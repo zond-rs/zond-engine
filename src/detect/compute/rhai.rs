@@ -8,12 +8,12 @@
 
 //! # The Rhai backend
 //!
-//! The first [`ComputeRuntime`], over [Rhai](https://rhai.rs) — a small,
+//! The first [`ComputeRuntime`], over [Rhai](https://rhai.rs), a small,
 //! embeddable, pure-Rust scripting language. It is sandboxed by the principle the
 //! whole subsystem turns on: Rhai has no I/O of its own, so a script reaches
 //! nothing but the host functions this backend registers, and those are exactly
 //! the [capability](Capabilities) verbs the grant permits. A `passive` grant
-//! registers none, so a passive module cannot reach the network — not because a
+//! registers none, so a passive module cannot reach the network, not because a
 //! call is refused, but because there is no `speak` to call.
 //!
 //! ## A module is a compiled script; an instance is an engine that serves it
@@ -82,7 +82,7 @@ thread_local! {
     /// The capabilities the currently-running module is served, as a raw pointer
     /// set by [`ActiveRun`] for the span of one [`run`](RhaiRuntime::run).
     static ACTIVE_CAPS: Cell<Option<NonNull<dyn Capabilities>>> = const { Cell::new(None) };
-    /// The abnormal outcome a capability recorded when it ended the run — a budget
+    /// The abnormal outcome a capability recorded when it ended the run, a budget
     /// or policy refusal the guest cannot catch. Read once the guest returns.
     static ABORT: RefCell<Option<RunOutcome>> = const { RefCell::new(None) };
     /// When the running module's wall-clock budget expires, read by the engine's
@@ -169,7 +169,7 @@ pub struct RhaiInstance {
 /// The Rhai [`ComputeRuntime`].
 pub struct RhaiRuntime {
     /// A bare engine used only to parse a module at load. Compilation resolves no
-    /// capability calls — those are late-bound at run — so this needs none of them
+    /// capability calls, those are late-bound at run, so this needs none of them
     /// registered.
     compiler: Engine,
 }
@@ -247,8 +247,8 @@ impl ComputeRuntime for RhaiRuntime {
         harden(&mut engine);
 
         // The wall-clock deadline, enforced independently of the I/O seam. Rhai
-        // calls this between operations, so a run that does work but never speaks —
-        // a passive module — still stops when its time is spent, where a deadline
+        // calls this between operations, so a run that does work but never speaks,
+        // a passive module, still stops when its time is spent, where a deadline
         // read only inside `speak` never would. A run past its deadline is
         // terminated, which `classify` reads back as `BudgetTrap::Deadline`.
         engine.on_progress(|operations| {
@@ -266,14 +266,14 @@ impl ComputeRuntime for RhaiRuntime {
         // A pure utility, always available and not a capability: decode bytes as
         // text so a detection can do string work on a response. Latin-1, so every
         // byte is its own code point and a binary reply is not mangled by a lossy
-        // conversion — the same decoding a flow's matcher reads a reply through.
+        // conversion, the same decoding a flow's matcher reads a reply through.
         engine.register_fn("text", |bytes: Blob| -> String {
             bytes.iter().map(|&byte| byte as char).collect()
         });
 
         // The class becomes the served set here: only the granted verbs are
         // registered, so an ungranted one is not refused but absent. `now` is
-        // always available — an injected clock touches nothing.
+        // always available, an injected clock touches nothing.
         engine.register_fn("now", capability_now);
         if grant.speak {
             engine.register_fn("speak", capability_speak);
@@ -425,7 +425,7 @@ fn record_abort(outcome: RunOutcome) {
 }
 
 /// An uncatchable termination, the vehicle for ending a run on a fatal capability
-/// error — the recorded [`RunOutcome`] carries the real cause.
+/// error, the recorded [`RunOutcome`] carries the real cause.
 fn terminated() -> Box<EvalAltResult> {
     Box::new(EvalAltResult::ErrorTerminated(
         Dynamic::UNIT,
@@ -610,7 +610,7 @@ mod tests {
     use std::time::Duration;
 
     /// A capabilities implementation that serves canned replies and records what
-    /// the module did — the offline path that is also the replay path.
+    /// the module did, the offline path that is also the replay path.
     /// The guard that makes ZA-4-005's invariant hold rather than merely be
     /// written down, and it holds in a release build: the runtime refuses the
     /// second run instead of trusting an implementation it did not write.
@@ -743,7 +743,7 @@ mod tests {
         assert_eq!(finding.severity(), Severity::High);
         assert_eq!(finding.confidence(), Confidence::Probable);
         assert_eq!(finding.title(), "port 6379 answered");
-        // Provenance is the grant's, not the module's — a module cannot forge it.
+        // Provenance is the grant's, not the module's, a module cannot forge it.
         assert_eq!(finding.detection().id(), "test-detection");
         assert_eq!(finding.detection().content_hash(), "hash");
         assert!(
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn a_passive_module_cannot_reach_the_network_because_speak_is_absent() {
         // The security property: a passive grant registers no `speak`, so the call
-        // is not refused but unnameable — and no byte reaches the capabilities.
+        // is not refused but unnameable, and no byte reaches the capabilities.
         let source = r#"
             fn analyze(ctx, responses) {
                 speak(blob());

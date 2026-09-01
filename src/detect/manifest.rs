@@ -12,7 +12,7 @@
 //! identity, the cheap gate that decides whether it runs for a port at all, and
 //! the capabilities and intrusiveness [class](Class) it asks the operator to
 //! grant. A [flow](super::flow) and a [compute module](super::compute) differ in
-//! their *body* — steps versus code — but declare themselves the same way, so the
+//! their *body*, steps versus code, but declare themselves the same way, so the
 //! manifest is one vocabulary both tiers share rather than each restating.
 //!
 //! ## The class is the request, not the grant
@@ -21,7 +21,7 @@
 //! [`Class`] and a [`CapabilitySpec`]; the [envelope](crate::config::envelope) decides
 //! what to serve, and the runtime serves exactly that. The class a detection asks
 //! for is the set of capabilities an envelope will hand it, so a `passive`
-//! detection cannot reach the network however it is authored — the boundary is
+//! detection cannot reach the network however it is authored, the boundary is
 //! the serving, not the label.
 //!
 //! ## Authoring types, kept free of the model
@@ -35,7 +35,7 @@
 //! the corpus with the very types the runtime deserializes.
 
 // `build.rs` compiles this file too, to validate the detection corpus, and its
-// checks read only a subset of these fields — the rest are a detection's declared
+// checks read only a subset of these fields, the rest are a detection's declared
 // budget the runtime reads. Within the library every field is public API and
 // live; the unread-field lint fires only in the build-script crate, so it is
 // silenced here rather than field by field.
@@ -43,7 +43,7 @@
 
 use serde::Deserialize;
 
-/// `[detection]` — what a detection *is* and what it *asks to be handed*, shared
+/// `[detection]`, what a detection *is* and what it *asks to be handed*, shared
 /// by every tier that runs one.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,7 +63,7 @@ pub struct DetectionManifest {
     pub capabilities: CapabilitySpec,
 }
 
-/// `[detection.when]` — the rule that gates the whole detection, nmap's portrule.
+/// `[detection.when]`, the rule that gates the whole detection, nmap's portrule.
 /// Every set field ANDs; an empty table means "any port the level offers".
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,7 +111,7 @@ pub struct Rule {
     pub speaks: Option<String>,
 }
 
-/// `[detection.capabilities]` — what a detection asks to be handed. The class *is*
+/// `[detection.capabilities]`, what a detection asks to be handed. The class *is*
 /// the capability set an envelope will serve; nothing here self-reports.
 ///
 /// Named a *spec* for the same reason the flow schema's other authoring types are:

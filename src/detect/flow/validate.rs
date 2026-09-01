@@ -10,7 +10,7 @@
 //!
 //! The structural half of the flow validator. It walks a parsed
 //! [`FlowDetection`](super::schema::FlowDetection) and reports every way it is
-//! ill-formed — a guard that names a variable no earlier step binds, a `passive`
+//! ill-formed, a guard that names a variable no earlier step binds, a `passive`
 //! detection that tries to send, a loop that never ends or never runs, a
 //! detection that can emit no finding at all. A flow that passes is a flow the
 //! interpreter can run without a surprise, which is the whole promise of a
@@ -20,7 +20,7 @@
 //! ## Why it lives here and not only in `build.rs`
 //!
 //! Like the schema and the guard grammar, this module carries no dependency on
-//! the rest of the crate — only [`std`], its sibling [`schema`](super::schema),
+//! the rest of the crate, only [`std`], its sibling [`schema`](super::schema),
 //! and its sibling [`expr`](super::expr). So `build.rs` loads it with `#[path]`
 //! and runs it over the flow corpus with the very code that would run over a flow
 //! loaded at runtime. Its `#[cfg(test)]` tests are free to reach into the crate
@@ -36,7 +36,7 @@
 //! hand; this module is pure over the flow's structure.
 
 // Every item here is consumed by `build.rs` (which `#[path]`-loads this file to
-// validate the flow corpus) and by the tests, not by the runtime library yet —
+// validate the flow corpus) and by the tests, not by the runtime library yet,
 // so the plain `--lib` build alone sees them as unused.
 #![allow(dead_code)]
 
@@ -59,7 +59,7 @@ const RESERVED_ID_PREFIX: &str = "zond:";
 pub enum ValidationError {
     /// More than [`MAX_FLOW_STEPS`] steps.
     TooManySteps(usize),
-    /// A `for_each` over an empty list — a step that never runs.
+    /// A `for_each` over an empty list, a step that never runs.
     EmptyLoop(usize),
     /// A `for_each` over more than [`MAX_LOOP_ITEMS`] items.
     LoopTooLong(usize, usize),
@@ -72,7 +72,7 @@ pub enum ValidationError {
     /// A step sends bytes but the detection was granted no `speak`.
     SendWithoutSpeak,
     /// A guard or template names a variable no earlier step binds. The `&str`
-    /// says where — a step guard, a send, a finding guard, a template field.
+    /// says where, a step guard, a send, a finding guard, a template field.
     UndefinedVariable(usize, String, &'static str),
     /// A step's own guard reads `matched`, which is out of scope before the step
     /// has matched anything.
@@ -81,7 +81,7 @@ pub enum ValidationError {
     MatchedWithoutExpect(usize),
     /// A guard does not parse. The `&str` says which guard.
     GuardParseError(usize, &'static str, ParseError),
-    /// A whole flow with no `[[step.finding]]` — a detection that can conclude
+    /// A whole flow with no `[[step.finding]]`, a detection that can conclude
     /// nothing.
     NoFindings,
     /// A `version` that is not a `major.minor.patch` triple.
@@ -170,7 +170,7 @@ impl fmt::Display for ValidationError {
 ///
 /// It reports *all* the problems it finds rather than the first, so one build
 /// surfaces every fix a flow needs. Duplicate ids across the corpus and the
-/// pattern/budget rules are the caller's to add — they need the whole corpus or
+/// pattern/budget rules are the caller's to add: they need the whole corpus or
 /// the pattern engine, which this pure structural pass does not hold.
 pub fn check(flow: &FlowDetection) -> Vec<ValidationError> {
     let mut errors = Vec::new();
@@ -200,7 +200,7 @@ pub fn check(flow: &FlowDetection) -> Vec<ValidationError> {
     errors
 }
 
-/// H11 — the identity is well-formed and does not forge a first-party finding.
+/// H11, the identity is well-formed and does not forge a first-party finding.
 fn check_identity(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     let id = &flow.detection.id;
     if id.trim().is_empty() {
@@ -218,7 +218,7 @@ fn check_identity(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// H8 — a detection cannot do more than its class allows. The class is what the
+/// H8, a detection cannot do more than its class allows. The class is what the
 /// envelope will serve; the flow's *structure* may not exceed it.
 fn check_capabilities(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     let caps = &flow.detection.capabilities;
@@ -243,7 +243,7 @@ fn check_capabilities(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// H7 — the transport that will serve `speak` is one the engine speaks.
+/// H7, the transport that will serve `speak` is one the engine speaks.
 fn check_protocol(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     if let Some(protocol) = &flow.detection.when.protocol
         && protocol != "tcp"
@@ -253,7 +253,7 @@ fn check_protocol(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// H1, H3, H9, H10, H12, H13 — the forward-only variable walk. It threads the
+/// H1, H3, H9, H10, H12, H13, the forward-only variable walk. It threads the
 /// set of variables that reach each step and proves every guard and template
 /// names only what is in scope, that every loop is bounded, and that a guard is
 /// well-formed.
@@ -267,7 +267,7 @@ fn check_references(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
         let loop_var = check_loop(index, step, &persisted, errors);
 
         // A step's guard and its send see the persisted variables plus this
-        // step's own loop variable — its binds have not run yet.
+        // step's own loop variable, its binds have not run yet.
         let mut gate_scope = persisted.clone();
         gate_scope.extend(loop_var.clone());
 
@@ -290,7 +290,7 @@ fn check_references(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// H1, H13 — a `for_each` is bounded and does not shadow. Returns the loop
+/// H1, H13, a `for_each` is bounded and does not shadow. Returns the loop
 /// variable it introduces, if any, for the scope of this step.
 fn check_loop(
     index: usize,
@@ -386,7 +386,7 @@ fn check_finding(
     }
 }
 
-/// H9 — every `{var}` a template interpolates is in scope.
+/// H9, every `{var}` a template interpolates is in scope.
 fn check_template(
     index: usize,
     template: &str,

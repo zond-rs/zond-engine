@@ -22,7 +22,7 @@
 //! loaded through the [`RhaiRuntime`](super::RhaiRuntime), and the runtime and the
 //! compiled set are held together, because the [stage](super::stage) needs both to
 //! run them. A body that will not compile is skipped with a warning rather than
-//! panicking a scan — the shipped corpus is proven to compile by a test, so a skip
+//! panicking a scan, the shipped corpus is proven to compile by a test, so a skip
 //! is a defence, not an expected path.
 
 use std::net::{IpAddr, SocketAddr};
@@ -171,7 +171,7 @@ pub fn replay_run(run: &DetectionRunRecord) -> Result<Vec<Finding>, ReplayError>
 }
 
 /// Compiles one embedded module into a runnable detection, or [`None`] with a
-/// warning if it will not compile — which the corpus test proves cannot happen for
+/// warning if it will not compile, which the corpus test proves cannot happen for
 /// what ships.
 fn load_module(
     runtime: &RhaiRuntime,

@@ -10,7 +10,7 @@
 //!
 //! A guard is the one place a Tier-1 flow makes a decision: a step's `when`
 //! decides whether the step runs, a finding's `when` decides whether it fires.
-//! This module is the guard *as syntax* — an [`Expr`] tree and the [`parse`]
+//! This module is the guard *as syntax*, an [`Expr`] tree and the [`parse`]
 //! that builds one from the string a flow author wrote. What a parsed guard
 //! *means* against a running flow's variables lives beside the interpreter
 //! ([`super::eval`]); the split is deliberate, and it is the same split the
@@ -19,7 +19,7 @@
 //! ## Shared verbatim with the build
 //!
 //! Like [`fingerprint::pattern`](crate::fingerprint) and the signature schema,
-//! this module carries no dependency on the rest of the crate — only [`std`] —
+//! this module carries no dependency on the rest of the crate, only [`std`],
 //! so `build.rs` can load it with `#[path]` and reject a malformed guard *at
 //! build time*, with the exact parser the runtime uses. A guard the build
 //! accepts is a guard the interpreter can read, because both read this file.
@@ -60,24 +60,24 @@ use std::fmt;
 /// stack.
 const MAX_GUARD_DEPTH: usize = 64;
 
-/// A parsed guard expression — the boolean a `when` clause denotes.
+/// A parsed guard expression, the boolean a `when` clause denotes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
-    /// `a or b` — true if either side is.
+    /// `a or b`, true if either side is.
     Or(Box<Expr>, Box<Expr>),
-    /// `a and b` — true only if both are.
+    /// `a and b`, true only if both are.
     And(Box<Expr>, Box<Expr>),
-    /// `not a` — the negation.
+    /// `not a`, the negation.
     Not(Box<Expr>),
-    /// `matched` — the enclosing step's combined match result. Meaningful only
+    /// `matched`, the enclosing step's combined match result. Meaningful only
     /// where a step result is in scope (a finding's guard), which the build
     /// checks; see [`super::eval`].
     Matched,
-    /// `bound(x)` — true if variable `x` has a value.
+    /// `bound(x)`, true if variable `x` has a value.
     Bound(String),
-    /// `unbound(x)` — true if variable `x` has none.
+    /// `unbound(x)`, true if variable `x` has none.
     Unbound(String),
-    /// `a <op> b` — an equality or ordered comparison of two operands.
+    /// `a <op> b`, an equality or ordered comparison of two operands.
     Compare {
         left: Operand,
         op: RelOp,
@@ -93,7 +93,7 @@ pub enum Operand {
     Var(String),
     /// A string literal, written `'…'` or `"…"`.
     Text(String),
-    /// An integer literal — the one operand two of which compare numerically.
+    /// An integer literal, the one operand two of which compare numerically.
     Int(i64),
 }
 
@@ -115,7 +115,7 @@ pub enum RelOp {
 // `--lib` build alone sees them as unused.
 #[allow(dead_code)]
 impl Expr {
-    /// The names of every variable this guard reads — the argument of a
+    /// The names of every variable this guard reads, the argument of a
     /// `bound`/`unbound`, and any variable operand of a comparison. The build
     /// uses it to prove a guard names only variables an earlier step binds.
     pub fn referenced_vars(&self) -> BTreeSet<String> {
@@ -146,8 +146,8 @@ impl Expr {
         }
     }
 
-    /// Whether this guard reads `matched`. A step's own guard may not — nothing
-    /// has matched when the step is gated — so the build rejects one that does.
+    /// Whether this guard reads `matched`. A step's own guard may not, nothing
+    /// has matched when the step is gated, so the build rejects one that does.
     pub fn uses_matched(&self) -> bool {
         match self {
             Expr::Matched => true,
@@ -167,7 +167,7 @@ impl Expr {
 pub enum ParseError {
     /// The guard is empty or all whitespace.
     Empty,
-    /// A character that begins no token — a stray `.`, `&`, or a lone `!`/`=`
+    /// A character that begins no token, a stray `.`, `&`, or a lone `!`/`=`
     /// that is not part of `!=`/`==`.
     UnexpectedChar(char),
     /// A string literal opened but never closed.
@@ -223,7 +223,7 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
     Ok(expr)
 }
 
-/// A lexical token — the parser's alphabet, one step up from characters.
+/// A lexical token, the parser's alphabet, one step up from characters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
     And,
@@ -360,7 +360,7 @@ impl Parser {
         }
     }
 
-    /// `or-expr = and-expr , { "or" , and-expr }` — the loosest binding.
+    /// `or-expr = and-expr , { "or" , and-expr }`, the loosest binding.
     ///
     /// Every nesting cycle passes through here, since a parenthesised primary
     /// re-enters it, so the parenthesis-depth guard lives here. It counts nesting
@@ -392,7 +392,7 @@ impl Parser {
         Ok(left)
     }
 
-    /// `not-expr = [ "not" ] , primary` — one optional negation, binding tighter
+    /// `not-expr = [ "not" ] , primary`, one optional negation, binding tighter
     /// than `and`, so `not a and b` is `(not a) and b`.
     fn not_expr(&mut self) -> Result<Expr, ParseError> {
         if self.peek() == Some(&Token::Not) {
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn a_bare_operand_is_not_a_guard() {
-        // No bare-value truthiness — a lone variable wants a comparison.
+        // No bare-value truthiness, a lone variable wants a comparison.
         assert_eq!(
             parse("version"),
             Err(ParseError::Expected("a comparison operator"))
@@ -641,7 +641,7 @@ mod tests {
         assert_eq!(parse("v & w"), Err(ParseError::UnexpectedChar('&')));
         assert_eq!(parse("v == 'open"), Err(ParseError::UnterminatedString));
         // An unquoted dotted version is not an integer and not a string, so its
-        // stray '.' is the unexpected character — versions must be quoted.
+        // stray '.' is the unexpected character, versions must be quoted.
         assert_eq!(parse("v < 8.3.1"), Err(ParseError::UnexpectedChar('.')));
     }
 

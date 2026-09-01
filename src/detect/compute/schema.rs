@@ -9,7 +9,7 @@
 //! # A compute detection, as it is authored
 //!
 //! A Tier-2 detection on disk: the shared `[detection]`
-//! [manifest](crate::detect::manifest) — identical to a flow's — followed by a
+//! [manifest](crate::detect::manifest), identical to a flow's, followed by a
 //! `[compute]` section carrying the body. It is a sibling of the flow corpus in
 //! the same `assets/detect/` directory; the build tells the two apart by which
 //! body a file carries, `[[step]]` for a flow and `[compute]` for a module, and
@@ -20,20 +20,20 @@
 //!
 //! The body is written one of two ways, and exactly one:
 //!
-//! - `source` — the code inline, the default for a small module a contributor
+//! - `source`, the code inline, the default for a small module a contributor
 //!   authors in one file.
-//! - `body` — the name of a sibling file the code lives in, for a module large
+//! - `body`, the name of a sibling file the code lives in, for a module large
 //!   enough to want its own file with editor support, and the only form a future
 //!   binary (WebAssembly) body can take at all.
 //!
 //! The build resolves a `body` reference to its source and normalises every
 //! module to the inline form before embedding, so the runtime only ever sees
-//! `source` — the file reference is an authoring convenience the corpus does not
+//! `source`, the file reference is an authoring convenience the corpus does not
 //! carry.
 
 // `build.rs` compiles this file to validate the module corpus; the runtime reads
 // the embedded, normalised form, so a field only the build reads (a `body`
-// reference, resolved away before runtime) is not dead — it is read in the build
+// reference, resolved away before runtime) is not dead: it is read in the build
 // script, where this same lint would not fire.
 #![allow(dead_code)]
 
@@ -49,7 +49,7 @@ pub struct ComputeDetection {
     pub compute: ComputeSection,
 }
 
-/// `[compute]` — the body of a Tier-2 detection and the language it is written in.
+/// `[compute]`, the body of a Tier-2 detection and the language it is written in.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComputeSection {

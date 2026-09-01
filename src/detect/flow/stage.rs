@@ -18,7 +18,7 @@
 //! ## What runs, and how it reaches the port
 //!
 //! A flow runs for a port when its `when` fits the port's service, number and
-//! protocol, and its class is one the default policy enables — `passive` and
+//! protocol, and its class is one the default policy enables, `passive` and
 //! `active-benign` for now, the intrusive classes staying off until an operator
 //! opts them in through an envelope (a later increment). The [`Probe`] each flow
 //! speaks through is supplied *per port* by the caller: that is the seam the live

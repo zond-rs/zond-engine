@@ -26,9 +26,9 @@ use super::manifest::Rule;
 impl Rule {
     /// Whether this gate fits a port's facts. Every set field must hold, and an
     /// empty gate fits any open port. A `service`/`services` names the identified
-    /// service, a `port`/`ports` the number, a `protocol` the transport — the
+    /// service, a `port`/`ports` the number, a `protocol` the transport, the
     /// last of which decides whether a UDP or a TCP socket serves the detection,
-    /// so a wrong one probes a service nobody asked about — and a `speaks` the
+    /// so a wrong one probes a service nobody asked about, and a `speaks` the
     /// application protocol the identified service is carried over, which the
     /// fingerprint corpus is asked for rather than the gate listing names.
     pub(crate) fn applies(&self, service: Option<&str>, number: u16, protocol: Protocol) -> bool {

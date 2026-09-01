@@ -10,7 +10,7 @@
 //!
 //! [`super::expr`] parses a guard into a tree; this evaluates that tree against a
 //! running flow's variable [environment](Env) to the one boolean the interpreter
-//! acts on — run this step, or emit this finding, or not. It is the runtime half
+//! acts on, run this step, or emit this finding, or not. It is the runtime half
 //! of the guard language, so unlike the grammar it may reach into the crate: an
 //! ordered comparison defers to [`crate::version`] so a flow guard and the CVE
 //! correlator rank a version string the same way.
@@ -20,8 +20,8 @@
 //! A guard that cannot be answered answers *no*, never *maybe*:
 //!
 //! - **A guard that does not parse** is treated as unmet. In a validated corpus
-//!   this cannot happen — the build rejects an unparseable guard (a later
-//!   increment) — but until then, and for a hand-built flow in a test, an
+//!   this cannot happen: the build rejects an unparseable guard (a later
+//!   increment), but until then, and for a hand-built flow in a test, an
 //!   unreadable guard suppresses its step or finding rather than firing it.
 //! - **A comparison on an unbound variable** is unmet. `version < '2'` when
 //!   `version` was never bound is false, not an error and not true, which is why
@@ -37,7 +37,7 @@ use super::expr::{self, Expr, Operand, RelOp};
 
 /// Whether a `when` clause holds against `env`.
 ///
-/// `matched` carries the enclosing step's match result where one is in scope — a
+/// `matched` carries the enclosing step's match result where one is in scope, a
 /// finding's guard may read `matched`, and receives `Some`; a step's own guard
 /// runs before the step matches anything and receives `None`, so a `matched` in
 /// it reads as false. An absent clause always holds.
@@ -90,8 +90,8 @@ fn resolve(operand: &Operand, env: &Env) -> Option<Value> {
     }
 }
 
-/// A resolved operand. A variable always resolves to [`Text`](Value::Text) — the
-/// environment holds only strings — so the numeric path is reached exactly when
+/// A resolved operand. A variable always resolves to [`Text`](Value::Text), the
+/// environment holds only strings, so the numeric path is reached exactly when
 /// *both* sides were written as integer literals, which is the rule the grammar
 /// promises.
 enum Value {
@@ -101,7 +101,7 @@ enum Value {
 
 impl Value {
     /// Equality: numeric between two integer literals, string-coerced otherwise
-    /// — total and always defined, so `count == 3` and `name == 'nginx'` both
+    ///, total and always defined, so `count == 3` and `name == 'nginx'` both
     /// mean what they read as.
     fn equals(&self, other: &Value) -> bool {
         match (self, other) {
@@ -111,7 +111,7 @@ impl Value {
     }
 
     /// Order: numeric between two integer literals, [dotted version](version_cmp)
-    /// otherwise — so `8.10.0 < 8.3.1` is false (10 outranks 3), the version
+    /// otherwise, so `8.10.0 < 8.3.1` is false (10 outranks 3), the version
     /// range check that is the whole reason the operator earns its place.
     fn order(&self, other: &Value) -> Ordering {
         match (self, other) {
@@ -170,7 +170,7 @@ mod tests {
         assert!(holds(Some("version < '8.3.1'"), &affected, None));
 
         // The lexical trap the operator exists to avoid: 8.10.0 is *newer* than
-        // 8.3.1, so it is not in the affected `< 8.3.1` range — a lexical `<`
+        // 8.3.1, so it is not in the affected `< 8.3.1` range, a lexical `<`
         // would wrongly report it, understating nothing and over-reporting a
         // patched server as vulnerable.
         let patched = env(&[("version", "8.10.0")]);
@@ -192,7 +192,7 @@ mod tests {
     fn a_comparison_on_an_unbound_variable_fails_closed() {
         // No `version` bound: the comparison is false, not an error and not true.
         assert!(!holds(Some("version < '2'"), &Env::new(), None));
-        // Which is why the conditional-step idiom guards it — the `and`
+        // Which is why the conditional-step idiom guards it, the `and`
         // short-circuits before the comparison is reached against nothing.
         assert!(!holds(
             Some("bound(version) and version < '2'"),

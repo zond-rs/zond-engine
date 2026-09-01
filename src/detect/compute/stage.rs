@@ -21,12 +21,12 @@
 //! Like the flow stage, this holds no socket of its own: `caps_for` yields the
 //! [`Capabilities`] a running detection is served, given the grant it will run
 //! under, so a scan hands it a live socket bound to the port and a test hands it a
-//! recorded one — the module cannot tell, which is the whole of replay.
+//! recorded one: the module cannot tell, which is the whole of replay.
 //!
 //! ## An abnormal end is not a finding
 //!
 //! A detection that trapped on a budget, was denied a call, or faulted did not
-//! *clear* the port — it did not finish. That outcome is logged and dropped, never
+//! clear the port. It did not finish. That outcome is logged and dropped, never
 //! turned into a finding, so a reader never mistakes "ran out of fuel" for "found
 //! nothing wrong."
 
@@ -48,7 +48,7 @@ use super::runtime::ComputeRuntime;
 
 /// A compute detection that did not finish cleanly: which detection, and why it
 /// ended. The stage returns these beside the findings so the caller can record an
-/// inconclusive run rather than dropping it — a run that trapped on a budget or
+/// inconclusive run rather than dropping it: a run that trapped on a budget or
 /// faulted did not clear the port, and a reader must be able to tell the two apart.
 pub(crate) struct InconclusiveRun {
     /// The detection whose run did not complete.
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn a_passive_detection_that_reaches_for_speak_produces_nothing() {
         // The grant gives a passive detection no `speak`, so a passive body that
-        // names it faults and emits nothing — the class enforced at the stage.
+        // names it faults and emits nothing, the class enforced at the stage.
         let runtime = RhaiRuntime::new();
         let source = r#"
             fn analyze(ctx, responses) {

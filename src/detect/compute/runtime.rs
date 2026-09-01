@@ -6,12 +6,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # The runtime seam — one trait over every compute backend
+//! # The runtime seam, one trait over every compute backend
 //!
 //! [`ComputeRuntime`] is the contract a compute backend serves, and the reason
 //! there is a contract at all: WebAssembly is the destination and [Rhai] the
 //! pure-Rust on-ramp, so a runtime is chosen behind this trait rather than in the
-//! detection stage, and choosing Rhai first forecloses nothing — a WebAssembly
+//! detection stage, and choosing Rhai first forecloses nothing, a WebAssembly
 //! backend is a second `impl`, not a redesign.
 //!
 //! [Rhai]: super::RhaiRuntime
@@ -30,7 +30,7 @@
 //! ## The body is bytes the host hands in
 //!
 //! A [`ModuleBody`] is source or a compiled blob a caller supplies, never a path
-//! the engine reads — per the library boundary, the engine hunts no filesystem
+//! the engine reads, per the library boundary, the engine hunts no filesystem
 //! for detections. Accepting one is safe precisely because it grants nothing: the
 //! capability model is what lets a detection be accepted from anywhere.
 
@@ -54,7 +54,7 @@ pub enum ModuleBody {
 
 /// Why a module could not be loaded or instantiated.
 ///
-/// A failure *before any port is touched* — a refusal with a cause, never a run
+/// A failure *before any port is touched*, a refusal with a cause, never a run
 /// that is quietly clamped. A body that will not compile, or one a given backend
 /// cannot serve, is rejected here.
 #[non_exhaustive]
@@ -63,7 +63,7 @@ pub enum LoadError {
     /// The body did not compile. Carries the backend's own diagnostic.
     #[error("the module did not compile: {0}")]
     Compile(String),
-    /// This backend does not serve this kind of body — a compiled blob handed to
+    /// This backend does not serve this kind of body, a compiled blob handed to
     /// a source runtime, or the reverse.
     #[error("this runtime does not serve this kind of module body")]
     UnsupportedBody,
@@ -72,7 +72,7 @@ pub enum LoadError {
 /// A compute backend: loads a module once, instantiates it per port, runs it per
 /// port. The one trait a WebAssembly backend and the Rhai one both satisfy.
 pub trait ComputeRuntime: Send + Sync {
-    /// A validated, compiled module — built once per detection and shared across
+    /// A validated, compiled module, built once per detection and shared across
     /// every port it runs against, so it is `Send + Sync`.
     type Module: Send + Sync;
 
@@ -83,7 +83,7 @@ pub trait ComputeRuntime: Send + Sync {
 
     /// Validate and compile `body` into a reusable module, or reject it with a
     /// cause. The one place a body's own validity is checked; whether a detection
-    /// *may run* — its class against the envelope — is decided by the caller
+    /// *may run*, its class against the envelope, is decided by the caller
     /// before instantiation.
     fn load(&self, body: &ModuleBody) -> Result<Self::Module, LoadError>;
 
@@ -98,7 +98,7 @@ pub trait ComputeRuntime: Send + Sync {
     ) -> Result<Self::Instance, LoadError>;
 
     /// Run `instance` to completion against one port, serving every capability
-    /// through `caps`. `Ok(vec)` is a clean run — an empty vector its clean
+    /// through `caps`. `Ok(vec)` is a clean run, an empty vector its clean
     /// no-finding case; `Err(`[`RunOutcome`]`)` is an abnormal end the report
     /// records rather than swallows.
     fn run(

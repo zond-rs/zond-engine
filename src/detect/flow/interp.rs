@@ -9,7 +9,7 @@
 //! # Running a flow
 //!
 //! Walks a [`FlowDetection`](super::schema::FlowDetection)'s steps front to back,
-//! once — there is no instruction that revisits a step — exchanging bytes with a
+//! once, there is no instruction that revisits a step, exchanging bytes with a
 //! [`Probe`], matching replies, binding variables, and emitting the
 //! [`Finding`]s its findings imply. The bound total probe count and the absence
 //! of any jump are what let it run without a fuel meter: it cannot loop forever
@@ -26,8 +26,8 @@
 //!
 //! Two kinds of `when` clause steer a flow, both written in the [guard
 //! grammar](super::expr) and answered by [`eval`](super::eval). A step's `when`
-//! is checked against the environment *before* the step runs — a false guard
-//! skips the step and moves on — so a step may be made conditional on what an
+//! is checked against the environment *before* the step runs, a false guard
+//! skips the step and moves on, so a step may be made conditional on what an
 //! earlier one bound. A finding's `when` is checked against the environment *and*
 //! its step's match result, so a finding fires only in the case it names. An
 //! absent guard always holds; an unparseable one never does.
@@ -84,7 +84,7 @@ enum Flow {
 /// Runs `flow` against `probe`, returning the findings it produced.
 ///
 /// `content_hash` is the flow body's content address, stamped on every finding's
-/// [`DetectionId`] as provenance — the loader that sourced the flow computes it
+/// [`DetectionId`] as provenance, the loader that sourced the flow computes it
 /// from the flow's bytes. Everything else, the id, version, severity and
 /// references, is the flow's own.
 pub fn run(flow: &FlowDetection, content_hash: &str, probe: &mut dyn Probe) -> Vec<Finding> {
@@ -128,15 +128,15 @@ fn run_step(
     probe: &mut dyn Probe,
     findings: &mut Vec<Finding>,
 ) -> Flow {
-    // A step's guard is checked before it runs: a false guard skips the step —
-    // its probe, its binds, its findings — and the flow proceeds to the next.
+    // A step's guard is checked before it runs: a false guard skips the step,
+    // its probe, its binds, its findings, and the flow proceeds to the next.
     // `matched` is out of scope here, nothing having matched yet, so the guard
     // reads only what earlier steps bound.
     if !eval::holds(step.when.as_deref(), env, None) {
         return Flow::Continue;
     }
 
-    // The probe exchange. A step with no `send` reads nothing new — for now it
+    // The probe exchange. A step with no `send` reads nothing new, for now it
     // has no reply to match against.
     let response = match &step.send {
         Some(send) => match interpolate(send, env) {
@@ -207,7 +207,7 @@ fn capture(spec: &MatchSpec, text: &str, name: &str) -> Option<String> {
 
 /// Builds the finding a [`FindingSpec`] describes, resolving its `{var}`
 /// templates against the environment. [`None`] if a template names a variable
-/// nothing bound — a finding that would lie about what it found is dropped, not
+/// nothing bound, a finding that would lie about what it found is dropped, not
 /// emitted half-built.
 fn build_finding(
     flow: &FlowDetection,
@@ -262,7 +262,7 @@ fn build_finding(
 }
 
 /// Substitutes each `{ident}` in `template` for the variable's value. [`None`] if
-/// a name is unbound, or the braces are unbalanced — the caller drops the field
+/// a name is unbound, or the braces are unbalanced, the caller drops the field
 /// rather than emit a half-built one.
 fn interpolate(template: &str, env: &Env) -> Option<String> {
     let mut out = String::with_capacity(template.len());
@@ -278,7 +278,7 @@ fn interpolate(template: &str, env: &Env) -> Option<String> {
     Some(out)
 }
 
-/// Decodes bytes as Latin-1 — each byte its own code point — so a probe reply is
+/// Decodes bytes as Latin-1, each byte its own code point, so a probe reply is
 /// a string a byte-oriented pattern can match without a lossy conversion eating
 /// the bytes it looks for.
 fn latin1(bytes: &[u8]) -> String {
@@ -452,7 +452,7 @@ mod tests {
     fn a_patched_or_unrelated_server_never_reaches_the_exploit_step() {
         let grafana = flow("grafana-path-traversal");
 
-        // 8.10.0 is *newer* than 8.3.1 — a lexical `<` would misread it as
+        // 8.10.0 is *newer* than 8.3.1, a lexical `<` would misread it as
         // affected (10 < 3 as strings) and probe a patched server; the
         // version-compare guard skips the step, so no finding and no traversal.
         let mut patched = Grafana {

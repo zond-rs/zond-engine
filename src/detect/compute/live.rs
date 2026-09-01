@@ -12,14 +12,14 @@
 //! over a fresh connection to the one scanned port, [`now`](Capabilities::now)
 //! off a scan-relative clock. It is the live counterpart to the recorded
 //! capabilities a test or a replay serves, and a module cannot tell which it
-//! holds — the whole point of the seam.
+//! holds, the whole point of the seam.
 //!
 //! ## The budget is enforced here
 //!
 //! The byte and connection budgets are spent at this boundary, so a module cannot
 //! exceed them: an exchange the budget cannot pay for is refused before a packet
 //! leaves, and a reply is capped at the bytes still available. This mirrors the
-//! Tier-1 [socket probe](crate::scanner::detection) a flow speaks through — the
+//! Tier-1 [socket probe](crate::scanner::detection) a flow speaks through, the
 //! difference is only the seam it satisfies, so a module's `speak` returns a
 //! typed [`CapError`] the module may catch rather than a bare absence.
 //!
@@ -132,7 +132,7 @@ fn io_error(error: &std::io::Error) -> CapError {
 
 /// Connects, sends `bytes`, and reads the reply until the port falls silent, the
 /// byte budget `cap` is spent, or the connection closes. A silent port is an
-/// empty reply, not an error — the module decides what that means.
+/// empty reply, not an error. The module decides what that means.
 fn tcp_exchange(
     addr: SocketAddr,
     bytes: &[u8],

@@ -11,35 +11,35 @@
 //! The data model of a Tier-1 detection: a bounded, straight-line sequence of
 //! steps, each a probe and a match, where a match binds variables and a later
 //! step or finding may be guarded on what an earlier one bound. It is the
-//! service-signature format ([`crate::fingerprint`]) grown a spine — sequencing,
+//! service-signature format ([`crate::fingerprint`]) grown a spine, sequencing,
 //! a variable environment, and a typed [`Finding`](crate::model::finding::Finding)
-//! on the end — and it reuses the matcher rather than reinventing it: `expect`
+//! on the end, and it reuses the matcher rather than reinventing it: `expect`
 //! and `bind` carry the same pattern (and optional product) a Tier-0
 //! [`MatchRule`](crate::fingerprint::MatchRule) does, compiled by the one shared
 //! engine. The authoring form here ([`MatchDetail`]) is a self-contained mirror
 //! of the fields a flow uses, so this schema deserializes without reaching into
-//! the fingerprint types — the discipline that lets `build.rs` share this file.
+//! the fingerprint types, the discipline that lets `build.rs` share this file.
 //!
 //! ## Authoring against the model
 //!
-//! These are *authoring* types — they deserialize from TOML and are deliberately
+//! These are authoring types: they deserialize from TOML and are deliberately
 //! separate from the [`model`](crate::model) types they map onto, for the reason
 //! [`fingerprint::signature`](crate::fingerprint) is separate from the model: the
 //! model stays serde-free, so a flow's `severity` and `references` are parsed here
 //! and converted into the model's own vocabulary when a flow produces a finding.
-//! The `[detection]` manifest a flow shares with the compute tier — its id, gate,
-//! and class — lives in [`manifest`](crate::detect::manifest).
+//! The `[detection]` manifest a flow shares with the compute tier, its id, gate,
+//! and class, lives in [`manifest`](crate::detect::manifest).
 //!
 //! ## Bounded by construction
 //!
 //! A flow has at most [`MAX_FLOW_STEPS`] steps and a `for_each` iterates at most
 //! [`MAX_LOOP_ITEMS`] literals, so the total probe count is a number known before
 //! the flow runs. That bound is what lets a flow be validated end to end at build
-//! time and metered without a fuel counter — see the module documentation for the
+//! time and metered without a fuel counter, see the module documentation for the
 //! interpreter and the validator that enforce it.
 
 // `build.rs` compiles this file too, to validate the flow corpus, and its
-// structural checks read only a subset of these authoring fields — the rest are
+// structural checks read only a subset of these authoring fields, the rest are
 // a finding's payload the runtime reads. Within the library every field is public
 // API and live; the unread-field lint fires only in the build-script crate, so it
 // is silenced here rather than field by field. (The flow database embeds each
@@ -76,7 +76,7 @@ pub struct FlowDetection {
     pub step: Vec<Step>,
 }
 
-/// One `[[step]]` — a straight-line node. There is no jump field; the absence is
+/// One `[[step]]`, a straight-line node. There is no jump field; the absence is
 /// the no-backward-jumps guarantee made structural.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,7 +84,7 @@ pub struct Step {
     /// A guard over variables bound by *earlier* steps. Absent = always run.
     #[serde(default)]
     pub when: Option<String>,
-    /// A bounded loop over a literal list — the one repetition construct.
+    /// A bounded loop over a literal list, the one repetition construct.
     #[serde(default)]
     pub for_each: Option<ForEach>,
     /// The bytes to emit, `{var}`-interpolated. Absent = a pure-analysis step
@@ -123,7 +123,7 @@ pub enum MatchSpec {
 }
 
 impl MatchSpec {
-    /// The regular-expression pattern this rule matches on — the one field
+    /// The regular-expression pattern this rule matches on, the one field
     /// present in every form, whether the rule was authored as a bare string or
     /// a table.
     pub fn pattern(&self) -> &str {
@@ -176,7 +176,7 @@ pub struct MatchDetail {
 pub struct ForEach {
     /// The loop variable, referenced in `send` and `{var}` within the step.
     pub var: String,
-    /// A literal list — the only form. Never a range, never a computed set.
+    /// A literal list, the only form. Never a range, never a computed set.
     #[serde(rename = "in")]
     pub items: Vec<String>,
 }
@@ -188,12 +188,12 @@ pub enum OnNoMatch {
     /// Stop the flow; nothing further runs.
     #[default]
     Halt,
-    /// Proceed with this step's binds left unbound — how a *conditional* later
+    /// Proceed with this step's binds left unbound, how a *conditional* later
     /// step reads "the probe happened but did not confirm".
     Continue,
 }
 
-/// `[[step.finding]]` — the typed output. Maps onto the model's
+/// `[[step.finding]]`, the typed output. Maps onto the model's
 /// [`Finding`](crate::model::finding::Finding).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -228,7 +228,7 @@ pub struct FindingSpec {
 }
 
 /// Accepts one value or a list of them into a `Vec`, so `expect = "x"` and
-/// `expect = ["x", "y"]` both read — the ergonomic shorthand the corpus uses.
+/// `expect = ["x", "y"]` both read, the ergonomic shorthand the corpus uses.
 fn one_or_many<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,

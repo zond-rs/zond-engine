@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Capabilities — the one seam a module reaches the world through
+//! # Capabilities, the one seam a module reaches the world through
 //!
 //! A compute module holds no authority of its own. Everything it can do to
 //! anything outside its own memory passes through this one trait, and a module is
@@ -24,7 +24,7 @@
 //! The seam is deliberately a set of verbs the host *runs*, not handles the
 //! module *holds*, and the rule is absolute: never hand a module a socket, a file
 //! descriptor, a dial-able address, or a clock. A handle is authority the module
-//! wields directly — the sandbox's memory boundary is beside the point once the
+//! wields directly, the sandbox's memory boundary is beside the point once the
 //! thing it can reach is on the far side of a `send` the host no longer mediates;
 //! the byte budget becomes advisory the moment a module writes without the seam
 //! counting; a held socket returns what the live network says today, so replay is
@@ -46,7 +46,7 @@ use super::budget::Budget;
 /// implementation; a module holds the verb, never the machinery behind it.
 ///
 /// `Send` because a module runs on the blocking pool, off the reactor, so the
-/// implementation that serves it — a live socket, a recorded tape — moves there
+/// implementation that serves it, a live socket, a recorded tape, moves there
 /// with it. It is deliberately *not* `Sync`: one run owns its capabilities, and a
 /// live one drives a single socket that no second thread may touch.
 ///
@@ -80,7 +80,7 @@ pub trait Capabilities: Send {
 
     /// The injected clock: a scan-relative tick, the *only* clock a module can
     /// read. It is not wall-clock and not a system time, which is what lets a run
-    /// be recorded and replayed — a real clock would make the same replay differ.
+    /// be recorded and replayed, a real clock would make the same replay differ.
     fn now(&mut self) -> ScanInstant;
 }
 
@@ -106,7 +106,7 @@ impl Capabilities for Box<dyn Capabilities> {
 ///
 /// A value the engine mints and can write down, deliberately not a
 /// [`std::time::Instant`], whose monotonic reading means nothing outside the
-/// process that took it and so cannot be journalled — the same reason a captured
+/// process that took it and so cannot be journalled, the same reason a captured
 /// round-trip sample's instant does not survive a report round-trip. Recording
 /// this tick is what lets a module that reads the clock still replay identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -126,7 +126,7 @@ impl ScanInstant {
     }
 }
 
-/// Which capability a call named — recorded on a [`Denial`](super::Denial), and
+/// Which capability a call named, recorded on a [`Denial`](super::Denial), and
 /// the vocabulary a runtime uses to decide which verbs a grant exposes.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,7 +142,7 @@ pub enum Capability {
 /// Why a capability could not serve a call.
 ///
 /// The distinction the runtime draws on it: a budget or scope refusal is a *hard*
-/// end to the run — a module cannot loop-and-retry its way past a byte budget, so
+/// end to the run, a module cannot loop-and-retry its way past a byte budget, so
 /// the run stops with the matching [`RunOutcome`](super::RunOutcome). An ordinary
 /// I/O failure is instead handed *back to the module*, which may catch it and try
 /// another approach the way any network client does.
@@ -156,7 +156,7 @@ pub enum CapError {
     /// hard end.
     #[error("the connection budget is exhausted")]
     ConnectionBudgetExhausted,
-    /// The call is refused on policy grounds — a `resolve` outside the granted
+    /// The call is refused on policy grounds, a `resolve` outside the granted
     /// scope. A hard end, carrying the reason for the report.
     #[error("the call was denied: {0}")]
     Denied(String),
@@ -190,7 +190,7 @@ impl CapError {
 /// carries `speak = false`, so the runtime serves no `speak` at all, and a
 /// `passive` module that names it fails because the verb is *absent*, not because
 /// a present verb returned an error. The identity and class are stamped onto
-/// every finding the module produces — a module cannot forge its own provenance.
+/// every finding the module produces, a module cannot forge its own provenance.
 #[derive(Debug, Clone)]
 pub struct Grant {
     /// The provenance stamped on every finding: the detection's id, version, and
@@ -207,7 +207,7 @@ pub struct Grant {
     pub resolve: bool,
 }
 
-/// The work bound a compute detection runs under when it declares none — enough
+/// The work bound a compute detection runs under when it declares none, enough
 /// for real parsing and a stateful exchange, and bounded against a runaway.
 const DEFAULT_FUEL: u64 = 10_000_000;
 /// The allocation ceiling a detection that declares none runs under: the largest
