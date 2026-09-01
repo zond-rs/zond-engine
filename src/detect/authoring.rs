@@ -27,6 +27,7 @@ use serde::Deserialize;
 /// How bad a finding is, as authored. Maps onto the model's
 /// [`Severity`](crate::model::finding::Severity) in the runtime
 /// `convert` module.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -50,6 +51,7 @@ pub enum Severity {
 /// `{ cwe = 79 }`, or `{ url = "…" }`. Maps onto the model's
 /// [`Reference`](crate::model::finding::Reference) in the runtime
 /// `convert` module.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Reference {

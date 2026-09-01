@@ -31,7 +31,7 @@ impl Rule {
     /// so a wrong one probes a service nobody asked about, and a `speaks` the
     /// application protocol the identified service is carried over, which the
     /// fingerprint corpus is asked for rather than the gate listing names.
-    pub(crate) fn applies(&self, service: Option<&str>, number: u16, protocol: Protocol) -> bool {
+    pub fn applies(&self, service: Option<&str>, number: u16, protocol: Protocol) -> bool {
         let service_ok = self
             .service
             .as_deref()

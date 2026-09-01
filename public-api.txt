@@ -443,10 +443,12 @@ pub fn zond_engine::cve::correlate_report(&mut zond_engine::report::ScanReport, 
 pub fn zond_engine::cve::correlate_with(&mut zond_engine::model::host::Host, &zond_engine::cve::Catalogue)
 pub mod zond_engine::detect
 pub mod zond_engine::detect::authoring
-pub enum zond_engine::detect::authoring::Reference
+#[non_exhaustive] pub enum zond_engine::detect::authoring::Reference
 pub zond_engine::detect::authoring::Reference::Cve(alloc::string::String)
 pub zond_engine::detect::authoring::Reference::Cwe(u32)
 pub zond_engine::detect::authoring::Reference::Url(alloc::string::String)
+impl zond_engine::detect::authoring::Reference
+pub fn zond_engine::detect::authoring::Reference::to_model(&self) -> core::option::Option<zond_engine::model::finding::Reference>
 impl core::clone::Clone for zond_engine::detect::authoring::Reference
 pub fn zond_engine::detect::authoring::Reference::clone(&self) -> zond_engine::detect::authoring::Reference
 impl core::cmp::Eq for zond_engine::detect::authoring::Reference
@@ -464,12 +466,14 @@ impl core::marker::Unpin for zond_engine::detect::authoring::Reference
 impl core::marker::UnsafeUnpin for zond_engine::detect::authoring::Reference
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::authoring::Reference
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::authoring::Reference
-pub enum zond_engine::detect::authoring::Severity
+#[non_exhaustive] pub enum zond_engine::detect::authoring::Severity
 pub zond_engine::detect::authoring::Severity::Critical
 pub zond_engine::detect::authoring::Severity::High
 pub zond_engine::detect::authoring::Severity::Info
 pub zond_engine::detect::authoring::Severity::Low
 pub zond_engine::detect::authoring::Severity::Medium
+impl zond_engine::detect::authoring::Severity
+pub fn zond_engine::detect::authoring::Severity::into_model(self) -> zond_engine::model::finding::Severity
 impl core::clone::Clone for zond_engine::detect::authoring::Severity
 pub fn zond_engine::detect::authoring::Severity::clone(&self) -> zond_engine::detect::authoring::Severity
 impl core::cmp::Eq for zond_engine::detect::authoring::Severity
@@ -922,14 +926,30 @@ impl core::marker::Unpin for zond_engine::detect::compute::ResolveExchangeRecord
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::ResolveExchangeRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::ResolveExchangeRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::ResolveExchangeRecord
+pub struct zond_engine::detect::compute::RhaiInstance
+impl !core::marker::Freeze for zond_engine::detect::compute::RhaiInstance
+impl core::marker::Send for zond_engine::detect::compute::RhaiInstance
+impl core::marker::Sync for zond_engine::detect::compute::RhaiInstance
+impl core::marker::Unpin for zond_engine::detect::compute::RhaiInstance
+impl core::marker::UnsafeUnpin for zond_engine::detect::compute::RhaiInstance
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::RhaiInstance
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::RhaiInstance
+pub struct zond_engine::detect::compute::RhaiModule
+impl core::marker::Freeze for zond_engine::detect::compute::RhaiModule
+impl core::marker::Send for zond_engine::detect::compute::RhaiModule
+impl core::marker::Sync for zond_engine::detect::compute::RhaiModule
+impl core::marker::Unpin for zond_engine::detect::compute::RhaiModule
+impl core::marker::UnsafeUnpin for zond_engine::detect::compute::RhaiModule
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::RhaiModule
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::RhaiModule
 pub struct zond_engine::detect::compute::RhaiRuntime
 impl zond_engine::detect::compute::RhaiRuntime
 pub fn zond_engine::detect::compute::RhaiRuntime::new() -> Self
 impl core::default::Default for zond_engine::detect::compute::RhaiRuntime
 pub fn zond_engine::detect::compute::RhaiRuntime::default() -> Self
 impl zond_engine::detect::compute::ComputeRuntime for zond_engine::detect::compute::RhaiRuntime
-pub type zond_engine::detect::compute::RhaiRuntime::Instance = zond_engine::detect::compute::rhai::RhaiInstance
-pub type zond_engine::detect::compute::RhaiRuntime::Module = zond_engine::detect::compute::rhai::RhaiModule
+pub type zond_engine::detect::compute::RhaiRuntime::Instance = zond_engine::detect::compute::RhaiInstance
+pub type zond_engine::detect::compute::RhaiRuntime::Module = zond_engine::detect::compute::RhaiModule
 pub fn zond_engine::detect::compute::RhaiRuntime::instantiate(&self, &Self::Module, &zond_engine::detect::compute::Grant) -> core::result::Result<Self::Instance, zond_engine::detect::compute::LoadError>
 pub fn zond_engine::detect::compute::RhaiRuntime::load(&self, &zond_engine::detect::compute::ModuleBody) -> core::result::Result<Self::Module, zond_engine::detect::compute::LoadError>
 pub fn zond_engine::detect::compute::RhaiRuntime::run(&self, &mut Self::Instance, &zond_engine::fingerprint::PortContext, &[&[u8]], &mut dyn zond_engine::detect::compute::Capabilities) -> core::result::Result<alloc::vec::Vec<zond_engine::model::finding::Finding>, zond_engine::detect::compute::RunOutcome>
@@ -1038,8 +1058,8 @@ pub fn zond_engine::detect::compute::ComputeRuntime::instantiate(&self, &Self::M
 pub fn zond_engine::detect::compute::ComputeRuntime::load(&self, &zond_engine::detect::compute::ModuleBody) -> core::result::Result<Self::Module, zond_engine::detect::compute::LoadError>
 pub fn zond_engine::detect::compute::ComputeRuntime::run(&self, &mut Self::Instance, &zond_engine::fingerprint::PortContext, &[&[u8]], &mut dyn zond_engine::detect::compute::Capabilities) -> core::result::Result<alloc::vec::Vec<zond_engine::model::finding::Finding>, zond_engine::detect::compute::RunOutcome>
 impl zond_engine::detect::compute::ComputeRuntime for zond_engine::detect::compute::RhaiRuntime
-pub type zond_engine::detect::compute::RhaiRuntime::Instance = zond_engine::detect::compute::rhai::RhaiInstance
-pub type zond_engine::detect::compute::RhaiRuntime::Module = zond_engine::detect::compute::rhai::RhaiModule
+pub type zond_engine::detect::compute::RhaiRuntime::Instance = zond_engine::detect::compute::RhaiInstance
+pub type zond_engine::detect::compute::RhaiRuntime::Module = zond_engine::detect::compute::RhaiModule
 pub fn zond_engine::detect::compute::RhaiRuntime::instantiate(&self, &Self::Module, &zond_engine::detect::compute::Grant) -> core::result::Result<Self::Instance, zond_engine::detect::compute::LoadError>
 pub fn zond_engine::detect::compute::RhaiRuntime::load(&self, &zond_engine::detect::compute::ModuleBody) -> core::result::Result<Self::Module, zond_engine::detect::compute::LoadError>
 pub fn zond_engine::detect::compute::RhaiRuntime::run(&self, &mut Self::Instance, &zond_engine::fingerprint::PortContext, &[&[u8]], &mut dyn zond_engine::detect::compute::Capabilities) -> core::result::Result<alloc::vec::Vec<zond_engine::model::finding::Finding>, zond_engine::detect::compute::RunOutcome>
@@ -1302,6 +1322,8 @@ pub zond_engine::detect::manifest::Rule::protocol: core::option::Option<alloc::s
 pub zond_engine::detect::manifest::Rule::service: core::option::Option<alloc::string::String>
 pub zond_engine::detect::manifest::Rule::services: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::detect::manifest::Rule::speaks: core::option::Option<alloc::string::String>
+impl zond_engine::detect::manifest::Rule
+pub fn zond_engine::detect::manifest::Rule::applies(&self, core::option::Option<&str>, u16, zond_engine::model::port::Protocol) -> bool
 impl core::clone::Clone for zond_engine::detect::manifest::Rule
 pub fn zond_engine::detect::manifest::Rule::clone(&self) -> zond_engine::detect::manifest::Rule
 impl core::default::Default for zond_engine::detect::manifest::Rule

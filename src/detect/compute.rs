@@ -72,6 +72,6 @@ pub use record::{
 pub use replay::{
     CapTape, RecordedCapabilities, RecordingCapabilities, ResolveExchange, SpeakExchange,
 };
-pub use rhai::RhaiRuntime;
+pub use rhai::{RhaiInstance, RhaiModule, RhaiRuntime};
 pub use runtime::{ComputeRuntime, LoadError, ModuleBody};
 pub use stage::LoadedDetection;

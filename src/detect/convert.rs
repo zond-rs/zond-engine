@@ -39,7 +39,7 @@ impl Class {
 
 impl Severity {
     /// The model severity this authoring severity names.
-    pub(crate) fn into_model(self) -> ModelSeverity {
+    pub fn into_model(self) -> ModelSeverity {
         match self {
             Severity::Info => ModelSeverity::Info,
             Severity::Low => ModelSeverity::Low,
@@ -56,7 +56,7 @@ impl Reference {
     ///
     /// Borrows rather than consumes: a spec's references are read once per
     /// finding it produces, and the spec outlives the finding.
-    pub(crate) fn to_model(&self) -> Option<ModelReference> {
+    pub fn to_model(&self) -> Option<ModelReference> {
         match self {
             Reference::Cve(id) => ModelReference::cve(id),
             Reference::Cwe(number) => Some(ModelReference::cwe(*number)),
