@@ -19,7 +19,7 @@
 //! The byte and connection budgets are spent at this boundary, so a module cannot
 //! exceed them: an exchange the budget cannot pay for is refused before a packet
 //! leaves, and a reply is capped at the bytes still available. This mirrors the
-//! Tier-1 [socket probe](crate::scanner::detect) a flow speaks through — the
+//! Tier-1 [socket probe](crate::scanner::detection) a flow speaks through — the
 //! difference is only the seam it satisfies, so a module's `speak` returns a
 //! typed [`CapError`] the module may catch rather than a bare absence.
 //!

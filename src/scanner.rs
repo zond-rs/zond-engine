@@ -150,7 +150,7 @@ pub mod audit;
 /// [`Journal`](crate::journal::Journal) to write into.
 #[cfg(feature = "journal-format")]
 pub mod checkpoint;
-pub mod detect;
+pub mod detection;
 pub mod dispatcher;
 pub mod payload;
 pub mod pool;
@@ -215,7 +215,7 @@ pub enum ScanError {
 /// The policy decides the enumeration: withhold the first half of a range and
 /// every position after it names a different target. A journal's plan already
 /// has the policy applied, so applying this run's policy to it and finding it
-/// unchanged is the whole test — one that withholds nothing further leaves the
+/// unchanged is the whole test: one that withholds nothing further leaves the
 /// same plan, and so the same fingerprint.
 ///
 /// A policy that withholds *less* passes, and is meant to: the recorded plan is
@@ -403,7 +403,9 @@ pub async fn discover(
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
 
-    let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
+    let (session, ctx) = ScanSession::builder()
+        .excluding(cfg.exclusions.clone())
+        .build();
     let handle = spawn_discovery(targets, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
 }
@@ -418,7 +420,7 @@ pub async fn discover(
 /// # The numbering comes from the journal
 ///
 /// A journal already holds the plan it is counted in, with the exclusion policy
-/// applied — [`Plan`](crate::journal::manifest::Plan) applies it, and
+/// applied: [`Plan`](crate::journal::manifest::Plan) applies it, and
 /// [`Journal::resume`](crate::journal::Journal::resume) checks it has not moved.
 /// The addresses an address settles against are read back from there, so
 /// nothing this function is passed can disagree with what the first sitting
@@ -438,7 +440,7 @@ pub async fn discover(
 /// answers, or when the probes aimed at it have been sent as many times as the
 /// policy allows and none of them answered. An address whose probes never left,
 /// one still mid-schedule when the sweep stopped, and one there was no route to
-/// carry no position and are asked again — see
+/// carry no position and are asked again. see
 /// [`settle`](crate::journal::settle) for why that distinction is the whole of
 /// the feature.
 ///
@@ -472,7 +474,11 @@ pub async fn discover_with_journal(
         resume_point.remaining_addresses(&positions)
     };
 
-    let (session, ctx) = ScanSession::sweeping(cfg.exclusions.clone(), &resume_point, positions);
+    let (session, ctx) = ScanSession::builder()
+        .excluding(cfg.exclusions.clone())
+        .resuming(&resume_point)
+        .counting(positions)
+        .build();
 
     ctx.restore_hosts(journal.restored());
     let earlier = journal.earlier_phases().to_vec();
@@ -577,7 +583,7 @@ pub struct ListenScope {
 /// When a listening phase stops.
 ///
 /// A scan ends when it has asked everything it meant to ask. A listener has
-/// asked nothing and can never be finished, so somebody else decides — which is
+/// asked nothing and can never be finished, so somebody else decides, which is
 /// why this is a required part of the scope rather than a setting with a
 /// default.
 #[non_exhaustive]
@@ -592,8 +598,8 @@ pub enum Until {
     Stopped,
     /// It runs for this long and then closes.
     ///
-    /// For a caller who wants a bounded sample — an inventory of what a segment
-    /// says over ten minutes — without having to hold the handle and time it.
+    /// For a caller who wants a bounded sample, an inventory of what a segment
+    /// says over ten minutes, without having to hold the handle and time it.
     Elapsed(std::time::Duration),
 }
 
@@ -605,7 +611,7 @@ impl ListenScope {
     /// inventory and a transcript. A link carrying traffic to anywhere else
     /// carries evidence about everywhere else: on a mirror port, every server a
     /// laptop opens a connection to is a real host, really up, with a really
-    /// open port — and on a busy uplink that is most of what an unnarrowed
+    /// open port, and on a busy uplink that is most of what an unnarrowed
     /// report would contain. [`recording_everything`](Self::recording_everything)
     /// is how a caller asks for it anyway.
     pub fn on(links: Vec<crate::model::ip::scoped::Zone>) -> Self {
@@ -620,7 +626,7 @@ impl ListenScope {
     ///
     /// For the question a listener answers that a scan cannot: which machines
     /// elsewhere this network depends on, and what they answer. It is the wider
-    /// reading of the same traffic rather than more of it — nothing extra is
+    /// reading of the same traffic rather than more of it: nothing extra is
     /// captured, and what changes is only what is allowed to reach the report.
     pub fn recording_everything(mut self) -> Self {
         self.recording = strategy::passive::Recording::Everything;
@@ -629,8 +635,8 @@ impl ListenScope {
 
     /// Records findings only about `addresses`.
     ///
-    /// Everything on the link is still *heard* — a listener cannot decline to
-    /// receive — and anything outside this is dropped before it reaches the
+    /// Everything on the link is still *heard*, a listener cannot decline to
+    /// receive, and anything outside this is dropped before it reaches the
     /// store. Which is where a passive phase's scope has to live: there is no
     /// asking to narrow.
     pub fn recording_only(mut self, addresses: IpSet) -> Self {
@@ -658,9 +664,9 @@ impl ListenScope {
 /// Reads what a link already carries, and concludes from it. Sends nothing.
 ///
 /// The third phase, beside [`discover`] and [`scan`], and the only one that puts
-/// no packet on the wire. It is for the networks the other two may not touch —
+/// no packet on the wire. It is for the networks the other two may not touch,
 /// industrial and clinical segments where probing is forbidden, production under
-/// change control, any engagement without an authorised scan window — and for
+/// change control, any engagement without an authorised scan window, and for
 /// the findings no probe can obtain: which switch port this machine is on, which
 /// VLANs a link carries, what a device says about itself while asking for an
 /// address.
@@ -669,7 +675,7 @@ impl ListenScope {
 ///
 /// **Only ever a positive claim.** Having sent nothing it cannot time anything
 /// out, so an address it never heard from may be absent, silent, behind a switch
-/// that never forwarded this way, or on a VLAN this link does not carry — and
+/// that never forwarded this way, or on a VLAN this link does not carry, and
 /// nothing separates those. It records a host as up and never as down, adds a
 /// role and never removes one, and its phase covers **no address at all**, so a
 /// [`diff`](crate::diff) cannot read a host that stayed quiet as one that went
@@ -680,8 +686,8 @@ impl ListenScope {
 /// On a switched network an unmirrored listener sees broadcast and multicast in
 /// full and very little unicast: the switch forwards a conversation between two
 /// other hosts out the one port that leads to it. That is enough for an asset
-/// and topology inventory — ARP, DHCP, mDNS, router advertisements, LLDP and CDP
-/// are all broadcast or multicast — and it is *not* enough for the endpoints and
+/// and topology inventory, ARP, DHCP, mDNS, router advertisements, LLDP and CDP
+/// are all broadcast or multicast, and it is *not* enough for the endpoints and
 /// flows, which need a mirror port, a tap, or a position traffic transits.
 ///
 /// The report says how much was lost rather than leaving it to be guessed: a
@@ -698,7 +704,9 @@ pub async fn listen(
     scope: ListenScope,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
-    let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
+    let (session, ctx) = ScanSession::builder()
+        .excluding(cfg.exclusions.clone())
+        .build();
     let handle = spawn_listen(scope, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
 }
@@ -713,7 +721,7 @@ pub async fn listen(
 /// # Resuming a watch appends a sitting
 ///
 /// This is the whole of how it differs from the other two, and it follows from
-/// what a listener is. A sweep and a port scan enumerate — the journal's cursor,
+/// what a listener is. A sweep and a port scan enumerate: the journal's cursor,
 /// watermark and total are arithmetic over that enumeration, and continuing one
 /// means *skipping what is settled*. A listener enumerates nothing: it was
 /// pointed at a link, the link carries what it carries, and there is no set of
@@ -738,7 +746,9 @@ pub async fn listen_with_journal(
         return Err(ScanError::WrongPhase);
     }
 
-    let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
+    let (session, ctx) = ScanSession::builder()
+        .excluding(cfg.exclusions.clone())
+        .build();
 
     // Before the watch starts, so a caller reading the session sees every
     // earlier sitting's hosts immediately and the report describes the job.
@@ -763,7 +773,7 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         // group on macOS and for a binary with `cap_net_raw` on Linux, both
         // being how anybody who is not root captures anything. Asking the
         // operating system for an effective uid instead would report those runs
-        // as unprivileged while they listened perfectly well, and — worse — a
+        // as unprivileged while they listened perfectly well, and, worse, a
         // run that opened nothing as privileged.
         //
         // There is no fallback to record either way. Reading a link is the whole
@@ -838,7 +848,9 @@ pub async fn scan(
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
 
-    let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
+    let (session, ctx) = ScanSession::builder()
+        .excluding(cfg.exclusions.clone())
+        .build();
     let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default());
     Ok((session, ScanTask::new(handle)))
 }
@@ -874,7 +886,10 @@ pub async fn scan_with_journal(
     cfg.evasion.validate()?;
     under_the_recorded_policy(&journal, cfg)?;
 
-    let (session, ctx) = ScanSession::resuming(cfg.exclusions.clone(), journal.resume_point());
+    let (session, ctx) = ScanSession::builder()
+        .excluding(cfg.exclusions.clone())
+        .resuming(journal.resume_point())
+        .build();
 
     // Before the scan starts, so a caller watching the session sees the earlier
     // sittings' hosts immediately and the report describes the whole job.
@@ -937,7 +952,7 @@ fn spawn_scan(
         // entirely.
         //
         // The scope is what this phase *covered*, so it is taken over the live
-        // subset — a reader compares it against phase one's to see how much of
+        // subset: a reader compares it against phase one's to see how much of
         // what they asked about went unprobed. The dispatcher below is handed
         // the whole plan, because that is what its positions are counted in.
         // Two questions, and they were one number until a resume needed them

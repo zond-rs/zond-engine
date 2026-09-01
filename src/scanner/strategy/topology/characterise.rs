@@ -16,8 +16,8 @@
 //! - **An inline middlebox**, from a reply to a bad-checksum probe to an *open*
 //!   port. A conformant host drops the corrupt segment unread, so a reply was
 //!   sent by something inline that answered without validating. One probe.
-//! - **A stateful filter**, from an ACK probe reaching a *filtered* port — a
-//!   reset, which is unfiltered — where the scan's plain SYN did not.
+//! - **A stateful filter**, from an ACK probe reaching a *filtered* port, a
+//!   reset, which is unfiltered, where the scan's plain SYN did not.
 //! - **A port-trusting ACL**, from a SYN out of a trusted source port reaching a
 //!   *filtered* port where an ordinary SYN did not.
 //! - **A stateless filter**, from a *fragmented* SYN reaching a *filtered* port
@@ -31,7 +31,7 @@
 //! The comparative three read the plain SYN's fate off the port state the scan
 //! already recorded, so only the alternative shape is sent here. Every one is a
 //! positive claim: silence proves nothing and records nothing. Correlation is by
-//! the nonce a reply echoes, so a segment we never provoked names no host — and
+//! the nonce a reply echoes, so a segment we never provoked names no host, and
 //! a filter that answers without acknowledging the probe is missed rather than
 //! guessed at, the safe direction for a claim made only when it is proven.
 
@@ -63,7 +63,7 @@ const TRUSTED_SOURCE_PORT: u16 = 53;
 /// Twenty-eight is an IP header (20) plus one eight-byte fragment, the smallest
 /// a conformant path carries. It puts the ports in the first fragment and the
 /// flags in a later one, so a filter that judges only the first sees a segment
-/// to nowhere in particular and lets the rest through — which is the thing this
+/// to nowhere in particular and lets the rest through, which is the thing this
 /// probe is built to catch.
 const STATELESS_FRAGMENT_MTU: u16 = 28;
 
@@ -71,12 +71,12 @@ const STATELESS_FRAGMENT_MTU: u16 = 28;
 pub struct Subject {
     /// The host to characterise.
     pub host: IpAddr,
-    /// An open TCP port, for the bad-checksum middlebox probe. `None` skips it —
+    /// An open TCP port, for the bad-checksum middlebox probe. `None` skips it:
     /// a probe whose whole point is that a listener answers has nowhere to land.
     pub open_port: Option<u16>,
     /// A port the scan found filtered, for the comparative probes: each tests
     /// whether a differently-shaped probe reaches where a plain SYN did not.
-    /// `None` skips them — an unfiltered port shows no filter doing anything.
+    /// `None` skips them: an unfiltered port shows no filter doing anything.
     pub filtered_port: Option<u16>,
 }
 
@@ -105,7 +105,7 @@ pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
 
     let mut resolver = SourceResolver::from_system();
 
-    // A self-built Ethernet sender for the one probe that needs one — the
+    // A self-built Ethernet sender for the one probe that needs one: the
     // fragmented stateless probe, which a raw socket cannot place. `None` where
     // this host has no Ethernet path at all, and even when it is `Some` a send
     // is refused for any host that path cannot route to; either way the
@@ -281,8 +281,8 @@ fn probe_stateless_filter(
     );
 }
 
-/// Builds `packet`, sends it from `source` to `host`, and — if it reached the
-/// wire — files its `nonce` under the `conclusion` a reply to it would prove.
+/// Builds `packet`, sends it from `source` to `host`, and, if it reached the
+/// wire, files its `nonce` under the `conclusion` a reply to it would prove.
 #[allow(clippy::too_many_arguments)]
 fn send_diagnostic(
     sender: &dyn ProbeSender,
@@ -417,7 +417,7 @@ mod tests {
             Some((HOST, Filtering::StatefulFilter))
         );
 
-        // A reply echoing a nonce we never sent settles nothing — a mutant that
+        // A reply echoing a nonce we never sent settles nothing: a mutant that
         // credited it would report a filter in front of a host that answered
         // nothing of ours.
         assert_eq!(

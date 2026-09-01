@@ -42,7 +42,7 @@ pub enum ProtocolMatch {
     /// The address is carried because the frame's source is not always it. A
     /// neighbor advertisement names the address it is about in its own target
     /// field, and a host with several addresses answers from whichever its stack
-    /// prefers rather than from the one that was asked about — measured on a
+    /// prefers rather than from the one that was asked about: measured on a
     /// real segment, a phone solicited at `2a02:…::21e9` answered from
     /// `2a02:…:14f0:ca99:5818:74ee`. Keyed on the source, that reply retires no
     /// probe, yields no round trip, and files the host under an address nobody
@@ -58,7 +58,7 @@ pub enum ProtocolMatch {
     /// the segment. The distinction from [`Solicited`](Self::Solicited) is not
     /// bookkeeping: a probe may well be outstanding for the same address, and
     /// retiring it here would credit our question with somebody else's answer
-    /// and time it from the moment we asked — a round trip that measures the
+    /// and time it from the moment we asked: a round trip that measures the
     /// gap between two unrelated messages. The probe is left to be answered or
     /// to expire on its own schedule.
     ///
@@ -70,7 +70,7 @@ pub enum ProtocolMatch {
     /// sequence number it echoed back.
     ///
     /// That probe is not consumed by any one reply, because every neighbour on
-    /// the segment may answer the same packet — but unlike a neighbor
+    /// the segment may answer the same packet, but unlike a neighbor
     /// solicitation it is still *attributable*. RFC 4443 requires the reply to
     /// return the request's identifier and sequence unchanged, so the token
     /// names exactly which of the scan's echo requests was answered, and the
@@ -160,21 +160,21 @@ pub trait DiscoveryProtocol: Send {
     ///
     /// Each implementation names its own evidence rather than the receive loop
     /// inferring it from the frame, so a new discovery mechanism stays one more
-    /// implementation in this module — the same reason `interpret` lives here.
+    /// implementation in this module: the same reason `interpret` lives here.
     fn status_protocol(&self) -> StatusProtocol;
 
     /// The `libpcap` filter clause admitting the frames this protocol reads.
     ///
     /// The sweep's capture narrows in the kernel, so a protocol whose traffic no
-    /// clause admits is never given a frame to interpret — and it fails that way
+    /// clause admits is never given a frame to interpret, and it fails that way
     /// silently, since a protocol that is never called and a protocol that
     /// recognises nothing look identical from the receive loop.
     ///
     /// Declared here, beside [`interpret`](Self::interpret), so that the two
     /// cannot disagree: the sweep's whole filter is the union of these, so
     /// adding an implementation widens the capture by the same edit that adds
-    /// the reader. Written the other way round — one filter maintained beside
-    /// the list — this module's promise that a new mechanism is one more
+    /// the reader. Written the other way round, one filter maintained beside
+    /// the list, this module's promise that a new mechanism is one more
     /// implementation *here* would quietly stop being true.
     ///
     /// A clause is a complete expression, combined with the others by `or`, so
@@ -185,8 +185,8 @@ pub trait DiscoveryProtocol: Send {
 /// Every protocol a local sweep reads, in the order it tries them against a
 /// frame.
 ///
-/// The single list. It is read twice — once to build the scanner's own
-/// interpreters, and once to work out what its capture must admit — and both
+/// The single list. It is read twice, once to build the scanner's own
+/// interpreters, and once to work out what its capture must admit, and both
 /// readings have to see the same protocols or the sweep listens for something
 /// other than what it can understand.
 pub fn sweep_protocols() -> Vec<Box<dyn DiscoveryProtocol>> {
@@ -302,8 +302,8 @@ fn is_assignable(address: std::net::Ipv6Addr) -> bool {
 /// The one piece of evidence this scanner does not have to provoke. Routers
 /// advertise themselves unprompted every few minutes, and the sweep's capture is
 /// promiscuous, so an advertisement that crosses the segment while a scan is
-/// running arrives here for free. A sweep also asks for one outright — see
-/// [`LocalScanner`](super::local::LocalScanner) — because the unprompted timer is
+/// running arrives here for free. A sweep also asks for one outright, see
+/// [`LocalScanner`](super::local::LocalScanner), because the unprompted timer is
 /// measured in minutes and a sweep is measured in seconds.
 ///
 /// Claimed as [`Unsolicited`](ProtocolMatch::Unsolicited), and filed under the
@@ -328,8 +328,8 @@ impl DiscoveryProtocol for RouterAdvertProtocol {
 
     /// All of ICMPv6 rather than the two neighbour-discovery types, which BPF
     /// cannot select without reading past a header whose length is not fixed.
-    /// The surplus is small — ICMPv6 on a segment is nearly all neighbour
-    /// discovery — and it is the same clause the other two IPv6 readers need.
+    /// The surplus is small, ICMPv6 on a segment is nearly all neighbour
+    /// discovery, and it is the same clause the other two IPv6 readers need.
     fn capture_clause(&self) -> &'static str {
         "icmp6"
     }
@@ -454,7 +454,7 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
 pub(crate) mod tests {
 
     /// A segment produced an advertisement naming `fe80::`, and the host that
-    /// sent it was then credited with an address nothing can hold — which read
+    /// sent it was then credited with an address nothing can hold, which read
     /// as an address it had *gained* when the segment was swept again.
     #[test]
     fn an_advertisement_naming_an_address_nothing_can_hold_is_left_alone() {
@@ -690,7 +690,7 @@ pub(crate) mod tests {
 
     /// The declaration has to survive the trip from the wire to the scanner. A
     /// neighbour that answers our solicitation and sets the R flag is a router
-    /// found for free, in a reply the sweep was already going to receive — and
+    /// found for free, in a reply the sweep was already going to receive, and
     /// the same reply without the flag claims nothing, which is what keeps the
     /// role off every host that merely answered.
     #[test]

@@ -521,11 +521,7 @@ fn addresses(written: &str) -> IpSet {
 #[tokio::test]
 async fn a_sweep_settles_the_address_that_answered() {
     let plan = addresses("127.0.0.1");
-    let (_session, ctx) = ScanSession::sweeping(
-        zond_engine::Exclusions::none(),
-        &Checkpoint::default(),
-        plan.positions(),
-    );
+    let (_session, ctx) = ScanSession::builder().counting(plan.positions()).build();
 
     let observer = ctx.clone();
     zond_engine::scanner::strategy::connect::discover(
@@ -591,11 +587,9 @@ async fn a_sweep_inside_a_port_scan_settles_nothing() {
 async fn an_address_outside_the_plan_settles_nothing() {
     // Numbered over a plan loopback is not in, then swept for loopback anyway,
     // which is the shape of a segment sweep finding a neighbour.
-    let (_session, ctx) = ScanSession::sweeping(
-        zond_engine::Exclusions::none(),
-        &Checkpoint::default(),
-        addresses("192.0.2.0/30").positions(),
-    );
+    let (_session, ctx) = ScanSession::builder()
+        .counting(addresses("192.0.2.0/30").positions())
+        .build();
 
     let observer = ctx.clone();
     zond_engine::scanner::strategy::connect::discover(

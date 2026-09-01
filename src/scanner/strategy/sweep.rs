@@ -66,7 +66,7 @@ use crate::scanner::session::ScanContext;
 /// The [`ScanContext`] is *not* held here and is passed to the two methods that
 /// need one. It is already a field on all three scanners and used on nearly
 /// every line of them, so moving it would have turned `self.ctx` into
-/// `self.sweep.ctx` throughout for no gain — this type exists to hold the
+/// `self.sweep.ctx` throughout for no gain: this type exists to hold the
 /// bookkeeping nobody reads directly, not to become the scanner.
 pub struct HostSweep<T> {
     /// Probes sent and not yet resolved, and the schedule they are repeated on.

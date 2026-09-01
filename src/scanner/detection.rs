@@ -8,20 +8,24 @@
 
 //! # Detection phase
 //!
-//! Runs the authored detection corpus — the Tier-1 [flows](crate::detect::flow)
-//! and the Tier-2 [compute modules](crate::detect::compute) — against the open
+//! Named apart from [`crate::detect`], which is the corpus itself. One is what
+//! a detection *is*, the other is when it runs, and the two modules used to
+//! have the same name.
+//!
+//! Runs the authored detection corpus, the Tier-1 [flows](crate::detect::flow)
+//! and the Tier-2 [compute modules](crate::detect::compute), against the open
 //! ports a scan has found and identified, recording a [`Finding`] wherever one
 //! fires. It is the active counterpart to the [CVE correlator](crate::cve): the
 //! correlator reads the service versions the scan gathered and joins them against
 //! known vulnerabilities without touching the target, while this runs the corpus
-//! over each port — a flow opening a fresh connection to decide, a module reading
+//! over each port: a flow opening a fresh connection to decide, a module reading
 //! the response the scan already drew or speaking its own.
 //!
 //! ## Compute modules over the same port
 //!
 //! Both tiers run on the blocking pool for each interested port. A compute module
-//! is served through [`LiveCapabilities`] — the same socket-backed budget a flow's
-//! probe enforces — when it *speaks*, and reads the port's gathered responses when
+//! is served through [`LiveCapabilities`], the same socket-backed budget a flow's
+//! probe enforces, when it *speaks*, and reads the port's gathered responses when
 //! it is *passive*. Those responses are what the pass that named the service
 //! drew and [kept](crate::scanner::session) for this phase: the [service
 //! phase](crate::scanner::service) after a raw scan, the [connect
@@ -481,7 +485,7 @@ mod tests {
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
 
         // An open http port, as the service phase would leave it, plus the
-        // response that phase gathered — a page missing every baseline header.
+        // response that phase gathered: a page missing every baseline header.
         let mut host = Host::new(ip);
         host.add_port(
             Port::new(80, Protocol::Tcp, PortState::Open).with_service(Service::new("http", 100)),

@@ -60,11 +60,11 @@ use tokio::time::timeout;
 /// Both are ordinary socket options that need no privilege, so they belong on
 /// this path as much as on the raw one: a hop limit a filter keys on should be
 /// the chosen value on *every* probe, the connect fallback included, or the
-/// fallback would leak the real one. The framing techniques — a spoofed hardware
-/// address, fragmentation, decoys — are absent here because they need a
+/// fallback would leak the real one. The framing techniques, a spoofed hardware
+/// address, fragmentation, decoys, are absent here because they need a
 /// self-built frame this path never touches; a profile that asks for one opens
-/// the Ethernet path and never reaches this scanner. The segment shapers —
-/// padding, a corrupt checksum — are absent for a different reason: the kernel
+/// the Ethernet path and never reaches this scanner. The segment shapers,
+/// padding, a corrupt checksum, are absent for a different reason: the kernel
 /// builds the segment a connect sends, so there is nothing here to shape.
 #[derive(Debug, Clone, Copy, Default)]
 struct ConnectShaping {
@@ -403,7 +403,7 @@ pub async fn scan(
 ///
 /// The responses the inline fingerprint drew are kept here too. They belong to
 /// no host record, so they go to the context the
-/// [detection phase](crate::scanner::detect) reads them from, which is the same
+/// [detection phase](crate::scanner::detection) reads them from, which is the same
 /// place [`service::detect`](crate::scanner::service::detect) puts the ones a
 /// raw scan draws in its second pass.
 fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
@@ -458,15 +458,15 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
 
 /// A port in `state`, carrying the packet that settled it where one did.
 ///
-/// This scanner never sees a segment — the kernel does the handshake and hands
-/// back an outcome — but the outcome names the packet exactly: a completed
+/// This scanner never sees a segment, the kernel does the handshake and hands
+/// back an outcome, but the outcome names the packet exactly: a completed
 /// connection is a SYN/ACK, a refusal is the RST the kernel translated into it,
 /// and a timeout is silence. Recorded so an unprivileged report can say what its
 /// verdicts rest on, which is the one thing separating a port a firewall dropped
 /// from a port nothing was listening on.
 ///
-/// `None` where no packet is implied: a local failure — no route, no socket
-/// left — is this host giving up, and crediting the target with a silence it was
+/// `None` where no packet is implied: a local failure, no route, no socket
+/// left, is this host giving up, and crediting the target with a silence it was
 /// never asked for would be evidence of the wrong thing.
 fn settled(number: u16, state: PortState, reason: Option<ScanResponse>) -> Port {
     let port = crate::fingerprint::baseline_port(number, Protocol::Tcp, state);
@@ -554,7 +554,7 @@ async fn port_prober(
                 // Anything else failed without the target having answered - a
                 // local routing failure, an exhausted resource - so the port is
                 // filtered and the host has proved nothing.
-                // A local failure — no route, no socket left — says nothing
+                // A local failure, no route, no socket left, says nothing
                 // about the target, and the next sitting may well get further.
                 // No evidence recorded: nothing was sent and nothing answered,
                 // so there is no packet to name. A port carrying `no reply`
@@ -573,7 +573,7 @@ async fn port_prober(
         }
         // Timeout: the probe was silently dropped, the classic firewall
         // signature. Settled, because a connect gets one attempt and this was
-        // it — the whole budget, spent.
+        // it: the whole budget, spent.
         Err(_) => Some(Probed {
             ip: target.ip,
             port: Some(settled(
@@ -609,8 +609,8 @@ fn wildcard_for(target: IpAddr) -> SocketAddr {
     source_bind(target, 0)
 }
 
-/// Sets `shaping`'s hop limit on a fresh socket, and — where a source port is
-/// pinned — the address reuse a pinned port needs.
+/// Sets `shaping`'s hop limit on a fresh socket, and, where a source port is
+/// pinned, the address reuse a pinned port needs.
 ///
 /// The hop limit goes on with the option the address family uses (`IP_TTL` or
 /// `IPV6_UNICAST_HOPS`), so it is in force before the first byte leaves. Address
@@ -782,7 +782,7 @@ async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> Pro
 
     let mut buf = [0u8; 1024];
     match timeout(CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
-        // Something answered, so something is listening — and what it said may
+        // Something answered, so something is listening, and what it said may
         // prove what the host is, which is a claim no port verdict can make.
         // Read here rather than left to the privileged path, so a scan without
         // root reaches the same conclusions about the network.
@@ -806,7 +806,7 @@ async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> Pro
             record(PortState::OpenFiltered, false, Outcome::Unroutable)
         }
         // No error and no reply: open but silent, or filtered. UDP cannot tell.
-        // Settled either way — this probe had one attempt and spent it.
+        // Settled either way: this probe had one attempt and spent it.
         Err(_) => record(
             PortState::OpenFiltered,
             false,
@@ -844,7 +844,7 @@ fn finish(
 /// time rather than on more ports of each.
 ///
 /// That shape is also what lets a sweep be continued. An address is the unit a
-/// journal counts, so its verdict has to be earned as a whole — answered, or
+/// journal counts, so its verdict has to be earned as a whole: answered, or
 /// every port asked once and none of them answering. Interleaving the ports of
 /// many addresses gave neither, because nothing knew when an address was
 /// finished with.
@@ -923,7 +923,7 @@ struct ProbedHost {
 /// knows where in the plan it sits.
 ///
 /// Only the first two are verdicts the sweep earned. The others say the address
-/// was not asked, or not finished with, and a resume must ask again — see
+/// was not asked, or not finished with, and a resume must ask again. see
 /// [`settle`](crate::journal::settle).
 enum Fate {
     /// It answered, and this is what the answer proved.
@@ -935,7 +935,7 @@ enum Fate {
     /// Every port was asked once and not one of them answered. **Settled**: a
     /// connect gets one attempt per port and those were all of them.
     Exhausted,
-    /// Nothing this probe sent left the host — no route, no socket left — so
+    /// Nothing this probe sent left the host, no route, no socket left, so
     /// the address proved nothing and the next sitting may get further.
     Unroutable,
     /// The scan stopped while the address's ports were still being tried.
@@ -954,7 +954,7 @@ enum Fate {
 /// The three cases are the three things a sweep can honestly say about an
 /// address: it answered, it was asked as many times as it is going to be and
 /// stayed silent, or it could not be asked from here at all. Only the first two
-/// are settled — see [`settle`](crate::journal::settle).
+/// are settled. see [`settle`](crate::journal::settle).
 fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
     match probed.fate {
         Fate::Answered(host) => {
@@ -976,8 +976,8 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
 ///
 /// Returns as soon as one of them answers at the TCP layer: a completed
 /// handshake, or a reset the kernel surfaced as a connection error. Any other
-/// failure says nothing about the address — only that this connect did not
-/// finish — so the next port is tried.
+/// failure says nothing about the address, only that this connect did not
+/// finish, so the next port is tried.
 ///
 /// **The stop signal is checked between ports, not only between addresses.**
 /// One task now covers up to five connects, and a sweep that only looked once
@@ -1015,7 +1015,7 @@ async fn prober(
             // A completed handshake means the host is alive.
             Ok(Ok(_)) => return answered(ip, start),
             // Only these TCP errors imply the host answered at the IP/TCP layer.
-            // Any other is a local failure — no route, permission denied — and
+            // Any other is a local failure, no route, permission denied, and
             // the probe never reached the wire.
             Ok(Err(e))
                 if matches!(
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     /// A shaped connect leaves from the chosen source port and carries the chosen
-    /// hop limit — proven where it counts, on the wire, against a peer that reads
+    /// hop limit: proven where it counts, on the wire, against a peer that reads
     /// both back.
     ///
     /// The peer's view of the source port is the whole chain end to end: profile

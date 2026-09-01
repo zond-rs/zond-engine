@@ -61,7 +61,7 @@ use crate::{error, info, success};
 ///   than its middle.
 /// - **Hard budget.** The base gives a distant target room for several round
 ///   trips; the per-target term covers the send burst and the spread of
-///   arrivals behind it. The ceiling bounds a scan whose pace nobody derived —
+///   arrivals behind it. The ceiling bounds a scan whose pace nobody derived:
 ///   it is *not* what bounds the port scanners, which tell it their size and
 ///   their pacing floor and so cannot be clamped by it. It used to be, and it
 ///   truncated a 65 535-port scan at 60 seconds of the 104 it had earned.
@@ -200,8 +200,8 @@ pub(super) struct EvasionParts<'a> {
 /// and returns the real probe's send outcome.
 ///
 /// The randomisation is of the wire order, so an observer cannot pick the real
-/// source out of the decoys by position. A decoy is sent and forgotten —
-/// nothing about it is recorded — which is what keeps a decoy's reply from ever
+/// source out of the decoys by position. A decoy is sent and forgotten,
+/// nothing about it is recorded, which is what keeps a decoy's reply from ever
 /// resolving a port. With no decoys this is one ordinary send.
 pub(super) fn emit_among_decoys(
     sender: &dyn ProbeSender,
@@ -261,7 +261,7 @@ pub(super) fn send_syn(
     } = evasion;
     // A caller who pinned a source port gets that port; otherwise a fresh
     // random high port, which is this sweep's default and is what makes a
-    // retried probe measurable — see the field this override travels on.
+    // retried probe measurable. see the field this override travels on.
     let src_port: u16 = src_port_override.unwrap_or_else(|| rand::random_range(50_000..u16::MAX));
     let seq_num: u32 = rand::random_range(0..=u32::MAX);
 
@@ -332,7 +332,7 @@ pub(super) fn send_syn(
                 // **Not an error, and not logged as one here at all.** An
                 // address this host has no route to is ordinary, the caller
                 // reports it once against the address, and an `error!` would
-                // print regardless of verbosity — errors are exempt from it,
+                // print regardless of verbosity: errors are exempt from it,
                 // which is exactly right for a scan that broke and exactly
                 // wrong for a machine that has no IPv6.
                 //
@@ -462,8 +462,8 @@ pub(super) fn send_udp(
 /// **Two kinds, because they are not the same finding.** A send path that will
 /// not work is a strategy that did not run, and a caller has to hear that the
 /// scan covered less than it was asked to. An address this host has no route to
-/// is ordinary — a dual-stack name on an IPv4-only network resolves to an AAAA
-/// nobody here can reach — and reporting it as a broken scan makes every such
+/// is ordinary, a dual-stack name on an IPv4-only network resolves to an AAAA
+/// nobody here can reach, and reporting it as a broken scan makes every such
 /// scan look partial, which trains a reader to ignore the one that is.
 ///
 /// Each keeps the first of its kind rather than all of them: sixteen identical
@@ -544,7 +544,7 @@ mod tests {
             (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)), vec![2u8, 2]),
         ];
 
-        // Every probe reaches the wire — the real one and both decoys — and the
+        // Every probe reaches the wire, the real one and both decoys, and the
         // real source appears exactly once.
         let mock = MockSender::default();
         assert!(
@@ -560,7 +560,7 @@ mod tests {
         emit_among_decoys(&mock, dst, Emission::routed(), real, &real_packet, &[]).unwrap();
         assert_eq!(mock.sent.lock().unwrap().len(), 1);
 
-        // The outcome returned is the real probe's own, never a decoy's — which
+        // The outcome returned is the real probe's own, never a decoy's, which
         // is what lets a caller keep a token only when *its* probe was sent, the
         // root of the invariant that a decoy resolves no port.
         let refusing_the_real = RefusesOneSource(real);
@@ -592,7 +592,7 @@ mod tests {
     /// The two kinds of send failure are kept apart, and each keeps only its
     /// first.
     ///
-    /// They are reported through different channels — a broken send path is a
+    /// They are reported through different channels: a broken send path is a
     /// strategy that did not run and reaches the report as a failure; an
     /// address with no route is said once and changes nothing about the scan's
     /// standing. Collapsed into one counter, a dual-stack name on an IPv4-only

@@ -42,7 +42,7 @@
 //! the [`ScanContext`] it was built with, and its run method reports only
 //! whether the attempt itself got to the end. That is what makes an ARP sweep,
 //! a raw SYN scan and a plain TCP connect interchangeable to a caller: build
-//! one, run it, read the store — and it is what lets several unrelated
+//! one, run it, read the store, and it is what lets several unrelated
 //! strategies write into a single live view while they are still running, which
 //! a return value cannot do.
 //!
@@ -136,8 +136,8 @@ pub enum StrategyError {
 /// reachable.
 ///
 /// The discovery half of the pair. Implementations differ entirely in how they
-/// ask — ARP and ICMPv6 on a local segment, raw TCP SYN through a gateway, an
-/// ordinary connect attempt where neither is possible — and not at all in what a
+/// ask, ARP and ICMPv6 on a local segment, raw TCP SYN through a gateway, an
+/// ordinary connect attempt where neither is possible, and not at all in what a
 /// caller does with them.
 #[async_trait]
 pub trait HostScanner: Send {
@@ -172,7 +172,7 @@ pub trait PortScanner: Send {
     /// Read when a scan is assembled, to decide which protocols still need an
     /// unprivileged fallback, and again by
     /// [`CompositePortScanner`](crate::scanner::strategy::composite::CompositePortScanner)
-    /// to route each target — so a strategy that under-reports its coverage is
+    /// to route each target, so a strategy that under-reports its coverage is
     /// simply never given that work, rather than given it and failing.
     fn supported_protocols(&self) -> Vec<Protocol>;
 

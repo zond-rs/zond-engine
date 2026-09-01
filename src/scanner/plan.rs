@@ -21,7 +21,7 @@
 //! interface reaches a target, whether a `/64` can be walked, whether a
 //! link-local address without a zone can be probed at all, whether a sweep may
 //! take leads from the host's neighbour table, which protocols still need an
-//! unprivileged fallback — all of that is settled before a single socket is
+//! unprivileged fallback: all of that is settled before a single socket is
 //! opened, and none of it needs a socket to settle.
 //!
 //! Fused into the code that spawns tasks, those judgements are unreachable: they
@@ -35,8 +35,8 @@
 //! ## What a plan costs to build
 //!
 //! No packets and no sockets. Building one does read the machine's own
-//! configuration — the interface list, the routing table, and for a sweep the
-//! IPv6 neighbour table — because which strategy reaches a target is a fact
+//! configuration, the interface list, the routing table, and for a sweep the
+//! IPv6 neighbour table, because which strategy reaches a target is a fact
 //! about this host and cannot be guessed. Those are ordinary reads of local
 //! state, they open nothing, and they are the same reads
 //! [`crate::system::interface`] performs for any caller.
@@ -82,7 +82,7 @@ use crate::{info, warn};
 /// Something the scan will not do, decided at planning time.
 ///
 /// A refusal is not a failure of the network and not an address that went
-/// unanswered — it was never probed, and the reason is knowable before anything
+/// unanswered: it was never probed, and the reason is knowable before anything
 /// is sent. It is carried out of the plan rather than dropped because the one
 /// thing a scanner may never do is stay quiet about ground it did not cover: a
 /// caller has to be able to tell "nothing is there" from "nobody looked", and
@@ -323,7 +323,7 @@ pub enum DiscoveryStep {
         /// The destinations, with their source addresses.
         targets: Vec<RoutedTarget>,
     },
-    /// Ordinary TCP connect attempts, for targets with no route and no segment —
+    /// Ordinary TCP connect attempts, for targets with no route and no segment:
     /// loopback, or anything the OS declined to resolve. Needs no privileges.
     Connect {
         /// The addresses to try.
@@ -408,7 +408,7 @@ impl DiscoveryPlan {
     ///
     /// `scope` decides whether the sweep may go beyond what it was given.
     /// [`Scope::Sweep`] earns a step for the link even when no address mapped to
-    /// it — its all-nodes echo is one packet the whole segment may answer — and
+    /// it, its all-nodes echo is one packet the whole segment may answer, and
     /// takes candidate addresses from the host's IPv6 neighbour table, which is
     /// the only source the engine has for an IPv6 address nobody named.
     /// [`Scope::Targeted`] does neither: probing addresses nobody asked about is
@@ -663,12 +663,12 @@ impl PortScanPlan {
     ///
     /// `privilege` is which sockets the scan would run with. It is a parameter
     /// rather than something read here so a caller can plan for a privilege
-    /// level they do not currently hold — asking "what would a root scan do?"
+    /// level they do not currently hold: asking "what would a root scan do?"
     /// is a reasonable question and needs no root to answer.
     ///
     /// ## The fallback is decided per protocol, not per scan
     ///
-    /// A host can be able to build one raw scanner and not the other — the TCP
+    /// A host can be able to build one raw scanner and not the other: the TCP
     /// scanner needs a raw TCP socket, the UDP scanner a raw UDP one, and a
     /// sandbox can permit one and refuse the other. A protocol left with no
     /// strategy at all is not a degraded scan but a silent one: nothing would
@@ -681,7 +681,7 @@ impl PortScanPlan {
     /// asks. It cannot send a FIN, a flagless segment or a bare ACK, so it
     /// cannot answer what any of those were asked. Where the caller chose one of
     /// those and raw sockets are unavailable, the TCP half is refused and left
-    /// undone — worse for the caller, and honest, where a silent substitution
+    /// undone: worse for the caller, and honest, where a silent substitution
     /// would hand back verdicts from a technique they did not choose with no
     /// field in the report saying so.
     pub fn build(cfg: &ZondConfig, privilege: Privilege) -> Self {
@@ -689,8 +689,8 @@ impl PortScanPlan {
         let mut refusals = Vec::new();
 
         // An idle scan replaces the ordinary port scan wholesale. It is TCP-only
-        // by nature — a UDP port has no counter to be read through, and probing
-        // one directly would announce the scanner the technique exists to hide —
+        // by nature, a UDP port has no counter to be read through, and probing
+        // one directly would announce the scanner the technique exists to hide,
         // so a UDP target is simply left unprobed, with no step to cover it.
         if let Some(idle) = &cfg.idle_scan {
             if privilege.is_raw() {
@@ -808,8 +808,8 @@ impl PortScanPlan {
 ///
 /// Mapping targets to interfaces can only ever produce interfaces some target
 /// named, and the whole point of a sweep is the probe that names nobody. A link
-/// addressed only in IPv6 resolves to no target list at all — a `/64` cannot be
-/// enumerated and there is no IPv4 range to walk — so it maps to nothing, no
+/// addressed only in IPv6 resolves to no target list at all, a `/64` cannot be
+/// enumerated and there is no IPv4 range to walk, so it maps to nothing, no
 /// step is built for it, and the all-nodes echo that would have found its entire
 /// segment is never sent. The scan reports an empty network and looks like it
 /// worked.
@@ -842,7 +842,7 @@ fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
 /// address someone already holds; the all-nodes echo produces addresses but is
 /// optional to answer and draws only link-local ones, since it goes out from a
 /// link-local source. The operating system's own table has been accumulating
-/// both for as long as the machine has been running, at no cost in packets — on
+/// both for as long as the machine has been running, at no cost in packets: on
 /// the segment this was written against it holds fifteen global and unique-local
 /// addresses the engine could not otherwise learn at all.
 ///

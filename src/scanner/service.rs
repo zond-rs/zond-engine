@@ -185,7 +185,7 @@ fn write_back(ctx: &ScanContext, key: ScopedIp, port: Port, about_the_host: Vec<
         }
 
         // Folded together with what the host's hardware and name say, and with
-        // whatever a stack reading already concluded — the point of the evidence
+        // whatever a stack reading already concluded: the point of the evidence
         // bus is that a banner agreeing with the wire is worth more than either.
         os::identify(host, about_the_host);
     });

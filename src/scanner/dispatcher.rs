@@ -44,7 +44,7 @@ use tokio::sync::mpsc;
 /// stream. See
 /// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address).
 ///
-/// The shuffling is the same bargain the dispatcher makes — a fixed batch is
+/// The shuffling is the same bargain the dispatcher makes: a fixed batch is
 /// filled, shuffled and streamed before the next is drawn, so neighbouring
 /// addresses end up spread apart in time and the memory cost stays bounded
 /// however large the set.
@@ -119,7 +119,7 @@ pub struct Dispatcher {
     ///
     /// Filtered here rather than by narrowing the plan, for the same reason
     /// `settled` is. Which hosts answer is a property of the network on the day,
-    /// so a plan narrowed to them is a different plan every sitting — and a
+    /// so a plan narrowed to them is a different plan every sitting, and a
     /// position counted in one of those means a different target in the next.
     live: Option<IpSet>,
 }
@@ -150,7 +150,7 @@ impl Dispatcher {
     ///
     /// For the port phase of a scan that established which hosts are there
     /// first. A target whose host answered nothing is not one the scan failed
-    /// to ask about — the scan asked whether the host was there, heard nothing,
+    /// to ask about: the scan asked whether the host was there, heard nothing,
     /// and declined to spend a probe on each of its ports. That decision is
     /// evidence, and a resume that had to re-derive it would ask the network a
     /// question it already answered.
@@ -296,7 +296,7 @@ mod tests {
     ///
     /// The journal numbers targets by [`TargetMap::iter`] and a resume skips
     /// positions in that numbering, so a dispatcher that emitted a different
-    /// collection — an extra target, a missed unit, a different pairing — would
+    /// collection, an extra target, a missed unit, a different pairing, would
     /// make every position mean something else. That does not fail loudly. It
     /// resumes a scan that skips the wrong targets and reports success, so it is
     /// asserted here rather than left to the two walks being the same by

@@ -8,8 +8,8 @@
 
 //! # ICMP Errors
 //!
-//! Reads the two ICMP errors this engine acts on — Destination Unreachable and
-//! Time Exceeded — for what each establishes and which probe it is about.
+//! Reads the two ICMP errors this engine acts on, Destination Unreachable and
+//! Time Exceeded, for what each establishes and which probe it is about.
 //!
 //! They are in one module because the hard part is identical. Neither carries
 //! ports of its own, both are attributable only through the datagram they quote
@@ -136,7 +136,7 @@ pub fn parse(reply: &CapturedSegment) -> Option<IcmpError<'_>> {
 #[non_exhaustive]
 pub struct Expired<'a> {
     /// The probe the router discarded, as it quoted it back. The only thing
-    /// tying this message to one of ours — see [`parse_expired`].
+    /// tying this message to one of ours. see [`parse_expired`].
     pub quoted: IpSegment<'a>,
 }
 
@@ -148,7 +148,7 @@ pub struct Expired<'a> {
 /// under no duty to identify itself; a router that *discards* one is (RFC 792,
 /// RFC 4443 §3.3). So a probe built to expire a chosen number of hops away
 /// makes exactly that router announce itself, and the announcement arrives from
-/// its own address — [`CapturedSegment::source`](crate::transport::capture::CapturedSegment::source) —
+/// its own address, [`CapturedSegment::source`](crate::transport::capture::CapturedSegment::source),
 /// while the quotation inside names the probe that provoked it.
 ///
 /// Both codes are accepted and not distinguished. Code 0 is a hop limit reaching
@@ -363,7 +363,7 @@ mod tests {
     /// The two errors are told apart, in both directions.
     ///
     /// They share a header layout and an eight-byte preamble, so a parser that
-    /// skipped the type check would read each as the other — and a Destination
+    /// skipped the type check would read each as the other, and a Destination
     /// Unreachable read as an expiry puts a firewall into a path as though it
     /// were a router on the way.
     #[test]

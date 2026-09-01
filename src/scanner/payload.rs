@@ -52,7 +52,7 @@
 //! already counted as evidence the port is open; for a handful of ports it is
 //! also proof of what the host *is*, and that proof is in the reply's own
 //! protocol rather than in the port number it came from. Both scanners that
-//! send UDP probes — the raw one and the unprivileged fallback — ask here, so a
+//! send UDP probes, the raw one and the unprivileged fallback, ask here, so a
 //! scan concludes the same roles whichever transport it had available.
 
 use crate::fingerprint::SignatureDb;
@@ -92,7 +92,7 @@ pub fn for_port(port: u16) -> &'static [u8] {
 ///
 /// One arm per role, and the arms that are missing are missing on purpose.
 /// [`NtpServer`](NetworkRole::NtpServer) and [`SnmpAgent`](NetworkRole::SnmpAgent)
-/// have probes in the corpus already — 123 and 161 are both sent — so each is
+/// have probes in the corpus already, 123 and 161 are both sent, so each is
 /// one validated reply away from being concluded here, and neither is concluded
 /// until that reply is actually read.
 pub fn declared_role(port: u16, reply: &[u8]) -> Option<NetworkRole> {
@@ -148,7 +148,7 @@ mod tests {
     /// host that never earned it. **Our own probe echoed back** is a query, not
     /// an answer, and a reflector or a proxy that returns it must not be read as
     /// a name server. **A DNS message on 5353** is mDNS, which nearly every
-    /// laptop and printer on a segment speaks — sharing DNS's framing does not
+    /// laptop and printer on a segment speaks: sharing DNS's framing does not
     /// make a responder a nameserver, and reading it as one would put the role
     /// on half a network.
     #[test]

@@ -12,7 +12,7 @@
 //! advance. The right answer for a Linux server on a switch is thousands of
 //! probes in flight; the right answer for the consumer router next to it is a
 //! few dozen, and asking that router at the server's pace does not merely
-//! annoy it — it manufactures findings. Probed faster than it will answer, a
+//! annoy it: it manufactures findings. Probed faster than it will answer, a
 //! router reports six hundred ports `filtered` with no more hesitation than it
 //! reports the three that really are, and every one of those verdicts is a
 //! claim about somebody's firewall that is actually a claim about our send rate.
@@ -23,7 +23,7 @@
 //!
 //! ## Why a window and not a rate
 //!
-//! A configured rate is a guess, and it is wrong in both directions at once —
+//! A configured rate is a guess, and it is wrong in both directions at once:
 //! too fast for the router, too slow for the server, and no rate is right for a
 //! scan that meets both. It is also unanchored: nothing about "four hundred
 //! probes a second" refers to anything the target does.
@@ -34,7 +34,7 @@
 //! is self-correcting: a target that slows down is asked more slowly without
 //! anybody deciding anything.
 //!
-//! The engine still has a rate ceiling, and it still means something — but it is
+//! The engine still has a rate ceiling, and it still means something, but it is
 //! a backstop against a defect in this file, not the thing that paces a scan.
 //!
 //! ## The loss signal, and why it is not the timeout
@@ -43,7 +43,7 @@
 //! means a full queue. A port scanner cannot borrow that rule, because for a
 //! scanner an unanswered probe usually means a firewall. Reducing on silence
 //! would slow a scan to a crawl against exactly the hosts that are silent by
-//! policy — and it would do it worst on the wide, heavily filtered ranges where
+//! policy, and it would do it worst on the wide, heavily filtered ranges where
 //! finishing at all is the whole difficulty.
 //!
 //! So the rule is narrower, and it turns on *who* is silent:
@@ -65,7 +65,7 @@
 //! | Host is being outrun badly | Answers arriving only on retries | Cuts the window |
 //!
 //! The last two are the same fault seen at different times, and both are needed.
-//! A recovery is the stronger evidence — the port demonstrably wanted to answer —
+//! A recovery is the stronger evidence, the port demonstrably wanted to answer,
 //! but it arrives late, and it arrives *not at all* when the retries are lost as
 //! well as the first attempt.
 //!
@@ -78,18 +78,18 @@
 //! - eleven ports were open across the three runs; **each run found exactly
 //!   seven**, and only one port was found by all three;
 //! - roughly two hundred and forty ports came back `filtered` each time, and the
-//!   set was reshuffled every run — port 53 filtered once and open twice, port 22
+//!   set was reshuffled every run: port 53 filtered once and open twice, port 22
 //!   open twice and filtered once.
 //!
 //! Nothing on that host was filtered. Every one of those verdicts was this
-//! scanner's own send rate, reported as somebody's firewall — which is precisely
+//! scanner's own send rate, reported as somebody's firewall, which is precisely
 //! the failure the module was written to prevent, arrived at by a different
 //! route.
 //!
 //! The arithmetic says why the recovery signal never fired. At a quarter of
 //! probes lost and three *independent* attempts, an open port is missed one time
 //! in seventy: eleven open ports should have come back as nearly eleven, not
-//! seven. Seven means the attempts were not independent — all three of them fell
+//! seven. Seven means the attempts were not independent: all three of them fell
 //! inside the same congested moment, so nothing was ever recovered on a retry and
 //! the controller was handed no evidence at all. A signal that only fires once
 //! the target has recovered is a signal that goes quiet exactly when the target
@@ -105,7 +105,7 @@
 //! That line is not a detail; getting it wrong is the difference between a
 //! working scanner and an unusable one. Hold the slot until the probe is
 //! finally resolved and a firewalled port occupies the window for its whole
-//! retry lifetime — most of two seconds, against a round trip of one
+//! retry lifetime: most of two seconds, against a round trip of one
 //! millisecond. A thousand filtered ports through a window of thirty-two is then
 //! a minute of waiting for silence the scan had already heard, and the target
 //! that is hardest to finish throttles the scan exactly as a congested one does.
@@ -126,8 +126,8 @@
 //! **A probe that timed out against a silent host grows the window exactly as an
 //! answered one does.** That reads backwards until the rule above is taken
 //! seriously: nothing that host does is evidence about capacity, and asking it
-//! more slowly discovers nothing. Against an address that answers nothing at all
-//! — a firewalled host, a dead address in a range — this is what lets the scan
+//! more slowly discovers nothing. Against an address that answers nothing at all,
+//! a firewalled host, a dead address in a range, this is what lets the scan
 //! open up and finish, instead of creeping through at whatever window it
 //! happened to start with.
 //!
@@ -146,7 +146,7 @@
 //! ## What is deliberately not a signal
 //!
 //! A frame the kernel's capture buffer dropped is loss too, and unlike a
-//! timeout it is unambiguous — the reply arrived and this process was too busy
+//! timeout it is unambiguous: the reply arrived and this process was too busy
 //! to take it. It is not wired in here, because it does not need to be: the
 //! probe whose reply was dropped times out, is sent again, and is answered, and
 //! that is a recovery like any other. Reading the counter as well would react
@@ -162,7 +162,7 @@
 //! **Not UDP**: a UDP probe's ordinary outcome *is* silence, and the ledger
 //! cannot tell which attempt a reply answered because a UDP probe carries
 //! nothing for the reply to echo. Both halves of the signal are missing, so a
-//! UDP scan keeps a window that does not move — [`WindowLimits::fixed`] — and
+//! UDP scan keeps a window that does not move, [`WindowLimits::fixed`], and
 //! stays paced by the fixed rate its ICMP rate limiter demands. A controller fed
 //! no evidence is not a conservative controller, it is a random one.
 
@@ -333,7 +333,7 @@ impl CongestionWindow {
     /// Records a retry leaving the wire: it counts toward the damping and takes
     /// no slot.
     ///
-    /// It is real traffic, so the damping has to see it — the window's worth of
+    /// It is real traffic, so the damping has to see it: the window's worth of
     /// sends between reductions is a count of packets, not of targets. It takes
     /// no slot because the slot was released when the question it repeats ran
     /// out of round-trip budget; see the module documentation on what occupies
@@ -350,7 +350,7 @@ impl CongestionWindow {
     /// host that answers nothing), and both free the slot. Folding the release
     /// into either signal would mean the other one leaked.
     ///
-    /// Call it exactly once per question, on whichever event ends it first — an
+    /// Call it exactly once per question, on whichever event ends it first: an
     /// answer, or the expiry of its round-trip budget. Never on a retry: the
     /// slot went back when the question the retry repeats ran out of budget.
     pub fn release(&mut self) {
@@ -484,7 +484,7 @@ mod tests {
     /// working pace does not immediately overshoot it again.
     ///
     /// Eight round trips' worth of answers buy eight more probes rather than
-    /// eight doublings — the same eight round trips of slow start would have
+    /// eight doublings: the same eight round trips of slow start would have
     /// asked for sixteen thousand.
     #[test]
     fn past_the_threshold_the_window_grows_by_one_per_round_trip() {
@@ -505,7 +505,7 @@ mod tests {
 
     /// The reason this type exists. A halving per recovery would collapse the
     /// window on the first overloaded moment, because one burst that needed
-    /// retries produces a burst of recoveries — and the scan would then crawl
+    /// retries produces a burst of recoveries, and the scan would then crawl
     /// against a host that was merely busy for a millisecond.
     #[test]
     fn one_overloaded_moment_cuts_the_window_once_and_not_fifty_times() {
@@ -538,7 +538,7 @@ mod tests {
     }
 
     /// A reduction stops at the floor. Past it a scan is not being polite, it is
-    /// failing to finish — and the verdicts it does not reach are indeterminate
+    /// failing to finish, and the verdicts it does not reach are indeterminate
     /// rather than merely late.
     #[test]
     fn reduction_stops_at_the_floor() {
@@ -574,8 +574,8 @@ mod tests {
     /// a settlement.
     ///
     /// Held instead until the probe was finally retired, a firewalled port would
-    /// occupy a slot for its whole retry lifetime — most of two seconds against
-    /// a round trip of one millisecond — and a thousand of them through a small
+    /// occupy a slot for its whole retry lifetime, most of two seconds against
+    /// a round trip of one millisecond, and a thousand of them through a small
     /// window is a minute of waiting for silence the scan had already heard.
     #[test]
     fn silence_frees_the_slot_it_was_holding() {
@@ -599,7 +599,7 @@ mod tests {
     }
 
     /// A retry is traffic and the damping has to count it, but it is a repeat of
-    /// a question already given up on — so it must not take a slot back from a
+    /// a question already given up on, so it must not take a slot back from a
     /// question nobody has asked yet.
     #[test]
     fn a_retry_costs_no_slot() {
@@ -628,8 +628,8 @@ mod tests {
         assert_eq!(window.in_flight(), 0);
     }
 
-    /// A UDP scan has neither half of the signal — silence is its ordinary
-    /// outcome and its replies name no attempt — so its window is told to hold
+    /// A UDP scan has neither half of the signal, silence is its ordinary
+    /// outcome and its replies name no attempt, so its window is told to hold
     /// still, and nothing it is fed may move it.
     #[test]
     fn a_fixed_window_ignores_every_signal() {

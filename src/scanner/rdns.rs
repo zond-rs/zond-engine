@@ -32,7 +32,7 @@
 //! ## What answering proves
 //!
 //! Both paths above read DNS *responses*, and a machine that answers a DNS
-//! question is a name server — [`NetworkRole::DnsServer`], concluded from the
+//! question is a name server: [`NetworkRole::DnsServer`], concluded from the
 //! protocol's own traffic rather than from a port being open. This is the only
 //! place a scan that never touches a port can conclude it, and on a local
 //! segment it is the usual place: the resolver a machine is configured with is
@@ -787,7 +787,7 @@ pub async fn resolve_hosts_async(ctx: &ScanContext) {
 ///
 /// **That is not a name, and accepting it costs more than an empty column.** It
 /// carries nothing the address does not already carry, and it fills the one slot
-/// a real name would take — this engine prefers a unicast answer to an mDNS one,
+/// a real name would take: this engine prefers a unicast answer to an mDNS one,
 /// so a synthesised PTR does not merely sit beside the machine's actual name, it
 /// keeps the scan from ever recording it.
 ///
@@ -1040,7 +1040,7 @@ mod tests {
     ///
     /// The second half is the trap on exactly those segments. mDNS shares DNS's
     /// framing and answers on 5353, and nearly every laptop and printer speaks
-    /// it — so the identical message from that port must name nobody.
+    /// it, so the identical message from that port must name nobody.
     #[tokio::test]
     async fn a_machine_that_answers_dns_is_a_name_server_and_an_mdns_responder_is_not() {
         let server = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53));

@@ -193,7 +193,7 @@ impl ScanBudget {
     /// **A ceiling is in different units from the rest of a budget, and that is
     /// how it goes wrong.** The base and the per-target term both scale with the
     /// work; a fixed ceiling does not, so past some target count it quietly
-    /// stops being a backstop and becomes the whole answer — and nothing says
+    /// stops being a backstop and becomes the whole answer, and nothing says
     /// so, because a truncated scan and a finished one report the same way.
     ///
     /// Measured, against one host: a 65 535-port scan whose pacing had settled
@@ -204,7 +204,7 @@ impl ScanBudget {
     ///
     /// So a caller that knows both the pace and the size says so, and the
     /// ceiling stops being able to contradict them. What it still does is bound
-    /// a scan whose *pace* nobody derived — which is every caller that does not
+    /// a scan whose *pace* nobody derived, which is every caller that does not
     /// call this.
     pub fn covering(self, target_count: usize) -> Self {
         Self {
@@ -341,7 +341,7 @@ mod tests {
 
     /// A scan that paces itself may settle far below the rate a budget was
     /// written for, and a budget that assumed more expires while the pacing is
-    /// doing its job — cutting the scan short and reporting the ports it never
+    /// doing its job: cutting the scan short and reporting the ports it never
     /// reached as though it had asked.
     #[test]
     fn a_budget_can_be_widened_to_the_pace_a_scan_will_actually_keep() {
@@ -365,7 +365,7 @@ mod tests {
 
     /// A ceiling is in different units from the rest of the budget, so past some
     /// target count it stops bounding a runaway scan and starts truncating a
-    /// working one — silently, because a scan cut short reports like a scan that
+    /// working one: silently, because a scan cut short reports like a scan that
     /// finished.
     #[test]
     fn a_ceiling_cannot_truncate_a_size_and_a_pace_it_was_told_about() {

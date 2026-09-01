@@ -148,7 +148,7 @@ impl PortScanner for CompositePortScanner {
         // whatever the router still held could not be handed over. Reporting
         // that as a strategy failure tells somebody who pressed `^C` that
         // something went wrong, when what went wrong is what they asked for. The
-        // targets are still not covered and still reach the report as such —
+        // targets are still not covered and still reach the report as such:
         // they simply did not fail.
         let stopped = self.ctx.handle.should_stop();
         let reportable = if stopped {

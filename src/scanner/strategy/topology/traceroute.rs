@@ -22,7 +22,7 @@
 //!
 //! Nothing about this is a request a router can decline politely. It either
 //! answers or it is silent, and silence at one distance says nothing about the
-//! next — which is why a [`Hop`] with no address is recorded rather than
+//! next, which is why a [`Hop`] with no address is recorded rather than
 //! skipped.
 //!
 //! ## The probe matches the scan
@@ -43,7 +43,7 @@
 //! it has already been probed.
 //!
 //! Walking inward, the first hop recognised as one another trace already found
-//! is the point at which the rest of the work can be skipped — which on a scan
+//! is the point at which the rest of the work can be skipped, which on a scan
 //! of many hosts behind one gateway is nearly all of it.
 //!
 //! Starting at the target requires knowing how far away it is, which is why
@@ -61,8 +61,8 @@
 //!
 //! **That is an assumption, and it is worth stating plainly**: it takes two
 //! paths that pass through one router at one distance to have been identical up
-//! to that point. Routing does not promise this — a load balancer can send two
-//! flows over different upstreams that rejoin — and it is nonetheless true of
+//! to that point. Routing does not promise this, a load balancer can send two
+//! flows over different upstreams that rejoin, and it is nonetheless true of
 //! very nearly every network anyone traces. The engine's answer is not to
 //! pretend otherwise but to mark what it did: every spliced hop is
 //! [`Hop::inferred`], so a reader can tell a measurement from an inheritance
@@ -119,7 +119,7 @@ const ROUND_TIMEOUT: Duration = Duration::from_millis(1500);
 ///
 /// **And the capture is not ready the instant a transport opens.** Opening a
 /// `libpcap` handle on every interface takes real time, and the first probe of a
-/// run can leave before the handles are live — so its reply is not missed on the
+/// run can leave before the handles are live, so its reply is not missed on the
 /// network but here. Every other strategy in this engine survives that by
 /// retrying, and this one is not special.
 const ATTEMPTS: u8 = 3;
@@ -128,7 +128,7 @@ const ATTEMPTS: u8 = 3;
 ///
 /// A ceiling on burst rather than a rate. Routers rate-limit the errors this
 /// depends on, so probes sent faster than they can be answered are not merely
-/// wasted — they push the answers to *other* probes out of the same budget, and
+/// wasted: they push the answers to *other* probes out of the same budget, and
 /// the path comes back full of holes that are an artefact of the scan.
 const MAX_IN_FLIGHT: usize = 16;
 
@@ -145,7 +145,7 @@ pub struct PathCache {
 /// A router recognised at a distance: the key a splice matches on.
 ///
 /// Both halves, because a router met at a different distance is a different
-/// point in a path — see `a_router_at_another_distance_is_not_the_same_point_in_a_path`.
+/// point in a path. see `a_router_at_another_distance_is_not_the_same_point_in_a_path`.
 type Waypoint = (u8, IpAddr);
 
 impl PathCache {
@@ -166,8 +166,8 @@ impl PathCache {
 
     /// Files a completed trace, so later ones can splice from it.
     ///
-    /// Only hops that answered are filed as keys — a silent distance names no
-    /// router and could not be recognised again — but silent hops are kept
+    /// Only hops that answered are filed as keys, a silent distance names no
+    /// router and could not be recognised again, but silent hops are kept
     /// *inside* the stored prefixes, because a path that quietly closed its own
     /// gaps would be spliced into later traces as a shorter path than it was.
     fn remember(&self, hops: &[Hop]) {
@@ -227,7 +227,7 @@ struct Tracer {
     probe: TraceProbe,
     cache: PathCache,
     /// The ICMP identifier, or the TCP source port, every probe in this run
-    /// carries — and so the value its replies come back to.
+    /// carries, and so the value its replies come back to.
     marker: u16,
     /// Which of this host's addresses to send from, per target. Owned rather
     /// than consulted through the caller, because resolving is a cached lookup
@@ -273,7 +273,7 @@ impl Tracer {
             TraceProbe::Syn { port } => {
                 // The distance rides in the sequence number's low byte. An ICMP
                 // error is only guaranteed to quote eight bytes past the IP
-                // header, which for TCP is the two ports and the sequence — so
+                // header, which for TCP is the two ports and the sequence, so
                 // this is the last field a router can be relied on to hand back,
                 // and the only one with room to spare.
                 let sequence = (u32::from(self.marker) << 8) | u32::from(distance);
@@ -333,7 +333,7 @@ impl Tracer {
                 // At the first level of detail, not the second. A probe that
                 // never reached the wire and a probe nobody answered look
                 // identical in an empty path, and only one of them is about the
-                // network — logging the difference at `-vv` hid the answer to
+                // network: logging the difference at `-vv` hid the answer to
                 // exactly the question a reader with an empty path is asking.
                 warn!(
                     verbosity = 1,
@@ -391,7 +391,7 @@ impl Tracer {
         // answered, so the later ones are still in the air when the next
         // distance is being probed. Matched on the source address alone, one of
         // those stragglers clears the outstanding entry for a distance it says
-        // nothing about — and that distance is then recorded as silent. It is
+        // nothing about, and that distance is then recorded as silent. It is
         // the same discipline `attribute` applies to an error, for the same
         // reason, and a first run against a real host is what showed both were
         // needed.
@@ -452,7 +452,7 @@ impl Tracer {
 /// `None` if it is quoting somebody else's packet.
 ///
 /// The quoted destination names the host and the marker inside the transport
-/// header names the distance — see [`Tracer::send`] for where each is written.
+/// header names the distance. see [`Tracer::send`] for where each is written.
 ///
 /// **Both halves are checked, and the marker twice for TCP.** An ICMP error
 /// carries no ports of its own, so the capture that admits them admits *every*
@@ -544,13 +544,13 @@ enum Reply {
 /// A hop counter is decremented once per router, so the distance is the gap
 /// between what arrived and the value it started at. The starting value is not
 /// carried in the packet and is a property of the sender's stack, so it is
-/// inferred from the usual ones — 32, 64, 128, 255 — by taking the smallest that
+/// inferred from the usual ones, 32, 64, 128, 255, by taking the smallest that
 /// could have produced what arrived.
 ///
 /// **A bound rather than a measurement**, and it can be wrong in one direction:
 /// a host more than 64 hops away is read against 128 and reported nearer than it
-/// is. Paths that long do not occur outside a laboratory, and the alternative —
-/// refusing to trace anything whose stack is not already fingerprinted — would
+/// is. Paths that long do not occur outside a laboratory, and the alternative,
+/// refusing to trace anything whose stack is not already fingerprinted, would
 /// decline nearly every host to avoid an error nobody has met.
 fn distance_from(arrived: u8) -> u8 {
     const COMMON: [u8; 4] = [32, 64, 128, 255];
@@ -640,14 +640,14 @@ impl Tracer {
         // A run that drew nothing at all is reported rather than left to look
         // like a network with no routers in it. It is the difference between
         // "nothing answered" and "nothing was heard", and only one of those is
-        // about the network — a scan whose capture or send path is wrong looks
+        // about the network: a scan whose capture or send path is wrong looks
         // exactly like a quiet internet, which is how the first version of this
         // shipped silently broken.
         // Three ways a trace comes back with nothing, and they call for
         // completely different responses: probes that would not leave this host,
         // probes that left and drew no answer, and a network with nothing to
         // say. Reported apart, because collapsed into one empty path they are
-        // indistinguishable — which is how the first version of this shipped
+        // indistinguishable, which is how the first version of this shipped
         // broken and looked like a quiet internet.
         if self.sent == 0 && self.failed > 0 {
             warn!(
@@ -674,7 +674,7 @@ impl Tracer {
     ///
     /// **Read from what the scan already saw wherever possible.** Every reply a
     /// host sent arrived with a hop counter, the scan recorded the most recent
-    /// one, and the distance falls straight out of it — so for a host the port
+    /// one, and the distance falls straight out of it, so for a host the port
     /// scan reached, this costs no probe, no round trip and no waiting.
     ///
     /// That is not only cheaper, it is sturdier. The first version of this sent
@@ -818,7 +818,7 @@ impl Tracer {
     ///
     /// **`estimate` is a starting point, not the answer.** It is read from the
     /// hop counter of a reply the host sent, which measures the path *back* from
-    /// the host — and internet routing is asymmetric, so the two differ
+    /// the host, and internet routing is asymmetric, so the two differ
     /// routinely and by more than a hop. An anycast address can easily answer
     /// from two hops nearer than it can be reached. Trusting the estimate
     /// outright reports the target closer than it is and silently drops every
@@ -827,8 +827,8 @@ impl Tracer {
     ///
     /// So the walk goes outward first, until the target actually answers, and
     /// only then inward. Both directions correct the estimate: outward when the
-    /// return path was shorter, and inward — where the target answering at a
-    /// nearer distance moves the far end in — when it was longer.
+    /// return path was shorter, and inward, where the target answering at a
+    /// nearer distance moves the far end in, when it was longer.
     async fn walk(&mut self, target: IpAddr, estimate: u8) {
         let Some(source) = self.resolver.resolve(target) else {
             return;
@@ -954,7 +954,7 @@ mod tests {
     /// A fake internet: routers that expire probes and a target that answers.
     ///
     /// Built around the hop limit rather than ignoring it, which is the whole
-    /// point — [`Emission`] is what a real router acts on, so a fake that
+    /// point: [`Emission`] is what a real router acts on, so a fake that
     /// discards it would test the loop against a network that does not behave
     /// like one. A probe with a hop limit below `distance` comes back as a Time
     /// Exceeded from the router at that distance; one that reaches the target
@@ -965,8 +965,8 @@ mod tests {
         /// The hop counter the target's own answers arrive with.
         ///
         /// Independent of [`distance`](Self::distance) on purpose. A reply's
-        /// counter measures the path *back*, and internet routing is asymmetric
-        /// — so the number a trace estimates its starting point from routinely
+        /// counter measures the path *back*, and internet routing is asymmetric,
+        /// so the number a trace estimates its starting point from routinely
         /// disagrees with the number of routers it then has to walk. A fake
         /// where the two always agreed would never exercise the correction, and
         /// that is exactly the case a real host found first.
@@ -1003,7 +1003,7 @@ mod tests {
 
     impl Network {
         /// A reply carrying an IP observation, which a synthetic segment
-        /// otherwise has none of — and which the loop needs, since the hop
+        /// otherwise has none of, and which the loop needs, since the hop
         /// counter is what says how far away the target is.
         fn observed(
             source: IpAddr,
@@ -1039,7 +1039,7 @@ mod tests {
             if emission.hop_limit >= self.distance {
                 // Far enough: the target itself answers, and its hop counter is
                 // what the trace reads the distance out of. A real SYN+ACK, not
-                // the probe echoed back — the acknowledgement is what names the
+                // the probe echoed back: the acknowledgement is what names the
                 // probe being answered, so a fake that omitted it would be
                 // testing the loop against a stack that does not exist.
                 let reply = Network::observed(
@@ -1115,12 +1115,12 @@ mod tests {
     /// quotation is read correctly and that a cache splices correctly, and a
     /// trace can still record nothing at all with both of those working. What
     /// this asserts is that the probes, the replies and the attribution fit
-    /// together — which is exactly what a first run against a real host found
+    /// together, which is exactly what a first run against a real host found
     /// they did not.
     ///
     /// It has already earned its place twice. It caught the straggler defect:
     /// several probes go out per distance and the trace moves on when the first
-    /// is answered, so the rest are still in the air during the next distance —
+    /// is answered, so the rest are still in the air during the next distance,
     /// and matched on sender alone, one of them cleared the outstanding entry
     /// for a distance it said nothing about, which was then recorded as silent.
     /// The silent router at distance two is in the fixture for that reason: it
@@ -1187,7 +1187,7 @@ mod tests {
     /// back from the host, and traceroute measures the path out to it; an
     /// anycast address answers from nearer than it can be reached. Trusted as
     /// the answer, the estimate reported the target two routers closer than it
-    /// was and dropped both hops beyond it — a confidently wrong path, which is
+    /// was and dropped both hops beyond it: a confidently wrong path, which is
     /// worse than a short one because nothing in it looks wrong.
     #[tokio::test(flavor = "current_thread")]
     async fn a_target_further_out_than_its_replies_suggest_is_still_reached() {
@@ -1249,9 +1249,9 @@ mod tests {
     /// **The shape that broke against a real host, and the reason the distance
     /// on an answer is checked.** Where every router answers, a straggler read
     /// as "the target is here" is overwritten by the genuine expiry arriving in
-    /// the same round, and the defect stays hidden. Where none of them answer —
+    /// the same round, and the defect stays hidden. Where none of them answer,
     /// which is ordinary, since large networks rate-limit these errors to
-    /// nothing — a straggler is the *only* reply a round sees, so the far end
+    /// nothing, a straggler is the *only* reply a round sees, so the far end
     /// walked one hop nearer per round until it reached the first, and the
     /// filter that drops hops beyond the far end then discarded the entire
     /// path. What came back was a single line claiming the target was one hop
@@ -1330,7 +1330,7 @@ mod tests {
     ///
     /// The pairing the whole trace rests on. The distance rides in a field
     /// chosen because it falls inside the eight bytes a quotation guarantees,
-    /// and if that arithmetic is wrong the failure is not a crash — it is a path
+    /// and if that arithmetic is wrong the failure is not a crash: it is a path
     /// whose hops are all at the wrong distance, which looks like a real answer.
     #[test]
     fn a_quoted_probe_names_the_host_and_the_distance_it_was_built_for() {
@@ -1354,7 +1354,7 @@ mod tests {
     /// The capture admits every ICMP error on the host, because an error names
     /// no ports of its own and cannot be narrowed in a kernel filter. A busy
     /// machine produces a steady background of them, and one accepted here puts
-    /// a router into a path it is not on — a wrong hop, which nothing
+    /// a router into a path it is not on: a wrong hop, which nothing
     /// downstream can tell from a right one.
     #[test]
     fn an_error_about_somebody_elses_packet_is_refused() {
@@ -1438,7 +1438,7 @@ mod tests {
     /// A router recognised at a *different* distance is not a match.
     ///
     /// Two paths meeting the same router at different distances have not
-    /// converged — one of them went somewhere else first — so splicing on the
+    /// converged, one of them went somewhere else first, so splicing on the
     /// address alone would graft a path that was never travelled.
     #[test]
     fn a_router_at_another_distance_is_not_the_same_point_in_a_path() {

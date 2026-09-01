@@ -9,8 +9,8 @@
 //! # Finding the IPv6 half of a segment
 //!
 //! IPv4 discovery walks a range: every address in it gets an ARP request, and
-//! the ones that answer are the hosts. An IPv6 `/64` cannot be walked — there
-//! are more addresses on one link than probes in a lifetime — so nothing about
+//! the ones that answer are the hosts. An IPv6 `/64` cannot be walked, there
+//! are more addresses on one link than probes in a lifetime, so nothing about
 //! the IPv4 half carries over. A neighbour is found here in one of three ways,
 //! and each keeps its own state because each is answered on its own terms:
 //!
@@ -19,7 +19,7 @@
 //!   times and then listened for; and it is the only probe here that can be
 //!   attributed, because an echo reply names the request it answers.
 //! - **A solicitation put to one address**, for a neighbour whose address is
-//!   already known — from the target list, the host's own neighbour table, or a
+//!   already known: from the target list, the host's own neighbour table, or a
 //!   lead overheard on the segment. Retransmitted through a ledger, on a
 //!   schedule nothing like ARP's.
 //! - **A confirmation**, the single solicitation an overheard address gets. Sent
@@ -35,7 +35,7 @@
 //!
 //! Drawing the line there is what makes any of this testable. Every decision
 //! below is a function of a clock and a few collections, so it can be checked
-//! directly — where the same logic reachable only through a scanner needs a
+//! directly, where the same logic reachable only through a scanner needs a
 //! simulated Ethernet segment to ask a question about a timer.
 //!
 //! ## The rule that shapes all of it
@@ -44,7 +44,7 @@
 //! advertisement carries no identifier, so a reply answering the second cannot
 //! be told from one answering the first, and Karn's rule says an unattributable
 //! sample must be discarded rather than guessed at. A round trip is therefore
-//! measurable only when the *first* attempt is the one answered — which makes
+//! measurable only when the *first* attempt is the one answered, which makes
 //! every timeout here load-bearing in a way ARP's are not, and is why a
 //! confirmation is sent exactly once and never retried.
 
@@ -279,7 +279,7 @@ pub(super) struct Ipv6Discovery {
     /// up on an address nobody has answered for. A confirmation asks a different
     /// question: the host is already known to be there, so the only thing at
     /// stake is the measurement, and a retry destroys exactly that. Measured on a
-    /// live segment, that is what happened to every neighbour on wifi — the retry
+    /// live segment, that is what happened to every neighbour on wifi: the retry
     /// timer, sized from ARP replies arriving in single-digit milliseconds, fired
     /// long before a sleeping device got round to answering.
     confirmed_at: HashMap<IpAddr, Instant>,
@@ -325,8 +325,8 @@ impl Ipv6Discovery {
     ///
     /// A lead is a claim somebody else made, possibly some time ago and possibly
     /// about an address that has since moved. It earns its place in the report
-    /// the same way a neighbour-table entry does — by answering a solicitation
-    /// now — so it is queued for one confirmation rather than recorded as a host.
+    /// the same way a neighbour-table entry does, by answering a solicitation
+    /// now, so it is queued for one confirmation rather than recorded as a host.
     ///
     /// `false` means the address is already spoken for and nothing was queued.
     pub(super) fn note_overheard(&mut self, address: IpAddr) -> bool {
@@ -388,7 +388,7 @@ impl Ipv6Discovery {
     /// Marks the address spoken for, which is what stops
     /// [`note_overheard`](Self::note_overheard) queueing a *confirmation* for an
     /// address this sweep is already asking about directly. The two are the same
-    /// packet on the wire, and sending both makes the answer unattributable —
+    /// packet on the wire, and sending both makes the answer unattributable:
     /// exactly the sample Karn's rule then discards.
     pub(super) fn record_asked(&mut self, address: IpAddr, now: Instant) {
         self.solicited.insert(address);
@@ -523,8 +523,8 @@ mod tests {
     /// A neighbour with no measurement of its own must be timed by the policy,
     /// never by what some other neighbour on the segment answered in.
     ///
-    /// The two populations on one wireless link differ by orders of magnitude —
-    /// a mains-powered device against a sleeping one — so a scan-wide estimate
+    /// The two populations on one wireless link differ by orders of magnitude,
+    /// a mains-powered device against a sleeping one, so a scan-wide estimate
     /// describes neither, and inheriting the fast one silently replaces the
     /// declared schedule with the floor.
     #[test]

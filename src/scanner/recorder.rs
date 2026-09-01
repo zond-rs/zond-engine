@@ -58,7 +58,7 @@ use crate::system::privilege::Privilege;
 /// // The policy has to reach the context as well as the targets. The
 /// // subtraction below covers the addresses named in the target list, and a
 /// // segment sweep does not confine itself to those; see `Exclusions`.
-/// let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
+/// let (session, ctx) = ScanSession::builder().excluding(cfg.exclusions.clone()).build();
 ///
 /// // Recorded before the targets move into a strategy, since what a scan was
 /// // asked to cover is only knowable here. `targets` comes back narrowed by
@@ -260,7 +260,7 @@ mod tests {
     /// The whole point of keeping it apart from a failure. A dual-stack name on
     /// an IPv4-only network resolves to an address nobody here can reach, and
     /// reporting that as a scan which covered less than it was asked to made
-    /// every such scan look broken — while the one detail a caller can act on,
+    /// every such scan look broken, while the one detail a caller can act on,
     /// *which* address went uncovered, was not in the report at all.
     #[test]
     fn an_unroutable_address_is_recorded_without_making_the_scan_partial() {

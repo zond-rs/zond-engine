@@ -32,7 +32,7 @@ use crate::scanner::session::ScanProgress;
 /// How often a running scan writes down how far it got.
 ///
 /// The cost of a crash is one interval of replayed work, and the cost of the
-/// interval is one rename of a small file — so this is chosen for the first,
+/// interval is one rename of a small file, so this is chosen for the first,
 /// not the second. Three seconds of a six-hour scan is not a tradeoff worth
 /// exposing.
 pub const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(3);

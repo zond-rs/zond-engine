@@ -851,7 +851,7 @@ where
         self.records.contains_key(key)
     }
 
-    /// Whether anything has ever come back from `host` — a SYN+ACK, a reset, an
+    /// Whether anything has ever come back from `host`: a SYN+ACK, a reset, an
     /// ICMP error, any reply at all.
     ///
     /// The question a pacing controller asks about a probe that went unanswered,
@@ -886,7 +886,7 @@ where
     ///
     /// Seeding *down* is safe in a way it would not be without per-attempt
     /// tokens. An estimate too tight retransmits early, and the reply to the
-    /// first attempt still names the first attempt when it arrives — so the
+    /// first attempt still names the first attempt when it arrives, so the
     /// round trip is measured correctly and, for a caller reading the answered
     /// attempt as a loss signal, an early retry is not mistaken for one. What it
     /// costs is the extra packet, bounded by [`min_rto`](RetryPolicy::min_rto).
@@ -1033,7 +1033,7 @@ mod tests {
     }
 
     /// A port scan meets hosts a liveness phase already timed, and starting
-    /// from the unmeasured guess throws that away — the cost lands entirely on
+    /// from the unmeasured guess throws that away: the cost lands entirely on
     /// the ports that turn out to be filtered, each of which then waits the full
     /// guess three times before silence is allowed to mean anything.
     #[test]

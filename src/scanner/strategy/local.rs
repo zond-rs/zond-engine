@@ -67,7 +67,7 @@ use ipv6::Ipv6Discovery;
 ///
 /// The union of what every [`DiscoveryProtocol`] declares it reads, plus the one
 /// thing the sweep reads without one. Derived rather than written down, so that
-/// adding a protocol widens the capture by the same edit that adds the reader —
+/// adding a protocol widens the capture by the same edit that adds the reader.
 /// see [`DiscoveryProtocol::capture_clause`] for why that is not a convenience.
 ///
 /// The sweep used to receive the whole segment and reject the surplus in
@@ -85,8 +85,8 @@ fn sweep_filter() -> String {
 
     clauses.extend(ABSORBED_CLAUSES);
 
-    // Several protocols share a clause — the three IPv6 readers are all
-    // `icmp6` — and a filter repeating it would compile to the same program
+    // Several protocols share a clause, the three IPv6 readers are all
+    // `icmp6`, and a filter repeating it would compile to the same program
     // while reading as though it meant something.
     clauses.sort_unstable();
     clauses.dedup();
@@ -105,8 +105,8 @@ fn sweep_filter() -> String {
 ///   with being there for it, because every laptop and printer on a link
 ///   answers mDNS and the announcer is often not the machine being announced.
 /// - **LLDP** and **CDP** (`absorb_announcement`) are equipment describing
-///   *itself*, and what they establish is where **this** machine is plugged in
-///   — a fact about the phase rather than about any host in it. See
+///   *itself*, and what they establish is where **this** machine is plugged in:
+///   a fact about the phase rather than about any host in it. See
 ///   [`Attachment`].
 ///
 /// A fourth reader of this kind needs a clause here, and nothing will say so:
@@ -114,7 +114,7 @@ fn sweep_filter() -> String {
 ///
 /// The CDP clause matches the group address rather than the protocol, because
 /// CDP rides 802.3 framing and has no EtherType to match on. That address also
-/// carries VTP, DTP and PAgP, which the reader declines — a small surplus, and
+/// carries VTP, DTP and PAgP, which the reader declines: a small surplus, and
 /// the alternative is reaching past a header whose length BPF cannot express.
 const ABSORBED_CLAUSES: [&str; 3] = [
     "(udp port 5353)",
@@ -242,7 +242,7 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 /// case. It is deliberately not slowed down anyway: a first attempt that goes
 /// unanswered is recovered by [`RETRY_POLICY`], so the gain is a better
 /// *attributed* round trip on a few hosts rather than more hosts, and it is
-/// bought at several times the scan duration — the send phase drags the
+/// bought at several times the scan duration: the send phase drags the
 /// adaptive deadline along behind it, so the cost compounds rather than adds.
 ///
 /// Two cautions from the last attempt, for whoever revisits it: the run-to-run
@@ -293,7 +293,7 @@ impl SourceIdentity {
     ///
     /// [`ScopedIp::scoped`] drops the zone from every address that does not need
     /// one, so this is the plain address for an IPv4 neighbour and for a global
-    /// IPv6 one — which is right, since a machine reachable at a global address
+    /// IPv6 one, which is right, since a machine reachable at a global address
     /// is the same machine through whichever interface it answered.
     fn key_for(&self, addr: std::net::IpAddr) -> crate::model::ip::scoped::ScopedIp {
         crate::model::ip::scoped::ScopedIp::scoped(addr, self.zone.clone())
@@ -422,8 +422,8 @@ pub struct LocalScanner {
     /// machine is.
     ///
     /// The two segment-wide questions are answered from an address the scan was
-    /// never asked about — a router advertises from its link-local, a DHCP
-    /// server may sit outside the range — so on a targeted run the answer
+    /// never asked about, a router advertises from its link-local, a DHCP
+    /// server may sit outside the range, so on a targeted run the answer
     /// arrives before, and often instead of, anything that identifies its
     /// sender. Held by MAC rather than dropped, and applied the moment that MAC
     /// answers a probe of ours.
@@ -431,7 +431,7 @@ pub struct LocalScanner {
     /// **This is what keeps a targeted run targeted.** Nothing here creates a
     /// host or adds an address: a declaration only ever lands on a record the
     /// scan built by asking, so a run handed one address still reports one
-    /// host — with, if it happens to be the router, the fact that it routes.
+    /// host: with, if it happens to be the router, the fact that it routes.
     ///
     /// Bounded by [`MAX_DECLARING_MACS`], unlike `mac_to_ip`, which only ever
     /// grows from replies to probes this scanner sent. This grows from traffic
@@ -495,7 +495,7 @@ impl HostScanner for LocalScanner {
         // segment without the two machines it is built around.
         //
         // This is not the sweep's reach in disguise. A sweep may *record* a
-        // host nobody named; a targeted run still may not, and does not — an
+        // host nobody named; a targeted run still may not, and does not: an
         // answer from an address outside the target set is read for what its
         // sender said it is and for nothing else. See
         // [`note_declaration`](Self::note_declaration).
@@ -504,7 +504,7 @@ impl HostScanner for LocalScanner {
 
         let mut sending_finished = false;
         // What the packet iterator has handed out, so what it still holds can be
-        // counted as unasked without draining it — building those packets is the
+        // counted as unasked without draining it: building those packets is the
         // work the sweep was stopped to avoid.
         let mut dispatched: u128 = 0;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL);
@@ -819,8 +819,8 @@ impl LocalScanner {
     ///
     /// [`FrameSink::send_frame`] reports whether the frame left, and an error is
     /// the only way it did not. The predecessor returned `Option<io::Result<()>>`
-    /// with two shapes of failure — no buffer to write into, and a write that
-    /// failed — and both meant the same thing to every caller, which is why this
+    /// with two shapes of failure, no buffer to write into, and a write that
+    /// failed, and both meant the same thing to every caller, which is why this
     /// says it once. Reading only whether the *packet built* would leave
     /// `sends_failed` making a claim about this code where a caller reads it as
     /// a claim about the link.
@@ -917,7 +917,7 @@ impl LocalScanner {
     /// targeted run targeted is about what may be *recorded*, and it is
     /// enforced where records are made: an answer from an address nobody asked
     /// about is read for the role its sender claims and never becomes a host.
-    /// The echo has no such reading — everything it draws is a new address —
+    /// The echo has no such reading, everything it draws is a new address,
     /// which is why it stays behind the sweep.
     ///
     /// Not repeated. A lost solicitation costs the *unsolicited* route to this
@@ -941,7 +941,7 @@ impl LocalScanner {
     /// [`dhcp`](crate::protocols::dhcp) for why this is a broadcast rather than
     /// a port probe.
     ///
-    /// Broadcast, and therefore seen by every device on the segment — which is
+    /// Broadcast, and therefore seen by every device on the segment, which is
     /// the same reach an ARP request has, and a scan of a range sends one of
     /// those per address in it. Sent on any local run, on the same terms as the
     /// router solicitation: what a targeted run may record is enforced where
@@ -1022,12 +1022,12 @@ impl LocalScanner {
     /// A segment announces itself constantly and this scanner's capture is
     /// promiscuous, so these addresses already arrive here.
     /// The hostname resolver caches mDNS records too, but applies them to hosts
-    /// *already in the store* — a record naming an address nothing has answered
+    /// *already in the store*: a record naming an address nothing has answered
     /// for goes nowhere there.
     ///
     /// They arrive as candidates, never as hosts. An mDNS record is a claim
     /// somebody else made, possibly some time ago and possibly about an address
-    /// that has since moved — the same standing as a neighbour-table entry, and
+    /// that has since moved: the same standing as a neighbour-table entry, and
     /// it earns its place in the report the same way, by answering a
     /// solicitation now. [`confirm`](Self::confirm) is that mechanism and
     /// already bounds itself to one solicitation per address.
@@ -1039,7 +1039,7 @@ impl LocalScanner {
     ///
     /// Nothing is taken once the sweep has run its course. Each confirmation
     /// holds the run open for a reply, so a segment that keeps talking could
-    /// otherwise keep extending it — and a lead that arrives after the sweep
+    /// otherwise keep extending it, and a lead that arrives after the sweep
     /// would have ended belongs to the next scan.
     /// Reads a switch's announcement of itself, where the frame is one.
     ///
@@ -1050,8 +1050,8 @@ impl LocalScanner {
     ///
     /// **Where this machine is plugged in** is recorded unconditionally, as an
     /// [`Attachment`] on the phase. It is not a claim about a host in the
-    /// report — it is a relation between this machine and somebody else's
-    /// equipment — so the rule that keeps a targeted run targeted does not
+    /// report, it is a relation between this machine and somebody else's
+    /// equipment, so the rule that keeps a targeted run targeted does not
     /// apply to it. A run handed one address still reports one host, and now
     /// also says which switch port it was run from.
     ///
@@ -1059,7 +1059,7 @@ impl LocalScanner {
     /// overheard claim: filed against the announcing hardware address and
     /// applied only if that machine turns out to be one the scan found by
     /// asking. A switch usually holds no address on the segment it serves, so
-    /// in the common case the claim is never applied to anything — and that is
+    /// in the common case the claim is never applied to anything, and that is
     /// the correct outcome, not a loss. The switch's identity is in the
     /// attachment, where it belongs.
     ///
@@ -1067,8 +1067,8 @@ impl LocalScanner {
     ///
     /// That its sender is a switch. Anything on a link can emit one, and
     /// nothing here authenticates it. What the group address buys is a
-    /// statement about *where* — conforming bridges constrain those addresses
-    /// rather than forwarding them — and never about truthfulness. The role
+    /// statement about *where*, conforming bridges constrain those addresses
+    /// rather than forwarding them, and never about truthfulness. The role
     /// this files carries that caveat in its own documentation.
     fn absorb_announcement(
         &mut self,
@@ -1245,7 +1245,7 @@ impl LocalScanner {
 
         // Before the address is read, because neither of these frames has one.
         // LLDP carries no IP header at all and CDP is not even an EtherType
-        // protocol, so `source_address` refuses both — which is correct, and is
+        // protocol, so `source_address` refuses both, which is correct, and is
         // why they have to be taken out of the stream first.
         if self.absorb_announcement(&eth_frame, source_mac, frame) {
             return Ok(());
@@ -1472,8 +1472,8 @@ impl LocalScanner {
     /// Whether every target address has answered, which is a question only a
     /// [`Scope::Targeted`] run can ask.
     ///
-    /// A sweep counts only in-range IPv4 addresses as responders — an IPv6
-    /// neighbour found through the all-nodes echo was never in the range — so
+    /// A sweep counts only in-range IPv4 addresses as responders, an IPv6
+    /// neighbour found through the all-nodes echo was never in the range, so
     /// comparing that count against the whole target set asks whether the IPv4
     /// half is done and then stops the IPv6 half on the answer. On a wide range
     /// it never trips and the bug stays hidden; on a handful of addresses that
@@ -1567,7 +1567,7 @@ impl LocalScanner {
     /// reported a router that answers in 5 ms as answering in 37.
     ///
     /// `declared` is what the sender said it *is*, where the frame carried such
-    /// a claim — the R flag on an advertisement, or an advertisement only a
+    /// a claim: the R flag on an advertisement, or an advertisement only a
     /// router sends. It is the host's own word rather than an inference of
     /// ours, which is why it is recorded here beside the liveness evidence and
     /// not derived later from what the record ended up holding.
@@ -1616,7 +1616,7 @@ impl LocalScanner {
             .write_host(self.identity.key_for(primary_ip), |host| {
                 // Every frame this scanner reads came off the one link it is
                 // bound to, so a host it credits was observed through that
-                // interface — whichever of its addresses answered first.
+                // interface: whichever of its addresses answered first.
                 //
                 // **Set here rather than left to the key.** A host is born with
                 // the zone its *key* carries, and a key carries one only where
@@ -1732,7 +1732,7 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     /// The sweep's capture narrows in the kernel, so a frame the filter does not
-    /// admit is one no [`DiscoveryProtocol`] is ever offered — and it fails
+    /// admit is one no [`DiscoveryProtocol`] is ever offered, and it fails
     /// silently, because a protocol that is never called looks exactly like one
     /// that recognised nothing.
     ///

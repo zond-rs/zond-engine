@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 ///
 /// **Stopping is not cancelling.** The scan winds down and still produces its
 /// [`ScanReport`](crate::report::ScanReport), describing however far it
-/// got — the hosts already found are findings, and discarding them because the
+/// got: the hosts already found are findings, and discarding them because the
 /// caller ran out of patience would throw away the work the scan had done. The
 /// report's [`StopReason`](crate::report::StopReason) says
 /// `Aborted` so nobody mistakes a shortened scan for a complete one.

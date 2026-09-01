@@ -156,8 +156,8 @@ impl TcpPortScanner {
             ProbeKind::TcpProbe {
                 reply_port: src_port,
                 // An arbitrary flag combination reads its verdict off ICMP the
-                // way a flag-probe technique does — silence upgrades to filtered
-                // when an error names the filter — so it asks for errors too.
+                // way a flag-probe technique does, silence upgrades to filtered
+                // when an error names the filter, so it asks for errors too.
                 icmp_errors: technique.reads_icmp_errors() || flags_override.is_some(),
             },
             tuning.evasion.effective_send_mode(tuning.send_mode),
@@ -287,8 +287,8 @@ impl TcpPortScanner {
         // An arbitrary flag combination has no open/closed meaning to read, so
         // any reply this scan's own probe drew proves only that the port is
         // reachable. A named technique reads its defined verdict instead, and a
-        // segment it could not have provoked — a SYN+ACK answering an ACK scan,
-        // say — is somebody else's traffic on this scan's port and resolves
+        // segment it could not have provoked, a SYN+ACK answering an ACK scan,
+        // say, is somebody else's traffic on this scan's port and resolves
         // nothing.
         let state = if self.arbitrary_flags() {
             PortState::Unfiltered
@@ -340,7 +340,7 @@ impl TcpPortScanner {
     ///
     /// Only a SYN+ACK is read. A reset carries no TCP options at all whatever the
     /// probe offered, and the corpus holds no rule that could be matched against
-    /// one — the single reset feature that looked promising was withdrawn after
+    /// one: the single reset feature that looked promising was withdrawn after
     /// the same labelled devices answered two scanners on one segment with
     /// opposite values.
     fn identify_stack(&self, ip: IpAddr, state: PortState, captured: &CapturedSegment) {
@@ -489,7 +489,7 @@ impl TcpPortScanner {
     }
 
     /// Whether this scan sends an arbitrary flag combination, so a reply says
-    /// only that the port is reachable and silence means open-filtered — the
+    /// only that the port is reachable and silence means open-filtered: the
     /// softer reading an arbitrary combination licenses, in place of the
     /// technique's defined open/closed verdict.
     const fn arbitrary_flags(&self) -> bool {
@@ -518,7 +518,7 @@ impl RawPortScan for TcpPortScanner {
     fn silence_means(&self) -> PortState {
         if self.arbitrary_flags() {
             // Silence to an arbitrary combination is either a drop or an open
-            // port that ignored it, the open-filtered of the flag-probe family —
+            // port that ignored it, the open-filtered of the flag-probe family:
             // never the plain filtered a SYN's silence would earn.
             PortState::OpenFiltered
         } else {
@@ -652,8 +652,8 @@ impl TcpPortScanner {
         let port = crate::fingerprint::baseline_port(port_num, Protocol::Tcp, state);
 
         // The packet that settled it, written down rather than merely acted on.
-        // The classification below already knows which reply arrived — it is
-        // what decides the verdict — and until this was recorded a reader had
+        // The classification below already knows which reply arrived, it is
+        // what decides the verdict, and until this was recorded a reader had
         // the word `filtered` and no way to learn whether a firewall said so or
         // nothing came back. The two are different findings.
         let port = match port_evidence(state, drawn_by, sender, ip) {
@@ -739,7 +739,7 @@ struct Answer {
     /// The hop counter as it arrived: an IPv4 TTL or an IPv6 hop limit.
     ///
     /// **Not the value the sender wrote.** Every router on the path decrements
-    /// it, so what is recorded is the initial value less the distance — which is
+    /// it, so what is recorded is the initial value less the distance, which is
     /// what makes it worth keeping per port: a reply whose count disagrees with
     /// the host's other replies did not come from where the others did. See
     /// [`IpObservation::remaining_hops`](crate::model::capture::IpObservation::remaining_hops).
@@ -750,7 +750,7 @@ struct Answer {
 ///
 /// The port-level mirror of the host evidence above, and drawn from the same
 /// two facts: the verdict, and the reply that produced it. Kept apart because
-/// they answer different questions — that one says why the *host* is believed
+/// they answer different questions, that one says why the *host* is believed
 /// alive, this says why the *port* is in the state it is.
 ///
 /// `None` where nothing arrived. A port nothing answered has no packet to name,
@@ -893,7 +893,7 @@ fn send_tcp_probe(
             // neither.
             // Once. A link that has stopped accepting sends refuses every
             // probe behind the one that noticed, and the same line seven
-            // thousand times buries everything else the run had to say —
+            // thousand times buries everything else the run had to say:
             // including the count, which is the number that actually matters and
             // which the audit reports on its own.
             if reason.is_none() {
@@ -1139,8 +1139,8 @@ mod tests {
     /// The packet that settled a port is written down, with the hop counter the
     /// header carried.
     ///
-    /// The scanner always knew which reply arrived — it is what decides the
-    /// verdict — and for a long while acted on it and threw it away. A reader
+    /// The scanner always knew which reply arrived, it is what decides the
+    /// verdict, and for a long while acted on it and threw it away. A reader
     /// then had the word `open` and no account of it, and no way at all to tell
     /// a `filtered` a firewall produced from a `filtered` nothing answered.
     #[test]
@@ -1275,7 +1275,7 @@ mod tests {
     /// SYN+PSH is span-one like a SYN, so the harness's own echo rule still
     /// applies and the answer resolves. A version that read the override's reply
     /// through the technique's verdict would call this reset closed, and one that
-    /// left silence to the technique would call it plain filtered — both untrue
+    /// left silence to the technique would call it plain filtered: both untrue
     /// of a combination that carries no open/closed meaning.
     #[test]
     fn an_arbitrary_flag_combination_reads_reachable_not_open_or_closed() {

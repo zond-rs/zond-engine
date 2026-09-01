@@ -12,15 +12,15 @@
 //! down on the machine the scan runs from, and the third is already in the
 //! record, put there by something that was measuring a different thing.
 //!
-//! - **[`Origin`]** — the address belongs to one of this machine's own
+//! - **[`Origin`]**: the address belongs to one of this machine's own
 //!   interfaces. A sweep of your own segment always contains you, and the
 //!   record it produces is unlike every other one in it.
-//! - **[`Router`], from the routing table** — the address is a default gateway
+//! - **[`Router`], from the routing table**: the address is a default gateway
 //!   of an interface the scan runs on. Something is only a gateway because it
 //!   forwards, and on an IPv4-only segment this is the only proof of that the
 //!   engine can obtain by asking: ARP has no equivalent of the neighbour
 //!   advertisement's R flag, and no equivalent of a router advertisement.
-//! - **[`Router`], from a measured path** — the address answered from inside
+//! - **[`Router`], from a measured path**: the address answered from inside
 //!   somebody else's route. A hop is recorded because a probe aimed past it
 //!   expired there, which means it decremented a hop limit on a packet
 //!   addressed to another machine. That is not evidence *about* routing; it is
@@ -31,7 +31,7 @@
 //! This runs as a pass over the finished store rather than as a check inside
 //! each strategy. A host's addresses arrive from several strategies over the
 //! life of a scan, and asking the question at the end is the only point where
-//! all of them are on the record — a check at creation time would miss the
+//! all of them are on the record: a check at creation time would miss the
 //! second address of a dual-stack host, which is exactly the address a gateway
 //! is most likely to be found under. The path source needs the same ordering
 //! for a stronger reason: a trace runs late, so a check anywhere earlier would
@@ -60,7 +60,7 @@ use crate::scanner::session::ScanContext;
 ///
 /// The seam that keeps this module testable. Everything below works on these,
 /// and [`Vantage::from_system`] is the only place that knows they come from
-/// `netdev` — so the rules can be exercised against a segment that does not
+/// `netdev`, so the rules can be exercised against a segment that does not
 /// exist, on a machine with whatever interfaces it happens to have.
 #[derive(Debug, Clone)]
 struct Interface {
@@ -99,8 +99,8 @@ impl Located {
 
 /// What this machine's own configuration says about the network it is scanning.
 ///
-/// Both lists are short — an interface holds a handful of addresses and a
-/// routing table a handful of default routes — so they are walked rather than
+/// Both lists are short, an interface holds a handful of addresses and a
+/// routing table a handful of default routes, so they are walked rather than
 /// hashed. A set would be the faster structure for the lookup and the wrong one
 /// for the comparison: matching a link-local address means comparing its zone
 /// too, which is not part of its identity as an address.
@@ -221,11 +221,11 @@ pub(super) fn attribute(ctx: &ScanContext) {
 /// Read out of the paths already in the store rather than probed for: a
 /// traceroute is run to answer "how do I reach this host", and the same replies
 /// say "these machines route", which nothing was reading. Empty unless a trace
-/// ran, which is off by default — so this costs one walk of the store on a scan
+/// ran, which is off by default, so this costs one walk of the store on a scan
 /// that measured no paths at all.
 ///
 /// **A hop is only a router to somebody else.** A completed trace records its
-/// own target as the last hop, at the distance it was reached — so a path's
+/// own target as the last hop, at the distance it was reached, so a path's
 /// hops are read against the host whose path it is, and its own addresses are
 /// left out. Without that, every traced host would be reported as a router, and
 /// the reader could not tell the routers from the destinations.
@@ -317,7 +317,7 @@ mod tests {
 
     /// `fe80::1` is a different router on every segment. A scan that reached
     /// two links would otherwise mark a neighbour on the second as the router
-    /// of the first — and a record with no interface on it cannot say which
+    /// of the first, and a record with no interface on it cannot say which
     /// link it came from at all, so it is left alone rather than guessed at.
     #[test]
     fn a_link_local_gateway_is_only_the_router_of_the_link_it_was_read_on() {
@@ -357,7 +357,7 @@ mod tests {
     /// A hop is a router to whoever was behind it, and never to itself.
     ///
     /// Both halves are load-bearing. A completed trace records its own target
-    /// as the last hop, at the distance it was reached — so reading hops
+    /// as the last hop, at the distance it was reached, so reading hops
     /// without regard to whose path they are in reports every traced host as a
     /// router, and a reader can no longer tell the routers from the
     /// destinations. The addresses are documentation ranges (RFC 5737), which

@@ -15,7 +15,7 @@
 //! in one of three distinguishable ways, and the fix for each is different:
 //!
 //! - the probes or the replies were **lost**, so the scanner never had the
-//!   information — the case retransmission exists for;
+//!   information: the case retransmission exists for;
 //! - the replies arrived but the scan had already **stopped**, so the deadline
 //!   is wrong rather than the network;
 //! - the replies arrived and were **not recognized**, so correlation is wrong
@@ -28,7 +28,7 @@
 //!
 //! One of those bounds cannot be measured from inside the scanner. A reply the
 //! kernel discards because the capture buffer was full never reaches any counter
-//! here, so loss on the receive path and loss on the network read identically —
+//! here, so loss on the receive path and loss on the network read identically:
 //! both are silence. [`CaptureCounts`] is reported alongside for that reason: it
 //! is the only place the difference is visible.
 //!
@@ -72,7 +72,7 @@ pub struct ProbeAudit {
     /// retransmissions land here, and so does a correlation bug.
     pub(crate) replies_without_rtt: u64,
 
-    /// Targets a reply resolved, counted once each — a host for a discovery
+    /// Targets a reply resolved, counted once each: a host for a discovery
     /// sweep, an `(address, port)` probe for a port scan. The number the run is
     /// judged on, and the numerator to the `targets` this run was given.
     pub(crate) hosts_found: u64,
@@ -99,7 +99,7 @@ pub struct ProbeAudit {
 /// The share of answers arriving only on a retry that is taken as evidence the
 /// send rate is too high.
 ///
-/// Retransmission earning its traffic is ordinary and expected — a fifth of
+/// Retransmission earning its traffic is ordinary and expected: a fifth of
 /// answers arriving late on a lossy path is a working scan. Past a third, the
 /// first attempt is failing often enough that the verdicts resting on silence
 /// cannot be trusted, and a caller who is told nothing will read them as
@@ -120,7 +120,7 @@ const MIN_ANSWERS_TO_JUDGE: u64 = 20;
 /// are the signature of a target that was outrun from the first probe to the
 /// last. A tenth is low enough to catch it and high enough that a scan of a
 /// firewalled host, which reaches the floor honestly, is not reported as
-/// broken — that scan answers nothing at all, so its window never cut and never
+/// broken, that scan answers nothing at all, so its window never cut and never
 /// arrived here.
 const UNANSWERED_SHARE_SUGGESTING_LOSS: f64 = 0.10;
 
@@ -361,7 +361,7 @@ impl ProbeAudit {
     /// The share of answers that only arrived because the probe was sent again.
     ///
     /// A first attempt that goes unanswered and a second that succeeds is a
-    /// reply that was *lost*, not a port that was silent — the host was always
+    /// reply that was *lost*, not a port that was silent: the host was always
     /// willing to answer and the question did not survive the trip. Read across
     /// a run, this is the clearest evidence available that probes are going out
     /// faster than the path or the target will take.
@@ -377,7 +377,7 @@ impl ProbeAudit {
     ///
     /// **A scan that degrades quietly is the failure this engine exists not to
     /// have.** Measured, against a consumer router: probed faster than it would
-    /// answer, a thousand-port scan reported six hundred ports `filtered` — with
+    /// answer, a thousand-port scan reported six hundred ports `filtered`: with
     /// no more hesitation than it reported the three that really were, and among
     /// them two ports running services. Every one of those verdicts is a claim
     /// about somebody's firewall, and they were claims about this scanner's own
@@ -611,7 +611,7 @@ mod tests {
     /// The signal that separates a lost reply from a silent port.
     ///
     /// A first attempt that goes unanswered and a second that succeeds means the
-    /// host was always willing — silence from a firewall does not improve on the
+    /// host was always willing: silence from a firewall does not improve on the
     /// retry. Read across a run it is the clearest evidence available that
     /// probes are outrunning what the target will answer.
     #[test]

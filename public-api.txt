@@ -12178,8 +12178,8 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::checkpoi
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::checkpoint::Checkpointing
 pub const zond_engine::scanner::checkpoint::CHECKPOINT_EVERY: core::time::Duration
 pub fn zond_engine::scanner::checkpoint::spawn_checkpoints(zond_engine::journal::store::Journal, zond_engine::scanner::session::ScanProgress) -> zond_engine::scanner::checkpoint::Checkpointing
-pub mod zond_engine::scanner::detect
-pub async fn zond_engine::scanner::detect::detect(&zond_engine::scanner::session::ScanContext, zond_engine::config::ServiceDetection, zond_engine::config::envelope::DetectionEnvelope)
+pub mod zond_engine::scanner::detection
+pub async fn zond_engine::scanner::detection::detect(&zond_engine::scanner::session::ScanContext, zond_engine::config::ServiceDetection, zond_engine::config::envelope::DetectionEnvelope)
 pub mod zond_engine::scanner::dispatcher
 pub struct zond_engine::scanner::dispatcher::Dispatcher
 impl zond_engine::scanner::dispatcher::Dispatcher
@@ -12791,15 +12791,13 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session:
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanProgress
 pub struct zond_engine::scanner::session::ScanSession
 impl zond_engine::scanner::session::ScanSession
+pub fn zond_engine::scanner::session::ScanSession::builder() -> zond_engine::scanner::session::SessionBuilder
+pub fn zond_engine::scanner::session::ScanSession::new() -> (Self, zond_engine::scanner::session::ScanContext)
+impl zond_engine::scanner::session::ScanSession
 pub fn zond_engine::scanner::session::ScanSession::events(&mut self) -> &mut zond_engine::scanner::session::ScanEvents
 pub fn zond_engine::scanner::session::ScanSession::handle(&self) -> &zond_engine::scanner::handle::ScanHandle
 pub fn zond_engine::scanner::session::ScanSession::hosts(&self) -> &zond_engine::scanner::session::HostStore
 pub fn zond_engine::scanner::session::ScanSession::into_parts(self) -> (zond_engine::scanner::session::HostStore, zond_engine::scanner::session::ScanEvents, zond_engine::scanner::handle::ScanHandle)
-impl zond_engine::scanner::session::ScanSession
-pub fn zond_engine::scanner::session::ScanSession::new() -> (Self, zond_engine::scanner::session::ScanContext)
-pub fn zond_engine::scanner::session::ScanSession::resuming(zond_engine::model::exclusion::Exclusions, &zond_engine::journal::cursor::Checkpoint) -> (Self, zond_engine::scanner::session::ScanContext)
-pub fn zond_engine::scanner::session::ScanSession::sweeping(zond_engine::model::exclusion::Exclusions, &zond_engine::journal::cursor::Checkpoint, zond_engine::model::ip::set::Positions) -> (Self, zond_engine::scanner::session::ScanContext)
-pub fn zond_engine::scanner::session::ScanSession::with_exclusions(zond_engine::model::exclusion::Exclusions) -> (Self, zond_engine::scanner::session::ScanContext)
 impl core::marker::Freeze for zond_engine::scanner::session::ScanSession
 impl core::marker::Send for zond_engine::scanner::session::ScanSession
 impl core::marker::Sync for zond_engine::scanner::session::ScanSession
@@ -12807,6 +12805,23 @@ impl core::marker::Unpin for zond_engine::scanner::session::ScanSession
 impl core::marker::UnsafeUnpin for zond_engine::scanner::session::ScanSession
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::ScanSession
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanSession
+pub struct zond_engine::scanner::session::SessionBuilder
+impl zond_engine::scanner::session::SessionBuilder
+pub fn zond_engine::scanner::session::SessionBuilder::build(self) -> (zond_engine::scanner::session::ScanSession, zond_engine::scanner::session::ScanContext)
+pub fn zond_engine::scanner::session::SessionBuilder::counting(self, zond_engine::model::ip::set::Positions) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::excluding(self, zond_engine::model::exclusion::Exclusions) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
+impl core::default::Default for zond_engine::scanner::session::SessionBuilder
+pub fn zond_engine::scanner::session::SessionBuilder::default() -> zond_engine::scanner::session::SessionBuilder
+impl core::fmt::Debug for zond_engine::scanner::session::SessionBuilder
+pub fn zond_engine::scanner::session::SessionBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::scanner::session::SessionBuilder
+impl core::marker::Send for zond_engine::scanner::session::SessionBuilder
+impl core::marker::Sync for zond_engine::scanner::session::SessionBuilder
+impl core::marker::Unpin for zond_engine::scanner::session::SessionBuilder
+impl core::marker::UnsafeUnpin for zond_engine::scanner::session::SessionBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::SessionBuilder
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::SessionBuilder
 pub mod zond_engine::scanner::strategy
 pub mod zond_engine::scanner::strategy::composite
 pub struct zond_engine::scanner::strategy::composite::CompositePortScanner
@@ -13630,6 +13645,28 @@ impl core::marker::Unpin for zond_engine::scanner::strategy::routed::RoutedScann
 impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::routed::RoutedScanner
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::routed::RoutedScanner
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::routed::RoutedScanner
+pub mod zond_engine::scanner::strategy::sweep
+pub struct zond_engine::scanner::strategy::sweep::HostSweep<T>
+pub zond_engine::scanner::strategy::sweep::HostSweep::audit: zond_engine::scanner::audit::ProbeAudit
+pub zond_engine::scanner::strategy::sweep::HostSweep::due: alloc::vec::Vec<zond_engine::scanner::pacing::retry::Due<core::net::ip_addr::IpAddr>>
+pub zond_engine::scanner::strategy::sweep::HostSweep::ledger: zond_engine::scanner::pacing::retry::ProbeLedger<core::net::ip_addr::IpAddr, T>
+pub zond_engine::scanner::strategy::sweep::HostSweep::responded: std::collections::hash::set::HashSet<core::net::ip_addr::IpAddr>
+pub zond_engine::scanner::strategy::sweep::HostSweep::retries: alloc::collections::vec_deque::VecDeque<core::net::ip_addr::IpAddr>
+impl<T: core::marker::Copy + core::cmp::PartialEq> zond_engine::scanner::strategy::sweep::HostSweep<T>
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::all_responded(&self, u128) -> bool
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::idle_delay(&self, &zond_engine::scanner::pacing::deadline::AdaptiveDeadline, std::time::Instant) -> core::time::Duration
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::new(zond_engine::scanner::pacing::retry::ProbeLedger<core::net::ip_addr::IpAddr, T>) -> Self
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::note_answered(&mut self, core::net::ip_addr::IpAddr) -> bool
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::report(&mut self, &zond_engine::scanner::session::ScanContext, &str, zond_engine::report::ScannerKind, u128, zond_engine::report::StopReason, core::option::Option<zond_engine::model::capture::CaptureCounts>)
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::service_retries(&mut self, &zond_engine::scanner::session::ScanContext, std::time::Instant, bool)
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::service_second_ledger<U: core::marker::Copy + core::cmp::PartialEq>(&mut self, &zond_engine::scanner::session::ScanContext, &mut zond_engine::scanner::pacing::retry::ProbeLedger<core::net::ip_addr::IpAddr, U>, std::time::Instant, bool)
+impl<T> core::marker::Freeze for zond_engine::scanner::strategy::sweep::HostSweep<T>
+impl<T> core::marker::Send for zond_engine::scanner::strategy::sweep::HostSweep<T> where T: core::marker::Send
+impl<T> core::marker::Sync for zond_engine::scanner::strategy::sweep::HostSweep<T> where T: core::marker::Sync
+impl<T> core::marker::Unpin for zond_engine::scanner::strategy::sweep::HostSweep<T> where T: core::marker::Unpin
+impl<T> core::marker::UnsafeUnpin for zond_engine::scanner::strategy::sweep::HostSweep<T>
+impl<T> core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::sweep::HostSweep<T> where T: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::sweep::HostSweep<T> where T: core::panic::unwind_safe::UnwindSafe
 pub mod zond_engine::scanner::strategy::topology
 pub mod zond_engine::scanner::strategy::topology::characterise
 pub struct zond_engine::scanner::strategy::topology::characterise::Subject
@@ -15417,15 +15454,13 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::ScanReport
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::ScanReport
 pub struct zond_engine::ScanSession
 impl zond_engine::scanner::session::ScanSession
+pub fn zond_engine::scanner::session::ScanSession::builder() -> zond_engine::scanner::session::SessionBuilder
+pub fn zond_engine::scanner::session::ScanSession::new() -> (Self, zond_engine::scanner::session::ScanContext)
+impl zond_engine::scanner::session::ScanSession
 pub fn zond_engine::scanner::session::ScanSession::events(&mut self) -> &mut zond_engine::scanner::session::ScanEvents
 pub fn zond_engine::scanner::session::ScanSession::handle(&self) -> &zond_engine::scanner::handle::ScanHandle
 pub fn zond_engine::scanner::session::ScanSession::hosts(&self) -> &zond_engine::scanner::session::HostStore
 pub fn zond_engine::scanner::session::ScanSession::into_parts(self) -> (zond_engine::scanner::session::HostStore, zond_engine::scanner::session::ScanEvents, zond_engine::scanner::handle::ScanHandle)
-impl zond_engine::scanner::session::ScanSession
-pub fn zond_engine::scanner::session::ScanSession::new() -> (Self, zond_engine::scanner::session::ScanContext)
-pub fn zond_engine::scanner::session::ScanSession::resuming(zond_engine::model::exclusion::Exclusions, &zond_engine::journal::cursor::Checkpoint) -> (Self, zond_engine::scanner::session::ScanContext)
-pub fn zond_engine::scanner::session::ScanSession::sweeping(zond_engine::model::exclusion::Exclusions, &zond_engine::journal::cursor::Checkpoint, zond_engine::model::ip::set::Positions) -> (Self, zond_engine::scanner::session::ScanContext)
-pub fn zond_engine::scanner::session::ScanSession::with_exclusions(zond_engine::model::exclusion::Exclusions) -> (Self, zond_engine::scanner::session::ScanContext)
 impl core::marker::Freeze for zond_engine::scanner::session::ScanSession
 impl core::marker::Send for zond_engine::scanner::session::ScanSession
 impl core::marker::Sync for zond_engine::scanner::session::ScanSession

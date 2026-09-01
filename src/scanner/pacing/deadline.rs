@@ -111,14 +111,14 @@ impl AdaptiveDeadlineConfig {
     ///
     /// A scan paced by a congestion window settles at whatever rate its targets
     /// will bear, and the slowest it may settle at is its window floor over its
-    /// shortest round-trip budget — every question timing out, with only the
+    /// shortest round-trip budget: every question timing out, with only the
     /// floor's worth of them outstanding. If the deadline assumed a faster pace
     /// than that, the pacing working as designed is what ends the scan early,
     /// and the ports it never reached are reported as though it had asked.
     ///
     /// `target_count` is what the ceiling is told, and it has to be told:
     /// widening the per-target term alone leaves a fixed ceiling free to clamp
-    /// the result straight back down, which is exactly what it did — see
+    /// the result straight back down, which is exactly what it did. see
     /// [`ScanBudget::covering`].
     ///
     /// Only the hard budget moves, on the same reasoning

@@ -10,7 +10,7 @@
 //!
 //! The strategy behind [`listen`](crate::scanner::listen). It opens a capture,
 //! reads what the link already carries, and records what that proves. It sends
-//! nothing at all — not a probe, not a solicitation, not a single frame — and
+//! nothing at all, not a probe, not a solicitation, not a single frame, and
 //! that is the property the whole design turns on rather than an implementation
 //! detail.
 //!
@@ -23,13 +23,13 @@
 //! A listener has neither. It did not send, so it cannot time out. An address it
 //! never heard from may be absent, may be silent, may be behind a switch that
 //! never forwarded a frame this way, or may have been talking the whole time on
-//! a VLAN this link does not carry — four possibilities with no experiment
+//! a VLAN this link does not carry: four possibilities with no experiment
 //! between them.
 //!
 //! So this raises claims and never lowers one. It records a host as
 //! [`Up`](HostStatus::Up) and never as down; it adds a role, a name, a hardware
 //! address; and it never contradicts or removes anything. The phase's scope says
-//! the same thing in the report — see
+//! the same thing in the report. see
 //! [`TargetScope::listening_on`](crate::report::TargetScope::listening_on),
 //! which covers no address, so a comparison cannot read a host that stayed quiet
 //! as a host that went away.
@@ -52,7 +52,7 @@
 //! The other two phases are bounded by their own enumeration: a sweep of a
 //! `/16` records at most sixty-five thousand hosts because that is how many it
 //! asked about. This one asked about nothing and stops when somebody stops it,
-//! so what it holds grows with the *traffic* rather than with a plan — and on
+//! so what it holds grows with the *traffic* rather than with a plan, and on
 //! [`Recording::Everything`] over a link that carries traffic to anywhere else,
 //! that is most of the internet.
 //!
@@ -61,7 +61,7 @@
 //! watch will record, `MAX_DECLARING_MACS` the claims it will hold against
 //! machines it has not identified, and `LISTEN_QUEUE_DEPTH` the frames waiting
 //! to be read. Each reports itself when it bites, because a limit that is silent
-//! is indistinguishable from a quiet network — which is the same reason the drop
+//! is indistinguishable from a quiet network, which is the same reason the drop
 //! counter is read at the end of every run.
 
 use std::collections::{HashMap, HashSet};
@@ -98,8 +98,8 @@ use crate::{info, warn};
 /// control-plane message; none of it needs a session's contents, and a snapshot
 /// length that cannot hold them is how that stays true.
 ///
-/// Generous enough for the largest thing actually read — an LLDP advertisement
-/// with a long system description — and far short of a payload.
+/// Generous enough for the largest thing actually read, an LLDP advertisement
+/// with a long system description, and far short of a payload.
 const LISTEN_SNAP_LEN: u32 = 512;
 
 /// How much the kernel may hold for a listening capture before it discards.
@@ -114,7 +114,7 @@ const LISTEN_BUFFER_BYTES: u32 = 4 * 1024 * 1024;
 ///
 /// Multiplied by [`LISTEN_SNAP_LEN`] this is the memory the queue costs, which
 /// is why the two are stated together. A full queue stalls the capture thread
-/// rather than dropping, so what is lost is counted by the kernel — see
+/// rather than dropping, so what is lost is counted by the kernel. see
 /// [`capture::frames`].
 const LISTEN_QUEUE_DEPTH: usize = 4096;
 
@@ -122,7 +122,7 @@ const LISTEN_QUEUE_DEPTH: usize = 4096;
 ///
 /// A declaration is filed against the hardware address that made it and applied
 /// when that machine turns out to be one this listener has a host for. Until
-/// then it costs memory, and it grows from frames nobody asked for — so a
+/// then it costs memory, and it grows from frames nobody asked for, so a
 /// segment full of strangers would otherwise set the size of this map. A link
 /// with more than this many distinct speakers is one where the surplus is noise.
 const MAX_DECLARING_MACS: usize = 4096;
@@ -133,7 +133,7 @@ const MAX_DECLARING_MACS: usize = 4096;
 /// two are bounded by their own enumeration: a sweep of a `/16` records at most
 /// sixty-five thousand hosts because that is how many it asked about. A listener
 /// asked about nothing, runs until somebody stops it, and records whatever
-/// arrives — so on [`Recording::Everything`] over a transit link the report
+/// arrives, so on [`Recording::Everything`] over a transit link the report
 /// grows with the *traffic*, and a watch left up for a week is a watch that runs
 /// the machine out of memory.
 ///
@@ -144,7 +144,7 @@ const MAX_DECLARING_MACS: usize = 4096;
 ///
 /// **Reaching it stops new records and never touches the ones already made.**
 /// Evicting would be this phase lowering a claim, which §2 of this module
-/// forbids — a host dropped to make room is indistinguishable in the report from
+/// forbids: a host dropped to make room is indistinguishable in the report from
 /// a host that was never heard. Refusing is visible instead: it is reported as a
 /// failure, so the report says the inventory is short and the run's exit status
 /// says so too.
@@ -213,7 +213,7 @@ impl OnLink {
                 continue;
             }
             // The prefix already names the range, both ends included, so there
-            // is no pair of addresses here to reconcile — and no way for the two
+            // is no pair of addresses here to reconcile, and no way for the two
             // halves to disagree about which family they are.
             for held in interface.addresses() {
                 ranges.insert_range(held.network());
@@ -235,11 +235,11 @@ impl OnLink {
     /// necessarily contain them and a frame from one is never proof of
     /// forwarding:
     ///
-    /// - **unspecified** — a client with no address yet, which has nothing to
+    /// - **unspecified**, a client with no address yet, which has nothing to
     ///   forward and nothing that could have been forwarded;
-    /// - **loopback** — never on a wire at all;
-    /// - **link-local**, both families — scoped to this segment by definition;
-    /// - **multicast** — not a source address any stack should emit, and not one
+    /// - **loopback**, never on a wire at all;
+    /// - **link-local**, both families, scoped to this segment by definition;
+    /// - **multicast**, not a source address any stack should emit, and not one
     ///   to draw a conclusion from if it does.
     fn contains(&self, address: IpAddr) -> bool {
         let confined = match address {
@@ -262,7 +262,7 @@ impl OnLink {
     /// **Not the same question as [`contains`](Self::contains)**, and the
     /// difference is the reason both exist. That one asks whether a frame could
     /// have originated here, so it answers yes for every address a wire never
-    /// carries as a source — the unspecified address, loopback, multicast —
+    /// carries as a source, the unspecified address, loopback, multicast,
     /// because none of them is evidence of forwarding. This one asks whether
     /// there is a *machine* here to record, and those three are not machines.
     ///
@@ -295,7 +295,7 @@ impl OnLink {
 /// Which addresses a listener may record findings about.
 ///
 /// A listener has no target set, because it targets nothing. What it has instead
-/// is a rule about what may reach the store — and that is the *only* control
+/// is a rule about what may reach the store, and that is the *only* control
 /// there is, since unlike every other strategy it cannot narrow what it asks.
 ///
 /// This is the distinction `network roles` §4.4 arrived at from the other
@@ -312,7 +312,7 @@ pub enum Recording {
     /// carrying traffic to anywhere else carries evidence about everywhere else:
     /// on a mirror port, every server a laptop opens a connection to is a real
     /// host that is really up, with a really open port. All of it true, none of
-    /// it an inventory of this network — and on a busy uplink it is most of what
+    /// it an inventory of this network, and on a busy uplink it is most of what
     /// the report would contain.
     ///
     /// **A link that states no addressing cannot narrow anything**, and this
@@ -325,22 +325,22 @@ pub enum Recording {
     /// Record whatever is heard, wherever it lives.
     ///
     /// What a listener wants when the question is about traffic rather than
-    /// about this segment's inventory — which machines elsewhere this network
+    /// about this segment's inventory, which machines elsewhere this network
     /// depends on, and what they answer.
     Everything,
     /// Record only findings about these addresses.
     ///
-    /// Frames from anything else are still read — a listener cannot decline to
-    /// receive — and are dropped without reaching the store.
+    /// Frames from anything else are still read, a listener cannot decline to
+    /// receive, and are dropped without reaching the store.
     Only(IpSet),
 }
 
 /// What the equipment on the far end of this machine's cable says about itself,
 /// whichever protocol it said it in.
 ///
-/// LLDP and CDP answer the same four questions in different words — what the
+/// LLDP and CDP answer the same four questions in different words, what the
 /// device calls itself, which of its ports this frame left by, which VLAN that
-/// port places untagged traffic in, and an address the device is managed at —
+/// port places untagged traffic in, and an address the device is managed at,
 /// and a listener does exactly the same thing with all four answers. Reading
 /// both into one shape here is what keeps [`read_announcement`] from being one
 /// routine written twice, which is what it was.
@@ -352,7 +352,7 @@ struct Announced<'a> {
     source: AttachmentSource,
     /// What the device calls itself, which on managed equipment is its hostname.
     device_name: Option<&'a str>,
-    /// What the device calls the port this frame left by — which is the port
+    /// What the device calls the port this frame left by, which is the port
     /// this machine is plugged into, and the finding no probe can obtain.
     port: Option<&'a str>,
     /// The VLAN this port places untagged traffic in.
@@ -389,8 +389,8 @@ impl<'a> Announced<'a> {
             return Some(Self {
                 source: AttachmentSource::Lldp,
                 device_name: advertisement.system_name,
-                // Only the text spelling. A chassis-shaped port identifier — a
-                // MAC, an address — names the port in a vocabulary nobody can
+                // Only the text spelling. A chassis-shaped port identifier, a
+                // MAC, an address, names the port in a vocabulary nobody can
                 // read back to a patch panel, which is what this is read for.
                 port: match advertisement.port_id {
                     Some(lldp::Identifier::Text(port)) => Some(port),
@@ -436,7 +436,7 @@ impl<'a> Announced<'a> {
 /// what it does differs from both. A `HostScanner` owns targets and finishes
 /// when it has asked about all of them; a `PortScanner` is fed targets and
 /// finishes when the stream ends. A listener owns no targets, enumerates
-/// nothing, and has no state that can be complete — it finishes when it is told
+/// nothing, and has no state that can be complete: it finishes when it is told
 /// to, and not before.
 ///
 /// Findings go to the [`ScanContext`] it was built with, as they do for the
@@ -456,7 +456,7 @@ pub struct PassiveListener {
     /// Held here rather than expressed by aborting the scan, though aborting
     /// would have been fewer lines. The abort signal means *a caller asked this
     /// to stop*, and a front end reads it to decide whether a run was
-    /// interrupted — so a watch that reached the end of the time it was asked
+    /// interrupted, so a watch that reached the end of the time it was asked
     /// for and set the same flag would report itself as interrupted, and
     /// `zond listen --for 10m || alert` would fire an alert every ten minutes.
     ///
@@ -466,7 +466,7 @@ pub struct PassiveListener {
 
     /// How far this listener may go to name the system behind a host.
     ///
-    /// A listener cannot be *active* whatever this says — it sends nothing —
+    /// A listener cannot be *active* whatever this says, it sends nothing,
     /// so the only distinction it can honour is between reading the stacks it
     /// hears and not reading them. `Off` is obeyed rather than ignored on the
     /// grounds that it costs no packets to disobey: a caller who asked for a
@@ -477,13 +477,13 @@ pub struct PassiveListener {
     /// machine was seen at.
     ///
     /// Two things depend on it. A device answering at four addresses is one
-    /// record rather than four, and a claim made about a *machine* — a router
-    /// identified only by the frames it forwards — can be applied to the host it
+    /// record rather than four, and a claim made about a *machine*, a router
+    /// identified only by the frames it forwards, can be applied to the host it
     /// turns out to be.
     ///
     /// **Seeded from whatever the store already holds**, which is what makes a
     /// resumed watch add to its earlier sittings instead of starting a second
-    /// record per machine — see [`paired_with_known_hosts`]. Beyond that it
+    /// record per machine. see [`paired_with_known_hosts`]. Beyond that it
     /// grows only from frames that produced a finding, which the recording
     /// filter has already narrowed.
     ///
@@ -619,8 +619,8 @@ impl PassiveListener {
     /// machine by the first address it hears that machine at, and which address
     /// that is depends only on which frame happened to arrive first. Starting a
     /// second sitting with an empty pairing means the same laptop, restored
-    /// under `10.0.0.5` and heard tonight from `fe80::…`, gets a second record
-    /// — and a watch resumed three times reports one machine as four.
+    /// under `10.0.0.5` and heard tonight from `fe80::…`, gets a second record,
+    /// and a watch resumed three times reports one machine as four.
     ///
     /// Which is the failure [`record`](Self::record) was shaped to avoid within
     /// a sitting. Seeding here extends the same rule across them: the pairing
@@ -639,7 +639,7 @@ impl PassiveListener {
 
         for key in keys {
             let Some(Some(mac)) = ctx.read_host(key.clone(), Host::mac) else {
-                // No hardware address is no way to recognise it again — the
+                // No hardware address is no way to recognise it again: the
                 // same reason `record` merges such a host by address alone.
                 continue;
             };
@@ -674,7 +674,7 @@ impl PassiveListener {
     /// What a listener's capture admits.
     ///
     /// Everything the readers below can use, and nothing else. Wider than a
-    /// sweep's — it takes TCP, to see which endpoints are serving somebody —
+    /// sweep's, it takes TCP, to see which endpoints are serving somebody,
     /// and still a filter rather than the whole wire, because a capture that
     /// admits everything copies a link into this process to discard almost all
     /// of it.
@@ -792,7 +792,7 @@ impl PassiveListener {
         // A switch usually holds no address on the segment it serves, so the
         // ordinary case is that it named none. The roles are then filed against
         // the hardware address that made the claim, and applied if that machine
-        // is ever heard speaking for itself — the same treatment an overheard
+        // is ever heard speaking for itself: the same treatment an overheard
         // router advertisement gets, and for the same reason: a claim about a
         // machine needs a machine to attach to.
         if !named_itself {
@@ -820,7 +820,7 @@ impl PassiveListener {
     /// is a claim about the client's intent and not about the server: a host
     /// that is not there draws a SYN just as readily as one that is. Recording
     /// from SYNs would mean anybody who scans the segment fills this report with
-    /// sixty-five thousand open ports per address — the tarpit problem with no
+    /// sixty-five thousand open ports per address: the tarpit problem with no
     /// probe budget to bound it. So the endpoint is taken from the *source* of a
     /// SYN+ACK, at its *source port*, and from nothing else.
     ///
@@ -854,7 +854,7 @@ impl PassiveListener {
 
         // **The hardware address is only this host's if this host is on the
         // link.** A forwarded frame carries the last hop's address, not the
-        // sender's, and the two are indistinguishable from here — so recording
+        // sender's, and the two are indistinguishable from here, so recording
         // it off-link credits a machine somewhere else with the router's
         // hardware, its vendor, and any claim held against it. That is not a
         // hypothetical: the router's own forwarding is what put this frame here.
@@ -867,7 +867,7 @@ impl PassiveListener {
 
         // The listener side, where the segment is the server's half of a
         // handshake. `classify_probe_response` reads RST before the SYN+ACK
-        // pair, so a RST+ACK — which is a refusal, not an acceptance — cannot
+        // pair, so a RST+ACK, which is a refusal, not an acceptance, cannot
         // arrive here as `SynAck`.
         let served = matches!(
             tcp::classify_probe_response(&parsed),
@@ -901,14 +901,14 @@ impl PassiveListener {
     ///
     /// **A frame whose hardware source is on this link and whose IP source is
     /// not.** That machine put a packet on this segment which it did not
-    /// originate — it forwarded somebody else's — and forwarding is what a
+    /// originate, it forwarded somebody else's, and forwarding is what a
     /// router is. Unlike every other proof of the role this needs no probe, no
     /// cooperation and no protocol of its own; it is routing observed rather
     /// than routing claimed.
     ///
     /// It is also the only such proof available on an IPv4-only segment. ARP has
     /// no equivalent of a neighbour advertisement's R flag and none of a router
-    /// advertisement, which left this engine reading its own routing table —
+    /// advertisement, which left this engine reading its own routing table:
     /// finding *your* gateway and missing the second router on the same wire.
     ///
     /// # It names a MAC, not an address
@@ -941,7 +941,7 @@ impl PassiveListener {
     /// Never creates a host and never records an address. A declaration is a
     /// claim about a machine, and the machine has to be one this listener has
     /// heard speak for itself before there is anything for the claim to attach
-    /// to — which is the rule a local sweep applies to an overheard router
+    /// to, which is the rule a local sweep applies to an overheard router
     /// advertisement, for the same reason.
     fn note_declaration(&mut self, source_mac: MacAddr, role: NetworkRole) {
         if let Some(key) = self.mac_to_ip.get(&source_mac).cloned() {
@@ -960,7 +960,7 @@ impl PassiveListener {
     /// Reads the operating system out of a segment's header shape.
     ///
     /// The same reading the active path takes from a probe's reply, on a segment
-    /// that was arriving anyway — which is the whole of what makes it free. A
+    /// that was arriving anyway, which is the whole of what makes it free. A
     /// stack's window, its option layout, its initial hop count and its quirks
     /// are chosen by whoever wrote it and are near-identical across every packet
     /// it will ever send.
@@ -969,8 +969,8 @@ impl PassiveListener {
     ///
     /// A **client's SYN** is the richest passive fingerprint there is, and it is
     /// deliberately not read here. This engine's rule database describes what a
-    /// stack sends *in answer* — a SYN+ACK from an open port, a reset from a
-    /// closed one — because that is what a scan draws. Matching a connection
+    /// stack sends *in answer*, a SYN+ACK from an open port, a reset from a
+    /// closed one, because that is what a scan draws. Matching a connection
     /// request against rules written for replies would produce a confident
     /// verdict from the wrong evidence, which is worse than no verdict.
     ///
@@ -1008,7 +1008,7 @@ impl PassiveListener {
     /// # Why a `DHCPDISCOVER` contributes nothing
     ///
     /// A client with no address yet sends from `0.0.0.0`, and the address it
-    /// asks for in option 50 is one it *wants* — not one it holds. Recording a
+    /// asks for in option 50 is one it *wants*: not one it holds. Recording a
     /// name against either would be the mistake this module's §"What it
     /// believes" names: crediting a frame to an address it merely mentions.
     ///
@@ -1116,7 +1116,7 @@ impl PassiveListener {
     /// and where two findings are equally good the one already recorded wins.
     fn store(&mut self, key: ScopedIp, host: Host) {
         // At the ceiling a record that already exists still takes everything
-        // this frame proves — the phase goes on raising claims about what it is
+        // this frame proves: the phase goes on raising claims about what it is
         // holding. What it stops doing is starting new ones.
         if self.held >= MAX_RECORDED_HOSTS && !self.ctx.contains_host(&key) {
             self.report_full();
@@ -1167,7 +1167,7 @@ impl PassiveListener {
     /// usually holds no address on the segment it serves.
     ///
     /// Anything already held against that hardware address is applied here, so a
-    /// claim that arrived before its sender was identified is not lost — which
+    /// claim that arrived before its sender was identified is not lost, which
     /// is the common order, since a router forwards constantly and speaks for
     /// itself rarely.
     fn record(&mut self, mut host: Host, zone: &Zone) {
@@ -1190,15 +1190,15 @@ impl PassiveListener {
         }
 
         // **The record is keyed by the machine, not by the address.** A device
-        // answers at every address it holds — a v4 address, a global v6 address
-        // or three, a link-local — and each arrives on its own frame. Keyed by
+        // answers at every address it holds, a v4 address, a global v6 address
+        // or three, a link-local, and each arrives on its own frame. Keyed by
         // whichever address that frame carried, one machine becomes four
         // records, which is the failure `Host` is shaped to avoid and which
         // this had until the first run against a real segment showed a laptop
         // reported as four hosts and a router as two.
         //
         // The first address the machine was seen at keys it, and every later
-        // one joins that record through [`Host::merge`] — which ranks the
+        // one joins that record through [`Host::merge`], which ranks the
         // addresses rather than taking the newest, so which reply arrived first
         // decides nothing about how the host is reported. A resumed watch
         // begins with the earlier sittings' pairings already in hand, so "the
@@ -1214,7 +1214,7 @@ impl PassiveListener {
         // **Two things can decline the write**, and a pairing that survived
         // either would name a record nothing is kept under: every later sighting
         // of the machine would be routed to that key and dropped, and
-        // `note_declaration` would write through it — which is the one path into
+        // `note_declaration` would write through it, which is the one path into
         // the store that does not come back through [`store`](Self::store).
         //
         // The ceiling is one. The scan's exclusions are the other, and they
@@ -1347,8 +1347,8 @@ mod tests {
     /// fails silently otherwise: a reader that is never given a frame and one
     /// that recognises nothing are indistinguishable from the loop.
     ///
-    /// The sweep's equivalent lives beside the sweep. This one is wider — it
-    /// takes TCP, to see which endpoints are serving somebody — so it needs its
+    /// The sweep's equivalent lives beside the sweep. This one is wider, it
+    /// takes TCP, to see which endpoints are serving somebody, so it needs its
     /// own.
     #[test]
     fn the_listen_filter_admits_every_frame_a_listener_can_read() {
@@ -1414,7 +1414,7 @@ mod tests {
     /// A frame is credited to the machine that sent it, and to no address the
     /// frame merely names.
     ///
-    /// A sweep may credit the address a reply is *about* — it asked about that
+    /// A sweep may credit the address a reply is *about*: it asked about that
     /// address, so a reply from one of the host's other addresses still answers
     /// the question. A listener asked nothing, so it has no question a third
     /// address could be answering and nothing to check the claim against. The
@@ -1455,7 +1455,7 @@ mod tests {
 
     /// The only control a listener has. It cannot narrow what it hears, so a
     /// caller who wants a bounded record gets it at the point findings are
-    /// written — which is where `network roles` §4.4 put the same rule.
+    /// written, which is where `network roles` §4.4 put the same rule.
     #[test]
     fn a_recording_filter_keeps_out_what_the_link_carries_anyway() {
         let mut wanted = IpSet::new();
@@ -1479,7 +1479,7 @@ mod tests {
         tcp_frame_from(PEER_MAC, from, sport, to, dport, flags)
     }
 
-    /// The same, from a stated hardware address — which is the half of a frame
+    /// The same, from a stated hardware address, which is the half of a frame
     /// the forwarding proof reads.
     fn tcp_frame_from(
         mac: pnet_base::MacAddr,
@@ -1511,7 +1511,7 @@ mod tests {
     /// A SYN says the *client* tried, which a host that is not there draws just
     /// as readily as one that is. Recording from SYNs means anybody who scans
     /// the segment fills the report with sixty-five thousand open ports per
-    /// address — the tarpit problem with no probe budget to bound it.
+    /// address: the tarpit problem with no probe budget to bound it.
     #[test]
     fn only_the_server_half_of_a_handshake_establishes_a_listener() {
         use crate::protocols::tcp::flags;
@@ -1559,7 +1559,7 @@ mod tests {
 
     /// A RST+ACK is a refusal. It carries the ACK bit, so a reader that checks
     /// for SYN and ACK without reading RST first turns every closed port into an
-    /// open one — and a listener may not record a closed one either, because it
+    /// open one, and a listener may not record a closed one either, because it
     /// has no probe of its own that went unanswered.
     #[test]
     fn a_refusal_records_no_port_in_either_direction() {
@@ -1629,8 +1629,8 @@ mod tests {
     /// shows that machine putting a packet on the segment it did not originate.
     /// It is the only proof of the role available on an IPv4-only segment: ARP
     /// has no equivalent of a neighbour advertisement's R flag and none of a
-    /// router advertisement, which left the engine reading its own routing table
-    /// — finding *your* gateway and missing the second router on the same wire.
+    /// router advertisement, which left the engine reading its own routing table:
+    /// finding *your* gateway and missing the second router on the same wire.
     #[test]
     fn a_machine_that_forwards_somebody_elses_packet_is_a_router() {
         use crate::protocols::tcp::flags;
@@ -1687,7 +1687,7 @@ mod tests {
     /// This is not a corner: a capture interface on a mirror port routinely has
     /// no address of its own, and with no ranges known *every* source address
     /// looks off-link. Left ungated, the first ARP frame on the segment would
-    /// make its sender a router — and the held-claim map would fill with one
+    /// make its sender a router, and the held-claim map would fill with one
     /// bogus claim per machine on the link.
     #[test]
     fn an_unknown_link_makes_nobody_a_router() {
@@ -1711,7 +1711,7 @@ mod tests {
     ///
     /// A link carrying traffic to anywhere else carries evidence about
     /// everywhere else. Every server a laptop opens a connection to is a real
-    /// host, really up, with a really open port — all true, and on a busy uplink
+    /// host, really up, with a really open port: all true, and on a busy uplink
     /// most of what an unnarrowed report would contain.
     #[test]
     fn the_default_records_this_links_machines_and_not_what_merely_crosses_it() {
@@ -1781,8 +1781,8 @@ mod tests {
     /// The stack reading the active path takes from a probe's reply, on a
     /// segment that was arriving anyway.
     ///
-    /// The packet is a real Linux shape — hop counter 64, options
-    /// `M,S,T,N,W`, timestamps and SACK — which is what
+    /// The packet is a real Linux shape, hop counter 64, options
+    /// `M,S,T,N,W`, timestamps and SACK, which is what
     /// `assets/fingerprinting/os/linux.toml` describes. Anything less specific
     /// classifies as nothing, and a test asserting on it would be measuring the
     /// corpus rather than this wiring.
@@ -1837,7 +1837,7 @@ mod tests {
     /// A watch that reached the end of the time it was asked for is not a watch
     /// somebody stopped.
     ///
-    /// It ends on its own terms, leaving the abort signal alone — because a
+    /// It ends on its own terms, leaving the abort signal alone, because a
     /// front end reads that signal to decide whether a run was interrupted, and
     /// a timed watch raising it would make `zond listen --for 10m || alert` fire
     /// an alert every ten minutes.
@@ -1881,7 +1881,7 @@ mod tests {
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
 
-        // The same machine answering at two of its addresses, on two frames —
+        // The same machine answering at two of its addresses, on two frames,
         // which is the only way a listener ever sees it, and the shape that
         // used to produce two records.
         let first = Ipv4Addr::new(10, 0, 0, 5);
@@ -1964,7 +1964,7 @@ mod tests {
     /// A sitting keys each machine by the first address it hears it at, and
     /// which address that is depends only on which frame happened to arrive
     /// first. So a second sitting starting with an empty pairing re-keys every
-    /// machine it hears — and the laptop restored under `10.0.0.5` and heard
+    /// machine it hears, and the laptop restored under `10.0.0.5` and heard
     /// tonight from `10.0.0.6` becomes a second record, with a third waiting
     /// for the next restart.
     ///
@@ -1982,7 +1982,7 @@ mod tests {
         let second = Ipv4Addr::new(10, 0, 0, 6);
 
         // What an earlier sitting wrote down, restored into the store before
-        // this one starts — which is what `listen_with_journal` does, and the
+        // this one starts, which is what `listen_with_journal` does, and the
         // reason the pairing has to be read from the store rather than begun
         // empty.
         let (_session, ctx) = ScanSession::new();
@@ -2039,7 +2039,7 @@ mod tests {
     ///
     /// The restored store holds both kinds: machines on the link, which carry a
     /// MAC, and hosts heard from off it through a router, which deliberately do
-    /// not — see `read_endpoint`. Reading a MAC off the second kind is the
+    /// not. see `read_endpoint`. Reading a MAC off the second kind is the
     /// mistake this guards, and it would be the same one the endpoint reader
     /// refuses: crediting a router's hardware to a machine somewhere else.
     #[test]
@@ -2065,8 +2065,8 @@ mod tests {
     /// The exclusion policy is enforced inside the store, so a write naming an
     /// excluded address creates nothing. The pairing has to notice: filed anyway,
     /// it would key the machine by an address nothing is kept under, and every
-    /// later frame from the machine — including from the address nobody
-    /// excluded — would be routed to that key and dropped. A machine would then
+    /// later frame from the machine, including from the address nobody
+    /// excluded, would be routed to that key and dropped. A machine would then
     /// disappear from the report for having once spoken from an address somebody
     /// asked to leave alone.
     #[test]
@@ -2081,7 +2081,9 @@ mod tests {
 
         let mut forbidden = IpSet::new();
         forbidden.insert(IpAddr::V4(excluded));
-        let (_session, ctx) = ScanSession::with_exclusions(Exclusions::new(forbidden));
+        let (_session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(forbidden))
+            .build();
 
         let (_tx, rx) = tokio::sync::mpsc::channel(16);
         let mut ranges = IpSet::new();
@@ -2139,7 +2141,7 @@ mod tests {
     /// Evicting instead would be this phase lowering a claim: a host dropped to
     /// make room reads in the report exactly like a host that was never heard,
     /// and there would be nothing to say which. So the refusal is the visible
-    /// half — it is reported as a failure, which is what makes the run's own
+    /// half: it is reported as a failure, which is what makes the run's own
     /// exit status say the inventory came up short.
     #[test]
     fn a_watch_at_its_ceiling_stops_taking_machines_and_keeps_enriching_the_ones_it_has() {
@@ -2152,7 +2154,7 @@ mod tests {
         let peer = Ipv4Addr::new(10, 0, 0, 9);
         let known = Ipv4Addr::new(10, 0, 0, 5);
 
-        // One machine on record, then already full — without standing up
+        // One machine on record, then already full: without standing up
         // sixty-five thousand hosts to get there. What is under test is the
         // branch, not the arithmetic that reaches it.
         listener.read(&captured(tcp_frame_from(
@@ -2209,7 +2211,7 @@ mod tests {
     }
 
     /// LLDP and CDP say the same four things in different words, and a listener
-    /// does the same thing with all four — so they are read through one
+    /// does the same thing with all four, so they are read through one
     /// normalising step rather than two routines that happen to agree.
     ///
     /// A field mismapped there is silent in a way most parsing mistakes are

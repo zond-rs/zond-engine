@@ -16,7 +16,7 @@
 //! Passive identification reads a reply the scan already drew, so it starts
 //! from a host that answered something. The hosts that answer nothing are not
 //! a rare case: a stock Windows firewall *drops* rather than refuses, so a
-//! desktop with no service exposed emits no packet any TCP rule could read —
+//! desktop with no service exposed emits no packet any TCP rule could read:
 //! measured, twice, on two independent installations. A great many of those
 //! machines still answer a ping, and what they put in the reply (a hop counter
 //! of 128, the request's code echoed or zeroed) is a property of the same
@@ -28,14 +28,14 @@
 //! The request carries [`ECHO_PROBE_CODE`](crate::protocols::icmp::ECHO_PROBE_CODE)
 //! rather than a conformant zero,
 //! because whether a responder echoes a non-zero code or writes zero is a
-//! documented disagreement between stacks — invisible to a probe that never
+//! documented disagreement between stacks: invisible to a probe that never
 //! asked. The identifier is the scan's identity (every other ping on the host
 //! is filtered out by it, in userspace, since no kernel filter can express it),
 //! and the sequence names the attempt, which is what makes a round trip real.
 //!
 //! ## What one reply may claim
 //!
-//! An echo reply carries no options, no window, no sequence number — an
+//! An echo reply carries no options, no window, no sequence number: an
 //! initial hop counter of 64 names *nothing*, because Linux, macOS and the BSDs
 //! all start there. The rule corpus is authored under that constraint, and
 //! [`classify`](crate::fingerprint::os) reports nothing rather than the
@@ -315,8 +315,8 @@ impl OsEchoScanner {
     /// through [`os::resolve`], merged by accuracy so nothing is overwritten so
     /// much as outranked.
     fn identify(&self, target: IpAddr, reply: &CapturedSegment) {
-        // `None` means no IP header was ever there to read — a synthetic
-        // receive stream — rather than that nothing notable was in one.
+        // `None` means no IP header was ever there to read, a synthetic
+        // receive stream, rather than that nothing notable was in one.
         let Some(observation) = reply.observation else {
             return;
         };
@@ -512,7 +512,7 @@ mod tests {
     /// The whole path this scanner exists for: a host that answered nothing a
     /// TCP probe could read, named from the one reply it does give. A stock
     /// Windows firewall drops rather than refuses, and 128 is the NT-family
-    /// hop counter — that one field is what the corpus's Windows echo rule
+    /// hop counter, that one field is what the corpus's Windows echo rule
     /// keys on.
     #[tokio::test(flavor = "current_thread")]
     async fn a_windows_hop_counter_in_an_echo_reply_names_windows() {
@@ -555,8 +555,8 @@ mod tests {
 
     /// Every other ping on the host is filtered out by the identifier, in
     /// userspace, because no kernel filter can express it. A reply carrying a
-    /// different identifier is not this scan's answer and must resolve nothing
-    /// — not name the host, not even mark it up.
+    /// different identifier is not this scan's answer and must resolve nothing:
+    /// not name the host, not even mark it up.
     #[tokio::test(flavor = "current_thread")]
     async fn somebody_elses_ping_is_not_our_answer() {
         // A link that answers nothing: this host's own probe goes unanswered,

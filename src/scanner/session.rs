@@ -36,7 +36,7 @@
 //! ## What a host is keyed by
 //!
 //! By the address it is reported under, carrying the interface that address was
-//! read on where it needs one — a [`ScopedIp`]. For every IPv4 address and every
+//! read on where it needs one: a [`ScopedIp`]. For every IPv4 address and every
 //! routable IPv6 one that is the bare address and nothing more, because a
 //! machine reachable at a global address is the same machine through whichever
 //! interface answered it.
@@ -98,7 +98,7 @@ pub enum ScanEvent {
     /// The event carries only the address, deliberately: a scan can emit
     /// thousands of these, and copying a whole [`Host`] into each one would cost
     /// more than the notification is worth. Read the current state back from
-    /// [`ScanSession::hosts`], which is a single lookup and always up to date —
+    /// [`ScanSession::hosts`], which is a single lookup and always up to date,
     /// where a host copied into an event is stale the moment the next probe
     /// answers.
     HostUpdated(ScopedIp),
@@ -133,7 +133,7 @@ pub enum ScanEvent {
 ///
 /// **Reads return owned snapshots.** [`get`](Self::get) clones the host rather
 /// than lending a reference into the map, because the alternative is a guard
-/// held across whatever the caller does next — and a scanner writing to the same
+/// held across whatever the caller does next, and a scanner writing to the same
 /// key meanwhile is not a hypothetical, it is the normal case. A caller cannot
 /// hold this wrong.
 ///
@@ -173,14 +173,14 @@ impl HostStore {
     /// The live counterpart of [`get`](Self::get), and the one to reach for
     /// inside an event loop. A scan fires
     /// [`HostUpdated`](ScanEvent::HostUpdated) on every change, and a port scan
-    /// changes a host once per port — so a consumer that answers each event with
+    /// changes a host once per port, so a consumer that answers each event with
     /// a [`get`](Self::get) clones a growing port map on every port of every
     /// host, which is quadratic in the size of the scan and invisible until the
     /// port count is large. Take what the event needs through this, and clone
     /// only once the answer is that the host is worth rendering.
     ///
     /// `read` runs under the store's own guard. It must not touch the store
-    /// again — that deadlocks — and it should not block, since a scanner writing
+    /// again, that deadlocks, and it should not block, since a scanner writing
     /// to the same host waits behind it.
     pub fn read<R>(&self, ip: impl Into<ScopedIp>, read: impl FnOnce(&Host) -> R) -> Option<R> {
         self.inner.get(&ip.into()).map(|entry| read(entry.value()))
@@ -222,7 +222,7 @@ impl HostStore {
 
     /// Puts a host in the store directly, replacing anything at that address.
     ///
-    /// Test-only, and deliberately not how a scan records a finding — that is
+    /// Test-only, and deliberately not how a scan records a finding, that is
     /// [`ScanContext::write_host`], which upserts, merges and announces the
     /// change. This exists for the tests that need a store already holding a
     /// particular host, standing in for the scanner that would have written it.
@@ -302,7 +302,7 @@ impl ScanEvents {
 /// Returned by [`discover`](crate::scanner::discover) and
 /// [`scan`](crate::scanner::scan) alongside the
 /// [`ScanTask`](crate::scanner::ScanTask) that resolves to the final report.
-/// This is the live half of that pair — it describes the present moment and
+/// This is the live half of that pair: it describes the present moment and
 /// keeps no history; the report is what answers a question asked afterwards.
 ///
 /// ```no_run
@@ -347,7 +347,7 @@ impl ScanSession {
     /// one task and read the hosts from another.
     ///
     /// [`HostStore`] and [`ScanHandle`] are both cloneable and shareable, so
-    /// this is only needed to move the event stream — which is not, there being
+    /// this is only needed to move the event stream, which is not, there being
     /// exactly one of it.
     pub fn into_parts(self) -> (HostStore, ScanEvents, ScanHandle) {
         (self.store, self.events, self.handle)
@@ -389,7 +389,7 @@ impl ProbeStatsLog {
 ///
 /// The service phase already draws a first-contact banner and any probe replies
 /// to name the service; rather than a later phase redrawing them, they are kept
-/// here, keyed by port, and *taken* by the detection phase — so a response body
+/// here, keyed by port, and *taken* by the detection phase, so a response body
 /// is held only across the two adjacent phases and freed as it is read, not
 /// retained through the whole paced scan.
 #[derive(Default)]
@@ -517,7 +517,7 @@ impl UnroutableLog {
 /// A sweep of a local segment reaches every host on the link, not only the
 /// addresses it was handed: an all-nodes solicitation is one probe every IPv6
 /// neighbour is required to answer. That is coverage, and there is no address
-/// range that expresses it — a link is named by the interface it is on.
+/// range that expresses it: a link is named by the interface it is on.
 ///
 /// Keyed by interface name, so a link swept by two strategies is recorded once.
 #[derive(Debug, Default)]
@@ -541,7 +541,7 @@ impl SweptLinks {
 /// strategies run.
 ///
 /// Keyed by the link and the protocol the announcement came from, so a switch
-/// re-announcing itself every thirty seconds — which is what they do — is
+/// re-announcing itself every thirty seconds, which is what they do, is
 /// recorded once rather than once per frame. The *latest* announcement wins,
 /// because the question is what this machine is plugged into now and a cable
 /// somebody moved should not be reported as two attachments held at once.
@@ -567,6 +567,32 @@ impl Attachments {
     }
 }
 
+/// Every host in `store`, cloned, ordered by the address each is keyed under.
+///
+/// Ordered because the one production consumer writes these to disk: a
+/// compaction whose record order came out of a concurrent map's iteration
+/// writes a different file every time it runs over the same findings.
+///
+/// A free function rather than a method, because both halves of the session
+/// need it and neither owns the other. `ScanContext` writes and `ScanProgress`
+/// is the narrow view a journal gets, and the three readings they had in common
+/// were three copies before this.
+fn snapshot_of(store: &DashMap<ScopedIp, Host>) -> Vec<Host> {
+    let mut hosts: Vec<Host> = store.iter().map(|entry| entry.value().clone()).collect();
+    hosts.sort_by_cached_key(Host::scoped_ip);
+    hosts
+}
+
+/// The hosts `changed` has marked since it was last drained, with their current
+/// state, dropping any the store no longer holds.
+fn changed_since(store: &DashMap<ScopedIp, Host>, changed: &ChangedHosts) -> Vec<Host> {
+    changed
+        .drain()
+        .into_iter()
+        .filter_map(|key| store.get(&key).map(|host| host.clone()))
+        .collect()
+}
+
 /// What a journal needs from a running scan, and nothing more.
 ///
 /// See [`ScanContext::progress`] for why this exists rather than a context.
@@ -587,11 +613,7 @@ impl ScanProgress {
 
     /// Takes the hosts whose findings have changed since this was last called.
     pub fn take_changed_hosts(&self) -> Vec<Host> {
-        self.changed
-            .drain()
-            .into_iter()
-            .filter_map(|key| self.store.get(&key).map(|host| host.clone()))
-            .collect()
+        changed_since(&self.store, &self.changed)
     }
 
     /// Takes the detection tapes captured since this was last called, for the
@@ -601,17 +623,13 @@ impl ScanProgress {
     }
 
     /// Every host found so far, cloned, ordered by the address each is keyed
-    /// under. The counterpart of
-    /// [`ScanContext::hosts_snapshot`](ScanContext::hosts_snapshot), and ordered
-    /// for the same reason.
+    /// under.
+    ///
+    /// Ordered because the one production consumer writes these to disk, and a
+    /// compaction whose record order came out of a concurrent map's iteration
+    /// writes a different file every time it runs over the same findings.
     pub fn hosts_snapshot(&self) -> Vec<Host> {
-        let mut hosts: Vec<Host> = self
-            .store
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect();
-        hosts.sort_by_cached_key(Host::scoped_ip);
-        hosts
+        snapshot_of(&self.store)
     }
 
     /// How many hosts have been found so far.
@@ -621,8 +639,14 @@ impl ScanProgress {
 
     /// Files a failure to the report. Not to the event stream; see
     /// [`ScanContext::progress`].
+    ///
+    /// Logged under the strategy that is failing, as
+    /// [`ScanContext::record_failure`] logs it, rather than under a fixed word:
+    /// the checkpoint task is not the only thing that reaches the report this
+    /// way any more, and a line saying `journal` for all of them told a reader
+    /// less than the name it already had.
     pub fn record_failure(&self, scanner: ScannerKind, reason: String) {
-        error!("journal: {reason}");
+        error!("{scanner:?} failed: {reason}");
         self.failures.push(ScannerFailure::new(scanner, reason));
     }
 }
@@ -737,9 +761,9 @@ pub struct ScanContext {
     ///
     /// Empty for a scan counted in something else, which is every port scan:
     /// its positions pair an address with a port and arrive on the target
-    /// stream. A sweep has no such stream — a
-    /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets
-    /// — so the numbering travels here instead.
+    /// stream. A sweep has no such stream, a
+    /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets,
+    /// so the numbering travels here instead.
     ///
     /// **Empty is what keeps the two apart.** A port scan's liveness pass runs
     /// the discovery strategies against a port scan's context, and those
@@ -809,14 +833,14 @@ impl ScanContext {
     /// Every finding in the engine reaches the store through this function, so
     /// this one branch covers the ARP and neighbour-advertisement replies a
     /// sweep learns addresses from, the host's own neighbour table, the mDNS
-    /// records, and — transitively, because they read the store to decide who to
-    /// probe — the service, OS-series and SNMP phases that run afterwards. A
+    /// records, and, transitively, because they read the store to decide who to
+    /// probe, the service, OS-series and SNMP phases that run afterwards. A
     /// scanner cannot forget to apply the policy, because a scanner is not where
     /// it is applied.
     ///
     /// A drop is logged rather than counted. The property worth checking is that
     /// no excluded address appears in the report, and a reader can confirm that
-    /// against the ranges the report already records — which is a better
+    /// against the ranges the report already records, which is a better
     /// guarantee than a number this engine reports about itself.
     pub fn write_host(
         &self,
@@ -846,7 +870,7 @@ impl ScanContext {
             // host is born knowing which link it is on rather than waiting for a
             // scanner to remember to say. `Host::set_zone` keeps the first zone
             // it is given, which is the right rule only if the first one is
-            // right — and the key is the one thing here that cannot be wrong
+            // right, and the key is the one thing here that cannot be wrong
             // about it, since it is what the host was looked up by.
             if let Some(zone) = key.zone() {
                 host.set_zone(zone.clone());
@@ -862,7 +886,7 @@ impl ScanContext {
         // host than the scan found.
         //
         // **These are two questions, and they were one for a while.** What a
-        // watcher is told is about novelty — a host already announced does not
+        // watcher is told is about novelty: a host already announced does not
         // need announcing again, which is why the echo probe answers `false`
         // for a host that was already up. What a journal writes is about state,
         // and that probe had just added an `icmp_echo` reason and a round trip
@@ -1001,7 +1025,7 @@ impl ScanContext {
     /// for a caller driving strategies themselves: they never reach the phase
     /// that drains these into a [`ScanReport`](crate::report::ScanReport),
     /// so this is how they read what a strategy filed. Non-destructive on
-    /// purpose — draining is the report's privilege, and a caller who could do
+    /// purpose: draining is the report's privilege, and a caller who could do
     /// it would leave the report describing a scan that recorded nothing.
     pub fn probe_stats_snapshot(&self) -> Vec<ProbeStats> {
         self.probe_stats.snapshot()
@@ -1051,7 +1075,7 @@ impl ScanContext {
 
     /// Records which switch port this machine turned out to be plugged into.
     ///
-    /// Called by whatever read an announcement off a link — see
+    /// Called by whatever read an announcement off a link. see
     /// [`Attachment`] for why this is a fact
     /// about the phase rather than about any host in it. A device re-announcing
     /// itself replaces the previous reading for that link and protocol rather
@@ -1088,7 +1112,7 @@ impl ScanContext {
     ///
     /// **Nothing is recorded in two cases, and both are correct.** A scan not
     /// counted in addresses has no numbering, so a port scan's liveness pass
-    /// settles nothing. And an address the plan does not name has no position —
+    /// settles nothing. And an address the plan does not name has no position:
     /// a sweep finds neighbours it was never asked about, and those are findings
     /// rather than plan targets. Either way the address is asked again on the
     /// next sitting, which is the direction this has to fail in.
@@ -1129,7 +1153,7 @@ impl ScanContext {
     ///
     /// **Deliberately not a [`ScanContext`].** A context carries the event
     /// sender, and a checkpoint task holding one would keep the event stream
-    /// open after the scan had ended — so a caller watching that stream to know
+    /// open after the scan had ended, so a caller watching that stream to know
     /// when to stop would wait forever for a scan that was already over, and the
     /// checkpoint task would wait for the caller to stop it. Neither moves.
     ///
@@ -1176,11 +1200,7 @@ impl ScanContext {
     /// rather than reading, so a host is written once per change rather than
     /// once per checkpoint for the rest of the run.
     pub fn take_changed_hosts(&self) -> Vec<Host> {
-        self.changed
-            .drain()
-            .into_iter()
-            .filter_map(|ip| self.store.get(&ip).map(|host| host.clone()))
-            .collect()
+        changed_since(&self.store, &self.changed)
     }
 
     /// The strategy failures filed so far, left in place.
@@ -1212,66 +1232,76 @@ impl ScanContext {
     }
 }
 
-impl ScanSession {
-    /// Opens a session and the context the strategies behind it write into.
-    ///
-    /// A caller wrapping the engine normally receives the session already
-    /// built, from [`discover`](crate::scanner::discover) or
-    /// [`scan`](crate::scanner::scan), and never calls this. A caller
-    /// orchestrating their own scan calls it first: every strategy in
-    /// [`strategy`](crate::scanner::strategy) is constructed with a
-    /// [`ScanContext`], and this is where one comes from.
-    pub fn new() -> (Self, ScanContext) {
-        Self::with_exclusions(Exclusions::none())
-    }
+/// Builds a [`ScanSession`] and the [`ScanContext`] the strategies behind it
+/// write into.
+///
+/// Four things a session can be given, three of which most callers leave alone.
+/// They used to be four constructors chaining into each other, which put the
+/// widest of them under the narrowest name: a caller who wanted exclusions
+/// *and* a resume point *and* an address numbering had to call `sweeping`, and
+/// one who wanted the numbering without the resume had to know that
+/// `Checkpoint::default()` was the neutral value. Here each is named once and
+/// there is one neutral state rather than three.
+///
+/// ```no_run
+/// use zond_engine::scanner::session::ScanSession;
+///
+/// let (session, ctx) = ScanSession::builder().build();
+/// # let _ = (session, ctx);
+/// ```
+#[must_use]
+#[derive(Debug, Default)]
+pub struct SessionBuilder {
+    exclusions: Exclusions,
+    settled: crate::journal::cursor::Checkpoint,
+    positions: Positions,
+}
 
-    /// [`new`](Self::new), with addresses the scan may not record.
+impl SessionBuilder {
+    /// Addresses the scan may not record a finding against.
     ///
-    /// What [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan)
-    /// call, with [`ZondConfig::exclusions`](crate::config::ZondConfig::exclusions).
     /// A caller orchestrating their own scan and honouring an exclusion policy
-    /// has to call this rather than `new`: subtracting the excluded addresses
-    /// from their own target list covers the addresses they named, and a segment
+    /// has to set this rather than subtract the addresses from their own target
+    /// list: the subtraction covers the addresses they named, and a segment
     /// sweep does not confine itself to those. See [`Exclusions`] for what each
     /// of the two enforcements is for.
-    pub fn with_exclusions(exclusions: Exclusions) -> (Self, ScanContext) {
-        Self::resuming(exclusions, &crate::journal::cursor::Checkpoint::default())
+    pub fn excluding(mut self, exclusions: Exclusions) -> Self {
+        self.exclusions = exclusions;
+        self
     }
 
-    /// [`with_exclusions`](Self::with_exclusions), continuing an earlier
-    /// sitting's progress.
+    /// The cursor this scan checkpoints from, for one continuing an earlier
+    /// sitting.
     ///
-    /// `settled` seeds the cursor this scan checkpoints from. Without it a
-    /// resumed scan would write a cursor covering only its own sitting, and the
-    /// journal would forget everything the first one settled.
-    pub fn resuming(
-        exclusions: Exclusions,
-        settled: &crate::journal::cursor::Checkpoint,
-    ) -> (Self, ScanContext) {
-        Self::sweeping(exclusions, settled, Positions::default())
+    /// Without it a resumed scan writes a cursor covering only its own sitting,
+    /// and the journal forgets everything the first one settled.
+    pub fn resuming(mut self, settled: &crate::journal::cursor::Checkpoint) -> Self {
+        self.settled = settled.clone();
+        self
     }
 
-    /// [`resuming`](Self::resuming), for a scan counted in addresses.
+    /// How this scan numbers an address, for one counted in addresses.
     ///
-    /// `positions` numbers the sweep's plan, so that a strategy which has
-    /// earned a verdict for an address can settle it without knowing where in
-    /// the plan it sits — see
-    /// [`ScanContext::settle_address`](ScanContext::settle_address).
+    /// A sweep sets this so a strategy that has earned a verdict for an address
+    /// can settle it without knowing where in the plan it sits; see
+    /// [`ScanContext::settle_address`].
     ///
-    /// This is the only constructor that supplies one. A port scan is counted
-    /// in address-and-port pairs and numbers them on its target stream, so it
-    /// leaves this empty and the discovery strategies running inside its
-    /// liveness pass settle nothing.
-    pub fn sweeping(
-        exclusions: Exclusions,
-        settled: &crate::journal::cursor::Checkpoint,
-        positions: Positions,
-    ) -> (Self, ScanContext) {
+    /// A port scan leaves it alone. It is counted in address-and-port pairs and
+    /// numbers them on its target stream, so the discovery strategies running
+    /// inside its liveness pass settle nothing -- which is what keeps a port
+    /// plan's watermark from advancing over probes nobody sent.
+    pub fn counting(mut self, positions: Positions) -> Self {
+        self.positions = positions;
+        self
+    }
+
+    /// Opens the session and the context.
+    pub fn build(self) -> (ScanSession, ScanContext) {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::new();
         let (events_tx, rx) = broadcast::channel(ScanEvents::CAPACITY);
 
-        let session = Self {
+        let session = ScanSession {
             store: HostStore::new(store.clone()),
             events: ScanEvents { rx },
             handle: handle.clone(),
@@ -1287,15 +1317,40 @@ impl ScanSession {
             unroutable: Arc::new(UnroutableLog::default()),
             swept_links: Arc::new(SweptLinks::default()),
             attachments: Arc::new(Attachments::default()),
-            exclusions: Arc::new(exclusions),
+            exclusions: Arc::new(self.exclusions),
             changed: Arc::new(ChangedHosts::default()),
-            settlements: Arc::new(Settlements::resuming(settled)),
-            positions: Arc::new(positions),
+            settlements: Arc::new(Settlements::resuming(&self.settled)),
+            positions: Arc::new(self.positions),
             responses: Arc::new(Responses::default()),
             tapes: Arc::new(Tapes::default()),
         };
 
         (session, ctx)
+    }
+}
+
+impl ScanSession {
+    /// A session and the context the strategies behind it write into, with
+    /// nothing excluded, nothing resumed and no address numbering.
+    ///
+    /// A caller wrapping the engine normally receives the session already built,
+    /// from [`discover`](crate::scanner::discover) or
+    /// [`scan`](crate::scanner::scan), and never calls this. A caller
+    /// orchestrating their own scan calls it first: every strategy in
+    /// [`strategy`](crate::scanner::strategy) is constructed with a
+    /// [`ScanContext`], and this is where one comes from.
+    ///
+    /// [`builder`](Self::builder) is the same thing with any of the three
+    /// settings applied.
+    pub fn new() -> (Self, ScanContext) {
+        Self::builder().build()
+    }
+
+    /// A session with exclusions, a resume point or an address numbering.
+    ///
+    /// See [`SessionBuilder`].
+    pub fn builder() -> SessionBuilder {
+        SessionBuilder::default()
     }
 }
 
@@ -1323,8 +1378,8 @@ mod tests {
     ///
     /// The `edit` closure panics on purpose. A drop that ran the caller's
     /// closure and then discarded the result would pass every assertion below
-    /// while still letting a scanner's own bookkeeping — a deadline update, a
-    /// counter, a hostname lookup keyed off the edit — run for a host nobody
+    /// while still letting a scanner's own bookkeeping, a deadline update, a
+    /// counter, a hostname lookup keyed off the edit, run for a host nobody
     /// may look at.
     #[test]
     fn an_excluded_address_reaches_neither_the_store_nor_the_stream() {
@@ -1333,7 +1388,9 @@ mod tests {
 
         let mut ips = crate::model::ip::set::IpSet::new();
         ips.insert_range("10.0.5.0/24".parse().expect("a valid range"));
-        let (mut session, ctx) = ScanSession::with_exclusions(Exclusions::new(ips));
+        let (mut session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(ips))
+            .build();
 
         assert!(
             !ctx.write_host(excluded, |_| unreachable!(
@@ -1362,7 +1419,7 @@ mod tests {
     ///
     /// Keyed by the bare address the second write landed on the first's entry,
     /// and one machine's hardware address, roles and round trips were folded
-    /// into another machine's record — under the wrong interface, since
+    /// into another machine's record: under the wrong interface, since
     /// `Host::set_zone` keeps the first zone it is given.
     #[test]
     fn two_link_locals_on_different_segments_are_two_hosts() {
@@ -1515,7 +1572,7 @@ mod tests {
     ///
     /// Without this the resumed scan's first checkpoint rolls the cursor back to
     /// what its own sitting settled, and everything the first one did is
-    /// forgotten — silently, since both scans report success.
+    /// forgotten: silently, since both scans report success.
     #[test]
     fn a_resuming_session_starts_from_the_earlier_cursor() {
         use crate::journal::cursor::Checkpoint;
@@ -1524,7 +1581,10 @@ mod tests {
             watermark: 12,
             settled_above: vec![14],
         };
-        let (_session, ctx) = ScanSession::resuming(Exclusions::none(), &settled);
+        let (_session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::none())
+            .resuming(&settled)
+            .build();
 
         assert_eq!(ctx.settlements().settled_count(), 13);
         assert_eq!(ctx.settlements().checkpoint(), settled);

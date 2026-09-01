@@ -82,7 +82,7 @@ pub(super) const PROBE_RATE_PER_SEC: NonZeroU32 = NonZeroU32::new(4_000).expect(
 ///
 /// **A challenge ACK is deliberately excluded, though it is a genuine answer.**
 /// It says a listener holds a connection half-open, which the port scanner acts
-/// on — but the port scanner earns that by checking the probe's nonce against
+/// on, but the port scanner earns that by checking the probe's nonce against
 /// its ledger, and this sweep has no ledger and checks nothing. A bare ACK is
 /// the commonest segment on any network: every established connection emits a
 /// stream of them, and a scan of an address somebody is talking to would credit
@@ -124,8 +124,8 @@ pub struct RoutedScanner {
     /// `None` is the default and keeps this sweep's own behaviour: a fresh
     /// random high port per probe, which together with a fresh sequence number
     /// is what lets a reply name the attempt it answers. An evasion profile that
-    /// set a source port replaces that with the one port — the sequence number
-    /// still varies per attempt, so a reply is still attributable — so a probe
+    /// set a source port replaces that with the one port, the sequence number
+    /// still varies per attempt, so a reply is still attributable, so a probe
     /// can leave from a port a filter is known to trust.
     src_port: Option<u16>,
     /// The IP-header state every SYN carries: its hop limit and any evasion
@@ -254,7 +254,7 @@ impl HostScanner for RoutedScanner {
         // range would bury everything else in the report.
         //
         // **Only the failures that are about this host.** An address with no
-        // route is not a strategy that did not run — the strategy ran, and that
+        // route is not a strategy that did not run: the strategy ran, and that
         // address is not reachable from here. Recorded as a failure it made
         // every scan of a dual-stack name on an IPv4-only network report itself
         // as partial, which is the surest way to teach a reader to ignore the
@@ -274,7 +274,7 @@ impl HostScanner for RoutedScanner {
         // Said once, at the level a person watching a scan sees: an address they
         // named was not covered, and nothing else in the output would tell them
         // so. Nothing is wrong with the scan, so it carries neither an error
-        // prefix nor the operating system's errno — that is a diagnostic detail
+        // prefix nor the operating system's errno, that is a diagnostic detail
         // and it is on the `-v` line beside the send that failed.
         //
         // The address and nothing else. That it went unscanned follows from

@@ -81,7 +81,7 @@ use crate::{error, info, success, warn};
 /// of it would throw away addresses somebody named.
 ///
 /// IPv4 is untouched. Every IPv4 range is finite in a way a person can reason
-/// about, and a `/8` is an unreasonable request rather than an impossible one —
+/// about, and a `/8` is an unreasonable request rather than an impossible one,
 /// which is a judgement for whoever is driving the engine, not for the engine.
 pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
     let refused: Vec<_> = targets
@@ -314,7 +314,7 @@ pub(super) fn build_port_scanner(
 /// **The plan cannot do this on its own, and that is the point of separating
 /// them.** A plan says a raw TCP scanner and a raw UDP scanner should run. Only
 /// the attempt discovers that this host permitted one raw socket and not the
-/// other — a sandbox can do exactly that — and a protocol left with no strategy
+/// other, a sandbox can do exactly that, and a protocol left with no strategy
 /// at all is not a degraded scan but a silent one:
 /// [`CompositePortScanner`](strategy::composite::CompositePortScanner) has
 /// nowhere to route those targets, so they are never probed and never reported.
@@ -385,7 +385,7 @@ pub(super) fn ensure_coverage(
 /// A port-scan strategy, and which of the planned steps actually opened.
 ///
 /// The second half is not decoration. Host enrichment is worth running only
-/// alongside a raw scan — it is the raw paths that yield a MAC and an RTT — and
+/// alongside a raw scan, it is the raw paths that yield a MAC and an RTT, and
 /// whether a raw scan is happening is answerable only after the sockets were
 /// asked for, not from the privilege the process holds.
 ///
@@ -427,10 +427,10 @@ pub(super) async fn run_port_scan(
                 scanner.detect_services(ctx).await;
             }
             // Active detections run over the services just identified, on the same
-            // terms service detection did — after it, and only if the scan is not
+            // terms service detection did: after it, and only if the scan is not
             // stopping.
             if !ctx.handle.should_stop() {
-                super::detect::detect(ctx, service_detection, detection).await;
+                super::detection::detect(ctx, service_detection, detection).await;
             }
         }
         Err(e) => ctx.record_failure(kind, e.to_string()),
@@ -462,7 +462,7 @@ pub(super) async fn finish_enrichment(
 ///
 /// This is [`OsDetection::Passive`] applied to a phase that had no way to apply
 /// it. The port scanner reads a stack off the segments it drew and the echo
-/// prober reads one off a ping it sent, but host discovery draws neither — so
+/// prober reads one off a ping it sent, but host discovery draws neither, so
 /// until now a discovery sweep concluded nothing about any host, however much it
 /// had learned about it. A machine whose hardware address names its maker and
 /// whose hostname is the one its system generated was sitting in the store,
@@ -475,7 +475,7 @@ pub(super) async fn finish_enrichment(
 /// ## What it will and will not conclude
 ///
 /// The two sources it has are each, deliberately, below the floor
-/// [`os::resolve`] reports at — so neither names a host alone, and a sweep of a
+/// [`os::resolve`] reports at, so neither names a host alone, and a sweep of a
 /// network of randomly-addressed phones concludes nothing at all. Two agreeing
 /// sources clear it: an Apple address under a default `MacBook-Pro` name is a
 /// verdict, where either alone is a guess. That is the intended yield and it is
@@ -519,7 +519,7 @@ pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsD
 /// The two active probes reach different hosts and read different things, and
 /// this one is the stronger of the pair wherever it applies. It revisits ports
 /// whose state the port scan already settled, so it needs a host that answered
-/// *something* over TCP — and for such a host it reads the identifier, sequence
+/// *something* over TCP, and for such a host it reads the identifier, sequence
 /// and clock policies that no single reply carries. The echo probe is the route
 /// to the host that answered nothing at all, where a hop counter and an echoed
 /// code are all there is. Running the series first means the echo pass sees a
@@ -530,7 +530,7 @@ pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsD
 /// At [`OsDetection::Active`] this follows the hosts a scan could not settle:
 /// every host that is up, has a TCP answer, and is not already named with high
 /// confidence. At [`OsDetection::Aggressive`] it follows **every** host with a
-/// TCP answer and takes twice the samples — which is what somebody measuring
+/// TCP answer and takes twice the samples, which is what somebody measuring
 /// hosts they already know the answer for wants, and is the reading a new rule
 /// is authored from.
 ///
@@ -597,7 +597,7 @@ pub(super) async fn run_active_os_series(
 /// Asks each host that has not said what kernel it runs, by SNMP.
 ///
 /// One `GetRequest` for `sysDescr.0` per host, and on anything that answers, the
-/// exact kernel — because on a Unix host `sysDescr` is the output of `uname -a`.
+/// exact kernel, because on a Unix host `sysDescr` is the output of `uname -a`.
 ///
 /// # Why this is worth a phase of its own
 ///
@@ -611,8 +611,8 @@ pub(super) async fn run_active_os_series(
 ///
 /// # What comes back from a box that has no kernel to name
 ///
-/// An appliance answers with its own identity instead — `Brother NC-8700w,
-/// Firmware Ver.ZL` — and that is not a failed probe. It is a make, a model, a
+/// An appliance answers with its own identity instead: `Brother NC-8700w,
+/// Firmware Ver.ZL`, and that is not a failed probe. It is a make, a model, a
 /// firmware and a device class off one datagram, on a host the rest of the scan
 /// could only place as *something with an initial hop count of 255*. The phase
 /// is named for the kernel because that is what justifies it; it is worth
@@ -631,11 +631,11 @@ pub(super) async fn run_active_os_series(
 /// A host that answers an SNMP request has proved something is listening, more
 /// directly than a SYN+ACK proves it, and a scanner that knew a port was open
 /// and did not say so would be withholding a finding. An open agent answering
-/// the default `public` community is also a finding in its own right — arguably
+/// the default `public` community is also a finding in its own right: arguably
 /// a more actionable one than the kernel it just disclosed.
 ///
-/// The port is filed with the evidence that found it —
-/// [`ScanResponse::UdpResponse`] — so a report can distinguish it from one the
+/// The port is filed with the evidence that found it,
+/// [`ScanResponse::UdpResponse`], so a report can distinguish it from one the
 /// port scan established and never has to pretend it was asked for.
 ///
 /// This is the *opposite* of widening `--ports`, not an exception to it. The
@@ -645,7 +645,7 @@ pub(super) async fn run_active_os_series(
 ///
 /// # Who is asked
 ///
-/// Every host that is up and whose kernel is still unknown — which is a
+/// Every host that is up and whose kernel is still unknown, which is a
 /// different and better test than "could not be named". A host already reported
 /// as `Linux · Debian 13` has been named perfectly well and still has nothing to
 /// say about its kernel, so it is exactly the host worth asking.
@@ -722,10 +722,10 @@ async fn ask_for_kernel(
     let (port, evidence, _) = crate::fingerprint::fingerprint_udp_detailed(addr, port).await?;
 
     // Recorded with what found it, so a report can tell this port from one the
-    // port scan established — and never has to imply it was asked for.
+    // port scan established, and never has to imply it was asked for.
     let port = port.with_discovery(PortDiscovery::new(ScanResponse::UdpResponse));
     // The key, not the address: an SNMP agent on a link-local neighbour is
-    // reachable here — `to_socket_addr` put the scope id on the socket — and
+    // reachable here, `to_socket_addr` put the scope id on the socket, and
     // writing the answer back bare would fork the host's record.
     Some((target, port, evidence))
 }
@@ -735,7 +735,7 @@ async fn ask_for_kernel(
 /// Runs last, after the ports are known, and that ordering is the whole reason
 /// it is a separate phase rather than part of discovery. What reaches a host
 /// decides what a trace to it should be made of, and the port scan is what
-/// establishes that — a host with 443 open is traced with SYNs to 443, which
+/// establishes that: a host with 443 open is traced with SYNs to 443, which
 /// crosses filters no ping survives. Run before the ports were known, every
 /// trace would fall back to echo and most of them would stop at the first
 /// firewall.
@@ -806,7 +806,7 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
 /// answered, and does nothing unless
 /// [`characterise`](crate::config::ZondConfig::characterise) was set. It sends a
 /// bad-checksum probe to one open TCP port of each such host and marks a
-/// middlebox on those that answer one — a reply no conformant host could have
+/// middlebox on those that answer one: a reply no conformant host could have
 /// sent. A host with no open TCP port is skipped: there is nowhere to aim a
 /// probe whose whole point is that a listener would answer it.
 pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
@@ -817,7 +817,7 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
     let mut subjects: Vec<strategy::topology::characterise::Subject> = Vec::new();
     for key in ctx.host_addresses() {
         // One open port to send the middlebox probe at, and one the scan found
-        // filtered to aim the comparative probes at — a filter is doing
+        // filtered to aim the comparative probes at: a filter is doing
         // something at a filtered port, and nothing at an unfiltered one.
         let ports = ctx.read_host(&key, |host| {
             host.status().is_up().then(|| {
@@ -857,8 +857,8 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
 /// Target selection is from the store and not from the plan, deliberately: "the
 /// passive sources concluded nothing" is only true once those sources have
 /// finished, and the store is where that conclusion lives. Every host that
-/// answered nothing a TCP rule could read — a stock Windows firewall drops
-/// rather than refuses — is here, and an echo reply is the one packet such a
+/// answered nothing a TCP rule could read, a stock Windows firewall drops
+/// rather than refuses, is here, and an echo reply is the one packet such a
 /// host still gives.
 ///
 /// Runs after [`run_active_os_series`], which has by then read everything a
@@ -998,7 +998,7 @@ pub(super) async fn run_port_phase(
         None
     };
 
-    // Numbered against the whole plan and filtered afterwards — to what an
+    // Numbered against the whole plan and filtered afterwards: to what an
     // earlier sitting did not settle, and to the hosts that answered. Both
     // filters run after the numbering, because both of them are properties of
     // this sitting and the numbering is a property of the job.
@@ -1019,7 +1019,7 @@ pub(super) async fn run_port_phase(
 /// The plan as the port phase actually probed it.
 ///
 /// **Not what the dispatcher walks.** That is the whole plan, so that a position
-/// means the same target in every sitting — see
+/// means the same target in every sitting. see
 /// [`live_addresses`]. This is what the phase *covered*, which is a different
 /// number and the one a [`TargetScope`](crate::report::TargetScope)
 /// records: a reader compares it against the liveness phase's to see how much of
@@ -1027,7 +1027,7 @@ pub(super) async fn run_port_phase(
 /// would report a scan that covered ground it deliberately skipped.
 ///
 /// Narrows every unit rather than rebuilding one set against one port list,
-/// because a unit may carry ports no other one does — `10.0.0.1:8080` names its
+/// because a unit may carry ports no other one does: `10.0.0.1:8080` names its
 /// own, and a subset that dropped that would answer a different question.
 pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
     // Walked once, not once per unit. `live.iter()` expands every address of
@@ -1057,7 +1057,7 @@ pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
 /// Every address the liveness pass found a host at.
 ///
 /// **A set rather than a narrowed plan.** The port phase used to be handed a
-/// `TargetMap` rebuilt from these, and the dispatcher numbered *that* — so a
+/// `TargetMap` rebuilt from these, and the dispatcher numbered *that*, so a
 /// position was counted in a plan that depended on which hosts happened to
 /// answer, and two sittings of one job could disagree about what position 400
 /// meant. The addresses travel to
@@ -1086,14 +1086,14 @@ pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
 /// cannot reach.
 ///
 /// **This is where the store's key becomes a bare address, and the one place a
-/// key may be narrowed to one.** The strategies below it — the trace, the echo
-/// probe — reach a host over the routing table and reason in addresses from end
+/// key may be narrowed to one.** The strategies below it, the trace, the echo
+/// probe, reach a host over the routing table and reason in addresses from end
 /// to end: a socket takes one, a reply carries one, and a hop table is keyed by
 /// one. Handing them a `ScopedIp` would key their reply matching on something no
 /// reply carries.
 ///
 /// So they are given what they can use, and a host whose address is meaningless
-/// without an interface is not given at all. `fe80::1` cannot be routed — the
+/// without an interface is not given at all. `fe80::1` cannot be routed: the
 /// kernel needs a scope id and a raw routed probe has nowhere to put one, which
 /// is the same refusal [`ScopedIp::to_socket_addr`] makes rather than attempting
 /// a send that fails for a reason having nothing to do with the target. Those
@@ -1102,7 +1102,7 @@ pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
 ///
 /// It also keeps the store honest. A routed strategy writes its finding back
 /// under the address it probed, and an address that is not the whole key would
-/// land in a second entry — one host in the report becoming two, each holding
+/// land in a second entry: one host in the report becoming two, each holding
 /// half of what was found.
 fn routable(key: crate::model::ip::scoped::ScopedIp) -> Option<IpAddr> {
     (!crate::model::ip::scoped::ScopedIp::needs_zone(&key.addr())).then(|| key.addr())
@@ -1178,7 +1178,7 @@ mod tests {
     /// The defect this function exists for. A `/64` handed to the unprivileged
     /// path was probed one address at a time until the process was killed, while
     /// the same range with root was refused in the plan before a packet was
-    /// sent — one engine giving two answers about one range.
+    /// sent: one engine giving two answers about one range.
     #[test]
     fn a_range_too_large_to_walk_is_refused_rather_than_started() {
         let (_session, ctx) = ScanSession::new();
@@ -1218,8 +1218,8 @@ mod tests {
         assert!(ctx.failures_snapshot().is_empty());
     }
 
-    /// A set that is entirely walkable is handed back untouched, and — the part
-    /// that matters — files no failure. A report claiming a refusal that never
+    /// A set that is entirely walkable is handed back untouched, and, the part
+    /// that matters, files no failure. A report claiming a refusal that never
     /// happened marks a complete scan as partial.
     #[test]
     fn a_set_that_can_be_walked_is_left_alone_and_files_nothing() {
@@ -1486,7 +1486,7 @@ mod tests {
 
     /// A host that has already said what kernel it runs is not asked again.
     ///
-    /// The test is "is the kernel known", not "was the host named" — a host
+    /// The test is "is the kernel known", not "was the host named": a host
     /// reported as `Linux · Debian 13` has been named perfectly well and still
     /// has nothing on record about its kernel, so it is exactly the host worth
     /// asking. Getting this backwards would skip the population the phase exists
@@ -1543,7 +1543,7 @@ mod tests {
     /// This was nearly built the other way, on the reasoning that 161 is not a
     /// port the caller asked to scan. That confuses two things: the objection to
     /// widening `--ports` is to sending traffic nobody requested, and this
-    /// traffic *was* requested — by the detection level. Once it is sent, all
+    /// traffic *was* requested: by the detection level. Once it is sent, all
     /// that remains is whether the answer is reported or thrown away, and an
     /// open agent answering the default community is a finding in its own right.
     ///
@@ -1590,8 +1590,8 @@ mod tests {
     }
 
     /// The series probe opens a raw socket, so it must not open one to probe
-    /// nothing. Every host here answered no TCP probe — which is the ordinary
-    /// state after a discovery sweep — and the phase has to notice that from the
+    /// nothing. Every host here answered no TCP probe, which is the ordinary
+    /// state after a discovery sweep, and the phase has to notice that from the
     /// store *before* reaching for a transport it would then have to report
     /// failing to get.
     #[tokio::test(flavor = "current_thread")]
@@ -1714,7 +1714,7 @@ mod tests {
     }
 
     /// A dual-stack machine is one host filed under one address. If it answered
-    /// over IPv6, the IPv4 address somebody actually typed is still live — it is
+    /// over IPv6, the IPv4 address somebody actually typed is still live: it is
     /// the same machine, and it is the one that was asked about.
     #[test]
     fn every_address_of_a_live_host_is_live() {
@@ -1731,7 +1731,7 @@ mod tests {
         assert!(live.contains(&"2001:db8::1".parse::<IpAddr>().expect("an address")));
     }
 
-    /// Nothing answered, so nothing is live. The plan is unchanged either way —
+    /// Nothing answered, so nothing is live. The plan is unchanged either way:
     /// what an empty answer costs is every one of its targets being settled as
     /// [`Skipped`](crate::journal::settle::Outcome::Skipped) rather than probed.
     #[test]

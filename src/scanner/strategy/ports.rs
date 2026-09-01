@@ -45,7 +45,7 @@
 //!
 //! The four stop conditions are the subtlest code in either scanner and the
 //! least visible when wrong. Each one is a claim about what silence means, and
-//! stopping on the wrong one does not fail — it returns a smaller answer that
+//! stopping on the wrong one does not fail: it returns a smaller answer that
 //! looks exactly like a quiet network. This engine has already paid for that
 //! once: a stop condition was fixed in one discovery scanner and left standing
 //! in its twin, because nothing tied the two together. One
@@ -122,7 +122,7 @@ use crate::transport::probe::{Emission, ProbeTransport};
 ///
 /// Measured, against a Raspberry Pi: a quarter of a thousand probes went
 /// unanswered, and with three independent attempts at that loss rate an open
-/// port should be missed one time in seventy — eleven open ports should have
+/// port should be missed one time in seventy: eleven open ports should have
 /// come back as nearly eleven. Three runs found seven each. The attempts were
 /// not independent; all three of them fitted inside the congestion that lost the
 /// first.
@@ -147,7 +147,7 @@ const PORT_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 ///
 /// This is the answer to a question no fixed rate answers well. A port scan
 /// aims every probe at one stack, and it is that stack's willingness to answer
-/// that bounds the result — a number that differs by two orders of magnitude
+/// that bounds the result: a number that differs by two orders of magnitude
 /// between the consumer router and the Linux server on the same switch, and
 /// that neither this crate nor its caller can know in advance. So the scan
 /// discovers it: see [`congestion`](crate::scanner::pacing::congestion) for how,
@@ -170,7 +170,7 @@ const PORT_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 ///   the rate ceiling would bind first anyway.
 /// - **Stop doubling at 64.** This is the number the controller is blind for.
 ///   Nothing can be known about a target until a probe to it has been answered
-///   or has timed out, and slow start doubles every round trip in the meantime —
+///   or has timed out, and slow start doubles every round trip in the meantime,
 ///   so the threshold is the worst overshoot a target can be subjected to before
 ///   the scan has any evidence about it at all. It was 256, and against a
 ///   Raspberry Pi that meant several hundred probes already in the air by the
@@ -181,7 +181,7 @@ const TCP_PORT_WINDOW: WindowLimits = WindowLimits::new(32, 16, 1_024, 64);
 
 /// The most probes a TCP port scan leaves unresolved at once.
 ///
-/// Not the pacing — [`TCP_PORT_WINDOW`] is — but the bound on how far the
+/// Not the pacing, [`TCP_PORT_WINDOW`] is, but the bound on how far the
 /// bookkeeping may run ahead of it. A probe leaves the window at its first
 /// timeout and stays on the ledger until its last, so against a range that
 /// answers nothing the scan admits at window speed while the backlog of
@@ -194,7 +194,7 @@ const TCP_PORT_UNRESOLVED: usize = 8_192;
 
 /// The fastest a TCP port scan will go regardless of what the window says.
 ///
-/// A **backstop**, not the pacing — [`TCP_PORT_WINDOW`] is the pacing. It is
+/// A **backstop**, not the pacing: [`TCP_PORT_WINDOW`] is the pacing. It is
 /// here so that a defect in the controller cannot turn a scan into a flood, and
 /// it is set far above any rate a correct scan reaches: at this rate a
 /// thousand-port scan emits in fifty milliseconds, which is already faster than
@@ -297,7 +297,7 @@ pub struct RawProbeScan<T> {
     /// **This is what paces a raw port scan**, and it is the answer to a
     /// question a fixed rate cannot answer. Measured, against a consumer router:
     /// asked as fast as the socket would take it, of a thousand ports it
-    /// answered roughly four hundred and the rest were reported *filtered* —
+    /// answered roughly four hundred and the rest were reported *filtered*:
     /// including one running a service. The host was not filtering anything. It
     /// was answering as fast as it could and being asked ten times faster.
     ///
@@ -322,7 +322,7 @@ pub struct RawProbeScan<T> {
     pub batch: usize,
     /// The most probes this scan leaves unresolved at once.
     ///
-    /// A bound on memory and correlation state, not on pace — see
+    /// A bound on memory and correlation state, not on pace. see
     /// [`admitting`](Self::admitting) for why the two are separate. A probe
     /// leaves the [`window`](Self::window) at its first timeout and stays on the
     /// ledger until its last, so against a range that answers nothing the
@@ -435,7 +435,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// **Silence is deliberately not one of them.** It reads as a fourth
     /// condition and it cannot be one: with targets still queued, an empty
     /// ledger does not mean the scan has heard nothing, it means the scan has
-    /// not *asked* yet — and the way that happens is the send path failing. A
+    /// not *asked* yet, and the way that happens is the send path failing. A
     /// loop that gave up there would abandon everything still queued at the
     /// moment its own machine started refusing sends, and report the remainder
     /// as ports nobody could reach. Measured: a wireless host whose ARP entry
@@ -464,7 +464,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// many questions are already awaiting an answer, and asking another would
     /// cost verdicts against a target that is being outrun. Or the ledger may be
     /// at [`max_unresolved`](Self::max_unresolved), which is not pacing at all
-    /// but a bound on memory — a probe stays on the ledger long after it has
+    /// but a bound on memory: a probe stays on the ledger long after it has
     /// stopped occupying the window, waiting out a retry schedule, and against a
     /// wide scan of a silent range that backlog is what grows without limit.
     pub fn admitting(&self, sending_finished: bool) -> bool {
@@ -488,9 +488,9 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         match (sent, first_attempt) {
             // A send the kernel refused is the one signal this controller gets
             // from *its own machine* rather than from the network, and it is the
-            // least ambiguous one there is. Whatever the reason — a full
+            // least ambiguous one there is. Whatever the reason, a full
             // interface queue, an unresolved neighbour, a link that has stopped
-            // keeping up — offering it more of the same faster cannot help. So
+            // keeping up, offering it more of the same faster cannot help. So
             // it is read as congestion, and the damping bounds how far a
             // permanent failure can cut.
             (false, _) => self.window.record_congestion(),
@@ -547,7 +547,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             // all along and the first ask did not survive. The slot went back at
             // that timeout, so this cuts and frees nothing.
             (_, Some(attempt)) if attempt > 1 => self.window.record_congestion(),
-            // Answered late — the first ask was answered after its budget had
+            // Answered late: the first ask was answered after its budget had
             // already expired, which the per-attempt token is what lets us see.
             // The timeout already released the slot and already judged it, and
             // doing either again would double-count.
@@ -570,7 +570,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// Seeds each host's retry timing from what an earlier phase already
     /// measured about it.
     ///
-    /// A port scan almost never meets its targets cold — [`scan`](crate::scan)
+    /// A port scan almost never meets its targets cold: [`scan`](crate::scan)
     /// establishes that an address is there before spending a probe on each of
     /// its ports, and that liveness pass timed every host that answered. Without
     /// this the port scanner starts from first principles anyway, and the cost
@@ -737,7 +737,7 @@ pub trait RawPortScan: PortScanner {
     /// Records what became of one target, which is a different question from
     /// the verdict [`record_port`](Self::record_port) gave it.
     ///
-    /// Every outcome reaches `record_port` with the same silence verdict — the
+    /// Every outcome reaches `record_port` with the same silence verdict: the
     /// engine's considered choice, since an absent port is the shortfall a
     /// reader cannot see. Only the earned ones carry a position, and only a
     /// position lets a resume skip a target. See
@@ -778,7 +778,7 @@ pub trait RawPortScan: PortScanner {
     /// never extends the scan's own deadline. Nothing answered.
     ///
     /// A probe's **first** timeout is also what releases its slot in the
-    /// congestion window and what tells the window how the target is coping —
+    /// congestion window and what tells the window how the target is coping:
     /// whichever event carries that timeout, the retry that follows it or the
     /// exhaustion that follows it when the budget was one attempt.
     ///
@@ -846,14 +846,14 @@ pub trait RawPortScan: PortScanner {
     /// Gives the verdict to every target that was never asked at all.
     ///
     /// A scan that hits its deadline with targets still queued used to leave
-    /// them with no record whatsoever — not a filtered port, not an unknown one,
+    /// them with no record whatsoever: not a filtered port, not an unknown one,
     /// simply absent from the host as though nobody had ever named it. That is
     /// the worst of the three ways a scan can fall short, because it is the only
     /// one a reader cannot see: a truncated port list and a complete one look
     /// identical, and the count in the summary agrees with itself.
     ///
     /// So they take the same verdict silence takes, and are counted. The verdict
-    /// is arguably too kind — nothing was asked, so nothing was learned — but a
+    /// is arguably too kind, nothing was asked, so nothing was learned, but a
     /// port reported as this scan's silence alongside a stop reason of
     /// `DeadlineExpired` is a fact somebody can act on, and an absent port is
     /// not.
@@ -862,8 +862,8 @@ pub trait RawPortScan: PortScanner {
     /// finish emitting would let a scan of a very large range spend longer
     /// filing verdicts than it spent scanning, and the deadline that stopped it
     /// is a guarantee of termination that this must not quietly undo. For every
-    /// scan smaller than the dispatcher's buffer — which is every scan whose
-    /// port list a person wrote — the queue is the whole remainder.
+    /// scan smaller than the dispatcher's buffer, which is every scan whose
+    /// port list a person wrote, the queue is the whole remainder.
     fn resolve_unasked(&mut self, targets: &mut mpsc::Receiver<PlannedTarget>) -> u128 {
         let protocol = self.protocol();
         let silence = self.silence_means();
@@ -912,7 +912,7 @@ pub struct AuditLabels {
 ///    to probe, a reply to read, or the moment the next probe is due.
 ///
 /// Anything still outstanding when the loop ends takes the scan's silence
-/// verdict, and so does anything still queued and never asked — so a scan cut
+/// verdict, and so does anything still queued and never asked, so a scan cut
 /// short by its own deadline reports the ports it never reached instead of
 /// leaving them off the host entirely, which is the one shortfall a reader
 /// cannot see. See [`RawPortScan::resolve_unasked`] for how far that reaches.
@@ -1144,7 +1144,7 @@ mod tests {
 
     /// A reply to the first attempt says the target is keeping up. A reply to a
     /// later one says it was willing all along and the first question did not
-    /// survive — which is the one thing a port scanner can observe that
+    /// survive, which is the one thing a port scanner can observe that
     /// separates being too fast from meeting a firewall.
     #[test]
     fn the_attempt_that_answered_is_what_moves_the_window() {
@@ -1175,8 +1175,8 @@ mod tests {
     /// A send the kernel refused is backpressure from this machine, and the one
     /// signal in the controller that does not come from the network at all.
     ///
-    /// Whatever refused it — a full interface queue, a neighbour that will not
-    /// resolve — offering more of the same faster cannot help. Measured: seven
+    /// Whatever refused it, a full interface queue, a neighbour that will not
+    /// resolve, offering more of the same faster cannot help. Measured: seven
     /// thousand `No route to host` failures in one run, at an unchanged window,
     /// because nothing was reading them.
     #[test]
@@ -1200,7 +1200,7 @@ mod tests {
     /// Silence from a host that has never said anything is not congestion. It is
     /// what a firewall and a dead address both produce, and a controller that
     /// read it as congestion would crawl against exactly the hosts that are
-    /// hardest to finish — while learning nothing, because nothing it did would
+    /// hardest to finish, while learning nothing, because nothing it did would
     /// change the answer.
     #[test]
     fn silence_from_a_host_that_never_answered_opens_the_window() {
@@ -1223,7 +1223,7 @@ mod tests {
     /// This is the signal the first version of the controller did not have, and
     /// its absence is measurable. Against a Raspberry Pi answering three quarters
     /// of a thousand probes, the window never cut once and the remaining quarter
-    /// was reported as a firewall that did not exist — a different set of ports
+    /// was reported as a firewall that did not exist: a different set of ports
     /// on every run.
     #[test]
     fn silence_from_a_host_that_is_answering_cuts_the_window() {

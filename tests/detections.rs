@@ -68,7 +68,7 @@ use zond_engine::model::port::{Port, Protocol};
 use zond_engine::report::ScanReport;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::connect::ConnectPortScanner;
-use zond_engine::scanner::{detect, service};
+use zond_engine::scanner::{detection, service};
 
 /// A loopback server keeping every request it read, so a test can assert on
 /// what did and did not leave the scanner.
@@ -348,7 +348,7 @@ async fn a_compute_module_grades_the_response_the_scan_already_gathered() {
     );
     run_port_scanner(&mut scanner, vec![tcp(LOOPBACK, server.port)]).await;
     service::detect(&ctx, ServiceDetection::Probe).await;
-    detect::detect(&ctx, ServiceDetection::Probe, DetectionEnvelope::default()).await;
+    detection::detect(&ctx, ServiceDetection::Probe, DetectionEnvelope::default()).await;
 
     let host = session.hosts().get(LOOPBACK).expect("the loopback host");
     let finding = port_finding(&host, server.port, "http-missing-security-headers")
@@ -400,7 +400,7 @@ async fn the_http_module_reaches_a_web_application_the_corpus_names() {
     );
     run_port_scanner(&mut scanner, vec![tcp(LOOPBACK, server.port)]).await;
     service::detect(&ctx, ServiceDetection::Probe).await;
-    detect::detect(&ctx, ServiceDetection::Probe, DetectionEnvelope::default()).await;
+    detection::detect(&ctx, ServiceDetection::Probe, DetectionEnvelope::default()).await;
 
     let host = session.hosts().get(LOOPBACK).expect("the loopback host");
 

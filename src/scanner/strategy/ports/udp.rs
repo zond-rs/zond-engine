@@ -142,7 +142,7 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 );
 
 /// The most probes left outstanding at once, and equally the window this scan
-/// is paced by — which for UDP is a window that does not move.
+/// is paced by, which for UDP is a window that does not move.
 ///
 /// Two jobs: it bounds the memory a scan of a large address space can occupy,
 /// and it keeps the send loop from emptying the dispatcher into the network as
@@ -305,7 +305,7 @@ fn answering_probe(bytes: &[u8], src_port: u16) -> Option<(u16, &[u8])> {
     // The datagram's own payload, which is where the answer to "what is this
     // host" lives when the port's protocol can say. Sliced from `bytes` at the
     // fixed header length rather than taken from the parsed packet, whose
-    // borrow ends with it — and rather than derived from the length field,
+    // borrow ends with it, and rather than derived from the length field,
     // which a padded frame makes shorter than what was actually captured.
     Some((udp.get_source(), &bytes[UDP_HDR_LEN..]))
 }
@@ -599,7 +599,7 @@ impl UdpPortScanner {
 ///
 /// The port-level mirror of the host evidence recorded beside it, drawn from the
 /// same two facts. A closed UDP port is only ever known by the unreachable that
-/// says so — nothing else refuses a datagram — so the two verdicts a reply can
+/// says so, nothing else refuses a datagram, so the two verdicts a reply can
 /// produce here are both ICMP, and which one turns on who sent it.
 ///
 /// `None` where nothing arrived. `OpenFiltered` from exhaustion is the ordinary
@@ -926,7 +926,7 @@ mod tests {
     }
 
     /// The same port answering with something that is not DNS is an open port
-    /// and nothing more — a socket bound to 53 is not a name server.
+    /// and nothing more: a socket bound to 53 is not a name server.
     #[test]
     fn an_open_port_53_that_does_not_speak_dns_is_only_an_open_port() {
         let (mut scanner, session) = scanner_with_mock();
