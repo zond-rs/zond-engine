@@ -616,6 +616,32 @@ impl core::marker::Unpin for zond_engine::detect::compute::ModuleFault
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::ModuleFault
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::ModuleFault
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::ModuleFault
+#[non_exhaustive] pub enum zond_engine::detect::compute::ReplayError
+pub zond_engine::detect::compute::ReplayError::Diverged
+pub zond_engine::detect::compute::ReplayError::GrantFailed
+pub zond_engine::detect::compute::ReplayError::Instantiate(zond_engine::detect::compute::LoadError)
+pub zond_engine::detect::compute::ReplayError::Run(zond_engine::detect::compute::RunOutcome)
+pub zond_engine::detect::compute::ReplayError::UnknownDetection
+pub zond_engine::detect::compute::ReplayError::UnknownTransport(alloc::string::String)
+impl core::clone::Clone for zond_engine::detect::compute::ReplayError
+pub fn zond_engine::detect::compute::ReplayError::clone(&self) -> zond_engine::detect::compute::ReplayError
+impl core::cmp::Eq for zond_engine::detect::compute::ReplayError
+impl core::cmp::PartialEq for zond_engine::detect::compute::ReplayError
+pub fn zond_engine::detect::compute::ReplayError::eq(&self, &zond_engine::detect::compute::ReplayError) -> bool
+impl core::error::Error for zond_engine::detect::compute::ReplayError
+pub fn zond_engine::detect::compute::ReplayError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::detect::compute::ReplayError
+pub fn zond_engine::detect::compute::ReplayError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::detect::compute::ReplayError
+pub fn zond_engine::detect::compute::ReplayError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::detect::compute::ReplayError
+impl core::marker::Freeze for zond_engine::detect::compute::ReplayError
+impl core::marker::Send for zond_engine::detect::compute::ReplayError
+impl core::marker::Sync for zond_engine::detect::compute::ReplayError
+impl core::marker::Unpin for zond_engine::detect::compute::ReplayError
+impl core::marker::UnsafeUnpin for zond_engine::detect::compute::ReplayError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::ReplayError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::ReplayError
 #[non_exhaustive] pub enum zond_engine::detect::compute::RunOutcome
 pub zond_engine::detect::compute::RunOutcome::BudgetExceeded(zond_engine::detect::compute::BudgetTrap)
 pub zond_engine::detect::compute::RunOutcome::Denied(zond_engine::detect::compute::Denial)
@@ -821,6 +847,7 @@ impl<M> core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute
 impl<M> core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::LoadedDetection<M> where M: core::panic::unwind_safe::UnwindSafe
 pub struct zond_engine::detect::compute::RecordedCapabilities
 impl zond_engine::detect::compute::RecordedCapabilities
+pub fn zond_engine::detect::compute::RecordedCapabilities::diverged(&self) -> bool
 pub fn zond_engine::detect::compute::RecordedCapabilities::from_tape(zond_engine::detect::compute::CapTape) -> Self
 pub fn zond_engine::detect::compute::RecordedCapabilities::tape(&self) -> &zond_engine::detect::compute::CapTape
 impl zond_engine::detect::compute::Capabilities for zond_engine::detect::compute::RecordedCapabilities
@@ -1016,7 +1043,7 @@ pub type zond_engine::detect::compute::RhaiRuntime::Module = zond_engine::detect
 pub fn zond_engine::detect::compute::RhaiRuntime::instantiate(&self, &Self::Module, &zond_engine::detect::compute::Grant) -> core::result::Result<Self::Instance, zond_engine::detect::compute::LoadError>
 pub fn zond_engine::detect::compute::RhaiRuntime::load(&self, &zond_engine::detect::compute::ModuleBody) -> core::result::Result<Self::Module, zond_engine::detect::compute::LoadError>
 pub fn zond_engine::detect::compute::RhaiRuntime::run(&self, &mut Self::Instance, &zond_engine::fingerprint::PortContext, &[&[u8]], &mut dyn zond_engine::detect::compute::Capabilities) -> core::result::Result<alloc::vec::Vec<zond_engine::model::finding::Finding>, zond_engine::detect::compute::RunOutcome>
-pub fn zond_engine::detect::compute::replay_run(&zond_engine::detect::compute::DetectionRunRecord) -> core::option::Option<alloc::vec::Vec<zond_engine::model::finding::Finding>>
+pub fn zond_engine::detect::compute::replay_run(&zond_engine::detect::compute::DetectionRunRecord) -> core::result::Result<alloc::vec::Vec<zond_engine::model::finding::Finding>, zond_engine::detect::compute::ReplayError>
 pub mod zond_engine::detect::flow
 pub mod zond_engine::detect::flow::schema
 #[non_exhaustive] pub enum zond_engine::detect::flow::schema::MatchSpec

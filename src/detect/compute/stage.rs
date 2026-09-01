@@ -42,6 +42,7 @@ use crate::model::port::Protocol;
 
 use super::budget::RunOutcome;
 use super::capability::{Capabilities, Grant};
+use super::db::ReplayError;
 use super::replay::{CapTape, RecordedCapabilities, RecordingCapabilities};
 use super::runtime::ComputeRuntime;
 
@@ -196,9 +197,9 @@ pub(crate) fn replay_over_tape<R: ComputeRuntime>(
     ctx: &PortContext,
     responses: &[&[u8]],
     tape: CapTape,
-) -> Vec<Finding> {
+) -> Result<Vec<Finding>, ReplayError> {
     let Some(mut grant) = Grant::from_manifest(&detection.manifest, &detection.content_hash) else {
-        return Vec::new();
+        return Err(ReplayError::GrantFailed);
     };
     // Replay reads its I/O from the tape, so it does no network work and finishes
     // in its own time. Leaving the live wall-clock deadline in place would let a
@@ -206,13 +207,19 @@ pub(crate) fn replay_over_tape<R: ComputeRuntime>(
     // slow one would disagree about the findings. Fuel still bounds it, the same
     // deterministic count the recording ran under.
     grant.budget.deadline = Duration::from_secs(86_400);
-    let Ok(mut instance) = runtime.instantiate(&detection.module, &grant) else {
-        return Vec::new();
-    };
+    let mut instance = runtime
+        .instantiate(&detection.module, &grant)
+        .map_err(ReplayError::Instantiate)?;
     let mut caps = RecordedCapabilities::from_tape(tape);
-    runtime
+    let findings = runtime
         .run(&mut instance, ctx, responses, &mut caps)
-        .unwrap_or_default()
+        .map_err(ReplayError::Run)?;
+    // A faithful replay reads the tape exactly; reading past its end means the tape
+    // was too short to reproduce the run, so the findings are not the recorded ones.
+    if caps.diverged() {
+        return Err(ReplayError::Diverged);
+    }
+    Ok(findings)
 }
 
 /// Whether any loaded detection the envelope permits gates onto a port with these
@@ -510,9 +517,45 @@ mod tests {
             ..Default::default()
         };
 
-        let findings = replay_over_tape(&runtime, &detection, &ctx(6379), &[], tape);
+        let findings = replay_over_tape(&runtime, &detection, &ctx(6379), &[], tape)
+            .expect("the recorded run replays");
         assert_eq!(findings.len(), 1, "the recorded run did not replay");
         assert_eq!(findings[0].severity(), Severity::High);
+    }
+
+    #[test]
+    fn a_replay_over_a_short_tape_reports_divergence_rather_than_a_finding() {
+        // A module that speaks twice, replayed against a one-entry tape: the second
+        // speak reads past the end, so the replay diverged from the recorded run and
+        // its findings are not the recorded ones.
+        use crate::detect::compute::SpeakExchange;
+        let runtime = RhaiRuntime::new();
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let a = speak(blob(1, 0x41));
+                let b = speak(blob(1, 0x42));
+                if a.len() > 0 && b.len() > 0 {
+                    [ #{ severity: "high", summary: "both answered" } ]
+                } else {
+                    []
+                }
+            }
+        "#;
+        let detection = loaded(&runtime, "two-speaks", "redis", Class::ActiveBenign, source);
+        let short = CapTape {
+            speaks: vec![SpeakExchange {
+                sent: vec![0x41],
+                reply: Ok(b"yes".to_vec()),
+            }],
+            ..Default::default()
+        };
+
+        let outcome = replay_over_tape(&runtime, &detection, &ctx(6379), &[], short);
+        assert_eq!(
+            outcome,
+            Err(ReplayError::Diverged),
+            "a short tape must report divergence, not a clean empty run"
+        );
     }
 
     #[test]

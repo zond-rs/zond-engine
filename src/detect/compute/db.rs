@@ -34,11 +34,47 @@ use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;
 use crate::record::wire;
 
+use super::budget::RunOutcome;
 use super::record::DetectionRunRecord;
 use super::rhai::{RhaiModule, RhaiRuntime};
-use super::runtime::{ComputeRuntime, ModuleBody};
+use super::runtime::{ComputeRuntime, LoadError, ModuleBody};
 use super::schema::ComputeDetection;
 use super::stage::{self, LoadedDetection};
+
+/// Why a recorded detection run could not be replayed, or how the replay ended.
+///
+/// Replay used to collapse every one of these into an empty result, so a caller
+/// could not tell a detection that faulted on replay from one that ran clean and
+/// found nothing. Each is now its own answer.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReplayError {
+    /// The corpus no longer holds the detection this record names, matched by
+    /// content hash, so a changed or removed detection is never reproduced by a
+    /// different one.
+    #[error("the corpus no longer holds the detection this run named")]
+    UnknownDetection,
+    /// The record names a transport this build does not know.
+    #[error("the run names a transport this build does not know: {0}")]
+    UnknownTransport(String),
+    /// The detection's identity would not resolve into a grant. A corpus refuses an
+    /// empty id at build, so a shipped detection never reaches this.
+    #[error("the detection's identity would not resolve into a grant")]
+    GrantFailed,
+    /// The module could not be instantiated for the replay.
+    #[error("the module could not be instantiated for replay: {0}")]
+    Instantiate(#[source] LoadError),
+    /// The replay ran and ended abnormally, exactly as the live run would have. The
+    /// [`RunOutcome`] it carries is the same one the live run would have recorded.
+    #[error("the replay ended abnormally rather than reproducing the run")]
+    Run(RunOutcome),
+    /// The tape ran short: the module read more from it than the recording holds,
+    /// so the replay diverged from the run that was recorded. A faithful replay of
+    /// the same detection over a complete tape never does this; a truncated journal
+    /// does.
+    #[error("the tape was too short to reproduce the run")]
+    Diverged,
+}
 
 /// The validated, normalised module corpus, compiled from `assets/detect/` by
 /// `build.rs`.
@@ -98,14 +134,18 @@ impl ComputeDb {
 /// Replays one journalled detection run offline, reproducing the findings it
 /// produced, with no network.
 ///
-/// [`None`] if the corpus no longer holds the exact detection that ran, matched by
-/// content hash, so a changed or removed detection is never silently reproduced by a
-/// different one; also [`None`] if the record names a transport this build does not
-/// know.
-pub fn replay_run(run: &DetectionRunRecord) -> Option<Vec<Finding>> {
+/// The `Err` half names why: the corpus no longer holds the exact detection that
+/// ran (matched by content hash, so a changed or removed detection is never
+/// reproduced by a different one), the record names an unknown transport, the
+/// replay ran and faulted or hit a bound, or the tape was too short to reproduce
+/// the run. A changed detection is never silently reproduced by a different one.
+pub fn replay_run(run: &DetectionRunRecord) -> Result<Vec<Finding>, ReplayError> {
     let db = ComputeDb::global();
-    let detection = db.detection_by_hash(&run.detection.content_hash)?;
-    let protocol = wire::protocol(&run.protocol)?;
+    let detection = db
+        .detection_by_hash(&run.detection.content_hash)
+        .ok_or(ReplayError::UnknownDetection)?;
+    let protocol = wire::protocol(&run.protocol)
+        .ok_or_else(|| ReplayError::UnknownTransport(run.protocol.clone()))?;
 
     let addr = run
         .host
@@ -127,13 +167,7 @@ pub fn replay_run(run: &DetectionRunRecord) -> Option<Vec<Finding>> {
         .collect();
     let slices: Vec<&[u8]> = responses.iter().map(Vec::as_slice).collect();
 
-    Some(stage::replay_over_tape(
-        db.runtime(),
-        detection,
-        &ctx,
-        &slices,
-        run.tape.rebuild(),
-    ))
+    stage::replay_over_tape(db.runtime(), detection, &ctx, &slices, run.tape.rebuild())
 }
 
 /// Compiles one embedded module into a runnable detection, or [`None`] with a

@@ -156,6 +156,7 @@ pub struct RecordedCapabilities {
     speak_cursor: usize,
     resolve_cursor: usize,
     now_cursor: usize,
+    diverged: bool,
 }
 
 impl RecordedCapabilities {
@@ -166,12 +167,20 @@ impl RecordedCapabilities {
             speak_cursor: 0,
             resolve_cursor: 0,
             now_cursor: 0,
+            diverged: false,
         }
     }
 
     /// The tape being replayed, for a caller that wants to read what it holds.
     pub fn tape(&self) -> &CapTape {
         &self.tape
+    }
+
+    /// Whether the replay read past the end of the tape at any verb. A faithful
+    /// replay of the same detection over a complete tape never does; a truncated
+    /// tape makes it, which is a diverged replay rather than a reproduced one.
+    pub fn diverged(&self) -> bool {
+        self.diverged
     }
 }
 
@@ -181,7 +190,10 @@ impl Capabilities for RecordedCapabilities {
         self.speak_cursor += 1;
         match exchange {
             Some(exchange) => exchange.reply.clone(),
-            None => Ok(Vec::new()),
+            None => {
+                self.diverged = true;
+                Ok(Vec::new())
+            }
         }
     }
 
@@ -190,14 +202,23 @@ impl Capabilities for RecordedCapabilities {
         self.resolve_cursor += 1;
         match exchange {
             Some(exchange) => exchange.result.clone(),
-            None => Ok(Vec::new()),
+            None => {
+                self.diverged = true;
+                Ok(Vec::new())
+            }
         }
     }
 
     fn now(&mut self) -> ScanInstant {
         let millis = self.tape.nows.get(self.now_cursor).copied();
         self.now_cursor += 1;
-        ScanInstant::from_millis(millis.unwrap_or(0))
+        match millis {
+            Some(millis) => ScanInstant::from_millis(millis),
+            None => {
+                self.diverged = true;
+                ScanInstant::from_millis(0)
+            }
+        }
     }
 }
 
