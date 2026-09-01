@@ -56,9 +56,9 @@ use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::protocols::icmp;
 use crate::report::ScannerKind;
 use crate::report::StopReason;
-use crate::scanner::audit::ProbeAudit;
-use crate::scanner::pacing::retry::{Due, ProbeLedger, RetryPolicy};
+use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::session::ScanContext;
+use crate::scanner::strategy::sweep::HostSweep;
 use crate::scanner::strategy::{HostScanner, StrategyError};
 use crate::success;
 use crate::system::interface::SourceResolver;
@@ -118,19 +118,16 @@ pub struct OsEchoScanner {
     next_sequence: u16,
     /// Targets not yet asked.
     pending: VecDeque<IpAddr>,
-    /// Targets awaiting a retry.
-    retries: VecDeque<IpAddr>,
-    /// Probes outstanding, keyed by host, carrying the sequence of the attempt.
-    ledger: ProbeLedger<IpAddr, u16>,
+    /// The outstanding probes, the retry queue and the run's counters, shared
+    /// with the two discovery sweeps. The ledger carries the sequence of the
+    /// attempt, so a round trip is measured against the send it answers.
+    sweep: HostSweep<u16>,
     /// Which host each sequence went to, since a reply names its attempt, not
     /// its target.
     by_sequence: HashMap<u16, IpAddr>,
-    /// Scratch space for the probes coming due on one iteration.
-    due: Vec<Due<IpAddr>>,
     /// The hard ceiling on this run, derived from the worst case a retry can
     /// still be answered within.
     deadline: Instant,
-    audit: ProbeAudit,
     send_failure: Option<String>,
 }
 
@@ -184,36 +181,13 @@ impl OsEchoScanner {
             identifier,
             next_sequence: 0,
             pending: targets.into(),
-            retries: VecDeque::new(),
-            ledger: ProbeLedger::new(RETRY_POLICY, 256),
+            sweep: HostSweep::new(ProbeLedger::new(RETRY_POLICY, 256)),
             by_sequence: HashMap::with_capacity(target_count),
-            due: Vec::new(),
             deadline: Instant::now()
                 + RETRY_POLICY.worst_case_probe_lifetime()
                 + send_duration
                 + QUIET_FLOOR,
-            audit: ProbeAudit::new(),
             send_failure: None,
-        }
-    }
-
-    /// Resends what has gone unanswered long enough, and writes off what has
-    /// spent its budget. A written-off host keeps whatever the passive sources
-    /// already said about it — which, for the hosts this scanner is given, is
-    /// nothing, so nothing is recorded.
-    fn service_retries(&mut self, now: Instant) {
-        self.ledger.drain_due(now, &mut self.due);
-        for event in self.due.drain(..) {
-            match event {
-                Due::Retry { key, .. } => self.retries.push_back(key),
-                // Nothing to settle. A sweep earns a verdict for the address
-                // when its budget runs out; this probe is asking a host the
-                // scan already found what kernel it runs, so a spent budget
-                // means only that it would not say. Matched rather than
-                // ignored, so a third variant is a compile error here as it
-                // already is in the two sweeps.
-                Due::Exhausted { .. } => {}
-            }
         }
     }
 
@@ -225,6 +199,7 @@ impl OsEchoScanner {
     /// for.
     fn send_one(&mut self, now: Instant) {
         let target = match self
+            .sweep
             .retries
             .pop_front()
             .or_else(|| self.pending.pop_front())
@@ -250,7 +225,7 @@ impl OsEchoScanner {
             Ok(message) => message,
             Err(e) => {
                 error!(verbosity = 2, "cannot build an echo for {target}: {e}");
-                self.audit.record_send(false);
+                self.sweep.audit.record_send(false);
                 return;
             }
         };
@@ -273,11 +248,11 @@ impl OsEchoScanner {
                 false
             }
         };
-        self.audit.record_send(sent);
+        self.sweep.audit.record_send(sent);
         if sent {
             self.next_sequence = self.next_sequence.wrapping_add(1);
             self.by_sequence.insert(sequence, target);
-            self.ledger.arm(target, target, sequence, (), now);
+            self.sweep.ledger.arm(target, target, sequence, (), now);
         }
     }
 
@@ -286,7 +261,7 @@ impl OsEchoScanner {
         if reply.protocol != IpNextHeaderProtocols::Icmp
             && reply.protocol != IpNextHeaderProtocols::Icmpv6
         {
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return;
         }
         // An ICMP message does not say which family's numbering it belongs to;
@@ -297,23 +272,24 @@ impl OsEchoScanner {
         else {
             // Every other ping on the host arrives here: the identifier cannot
             // be expressed in a kernel filter, so this is where it is enforced.
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return;
         };
         let Some(&target) = self.by_sequence.get(&sequence) else {
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return;
         };
 
-        let resolution = self.ledger.resolve(&target, Some(sequence), now);
+        let resolution = self.sweep.ledger.resolve(&target, Some(sequence), now);
         if resolution.is_none() {
             // A duplicate, or an answer to a probe already written off. It
             // proved the host alive but yields no sample.
-            self.audit.record_reply_without_rtt();
+            self.sweep.audit.record_reply_without_rtt();
             return;
         }
         let rtt = resolution.and_then(|r| r.rtt);
-        self.audit
+        self.sweep
+            .audit
             .record_host_found(resolution.and_then(|r| r.answered_attempt));
 
         self.ctx.write_host(target, |host| {
@@ -371,20 +347,27 @@ impl HostScanner for OsEchoScanner {
 
         let reason = loop {
             let now = Instant::now();
-            self.service_retries(now);
+            // An exhausted probe settles nothing: this asks hosts the scan
+            // already found what they run, and a scan not counted in addresses
+            // has no position to settle against.
+            self.sweep.service_retries(&self.ctx, now, false);
 
             if self.ctx.handle.should_stop() {
                 break StopReason::Aborted;
             }
-            if self.pending.is_empty() && self.retries.is_empty() && self.ledger.is_empty() {
+            if self.pending.is_empty()
+                && self.sweep.retries.is_empty()
+                && self.sweep.ledger.is_empty()
+            {
                 break StopReason::AttemptsSpent;
             }
             if now >= self.deadline {
                 break StopReason::DeadlineExpired;
             }
 
-            let sending = !self.pending.is_empty() || !self.retries.is_empty();
+            let sending = !self.pending.is_empty() || !self.sweep.retries.is_empty();
             let until_due = self
+                .sweep
                 .ledger
                 .next_due()
                 .map_or(Duration::from_millis(50), |due| {
@@ -396,7 +379,7 @@ impl HostScanner for OsEchoScanner {
                 res = self.transport.rx.recv() => {
                     match res {
                         Some(reply) => {
-                            self.audit.record_segment();
+                            self.sweep.audit.record_segment();
                             self.handle_reply(reply, Instant::now());
                         }
                         None => break StopReason::StreamClosed,
@@ -411,13 +394,13 @@ impl HostScanner for OsEchoScanner {
             }
         };
 
-        if self.audit.sends_failed > 0 {
+        if self.sweep.audit.sends_failed > 0 {
             self.ctx.record_failure(
                 ScannerKind::OsEcho,
                 format!(
                     "{} of {} echo probes could not be sent: {}",
-                    self.audit.sends_attempted,
-                    self.audit.sends_attempted,
+                    self.sweep.audit.sends_attempted,
+                    self.sweep.audit.sends_attempted,
                     self.send_failure.as_deref().unwrap_or("cause unrecorded"),
                 ),
             );
@@ -425,14 +408,14 @@ impl HostScanner for OsEchoScanner {
 
         let capture = self.transport.capture_counts();
         let targets = self.next_sequence as u128;
-        self.audit.report("os-echo", targets, reason, capture, None);
-        self.ctx.record_probe_stats(self.audit.stats(
+        self.sweep.report(
+            &self.ctx,
+            "os-echo",
             ScannerKind::OsEcho,
             targets,
             reason,
             capture,
-            None,
-        ));
+        );
         Ok(())
     }
 }

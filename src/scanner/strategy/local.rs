@@ -27,7 +27,7 @@
 mod ipv6;
 mod probes;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
@@ -46,11 +46,11 @@ use crate::model::ip::set::IpSet;
 use crate::protocols::{self as protocol, ethernet};
 use crate::report::ScannerKind;
 use crate::report::{Attachment, AttachmentSource, StopReason};
-use crate::scanner::audit::ProbeAudit;
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::scanner::pacing::retry::{Due, ProbeLedger, RetryPolicy};
+use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::session::ScanContext;
+use crate::scanner::strategy::sweep::HostSweep;
 use crate::scanner::strategy::{HostScanner, StrategyError};
 use crate::system::interface::Link;
 use crate::transport::capture::CapturedFrame;
@@ -404,17 +404,14 @@ pub struct LocalScanner {
     /// Wire formats this scanner recognizes as discovery replies, tried in
     /// order against every received frame.
     protocols: Vec<Box<dyn DiscoveryProtocol>>,
-    /// Outstanding ARP requests, and when each is next due to be repeated or
-    /// given up on.
-    ledger: Ledger,
-    /// Scratch space for the probes coming due on one iteration, reused so a
-    /// quiet tick allocates nothing.
-    due: Vec<Due<IpAddr>>,
-    /// Addresses waiting to be asked again. Held as a queue rather than resent
-    /// on the spot so a retry leaves through the same paced ticker a first
-    /// attempt does, which is what keeps a burst of expiring probes from
-    /// becoming a burst on the wire.
-    retries: VecDeque<IpAddr>,
+    /// The outstanding ARP requests, the retry queue, what has answered and
+    /// the run's counters, shared with the two routed sweeps.
+    ///
+    /// The neighbour-discovery schedule is `ipv6`'s own and is serviced through
+    /// [`HostSweep::service_second_ledger`]: one link, two populations, and a
+    /// mains-powered router answers a solicitation in five milliseconds where a
+    /// phone asleep on wifi takes four hundred.
+    sweep: HostSweep<()>,
     /// Where to forward newly discovered addresses for hostname
     /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
@@ -442,17 +439,6 @@ pub struct LocalScanner {
     declared: HashMap<MacAddr, HashSet<NetworkRole>>,
     /// Whether to sweep the segment or probe only the given targets.
     scope: Scope,
-    /// Target addresses that have answered, so a targeted run can stop the
-    /// moment every one of them has, rather than waiting out the deadline.
-    responded: HashSet<IpAddr>,
-    /// Per-run counters, so a sweep that finds fewer hosts than the segment
-    /// holds can be attributed to loss, to its own deadline, or to correlation
-    /// rather than guessed at. Reported once when the loop exits.
-    ///
-    /// `capture` comes from the [`EthernetHandle`]'s own capture, and is `None`
-    /// only for a synthetic frame stream — which has no kernel buffer to have
-    /// overflowed, and must not report a clean receive path it never had.
-    audit: ProbeAudit,
     /// Why the first frame that could not be put on the wire failed, if any did.
     ///
     /// The count alone cannot separate a link that refused every write from a
@@ -531,7 +517,11 @@ impl HostScanner for LocalScanner {
         // the code never actually took.
         let reason = loop {
             let now = Instant::now();
-            self.service_retries(now);
+            // Both schedules, and a sweep settles: it was asked whether an
+            // address is there and has asked as many times as it may.
+            self.sweep.service_retries(&self.ctx, now, true);
+            self.sweep
+                .service_second_ledger(&self.ctx, self.ipv6.ledger_mut(), now, true);
 
             if let Some(reason) = self.stop_reason(now, sending_finished) {
                 break reason;
@@ -540,7 +530,7 @@ impl HostScanner for LocalScanner {
             // Anything left to put on the wire, whether a first attempt or a
             // repeat, goes through the same paced ticker.
             let sending = !sending_finished
-                || !self.retries.is_empty()
+                || !self.sweep.retries.is_empty()
                 || self.ipv6.confirmations_pending()
                 || self.ipv6.solicitation().is_due(now);
             let idle_delay = self.tick_delay(now);
@@ -549,7 +539,7 @@ impl HostScanner for LocalScanner {
                 pkt = self.eth_handle.rx.recv() => {
                     match pkt {
                         Some(frame) => {
-                            self.audit.record_segment();
+                            self.sweep.audit.record_segment();
                             _ = self.process_eth_packet(&frame, Instant::now());
                         }
                         None => break StopReason::StreamClosed,
@@ -672,18 +662,12 @@ impl LocalScanner {
             eth_handle,
             deadline,
             protocols: frames::sweep_protocols(),
-            ledger: Ledger::new(retry, target_count),
-
-            due: Vec::new(),
-            retries: VecDeque::new(),
-
+            sweep: HostSweep::new(Ledger::new(retry, target_count)),
             dns_tx,
             mac_to_ip: HashMap::new(),
             declared: HashMap::new(),
             scope,
-            responded: HashSet::new(),
             ipv6: Ipv6Discovery::new(target_count),
-            audit: ProbeAudit::new(),
             send_failure: None,
         })
     }
@@ -726,7 +710,7 @@ impl LocalScanner {
         sending_finished: bool,
         now: Instant,
     ) -> Dispatched {
-        if let Some(target) = self.retries.pop_front() {
+        if let Some(target) = self.sweep.retries.pop_front() {
             self.send_probe(target, now);
             Dispatched::Again
         } else if let Some(target) = self.ipv6.next_confirmation() {
@@ -764,7 +748,7 @@ impl LocalScanner {
         // rather than skipping it. None of these carries a position: a probe
         // still mid-schedule was cut off rather than spent, and one the iterator
         // still holds was never built, let alone sent.
-        let outstanding = self.ledger.drain_unresolved().len() as u64;
+        let outstanding = self.sweep.ledger.drain_unresolved().len() as u64;
         self.ctx
             .record_many_outcomes(Outcome::Interrupted, outstanding);
         self.ctx.record_many_outcomes(
@@ -793,14 +777,14 @@ impl LocalScanner {
         // This covers every frame the sweep emits, which is what makes it worth
         // having: while the first attempts bypassed the audit, the one path that
         // sends a frame per target could fail entirely and this stayed silent.
-        if self.audit.sends_failed > 0 {
+        if self.sweep.audit.sends_failed > 0 {
             self.ctx.record_failure(
                 ScannerKind::Local,
                 format!(
                     "{} of {} frames never reached {}, so those addresses are \
                      reported absent without having been asked: {}",
-                    self.audit.sends_failed,
-                    self.audit.sends_attempted,
+                    self.sweep.audit.sends_failed,
+                    self.sweep.audit.sends_attempted,
                     self.identity.zone,
                     self.send_failure.as_deref().unwrap_or("cause unrecorded"),
                 ),
@@ -814,15 +798,14 @@ impl LocalScanner {
         // which has no kernel buffer to have overflowed.
         let capture = self.eth_handle.capture_counts();
         let targets = self.ip_set.len();
-        self.audit
-            .report("local-discovery", targets, reason, capture, None);
-        self.ctx.record_probe_stats(self.audit.stats(
+        self.sweep.report(
+            &self.ctx,
+            "local-discovery",
             ScannerKind::Local,
             targets,
             reason,
             capture,
-            None,
-        ));
+        );
     }
 
     /// Puts one frame on the segment and records what actually happened to it.
@@ -844,11 +827,11 @@ impl LocalScanner {
     fn emit(&mut self, packet: &[u8], what: &str) -> bool {
         match self.eth_handle.tx.send_frame(packet) {
             Ok(()) => {
-                self.audit.record_send(true);
+                self.sweep.audit.record_send(true);
                 true
             }
             Err(reason) => {
-                self.audit.record_send(false);
+                self.sweep.audit.record_send(false);
                 self.send_failure
                     .get_or_insert_with(|| format!("{what}: {reason}"));
                 false
@@ -866,7 +849,7 @@ impl LocalScanner {
         if ip.is_ipv6() {
             self.ipv6.record_asked(ip, now);
         } else {
-            self.ledger.arm(ip, ip, (), (), now);
+            self.sweep.ledger.arm(ip, ip, (), (), now);
         }
     }
 
@@ -1029,7 +1012,7 @@ impl LocalScanner {
         if target.is_ipv6() {
             self.ipv6.record_asked(target, now);
         } else {
-            self.ledger.arm(target, target, (), (), now);
+            self.sweep.ledger.arm(target, target, (), (), now);
         }
     }
 
@@ -1201,32 +1184,6 @@ impl LocalScanner {
         true
     }
 
-    /// Queues everything due to be asked again.
-    ///
-    /// An address that has run out of attempts needs nothing recorded: a host
-    /// that never answered is one this sweep does not report, and the ledger
-    /// emptying is part of what tells the loop it is finished.
-    fn service_retries(&mut self, now: Instant) {
-        // Taken so each ledger can borrow `self` mutably in turn; the buffer
-        // itself is reused, so this costs no allocation.
-        let mut due = std::mem::take(&mut self.due);
-
-        self.ledger.drain_due(now, &mut due);
-        self.ipv6.drain_due(now, &mut due);
-        for event in due.drain(..) {
-            match event {
-                Due::Retry { key, .. } => self.retries.push_back(key),
-                // The budget is spent, which is the moment silence stops being
-                // provisional and becomes a verdict this sweep earned. A probe
-                // whose frame never left is not armed, so nothing settled here
-                // went unasked.
-                Due::Exhausted { key, .. } => self.ctx.settle_address(key, Settled::Exhausted),
-            }
-        }
-
-        self.due = due;
-    }
-
     /// Retires the probe for `address` from whichever ledger owns its family.
     fn resolve_probe(
         &mut self,
@@ -1236,13 +1193,13 @@ impl LocalScanner {
         if address.is_ipv6() {
             self.ipv6.resolve(address, now)
         } else {
-            self.ledger.resolve(address, None, now)
+            self.sweep.ledger.resolve(address, None, now)
         }
     }
 
     /// Whether the sweep has nothing left to send and nothing left to wait for.
     fn idle(&self, now: Instant) -> bool {
-        self.retries.is_empty() && self.ledger.is_empty() && self.ipv6.is_idle(now)
+        self.sweep.retries.is_empty() && self.sweep.ledger.is_empty() && self.ipv6.is_idle(now)
     }
 
     /// How long the loop may sleep once it has stopped sending: until the
@@ -1251,7 +1208,7 @@ impl LocalScanner {
     /// comes first.
     fn tick_delay(&self, now: Instant) -> Duration {
         let mut delay = self.deadline.time_until_next_tick();
-        for wakeup in [self.ledger.next_due(), self.ipv6.next_wakeup()]
+        for wakeup in [self.sweep.ledger.next_due(), self.ipv6.next_wakeup()]
             .into_iter()
             .flatten()
         {
@@ -1274,7 +1231,7 @@ impl LocalScanner {
         // reaches here, and reading its bytes as Ethernet would invent a source
         // address rather than fail.
         if frame.link != LinkType::Ethernet {
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return Err(FrameRejected::UnreadableLink);
         }
 
@@ -1282,7 +1239,7 @@ impl LocalScanner {
 
         let source_mac = eth_frame.source();
         if source_mac == self.identity.mac {
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return Err(FrameRejected::SelfSourcedPacket);
         }
 
@@ -1303,7 +1260,7 @@ impl LocalScanner {
         let Some((reading, protocol)) = self.interpret_response(&eth_frame) else {
             // Common in promiscuous mode: traffic between other hosts, or
             // forwarded through a router. Not this scan's, and not a fault.
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return Ok(());
         };
 
@@ -1336,7 +1293,7 @@ impl LocalScanner {
                 return Ok(());
             }
 
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return Err(FrameRejected::AddressOutOfRange(subject));
         }
 
@@ -1382,7 +1339,7 @@ impl LocalScanner {
         };
 
         if self.ip_set.contains(&subject) {
-            self.responded.insert(subject);
+            self.sweep.responded.insert(subject);
         }
         self.record_response(
             source_mac,
@@ -1528,7 +1485,7 @@ impl LocalScanner {
     /// `0 >= 0`, true on the first iteration, so the run ends before the echo it
     /// exists to send can be answered.
     fn all_targets_responded(&self) -> bool {
-        matches!(self.scope, Scope::Targeted) && self.responded.len() as u128 >= self.ip_set.len()
+        matches!(self.scope, Scope::Targeted) && self.sweep.all_responded(self.ip_set.len())
     }
 
     /// Tries each configured [`DiscoveryProtocol`] against `frame` in turn.
@@ -1715,13 +1672,13 @@ impl LocalScanner {
             self.deadline.mark_activity();
         }
         if first_sighting {
-            self.audit.record_host_found(answered_attempt);
+            self.sweep.audit.record_host_found(answered_attempt);
         }
         if rtt.is_none() {
             // Alive, and no round trip to show for it: a reply to a probe this
             // scan no longer had outstanding, or one Karn's rule refuses to
             // time. Both are worth counting separately from the finding itself.
-            self.audit.record_reply_without_rtt();
+            self.sweep.audit.record_reply_without_rtt();
         }
 
         if let Some((rtt, source)) = rtt {

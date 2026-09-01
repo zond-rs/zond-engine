@@ -23,7 +23,7 @@
 
 use std::num::NonZeroU32;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::HashMap,
     net::IpAddr,
     time::{Duration, Instant},
 };
@@ -37,7 +37,7 @@ use crate::model::ip::set::IpSet;
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols as protocol;
 use crate::scanner::pacing::deadline::AdaptiveDeadline;
-use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy};
+use crate::scanner::pacing::retry::{ProbeLedger, Resolution, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::system::interface::RoutedTarget;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
@@ -46,11 +46,11 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::report::ScannerKind;
 use crate::report::StopReason;
-use crate::scanner::audit::ProbeAudit;
 use crate::scanner::strategy::raw::{
     DEADLINE_CONFIG, EvasionParts, RETRY_POLICY, SendFaults, SynToken, pacing_for, rate_or,
     send_syn,
 };
+use crate::scanner::strategy::sweep::HostSweep;
 use crate::scanner::strategy::{HostScanner, StrategyError};
 
 /// The fastest a routed sweep puts probes on the wire, in probes per second.
@@ -142,49 +142,15 @@ pub struct RoutedScanner {
     /// Where to forward newly discovered addresses for hostname
     /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
-    /// Probes sent but not yet answered, and when each is next due to be
-    /// resent or given up on.
-    ledger: ProbeLedger<IpAddr, SynToken>,
-    /// Scratch space for the probes coming due on one iteration, reused so a
-    /// quiet tick allocates nothing.
-    due: Vec<Due<IpAddr>>,
+    /// The outstanding probes, the retry queue, what has answered and the
+    /// run's counters, shared with the other two probing sweeps.
+    sweep: HostSweep<SynToken>,
     /// Targets whose first probe has not left yet, released by the send ticker.
     pending: std::vec::IntoIter<IpAddr>,
-    /// Targets due for another attempt, released by the same ticker and ahead
-    /// of anything in `pending`.
-    ///
-    /// A retry is an obligation the sweep already owns, where the next unprobed
-    /// address is only work it intends to do. Draining them first is also what
-    /// keeps the schedule honest: a retry queued behind thousands of first
-    /// attempts would be sent long after the moment it was scheduled for.
-    retries: VecDeque<IpAddr>,
     /// How often the send ticker fires, and how many probes it releases each
     /// time. Together they are the configured rate; see [`pacing_for`].
     send_tick: Duration,
     batch: usize,
-    /// The targets *this sweep* has seen answer.
-    ///
-    /// A set rather than a counter, and kept here rather than read off the
-    /// store, because the two answer different questions. `write_host` reports
-    /// whether the **store** gained a host, which in a discovery-only phase is
-    /// the same thing and in a port-scan phase is not: discovery runs there as
-    /// enrichment beside the port scanner, the host almost always exists
-    /// already, and every one of this sweep's own answers would report "not
-    /// new". The count then never reaches `ips.len()`, so the
-    /// [`AllResponded`](StopReason::AllResponded) exit is silently unavailable
-    /// in exactly the phase where discovery is cheapest.
-    ///
-    /// Not taken from the [`ProbeLedger`] either, though it is the obvious
-    /// source. `resolve` retires a probe, so a duplicate reply correctly reports
-    /// nothing — but an exhausted probe is drained out of the ledger entirely,
-    /// and a reply arriving after that would go uncredited. This is the same
-    /// shape [`LocalScanner`](super::local::LocalScanner) settled on when its
-    /// mirror of this defect was fixed.
-    responded: HashSet<IpAddr>,
-    /// Per-run counters, so a sweep that finds fewer hosts than it should can be
-    /// attributed to loss, to its own deadline, or to correlation rather than
-    /// guessed at. Reported once when the loop exits.
-    audit: ProbeAudit,
     /// Why probes that could not be sent could not be sent, if any could not.
     ///
     /// Kept so the reason survives into the report. The count of failed sends is
@@ -211,9 +177,11 @@ impl HostScanner for RoutedScanner {
         // the code never actually took.
         let reason = loop {
             let now = Instant::now();
-            self.service_retries(now);
+            // A sweep settles: it was asked whether an address is there and
+            // has now asked as many times as the policy allows.
+            self.sweep.service_retries(&self.ctx, now, true);
 
-            let all_responded = self.ips.len() == self.responded.len() as u128;
+            let all_responded = self.sweep.all_responded(self.ips.len());
             if self.ctx.handle.should_stop() {
                 break StopReason::Aborted;
             }
@@ -227,7 +195,7 @@ impl HostScanner for RoutedScanner {
             // Both queues have to be checked, not just the ledger: at the first
             // iteration the ledger is empty because no probe has left yet, and
             // stopping there would end the sweep before it began.
-            if self.nothing_left_to_send() && self.ledger.is_empty() {
+            if self.nothing_left_to_send() && self.sweep.ledger.is_empty() {
                 break StopReason::AttemptsSpent;
             }
             if self.deadline.hard_deadline_passed() {
@@ -235,13 +203,13 @@ impl HostScanner for RoutedScanner {
             }
 
             let sending = !self.nothing_left_to_send();
-            let tick = self.tick_delay(now);
+            let tick = self.sweep.idle_delay(&self.deadline, now);
 
             tokio::select! {
                 res = self.transport.rx.recv() => {
                     match res {
                         Some(reply) => {
-                            self.audit.record_segment();
+                            self.sweep.audit.record_segment();
                             self.handle_discovery_reply(reply.source, &reply.bytes, Instant::now());
                         }
                         None => break StopReason::StreamClosed,
@@ -264,7 +232,7 @@ impl HostScanner for RoutedScanner {
         // rather than skipping it. None of these carries a position: a probe
         // still mid-schedule was cut off rather than spent, one still queued was
         // never sent, and one with no route was never asked.
-        let outstanding = self.ledger.drain_unresolved().len() as u64;
+        let outstanding = self.sweep.ledger.drain_unresolved().len() as u64;
         self.ctx
             .record_many_outcomes(Outcome::Interrupted, outstanding);
         self.ctx
@@ -293,12 +261,12 @@ impl HostScanner for RoutedScanner {
         // warning that matters. It is recorded against the address instead, just
         // below.
         if let Some(reason) = &self.faults.broken {
-            let broken = self.audit.sends_failed - self.faults.unroutable_count;
+            let broken = self.sweep.audit.sends_failed - self.faults.unroutable_count;
             self.ctx.record_failure(
                 ScannerKind::Routed,
                 format!(
                     "{broken} of {} probes could not be sent: {reason}",
-                    self.audit.sends_attempted,
+                    self.sweep.audit.sends_attempted,
                 ),
             );
         }
@@ -328,15 +296,14 @@ impl HostScanner for RoutedScanner {
         // the capture threads it keeps alive.
         let capture = self.transport.capture_counts();
         let targets = self.ips.len();
-        self.audit
-            .report("routed-discovery", targets, reason, capture, None);
-        self.ctx.record_probe_stats(self.audit.stats(
+        self.sweep.report(
+            &self.ctx,
+            "routed-discovery",
             ScannerKind::Routed,
             targets,
             reason,
             capture,
-            None,
-        ));
+        );
         Ok(())
     }
 }
@@ -462,14 +429,10 @@ impl RoutedScanner {
             decoys,
             deadline: AdaptiveDeadline::new(deadline_config, target_count),
             dns_tx,
-            ledger: ProbeLedger::new(retry, target_count),
-            due: Vec::new(),
+            sweep: HostSweep::new(ProbeLedger::new(retry, target_count)),
             pending: order.into_iter(),
-            retries: VecDeque::new(),
             send_tick,
             batch,
-            responded: HashSet::new(),
-            audit: ProbeAudit::new(),
             faults: SendFaults::default(),
         }
     }
@@ -479,7 +442,7 @@ impl RoutedScanner {
     /// number matches an outstanding probe.
     fn handle_discovery_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
         if !self.ips.contains(&ip) {
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return;
         }
 
@@ -494,7 +457,7 @@ impl RoutedScanner {
         // user happens to be connected to would credit a discovery this scan did
         // not make, on evidence the IPv4 path has never accepted.
         if !answers_a_syn_probe(bytes) {
-            self.audit.record_off_target();
+            self.sweep.audit.record_off_target();
             return;
         }
 
@@ -504,7 +467,7 @@ impl RoutedScanner {
         let resolution = self.resolve_probe(ip, bytes, now);
         let rtt = resolution.and_then(|resolution| resolution.rtt);
         if rtt.is_none() {
-            self.audit.record_reply_without_rtt();
+            self.sweep.audit.record_reply_without_rtt();
         }
 
         // Host mutation only; the guard is dropped and the event emitted inside
@@ -531,8 +494,9 @@ impl RoutedScanner {
             !was_up
         });
 
-        if self.responded.insert(ip) {
-            self.audit
+        if self.sweep.responded.insert(ip) {
+            self.sweep
+                .audit
                 .record_host_found(resolution.and_then(|resolution| resolution.answered_attempt));
             self.deadline.mark_activity();
             if let Some(dns) = &self.dns_tx {
@@ -566,45 +530,20 @@ impl RoutedScanner {
         });
 
         token
-            .and_then(|token| self.ledger.resolve(&ip, Some(token), now))
-            .or_else(|| self.ledger.resolve(&ip, None, now))
-    }
-
-    /// Queues every probe that has gone unanswered long enough.
-    ///
-    /// Queued rather than sent, so a retry leaves through the same paced ticker
-    /// a first attempt does. Sending them here would put the whole of one
-    /// attempt on the wire in a single iteration - which is the burst this
-    /// scanner exists to avoid, arriving one round later.
-    ///
-    /// A probe that runs out of attempts needs nothing recorded: a host that
-    /// never answered is simply one this sweep does not report, and the ledger
-    /// emptying is what tells the loop the sweep is finished.
-    fn service_retries(&mut self, now: Instant) {
-        self.ledger.drain_due(now, &mut self.due);
-
-        for event in self.due.drain(..) {
-            match event {
-                Due::Retry { key, .. } => self.retries.push_back(key),
-                // The budget is spent, which is the moment silence stops being
-                // provisional and becomes a verdict this sweep earned. Only
-                // probes that actually left are armed, so nothing settled here
-                // went unasked.
-                Due::Exhausted { key, .. } => self.ctx.settle_address(key, Settled::Exhausted),
-            }
-        }
+            .and_then(|token| self.sweep.ledger.resolve(&ip, Some(token), now))
+            .or_else(|| self.sweep.ledger.resolve(&ip, None, now))
     }
 
     /// Whether every probe this sweep intends to send has left.
     fn nothing_left_to_send(&self) -> bool {
-        self.retries.is_empty() && self.pending.len() == 0
+        self.sweep.retries.is_empty() && self.pending.len() == 0
     }
 
     /// Releases one tick's worth of probes: retries first, then targets not yet
     /// asked.
     fn send_allowance(&mut self, now: Instant) {
         for _ in 0..self.batch {
-            let target = match self.retries.pop_front() {
+            let target = match self.sweep.retries.pop_front() {
                 Some(target) => target,
                 None => match self.pending.next() {
                     Some(target) => target,
@@ -612,16 +551,6 @@ impl RoutedScanner {
                 },
             };
             self.probe(target, now);
-        }
-    }
-
-    /// How long the loop may sleep: until the sweep's next checkpoint, or until
-    /// the next probe is due, whichever comes first.
-    fn tick_delay(&self, now: Instant) -> Duration {
-        let until_deadline_tick = self.deadline.time_until_next_tick();
-        match self.ledger.next_due() {
-            Some(due) => until_deadline_tick.min(due.saturating_duration_since(now)),
-            None => until_deadline_tick,
         }
     }
 
@@ -651,10 +580,10 @@ impl RoutedScanner {
             },
             &mut self.faults,
         );
-        self.audit.record_send(token.is_some());
+        self.sweep.audit.record_send(token.is_some());
 
         if let Some(token) = token {
-            self.ledger.arm(target, target, token, (), now);
+            self.sweep.ledger.arm(target, target, token, (), now);
         }
     }
 }

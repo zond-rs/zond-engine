@@ -52,7 +52,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy};
+use crate::scanner::pacing::retry::{ProbeLedger, Resolution, RetryPolicy};
 
 /// Outstanding per-address solicitations and the schedule they are retried on.
 ///
@@ -402,8 +402,13 @@ impl Ipv6Discovery {
     }
 
     /// Moves everything due into `buf`, which the caller drains.
-    pub(super) fn drain_due(&mut self, now: Instant, buf: &mut Vec<Due<IpAddr>>) {
-        self.ledger.drain_due(now, buf);
+    /// The solicitation schedule, for the sweep that services both ledgers.
+    ///
+    /// Handed out rather than drained here, so the queueing and settling of an
+    /// expired probe happen in one place for both schedules. See
+    /// [`HostSweep::service_second_ledger`](crate::scanner::strategy::sweep::HostSweep::service_second_ledger).
+    pub(super) fn ledger_mut(&mut self) -> &mut Ledger {
+        &mut self.ledger
     }
 
     /// How long ago `address` was first asked about, rendered for a log line, or

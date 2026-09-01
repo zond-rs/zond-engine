@@ -28,7 +28,7 @@
 //! | [`topology`] | what is between here and a host |
 //! | [`passive`] | what a link already carries, having sent nothing |
 //! | [`composite`] | routes each target to a strategy that covers its protocol |
-//! | [`raw`], [`frames`], [`icmp_error`] | not strategies: what they are built from, and what they read |
+//! | [`raw`], [`frames`], [`icmp_error`], [`sweep`] | not strategies: what they are built from, what they read, and what they all keep track of |
 //!
 //! It was arranged by the target's network position until September 2026, and
 //! the two axes had been crossed: `routed` meant "reached through a gateway"
@@ -222,6 +222,8 @@ pub mod ports;
 // timings a probe over a routed path is held to.
 pub mod raw;
 pub mod routed;
+// What the three probing sweeps keep track of in common.
+pub mod sweep;
 // What is between here and a host, rather than what is at it. Both passes here
 // run after the ports are known, because what reaches a host is what decides
 // how to ask about the path to it.
