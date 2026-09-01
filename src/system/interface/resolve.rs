@@ -81,9 +81,9 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
 
     let Some(net) = link.ipv4 else {
         // Named, and named accurately. What the caller needs to be able to tell
-        // apart is "nothing is there" from "this link cannot be swept the way
-        // you asked", and the old message asserted the first while meaning the
-        // second.
+        // apart is nothing being there from the link not being sweepable the
+        // way it was asked for, and the old message asserted the first while
+        // meaning the second.
         return Err(lan_unresolved(format!(
             "{} has no private IPv4 network to sweep{}. Give an explicit range, \
              or an IPv6 target on this link.",

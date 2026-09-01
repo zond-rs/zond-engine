@@ -68,7 +68,7 @@ pub struct RoutedTarget {
 /// memory. There is no ceiling at which walking a `/64` becomes reasonable, so
 /// the question is only where to stop pretending.
 ///
-/// It is deliberately the same number as the largest IPv4 range anyone sweeps
+/// It is the same number as the largest IPv4 range anyone sweeps
 /// in practice, because the limit is about how many probes a scan can spend
 /// rather than about the address family. Larger IPv6 ranges are not scanned
 /// less thoroughly here; they are refused, loudly, so the caller knows the
@@ -134,7 +134,7 @@ pub struct RoutedTargets {
 /// Reads the host's interface table through
 /// [`interfaces`](super::interfaces), narrowed to the links that could carry a
 /// probe. Where that table comes from is [`Link::from_netdev`](super::Link)'s
-/// business and deliberately nobody else's; this used to name `pnet::datalink`,
+/// business and nobody else's; this used to name `pnet::datalink`,
 /// which stopped being the source, and then stopped being a dependency.
 pub fn map_ips_to_interfaces(ip_set: IpSet) -> RoutedTargets {
     map_ips_to_interfaces_with(ip_set, viable_interfaces())

@@ -93,7 +93,7 @@ pub fn prioritized_interfaces(limit: usize) -> Vec<Link> {
 
 /// The ordering, decoupled from the host so it can be tested.
 ///
-/// **Wired before wireless, and a name is no longer consulted.** This sorted on
+/// Wired before wireless, and a name is no longer consulted. This sorted on
 /// `name.starts_with("e")`, which is `eth0` and `en0` on Linux and macOS, and
 /// nothing at all on Windows, where an adapter is named by its GUID. It also
 /// ranked `en1` above `wlan0` on a machine where `en1` *is* the Wi-Fi, which is
@@ -111,7 +111,7 @@ pub(crate) fn prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) ->
 /// broadcast-capable and not point-to-point. [`ViabilityError`] names each of
 /// those the other way round.
 ///
-/// **`None` rather than an error, because there is no error to report.** A
+/// `None` rather than an error, because there is no error to report. A
 /// machine with nothing but loopback and a VPN tunnel is a machine with no LAN,
 /// which is an answer about the host and not a failure to find one out. Every
 /// caller of this treated the two the same way when they were separate.
@@ -217,7 +217,7 @@ pub fn lan_viability(link: &Link) -> Result<(), ViabilityError> {
 
 /// The best of the viable links.
 ///
-/// **The one the default route leaves by, before anything else.** That is what
+/// The one the default route leaves by, before anything else. That is what
 /// `lan` means to somebody who types it, the network this machine is actually
 /// on, and it is a fact about the routing table rather than a guess about the
 /// hardware, which is why it is answerable the same way on every platform.
@@ -230,7 +230,7 @@ pub fn lan_viability(link: &Link) -> Result<(), ViabilityError> {
 /// `/24`, and `zond discover lan` answered *"awdl0 has no private IPv4 network
 /// to sweep"* on a machine plainly on a network.
 ///
-/// **Neither does having an address make a link the LAN.** Falling back to "the
+/// Neither does having an address make a link the LAN. Falling back to "the
 /// first one with a private IPv4" would pick `bridge100` on this same laptop,
 /// which is the virtualisation bridge on `192.168.64.1/24`: a real private
 /// network with nothing on it but virtual machines.

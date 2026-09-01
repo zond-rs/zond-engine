@@ -24,7 +24,7 @@
 //! filtered on it, found nothing, and reported a machine with no network, which
 //! is the one failure shape the rest of this crate is built to refuse.
 //!
-//! **The one that outlives it**: swapping that type for another library's would
+//! The one that outlives it: swapping that type for another library's would
 //! have fixed the platform and kept the shape, and the next library's defect
 //! would arrive by the same route. A consumer of this crate should not have to
 //! know which crate read the interface table, any more than they have to know
@@ -32,7 +32,7 @@
 //! they come from is [`from_netdev`](Link::from_netdev)'s business and nobody
 //! else's.
 //!
-//! ## What it deliberately does not carry
+//! ## What it does not carry
 //!
 //! Speed, MTU, DNS servers, statistics. All available from the source and none
 //! of them read by anything in this engine, and a field nothing reads is a
@@ -213,7 +213,7 @@ impl Link {
 
     /// What the interface is called here.
     ///
-    /// **Whatever this platform calls it**, which is not always what a person
+    /// Whatever this platform calls it, which is not always what a person
     /// would: on Windows it is the adapter's GUID rather than the name in the
     /// control panel. It is the name every other call in this crate is keyed
     /// by, so it is the one worth carrying.
@@ -304,7 +304,7 @@ impl Link {
 
     /// Whether this machine's default route leaves by this link.
     ///
-    /// **The closest thing there is to "which network am I on".** It is a fact
+    /// The closest thing there is to "which network am I on". It is a fact
     /// about the routing table rather than a guess about the hardware, which is
     /// what makes it answerable the same way on every platform, and what makes
     /// it right where hardware guesses are wrong. macOS presents `awdl0`
@@ -361,7 +361,7 @@ pub enum Addressing {
 impl Addressing {
     /// What a platform's two flags amount to.
     ///
-    /// **A link reporting both is read as point-to-point.** No operating system
+    /// A link reporting both is read as point-to-point. No operating system
     /// sets `IFF_BROADCAST` and `IFF_POINTOPOINT` together, so this is a rule
     /// about a case that should not arise; it picks the direction that refuses
     /// rather than the one that sweeps, because broadcasting onto something
@@ -377,7 +377,7 @@ impl Addressing {
 
 /// Every interface this machine has.
 ///
-/// **The one place the host is asked.** Everything else in this crate takes
+/// The one place the host is asked. Everything else in this crate takes
 /// [`Link`]s from a caller or from here, which is what makes a scan against a
 /// stated set of links and a scan against the real machine the same code path,
 /// and what stops a second enumeration appearing with a second library's
@@ -392,8 +392,8 @@ pub fn interfaces() -> Vec<Link> {
 impl Link {
     /// Reads one interface out of the host's table.
     ///
-    /// **This is the whole of the crate's dependency on how that table is
-    /// read.** Every fact below is copied out rather than borrowed, so the
+    /// This is the whole of the crate's dependency on how that table is read.
+    /// Every fact below is copied out rather than borrowed, so the
     /// source has no reach past this function.
     ///
     /// Windows is the reason it says `oper_state` rather than a flags word.
@@ -455,7 +455,7 @@ pub fn is_layer_2_capable(link: &Link) -> bool {
 
 /// Whether every target in `ips` is on the same segment as `link`.
 ///
-/// **Every range, wholly, in both families.** A range straddling the edge of
+/// Every range, wholly, in both families. A range straddling the edge of
 /// the link's network is not on-link: half of it is reachable by ARP and half
 /// needs a router, and treating the whole as local would have a sweep wait out
 /// a timeout for every address past the boundary.

@@ -16,8 +16,8 @@
 //! address nobody named. [`privilege`] reports whether the process may open raw
 //! sockets.
 //!
-//! **This is the only module that asks the host about itself, and it asks only
-//! what a scan needs to send a packet.** It deliberately does not profile the
+//! This is the only module that asks the host about itself, and it asks only
+//! what a scan needs to send a packet. It does not profile the
 //! machine, what it is listening on, what firewall it runs, because none of
 //! that changes what goes on the wire, and a library that gathers it is
 //! collecting data on its embedder's host for nobody's benefit.

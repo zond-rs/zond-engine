@@ -24,7 +24,7 @@
 //! and is reported as the unanswerable question it is, and an off-link range too
 //! large to walk is refused rather than half-scanned.
 //!
-//! **The facade is the whole of it.** Every name below is re-exported here and
+//! The facade is the whole of it. Every name below is re-exported here and
 //! the modules holding them are private, so each has exactly one public path.
 //! Naming both would commit the crate to two spellings of every item and to the
 //! file layout underneath, and the layout is where this module still moves: how

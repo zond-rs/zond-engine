@@ -25,8 +25,8 @@
 //! that: [`journal::paths`](crate::journal::paths), deciding whose home a
 //! journal written under `sudo` belongs in.
 //!
-//! **Asking the second where the first was meant is how a scan degrades for no
-//! reason.** Linux gates a raw socket on `CAP_NET_RAW`, which root has and which
+//! Asking the second where the first was meant is how a scan degrades for no
+//! reason. Linux gates a raw socket on `CAP_NET_RAW`, which root has and which
 //! a binary given `setcap cap_net_raw+ep` also has without being root. That is
 //! how a scanner is deployed without handing it the whole machine, and a uid
 //! check reports every such run as unprivileged while it would have scanned

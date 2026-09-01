@@ -73,8 +73,8 @@ impl OnLinkTable {
     /// Returns the source address for `target` if it sits on one of the host's
     /// own subnets, or `None` if it has to be routed off-link.
     ///
-    /// **A bare link-local target answers `None`, and that is the whole of why
-    /// this is not a one-line `find`.** Every interface holds an `fe80::/64`, so
+    /// A bare link-local target answers `None`, and that is the whole of why
+    /// this is not a one-line `find`. Every interface holds an `fe80::/64`, so
     /// such a target matches all of them and identifies none, and the first
     /// match is decided by whatever order the host listed its interfaces in.
     /// [`RoutedTargets::ambiguous`](super::RoutedTargets) is the same refusal
@@ -468,7 +468,7 @@ mod tests {
     /// destination is reachable only from a link-local address, so a global one
     /// must not be offered for it.
     ///
-    /// **Nor may a link-local one be**, which is what this used to assert. The
+    /// Nor may a link-local one be, which is what this used to assert. The
     /// property above is real and still holds; what it does not establish is
     /// *which* link-local address, and on a fixture with one interface there
     /// was only one to pick. Every interface holds an `fe80::/64`, so on a real
