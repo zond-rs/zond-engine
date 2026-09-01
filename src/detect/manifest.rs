@@ -12,12 +12,12 @@
 //! identity, the cheap gate that decides whether it runs for a port at all, and
 //! the capabilities and intrusiveness [class](Class) it asks the operator to
 //! grant. A [flow](super::flow) and a [compute module](super::compute) differ in
-//! their *body*, steps versus code, but declare themselves the same way, so the
+//! their body, steps versus code, but declare themselves the same way, so the
 //! manifest is one vocabulary both tiers share rather than each restating.
 //!
 //! ## The class is the request, not the grant
 //!
-//! Nothing here self-reports a permission. A detection *declares* a
+//! Nothing here self-reports a permission. A detection declares a
 //! [`Class`] and a [`CapabilitySpec`]; the [envelope](crate::config::envelope) decides
 //! what to serve, and the runtime serves exactly that. The class a detection asks
 //! for is the set of capabilities an envelope will hand it, so a `passive`
@@ -26,7 +26,7 @@
 //!
 //! ## Authoring types, kept free of the model
 //!
-//! These deserialize from TOML and are deliberately separate from the
+//! These deserialize from TOML and are separate from the
 //! [`model`](crate::model) types they map onto, for the reason the fingerprint
 //! signature schema is: the model stays serde-free, so a detection's `class` is
 //! parsed here and [converted](Class::into_model) into the model's own vocabulary
@@ -43,7 +43,7 @@
 
 use serde::Deserialize;
 
-/// `[detection]`, what a detection *is* and what it *asks to be handed*, shared
+/// `[detection]`, what a detection is and what it asks to be handed, shared
 /// by every tier that runs one.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,10 +111,10 @@ pub struct Rule {
     pub speaks: Option<String>,
 }
 
-/// `[detection.capabilities]`, what a detection asks to be handed. The class *is*
+/// `[detection.capabilities]`, what a detection asks to be handed. The class is
 /// the capability set an envelope will serve; nothing here self-reports.
 ///
-/// Named a *spec* for the same reason the flow schema's other authoring types are:
+/// Named a spec for the same reason the flow schema's other authoring types are:
 /// it is a specification a detection writes, distinct from the served
 /// [`Capabilities`](super::compute::Capabilities) a compute module holds at run
 /// and the [`Grant`](super::compute::Grant) an envelope produces from it.

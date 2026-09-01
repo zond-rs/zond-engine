@@ -10,14 +10,14 @@
 //!
 //! The tier for the detections a [flow](super::flow) cannot express: real
 //! parsing, a stateful exchange, a verdict computed from behaviour rather than
-//! recognised from a string. It is *code*, and the whole of what makes running a
+//! recognised from a string. It is code, and what makes running a
 //! stranger's code safe is one inversion: the module names nothing that
 //! reaches the world; the host hands it a fixed set of verbs, and that set, no
 //! larger, is the entire surface between the module and everything outside its
 //! own memory. Inject nothing and the module is a pure calculator over the
 //! bytes it was given; inject only what its class grants and it is bounded to
-//! exactly that; inject *recorded* bytes and it is a pure function of its inputs,
-//! which is the whole of replay.
+//! exactly that; inject recorded bytes and it is a pure function of its inputs,
+//! which is what replay is.
 //!
 //! ## The seam
 //!

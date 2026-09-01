@@ -26,9 +26,9 @@
 //!
 //! Two kinds of `when` clause steer a flow, both written in the [guard
 //! grammar](super::expr) and answered by [`eval`](super::eval). A step's `when`
-//! is checked against the environment *before* the step runs, a false guard
+//! is checked against the environment before the step runs, a false guard
 //! skips the step and moves on, so a step may be made conditional on what an
-//! earlier one bound. A finding's `when` is checked against the environment *and*
+//! earlier one bound. A finding's `when` is checked against the environment and
 //! its step's match result, so a finding fires only in the case it names. An
 //! absent guard always holds; an unparseable one never does.
 
@@ -452,7 +452,7 @@ mod tests {
     fn a_patched_or_unrelated_server_never_reaches_the_exploit_step() {
         let grafana = flow("grafana-path-traversal");
 
-        // 8.10.0 is *newer* than 8.3.1, a lexical `<` would misread it as
+        // 8.10.0 is newer than 8.3.1, a lexical `<` would misread it as
         // affected (10 < 3 as strings) and probe a patched server; the
         // version-compare guard skips the step, so no finding and no traversal.
         let mut patched = Grafana {

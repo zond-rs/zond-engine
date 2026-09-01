@@ -15,15 +15,16 @@
 //!
 //! ## Source, not a parsed form
 //!
-//! What is embedded is each flow's validated *source* and the SHA-256 of its
+//! What is embedded is each flow's validated source and the SHA-256 of its
 //! bytes, and the source is re-parsed here. Two reasons: the match rule is an
 //! `untagged` enum `bincode` cannot round-trip, so the parsed form would not
 //! survive the blob; and re-reading the exact bytes the build validated keeps the
 //! build and the runtime reading one text. A flow the build accepted parses here
 //! without fail, which is why the re-parse may `expect`.
 
-// The corpus is loaded but not yet run in a scan: the detection stage that will
-// draw on it is a later increment, so for now only the tests exercise these.
+// The scanner runs this corpus; a couple of accessors and the test-only
+// constructors the scan path does not reach would otherwise trip the unread-item
+// lint, so it is silenced module-wide.
 #![allow(dead_code)]
 
 use std::sync::OnceLock;

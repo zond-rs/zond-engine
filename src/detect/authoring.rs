@@ -13,7 +13,7 @@
 //! way, so this is one vocabulary they share rather than each restating. The
 //! [manifest](super::manifest) is the same idea for the `[detection]` table.
 //!
-//! What a finding *says* is not here. A flow's summary and detail are `{var}`
+//! What a finding says is not here. A flow's summary and detail are `{var}`
 //! templates resolved against what earlier steps bound; a host detection's are
 //! literal text. They are different grammars behind the same field names, so
 //! each tier keeps its own `FindingSpec` and only these two enums are shared.

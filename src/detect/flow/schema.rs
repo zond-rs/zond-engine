@@ -22,7 +22,7 @@
 //!
 //! ## Authoring against the model
 //!
-//! These are authoring types: they deserialize from TOML and are deliberately
+//! These are authoring types: they deserialize from TOML and are
 //! separate from the [`model`](crate::model) types they map onto, for the reason
 //! [`fingerprint::signature`](crate::fingerprint) is separate from the model: the
 //! model stays serde-free, so a flow's `severity` and `references` are parsed here
@@ -81,7 +81,7 @@ pub struct FlowDetection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
-    /// A guard over variables bound by *earlier* steps. Absent = always run.
+    /// A guard over variables bound by earlier steps. Absent = always run.
     #[serde(default)]
     pub when: Option<String>,
     /// A bounded loop over a literal list, the one repetition construct.
@@ -188,7 +188,7 @@ pub enum OnNoMatch {
     /// Stop the flow; nothing further runs.
     #[default]
     Halt,
-    /// Proceed with this step's binds left unbound, how a *conditional* later
+    /// Proceed with this step's binds left unbound, how a conditional later
     /// step reads "the probe happened but did not confirm".
     Continue,
 }

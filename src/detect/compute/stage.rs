@@ -21,7 +21,7 @@
 //! Like the flow stage, this holds no socket of its own: `caps_for` yields the
 //! [`Capabilities`] a running detection is served, given the grant it will run
 //! under, so a scan hands it a live socket bound to the port and a test hands it a
-//! recorded one: the module cannot tell, which is the whole of replay.
+//! recorded one: the module cannot tell, which is what replay is.
 //!
 //! ## An abnormal end is not a finding
 //!

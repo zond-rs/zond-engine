@@ -10,18 +10,18 @@
 //!
 //! A guard is the one place a Tier-1 flow makes a decision: a step's `when`
 //! decides whether the step runs, a finding's `when` decides whether it fires.
-//! This module is the guard *as syntax*, an [`Expr`] tree and the [`parse`]
+//! This module is the guard as syntax, an [`Expr`] tree and the [`parse`]
 //! that builds one from the string a flow author wrote. What a parsed guard
-//! *means* against a running flow's variables lives beside the interpreter
-//! ([`super::eval`]); the split is deliberate, and it is the same split the
+//! means against a running flow's variables lives beside the interpreter
+//! ([`super::eval`]); the split is the same one the
 //! service signatures already keep.
 //!
 //! ## Shared verbatim with the build
 //!
 //! Like [`fingerprint::pattern`](crate::fingerprint) and the signature schema,
 //! this module carries no dependency on the rest of the crate, only [`std`],
-//! so `build.rs` can load it with `#[path]` and reject a malformed guard *at
-//! build time*, with the exact parser the runtime uses. A guard the build
+//! so `build.rs` can load it with `#[path]` and reject a malformed guard at
+//! build time, with the exact parser the runtime uses. A guard the build
 //! accepts is a guard the interpreter can read, because both read this file.
 //! Nothing here reaches a network, a clock, or a variable's value: parsing is
 //! pure over the text, which is what lets the build do it.
@@ -44,9 +44,9 @@
 //! operand     = ident | string-literal | int-literal ;
 //! ```
 //!
-//! There is deliberately no arithmetic, no function call, and no regex operator
+//! There is no arithmetic, no function call, and no regex operator
 //! (matching is `bind`'s job, run once and its result named): a guard that could
-//! *compute* would be the first inch of a programming language, and the signal
+//! compute would be the first inch of a programming language, and the signal
 //! that a detection belongs in the compute tier instead.
 
 use std::collections::BTreeSet;

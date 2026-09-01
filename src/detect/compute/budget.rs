@@ -17,17 +17,17 @@
 //! ## Three bounds, three questions
 //!
 //! [`Budget`] carries bounds that answer different questions and bite in
-//! different places. `fuel` bounds *work done*, independent of machine speed, and
-//! is what a busy loop hits. `deadline` bounds *wall-clock*, and is what a run
+//! different places. `fuel` bounds work done, independent of machine speed, and
+//! is what a busy loop hits. `deadline` bounds wall-clock, and is what a run
 //! stalled in a slow exchange hits, which fuel cannot see. `max_memory` bounds
-//! *allocation*. `max_bytes` and `max_connections` bound the *I/O at the seam*:
+//! allocation. `max_bytes` and `max_connections` bound the I/O at the seam:
 //! they are spent inside [`speak`](super::Capabilities::speak), the one place a
 //! module reaches the network, so a module cannot exceed them because the thing
 //! that would spend them refuses to.
 //!
 //! ## An abnormal end is not an empty result
 //!
-//! A clean run that found nothing returns `Ok(vec![])`, *ran, no finding*. A run
+//! A clean run that found nothing returns `Ok(vec![])`, ran, no finding. A run
 //! that hit a bound, was refused a call, or broke returns `Err(RunOutcome)`, a
 //! different fact, so a reader never reads "it ran out of fuel" as "it cleared the
 //! host." This is the honesty the whole subsystem is built for, carried into the
@@ -65,7 +65,7 @@ pub struct Budget {
     pub max_connections: u32,
 }
 
-/// Which bound a run hit. Each is a *deterministic* trap at a known point, not a
+/// Which bound a run hit. Each is a deterministic trap at a known point, not a
 /// timing accident, so the same inputs trap at the same place every time.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +78,7 @@ pub enum BudgetTrap {
     /// here, in the guest, before the allocation lands.
     Memory,
     /// The byte budget, spent at the seam. The exchange that would exceed it does
-    /// not happen, the trap is *before* the bytes leave.
+    /// not happen, the trap is before the bytes leave.
     Bytes,
     /// The connection budget. The exchange that would open one connection too
     /// many is refused before it is opened.
@@ -88,8 +88,8 @@ pub enum BudgetTrap {
 /// A granted capability that refused a specific call.
 ///
 /// The narrow case: not a capability the module was never given, that one is
-/// *absent*, and a module that names it fails without a `Denial`, because there
-/// is nothing there to refuse, but a capability the module *holds* declining a
+/// absent, and a module that names it fails without a `Denial`, because there
+/// is nothing there to refuse, but a capability the module holds declining a
 /// particular use of it, such as [`resolve`](super::Capabilities::resolve) of a
 /// name the envelope's scope forbids.
 #[derive(Debug, Clone, PartialEq, Eq)]

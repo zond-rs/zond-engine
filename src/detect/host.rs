@@ -20,7 +20,7 @@
 //! computes a verdict, is a later addition; presence correlation is what the first
 //! detections need.
 //!
-//! It is deliberately not [network roles](crate::model::host::NetworkRole). A role
+//! It is not [network roles](crate::model::host::NetworkRole). A role
 //! is a conclusion proven in its own protocol, never from a port number, so a host
 //! with 80 open is not a web server there. A host detection is the opposite reading:
 //! a finding drawn precisely from which ports a host presents together.

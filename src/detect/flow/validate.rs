@@ -13,7 +13,7 @@
 //! ill-formed, a guard that names a variable no earlier step binds, a `passive`
 //! detection that tries to send, a loop that never ends or never runs, a
 //! detection that can emit no finding at all. A flow that passes is a flow the
-//! interpreter can run without a surprise, which is the whole promise of a
+//! interpreter can run without a surprise, which is the promise of a
 //! validated tier: the failure is at the build, with a pointer to the file, not
 //! at scan time against a live target.
 //!
@@ -22,12 +22,12 @@
 //! Like the schema and the guard grammar, this module carries no dependency on
 //! the rest of the crate, only [`std`], its sibling [`schema`](super::schema),
 //! and its sibling [`expr`](super::expr). So `build.rs` loads it with `#[path]`
-//! and runs it over the flow corpus with the very code that would run over a flow
+//! and runs it over the flow corpus with the same code that would run over a flow
 //! loaded at runtime. Its `#[cfg(test)]` tests are free to reach into the crate
 //! (the build never compiles them), so they check the checker against the real
 //! matcher and real parsed flows.
 //!
-//! ## What it does *not* check
+//! ## What it does not check
 //!
 //! The engine-backed rules stay with the engine, in `build.rs`: that every
 //! `expect`/`bind` pattern compiles and its capture group exists, and that a
@@ -168,7 +168,7 @@ impl fmt::Display for ValidationError {
 
 /// Checks `flow` and returns every way it is ill-formed, empty if it is sound.
 ///
-/// It reports *all* the problems it finds rather than the first, so one build
+/// It reports all the problems it finds rather than the first, so one build
 /// surfaces every fix a flow needs. Duplicate ids across the corpus and the
 /// pattern/budget rules are the caller's to add: they need the whole corpus or
 /// the pattern engine, which this pure structural pass does not hold.
@@ -219,7 +219,7 @@ fn check_identity(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
 }
 
 /// H8, a detection cannot do more than its class allows. The class is what the
-/// envelope will serve; the flow's *structure* may not exceed it.
+/// envelope will serve; the flow's structure may not exceed it.
 fn check_capabilities(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     let caps = &flow.detection.capabilities;
     let has_send = flow.step.iter().any(|step| step.send.is_some());

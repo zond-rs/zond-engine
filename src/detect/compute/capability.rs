@@ -21,8 +21,8 @@
 //!
 //! ## Why a verb, never a handle
 //!
-//! The seam is deliberately a set of verbs the host *runs*, not handles the
-//! module *holds*, and the rule is absolute: never hand a module a socket, a file
+//! The seam is a set of verbs the host runs, not handles the
+//! module holds, and the rule is absolute: never hand a module a socket, a file
 //! descriptor, a dial-able address, or a clock. A handle is authority the module
 //! wields directly, the sandbox's memory boundary is beside the point once the
 //! thing it can reach is on the far side of a `send` the host no longer mediates;
@@ -47,7 +47,7 @@ use super::budget::Budget;
 ///
 /// `Send` because a module runs on the blocking pool, off the reactor, so the
 /// implementation that serves it, a live socket, a recorded tape, moves there
-/// with it. It is deliberately *not* `Sync`: one run owns its capabilities, and a
+/// with it. It is not `Sync`: one run owns its capabilities, and a
 /// live one drives a single socket that no second thread may touch.
 ///
 /// # An implementation must not re-enter a compute runtime
@@ -78,7 +78,7 @@ pub trait Capabilities: Send {
     /// cannot also reach the resolver; served only where the class grants it.
     fn resolve(&mut self, name: &str) -> Result<Vec<IpAddr>, CapError>;
 
-    /// The injected clock: a scan-relative tick, the *only* clock a module can
+    /// The injected clock: a scan-relative tick, the only clock a module can
     /// read. It is not wall-clock and not a system time, which is what lets a run
     /// be recorded and replayed, a real clock would make the same replay differ.
     fn now(&mut self) -> ScanInstant;
@@ -104,7 +104,7 @@ impl Capabilities for Box<dyn Capabilities> {
 
 /// A scan-relative instant: milliseconds since the scan's clock started.
 ///
-/// A value the engine mints and can write down, deliberately not a
+/// A value the engine mints and can write down, not a
 /// [`std::time::Instant`], whose monotonic reading means nothing outside the
 /// process that took it and so cannot be journalled, the same reason a captured
 /// round-trip sample's instant does not survive a report round-trip. Recording
@@ -141,10 +141,10 @@ pub enum Capability {
 
 /// Why a capability could not serve a call.
 ///
-/// The distinction the runtime draws on it: a budget or scope refusal is a *hard*
+/// The distinction the runtime draws on it: a budget or scope refusal is a hard
 /// end to the run, a module cannot loop-and-retry its way past a byte budget, so
 /// the run stops with the matching [`RunOutcome`](super::RunOutcome). An ordinary
-/// I/O failure is instead handed *back to the module*, which may catch it and try
+/// I/O failure is instead handed back to the module, which may catch it and try
 /// another approach the way any network client does.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -185,10 +185,10 @@ impl CapError {
 /// What the operator's envelope produced for one detection: its identity, the
 /// class it runs at, the concrete [`Budget`], and which verbs to serve it.
 ///
-/// The grant is the whole of what a runtime needs to instantiate a module, and it
+/// The grant is all a runtime needs to instantiate a module, and it
 /// is where the class becomes enforcement rather than advice: a `passive` grant
 /// carries `speak = false`, so the runtime serves no `speak` at all, and a
-/// `passive` module that names it fails because the verb is *absent*, not because
+/// `passive` module that names it fails because the verb is absent, not because
 /// a present verb returned an error. The identity and class are stamped onto
 /// every finding the module produces, a module cannot forge its own provenance.
 #[derive(Debug, Clone)]

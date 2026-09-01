@@ -70,7 +70,7 @@ pub struct ResolveExchange {
 
 /// Every capability interaction of one run, in call order per verb.
 ///
-/// This is the whole of what a run read from the world. Build a
+/// This is everything a run read from the world. Build a
 /// [`RecordedCapabilities`] from it and the run reproduces exactly, because there
 /// is nothing else a module can read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

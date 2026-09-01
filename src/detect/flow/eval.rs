@@ -17,13 +17,13 @@
 //!
 //! ## Two ways a guard fails closed
 //!
-//! A guard that cannot be answered answers *no*, never *maybe*:
+//! A guard that cannot be answered answers no, never maybe:
 //!
-//! - **A guard that does not parse** is treated as unmet. In a validated corpus
-//!   this cannot happen: the build rejects an unparseable guard (a later
-//!   increment), but until then, and for a hand-built flow in a test, an
-//!   unreadable guard suppresses its step or finding rather than firing it.
-//! - **A comparison on an unbound variable** is unmet. `version < '2'` when
+//! - A guard that does not parse is treated as unmet. In a validated corpus
+//!   this cannot happen: the build rejects an unparseable guard, but until then,
+//!   and for a hand-built flow in a test, an unreadable guard suppresses its step
+//!   or finding rather than firing it.
+//! - A comparison on an unbound variable is unmet. `version < '2'` when
 //!   `version` was never bound is false, not an error and not true, which is why
 //!   a conditional step guards `bound(version) and version < '2'`: the `and`
 //!   short-circuits and the comparison is never reached against nothing.
@@ -92,7 +92,7 @@ fn resolve(operand: &Operand, env: &Env) -> Option<Value> {
 
 /// A resolved operand. A variable always resolves to [`Text`](Value::Text), the
 /// environment holds only strings, so the numeric path is reached exactly when
-/// *both* sides were written as integer literals, which is the rule the grammar
+/// both sides were written as integer literals, which is the rule the grammar
 /// promises.
 enum Value {
     Number(i64),
@@ -100,8 +100,8 @@ enum Value {
 }
 
 impl Value {
-    /// Equality: numeric between two integer literals, string-coerced otherwise
-    ///, total and always defined, so `count == 3` and `name == 'nginx'` both
+    /// Equality: numeric between two integer literals, string-coerced otherwise,
+    /// total and always defined, so `count == 3` and `name == 'nginx'` both
     /// mean what they read as.
     fn equals(&self, other: &Value) -> bool {
         match (self, other) {
@@ -169,7 +169,7 @@ mod tests {
         let affected = env(&[("version", "8.2.0")]);
         assert!(holds(Some("version < '8.3.1'"), &affected, None));
 
-        // The lexical trap the operator exists to avoid: 8.10.0 is *newer* than
+        // The lexical trap the operator exists to avoid: 8.10.0 is newer than
         // 8.3.1, so it is not in the affected `< 8.3.1` range, a lexical `<`
         // would wrongly report it, understating nothing and over-reporting a
         // patched server as vulnerable.

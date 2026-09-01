@@ -12,7 +12,7 @@
 //! over a fresh connection to the one scanned port, [`now`](Capabilities::now)
 //! off a scan-relative clock. It is the live counterpart to the recorded
 //! capabilities a test or a replay serves, and a module cannot tell which it
-//! holds, the whole point of the seam.
+//! holds, which is what the seam is for.
 //!
 //! ## The budget is enforced here
 //!

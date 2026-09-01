@@ -18,7 +18,7 @@
 //!
 //! ## Three stages, because a module is compiled once and run often
 //!
-//! A detection is validated and compiled *once*, then run against every open port
+//! A detection is validated and compiled once, then run against every open port
 //! it is interested in, so the lifecycle is three stages:
 //! [`load`](ComputeRuntime::load) turns a body into a shared, reusable module;
 //! [`instantiate`](ComputeRuntime::instantiate) draws a cheap per-port instance
@@ -31,7 +31,7 @@
 //!
 //! A [`ModuleBody`] is source or a compiled blob a caller supplies, never a path
 //! the engine reads, per the library boundary, the engine hunts no filesystem
-//! for detections. Accepting one is safe precisely because it grants nothing: the
+//! for detections. Accepting one is safe because it grants nothing: the
 //! capability model is what lets a detection be accepted from anywhere.
 
 use crate::fingerprint::PortContext;
@@ -54,7 +54,7 @@ pub enum ModuleBody {
 
 /// Why a module could not be loaded or instantiated.
 ///
-/// A failure *before any port is touched*, a refusal with a cause, never a run
+/// A failure before any port is touched, a refusal with a cause, never a run
 /// that is quietly clamped. A body that will not compile, or one a given backend
 /// cannot serve, is rejected here.
 #[non_exhaustive]
@@ -83,7 +83,7 @@ pub trait ComputeRuntime: Send + Sync {
 
     /// Validate and compile `body` into a reusable module, or reject it with a
     /// cause. The one place a body's own validity is checked; whether a detection
-    /// *may run*, its class against the envelope, is decided by the caller
+    /// may run, its class against the envelope, is decided by the caller
     /// before instantiation.
     fn load(&self, body: &ModuleBody) -> Result<Self::Module, LoadError>;
 

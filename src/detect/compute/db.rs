@@ -17,7 +17,7 @@
 //!
 //! ## Compiled once, at first use
 //!
-//! Unlike a [flow](crate::detect::flow), a module is *code* and must be compiled.
+//! Unlike a [flow](crate::detect::flow), a module is code and must be compiled.
 //! That happens here, once, when the database is first asked for: each body is
 //! loaded through the [`RhaiRuntime`](super::RhaiRuntime), and the runtime and the
 //! compiled set are held together, because the [stage](super::stage) needs both to

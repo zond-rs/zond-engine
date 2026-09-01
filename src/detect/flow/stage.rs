@@ -20,14 +20,14 @@
 //! A flow runs for a port when its `when` fits the port's service, number and
 //! protocol, and its class is one the default policy enables, `passive` and
 //! `active-benign` for now, the intrusive classes staying off until an operator
-//! opts them in through an envelope (a later increment). The [`Probe`] each flow
-//! speaks through is supplied *per port* by the caller: that is the seam the live
+//! opts them in through an envelope. The [`Probe`] each flow
+//! speaks through is supplied per port by the caller: that is the seam the live
 //! transport plugs into, and it keeps this stage testable with a canned socket
 //! and free of any transport of its own. A caller that cannot reach a port
 //! returns [`None`], and the port is skipped.
 
-// The stage is wired into a scan by a later increment (the live transport that
-// supplies the Probe), so for now only the tests exercise it.
+// `run_flows` is a synchronous convenience the scanner bypasses, driving
+// `detect_port` directly, so only the tests exercise it.
 #![allow(dead_code)]
 
 use crate::config::DetectionEnvelope;
@@ -227,7 +227,7 @@ mod tests {
         use crate::detect::flow::schema::FlowDetection;
 
         // A flow whose class is off by default. Even on a matching port answering
-        // exactly what its `expect` wants, the stage must refuse to run it.
+        // just what its `expect` wants, the stage must refuse to run it.
         let source = r#"
             [detection]
             id      = "dangerous"
