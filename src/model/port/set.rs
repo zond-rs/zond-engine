@@ -174,6 +174,30 @@ impl PortSet {
             .collect()
     }
 
+    /// The `count` SCTP ports this engine would ask about first.
+    ///
+    /// The one list of the three that is not a default. A scan reaches SCTP
+    /// only where a port specification named it, so this is what a front end
+    /// offering the scan asks for rather than what fills in a blank. It is also
+    /// the shortest by an order of magnitude, and
+    /// [`catalog::SCTP_BY_PREVALENCE`](super::catalog::SCTP_BY_PREVALENCE) has
+    /// the argument for why a closed set needs no tail.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::model::port::set::PortSet;
+    ///
+    /// // The mobile core comes first, so a short list is still a useful one.
+    /// assert!(PortSet::top_sctp(3).has_sctp(3868));
+    /// ```
+    pub fn top_sctp(count: usize) -> Self {
+        super::catalog::top_sctp(count)
+            .iter()
+            .map(|&port| (port, Protocol::Sctp))
+            .collect()
+    }
+
     /// Returns the total number of unique port/protocol combinations.
     ///
     /// Note: This counts every individual port within every range.

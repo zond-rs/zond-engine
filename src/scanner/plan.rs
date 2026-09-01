@@ -351,6 +351,19 @@ pub enum DiscoveryStep {
         /// The destinations, with their source addresses.
         targets: Vec<RoutedTarget>,
     },
+    /// Raw SCTP INIT to the same routed targets, for a scan whose ports name
+    /// SCTP.
+    ///
+    /// Runs beside [`Routed`](Self::Routed) rather than instead of it. A host
+    /// answers whichever transport reaches it, and one that answers only SCTP is
+    /// reported down by a SYN sweep and never has its ports probed at all, since
+    /// the port phase covers what discovery found.
+    RoutedSctp {
+        /// The destinations, with their source addresses.
+        targets: Vec<RoutedTarget>,
+        /// The port every INIT is aimed at.
+        port: u16,
+    },
     /// Ordinary TCP connect attempts, for targets with no route and no segment:
     /// loopback, or anything the OS declined to resolve. Needs no privileges.
     Connect {
@@ -365,6 +378,7 @@ impl DiscoveryStep {
         match self {
             Self::Local { .. } => ScannerKind::Local,
             Self::Routed { .. } => ScannerKind::Routed,
+            Self::RoutedSctp { .. } => ScannerKind::RoutedSctp,
             Self::Connect { .. } => ScannerKind::Connect,
         }
     }
@@ -377,7 +391,7 @@ impl DiscoveryStep {
     pub fn target_count(&self) -> u128 {
         match self {
             Self::Local { targets, .. } | Self::Connect { targets } => targets.len(),
-            Self::Routed { targets } => targets.len() as u128,
+            Self::Routed { targets } | Self::RoutedSctp { targets, .. } => targets.len() as u128,
         }
     }
 
@@ -413,6 +427,9 @@ impl DiscoveryStep {
             Self::Routed { targets } => {
                 Ok(Box::new(RoutedScanner::new(targets, ctx, dns_tx, tuning)?))
             }
+            Self::RoutedSctp { targets, port } => Ok(Box::new(RoutedScanner::over_sctp(
+                targets, ctx, dns_tx, tuning, port,
+            )?)),
             Self::Connect { targets } => {
                 Ok(Box::new(ConnectScanner::new(targets, ctx, &tuning.evasion)))
             }
@@ -527,6 +544,33 @@ impl DiscoveryPlan {
         }
 
         Self { steps, refusals }
+    }
+
+    /// Adds an SCTP sweep beside every routed step, asking `port`.
+    ///
+    /// Apart from [`build`](Self::build) for the reason
+    /// [`PortScanPlan::cover_sctp`] is: what decides it is the
+    /// port specification, which belongs to the targets and not to the addresses
+    /// this plan was built from. A caller that never mentions SCTP sweeps with a
+    /// SYN alone and opens no second socket.
+    ///
+    /// Only the routed steps gain one. A local segment is swept at the link
+    /// layer, where ARP and neighbour discovery answer whatever the host speaks
+    /// above them, and an unprivileged connect step has no raw socket to send an
+    /// INIT through.
+    pub fn also_over_sctp(&mut self, port: u16) {
+        let sctp: Vec<DiscoveryStep> = self
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                DiscoveryStep::Routed { targets } => Some(DiscoveryStep::RoutedSctp {
+                    targets: targets.clone(),
+                    port,
+                }),
+                _ => None,
+            })
+            .collect();
+        self.steps.extend(sctp);
     }
 
     /// The strategies this plan would run.
@@ -974,6 +1018,44 @@ mod tests {
             mac: None,
             interface_index: index,
         }
+    }
+
+    /// An SCTP sweep runs beside each routed step and nowhere else: a segment
+    /// is swept at the link layer, where ARP and neighbour discovery answer
+    /// whatever the host speaks above them, and a connect step has no raw
+    /// socket to send an INIT through.
+    #[test]
+    fn an_sctp_sweep_is_added_to_the_routed_steps_alone() {
+        let mut plan = DiscoveryPlan {
+            steps: vec![
+                DiscoveryStep::Routed {
+                    targets: vec![RoutedTarget {
+                        target: v6("192.0.2.1"),
+                        source: v6("192.0.2.9"),
+                    }],
+                },
+                DiscoveryStep::Connect {
+                    targets: IpSet::new(),
+                },
+            ],
+            refusals: Vec::new(),
+        };
+
+        plan.also_over_sctp(3868);
+
+        let kinds: Vec<ScannerKind> = plan.steps().iter().map(DiscoveryStep::kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ScannerKind::Routed,
+                ScannerKind::Connect,
+                ScannerKind::RoutedSctp
+            ]
+        );
+        assert!(matches!(
+            plan.steps().last(),
+            Some(DiscoveryStep::RoutedSctp { port: 3868, .. })
+        ));
     }
 
     /// SCTP has no unprivileged form at all, so a scan that named SCTP ports

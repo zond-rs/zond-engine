@@ -1032,6 +1032,26 @@ mod tests {
         );
     }
 
+    /// An SCTP port carries the name of whatever claims its number, which for
+    /// the ports a scan of a mobile core asks about is the whole of what this
+    /// engine can say about them.
+    ///
+    /// Nothing here fingerprints an SCTP service: naming one needs a completed
+    /// association, and the scan opens none. A port reported with no label at
+    /// all was the alternative, and `2905/sctp open` tells a reader less than
+    /// their own notes would.
+    #[test]
+    fn an_sctp_port_is_named_by_the_service_that_claims_its_number() {
+        let port = baseline_port(2905, Protocol::Sctp, PortState::Open);
+        let service = port.service().expect("m3ua claims 2905");
+
+        assert_eq!(service.name(), "m3ua");
+        assert!(
+            service.is_inferred(),
+            "nothing asked the port what it was running"
+        );
+    }
+
     /// And what is seeded is marked as the guess it is.
     #[test]
     fn a_seeded_label_is_never_mistaken_for_an_identification() {

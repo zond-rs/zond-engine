@@ -10,9 +10,14 @@
 //!
 //! A scan that was given no port specification has to pick one, and the pick is
 //! the single largest determinant of what the scan finds. This module is that
-//! pick: two lists of port numbers, most likely to be listening first, from
-//! which [`PortSet::top_tcp`](super::PortSet::top_tcp) and
-//! [`PortSet::top_udp`](super::PortSet::top_udp) take a prefix.
+//! pick: three lists of port numbers, most likely to be listening first, from
+//! which [`PortSet::top_tcp`](super::PortSet::top_tcp),
+//! [`PortSet::top_udp`](super::PortSet::top_udp) and
+//! [`PortSet::top_sctp`](super::PortSet::top_sctp) take a prefix.
+//!
+//! The third is not a default. Nothing probes SCTP unless a caller asked about
+//! it, so that list answers "which SCTP ports" for a front end offering the
+//! scan rather than filling in a blank.
 //!
 //! ## Why not the well-known range
 //!
@@ -76,6 +81,8 @@
 //! actually bind, and the RPC ephemeral range.
 //!
 //! ## Adding to it
+//!
+//! The SCTP list has no tiers and needs none; [`SCTP_BY_PREVALENCE`] says why.
 //!
 //! Insert the port in the tier that describes it and keep the tier sorted; the
 //! tests below hold both the sorting and the total. A port whose service this
@@ -213,6 +220,61 @@ pub const UDP_BY_PREVALENCE: [u16; 250] = [
     51821, 65024,
 ];
 
+/// SCTP ports, most likely to be listening first.
+///
+/// A different kind of list from the two above. SCTP is not a general-purpose
+/// transport: nearly everything that speaks it is telecom signalling, and the
+/// deployed set is closed enough to write down, so there are no tiers here and
+/// no long tail to cut. The whole catalogue is twenty-five ports, a fortieth of
+/// the TCP list, and the order is a claim all the way down rather than only at
+/// the head.
+///
+/// The front is a mobile core, which is the reason anyone scans SCTP at all:
+/// Diameter first, then the RAN interfaces an LTE or 5G deployment exposes,
+/// then the SIGTRAN adaptation layers that carry SS7 signalling over IP. Behind
+/// them is the rest of what is both registered for SCTP and still deployed:
+/// media gateway control, SIP where it is carried this way, IPFIX, whose
+/// specification names SCTP as the transport a collector must implement, and
+/// RSerPool.
+///
+/// What is deliberately absent is the registered-but-unused tail. A dozen more
+/// numbers claim SCTP in the IANA registry and nothing has spoken them this
+/// century, and the argument the module documentation makes about the eighties
+/// applies here with more force: a list this short is read by hand.
+///
+/// Nothing reaches these ports unless a caller asked about SCTP. See
+/// [`PortSet::top_sctp`](super::PortSet::top_sctp).
+pub const SCTP_BY_PREVALENCE: [u16; 25] = [
+    // The mobile core.
+    3868,  // diameter
+    36412, // s1ap, the LTE control plane between eNodeB and MME
+    38412, // ngap, its 5G counterpart
+    2905,  // m3ua
+    36422, // x2ap
+    38422, // xnap
+    38472, // f1ap
+    38462, // e1ap
+    29118, // sgsap
+    29168, // sbcap
+    // SIGTRAN, carrying SS7 over IP.
+    14001, // sua
+    2904,  // m2ua
+    3565,  // m2pa
+    9900,  // iua
+    // Everything else that speaks SCTP and is still deployed.
+    2944, // megaco/h.248, text encoding
+    2945, // megaco/h.248, binary encoding
+    5060, // sip
+    5061, // sip over tls
+    4739, // ipfix
+    4740, // ipfix over dtls
+    9899, // sctp tunnelling
+    3863, // asap
+    3864, // asap over tls
+    9901, // enrp
+    9902, // enrp over tls
+];
+
 /// The ranks each tier of [`TCP_BY_PREVALENCE`] ends at, so the tests and the
 /// documentation cannot come to disagree about where the boundaries are.
 ///
@@ -233,6 +295,11 @@ pub fn top_tcp(count: usize) -> &'static [u16] {
 /// [`top_tcp`] is.
 pub fn top_udp(count: usize) -> &'static [u16] {
     &UDP_BY_PREVALENCE[..count.min(UDP_BY_PREVALENCE.len())]
+}
+
+/// The first `count` SCTP ports, most likely first. Clamped, as [`top_tcp`] is.
+pub fn top_sctp(count: usize) -> &'static [u16] {
+    &SCTP_BY_PREVALENCE[..count.min(SCTP_BY_PREVALENCE.len())]
 }
 
 // ╔════════════════════════════════════════════╗
@@ -257,6 +324,7 @@ mod tests {
         for (name, list) in [
             ("tcp", TCP_BY_PREVALENCE.as_slice()),
             ("udp", UDP_BY_PREVALENCE.as_slice()),
+            ("sctp", SCTP_BY_PREVALENCE.as_slice()),
         ] {
             let unique: HashSet<u16> = list.iter().copied().collect();
             assert_eq!(

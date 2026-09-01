@@ -1,0 +1,9 @@
+# Name only, deliberately. This service is carried over SCTP, where identifying
+# what is behind a port needs a completed association and this engine opens
+# none. Naming the number is still worth doing: it is what a scan prints beside
+# the port it found.
+
+[service]
+name = "m3ua"
+default_ports = [2905]
+description = "MTP3 User Adaptation, carrying SS7 MTP3 users over IP, RFC 4666"

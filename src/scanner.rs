@@ -516,7 +516,9 @@ fn spawn_discovery(
     let cfg = cfg.clone();
 
     tokio::spawn(async move {
-        run_discovery(targets, reach, caps, &cfg, &ctx).await;
+        // No SCTP sweep: `discover` is asked about addresses and never about
+        // ports, so nothing has said which SCTP port would be worth asking.
+        run_discovery(targets, reach, caps, &cfg, &ctx, None).await;
         // Only the echo probe. The series probe reads a port whose state is
         // already known, and a sweep establishes none.
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
@@ -541,15 +543,24 @@ fn spawn_discovery(
 ///
 /// `reach` is the difference between the two: a sweep may go beyond the
 /// addresses it was given, and a port scan's liveness check never does.
+///
+/// `sctp_port` adds an INIT sweep beside the SYN one, for a port scan whose
+/// ports name SCTP. `None` for a run that never mentioned it, which is every
+/// other one: an SCTP sweep costs a second raw socket and a second capture, and
+/// asks a question nobody put.
 async fn run_discovery(
     targets: IpSet,
     reach: Scope,
     caps: ScanCapabilities,
     cfg: &ZondConfig,
     ctx: &ScanContext,
+    sctp_port: Option<u16>,
 ) {
     if caps.privilege.is_raw() {
-        let plan = plan::DiscoveryPlan::build(targets, reach);
+        let mut plan = plan::DiscoveryPlan::build(targets, reach);
+        if let Some(port) = sctp_port {
+            plan.also_over_sctp(port);
+        }
         let enrichment = Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await;
         finish_enrichment(Some(enrichment), caps, ctx).await;
     } else {
@@ -940,8 +951,12 @@ fn spawn_scan(
             let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg);
 
             // Targeted, never a sweep: a port scan was asked about addresses,
-            // not about the network around them.
-            run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx).await;
+            // not about the network around them. It asks over SCTP as well
+            // where the scan's ports named an SCTP one, since a host that
+            // answers only SCTP would otherwise be called down and its ports
+            // never probed.
+            let sctp = orchestrator::sctp_discovery_port(&target_map);
+            run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx, sctp).await;
 
             orchestrator::run_correlation(&ctx, cfg.service_detection);
             let report = recorder.finish(&ctx);

@@ -2187,6 +2187,15 @@ pub enum ScannerKind {
     Passive,
     /// Raw TCP SYN discovery for gateway-routed targets.
     Routed,
+    /// The same sweep asking over SCTP: one INIT per address, for a scan whose
+    /// ports name SCTP.
+    ///
+    /// Named apart from [`Routed`](Self::Routed) because it is a different
+    /// question put to the network and it fails for its own reasons. A host
+    /// behind a filter that passes SCTP and drops TCP answers this and nothing
+    /// else, and a report attributing that finding to the SYN sweep would
+    /// describe a packet which drew silence.
+    RoutedSctp,
     /// Raw TCP SYN port scanning (the port-scan phase, distinct from [`Routed`]
     /// host discovery).
     ///
@@ -2330,10 +2339,11 @@ impl ScannerKind {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [ScannerKind; 17] = [
+    pub const ALL: [ScannerKind; 18] = [
         Self::Local,
         Self::Passive,
         Self::Routed,
+        Self::RoutedSctp,
         Self::SynPort,
         Self::TcpPort,
         Self::Connect,

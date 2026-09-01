@@ -173,12 +173,23 @@ alone comes back looking empty. Ask about it in the port specification, with the
 80,443,u:53,s:2905,s:3868
 ```
 
+`PortSet::top_sctp` is the engine's own list of which ports those are: twenty-five
+of them, a mobile core first, short enough that the order is a claim all the way
+down. It is the one port list that is never a default, since nothing probes SCTP
+unless a scan asked for it.
+
 The probe is an INIT chunk, and both answers it can draw are decisive: an
 INIT-ACK is an endpoint accepting the association, so the port is open, and an
 ABORT is a reachable stack refusing it, so the port is closed. Neither completes
 an association, and nothing sends the COOKIE-ECHO that would, so no port is left
 half-open. Silence is `filtered` rather than `open|filtered`, because a live
 endpoint answers either way.
+
+Discovery follows the ports. A scan that names an SCTP port also sweeps for
+hosts with an INIT, not only with a SYN, because the port phase probes what
+discovery found: a host behind a filter that passes SCTP and drops everything
+else would otherwise be reported down with its ports never looked at. The sweep
+asks on the likeliest of the ports you named.
 
 Two things worth knowing. It needs raw sockets and has no unprivileged form, so
 an unprivileged scan that named SCTP ports is told they went unprobed rather than

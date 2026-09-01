@@ -48,7 +48,7 @@ use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::strategy::raw::{
     DEADLINE_CONFIG, EvasionParts, RETRY_POLICY, SendFaults, SynToken, pacing_for, rate_or,
-    send_syn,
+    send_init, send_syn,
 };
 use crate::scanner::strategy::sweep::HostSweep;
 use crate::scanner::strategy::{HostScanner, StrategyError};
@@ -98,7 +98,153 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
         .is_some_and(|reply| !matches!(reply, TcpReply::ChallengeAck))
 }
 
-/// Checks whether addresses behind a gateway are alive, putting one raw TCP SYN
+/// The port a SYN sweep asks about.
+///
+/// Any port answers a discovery probe, since the handshake is never completed
+/// and both a SYN+ACK and a RST prove the host. 443 is chosen because a filter
+/// that passes anything usually passes it.
+const SYN_DISCOVERY_PORT: u16 = 443;
+
+/// Which packet a routed sweep asks with.
+///
+/// The sweep is the same either way. Its pacing, its retry schedule, its
+/// deadline and its audit are properties of asking a list of addresses whether
+/// anything is there, not of the packet that asks. Four things do follow from
+/// the packet: the transport the probes and their answers travel over, what a
+/// probe is, what counts as an answer to one, and what the report says the host
+/// was found by.
+///
+/// There are two because a scan asking about SCTP ports and a scan asking about
+/// TCP ports are putting different questions to the network. A host behind a
+/// filter that passes one transport and drops the other answers exactly one of
+/// these probes, and sweeping it with the wrong one reports it down while its
+/// ports are listening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepProbe {
+    /// A TCP SYN, never completed.
+    Syn {
+        /// The port every probe leaves from when a caller pinned one, or `None`
+        /// for a fresh high port per probe. A fresh port and a fresh sequence
+        /// number together are what let a reply name the attempt it answers; a
+        /// pinned one keeps the sequence number varying and buys a port a filter
+        /// is known to trust.
+        src_port: Option<u16>,
+        /// The port every probe is aimed at.
+        dst_port: u16,
+    },
+    /// An SCTP INIT, for a scan that asked about SCTP.
+    ///
+    /// Both answers it can draw prove the host: an INIT-ACK is an endpoint
+    /// accepting the association, an ABORT is the same stack refusing it. The
+    /// association is never completed, so nothing is left half-open.
+    Init {
+        /// The one port every probe leaves from. Fixed rather than fresh per
+        /// probe, because it is what the capture filter narrows on; the Initiate
+        /// Tag is what varies per attempt.
+        src_port: u16,
+        /// The port every probe is aimed at, which a caller takes from the ports
+        /// the scan is about. A filter that passes SCTP at all is likeliest to
+        /// pass it to the port something is running on.
+        dst_port: u16,
+    },
+}
+
+impl SweepProbe {
+    /// A SYN sweep, asking the port a discovery probe asks by default.
+    ///
+    /// Any port serves, since the handshake is never completed and both answers
+    /// prove the host; 443 is picked because a filter that passes anything
+    /// usually passes it.
+    pub const fn syn(src_port: Option<u16>) -> Self {
+        Self::Syn {
+            src_port,
+            dst_port: SYN_DISCOVERY_PORT,
+        }
+    }
+
+    /// An INIT sweep, leaving from `src_port` and asking `dst_port`.
+    pub const fn init(src_port: u16, dst_port: u16) -> Self {
+        Self::Init { src_port, dst_port }
+    }
+
+    /// The transport this sweep's probes and answers travel over.
+    const fn transport(self) -> ProbeKind {
+        match self {
+            Self::Syn { .. } => ProbeKind::TcpSyn,
+            Self::Init { src_port, .. } => ProbeKind::SctpInit {
+                reply_port: src_port,
+            },
+        }
+    }
+
+    /// Which strategy a sweep asking this way reports itself as.
+    const fn scanner_kind(self) -> ScannerKind {
+        match self {
+            Self::Syn { .. } => ScannerKind::Routed,
+            Self::Init { .. } => ScannerKind::RoutedSctp,
+        }
+    }
+
+    /// Whether `bytes` answers a probe of this kind at all.
+    ///
+    /// The capture filter has already narrowed what arrives, but it is a
+    /// performance boundary rather than a guarantee: over IPv6 the TCP half
+    /// cannot be narrowed on flags at all, and a transport can be built with no
+    /// filter. This is what holds both families to one standard.
+    fn answers(self, bytes: &[u8]) -> bool {
+        match self {
+            Self::Syn { .. } => answers_a_syn_probe(bytes),
+            // Either chunk an INIT can draw, and nothing else. A packet from an
+            // association this sweep is not part of carries neither.
+            Self::Init { .. } => protocol::sctp::parse(bytes)
+                .ok()
+                .and_then(|packet| protocol::sctp::classify_probe_response(&packet))
+                .is_some(),
+        }
+    }
+
+    /// The attempt `bytes` names, for matching against an outstanding probe.
+    fn token_of(self, bytes: &[u8], padding: u16) -> Option<SweepToken> {
+        match self {
+            Self::Syn { .. } => protocol::tcp::parse(bytes).ok().map(|tcp| {
+                SweepToken::Syn(SynToken {
+                    seq: protocol::tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp, padding),
+                    src_port: tcp.destination_port(),
+                })
+            }),
+            Self::Init { .. } => protocol::sctp::parse(bytes)
+                .ok()
+                .map(|packet| SweepToken::Init(protocol::sctp::echoed_nonce(&packet))),
+        }
+    }
+
+    /// What a report says about a host this probe found.
+    fn evidence(self) -> StatusReason {
+        match self {
+            // A TCP segment from a probed address is proof of a live stack
+            // whichever flags it carries: a SYN+ACK and a RST both require the
+            // host to have received the probe and answered it.
+            Self::Syn { .. } => {
+                StatusReason::new(StatusProtocol::TcpSyn, "tcp reply to a discovery probe")
+            }
+            Self::Init { .. } => {
+                StatusReason::new(StatusProtocol::Sctp, "sctp reply to a discovery probe")
+            }
+        }
+    }
+}
+
+/// What identifies one attempt of a sweep's probe on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepToken {
+    /// A SYN's sequence number and source port. See [`SynToken`].
+    Syn(SynToken),
+    /// An INIT's Initiate Tag, which RFC 4960 §3.3.2 obliges a peer to echo in
+    /// the verification tag of whatever it answers with.
+    Init(u32),
+}
+
+/// Checks whether addresses behind a gateway are alive, putting one raw probe
 /// to each and crediting whatever comes back.
 ///
 /// The handshake is never completed, so an address answers whether or not the
@@ -119,15 +265,9 @@ pub struct RoutedScanner {
     ips: IpSet,
     /// Transport used to send SYN probes and receive replies.
     transport: ProbeTransport,
-    /// The source port every probe leaves from, when a caller pinned one.
-    ///
-    /// `None` is the default and keeps this sweep's own behaviour: a fresh
-    /// random high port per probe, which together with a fresh sequence number
-    /// is what lets a reply name the attempt it answers. An evasion profile that
-    /// set a source port replaces that with the one port, the sequence number
-    /// still varies per attempt, so a reply is still attributable, so a probe
-    /// can leave from a port a filter is known to trust.
-    src_port: Option<u16>,
+    /// What this sweep asks with, and everything that follows from it: the
+    /// packet, what counts as an answer, and what the report credits.
+    probe: SweepProbe,
     /// The IP-header state every SYN carries: its hop limit and any evasion
     /// override of the IP header.
     emission: Emission,
@@ -144,7 +284,7 @@ pub struct RoutedScanner {
     dns_tx: Option<UnboundedSender<IpAddr>>,
     /// The outstanding probes, the retry queue, what has answered and the
     /// run's counters, shared with the other two probing sweeps.
-    sweep: HostSweep<SynToken>,
+    sweep: HostSweep<SweepToken>,
     /// Targets whose first probe has not left yet, released by the send ticker.
     pending: std::vec::IntoIter<IpAddr>,
     /// How often the send ticker fires, and how many probes it releases each
@@ -163,7 +303,7 @@ pub struct RoutedScanner {
 #[async_trait]
 impl HostScanner for RoutedScanner {
     fn kind(&self) -> ScannerKind {
-        ScannerKind::Routed
+        self.probe.scanner_kind()
     }
 
     async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
@@ -326,8 +466,56 @@ impl RoutedScanner {
         dns_tx: Option<UnboundedSender<IpAddr>>,
         tuning: ProbeTuning,
     ) -> Result<Self, StrategyError> {
+        Self::asking(
+            SweepProbe::syn(tuning.evasion.source_port),
+            targets,
+            ctx,
+            dns_tx,
+            tuning,
+        )
+    }
+
+    /// A sweep of `targets` that asks over SCTP, sending one INIT per address to
+    /// `dst_port` instead of a SYN.
+    ///
+    /// For a scan whose ports name SCTP. A host that answers only SCTP is
+    /// reported down by a SYN sweep, and its ports are never reached: the port
+    /// phase probes what discovery found. `dst_port` is the caller's to choose
+    /// from the ports the scan is about; see [`SweepProbe::Init`].
+    ///
+    /// Fails when the raw transport cannot be opened, which is what happens
+    /// without root.
+    pub fn over_sctp(
+        targets: Vec<RoutedTarget>,
+        ctx: ScanContext,
+        dns_tx: Option<UnboundedSender<IpAddr>>,
+        tuning: ProbeTuning,
+        dst_port: u16,
+    ) -> Result<Self, StrategyError> {
+        let src_port = tuning
+            .evasion
+            .source_port
+            .unwrap_or_else(|| rand::random_range(50_000..u16::MAX));
+        Self::asking(
+            SweepProbe::init(src_port, dst_port),
+            targets,
+            ctx,
+            dns_tx,
+            tuning,
+        )
+    }
+
+    /// The constructor both of the above are: it opens the transport `probe`
+    /// calls for and hands everything else to [`build`](Self::build).
+    fn asking(
+        probe: SweepProbe,
+        targets: Vec<RoutedTarget>,
+        ctx: ScanContext,
+        dns_tx: Option<UnboundedSender<IpAddr>>,
+        tuning: ProbeTuning,
+    ) -> Result<Self, StrategyError> {
         let transport = ProbeTransport::open_with(
-            ProbeKind::TcpSyn,
+            probe.transport(),
             tuning.evasion.effective_send_mode(tuning.send_mode),
         )?;
         Ok(Self::build(
@@ -335,7 +523,7 @@ impl RoutedScanner {
             ctx,
             dns_tx,
             transport,
-            tuning.evasion.source_port,
+            probe,
             tuning.evasion.emission(),
             tuning.evasion.segment_shaping(),
             tuning.evasion.decoys.clone(),
@@ -363,12 +551,28 @@ impl RoutedScanner {
         dns_tx: Option<UnboundedSender<IpAddr>>,
         transport: ProbeTransport,
     ) -> Self {
+        Self::with_transport_asking(targets, ctx, dns_tx, transport, SweepProbe::syn(None))
+    }
+
+    /// [`with_transport`](Self::with_transport) for a sweep asking something
+    /// other than a SYN.
+    ///
+    /// The transport has to be one `probe` would have opened: an INIT sweep
+    /// reading a capture filtered for TCP hears nothing, and the silence is
+    /// indistinguishable from a range with nothing on it.
+    pub fn with_transport_asking(
+        targets: Vec<RoutedTarget>,
+        ctx: ScanContext,
+        dns_tx: Option<UnboundedSender<IpAddr>>,
+        transport: ProbeTransport,
+        probe: SweepProbe,
+    ) -> Self {
         Self::build(
             targets,
             ctx,
             dns_tx,
             transport,
-            None,
+            probe,
             Emission::routed(),
             SegmentShaping::default(),
             Vec::new(),
@@ -386,7 +590,7 @@ impl RoutedScanner {
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
         transport: ProbeTransport,
-        src_port: Option<u16>,
+        probe: SweepProbe,
         emission: Emission,
         shaping: SegmentShaping,
         decoys: Vec<IpAddr>,
@@ -423,7 +627,7 @@ impl RoutedScanner {
             sources,
             ips,
             transport,
-            src_port,
+            probe,
             emission,
             shaping,
             decoys,
@@ -456,7 +660,7 @@ impl RoutedScanner {
         // dropped the rest; without the same test, an ACK from an IPv6 host the
         // user happens to be connected to would credit a discovery this scan did
         // not make, on evidence the IPv4 path has never accepted.
-        if !answers_a_syn_probe(bytes) {
+        if !self.probe.answers(bytes) {
             self.sweep.audit.record_off_target();
             return;
         }
@@ -476,16 +680,14 @@ impl RoutedScanner {
         // Evidence goes in whatever this sweep has seen before; the return
         // value is ignored, because it reports store novelty and
         // the decisions below are about *this sweep's* first sighting.
+        // Whichever answer arrived, it required the host to have received the
+        // probe and answered it: a SYN+ACK and a RST both do, and so do an
+        // INIT-ACK and an ABORT. Discovery already treats either of a pair as an
+        // answer; this records which packet proved it.
+        let evidence = self.probe.evidence();
         self.ctx.write_host(ip, |host| {
-            // A TCP segment from a probed address is proof of a live stack
-            // whichever flags it carries: a SYN+ACK and a RST both require the
-            // host to have received the probe and answered it. Discovery already
-            // treats either as an answer; this records what the answer proved.
             let was_up = host.status().is_up();
-            host.record_evidence(
-                HostStatus::Up,
-                StatusReason::new(StatusProtocol::TcpSyn, "tcp reply to a discovery probe"),
-            );
+            host.record_evidence(HostStatus::Up, evidence.clone());
 
             if let Some(rtt) = rtt {
                 host.add_rtt(rtt);
@@ -520,14 +722,9 @@ impl RoutedScanner {
     /// attempt. Retiring the probe either way is what stops a host that has
     /// already proved it exists from being asked again.
     fn resolve_probe(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) -> Option<Resolution> {
-        let token = protocol::tcp::parse(bytes).ok().map(|tcp| SynToken {
-            seq: protocol::tcp::echoed_nonce(
-                TcpScanTechnique::Syn,
-                &tcp,
-                self.shaping.padding.unwrap_or(0),
-            ),
-            src_port: tcp.destination_port(),
-        });
+        let token = self
+            .probe
+            .token_of(bytes, self.shaping.padding.unwrap_or(0));
 
         token
             .and_then(|token| self.sweep.ledger.resolve(&ip, Some(token), now))
@@ -561,25 +758,37 @@ impl RoutedScanner {
     /// a retry reaches here, so an unroutable target still runs out of attempts
     /// on schedule.
     fn probe(&mut self, target: IpAddr, now: Instant) {
-        const DST_PORT: u16 = 443;
-
         let Some(&source) = self.sources.get(&target) else {
             return;
         };
 
-        let token = send_syn(
-            self.transport.tx.as_ref(),
-            source,
-            target,
-            DST_PORT,
-            self.src_port,
-            EvasionParts {
-                emission: self.emission,
-                shaping: self.shaping,
-                decoys: &self.decoys,
-            },
-            &mut self.faults,
-        );
+        let token = match self.probe {
+            SweepProbe::Syn { src_port, dst_port } => send_syn(
+                self.transport.tx.as_ref(),
+                source,
+                target,
+                dst_port,
+                src_port,
+                EvasionParts {
+                    emission: self.emission,
+                    shaping: self.shaping,
+                    decoys: &self.decoys,
+                },
+                &mut self.faults,
+            )
+            .map(SweepToken::Syn),
+            SweepProbe::Init { src_port, dst_port } => send_init(
+                self.transport.tx.as_ref(),
+                source,
+                target,
+                dst_port,
+                src_port,
+                &self.decoys,
+                self.emission,
+                &mut self.faults,
+            )
+            .map(SweepToken::Init),
+        };
         self.sweep.audit.record_send(token.is_some());
 
         if let Some(token) = token {

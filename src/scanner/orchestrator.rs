@@ -1107,6 +1107,32 @@ pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
     kept
 }
 
+/// The SCTP port a discovery sweep should ask about, or `None` where the scan
+/// named no SCTP port and so wants no SCTP sweep.
+///
+/// Chosen from the ports the scan is about, because those are the ports a
+/// filter in front of an SCTP host is likeliest to pass. Among them the
+/// catalogue's order decides, which is this engine's opinion about which SCTP
+/// port something is actually running on; a port the catalogue has never heard
+/// of loses to one it has, and a scan naming only unknown ports takes the
+/// lowest of them so the choice is still the same on every run.
+pub(super) fn sctp_discovery_port(map: &TargetMap) -> Option<u16> {
+    let named: Vec<u16> = map
+        .units
+        .iter()
+        .flat_map(|unit| unit.ports().ranges(Protocol::Sctp))
+        .flat_map(|range| range.clone())
+        .collect();
+
+    named.iter().copied().min_by_key(|port| {
+        let rank = crate::model::port::catalog::SCTP_BY_PREVALENCE
+            .iter()
+            .position(|known| known == port)
+            .unwrap_or(usize::MAX);
+        (rank, *port)
+    })
+}
+
 /// Every address the liveness pass found a host at.
 ///
 /// A set rather than a narrowed plan. The port phase used to be handed a
@@ -1192,6 +1218,54 @@ fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Which SCTP port a sweep asks about, when the scan named several.
+    ///
+    /// The catalogue's order decides, so a scan naming a well-known port and an
+    /// arbitrary one asks on the one something is likely to be listening on. A
+    /// filter in front of an SCTP host is likeliest to pass that port, and a
+    /// sweep that picked the other would report the host down.
+    #[test]
+    fn the_sweep_asks_on_the_likeliest_of_the_ports_the_scan_named() {
+        use crate::model::target::TargetSet;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1".parse().expect("an address"),
+            "s:9999, s:3868, s:2905".parse().expect("a specification"),
+        ));
+
+        assert_eq!(sctp_discovery_port(&map), Some(3868));
+    }
+
+    /// A scan naming nothing the catalogue knows still asks the same port every
+    /// time, so two runs of one command sweep alike.
+    #[test]
+    fn a_sweep_over_unknown_ports_still_picks_one_deterministically() {
+        use crate::model::target::TargetSet;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1".parse().expect("an address"),
+            "s:9999, s:9001".parse().expect("a specification"),
+        ));
+
+        assert_eq!(sctp_discovery_port(&map), Some(9001));
+    }
+
+    /// A scan that never mentioned SCTP opens no socket for it.
+    #[test]
+    fn a_scan_naming_no_sctp_port_sweeps_none() {
+        use crate::model::target::TargetSet;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1".parse().expect("an address"),
+            "80, u:53".parse().expect("a specification"),
+        ));
+
+        assert_eq!(sctp_discovery_port(&map), None);
+    }
 
     /// `fe80::1` names a different machine on every segment, and a port scan
     /// reaches its targets over the routing table, which cannot carry one

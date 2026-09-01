@@ -1,0 +1,9 @@
+# Name only, deliberately. This service is carried over SCTP, where identifying
+# what is behind a port needs a completed association and this engine opens
+# none. Naming the number is still worth doing: it is what a scan prints beside
+# the port it found.
+
+[service]
+name = "f1ap"
+default_ports = [38472]
+description = "F1 Application Protocol, between a 5G central unit and its distributed units, 3GPP TS 38.472"

@@ -1265,6 +1265,7 @@
         "local",
         "passive",
         "routed",
+        "routed_sctp",
         "syn_port",
         "tcp_port",
         "connect",

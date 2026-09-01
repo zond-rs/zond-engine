@@ -1,0 +1,9 @@
+# Name only, deliberately. This service is carried over SCTP, where identifying
+# what is behind a port needs a completed association and this engine opens
+# none. Naming the number is still worth doing: it is what a scan prints beside
+# the port it found.
+
+[service]
+name = "megaco"
+default_ports = [2944, 2945]
+description = "Megaco/H.248 media gateway control, text and binary encodings"

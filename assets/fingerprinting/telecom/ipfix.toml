@@ -1,0 +1,9 @@
+# Name only, deliberately. This service is carried over SCTP, where identifying
+# what is behind a port needs a completed association and this engine opens
+# none. Naming the number is still worth doing: it is what a scan prints beside
+# the port it found.
+
+[service]
+name = "ipfix"
+default_ports = [4739, 4740]
+description = "IP Flow Information Export collector, RFC 7011, whose mandatory transport is SCTP"

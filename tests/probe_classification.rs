@@ -34,7 +34,7 @@ use zond_engine::report::StopReason;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::ports::{SctpPortScanner, TcpPortScanner, UdpPortScanner};
-use zond_engine::scanner::strategy::routed::RoutedScanner;
+use zond_engine::scanner::strategy::routed::{RoutedScanner, SweepProbe};
 use zond_engine::system::interface::RoutedTarget;
 
 /// The fixed source port the simulated UDP scans probe from.
@@ -952,4 +952,72 @@ async fn every_init_probe_leaves_from_the_scan_source_port_with_its_own_tag() {
     for probe in &probes {
         assert_eq!(probe.source_port, SCTP_SRC_PORT);
     }
+}
+
+/// A host that speaks only SCTP is found by the sweep that asks over SCTP.
+///
+/// This is the whole reason the INIT sweep exists. The port phase probes what
+/// discovery found, so a host behind a filter that passes SCTP and drops
+/// everything else is reported down by a SYN sweep and never has its SCTP ports
+/// looked at, however carefully the caller named them.
+#[tokio::test]
+async fn an_init_sweep_finds_a_host_that_answers_only_sctp() {
+    let net = FakeNet::new(Layer4::Sctp).host(TARGET, 3868, Policy::open());
+    let (session, ctx) = ScanSession::new();
+
+    let mut scanner = RoutedScanner::with_transport_asking(
+        vec![RoutedTarget {
+            target: TARGET,
+            source: SCANNER_V4.into(),
+        }],
+        ctx,
+        None,
+        net.transport(),
+        SweepProbe::init(SCTP_SRC_PORT, 3868),
+    );
+    scanner
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    let host = session.hosts().get(TARGET).expect("the host answered");
+    assert!(host.status().is_up());
+    assert!(
+        host.reasons()
+            .iter()
+            .any(|reason| reason.protocol == StatusProtocol::Sctp),
+        "the host was credited to something other than the init that found it"
+    );
+}
+
+/// A refusal proves the host as well as an acceptance does, which is what makes
+/// an INIT a discovery probe and not a port probe: a closed port answers too, so
+/// the sweep does not have to guess which port is listening.
+#[tokio::test]
+async fn an_abort_discovers_a_host_the_way_an_init_ack_does() {
+    let net = FakeNet::new(Layer4::Sctp).host(TARGET, 3868, Policy::closed());
+    let (session, ctx) = ScanSession::new();
+
+    let mut scanner = RoutedScanner::with_transport_asking(
+        vec![RoutedTarget {
+            target: TARGET,
+            source: SCANNER_V4.into(),
+        }],
+        ctx,
+        None,
+        net.transport(),
+        SweepProbe::init(SCTP_SRC_PORT, 3868),
+    );
+    scanner
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    assert!(
+        session
+            .hosts()
+            .get(TARGET)
+            .is_some_and(|host| host.status().is_up()),
+        "an abort is a stack refusing an association, which is still a stack"
+    );
 }

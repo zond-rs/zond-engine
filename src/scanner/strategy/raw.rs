@@ -236,6 +236,70 @@ pub(super) fn emit_among_decoys(
     real_result.expect("the real probe is always among those sent")
 }
 
+/// Sends a single SCTP INIT from `src_addr` to `dst_addr:dst_port` through
+/// `sender` and logs the outcome. On success it returns the Initiate Tag the
+/// packet went out carrying, which a conformant peer echoes back in whatever it
+/// answers with, so a reply can be tied to this attempt.
+///
+/// The counterpart of [`send_syn`] for a sweep asking over SCTP, and it reports
+/// its failures the same way and for the same reason. What it does not carry is
+/// the segment shaping a SYN takes: an SCTP packet is covered by a CRC32c rather
+/// than a checksum worth perturbing, and padding a chunk changes what the
+/// receiver reads rather than only how the packet looks. Decoys still apply,
+/// being a property of the source address rather than of the packet.
+///
+/// Infallible in its building, unlike [`send_syn`]: an SCTP checksum covers no
+/// pseudo-header, so there are no addresses for the builder to reconcile.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn send_init(
+    sender: &dyn ProbeSender,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
+    dst_port: u16,
+    src_port: u16,
+    decoys: &[IpAddr],
+    emission: Emission,
+    faults: &mut SendFaults,
+) -> Option<u32> {
+    // Non-zero, which RFC 4960 §3.3.2 requires of an Initiate Tag and which the
+    // builder leaves to its caller.
+    let tag: u32 = rand::random_range(1..=u32::MAX);
+    let packet = protocol::sctp::build_init_probe(src_port, dst_port, tag);
+
+    // A decoy from each address of the target's own family, carrying a port and
+    // a tag of its own so none of the probes is the odd one out.
+    let decoy_packets: Vec<(IpAddr, Vec<u8>)> = decoys
+        .iter()
+        .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
+        .map(|&decoy| {
+            let packet = protocol::sctp::build_init_probe(
+                rand::random_range(50_000..u16::MAX),
+                dst_port,
+                rand::random_range(1..=u32::MAX),
+            );
+            (decoy, packet)
+        })
+        .collect();
+
+    match emit_among_decoys(
+        sender,
+        dst_addr,
+        emission,
+        src_addr,
+        &packet,
+        &decoy_packets,
+    ) {
+        Ok(()) => {
+            success!(verbosity = 2, "sent SCTP init to {dst_addr}:{dst_port}");
+            Some(tag)
+        }
+        Err(e) => {
+            faults.record(dst_addr, &e);
+            None
+        }
+    }
+}
+
 /// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port` through
 /// `sender` and logs the outcome. On success it returns the [`SynToken`] the
 /// packet went out carrying, so the caller can record it and recognize a later

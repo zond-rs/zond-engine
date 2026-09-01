@@ -694,11 +694,14 @@ mod tests {
     /// names ports without saying which transport they are reached over.
     #[test]
     fn every_port_with_a_signature_is_a_port_the_default_scan_reaches() {
-        use crate::model::port::catalog::{TCP_BY_PREVALENCE, UDP_BY_PREVALENCE};
+        use crate::model::port::catalog::{
+            SCTP_BY_PREVALENCE, TCP_BY_PREVALENCE, UDP_BY_PREVALENCE,
+        };
 
         let probed: std::collections::HashSet<u16> = TCP_BY_PREVALENCE
             .iter()
             .chain(UDP_BY_PREVALENCE.iter())
+            .chain(SCTP_BY_PREVALENCE.iter())
             .copied()
             .collect();
 
