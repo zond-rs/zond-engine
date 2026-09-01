@@ -33,7 +33,7 @@ use crate::system::privilege::Privilege;
 /// until the second is available, so both land in one [`ScanPhase`] rather than
 /// leaving a half-built report somewhere for the closing code to find.
 ///
-/// # Building a report from your own orchestration
+/// # Building a report from a caller's own orchestration
 ///
 /// [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan) use
 /// this internally, and it is public so that a caller running strategies

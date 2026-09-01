@@ -74,7 +74,7 @@ use ipv6::Ipv6Discovery;
 /// userspace, which on a busy link meant copying every frame on the wire to
 /// discard almost all of it.
 ///
-/// **802.1Q-tagged frames are not admitted**, and that is not a new loss: the
+/// 802.1Q-tagged frames are not admitted, and that is not a new loss: the
 /// frame reader below takes the EtherType from its fixed offset, so a tagged
 /// frame already read as an unsupported EtherType and was rejected a layer up.
 fn sweep_filter() -> String {
@@ -98,7 +98,7 @@ fn sweep_filter() -> String {
 /// [`DiscoveryProtocol`] to declare them.
 ///
 /// Every protocol in [`frames::sweep_protocols`] exists to conclude that a
-/// host is present. These three deliberately do not, and each declines for its
+/// host is present. These three do not, and each declines for its
 /// own reason:
 ///
 /// - **mDNS** (`absorb_mdns`) reads a name off the segment and credits nobody
@@ -129,7 +129,7 @@ const ABSORBED_CLAUSES: [&str; 3] = [
 /// ledger applies Karn's rule on that basis and declines to measure a round trip
 /// it cannot attribute.
 ///
-/// The all-nodes solicitation is deliberately not in here. It is one multicast
+/// The all-nodes solicitation is not in here. It is one multicast
 /// packet that every neighbour may answer, so it has no single outcome to
 /// resolve and nothing to retire; the scanner times it separately.
 type Ledger = ProbeLedger<IpAddr, ()>;
@@ -239,7 +239,7 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 /// Slowing this down measurably raises the share of *first* attempts that get
 /// answered on a wireless segment, where both of this scanner's first-attempt
 /// probes are group-addressed and group-addressed frames are the expensive
-/// case. It is deliberately not slowed down anyway: a first attempt that goes
+/// case. It is not slowed down anyway: a first attempt that goes
 /// unanswered is recovered by [`RETRY_POLICY`], so the gain is a better
 /// *attributed* round trip on a few hosts rather than more hosts, and it is
 /// bought at several times the scan duration: the send phase drags the
@@ -284,7 +284,7 @@ struct SourceIdentity {
 impl SourceIdentity {
     /// How the store keys a neighbour this scanner found.
     ///
-    /// **The interface belongs in the key, not only on the record.** Every
+    /// The interface belongs in the key, not only on the record. Every
     /// address here was read off one segment, and a link-local one is valid on
     /// that segment alone: `fe80::1` on `en0` and `fe80::1` on `en1` are two
     /// machines. Keyed by the bare address they were one entry, and the second
@@ -428,7 +428,7 @@ pub struct LocalScanner {
     /// sender. Held by MAC rather than dropped, and applied the moment that MAC
     /// answers a probe of ours.
     ///
-    /// **This is what keeps a targeted run targeted.** Nothing here creates a
+    /// This is what keeps a targeted run targeted. Nothing here creates a
     /// host or adds an address: a declaration only ever lands on a record the
     /// scan built by asking, so a run handed one address still reports one
     /// host: with, if it happens to be the router, the fact that it routes.
@@ -810,7 +810,7 @@ impl LocalScanner {
 
     /// Puts one frame on the segment and records what actually happened to it.
     ///
-    /// **Every send in this scanner goes through here, and that is the point.**
+    /// Every send in this scanner goes through here, and that is the point.
     /// The audit's counters are only worth reading if they cover every frame,
     /// and a second send path is how they stop doing that: the sweep's own first
     /// attempts went out beside this one for a while, uncounted, so
@@ -1032,7 +1032,7 @@ impl LocalScanner {
     /// solicitation now. [`confirm`](Self::confirm) is that mechanism and
     /// already bounds itself to one solicitation per address.
     ///
-    /// The sender is deliberately not credited either. A frame off the segment
+    /// The sender is not credited either. A frame off the segment
     /// does prove its sender exists, but crediting a host to "was chatty on
     /// mDNS" attributes it to a mechanism that did not find it, which is the
     /// distinction [`Icmpv6EchoProtocol`] is careful about for the same reason.
@@ -1048,14 +1048,14 @@ impl LocalScanner {
     ///
     /// # Two findings, and only one of them is about a host
     ///
-    /// **Where this machine is plugged in** is recorded unconditionally, as an
+    /// Where this machine is plugged in is recorded unconditionally, as an
     /// [`Attachment`] on the phase. It is not a claim about a host in the
     /// report, it is a relation between this machine and somebody else's
     /// equipment, so the rule that keeps a targeted run targeted does not
     /// apply to it. A run handed one address still reports one host, and now
     /// also says which switch port it was run from.
     ///
-    /// **What the sender is** goes through `note_declaration` like any other
+    /// What the sender is goes through `note_declaration` like any other
     /// overheard claim: filed against the announcing hardware address and
     /// applied only if that machine turns out to be one the scan found by
     /// asking. A switch usually holds no address on the segment it serves, so

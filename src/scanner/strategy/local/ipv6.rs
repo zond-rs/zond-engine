@@ -40,7 +40,7 @@
 //!
 //! ## The rule that shapes all of it
 //!
-//! **Two solicitations for one address are identical on the wire.** An
+//! Two solicitations for one address are identical on the wire. An
 //! advertisement carries no identifier, so a reply answering the second cannot
 //! be told from one answering the first, and Karn's rule says an unattributable
 //! sample must be discarded rather than guessed at. A round trip is therefore
@@ -67,7 +67,7 @@ type Ledger = ProbeLedger<IpAddr, ()>;
 /// The constraint that shapes this is Karn's rule. Two solicitations for one
 /// address are identical on the wire and an advertisement carries no identifier,
 /// so a reply answering the second cannot be told from one answering the first.
-/// **A round trip is only measurable if the first attempt is the one answered**,
+/// A round trip is only measurable if the first attempt is the one answered,
 /// which makes the first timeout the load-bearing number: it has to outlast the
 /// replies rather than merely be generous. The second attempt exists for a lost
 /// probe and knowingly gives up the measurement to recover the host.
@@ -91,7 +91,7 @@ type Ledger = ProbeLedger<IpAddr, ()>;
 /// asked once per sweep, so its own estimate exists only after the probe it
 /// would have timed has already resolved.
 ///
-/// **Slack here is charged to every scan**, not just to a retransmit:
+/// Slack here is charged to every scan, not just to a retransmit:
 /// [`DEADLINE_CONFIG`] is widened to outlive the longest probe, so a first
 /// timeout set too generously holds every sweep open whether or not any IPv6
 /// neighbour is slow.
@@ -275,7 +275,7 @@ pub(super) struct Ipv6Discovery {
     confirming: VecDeque<IpAddr>,
     /// When each confirmation was sent, so its answer can be timed.
     ///
-    /// Deliberately outside the [`Ledger`], which exists to decide when to give
+    /// Outside the [`Ledger`], which exists to decide when to give
     /// up on an address nobody has answered for. A confirmation asks a different
     /// question: the host is already known to be there, so the only thing at
     /// stake is the measurement, and a retry destroys exactly that. Measured on a

@@ -143,8 +143,8 @@ pub struct Expired<'a> {
 /// Reads `reply` as a Time Exceeded: the message a router is required to send
 /// when it decrements a hop limit to zero and drops what it was carrying.
 ///
-/// **This is the whole mechanism of path discovery, and it works by
-/// obligation rather than by cooperation.** A router that forwards a packet is
+/// This is the whole mechanism of path discovery, and it works by obligation
+/// rather than by cooperation. A router that forwards a packet is
 /// under no duty to identify itself; a router that *discards* one is (RFC 792,
 /// RFC 4443 §3.3). So a probe built to expire a chosen number of hops away
 /// makes exactly that router announce itself, and the announcement arrives from
@@ -251,7 +251,7 @@ fn reason_v4(code: IcmpCode) -> Option<Unreachable> {
 /// The ICMPv6 counterpart of [`reason_v4`] (RFC 4443 §3.1).
 ///
 /// Code 2 (beyond scope of source address) describes the *sender's* address
-/// selection rather than the target's reachability, and is deliberately left
+/// selection rather than the target's reachability, and is left
 /// unclassified.
 fn reason_v6(code: Icmpv6Code) -> Option<Unreachable> {
     match code {

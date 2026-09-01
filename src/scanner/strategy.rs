@@ -52,7 +52,7 @@
 //! [`StrategyError`]. Only the second is an `Err`, because only the second means
 //! the absence of hosts proves nothing.
 //!
-//! ## The two traits are deliberately the same shape
+//! ## The two traits are the same shape
 //!
 //! Both carry a [`kind`](HostScanner::kind), both take `&mut self`, both return
 //! `Result<(), StrategyError>`. Where they differ they differ for a reason:
@@ -76,7 +76,7 @@ use crate::scanner::session::ScanContext;
 
 /// Why one scanning strategy could not start, or could not finish.
 ///
-/// **This is not how a scan fails.** A scan runs several strategies and carries
+/// This is not how a scan fails. A scan runs several strategies and carries
 /// on with whatever survives, so one of these is recorded in the report's
 /// [`failures`](crate::report::ScanReport::failures) and announced on
 /// the event stream rather than returned from

@@ -55,7 +55,7 @@ pub(super) type PacketIter = Box<dyn Iterator<Item = (Bytes, IpAddr)> + Send>;
 /// time: the solicitations end up separated by however many ARP requests the
 /// ratio allows, at no cost in packets or duration to either family.
 ///
-/// The all-nodes echo is deliberately not here. It is one probe on a schedule
+/// The all-nodes echo is not here. It is one probe on a schedule
 /// of its own, repeated on an interval and timed by the identifier it carries,
 /// which makes it the scanner's to own rather than an item in a queue.
 pub fn eth_packet_iter(

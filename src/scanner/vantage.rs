@@ -13,7 +13,8 @@
 //! record, put there by something that was measuring a different thing.
 //!
 //! - **[`Origin`]**: the address belongs to one of this machine's own
-//!   interfaces. A sweep of your own segment always contains you, and the
+//!   interfaces. A sweep of the scanning machine's own segment contains it, and
+//!   the
 //!   record it produces is unlike every other one in it.
 //! - **[`Router`], from the routing table**: the address is a default gateway
 //!   of an interface the scan runs on. Something is only a gateway because it
@@ -224,7 +225,7 @@ pub(super) fn attribute(ctx: &ScanContext) {
 /// ran, which is off by default, so this costs one walk of the store on a scan
 /// that measured no paths at all.
 ///
-/// **A hop is only a router to somebody else.** A completed trace records its
+/// A hop is only a router to somebody else. A completed trace records its
 /// own target as the last hop, at the distance it was reached, so a path's
 /// hops are read against the host whose path it is, and its own addresses are
 /// left out. Without that, every traced host would be reported as a router, and

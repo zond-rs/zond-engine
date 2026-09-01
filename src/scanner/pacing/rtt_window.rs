@@ -88,7 +88,7 @@ impl RttWindow {
     /// moves between measurements rather than how far each sits from the
     /// middle.
     ///
-    /// **Not RFC 6298's `RTTVAR`**, which is the smoothed deviation from the
+    /// Not RFC 6298's `RTTVAR`, which is the smoothed deviation from the
     /// estimate and is what
     /// [`RttEstimator`](super::retry::RttEstimator) computes. This is the
     /// cheaper statistic over a real window, and it answers a slightly different
@@ -121,7 +121,7 @@ impl RttWindow {
     /// `floor` comes back, there being no measurement to justify waiting
     /// longer.
     ///
-    /// **A ceiling below the floor does not panic.** The floor wins, on the
+    /// A ceiling below the floor does not panic. The floor wins, on the
     /// same reasoning [`ProbeLedger`](super::retry::ProbeLedger) applies to its
     /// own bounds: it is the one of the two imposed rather than chosen, and a
     /// pair that has been configured into disagreeing should still describe a

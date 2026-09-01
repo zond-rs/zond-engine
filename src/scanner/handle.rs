@@ -14,7 +14,7 @@
 //! every probing loop.
 //!
 //! [`ScanHandle`] is that flag. Everything else about stopping a scan follows
-//! from what it deliberately is not: it does not cancel tasks, it does not
+//! from what it is not: it does not cancel tasks, it does not
 //! discard findings, and it cannot be undone. The type's own documentation has
 //! the argument for each.
 
@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// every pass of its own loop rather than only between targets, so a scan of a
 /// large range stops promptly instead of after the address it is on.
 ///
-/// **Stopping is not cancelling.** The scan winds down and still produces its
+/// Stopping is not cancelling. The scan winds down and still produces its
 /// [`ScanReport`](crate::report::ScanReport), describing however far it
 /// got: the hosts already found are findings, and discarding them because the
 /// caller ran out of patience would throw away the work the scan had done. The
@@ -60,7 +60,7 @@ impl ScanHandle {
     /// [`ScanTask`](crate::scanner::ScanTask) to know when they have all
     /// finished and to collect the report.
     ///
-    /// Idempotent, and there is deliberately no way to undo it. A scan that
+    /// Idempotent, and there is no way to undo it. A scan that
     /// resumed after being stopped would have a gap in the middle that nothing
     /// in the report could describe.
     pub fn abort(&self) {

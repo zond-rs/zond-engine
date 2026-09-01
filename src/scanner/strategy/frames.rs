@@ -343,8 +343,8 @@ impl DiscoveryProtocol for RouterAdvertProtocol {
 /// [`dhcp`] for why a port scan cannot ask this
 /// question.
 ///
-/// **The role goes on the address the server named for itself, and only when
-/// the message came from that address.** A relay agent forwarding for a server
+/// The role goes on the address the server named for itself, and only when the
+/// message came from that address. A relay agent forwarding for a server
 /// on another segment sends the reply from its own address while the message
 /// inside names the server; marking the sender would name the relay a DHCP
 /// server, and marking the named address would attach the role to a machine
@@ -414,7 +414,7 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
 
         // The probe leaves from this host's link-local address, so an answer to
         // it comes back to one. Not proof the frame is addressed to *us* - that
-        // needs an address this trait deliberately does not have - but it rules
+        // needs an address this trait does not have - but it rules
         // out the multicast and global traffic a promiscuous capture also sees.
         let destination = ip::ipv6_destination(frame)?;
         if !destination.is_unicast_link_local() {

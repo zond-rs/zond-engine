@@ -41,7 +41,7 @@
 //! machine reachable at a global address is the same machine through whichever
 //! interface answered it.
 //!
-//! **An IPv6 link-local is the exception, and it is why the key exists.**
+//! An IPv6 link-local is the exception, and it is why the key exists.
 //! `fe80::1` names a different machine on every segment, so a host watching two
 //! of them finds two neighbours under one number. Keyed by the bare address the
 //! second write landed on the first's entry, and one machine's hardware address,
@@ -95,7 +95,7 @@ use crate::scanner::handle::ScanHandle;
 pub enum ScanEvent {
     /// Something was learned about the host at this address.
     ///
-    /// The event carries only the address, deliberately: a scan can emit
+    /// The event carries only the address: a scan can emit
     /// thousands of these, and copying a whole [`Host`] into each one would cost
     /// more than the notification is worth. Read the current state back from
     /// [`ScanSession::hosts`], which is a single lookup and always up to date,
@@ -131,13 +131,13 @@ pub enum ScanEvent {
 /// hosts; every clone reads the same live data, so a consumer can hand one to a
 /// rendering task and keep another for itself.
 ///
-/// **Reads return owned snapshots.** [`get`](Self::get) clones the host rather
+/// Reads return owned snapshots. [`get`](Self::get) clones the host rather
 /// than lending a reference into the map, because the alternative is a guard
 /// held across whatever the caller does next, and a scanner writing to the same
 /// key meanwhile is not a hypothetical, it is the normal case. A caller cannot
 /// hold this wrong.
 ///
-/// The concrete map behind it is deliberately not visible. It is an
+/// The concrete map behind it is not visible. It is an
 /// implementation choice, and exposing it would make the version of a
 /// third-party concurrency crate part of this crate's semver.
 #[derive(Debug, Clone, Default)]
@@ -157,7 +157,7 @@ impl HostStore {
     /// host up by any of its addresses, search
     /// [`snapshot`](Self::snapshot) on [`Host::ips`].
     ///
-    /// **An IPv6 link-local needs the interface it was read on.** `fe80::1`
+    /// An IPv6 link-local needs the interface it was read on. `fe80::1`
     /// names a different machine on every segment, so a bare one names no host
     /// here and answers `None`; pass the [`ScopedIp`] the event carried. Every
     /// other address is its own whole key, and a plain [`IpAddr`] is accepted
@@ -222,7 +222,7 @@ impl HostStore {
 
     /// Puts a host in the store directly, replacing anything at that address.
     ///
-    /// Test-only, and deliberately not how a scan records a finding, that is
+    /// Test-only, and not how a scan records a finding, that is
     /// [`ScanContext::write_host`], which upserts, merges and announces the
     /// change. This exists for the tests that need a store already holding a
     /// particular host, standing in for the scanner that would have written it.
@@ -237,13 +237,13 @@ impl HostStore {
 /// Each event says that something changed; the detail is read back from the
 /// [`HostStore`]. See [`ScanEvent`].
 ///
-/// **The stream is bounded, and the oldest events are the ones that go.** It
+/// The stream is bounded, and the oldest events are the ones that go. It
 /// holds [`CAPACITY`](Self::CAPACITY) events, and a scan that fills it
 /// overwrites what has waited longest rather than growing or pausing. A caller
 /// who never reads this costs the scan one fixed buffer, and a caller who reads
 /// it slowly never holds the scan up.
 ///
-/// **A gap is announced where it happened.** The read that follows one answers
+/// A gap is announced where it happened. The read that follows one answers
 /// [`ScanEvent::EventsDropped`], carrying how many events went missing, so a
 /// consumer is never quietly out of date.
 ///
@@ -546,7 +546,7 @@ impl SweptLinks {
 /// because the question is what this machine is plugged into now and a cable
 /// somebody moved should not be reported as two attachments held at once.
 ///
-/// A link answering on both LLDP and CDP keeps both, deliberately: which
+/// A link answering on both LLDP and CDP keeps both: which
 /// protocols a network speaks is itself a fact about what it is made of, and
 /// the two carry different fields.
 #[derive(Debug, Default)]
@@ -743,7 +743,7 @@ pub struct ScanContext {
     pub(crate) exclusions: Arc<Exclusions>,
     /// Which hosts have findings a journal has not written down yet.
     ///
-    /// Marked on every write, which is deliberately *not* the condition that
+    /// Marked on every write, which is *not* the condition that
     /// fires [`ScanEvent::HostUpdated`]. A watcher is told about novelty and a
     /// journal records state, and the two part company exactly where it matters:
     /// an enrichment pass adding evidence to a host already announced has
@@ -765,7 +765,7 @@ pub struct ScanContext {
     /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets,
     /// so the numbering travels here instead.
     ///
-    /// **Empty is what keeps the two apart.** A port scan's liveness pass runs
+    /// Empty is what keeps the two apart. A port scan's liveness pass runs
     /// the discovery strategies against a port scan's context, and those
     /// strategies settle addresses. Numbering them against the port plan would
     /// advance its watermark over probes nobody sent, so a context that does not
@@ -828,8 +828,8 @@ impl ScanContext {
     /// An address the scan's [`Exclusions`] forbid is dropped here: `edit` is not
     /// run, no host is created, no event is emitted, and this returns `false`.
     ///
-    /// **This is the enforcement that a subtraction from the target list cannot
-    /// perform**, and putting it here rather than at each scanner is deliberate.
+    /// This is the enforcement that a subtraction from the target list cannot
+    /// perform, and putting it here rather than at each scanner is deliberate.
     /// Every finding in the engine reaches the store through this function, so
     /// this one branch covers the ARP and neighbour-advertisement replies a
     /// sweep learns addresses from, the host's own neighbour table, the mDNS
@@ -905,7 +905,7 @@ impl ScanContext {
     /// The counterpart of [`write_host`](Self::write_host), and a closure for
     /// the same reason: the store's guard is held for the duration of `read`
     /// and released before this returns, so a caller cannot keep it across an
-    /// await. Take what you need out of the host and let the guard go.
+    /// await. Take what is needed out of the host and let the guard go.
     ///
     /// `read` must not touch this context again. The guard it runs under is the
     /// store's own, and reaching back into the store from inside it deadlocks.
@@ -924,7 +924,7 @@ impl ScanContext {
     /// for what [`HostStore::contains`] answers on the reading half, and named
     /// to match it: one question should not have two names across the pair.
     ///
-    /// **A question about the key, not about the machine.** A host is reachable
+    /// A question about the key, not about the machine. A host is reachable
     /// at every address it holds and is recorded under one of them, so this
     /// answers "is there a record here" and never "is this machine known".
     pub fn contains_host(&self, ip: &ScopedIp) -> bool {
@@ -963,7 +963,7 @@ impl ScanContext {
 
     /// The single place a refusal enters the record.
     ///
-    /// **Not a failure, and this is the difference.** A refusal is the engine
+    /// Not a failure, and this is the difference. A refusal is the engine
     /// working out, before anything is sent, that part of what it was asked for
     /// has no strategy behind it: an SCTP port on a host with no raw sockets, a
     /// prefix too large to walk, a technique a connect scan cannot express.
@@ -1110,7 +1110,7 @@ impl ScanContext {
     /// caller does not need to know: a strategy knows it asked an address and
     /// what came back, and this turns that into a position a resume can skip.
     ///
-    /// **Nothing is recorded in two cases, and both are correct.** A scan not
+    /// Nothing is recorded in two cases, and both are correct. A scan not
     /// counted in addresses has no numbering, so a port scan's liveness pass
     /// settles nothing. And an address the plan does not name has no position:
     /// a sweep finds neighbours it was never asked about, and those are findings
@@ -1151,7 +1151,7 @@ impl ScanContext {
 
     /// What a journal needs from a running scan.
     ///
-    /// **Deliberately not a [`ScanContext`].** A context carries the event
+    /// Not a [`ScanContext`]. A context carries the event
     /// sender, and a checkpoint task holding one would keep the event stream
     /// open after the scan had ended, so a caller watching that stream to know
     /// when to stop would wait forever for a scan that was already over, and the
@@ -1594,7 +1594,7 @@ mod tests {
         assert_eq!(fresh.settlements().settled_count(), 0);
     }
 
-    /// **What a watcher is told and what a journal writes are two questions.**
+    /// What a watcher is told and what a journal writes are two questions.
     ///
     /// An enrichment pass adding evidence to a host already announced answers
     /// `false`: there is nothing new to tell somebody watching a scan, and the

@@ -23,28 +23,29 @@
 //! level is written in terms of the one below it, so moving down means taking
 //! over more of the decisions, never reimplementing anything.
 //!
-//! **Call [`discover`] or [`scan`].** Targets and a [`ZondConfig`] in, a live
+//! Call [`discover`] or [`scan`]. Targets and a [`ZondConfig`] in, a live
 //! [`ScanSession`] and a [`ScanReport`] out. Privilege, interfaces, fallbacks,
-//! retries and hostname resolution are all decided for you. This is the right
+//! retries and hostname resolution are all decided by the engine. This is the right
 //! altitude for anything wrapping the engine, and where most callers should
 //! stay. [`scan_with_journal`] is the same scan writing down how far it got, so
 //! that a run cut short can be continued, and [`discover_with_journal`] is the
 //! same for a sweep. Either can be read back afterwards as the report it
 //! produced, with [`store::report`](crate::journal::store::report).
 //!
-//! **Build a [`plan`], edit it, run it.** A
+//! Build a [`plan`], edit it, run it. A
 //! [`DiscoveryPlan`](plan::DiscoveryPlan) is the set of strategies a scan
 //! intends to run, worked out from the targets and this host's configuration,
-//! with nothing opened and nothing sent. Print it instead of running it and you
-//! have a dry run; drop the steps for three of your five links and run the rest.
+//! with nothing opened and nothing sent. Printing it instead of running it is a
+//! dry run, and the steps for three links out of five can be dropped and the
+//! rest run.
 //! Its [refusals](plan::RefusedStep) say what a scan will not cover before it
 //! starts.
 //!
-//! **Build one strategy and drive it yourself.** Everything in [`strategy`] is
+//! Build one strategy and drive it yourself. Everything in [`strategy`] is
 //! ordinary public API: open a [`ScanSession`], construct a
 //! [`LocalScanner`](strategy::local::LocalScanner) aimed at one segment or a
-//! [`TcpPortScanner`](strategy::ports::TcpPortScanner) over a transport you
-//! opened, run it, and read the store. None of it needs a cargo feature.
+//! [`TcpPortScanner`](strategy::ports::TcpPortScanner) over a transport opened
+//! by the caller, run it, and read the store. None of it needs a cargo feature.
 //!
 //! A scan driven this way produces the same record as one the engine ran.
 //! [`recorder::PhaseRecorder`] takes the scope and settings before the strategies
@@ -74,7 +75,7 @@
 //!     println!("not covered: {}", refusal.reason);
 //! }
 //!
-//! // And when you want to run it, a context is what a strategy is built with.
+//! // And to run it, a context is what a strategy is built with.
 //! let (_session, ctx) = ScanSession::new();
 //! for step in plan.into_steps() {
 //!     let mut scanner = step.into_scanner(ctx.clone(), None, cfg.probe_tuning())?;
@@ -204,7 +205,7 @@ pub enum ScanError {
     /// Checked before a probe leaves rather than on each one, because every
     /// probe refusing is a scan that sends nothing and reports a network with
     /// nothing on it. See [`EvasionProfile::validate`](crate::EvasionProfile::validate)
-    /// for what that check covers and what it deliberately does not.
+    /// for what that check covers and what it does not.
     #[error("{0}")]
     Evasion(#[from] crate::evasion::EvasionError),
 }
@@ -413,7 +414,7 @@ pub async fn discover(
 /// [`discover`], writing down how far it got, so that a sweep cut short can be
 /// continued rather than restarted.
 ///
-/// **Journalling is the caller's choice, never this crate's**, on the same
+/// Journalling is the caller's choice, never this crate's, on the same
 /// terms as [`scan_with_journal`]: hand this a journal and the sweep is
 /// recorded, call [`discover`] and nothing touches a disk.
 ///
@@ -568,7 +569,7 @@ async fn run_discovery(
 /// what makes it a different phase. It cannot narrow what it hears, so the only
 /// control there is sits at the other end: what may be recorded.
 ///
-/// **Nothing here reaches into the host on its own.** A caller who wants every
+/// Nothing here reaches into the host on its own. A caller who wants every
 /// link says which links those are; see [`system::interface`](crate::system::interface)
 /// for how to find them. That is the same rule that keeps the engine from
 /// opening a journal nobody asked for.
@@ -673,7 +674,7 @@ impl ListenScope {
 ///
 /// # What it may conclude
 ///
-/// **Only ever a positive claim.** Having sent nothing it cannot time anything
+/// Only ever a positive claim. Having sent nothing it cannot time anything
 /// out, so an address it never heard from may be absent, silent, behind a switch
 /// that never forwarded this way, or on a VLAN this link does not carry, and
 /// nothing separates those. It records a host as up and never as down, adds a
@@ -714,7 +715,7 @@ pub async fn listen(
 /// [`listen`], writing down what it hears, so that a watch cut short keeps what
 /// it found.
 ///
-/// **Journalling is the caller's choice, never this crate's**, on the same terms
+/// Journalling is the caller's choice, never this crate's, on the same terms
 /// as [`scan_with_journal`]: hand this a journal and the watch is recorded, call
 /// [`listen`] and nothing touches a disk.
 ///
@@ -825,7 +826,7 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
 /// addresses that answer are port-scanned. An address with nothing at it costs a
 /// handful of probes rather than one per port.
 ///
-/// **The liveness phase probes only the addresses it was given.** It is a
+/// The liveness phase probes only the addresses it was given. It is a
 /// [`Scope::Targeted`] pass, never a segment sweep, so scanning one host does
 /// not wake its neighbours. `cfg.segment_sweep` is not consulted here.
 ///
@@ -857,7 +858,7 @@ pub async fn scan(
 
 /// [`scan`], recording its progress so that an interrupted run can be continued.
 ///
-/// **Journalling is the caller's choice, never this crate's.** The engine does
+/// Journalling is the caller's choice, never this crate's. The engine does
 /// not touch a filesystem it was not pointed at; see
 /// `import::settings`, which draws that boundary and explains it. A front end that wants every scan resumable opens a journal for
 /// every scan, and that policy belongs to the front end.

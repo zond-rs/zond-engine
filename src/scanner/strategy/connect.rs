@@ -837,7 +837,7 @@ fn finish(
 /// the probe across several ports catches hosts that only expose one of them,
 /// which improves the odds of finding Linux, Windows, and embedded targets alike.
 ///
-/// **One task per address, not per port.** Its ports are tried in turn and the
+/// One task per address, not per port. Its ports are tried in turn and the
 /// first TCP-layer answer ends the address, so a host that answers on SSH costs
 /// one connect rather than five. A silent address costs all five, which is what
 /// it took before as well: the same socket budget, spent on fewer addresses at a
@@ -979,7 +979,7 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
 /// failure says nothing about the address, only that this connect did not
 /// finish, so the next port is tried.
 ///
-/// **The stop signal is checked between ports, not only between addresses.**
+/// The stop signal is checked between ports, not only between addresses.
 /// One task now covers up to five connects, and a sweep that only looked once
 /// per address would take five timeouts to wind down rather than one. What has
 /// been asked so far decides how the address is filed: cut off part way through

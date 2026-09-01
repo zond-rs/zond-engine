@@ -80,7 +80,7 @@ pub(super) const PROBE_RATE_PER_SEC: NonZeroU32 = NonZeroU32::new(4_000).expect(
 /// answered it, and nothing else a SYN elicits sets either flag. Anything else
 /// from the same address is traffic that happens to share a host with the scan.
 ///
-/// **A challenge ACK is deliberately excluded, though it is a genuine answer.**
+/// A challenge ACK is excluded, though it is a genuine answer.
 /// It says a listener holds a connection half-open, which the port scanner acts
 /// on, but the port scanner earns that by checking the probe's nonce against
 /// its ledger, and this sweep has no ledger and checks nothing. A bare ACK is
@@ -474,7 +474,7 @@ impl RoutedScanner {
         // `write_host`, so the deadline and DNS follow-ups below never run under
         // the store lock.
         // Evidence goes in whatever this sweep has seen before; the return
-        // value is deliberately ignored, because it reports store novelty and
+        // value is ignored, because it reports store novelty and
         // the decisions below are about *this sweep's* first sighting.
         self.ctx.write_host(ip, |host| {
             // A TCP segment from a probed address is proof of a live stack

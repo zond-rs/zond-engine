@@ -85,7 +85,7 @@ pub fn for_port(port: u16) -> &'static [u8] {
 /// What a reply to the probe for `port` proves the host *does*, if its own
 /// protocol says so.
 ///
-/// **The port is which question to ask, never the answer.** UDP/53 open means
+/// The port is which question to ask, never the answer. UDP/53 open means
 /// something is bound there; a DNS response means a name server answered. The
 /// first is a port verdict and already recorded as one, and promoting it to a
 /// role would put an infrastructure marking on every host with a socket open.

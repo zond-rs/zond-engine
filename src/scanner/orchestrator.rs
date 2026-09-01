@@ -311,8 +311,8 @@ pub(super) fn build_port_scanner(
 /// Backs the plan's intent with what actually opened: any protocol left without
 /// a strategy gets the unprivileged one, or is refused.
 ///
-/// **The plan cannot do this on its own, and that is the point of separating
-/// them.** A plan says a raw TCP scanner and a raw UDP scanner should run. Only
+/// The plan cannot do this on its own, and that is the point of separating
+/// them. A plan says a raw TCP scanner and a raw UDP scanner should run. Only
 /// the attempt discovers that this host permitted one raw socket and not the
 /// other, a sandbox can do exactly that, and a protocol left with no strategy
 /// at all is not a degraded scan but a silent one:
@@ -321,7 +321,7 @@ pub(super) fn build_port_scanner(
 /// Asking what actually built, rather than assuming a privileged scan covers
 /// everything, is what keeps that from happening.
 ///
-/// **A connect fallback substitutes for a SYN scan and for nothing else.** It
+/// A connect fallback substitutes for a SYN scan and for nothing else. It
 /// completes handshakes, so it answers roughly the question a SYN scan asks; it
 /// cannot send a FIN, a flagless segment or a bare ACK, and so cannot answer
 /// what any of those were asked. Where the caller chose one of those and no raw
@@ -330,7 +330,7 @@ pub(super) fn build_port_scanner(
 /// back verdicts from a technique they did not choose - and no field in the
 /// report would say so.
 ///
-/// **`intended` is what keeps this from repeating the plan.** A protocol the
+/// `intended` is what keeps this from repeating the plan. A protocol the
 /// plan never meant to cover was already refused, in the words
 /// [`plan::RefusedStep::technique_needs_raw_sockets`]
 /// supplies, and saying it again puts one cause in the report twice. What is
@@ -474,7 +474,7 @@ pub(super) async fn finish_enrichment(
 ///
 /// ## What it will and will not conclude
 ///
-/// The two sources it has are each, deliberately, below the floor
+/// The two sources it has are each below the floor
 /// [`os::resolve`] reports at, so neither names a host alone, and a sweep of a
 /// network of randomly-addressed phones concludes nothing at all. Two agreeing
 /// sources clear it: an Apple address under a default `MacBook-Pro` name is a
@@ -854,7 +854,7 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
 /// Runs the active operating-system echo probe, where the caller asked for it
 /// and the passive sources left hosts unnamed.
 ///
-/// Target selection is from the store and not from the plan, deliberately: "the
+/// Target selection is from the store and not from the plan: "the
 /// passive sources concluded nothing" is only true once those sources have
 /// finished, and the store is where that conclusion lives. Every host that
 /// answered nothing a TCP rule could read, a stock Windows firewall drops
@@ -1018,7 +1018,7 @@ pub(super) async fn run_port_phase(
 
 /// The plan as the port phase actually probed it.
 ///
-/// **Not what the dispatcher walks.** That is the whole plan, so that a position
+/// Not what the dispatcher walks. That is the whole plan, so that a position
 /// means the same target in every sitting. see
 /// [`live_addresses`]. This is what the phase *covered*, which is a different
 /// number and the one a [`TargetScope`](crate::report::TargetScope)
@@ -1056,7 +1056,7 @@ pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
 
 /// Every address the liveness pass found a host at.
 ///
-/// **A set rather than a narrowed plan.** The port phase used to be handed a
+/// A set rather than a narrowed plan. The port phase used to be handed a
 /// `TargetMap` rebuilt from these, and the dispatcher numbered *that*, so a
 /// position was counted in a plan that depended on which hosts happened to
 /// answer, and two sittings of one job could disagree about what position 400
@@ -1085,8 +1085,8 @@ pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
 /// The address a raw routed probe can be aimed at, or `None` for a host it
 /// cannot reach.
 ///
-/// **This is where the store's key becomes a bare address, and the one place a
-/// key may be narrowed to one.** The strategies below it, the trace, the echo
+/// This is where the store's key becomes a bare address, and the one place a
+/// key may be narrowed to one. The strategies below it, the trace, the echo
 /// probe, reach a host over the routing table and reason in addresses from end
 /// to end: a socket takes one, a reply carries one, and a hop table is keyed by
 /// one. Handing them a `ScopedIp` would key their reply matching on something no
@@ -1231,7 +1231,7 @@ mod tests {
         assert!(ctx.failures_snapshot().is_empty());
     }
 
-    /// IPv4 is deliberately not bounded here. A `/8` is sixteen million probes,
+    /// IPv4 is not bounded here. A `/8` is sixteen million probes,
     /// which is unreasonable rather than impossible, and which of those it is is
     /// a judgement for whoever is driving the engine.
     #[test]

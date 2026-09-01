@@ -42,7 +42,7 @@
 //! and any hardware address into a frame.
 //!
 //! The rule that follows is narrow and is applied at the one place it can be:
-//! **a frame is credited to its sender and to nobody else.** A claim about a
+//! a frame is credited to its sender and to nobody else. A claim about a
 //! third address is read for what the *sender* is and never for what the address
 //! it names is, which is the same reasoning `local`'s `note_declaration` already
 //! applies to an overheard router advertisement.
@@ -90,8 +90,8 @@ use crate::{info, warn};
 
 /// How much of each frame the kernel keeps for a listener.
 ///
-/// **This is the payload boundary, and it is enforced by the kernel rather than
-/// by discipline here.** A listener sees traffic belonging to other people, and
+/// This is the payload boundary, and it is enforced by the kernel rather than
+/// by discipline here. A listener sees traffic belonging to other people, and
 /// the honest limit on how much of it this process reads is a limit the process
 /// cannot exceed even by mistake. Everything this module concludes comes from
 /// link, network and transport headers, plus the first stretch of a
@@ -129,7 +129,7 @@ const MAX_DECLARING_MACS: usize = 4096;
 
 /// How many machines a watch will record before it stops taking new ones.
 ///
-/// **The one phase with no end of its own needs a ceiling somewhere.** The other
+/// The one phase with no end of its own needs a ceiling somewhere. The other
 /// two are bounded by their own enumeration: a sweep of a `/16` records at most
 /// sixty-five thousand hosts because that is how many it asked about. A listener
 /// asked about nothing, runs until somebody stops it, and records whatever
@@ -142,7 +142,7 @@ const MAX_DECLARING_MACS: usize = 4096;
 /// What reaches it is the wide scope on a busy uplink, which is exactly the case
 /// this exists for.
 ///
-/// **Reaching it stops new records and never touches the ones already made.**
+/// Reaching it stops new records and never touches the ones already made.
 /// Evicting would be this phase lowering a claim, which §2 of this module
 /// forbids: a host dropped to make room is indistinguishable in the report from
 /// a host that was never heard. Refusing is visible instead: it is reported as a
@@ -194,7 +194,7 @@ fn tcp_segment<'a>(frame: &Frame<'a>) -> Option<&'a [u8]> {
 /// question asked of the operating system per frame: the answer is fixed for the
 /// life of a phase and the question would otherwise be asked millions of times.
 ///
-/// **Empty means unknown, never "nothing is on this link".** A listener that
+/// Empty means unknown, never "nothing is on this link". A listener that
 /// could not read its own interface table concludes nothing about forwarding
 /// rather than concluding that every sender forwards, which is what treating an
 /// empty set as authoritative would produce.
@@ -259,7 +259,7 @@ impl OnLink {
 
     /// Whether `address` belongs to a machine attached to this link.
     ///
-    /// **Not the same question as [`contains`](Self::contains)**, and the
+    /// Not the same question as [`contains`](Self::contains), and the
     /// difference is the reason both exist. That one asks whether a frame could
     /// have originated here, so it answers yes for every address a wire never
     /// carries as a source, the unspecified address, loopback, multicast,
@@ -315,7 +315,7 @@ pub enum Recording {
     /// it an inventory of this network, and on a busy uplink it is most of what
     /// the report would contain.
     ///
-    /// **A link that states no addressing cannot narrow anything**, and this
+    /// A link that states no addressing cannot narrow anything, and this
     /// admits everything rather than nothing when that happens. A capture
     /// interface on a mirror port routinely has no address of its own, and a
     /// listener that silently recorded nothing there would be the worst of the
@@ -481,7 +481,7 @@ pub struct PassiveListener {
     /// identified only by the frames it forwards, can be applied to the host it
     /// turns out to be.
     ///
-    /// **Seeded from whatever the store already holds**, which is what makes a
+    /// Seeded from whatever the store already holds, which is what makes a
     /// resumed watch add to its earlier sittings instead of starting a second
     /// record per machine. see [`paired_with_known_hosts`]. Beyond that it
     /// grows only from frames that produced a finding, which the recording
@@ -615,7 +615,7 @@ impl PassiveListener {
     /// The hardware address of every machine the store already knows, paired
     /// with the record it is kept under.
     ///
-    /// **This is what makes a resumed watch one watch.** A sitting keys each
+    /// This is what makes a resumed watch one watch. A sitting keys each
     /// machine by the first address it hears that machine at, and which address
     /// that is depends only on which frame happened to arrive first. Starting a
     /// second sitting with an empty pairing means the same laptop, restored
@@ -811,12 +811,12 @@ impl PassiveListener {
     ///
     /// # Two claims, and only one of them needs a handshake
     ///
-    /// **Any segment proves its sender is there.** A machine that put a TCP
+    /// Any segment proves its sender is there. A machine that put a TCP
     /// segment on the wire has a live stack, which is the model's own standard
     /// for [`HostStatus::Up`] and does not care whether the segment was drawn by
     /// a probe of ours.
     ///
-    /// **Only a SYN+ACK proves a listener.** A SYN says somebody *tried*, which
+    /// Only a SYN+ACK proves a listener. A SYN says somebody *tried*, which
     /// is a claim about the client's intent and not about the server: a host
     /// that is not there draws a SYN just as readily as one that is. Recording
     /// from SYNs would mean anybody who scans the segment fills this report with
@@ -899,8 +899,8 @@ impl PassiveListener {
 
     /// Records that a machine forwards, where the frame shows it doing so.
     ///
-    /// **A frame whose hardware source is on this link and whose IP source is
-    /// not.** That machine put a packet on this segment which it did not
+    /// A frame whose hardware source is on this link and whose IP source is
+    /// not. That machine put a packet on this segment which it did not
     /// originate, it forwarded somebody else's, and forwarding is what a
     /// router is. Unlike every other proof of the role this needs no probe, no
     /// cooperation and no protocol of its own; it is routing observed rather
@@ -909,7 +909,8 @@ impl PassiveListener {
     /// It is also the only such proof available on an IPv4-only segment. ARP has
     /// no equivalent of a neighbour advertisement's R flag and none of a router
     /// advertisement, which left this engine reading its own routing table:
-    /// finding *your* gateway and missing the second router on the same wire.
+    /// finding this machine's own gateway and missing the second router on the
+    /// same wire.
     ///
     /// # It names a MAC, not an address
     ///
@@ -968,7 +969,7 @@ impl PassiveListener {
     /// # Only a reply's shape is classified
     ///
     /// A **client's SYN** is the richest passive fingerprint there is, and it is
-    /// deliberately not read here. This engine's rule database describes what a
+    /// not read here. This engine's rule database describes what a
     /// stack sends *in answer*, a SYN+ACK from an open port, a reset from a
     /// closed one, because that is what a scan draws. Matching a connection
     /// request against rules written for replies would produce a confident
@@ -1107,7 +1108,7 @@ impl PassiveListener {
     /// Folds a finding into the store under `key`, promoting rather than
     /// replacing.
     ///
-    /// **Every finding this listener records passes through here**, which is
+    /// Every finding this listener records passes through here, which is
     /// what lets the ceiling be one branch rather than a rule each reader has to
     /// remember.
     ///
@@ -1630,7 +1631,8 @@ mod tests {
     /// It is the only proof of the role available on an IPv4-only segment: ARP
     /// has no equivalent of a neighbour advertisement's R flag and none of a
     /// router advertisement, which left the engine reading its own routing table:
-    /// finding *your* gateway and missing the second router on the same wire.
+    /// finding this machine's own gateway and missing the second router on the
+    /// same wire.
     #[test]
     fn a_machine_that_forwards_somebody_elses_packet_is_a_router() {
         use crate::protocols::tcp::flags;
@@ -2038,8 +2040,8 @@ mod tests {
     /// invent one for it.
     ///
     /// The restored store holds both kinds: machines on the link, which carry a
-    /// MAC, and hosts heard from off it through a router, which deliberately do
-    /// not. see `read_endpoint`. Reading a MAC off the second kind is the
+    /// MAC, and hosts heard from off it through a router, which do not. See
+    /// `read_endpoint`. Reading a MAC off the second kind is the
     /// mistake this guards, and it would be the same one the endpoint reader
     /// refuses: crediting a router's hardware to a machine somewhere else.
     #[test]

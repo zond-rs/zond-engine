@@ -24,7 +24,7 @@
 //! contents did not change; what changed is that `routed` no longer means both
 //! "reached through a gateway" and "opens a raw socket".
 //!
-//! ## What is shared and what deliberately is not
+//! ## What is shared and what is not
 //!
 //! The timings here are the ones a probe over a routed path shares whatever it
 //! is asking about: a SYN sweep and a TCP port scan cross the same links and
@@ -459,7 +459,7 @@ pub(super) fn send_udp(
 
 /// Why probes did not reach the wire, split by what that says.
 ///
-/// **Two kinds, because they are not the same finding.** A send path that will
+/// Two kinds, because they are not the same finding. A send path that will
 /// not work is a strategy that did not run, and a caller has to hear that the
 /// scan covered less than it was asked to. An address this host has no route to
 /// is ordinary, a dual-stack name on an IPv4-only network resolves to an AAAA

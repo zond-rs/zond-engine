@@ -190,8 +190,8 @@ impl ScanBudget {
     /// The same budget, with its ceiling raised to whatever `target_count`
     /// targets need at this budget's own rate.
     ///
-    /// **A ceiling is in different units from the rest of a budget, and that is
-    /// how it goes wrong.** The base and the per-target term both scale with the
+    /// A ceiling is in different units from the rest of a budget, and that is
+    /// how it goes wrong. The base and the per-target term both scale with the
     /// work; a fixed ceiling does not, so past some target count it quietly
     /// stops being a backstop and becomes the whole answer, and nothing says
     /// so, because a truncated scan and a finished one report the same way.

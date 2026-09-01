@@ -73,8 +73,8 @@ where
     /// `kind` names the strategy this pool is probing for, so a panic can be
     /// attributed to it in the report.
     ///
-    /// **A limit of zero is a caller error rather than an instruction to run
-    /// nothing**, and is read as one probe, on the same terms `rate_or` reads a
+    /// A limit of zero is a caller error rather than an instruction to run
+    /// nothing, and is read as one probe, on the same terms `rate_or` reads a
     /// configured rate of zero. Honouring it is not an option: the admission
     /// loop below would spin on an empty set, and because it never awaits
     /// anything it never returns to the runtime: on a current-thread runtime

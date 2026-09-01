@@ -123,8 +123,8 @@
 //! thousand; the threshold is what stops it overshooting a target's capacity by
 //! a factor of two before it notices.
 //!
-//! **A probe that timed out against a silent host grows the window exactly as an
-//! answered one does.** That reads backwards until the rule above is taken
+//! A probe that timed out against a silent host grows the window exactly as an
+//! answered one does. That reads backwards until the rule above is taken
 //! seriously: nothing that host does is evidence about capacity, and asking it
 //! more slowly discovers nothing. Against an address that answers nothing at all,
 //! a firewalled host, a dead address in a range, this is what lets the scan
@@ -143,7 +143,7 @@
 //! in probes rather than in round trips because a scanner already counts probes
 //! and would have to invent the round trip.
 //!
-//! ## What is deliberately not a signal
+//! ## What is not a signal
 //!
 //! A frame the kernel's capture buffer dropped is loss too, and unlike a
 //! timeout it is unambiguous: the reply arrived and this process was too busy
@@ -156,10 +156,10 @@
 //! that cannot keep up is a fact about their machine rather than about the
 //! network, and no amount of pacing makes that the right thing not to say.
 //!
-//! ## Where it applies, and where it deliberately does not
+//! ## Where it applies, and where it does not
 //!
 //! TCP port scanning, where silence is exceptional and an answer is the norm.
-//! **Not UDP**: a UDP probe's ordinary outcome *is* silence, and the ledger
+//! Not UDP: a UDP probe's ordinary outcome *is* silence, and the ledger
 //! cannot tell which attempt a reply answered because a UDP probe carries
 //! nothing for the reply to echo. Both halves of the signal are missing, so a
 //! UDP scan keeps a window that does not move, [`WindowLimits::fixed`], and
@@ -275,7 +275,7 @@ pub struct CongestionWindow {
 impl CongestionWindow {
     /// A window at its starting size, with nothing learned yet.
     ///
-    /// **Bounds that disagree do not panic.** `floor` and `ceiling` are adjacent
+    /// Bounds that disagree do not panic. `floor` and `ceiling` are adjacent
     /// arguments of one type on a public constructor, so a caller can cross
     /// them; the floor wins, for the reason
     /// [`suggest_timeout`](super::rtt_window::RttWindow::suggest_timeout) and

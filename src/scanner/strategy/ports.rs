@@ -220,7 +220,7 @@ const TCP_PORT_RATE_CEILING: NonZeroU32 = NonZeroU32::new(20_000).expect("a non-
 /// ports that are closed. Spread across the hosts of a shuffled scan this is
 /// survivable; aimed at one host it is the whole result.
 ///
-/// **This number is inherited reasoning, not a measurement.** The sweep's rate
+/// This number is inherited reasoning, not a measurement. The sweep's rate
 /// was measured; this is set an order of magnitude below it because the
 /// per-target load is an order of magnitude higher, and that is an argument
 /// rather than an experiment.
@@ -294,7 +294,7 @@ pub struct RawProbeScan<T> {
     /// How many questions this scan may have awaiting an answer, grown and cut
     /// from what the targets are managing to answer.
     ///
-    /// **This is what paces a raw port scan**, and it is the answer to a
+    /// This is what paces a raw port scan, and it is the answer to a
     /// question a fixed rate cannot answer. Measured, against a consumer router:
     /// asked as fast as the socket would take it, of a thousand ports it
     /// answered roughly four hundred and the rest were reported *filtered*:
@@ -432,7 +432,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     ///   allows and none is still outstanding. Waiting longer cannot change what
     ///   this found.
     ///
-    /// **Silence is deliberately not one of them.** It reads as a fourth
+    /// Silence is not one of them. It reads as a fourth
     /// condition and it cannot be one: with targets still queued, an empty
     /// ledger does not mean the scan has heard nothing, it means the scan has
     /// not *asked* yet, and the way that happens is the send path failing. A
@@ -774,7 +774,7 @@ pub trait RawPortScan: PortScanner {
     /// the [`window`](RawProbeScan::window) for the targets queued behind
     /// them.
     ///
-    /// Running out of attempts is deliberately not treated as activity, so it
+    /// Running out of attempts is not treated as activity, so it
     /// never extends the scan's own deadline. Nothing answered.
     ///
     /// A probe's **first** timeout is also what releases its slot in the
@@ -858,7 +858,7 @@ pub trait RawPortScan: PortScanner {
     /// `DeadlineExpired` is a fact somebody can act on, and an absent port is
     /// not.
     ///
-    /// **What is already queued, and no more.** Waiting for the dispatcher to
+    /// What is already queued, and no more. Waiting for the dispatcher to
     /// finish emitting would let a scan of a very large range spend longer
     /// filing verdicts than it spent scanning, and the deadline that stopped it
     /// is a guarantee of termination that this must not quietly undo. For every

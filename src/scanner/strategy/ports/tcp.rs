@@ -333,7 +333,7 @@ impl TcpPortScanner {
     /// Reads what the reply that just resolved a port says about the machine
     /// behind it, and files it against the host.
     ///
-    /// Deliberately after the port verdict and deliberately not able to change
+    /// After the port verdict, and not able to change
     /// it. Identifying an operating system is a secondary reading of a reply
     /// drawn for another purpose, and a defect here must not be able to cost a
     /// port its state.
@@ -350,7 +350,7 @@ impl TcpPortScanner {
             return;
         };
 
-        // Before the detection gate, and deliberately. The hop counter is not an
+        // Before the detection gate. The hop counter is not an
         // identification and costs nothing to keep - it arrived in a header this
         // function already had in hand - while what needs it later is a
         // traceroute, which is a separate setting entirely. Gated with the OS
@@ -738,7 +738,7 @@ struct Answer {
     sender: Option<IpAddr>,
     /// The hop counter as it arrived: an IPv4 TTL or an IPv6 hop limit.
     ///
-    /// **Not the value the sender wrote.** Every router on the path decrements
+    /// Not the value the sender wrote. Every router on the path decrements
     /// it, so what is recorded is the initial value less the distance, which is
     /// what makes it worth keeping per port: a reply whose count disagrees with
     /// the host's other replies did not come from where the others did. See

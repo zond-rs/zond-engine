@@ -84,7 +84,7 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 );
 
 /// How fast echoes leave the wire. One per millisecond is far slower than the
-/// port scanners, deliberately: a scan that opted into active detection pays
+/// port scanners: a scan that opted into active detection pays
 /// for its hosts one packet at a time, and this phase is never the thing being
 /// timed.
 const SEND_TICK: Duration = Duration::from_millis(1);

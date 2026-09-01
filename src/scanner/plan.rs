@@ -156,7 +156,7 @@ impl RefusedStep {
     /// An idle scan was asked for without the privilege it needs.
     ///
     /// The forged source address of an idle scan's probe can only ride a
-    /// self-built frame, which needs privilege. There is deliberately no
+    /// self-built frame, which needs privilege. There is no
     /// fallback: scanning the target under this host's own address is the one
     /// thing an idle scan exists to avoid, so the whole of it is refused rather
     /// than run in the open.
@@ -355,7 +355,7 @@ impl DiscoveryStep {
 
     /// Opens whatever this step needs and hands back the strategy to run.
     ///
-    /// **This is where the plan stops being free.** A local step opens a
+    /// This is where the plan stops being free. A local step opens a
     /// link-layer channel on its interface; a routed step opens a raw transport
     /// and a capture. Either can fail on an environment the plan could not see,
     /// and that is a [`StrategyError`] rather than a panic, so a caller can

@@ -43,7 +43,7 @@
 //! as a host. The unprivileged fallback contributes nothing here: it asks
 //! through the system resolver, which does not say which server answered.
 //!
-//! mDNS is deliberately not counted. It shares DNS's framing and answers on
+//! mDNS is not counted. It shares DNS's framing and answers on
 //! 5353, and nearly every laptop and printer on a segment responds to it.
 
 use hickory_resolver::config::ProtocolConfig;
@@ -785,13 +785,13 @@ pub async fn resolve_hosts_async(ctx: &ScanContext) {
 /// label: `192.168.0.26` comes back as `192-168-0-26.lan`. Consumer routers do
 /// this by default, and cloud providers do it deliberately.
 ///
-/// **That is not a name, and accepting it costs more than an empty column.** It
+/// That is not a name, and accepting it costs more than an empty column. It
 /// carries nothing the address does not already carry, and it fills the one slot
 /// a real name would take: this engine prefers a unicast answer to an mDNS one,
 /// so a synthesised PTR does not merely sit beside the machine's actual name, it
 /// keeps the scan from ever recording it.
 ///
-/// **The test is decidable, not a guess about shape.** An address cannot appear
+/// The test is decidable, not a guess about shape. An address cannot appear
 /// literally in a label, since its own separator is the label separator, so a
 /// resolver writing one has to substitute: a dot becomes a dash or an underscore
 /// and a colon becomes a dash. Each substitution is undone and the result read

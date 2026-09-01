@@ -375,8 +375,8 @@ impl ProbeAudit {
 
     /// Says so when a run's own counters show it was losing replies.
     ///
-    /// **A scan that degrades quietly is the failure this engine exists not to
-    /// have.** Measured, against a consumer router: probed faster than it would
+    /// A scan that degrades quietly is the failure this engine exists not to
+    /// have. Measured, against a consumer router: probed faster than it would
     /// answer, a thousand-port scan reported six hundred ports `filtered`: with
     /// no more hesitation than it reported the three that really were, and among
     /// them two ports running services. Every one of those verdicts is a claim
@@ -534,7 +534,7 @@ fn format_offset(offset: Option<Duration>) -> String {
 /// The kernel-capture segment of the audit line, empty where there was no
 /// capture to report on.
 ///
-/// `received` is deliberately kept next to `dropped` rather than reported
+/// `received` is kept next to `dropped` rather than reported
 /// alone. The filter admits traffic this scan did not cause, so the count is
 /// not the scan's replies; what it gives is the scale the drops happened at,
 /// and a drop count without one says nothing about how close the receive path

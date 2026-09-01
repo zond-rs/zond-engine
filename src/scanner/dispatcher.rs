@@ -364,7 +364,7 @@ mod tests {
         assert!((15..100).contains(&count));
     }
 
-    /// **The property the liveness filter exists to keep.**
+    /// The property the liveness filter exists to keep.
     ///
     /// Which hosts answer is a fact about the network on the day, so a plan
     /// narrowed to them is a different plan every sitting. Numbering has to

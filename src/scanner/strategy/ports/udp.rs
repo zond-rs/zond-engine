@@ -76,7 +76,7 @@ use crate::scanner::strategy::icmp_error::{self, Unreachable};
 
 /// How long this scan runs and how it adapts.
 ///
-/// Deliberately *not* the profile the SYN scanners share
+/// Not the profile the SYN scanners share
 /// ([`DEADLINE_CONFIG`](super::super::raw::DEADLINE_CONFIG)), because the thing being
 /// waited for is different in kind. A SYN probe is answered by the target's
 /// TCP stack as fast as the link allows. A UDP probe's most informative answer
@@ -149,7 +149,7 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// fast as the socket accepts writes - a burst that outruns any rate-limited
 /// host's ability to answer manufactures open-filtered verdicts.
 ///
-/// **Fixed, where the TCP scanner's equivalent adapts.** A congestion window
+/// Fixed, where the TCP scanner's equivalent adapts. A congestion window
 /// needs evidence, and a UDP scan is given none: silence is its ordinary
 /// outcome rather than a signal, and its replies carry nothing naming the
 /// attempt they answer, so neither the growth nor the reduction side of the
@@ -437,7 +437,7 @@ impl RawPortScan for UdpPortScanner {
             }
             // Named a host but resolved no probe. Counted as seen rather than
             // off-target: it came from an address this scan asked about.
-            // The probe is deliberately left outstanding. This message reports
+            // The probe is left outstanding. This message reports
             // that the address could not be reached at all, so it carries no
             // verdict on the port it happened to quote, and the probe should
             // retire on its own schedule like any other unanswered one.
@@ -1075,7 +1075,7 @@ mod tests {
 
     /// The distinction the whole host-status design turns on: an ICMP error
     /// names the hop that sent it as well as the address it is about, and only
-    /// the first tells you whether the target is alive.
+    /// the first says whether the target is alive.
     #[test]
     fn a_port_unreachable_proves_the_host_only_when_the_host_sent_it() {
         let (mut scanner, session) = scanner_with_mock();

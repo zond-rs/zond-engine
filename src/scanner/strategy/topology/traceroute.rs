@@ -47,7 +47,7 @@
 //! of many hosts behind one gateway is nearly all of it.
 //!
 //! Starting at the target requires knowing how far away it is, which is why
-//! **only hosts that answered are traced**. The distance is read out of the
+//! only hosts that answered are traced. The distance is read out of the
 //! reply: a hop counter arrives having been decremented once per router, so the
 //! gap between what arrived and the value it plausibly started at is the
 //! distance. See `distance_from`.
@@ -59,7 +59,7 @@
 //! same distance, the hops before it are taken from that earlier trace instead
 //! of being measured again.
 //!
-//! **That is an assumption, and it is worth stating plainly**: it takes two
+//! That is an assumption, and it is worth stating plainly: it takes two
 //! paths that pass through one router at one distance to have been identical up
 //! to that point. Routing does not promise this, a load balancer can send two
 //! flows over different upstreams that rejoin, and it is nonetheless true of
@@ -99,7 +99,7 @@ pub const MAX_HOPS: u8 = 30;
 
 /// How long one round of probes is given to be answered.
 ///
-/// Generous compared with a port probe's budget, and deliberately. A Time
+/// Generous compared with a port probe's budget. A Time
 /// Exceeded is the lowest-priority work a router does: it is generated on the
 /// control plane, by software, usually after every packet that could be
 /// forwarded has been, and commonly rate-limited to a handful per second. A
@@ -112,12 +112,12 @@ const ROUND_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Three, which is what every traceroute has sent per hop since the first one,
 /// and for two reasons that both still hold.
 ///
-/// **Routers rate-limit the error this depends on.** A single unanswered probe
+/// Routers rate-limit the error this depends on. A single unanswered probe
 /// is weak evidence of silence: the router may simply have spent its budget on
 /// somebody else that second. Reporting a hop as silent on one miss fills a path
 /// with holes that are an artefact of the scan.
 ///
-/// **And the capture is not ready the instant a transport opens.** Opening a
+/// And the capture is not ready the instant a transport opens. Opening a
 /// `libpcap` handle on every interface takes real time, and the first probe of a
 /// run can leave before the handles are live, so its reply is not missed on the
 /// network but here. Every other strategy in this engine survives that by
@@ -454,7 +454,7 @@ impl Tracer {
 /// The quoted destination names the host and the marker inside the transport
 /// header names the distance. see [`Tracer::send`] for where each is written.
 ///
-/// **Both halves are checked, and the marker twice for TCP.** An ICMP error
+/// Both halves are checked, and the marker twice for TCP. An ICMP error
 /// carries no ports of its own, so the capture that admits them admits *every*
 /// ICMP error on every captured interface: a busy host produces a steady
 /// background of errors about packets this engine never sent, and one of those
@@ -547,7 +547,7 @@ enum Reply {
 /// inferred from the usual ones, 32, 64, 128, 255, by taking the smallest that
 /// could have produced what arrived.
 ///
-/// **A bound rather than a measurement**, and it can be wrong in one direction:
+/// A bound rather than a measurement, and it can be wrong in one direction:
 /// a host more than 64 hops away is read against 128 and reported nearer than it
 /// is. Paths that long do not occur outside a laboratory, and the alternative,
 /// refusing to trace anything whose stack is not already fingerprinted, would
@@ -672,7 +672,7 @@ impl Tracer {
 
     /// How far away each host is.
     ///
-    /// **Read from what the scan already saw wherever possible.** Every reply a
+    /// Read from what the scan already saw wherever possible. Every reply a
     /// host sent arrived with a hop counter, the scan recorded the most recent
     /// one, and the distance falls straight out of it, so for a host the port
     /// scan reached, this costs no probe, no round trip and no waiting.
@@ -816,7 +816,7 @@ impl Tracer {
 
     /// Measures the path to `target`, starting from `estimate` and correcting it.
     ///
-    /// **`estimate` is a starting point, not the answer.** It is read from the
+    /// `estimate` is a starting point, not the answer. It is read from the
     /// hop counter of a reply the host sent, which measures the path *back* from
     /// the host, and internet routing is asymmetric, so the two differ
     /// routinely and by more than a hop. An anycast address can easily answer
@@ -1183,7 +1183,7 @@ mod tests {
 
     /// The estimate reads short, and the trace walks out past it.
     ///
-    /// **The defect a real host found.** A reply's hop counter measures the path
+    /// The defect a real host found. A reply's hop counter measures the path
     /// back from the host, and traceroute measures the path out to it; an
     /// anycast address answers from nearer than it can be reached. Trusted as
     /// the answer, the estimate reported the target two routers closer than it
@@ -1246,8 +1246,8 @@ mod tests {
 
     /// A path whose routers all stay quiet still reports its own length.
     ///
-    /// **The shape that broke against a real host, and the reason the distance
-    /// on an answer is checked.** Where every router answers, a straggler read
+    /// The shape that broke against a real host, and the reason the distance on
+    /// an answer is checked. Where every router answers, a straggler read
     /// as "the target is here" is overwritten by the genuine expiry arriving in
     /// the same round, and the defect stays hidden. Where none of them answer,
     /// which is ordinary, since large networks rate-limit these errors to

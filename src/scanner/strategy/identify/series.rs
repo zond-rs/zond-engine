@@ -92,7 +92,7 @@
 //! than a slice of one long one. `BATCH` is that size, and carries the
 //! arithmetic behind it.
 //!
-//! ## No retransmission, deliberately
+//! ## Why there is no retransmission
 //!
 //! Every other scanner here resends what went unanswered. This one does not, and
 //! it is the same fact read again: a retry arrives at a moment nothing planned,
@@ -303,7 +303,7 @@ pub struct OsSeriesScanner {
     transport: ProbeTransport,
     /// The IP-header state every sample carries. Only the hop limit is taken
     /// from an evasion profile: a sample's answer is the measurement, so it must
-    /// not be reshaped, and its source port is deliberately varied per sample
+    /// not be reshaped, and its source port is varied per sample
     /// (see [`send_one`](Self::send_one)) rather than pinned. See
     /// [`EvasionProfile::hop_limited_emission`](crate::evasion::EvasionProfile::hop_limited_emission).
     emission: Emission,

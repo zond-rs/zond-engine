@@ -78,7 +78,7 @@ const MAX_TRACKED_ATTEMPTS: usize = 4;
 /// all is the single largest source of wasted traffic in a wide scan: three
 /// attempts across 65 535 ports is nearly 200 000 packets to learn one fact.
 ///
-/// The rule is deliberately conservative. *Any* reply counts as life - a `RST`,
+/// The rule is conservative. *Any* reply counts as life - a `RST`,
 /// an ICMP error, an ARP reply - so an ordinary firewalled-but-alive host that
 /// refuses even one port never triggers it, and the budget is reduced rather
 /// than abandoned. What it can still cost is a port that is open, behind a path
@@ -127,7 +127,7 @@ pub struct RetryPolicy {
     pub max_attempts: u8,
     /// The timeout used before anything has been measured.
     ///
-    /// Deliberately distinct from [`min_rto`](Self::min_rto). With no samples
+    /// Distinct from [`min_rto`](Self::min_rto). With no samples
     /// the network is unknown, not known to be fast, and starting at the floor
     /// would triple the traffic of a scan whose first probes cross an ocean.
     /// Only measurement is allowed to push the timeout down toward the floor.
@@ -405,7 +405,7 @@ struct Record<T, P> {
     sends: u8,
     /// How many sends actually reached the wire and were recorded here.
     ///
-    /// Deliberately separate from [`sends`](Self::sends), which is charged when
+    /// Separate from [`sends`](Self::sends), which is charged when
     /// a retry is *scheduled* so that a probe nobody manages to send still
     /// exhausts on time. Numbering the tracked attempts off that count would
     /// misname them by however many were charged and never emitted, so the
@@ -438,7 +438,7 @@ impl<T: Copy, P> Record<T, P> {
     /// Stores the token one attempt was sent with, evicting the oldest when the
     /// array is full.
     ///
-    /// The attempt *count* is deliberately not touched here. It belongs to
+    /// The attempt *count* is not touched here. It belongs to
     /// [`ProbeLedger::drain_due`], which charges an attempt when it schedules a
     /// retry rather than when the caller gets around to sending it, so a retry
     /// that is never actually emitted still exhausts on schedule.
@@ -861,7 +861,7 @@ where
     /// failing to keep up, and that is exactly a reason to. See
     /// [`congestion`](super::congestion).
     ///
-    /// Deliberately not "has a round trip", which
+    /// Not "has a round trip", which
     /// [`host_rtt`](Self::host_rtt) answers: a reply that could not be
     /// attributed to an attempt still proves the host is talking, and a host
     /// whose every reply arrived ambiguously would otherwise look silent.
@@ -1122,7 +1122,7 @@ mod tests {
         );
     }
 
-    /// The default is the opposite, and deliberately so: where every probe
+    /// The default is the opposite: where every probe
     /// crosses the same path, the first host to answer has told the scan what
     /// the rest will cost, and a fresh target should not start from first
     /// principles.
