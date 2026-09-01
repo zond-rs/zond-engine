@@ -28,6 +28,7 @@ use serde::Deserialize;
 /// A whole host-detection file: what it is, and the findings it draws for a host
 /// its gate fits.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostDetection {
     pub detection: HostManifest,
     #[serde(default)]
@@ -37,6 +38,7 @@ pub struct HostDetection {
 /// `[detection]` for a host-level detection: its identity and the gate that decides
 /// which hosts it concludes something about.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostManifest {
     pub id: String,
     pub version: String,
@@ -49,6 +51,7 @@ pub struct HostManifest {
 /// Every field is a set every member of which must hold, so listing more narrows
 /// the match rather than widening it. An empty gate fits every host.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostGate {
     /// Ports that must all be open.
     #[serde(default)]
@@ -74,6 +77,7 @@ impl HostGate {
 
 /// `[[finding]]`: a conclusion the detection draws about a host whose gate fit.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FindingSpec {
     /// How bad it is if true.
     pub severity: Severity,

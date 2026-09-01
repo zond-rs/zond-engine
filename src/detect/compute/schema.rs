@@ -43,6 +43,7 @@ use super::manifest::DetectionManifest;
 
 /// A whole compute-detection file: the shared manifest, then its body.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComputeDetection {
     pub detection: DetectionManifest,
     pub compute: ComputeSection,
@@ -50,6 +51,7 @@ pub struct ComputeDetection {
 
 /// `[compute]` — the body of a Tier-2 detection and the language it is written in.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComputeSection {
     pub language: Language,
     /// The code inline. Exactly one of `source` or [`body`](Self::body) is set.

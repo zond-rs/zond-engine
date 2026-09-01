@@ -23,7 +23,10 @@ services = ["http", "grafana"]
 protocol = "tcp"
 
 [detection.capabilities]
-class           = "active-benign"   # reads a file the app should not expose; changes nothing
+# Triggers the weakness to prove it, reading a file off the target rather than
+# inferring the version, so it is an exploit and waits for an operator to raise
+# the envelope to it. A default scan sends nothing here.
+class           = "exploit"
 speak           = "target"
 max_bytes       = 65536
 max_millis      = 4000

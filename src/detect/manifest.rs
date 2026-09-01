@@ -46,6 +46,7 @@ use serde::Deserialize;
 /// `[detection]` — what a detection *is* and what it *asks to be handed*, shared
 /// by every tier that runs one.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DetectionManifest {
     /// The author-chosen identity, stamped on every finding this detection
     /// produces.
@@ -65,6 +66,7 @@ pub struct DetectionManifest {
 /// `[detection.when]` — the rule that gates the whole detection, nmap's portrule.
 /// Every set field ANDs; an empty table means "any port the level offers".
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     /// The identified service name, `redis` or `http`. A port whose service the
     /// scan could not name never fits a rule that names one.
@@ -117,6 +119,7 @@ pub struct Rule {
 /// [`Capabilities`](super::compute::Capabilities) a compute module holds at run
 /// and the [`Grant`](super::compute::Grant) an envelope produces from it.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilitySpec {
     /// The intrusiveness this detection declares. An envelope permits or
     /// refuses the detection on this alone.

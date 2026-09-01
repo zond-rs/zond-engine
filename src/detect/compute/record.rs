@@ -244,17 +244,23 @@ fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Bytes from lowercase hex. A malformed string reads back empty rather than
-/// failing, since a machine wrote it and a corrupt tape is a degraded replay, not a
-/// crash.
+/// Bytes from lowercase hex. A malformed string, an odd length, or a non-hex or
+/// non-ASCII byte reads back empty rather than failing, since a machine wrote it
+/// and a corrupt tape is a degraded replay, not a crash. Indexing is over bytes,
+/// not chars, so a multi-byte character cannot land a slice mid-character.
 fn from_hex(hex: &str) -> Vec<u8> {
+    let hex = hex.as_bytes();
     if !hex.len().is_multiple_of(2) {
         return Vec::new();
     }
     (0..hex.len())
         .step_by(2)
-        .map(|start| u8::from_str_radix(&hex[start..start + 2], 16))
-        .collect::<Result<Vec<u8>, _>>()
+        .map(|start| {
+            let hi = (hex[start] as char).to_digit(16)?;
+            let lo = (hex[start + 1] as char).to_digit(16)?;
+            Some((hi * 16 + lo) as u8)
+        })
+        .collect::<Option<Vec<u8>>>()
         .unwrap_or_default()
 }
 
@@ -388,5 +394,26 @@ mod tests {
                 "an error kind did not survive its wire name"
             );
         }
+    }
+
+    #[test]
+    fn a_tape_with_non_ascii_hex_reads_back_empty_rather_than_panicking() {
+        // A journal a local attacker plants can hold any string in a hex field. An
+        // even byte length of multi-byte characters once passed the length guard
+        // and then sliced a `&str` mid-character, aborting the read of the file.
+        let record = CapTapeRecord {
+            speaks: vec![SpeakExchangeRecord {
+                sent: "€€".to_string(),
+                reply: Some(" zz not hex".to_string()),
+                error: None,
+            }],
+            resolves: Vec::new(),
+            nows: Vec::new(),
+        };
+
+        let tape = record.rebuild();
+        assert_eq!(tape.speaks.len(), 1);
+        assert_eq!(tape.speaks[0].sent, Vec::<u8>::new());
+        assert_eq!(tape.speaks[0].reply, Ok(Vec::new()));
     }
 }

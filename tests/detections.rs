@@ -54,7 +54,7 @@ use tokio::time::timeout;
 
 use common::*;
 use zond_engine::config::limits::CONNECT_CONCURRENCY;
-use zond_engine::config::{DetectionEnvelope, ServiceDetection};
+use zond_engine::config::{DetectionEnvelope, ServiceDetection, ZondConfig};
 use zond_engine::detect::compute::{
     ComputeRuntime, Grant, LiveCapabilities, LoadError, ModuleBody, ModuleFault, RhaiRuntime,
     RunOutcome,
@@ -224,6 +224,17 @@ fn port_finding<'a>(host: &'a Host, number: u16, id: &str) -> Option<&'a Finding
         .find(|finding| finding.detection().id() == id)
 }
 
+/// The test config with the detection envelope raised to permit an `exploit`.
+///
+/// The Grafana flow reads `/etc/passwd` off the target to confirm the CVE, which
+/// is an exploit, so a default scan withholds it and a test that needs it to run
+/// opts in the way an operator would.
+fn exploit_config() -> ZondConfig {
+    let mut cfg = test_config();
+    cfg.detection = DetectionEnvelope::up_to(DetectionClass::Exploit);
+    cfg
+}
+
 /// Whether this run takes the raw paths rather than the connect fallback the
 /// assertions here depend on.
 fn skip_when_privileged() -> bool {
@@ -250,7 +261,7 @@ async fn a_flow_probes_a_live_service_and_files_what_it_confirmed() {
     let server = spawn_web_server(0).await;
     let outcome = run_scan(
         target_map(LOOPBACK, &server.port.to_string()),
-        &test_config(),
+        &exploit_config(),
     )
     .await;
 
@@ -262,7 +273,7 @@ async fn a_flow_probes_a_live_service_and_files_what_it_confirmed() {
         finding.title(),
         "Grafana is vulnerable to unauthenticated path traversal"
     );
-    assert_eq!(finding.class(), DetectionClass::ActiveBenign);
+    assert_eq!(finding.class(), DetectionClass::Exploit);
     assert!(
         finding.excerpt().as_str().contains("root:x:0:0:"),
         "the excerpt should be the bytes the traversal read, got {:?}",
@@ -300,7 +311,7 @@ async fn a_flow_fires_against_the_service_name_its_own_fingerprint_produces() {
     let server = spawn_grafana_server().await;
     let outcome = run_scan(
         target_map(LOOPBACK, &server.port.to_string()),
-        &test_config(),
+        &exploit_config(),
     )
     .await;
 
@@ -438,7 +449,7 @@ async fn a_detection_whose_gate_does_not_fit_the_port_never_runs() {
     let web = spawn_web_server(0).await;
     let ssh = spawn_greeting_server(b"SSH-2.0-OpenSSH_9.6p1 Debian-3\r\n").await;
     let spec = format!("{},{}", web.port, ssh.port);
-    let outcome = run_scan(target_map(LOOPBACK, &spec), &test_config()).await;
+    let outcome = run_scan(target_map(LOOPBACK, &spec), &exploit_config()).await;
 
     assert!(
         finding(&outcome.report, web.port, "grafana-path-traversal").is_some(),
@@ -462,49 +473,50 @@ async fn a_detection_whose_gate_does_not_fit_the_port_never_runs() {
     );
 }
 
-/// The envelope decides what runs. A class above the ceiling does not, and the
-/// detection that declared it never reaches the network.
+/// The envelope decides what runs. An exploit above the default ceiling does not
+/// reach the network, and raising the ceiling to it is what lets it.
 ///
 /// Both sides, one server type, one scan shape: the only difference between the
-/// halves is the ceiling, so the flow's absence is the envelope withholding a
-/// class rather than the phase being off or the server being unreachable.
+/// halves is the ceiling, so the flow's absence is the envelope withholding the
+/// class rather than the phase being off or the server being unreachable. It is
+/// the guarantee a default scan makes: the Grafana flow reads a file off the
+/// target, and nothing sends that probe until an operator opts in.
 #[tokio::test]
 async fn the_envelope_withholds_the_class_above_its_ceiling_and_serves_the_one_below() {
     if skip_when_privileged() {
         return;
     }
 
+    // The default ceiling is active-benign, so the exploit-class Grafana flow is
+    // withheld and never reaches the wire.
     let withheld = spawn_web_server(0).await;
-    let mut passive_only = test_config();
-    passive_only.detection = DetectionEnvelope::up_to(DetectionClass::Passive);
     let outcome = run_scan(
         target_map(LOOPBACK, &withheld.port.to_string()),
-        &passive_only,
+        &test_config(),
     )
     .await;
 
     assert!(
         finding(&outcome.report, withheld.port, "grafana-path-traversal").is_none(),
-        "an active-benign flow ran under a passive-only envelope"
+        "an exploit-class flow ran under the default envelope"
     );
     assert!(
         !withheld.saw("/login"),
         "a withheld flow still put bytes on the wire"
     );
 
-    // The same server and the same scan under the default ceiling, which
-    // permits active-benign: the flow runs, so what stopped it above was the
-    // envelope and nothing else.
+    // The same server and scan with the ceiling raised to exploit: the flow runs,
+    // so what stopped it above was the envelope and nothing else.
     let permitted = spawn_web_server(0).await;
     let outcome = run_scan(
         target_map(LOOPBACK, &permitted.port.to_string()),
-        &test_config(),
+        &exploit_config(),
     )
     .await;
 
     assert!(
         finding(&outcome.report, permitted.port, "grafana-path-traversal").is_some(),
-        "raising the ceiling to active-benign did not let the flow run"
+        "raising the ceiling to exploit did not let the flow run"
     );
     assert!(
         permitted.saw("/login"),
@@ -529,7 +541,7 @@ async fn a_flow_that_would_outspend_its_byte_budget_never_sends_the_second_probe
     let server = spawn_web_server(200_000).await;
     let outcome = run_scan(
         target_map(LOOPBACK, &server.port.to_string()),
-        &test_config(),
+        &exploit_config(),
     )
     .await;
 

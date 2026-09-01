@@ -44,6 +44,7 @@
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ::rhai::{
     AST, Array, Blob, Dynamic, Engine, EvalAltResult, ImmutableString, Map, Position, Scope,
@@ -62,11 +63,20 @@ use super::runtime::{ComputeRuntime, LoadError, ModuleBody};
 /// unbounded recursion independent of the work budget.
 const MAX_CALL_LEVELS: usize = 32;
 
+/// How many operations pass between wall-clock deadline checks in the engine's
+/// progress callback. Reading the clock every operation would cost more than the
+/// work it guards; a few thousand keeps the check off the hot path while still
+/// tripping the deadline within a millisecond of expiry.
+const PROGRESS_STRIDE: u64 = 8192;
+
 /// The deepest an expression may nest, bounding the parser's own recursion so a
-/// pathologically nested module cannot overflow the stack at compile. Generous
-/// enough for any real detection; the same bound applies to a function body and
-/// to an expression outside one.
-const MAX_PARSE_DEPTH: usize = 256;
+/// pathologically nested module cannot overflow the stack at compile. A real
+/// detection nests only a few deep, so this is kept near [`MAX_CALL_LEVELS`]: the
+/// bound has to trip before the parser's own recursion exhausts a worker thread's
+/// stack, and a bound set for headroom rather than for stack safety overflows a
+/// smaller stack before it fires. The same bound applies to a function body and to
+/// an expression outside one.
+const MAX_PARSE_DEPTH: usize = 64;
 
 thread_local! {
     /// The capabilities the currently-running module is served, as a raw pointer
@@ -75,6 +85,9 @@ thread_local! {
     /// The abnormal outcome a capability recorded when it ended the run — a budget
     /// or policy refusal the guest cannot catch. Read once the guest returns.
     static ABORT: RefCell<Option<RunOutcome>> = const { RefCell::new(None) };
+    /// When the running module's wall-clock budget expires, read by the engine's
+    /// progress callback so a run that never speaks is still bounded in time.
+    static RUN_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 /// Sets the thread-local capability pointer for the span of one run and restores
@@ -83,12 +96,14 @@ thread_local! {
 struct ActiveRun {
     previous_caps: Option<NonNull<dyn Capabilities>>,
     previous_abort: Option<RunOutcome>,
+    previous_deadline: Option<Instant>,
 }
 
 impl ActiveRun {
-    /// Installs `caps` as the active capabilities. The pointer must stay valid,
-    /// its referent unmoved and untouched by any other path, until this guard is
-    /// dropped, which the sole caller ([`run`](RhaiRuntime::run)) guarantees.
+    /// Installs `caps` as the active capabilities and `deadline` as the run's
+    /// wall-clock ceiling. The pointer must stay valid, its referent unmoved and
+    /// untouched by any other path, until this guard is dropped, which the sole
+    /// caller ([`run`](RhaiRuntime::run)) guarantees.
     ///
     /// `None` when a run is already active on this thread, which can only happen
     /// if a [`Capabilities`] implementation re-entered the runtime. [The
@@ -97,16 +112,18 @@ impl ActiveRun {
     /// release build rather than only under an assertion. `Capabilities` is
     /// implementable outside this crate, so the rule is one somebody else's code
     /// has to keep and this is the only place that can check it.
-    fn new(caps: *mut dyn Capabilities) -> Option<Self> {
+    fn new(caps: *mut dyn Capabilities, deadline: Instant) -> Option<Self> {
         if ACTIVE_CAPS.with(|cell| cell.get().is_some()) {
             return None;
         }
 
         let previous_caps = ACTIVE_CAPS.with(|cell| cell.replace(NonNull::new(caps)));
         let previous_abort = ABORT.with(|cell| cell.borrow_mut().take());
+        let previous_deadline = RUN_DEADLINE.with(|cell| cell.replace(Some(deadline)));
         Some(Self {
             previous_caps,
             previous_abort,
+            previous_deadline,
         })
     }
 
@@ -120,6 +137,7 @@ impl Drop for ActiveRun {
     fn drop(&mut self) {
         ACTIVE_CAPS.with(|cell| cell.set(self.previous_caps));
         ABORT.with(|cell| *cell.borrow_mut() = self.previous_abort.take());
+        RUN_DEADLINE.with(|cell| cell.set(self.previous_deadline));
     }
 }
 
@@ -163,6 +181,10 @@ impl RhaiRuntime {
         // Parsing is the one place this engine works, so its recursion is bounded
         // here; the run engine never re-parses a compiled module.
         compiler.set_max_expr_depths(MAX_PARSE_DEPTH, MAX_PARSE_DEPTH);
+        // Harden the compiler too: this is where `eval` is refused, at load, before
+        // any port is touched. The other two are function shadows the run engine
+        // needs; here they are inert but harmless.
+        harden(&mut compiler);
         Self { compiler }
     }
 }
@@ -210,15 +232,36 @@ impl ComputeRuntime for RhaiRuntime {
         engine.on_print(|_| {});
         engine.on_debug(|_, _, _| {});
 
-        // The work and allocation bounds. The wall-clock deadline and the byte and
-        // connection budgets are enforced elsewhere — the deadline against the
-        // injected clock in the live phase, the byte and connection counts inside
-        // the capabilities that serve the I/O.
+        // The work and allocation bounds. The byte and connection budgets are
+        // enforced inside the capabilities that serve the I/O; the wall-clock
+        // deadline is enforced here, by the progress callback below, so a run doing
+        // work but never speaking is bounded in time all the same.
         engine.set_max_operations(grant.budget.fuel);
         engine.set_max_string_size(grant.budget.max_memory);
         engine.set_max_array_size(grant.budget.max_memory);
         engine.set_max_map_size(grant.budget.max_memory);
         engine.set_max_call_levels(MAX_CALL_LEVELS);
+
+        // Refuse the stock symbols again on the engine that runs the code, so the
+        // containment does not rest on the compiler alone.
+        harden(&mut engine);
+
+        // The wall-clock deadline, enforced independently of the I/O seam. Rhai
+        // calls this between operations, so a run that does work but never speaks —
+        // a passive module — still stops when its time is spent, where a deadline
+        // read only inside `speak` never would. A run past its deadline is
+        // terminated, which `classify` reads back as `BudgetTrap::Deadline`.
+        engine.on_progress(|operations| {
+            if operations % PROGRESS_STRIDE == 0
+                && RUN_DEADLINE
+                    .with(|cell| cell.get())
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                Some(Dynamic::UNIT)
+            } else {
+                None
+            }
+        });
 
         // A pure utility, always available and not a capability: decode bytes as
         // text so a detection can do string work on a response. Latin-1, so every
@@ -261,7 +304,8 @@ impl ComputeRuntime for RhaiRuntime {
         // SAFETY: the two pointer types are identical fat pointers differing only
         // in the pointee's lifetime, which `ActiveRun` bounds to this call.
         let caps: *mut (dyn Capabilities + 'static) = unsafe { std::mem::transmute(caps) };
-        let Some(active) = ActiveRun::new(caps) else {
+        let deadline = Instant::now() + instance.grant.budget.deadline;
+        let Some(active) = ActiveRun::new(caps, deadline) else {
             return Err(RunOutcome::HostReentered);
         };
 
@@ -286,6 +330,43 @@ impl ComputeRuntime for RhaiRuntime {
             },
         }
     }
+}
+
+/// Removes the stock-engine symbols the sandbox's contracts cannot survive.
+///
+/// `Engine::new` ships a standard library the capability model does not account
+/// for: `sleep` parks the thread doing no work, so it spends no fuel and, until
+/// the deadline callback lands, escaped the wall-clock bound too; `timestamp`
+/// reads the real clock, which the injected [`now`](Capabilities::now) exists to
+/// keep a module away from so a run replays identically; and `eval` re-parses a
+/// string at run, turning response text a module interpolates into executed
+/// source. None is a capability verb, so a module loses nothing it was meant to
+/// hold.
+///
+/// `eval` is a keyword, so disabling the symbol refuses a module that names it at
+/// compile. `sleep` and `timestamp` are ordinary library functions, which the
+/// symbol machinery does not reach, so they are shadowed by registrations that
+/// fault: the call is refused rather than served, `sleep` never parks the thread
+/// and `timestamp` never reads the wall clock.
+fn harden(engine: &mut Engine) {
+    engine.disable_symbol("eval");
+    engine.register_fn("sleep", |_seconds: i64| -> Result<(), Box<EvalAltResult>> {
+        Err(disabled_symbol("sleep"))
+    });
+    engine.register_fn("sleep", |_seconds: f64| -> Result<(), Box<EvalAltResult>> {
+        Err(disabled_symbol("sleep"))
+    });
+    engine.register_fn("timestamp", || -> Result<Dynamic, Box<EvalAltResult>> {
+        Err(disabled_symbol("timestamp"))
+    });
+}
+
+/// The error a shadowed stock symbol raises when a module calls it.
+fn disabled_symbol(name: &str) -> Box<EvalAltResult> {
+    Box::new(EvalAltResult::ErrorRuntime(
+        format!("`{name}` is not available to a detection module").into(),
+        Position::NONE,
+    ))
 }
 
 // ── The capability verbs, as Rhai host functions ─────────────────────────────
@@ -542,17 +623,18 @@ mod tests {
     fn a_second_run_on_one_thread_is_refused_before_it_can_alias() {
         let mut caps = RecordedCaps::new(Vec::new());
         let pointer: *mut dyn Capabilities = &mut caps;
+        let deadline = Instant::now() + Duration::from_secs(1);
 
-        let outer = ActiveRun::new(pointer);
+        let outer = ActiveRun::new(pointer, deadline);
         assert!(outer.is_some(), "the first run installs");
         assert!(
-            ActiveRun::new(pointer).is_none(),
+            ActiveRun::new(pointer, deadline).is_none(),
             "a second run on one thread would alias the first's borrow"
         );
 
         drop(outer);
         assert!(
-            ActiveRun::new(pointer).is_some(),
+            ActiveRun::new(pointer, deadline).is_some(),
             "and the refusal lifts once the first run is over"
         );
     }
@@ -758,6 +840,70 @@ mod tests {
         assert_eq!(
             first, second,
             "a pure function of its inputs did not replay"
+        );
+    }
+
+    #[test]
+    fn eval_is_refused_at_load() {
+        // `eval` re-parses text at run, which is how attacker-controlled response
+        // bytes a module interpolates could become executed source. It is a
+        // keyword, so a module naming it is refused at compile, before any port.
+        let runtime = RhaiRuntime::new();
+        let source = "fn analyze(ctx, responses) { let x = eval(\"1\"); [] }".to_string();
+        assert!(
+            matches!(
+                runtime.load(&ModuleBody::Rhai(source)),
+                Err(LoadError::Compile(_))
+            ),
+            "a module naming `eval` was not refused at load"
+        );
+    }
+
+    #[test]
+    fn sleep_and_timestamp_fault_rather_than_parking_or_reading_the_clock() {
+        // `sleep` would park the worker unmetered and `timestamp` would read the
+        // real wall clock and break replay. Both are shadowed to fault, so a module
+        // that calls one is refused the call rather than served it.
+        for call in ["sleep(1);", "sleep(1.5);", "let t = timestamp();"] {
+            let source = format!("fn analyze(ctx, responses) {{ {call} [] }}");
+            let mut caps = RecordedCaps::new(Vec::new());
+            let outcome = run(&source, grant(DetectionClass::Passive, false), &mut caps);
+            assert!(
+                matches!(outcome, Err(RunOutcome::Faulted(ModuleFault::Runtime(_)))),
+                "`{call}` was not faulted: {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_passive_module_that_runs_without_end_is_bounded_by_its_wall_clock() {
+        // A passive grant registers no `speak`, so a deadline read only inside the
+        // I/O seam would never be consulted. The progress callback consults it
+        // regardless, so a passive module doing endless work still stops in time.
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let n = 0;
+                loop { n += 1; }
+                []
+            }
+        "#;
+        let mut grant = grant(DetectionClass::Passive, false);
+        grant.budget.fuel = u64::MAX; // take fuel out of the picture; the clock must bind
+        grant.budget.deadline = Duration::from_millis(50);
+
+        let started = std::time::Instant::now();
+        let mut caps = RecordedCaps::new(Vec::new());
+        let outcome = run(source, grant, &mut caps);
+
+        assert_eq!(
+            outcome,
+            Err(RunOutcome::BudgetExceeded(BudgetTrap::Deadline)),
+            "a passive run past its deadline was not trapped as a deadline"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline did not stop the run promptly: {:?}",
+            started.elapsed()
         );
     }
 }

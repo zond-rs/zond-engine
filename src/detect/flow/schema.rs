@@ -65,6 +65,7 @@ pub const MAX_LOOP_ITEMS: usize = 64;
 
 /// A whole flow file: one detection, then its steps.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlowDetection {
     /// The `[detection]` table: identity, the port gate, and what the flow asks
     /// to be handed.
@@ -78,6 +79,7 @@ pub struct FlowDetection {
 /// One `[[step]]` — a straight-line node. There is no jump field; the absence is
 /// the no-backward-jumps guarantee made structural.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Step {
     /// A guard over variables bound by *earlier* steps. Absent = always run.
     #[serde(default)]
@@ -149,6 +151,7 @@ impl MatchSpec {
 /// gate identifies, for a finding's evidence; the matcher reads only `pattern`
 /// and `version_group`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchDetail {
     /// The regular expression run against the reply.
     pub pattern: String,
@@ -169,6 +172,7 @@ pub struct MatchDetail {
 
 /// A bounded loop over a literal list.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForEach {
     /// The loop variable, referenced in `send` and `{var}` within the step.
     pub var: String,
@@ -192,6 +196,7 @@ pub enum OnNoMatch {
 /// `[[step.finding]]` — the typed output. Maps onto the model's
 /// [`Finding`](crate::model::finding::Finding).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FindingSpec {
     /// Emit only if this holds. Absent = emit whenever reached.
     #[serde(default)]
@@ -279,10 +284,32 @@ mod tests {
     }
 
     #[test]
-    fn the_snmp_example_parses_its_bounded_loop() {
-        let flow = parse(include_str!(
-            "../../../assets/detect/snmp-default-community.toml"
-        ));
+    fn a_bounded_loop_parses_its_var_and_items() {
+        // The `for_each` shorthand a flow uses for a bounded sweep, parsed from a
+        // fixture rather than a shipped file so the coverage stays put when the
+        // corpus changes.
+        let flow = parse(
+            r#"
+            [detection]
+            id = "loop"
+            version = "1.0.0"
+            title = "loop"
+            [detection.when]
+            protocol = "udp"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            [[step]]
+            for_each = { var = "community", in = ["public", "private", "manager", "admin"] }
+            send = "{community}"
+            expect = "ok"
+            on_no_match = "continue"
+            [[step.finding]]
+            when = "matched"
+            severity = "high"
+            summary = "answered {community}"
+            "#,
+        );
 
         assert_eq!(flow.detection.when.protocol.as_deref(), Some("udp"));
         let step = &flow.step[0];

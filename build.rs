@@ -93,6 +93,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/detect/flow/expr.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/validate.rs");
     println!("cargo:rerun-if-changed=src/detect/compute/schema.rs");
+    println!("cargo:rerun-if-changed=src/detect/host/schema.rs");
+    println!("cargo:rerun-if-changed=src/fingerprint/pattern.rs");
 
     let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest_path = Path::new(&out_dir).join("fingerprints.bin");

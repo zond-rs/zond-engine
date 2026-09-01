@@ -92,6 +92,9 @@ pub enum ValidationError {
     EmptyTitle,
     /// An `id` claiming the reserved `zond:` namespace.
     ReservedId(String),
+    /// A step names an `expect` but sends nothing, so no reply is drawn for it to
+    /// match against and the step can never match.
+    ExpectWithoutSend(usize),
 }
 
 impl fmt::Display for ValidationError {
@@ -155,6 +158,10 @@ impl fmt::Display for ValidationError {
                     "id `{id}` claims the reserved `{RESERVED_ID_PREFIX}` namespace"
                 )
             }
+            ValidationError::ExpectWithoutSend(step) => write!(
+                f,
+                "step {step} has an `expect` but no `send`, so nothing is drawn for it to match"
+            ),
         }
     }
 }
@@ -177,6 +184,15 @@ pub fn check(flow: &FlowDetection) -> Vec<ValidationError> {
     }
     if flow.step.iter().all(|step| step.finding.is_empty()) {
         errors.push(ValidationError::NoFindings);
+    }
+
+    for (index, step) in flow.step.iter().enumerate() {
+        // A step with an `expect` and no `send` draws no reply, so the gate is
+        // false on every port and the step is dead. The same kind of structurally
+        // dead step as an empty loop, refused for the same reason.
+        if !step.expect.is_empty() && step.send.is_none() {
+            errors.push(ValidationError::ExpectWithoutSend(index));
+        }
     }
 
     check_references(flow, &mut errors);
@@ -557,6 +573,21 @@ mod tests {
         let mut flow = sound();
         flow.detection.capabilities.speak = None;
         assert!(check(&flow).contains(&ValidationError::SendWithoutSpeak));
+    }
+
+    #[test]
+    fn an_expect_without_a_send_is_dead_and_rejected() {
+        // sound()'s single step expects "Server:" off its send; drop the send and
+        // the expect can never draw a reply to match.
+        let mut flow = sound();
+        flow.step[0].send = None;
+        assert!(
+            check(&flow)
+                .iter()
+                .any(|e| matches!(e, ValidationError::ExpectWithoutSend(0))),
+            "{:?}",
+            check(&flow)
+        );
     }
 
     #[test]

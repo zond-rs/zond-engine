@@ -30,6 +30,8 @@
 //! turned into a finding, so a reader never mistakes "ran out of fuel" for "found
 //! nothing wrong."
 
+use std::time::Duration;
+
 use tracing::debug;
 
 use crate::config::DetectionEnvelope;
@@ -158,9 +160,15 @@ pub(crate) fn replay_over_tape<R: ComputeRuntime>(
     responses: &[&[u8]],
     tape: CapTape,
 ) -> Vec<Finding> {
-    let Some(grant) = Grant::from_manifest(&detection.manifest, &detection.content_hash) else {
+    let Some(mut grant) = Grant::from_manifest(&detection.manifest, &detection.content_hash) else {
         return Vec::new();
     };
+    // Replay reads its I/O from the tape, so it does no network work and finishes
+    // in its own time. Leaving the live wall-clock deadline in place would let a
+    // slow replay host trap a run the recording did not, so a fast machine and a
+    // slow one would disagree about the findings. Fuel still bounds it, the same
+    // deterministic count the recording ran under.
+    grant.budget.deadline = Duration::from_secs(86_400);
     let Ok(mut instance) = runtime.instantiate(&detection.module, &grant) else {
         return Vec::new();
     };

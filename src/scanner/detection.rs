@@ -172,6 +172,13 @@ fn interested_ports(
             if port.state() != PortState::Open {
                 continue;
             }
+            // No detection runs against an SCTP port. The scan holds no client
+            // stack to speak over one, so an active detection is refused at the
+            // seam, and an SCTP scan gathers no responses a passive one could read.
+            // Skipping it here spares a blocking task both seams would only refuse.
+            if port.protocol() == Protocol::Sctp {
+                continue;
+            }
             let number = port.number();
             let protocol = port.protocol();
             let service = port.service().map(|service| service.name().to_string());

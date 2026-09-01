@@ -52,6 +52,14 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+/// The deepest a guard may nest parentheses. The grammar recurses once per level,
+/// and `eval` re-parses a guard on every evaluation, so an unbounded guard would
+/// overflow the stack of the worker running it, which is an abort rather than a
+/// catchable error. A real guard nests two or three deep; this leaves generous
+/// room under the depth at which the parser's own recursion runs a thread out of
+/// stack.
+const MAX_GUARD_DEPTH: usize = 64;
+
 /// A parsed guard expression — the boolean a `when` clause denotes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
@@ -170,6 +178,9 @@ pub enum ParseError {
     Expected(&'static str),
     /// A complete expression, then more tokens the grammar cannot attach.
     Trailing,
+    /// The guard nests parentheses deeper than [`MAX_GUARD_DEPTH`], which the
+    /// parser refuses rather than recursing into a stack overflow.
+    TooDeep,
 }
 
 impl fmt::Display for ParseError {
@@ -181,6 +192,9 @@ impl fmt::Display for ParseError {
             ParseError::IntOverflow(n) => write!(f, "the number {n} is too large"),
             ParseError::Expected(what) => write!(f, "expected {what}"),
             ParseError::Trailing => write!(f, "unexpected trailing input after the expression"),
+            ParseError::TooDeep => {
+                write!(f, "the guard nests deeper than {MAX_GUARD_DEPTH} levels")
+            }
         }
     }
 }
@@ -197,7 +211,11 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
     if tokens.is_empty() {
         return Err(ParseError::Empty);
     }
-    let mut parser = Parser { tokens, pos: 0 };
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+    };
     let expr = parser.or_expr()?;
     if parser.pos != parser.tokens.len() {
         return Err(ParseError::Trailing);
@@ -314,6 +332,9 @@ fn keyword(word: String) -> Token {
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// The parenthesis-nesting depth of the expression currently being parsed,
+    /// bounded by [`MAX_GUARD_DEPTH`] so the recursion cannot overflow the stack.
+    depth: usize,
 }
 
 impl Parser {
@@ -340,13 +361,23 @@ impl Parser {
     }
 
     /// `or-expr = and-expr , { "or" , and-expr }` — the loosest binding.
+    ///
+    /// Every nesting cycle passes through here, since a parenthesised primary
+    /// re-enters it, so the parenthesis-depth guard lives here. It counts nesting
+    /// rather than total work, so a flat guard with many `or` clauses is fine and
+    /// only genuine parenthesis nesting is bounded.
     fn or_expr(&mut self) -> Result<Expr, ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_GUARD_DEPTH {
+            return Err(ParseError::TooDeep);
+        }
         let mut left = self.and_expr()?;
         while self.peek() == Some(&Token::Or) {
             self.pos += 1;
             let right = self.and_expr()?;
             left = Expr::Or(Box::new(left), Box::new(right));
         }
+        self.depth -= 1;
         Ok(left)
     }
 
@@ -612,5 +643,19 @@ mod tests {
         // An unquoted dotted version is not an integer and not a string, so its
         // stray '.' is the unexpected character — versions must be quoted.
         assert_eq!(parse("v < 8.3.1"), Err(ParseError::UnexpectedChar('.')));
+    }
+
+    #[test]
+    fn a_guard_nested_past_the_bound_is_refused_rather_than_overflowing_the_stack() {
+        // `eval` re-parses a guard on every evaluation and this runs on a worker
+        // thread, so an unbounded parenthesis nest would abort the process rather
+        // than fail. The bound turns that into an ordinary parse error.
+        let over = MAX_GUARD_DEPTH + 5;
+        let deep = format!("{}matched{}", "(".repeat(over), ")".repeat(over));
+        assert_eq!(parse(&deep), Err(ParseError::TooDeep));
+
+        // A guard nested the handful of levels a real one reaches still parses.
+        let shallow = format!("{}matched{}", "(".repeat(4), ")".repeat(4));
+        assert!(parse(&shallow).is_ok());
     }
 }

@@ -37,8 +37,8 @@ use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionId, Excerpt, Finding, Version};
 use crate::record::wire;
 
-use super::schema::MAX_LOOP_ITEMS;
 use super::schema::{FindingSpec, FlowDetection, MatchSpec, OnNoMatch, Step};
+use super::schema::{MAX_FLOW_STEPS, MAX_LOOP_ITEMS};
 use super::{Env, eval};
 
 /// The one capability a flow reaches the world through: send bytes to the scanned
@@ -67,7 +67,12 @@ pub fn run(flow: &FlowDetection, content_hash: &str, probe: &mut dyn Probe) -> V
     let mut env = Env::new();
     let mut findings = Vec::new();
 
-    for step in &flow.step {
+    // The step ceiling is enforced here, not only in the build-time validator, so
+    // a flow handed straight to `run` by a caller that never validated it cannot
+    // probe past the bound the corpus is held to. The validator rejects a longer
+    // flow outright; this clamps one, the same way the loop below clamps a
+    // `for_each` at `MAX_LOOP_ITEMS`.
+    for step in flow.step.iter().take(MAX_FLOW_STEPS) {
         match &step.for_each {
             Some(for_each) => {
                 for item in for_each.items.iter().take(MAX_LOOP_ITEMS) {
@@ -311,36 +316,44 @@ mod tests {
         assert!(run(&redis, "", &mut probe).is_empty());
     }
 
-    /// A probe standing in for an SNMP agent that answers only the `public`
-    /// community. `\xa2` (GetResponse) marks a good reply; anything else is an
-    /// error the `expect` gate rejects.
+    /// A probe standing in for an SNMP agent that accepts only the `public`
+    /// community. It answers a well-formed GetRequest carrying the sysDescr OID and
+    /// the `public` community with a GetResponse (PDU tag `\xa2`); every other
+    /// probe gets a report PDU (`\xa3`), which the `\xa2` gate rejects. The check
+    /// is on the packet decoding, not on a substring, so a malformed probe that
+    /// merely mentioned a community would not be answered.
     struct Snmp;
     impl Probe for Snmp {
         fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-            if bytes.windows(6).any(|window| window == b"public") {
+            let sys_descr_oid: &[u8] = &[0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00];
+            let well_formed = bytes.first() == Some(&0x30) && contains(bytes, sys_descr_oid);
+            let community_public = contains(bytes, b"\x04\x06public");
+            if well_formed && community_public {
                 let mut reply = vec![0xa2];
                 reply.extend_from_slice(b" sysDescr: Linux router 6.1");
                 Some(reply)
             } else {
-                Some(b"\xa3 no such community".to_vec())
+                Some(b"\xa3 wrong community".to_vec())
             }
         }
     }
 
     #[test]
-    fn the_snmp_flow_walks_its_community_list_and_finds_the_open_one() {
+    fn the_snmp_flow_probes_each_community_and_flags_the_one_that_answers() {
         let snmp = flow("snmp-default-community");
         let findings = run(&snmp, "", &mut Snmp);
 
-        // One community answered; the others continued without a finding.
+        // Only `public` was accepted, so one finding, and it names that community.
         assert_eq!(findings.len(), 1);
         let finding = &findings[0];
         assert_eq!(finding.severity(), Severity::High);
-        // The loop variable and the bound capture both reached the detail.
-        assert_eq!(
-            finding.excerpt().as_str(),
-            "Community 'public' returned sysDescr: Linux router 6.1"
+        assert!(
+            finding.title().contains("public"),
+            "the finding should name the community that answered, got {:?}",
+            finding.title()
         );
+        // The excerpt is the GetResponse the agent returned.
+        assert!(finding.excerpt().as_str().contains("Linux router 6.1"));
     }
 
     /// Whether `haystack` contains `needle` as a contiguous run.
@@ -431,5 +444,35 @@ mod tests {
             leak: b"root:x:0:0:should-never-be-sent",
         };
         assert!(run(&grafana, "", &mut other).is_empty());
+    }
+
+    #[test]
+    fn run_does_not_probe_past_the_step_ceiling() {
+        // The validator rejects a flow over the ceiling at build, but `run` is
+        // public and a caller can hand it one that never went through the
+        // validator. It must still refuse to probe past the bound.
+        let mut probes = 0usize;
+        struct Counting<'a>(&'a mut usize);
+        impl Probe for Counting<'_> {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                *self.0 += 1;
+                Some(b"x".to_vec())
+            }
+        }
+
+        let mut source = String::from(
+            "[detection]\nid = \"x\"\nversion = \"1.0.0\"\ntitle = \"x\"\n\
+             [detection.when]\n[detection.capabilities]\nclass = \"active-benign\"\nspeak = \"target\"\n",
+        );
+        for _ in 0..(MAX_FLOW_STEPS + 50) {
+            source.push_str("[[step]]\nsend = \"p\"\non_no_match = \"continue\"\n");
+        }
+        let flow: FlowDetection = toml::from_str(&source).expect("a parseable flow");
+
+        run(&flow, "", &mut Counting(&mut probes));
+        assert_eq!(
+            probes, MAX_FLOW_STEPS,
+            "run probed a flow past the {MAX_FLOW_STEPS}-step ceiling"
+        );
     }
 }
