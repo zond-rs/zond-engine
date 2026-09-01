@@ -46,7 +46,7 @@ mod eval;
 mod interp;
 pub(crate) mod stage;
 
-pub use interp::{Probe, run};
+pub use interp::{Probe, ProbeRefusal, run};
 
 // Re-exported so the build-shared `schema` and `validate` can name the shared
 // manifest as `super::manifest` in both the library, where it lives one level up

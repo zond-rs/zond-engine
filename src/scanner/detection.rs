@@ -66,7 +66,7 @@ use crate::detect::compute::{
     CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities, RunOutcome,
 };
 use crate::detect::flow::db::FlowDb;
-use crate::detect::flow::{Probe, stage};
+use crate::detect::flow::{Probe, ProbeRefusal, stage};
 use crate::detect::host::db::HostDb;
 use crate::detect::host::stage as host_stage;
 use crate::detect::manifest::CapabilitySpec;
@@ -91,15 +91,9 @@ const DEFAULT_MAX_MILLIS: u64 = 2000;
 const DEFAULT_MAX_CONNECTIONS: u32 = 64;
 
 /// One port's detections as they travel off the blocking pool: the host key, the
-/// port and protocol, the findings drawn, and the runs that did not finish so the
-/// pool can record each as a failure.
-type PortResult = (
-    ScopedIp,
-    u16,
-    Protocol,
-    Vec<Finding>,
-    Vec<compute_stage::InconclusiveRun>,
-);
+/// port and protocol, the findings drawn, and the detections that did not finish
+/// as `(id, reason)` pairs so the pool can record each as a failure.
+type PortResult = (ScopedIp, u16, Protocol, Vec<Finding>, Vec<(String, String)>);
 
 /// Runs the corpus against every open port a detection is interested in,
 /// recording the findings it produces.
@@ -132,17 +126,13 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         ScannerKind::Detection,
         |result: Option<PortResult>, _audit| {
             if let Some((key, number, protocol, findings, inconclusive)) = result {
-                // A detection that trapped on a budget or faulted did not clear the
-                // port; record that it did not finish so the report tells it apart
-                // from a detection that finished and found nothing.
-                for run in &inconclusive {
+                // A detection that trapped on a budget, faulted, or ran its socket
+                // budget dry did not clear the port; record that it did not finish
+                // so the report tells it apart from one that found nothing.
+                for (id, reason) in &inconclusive {
                     ctx.record_failure(
                         ScannerKind::Detection,
-                        format!(
-                            "detection '{}' on {key}:{number} {}",
-                            run.detection.id(),
-                            describe_outcome(&run.outcome)
-                        ),
+                        format!("detection '{id}' on {key}:{number} {reason}"),
                     );
                 }
                 record(ctx, key, number, protocol, findings);
@@ -252,7 +242,7 @@ async fn detect_one(
     // Both tiers are synchronous and hold a blocking socket, so they run off the
     // reactor. `spawn_blocking` fails only if the runtime is shutting down.
     let produced = tokio::task::spawn_blocking(move || {
-        let mut findings = stage::detect_port(
+        let (mut findings, flow_refusals) = stage::detect_port(
             flows,
             &envelope,
             service.as_deref(),
@@ -299,7 +289,26 @@ async fn detect_one(
             },
         );
         findings.extend(computed.findings);
-        (findings, computed.inconclusive)
+
+        // Both tiers' inconclusive runs, phrased for the report: a compute run that
+        // trapped or faulted, and a flow the socket budget cut short.
+        let mut inconclusive: Vec<(String, String)> = computed
+            .inconclusive
+            .iter()
+            .map(|run| {
+                (
+                    run.detection.id().to_string(),
+                    describe_outcome(&run.outcome),
+                )
+            })
+            .collect();
+        inconclusive.extend(
+            flow_refusals
+                .into_iter()
+                .map(|(id, refusal)| (id, describe_refusal(refusal))),
+        );
+
+        (findings, inconclusive)
     })
     .await
     .ok()?;
@@ -326,6 +335,17 @@ fn describe_outcome(outcome: &RunOutcome) -> String {
         RunOutcome::Faulted(fault) => format!("faulted: {fault:?}"),
         RunOutcome::HostReentered => "re-entered the runtime".to_string(),
     }
+}
+
+/// A human phrase for a socket budget that cut a flow short, for the failure the
+/// report carries.
+fn describe_refusal(refusal: ProbeRefusal) -> String {
+    match refusal {
+        ProbeRefusal::Bytes => "hit its byte budget",
+        ProbeRefusal::Connections => "hit its connection budget",
+        ProbeRefusal::Deadline => "hit its time budget",
+    }
+    .to_string()
 }
 
 /// Folds one port's findings back into its host.
@@ -403,6 +423,9 @@ struct SocketProbe {
     deadline: Instant,
     /// Connections still available to this flow.
     connections_left: u32,
+    /// Why the last `speak` refused, if a budget did rather than the port going
+    /// silent. Read after the flow runs so a cut-short detection reaches the report.
+    last_refusal: Option<ProbeRefusal>,
 }
 
 impl SocketProbe {
@@ -416,24 +439,34 @@ impl SocketProbe {
             connections_left: caps
                 .max_connections
                 .map_or(DEFAULT_MAX_CONNECTIONS, u32::from),
+            last_refusal: None,
         }
     }
 }
 
 impl Probe for SocketProbe {
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        // Refuse the exchange the budget cannot pay for, before any packet leaves.
-        if self.connections_left == 0 || remaining(self.deadline).is_none() {
+        // Refuse the exchange the budget cannot pay for, before any packet leaves,
+        // recording which budget so a silent port and a spent one stay distinct.
+        self.last_refusal = None;
+        if self.connections_left == 0 {
+            self.last_refusal = Some(ProbeRefusal::Connections);
+            return None;
+        }
+        if remaining(self.deadline).is_none() {
+            self.last_refusal = Some(ProbeRefusal::Deadline);
             return None;
         }
         let sent = bytes.len() as u64;
         if sent > self.bytes_left {
+            self.last_refusal = Some(ProbeRefusal::Bytes);
             return None;
         }
         self.bytes_left -= sent;
         self.connections_left -= 1;
 
-        // The reply may consume at most what the byte budget has left.
+        // The reply may consume at most what the byte budget has left. A silent or
+        // unreachable port is not a refusal, so `last_refusal` stays clear.
         let reply = match self.protocol {
             Protocol::Tcp => tcp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
             Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
@@ -443,6 +476,10 @@ impl Probe for SocketProbe {
         }?;
         self.bytes_left -= reply.len() as u64;
         Some(reply)
+    }
+
+    fn last_refusal(&self) -> Option<ProbeRefusal> {
+        self.last_refusal
     }
 }
 

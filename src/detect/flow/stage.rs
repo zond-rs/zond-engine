@@ -35,8 +35,8 @@ use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::{Port, PortState, Protocol};
 
-use super::Probe;
 use super::db::FlowDb;
+use super::{Probe, ProbeRefusal};
 use crate::detect::manifest::{CapabilitySpec, Class};
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
@@ -62,9 +62,13 @@ pub(crate) fn run_flows(
         let number = port.number();
         let protocol = port.protocol();
         let service = port.service().map(|service| service.name());
-        for finding in detect_port(corpus, envelope, service, number, protocol, |_caps| {
-            probe_for(port)
-        }) {
+        // run_flows is a synchronous convenience; the scanner drives detect_port
+        // directly and surfaces the refusals this `.0` discards.
+        let (produced, _refusals) =
+            detect_port(corpus, envelope, service, number, protocol, |_caps| {
+                probe_for(port)
+            });
+        for finding in produced {
             hits.push((number, protocol, finding));
         }
     }
@@ -87,8 +91,9 @@ pub(crate) fn detect_port(
     number: u16,
     protocol: Protocol,
     mut probe_for: impl FnMut(&CapabilitySpec) -> Option<Box<dyn Probe>>,
-) -> Vec<Finding> {
+) -> (Vec<Finding>, Vec<(String, ProbeRefusal)>) {
     let mut findings = Vec::new();
+    let mut refusals = Vec::new();
     for flow in corpus.flows() {
         let manifest = &flow.flow().detection;
         if !enabled(manifest.capabilities.class, envelope)
@@ -100,8 +105,14 @@ pub(crate) fn detect_port(
             continue;
         };
         findings.extend(flow.run(probe.as_mut()));
+        // A budget the flow spent halts it without a reply, which a silent port
+        // does too; the probe says which, so a detection cut short by its own
+        // budget is recorded rather than mistaken for a clean run over a quiet port.
+        if let Some(refusal) = probe.last_refusal() {
+            refusals.push((manifest.id.clone(), refusal));
+        }
     }
-    findings
+    (findings, refusals)
 }
 
 /// Whether any enabled flow in `corpus` gates onto a port with these facts, so a
@@ -261,6 +272,39 @@ mod tests {
             port.findings().count(),
             1,
             "an exploit the operator opted into did not run"
+        );
+    }
+
+    #[test]
+    fn a_flow_whose_budget_cuts_it_short_is_returned_as_a_refusal() {
+        // A probe that refuses every exchange on its byte budget, standing in for a
+        // flow cut short. detect_port must return the refusal, not swallow it into a
+        // silent empty result the way a quiet port would leave.
+        struct Refusing;
+        impl Probe for Refusing {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                None
+            }
+            fn last_refusal(&self) -> Option<ProbeRefusal> {
+                Some(ProbeRefusal::Bytes)
+            }
+        }
+
+        let (findings, refusals) = detect_port(
+            FlowDb::global(),
+            &default_envelope(),
+            Some("redis"),
+            6379,
+            Protocol::Tcp,
+            |_caps| Some(Box::new(Refusing)),
+        );
+
+        assert!(findings.is_empty(), "a refused flow drew no finding");
+        assert!(
+            refusals
+                .iter()
+                .any(|(id, refusal)| id == "redis-unauth-access" && *refusal == ProbeRefusal::Bytes),
+            "the budget refusal was not surfaced: {refusals:?}"
         );
     }
 }

@@ -41,6 +41,21 @@ use super::schema::{FindingSpec, FlowDetection, MatchSpec, OnNoMatch, Step};
 use super::schema::{MAX_FLOW_STEPS, MAX_LOOP_ITEMS};
 use super::{Env, eval};
 
+/// Why an exchange a flow asked for was refused before it happened, rather than
+/// simply going unanswered: a budget the detection declared, now spent. A silent
+/// port and a spent budget both leave a step without a reply, and a report needs
+/// to tell them apart.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeRefusal {
+    /// The byte budget across the flow's exchanges is spent.
+    Bytes,
+    /// The connection budget is spent.
+    Connections,
+    /// The wall-clock budget is spent.
+    Deadline,
+}
+
 /// The one capability a flow reaches the world through: send bytes to the scanned
 /// socket and read its reply. A test supplies a canned one; a scan supplies the
 /// real socket.
@@ -48,6 +63,15 @@ pub trait Probe {
     /// Sends `bytes` and returns the reply, or [`None`] if the socket said
     /// nothing.
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>>;
+
+    /// Why the most recent [`speak`](Self::speak) returned [`None`], if a budget
+    /// refused the exchange rather than the port merely going silent. The default
+    /// is [`None`]: a probe with no budget of its own never refuses, it only goes
+    /// unanswered. The live socket probe overrides this, so a flow cut short by its
+    /// own budget is recorded rather than mistaken for a silent port.
+    fn last_refusal(&self) -> Option<ProbeRefusal> {
+        None
+    }
 }
 
 /// Whether the flow should keep running after a step.

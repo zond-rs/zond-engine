@@ -1184,7 +1184,28 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::sche
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::schema::Step
 pub const zond_engine::detect::flow::schema::MAX_FLOW_STEPS: usize
 pub const zond_engine::detect::flow::schema::MAX_LOOP_ITEMS: usize
+#[non_exhaustive] pub enum zond_engine::detect::flow::ProbeRefusal
+pub zond_engine::detect::flow::ProbeRefusal::Bytes
+pub zond_engine::detect::flow::ProbeRefusal::Connections
+pub zond_engine::detect::flow::ProbeRefusal::Deadline
+impl core::clone::Clone for zond_engine::detect::flow::ProbeRefusal
+pub fn zond_engine::detect::flow::ProbeRefusal::clone(&self) -> zond_engine::detect::flow::ProbeRefusal
+impl core::cmp::Eq for zond_engine::detect::flow::ProbeRefusal
+impl core::cmp::PartialEq for zond_engine::detect::flow::ProbeRefusal
+pub fn zond_engine::detect::flow::ProbeRefusal::eq(&self, &zond_engine::detect::flow::ProbeRefusal) -> bool
+impl core::fmt::Debug for zond_engine::detect::flow::ProbeRefusal
+pub fn zond_engine::detect::flow::ProbeRefusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::detect::flow::ProbeRefusal
+impl core::marker::StructuralPartialEq for zond_engine::detect::flow::ProbeRefusal
+impl core::marker::Freeze for zond_engine::detect::flow::ProbeRefusal
+impl core::marker::Send for zond_engine::detect::flow::ProbeRefusal
+impl core::marker::Sync for zond_engine::detect::flow::ProbeRefusal
+impl core::marker::Unpin for zond_engine::detect::flow::ProbeRefusal
+impl core::marker::UnsafeUnpin for zond_engine::detect::flow::ProbeRefusal
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::ProbeRefusal
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::ProbeRefusal
 pub trait zond_engine::detect::flow::Probe
+pub fn zond_engine::detect::flow::Probe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
 pub fn zond_engine::detect::flow::Probe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn zond_engine::detect::flow::run(&zond_engine::detect::flow::schema::FlowDetection, &str, &mut dyn zond_engine::detect::flow::Probe) -> alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub mod zond_engine::detect::host
