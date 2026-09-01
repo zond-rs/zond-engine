@@ -64,7 +64,7 @@
 
 // Public rather than private-with-re-exports. A caller writing a fifth scanner
 // has to be able to read the four that exist, and a module they cannot name is
-// a file they have to already know about — which is what the shared machinery
+// a file they have to already know about. Which is what the shared machinery
 // here used to be, under a name that described where the target sat.
 pub mod idle;
 pub mod sctp;

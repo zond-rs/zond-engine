@@ -183,7 +183,7 @@ mod tests {
     /// and only one of them says something went wrong. They reached the report
     /// as one list, so a scan that declined an unenumerable prefix and a scan
     /// whose raw socket died were indistinguishable to a caller of `discover`
-    /// or `scan` — which is the distinction `plan.rs` opens by saying a scanner
+    /// or `scan`, which is the distinction `plan.rs` opens by saying a scanner
     /// may never lose.
     #[test]
     fn a_refusal_reaches_the_report_as_a_refusal_and_not_as_a_failure() {

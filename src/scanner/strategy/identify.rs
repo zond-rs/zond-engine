@@ -28,7 +28,7 @@
 //! Both implement [`HostScanner`](super::HostScanner), and that trait's summary
 //! says a strategy which finds reachable hosts. Neither does. They take the
 //! addresses the store already holds, so the trait is being used here for its
-//! shape — a run loop and a [`ScannerKind`](crate::report::ScannerKind) — rather
+//! shape, a run loop and a [`ScannerKind`](crate::report::ScannerKind), rather
 //! than for what it describes.
 
 pub mod echo;

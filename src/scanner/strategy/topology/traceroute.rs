@@ -760,7 +760,7 @@ impl Tracer {
     /// The unit the walk is built from: [`walk`](Self::walk) chooses which
     /// distances to ask about and this asks about one of them. Three outcomes
     /// come back rather than two, because a distance nothing answered and one
-    /// the target answered are different facts — see [`Landing`].
+    /// the target answered are different facts. See [`Landing`].
     async fn probe_distance(&mut self, target: IpAddr, at: u8, source: IpAddr) -> Landing {
         // A burst rather than one probe waited out three times: the answers are
         // independent, so sending them together costs one round trip instead of

@@ -18,9 +18,9 @@
 //! ## Why it is a module rather than part of a scanner
 //!
 //! It used to live in `routed`, beside the SYN sweep, because the sweep was the
-//! first thing to need it. Everything raw that arrived afterwards — four port
-//! scanners, two operating-system probes, a trace and a filter probe — was then
-//! written as a submodule of the sweep, which is not what any of them is. The
+//! first thing to need it. Everything raw that arrived afterwards, four port
+//! scanners and two operating-system probes and a trace and a filter probe, was
+//! then written as a submodule of the sweep, which is not what any of them is. The
 //! contents did not change; what changed is that `routed` no longer means both
 //! "reached through a gateway" and "opens a raw socket".
 //!
@@ -28,7 +28,7 @@
 //!
 //! The timings here are the ones a probe over a routed path shares whatever it
 //! is asking about: a SYN sweep and a TCP port scan cross the same links and
-//! wait on the same round trips. What each *scan* does with them is its own —
+//! wait on the same round trips. What each scan does with them is its own.
 //! [`ports`](super::ports) holds the profiles that belong to a port scan, and
 //! the UDP scanner keeps its own outright, because an ICMP rate limiter is not
 //! a property of the path.

@@ -944,7 +944,7 @@ impl ScanContext {
     /// has no strategy behind it: an SCTP port on a host with no raw sockets, a
     /// prefix too large to walk, a technique a connect scan cannot express.
     /// Nothing broke, so it is not announced on the event stream and no
-    /// strategy is blamed — it reaches the report as its own kind of thing, and
+    /// strategy is blamed. It reaches the report as its own kind of thing, and
     /// [`Refusal`] has the argument for why that matters.
     ///
     /// Filed once per distinct refusal. A plan that declines the same range on

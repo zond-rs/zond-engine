@@ -21,7 +21,7 @@
 //! ## Why a window and not a smoothed estimate
 //!
 //! [`RttEstimator`](super::retry::RttEstimator) is the smoothed one, and it is
-//! kept *per host* — two durations updated in place, which is what makes
+//! kept per host: two durations updated in place, which is what makes
 //! per-host timing affordable at all. This is kept once per scan and holds real
 //! samples, because what it steers is the scan's own deadline: how long the
 //! whole run waits before concluding that silence means the end. That question
@@ -126,8 +126,8 @@ impl RttWindow {
     /// own bounds: it is the one of the two imposed rather than chosen, and a
     /// pair that has been configured into disagreeing should still describe a
     /// real range. `Duration::clamp` asserts instead, and this is public API
-    /// taking two adjacent arguments of one type — so the mistake reached a
-    /// live scan and took the caller's process with it on the first host that
+    /// taking two adjacent arguments of one type, so the mistake reached a live
+    /// scan and took the caller's process with it on the first host that
     /// answered.
     pub fn suggest_timeout(&self, multiplier: f64, floor: Duration, ceiling: Duration) -> Duration {
         let Some(mean) = self.mean() else {
@@ -217,8 +217,8 @@ mod tests {
 
     /// `floor` and `ceiling` are adjacent arguments of one type, so a caller
     /// can cross them and the compiler cannot say. `Duration::clamp` asserted
-    /// `min <= max`, which made that mistake a panic in the caller's process —
-    /// and one that waited for the first sample, so a scan opened its sockets,
+    /// `min <= max`, which made that mistake a panic in the caller's process,
+    /// and one that waited for the first sample: a scan opened its sockets,
     /// sent its probes and died on the first host that answered.
     #[test]
     fn a_ceiling_below_the_floor_yields_the_floor_rather_than_panicking() {

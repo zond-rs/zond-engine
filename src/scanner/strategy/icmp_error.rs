@@ -17,7 +17,7 @@
 //! defensively. What differs is one type number and what the message means, and
 //! those are the only parts written twice.
 //!
-//! Three strategies depend on this — the UDP and SCTP port scans and the trace —
+//! Three strategies depend on this, the UDP and SCTP port scans and the trace,
 //! and each would otherwise carry its own copy of two code tables that number
 //! the same meanings differently. It sits beside them rather than inside any of
 //! them because it is a parser and none of them owns it; a caller writing a

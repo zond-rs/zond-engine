@@ -176,9 +176,9 @@ use crate::report::WindowSummary;
 ///
 /// `#[non_exhaustive]`, along with the three other pacing configurations, and
 /// for the reason they share: these are the knobs a controller gains a field of
-/// every time somebody measures something new — this module records three such
-/// measurements already — and every one of them is read here rather than
-/// pattern-matched by a consumer. Closing the literal costs a caller
+/// every time somebody measures something new, this module having recorded
+/// three such measurements already, and every one of them is read here rather
+/// than pattern-matched by a consumer. Closing the literal costs a caller
 /// [`new`](Self::new) instead of a struct expression, and it is what keeps
 /// [`new`](Self::new)'s bounds check from being walked around.
 #[non_exhaustive]
@@ -281,9 +281,8 @@ impl CongestionWindow {
     /// [`suggest_timeout`](super::rtt_window::RttWindow::suggest_timeout) and
     /// [`ProbeLedger`](super::retry::ProbeLedger) give. A crossed pair then
     /// describes a range with nothing in it, so the window is stationary and
-    /// reports itself as such through [`WindowSummary::adaptive`] — where
-    /// `u32::clamp` asserted and took the scan down before that logic could
-    /// run.
+    /// reports itself as such through [`WindowSummary::adaptive`]. `u32::clamp`
+    /// asserted instead, and took the scan down before that logic could run.
     pub fn new(limits: WindowLimits) -> Self {
         let window = f64::from(
             limits
@@ -428,7 +427,7 @@ mod tests {
 
     /// `floor` and `ceiling` are adjacent `u32`s on a public constructor, so a
     /// caller can cross them. `u32::clamp` asserted, which turned that into a
-    /// panic in the caller's process — two lines before the `adaptive` check
+    /// panic in the caller's process, two lines before the `adaptive` check
     /// that already handles a range with nothing in it.
     #[test]
     fn crossed_bounds_freeze_the_window_rather_than_panicking() {

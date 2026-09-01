@@ -77,9 +77,9 @@ where
     /// nothing**, and is read as one probe, on the same terms `rate_or` reads a
     /// configured rate of zero. Honouring it is not an option: the admission
     /// loop below would spin on an empty set, and because it never awaits
-    /// anything it never returns to the runtime — so on a current-thread
-    /// runtime the scan hangs with no diagnostic and a `timeout` wrapped around
-    /// it cannot fire.
+    /// anything it never returns to the runtime: on a current-thread runtime
+    /// the scan hangs with no diagnostic, and a `timeout` wrapped around it
+    /// cannot fire.
     pub fn new(limit: usize, ctx: ScanContext, kind: ScannerKind, fold: F) -> Self {
         Self {
             set: JoinSet::new(),

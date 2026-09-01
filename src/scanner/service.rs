@@ -97,7 +97,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
 ///
 /// # Which UDP ports qualify
 ///
-/// Only those whose reply this engine can read — [`reads_replies`]. A TCP port
+/// Only those whose reply this engine can read: [`reads_replies`]. A TCP port
 /// always qualifies, because any of them may volunteer a banner and reading one
 /// costs a connection that was going to be made anyway. A UDP port is different:
 /// there is no banner to wait for, so a datagram nothing here could decode

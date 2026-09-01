@@ -17,7 +17,7 @@
 //! [`ScanTimer`] is that duration once it is running, alongside two other
 //! limits: a minimum runtime, and a silence tolerance the caller supplies on
 //! every check rather than fixing at construction. That last part is what makes
-//! it adaptive — a loop learning what the network costs narrows or widens what
+//! it adaptive: a loop learning what the network costs narrows or widens what
 //! it is willing to read as "nothing more is coming", and the timer does not
 //! have to know how.
 

@@ -222,7 +222,7 @@ impl ProbeAudit {
     /// Of those, the ones the sender refused.
     ///
     /// Non-zero means the shortfall starts at home, before the network is
-    /// implicated at all — which is the first of the three distinguishable
+    /// implicated at all, which is the first of the three distinguishable
     /// failures the module documentation sets out.
     pub fn sends_failed(&self) -> u64 {
         self.sends_failed
@@ -245,8 +245,8 @@ impl ProbeAudit {
     /// In-set replies that answered no outstanding probe, so they proved a host
     /// alive and yielded no round-trip sample.
     ///
-    /// Duplicates and late arrivals land here, and so does a correlation bug —
-    /// which is the third of the three failures, and the one no amount of extra
+    /// Duplicates and late arrivals land here, and so does a correlation bug,
+    /// which is the third of the three failures and the one no amount of extra
     /// time or extra packets would fix.
     pub fn replies_without_rtt(&self) -> u64 {
         self.replies_without_rtt
@@ -579,7 +579,7 @@ mod tests {
 
     /// The type was `pub` with no `pub` method and no `pub` field: a caller
     /// could name it, could obtain one from `ProbePool`, and could do nothing
-    /// with it — while the module documentation argued at length that these
+    /// with it, while the module documentation argued at length that these
     /// counters are what separates three failures a scan cannot otherwise tell
     /// apart. This is that argument made reachable.
     #[test]
