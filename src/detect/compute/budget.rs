@@ -35,7 +35,8 @@
 
 use std::time::Duration;
 
-use super::capability::Capability;
+use super::capability::{Capability, DEFAULT_MAX_MEMORY};
+use crate::detect::manifest::{DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS};
 
 /// The bounds a compute module runs under.
 ///
@@ -45,6 +46,14 @@ use super::capability::Capability;
 /// runs the code, while `max_bytes` and `max_connections` are enforced by the
 /// [`Capabilities`](super::Capabilities) that serve its I/O, which is the point,
 /// because the seam that spends a byte is the seam that can refuse to.
+///
+/// A scan resolves one from the detection and the envelope, so the fields stay
+/// public to read. To build one directly, for driving a module outside a scan, start
+/// from [`new`](Self::new) and tighten a ceiling with a `with_*` setter;
+/// [`non_exhaustive`], so a bound added later is not a breaking change.
+///
+/// [`non_exhaustive`]: https://doc.rust-lang.org/reference/attributes/type-system.html#the-non_exhaustive-attribute
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
     /// The work bound: how much a module may compute before it is trapped. A
@@ -63,6 +72,46 @@ pub struct Budget {
     /// The number of distinct exchanges a module may open. Class-bounded, one
     /// for an `active-benign` detection that talks to a single socket.
     pub max_connections: u32,
+}
+
+impl Budget {
+    /// A budget bounding `fuel` operations and `deadline` wall-clock time, with the
+    /// memory, byte, and connection ceilings left at the runtime's own defaults.
+    ///
+    /// For driving a module outside a scan; the scan path resolves a budget from the
+    /// detection and the envelope instead. Tighten a defaulted ceiling with the
+    /// matching `with_*` setter.
+    pub fn new(fuel: u64, deadline: Duration) -> Self {
+        Self {
+            fuel,
+            deadline,
+            max_memory: DEFAULT_MAX_MEMORY,
+            max_bytes: DEFAULT_MAX_BYTES,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+        }
+    }
+
+    /// Sets the allocation ceiling: the largest string, array, or map the module may
+    /// build, counted in elements.
+    #[must_use]
+    pub fn with_max_memory(mut self, max_memory: usize) -> Self {
+        self.max_memory = max_memory;
+        self
+    }
+
+    /// Sets the ceiling on bytes exchanged across all of the module's `speak` calls.
+    #[must_use]
+    pub fn with_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_bytes = max_bytes;
+        self
+    }
+
+    /// Sets the ceiling on how many exchanges the module may open.
+    #[must_use]
+    pub fn with_max_connections(mut self, max_connections: u32) -> Self {
+        self.max_connections = max_connections;
+        self
+    }
 }
 
 /// Which bound a run hit. Each is a deterministic trap at a known point, not a
@@ -92,6 +141,7 @@ pub enum BudgetTrap {
 /// is nothing there to refuse, but a capability the module holds declining a
 /// particular use of it, such as [`resolve`](super::Capabilities::resolve) of a
 /// name the envelope's scope forbids.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Denial {
     /// The verb that refused.
@@ -134,4 +184,33 @@ pub enum RunOutcome {
     /// the runtime refuses the second rather than taking the implementation at
     /// its word.
     HostReentered,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_takes_fuel_and_time_and_defaults_the_rest() {
+        let budget = Budget::new(5_000, Duration::from_millis(750));
+        assert_eq!(budget.fuel, 5_000);
+        assert_eq!(budget.deadline, Duration::from_millis(750));
+        // The ceilings a caller did not set are the runtime's own defaults.
+        assert_eq!(budget.max_memory, DEFAULT_MAX_MEMORY);
+        assert_eq!(budget.max_bytes, DEFAULT_MAX_BYTES);
+        assert_eq!(budget.max_connections, DEFAULT_MAX_CONNECTIONS);
+    }
+
+    #[test]
+    fn each_setter_tightens_only_its_own_ceiling() {
+        let budget = Budget::new(1, Duration::from_millis(1))
+            .with_max_memory(128)
+            .with_max_bytes(256)
+            .with_max_connections(2);
+        assert_eq!(budget.max_memory, 128);
+        assert_eq!(budget.max_bytes, 256);
+        assert_eq!(budget.max_connections, 2);
+        // Untouched by the setters.
+        assert_eq!(budget.fuel, 1);
+    }
 }

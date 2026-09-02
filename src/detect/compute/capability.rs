@@ -194,6 +194,11 @@ impl CapError {
 /// `passive` module that names it fails because the verb is absent, not because
 /// a present verb returned an error. The identity and class are stamped onto
 /// every finding the module produces, a module cannot forge its own provenance.
+///
+/// Built by [`from_manifest`](Self::from_manifest), never by hand, so it is
+/// [`non_exhaustive`](https://doc.rust-lang.org/reference/attributes/type-system.html#the-non_exhaustive-attribute):
+/// a field a later class needs is not a breaking change for a caller who holds one.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Grant {
     /// The provenance stamped on every finding: the detection's id, version, and
@@ -216,8 +221,10 @@ pub struct Grant {
 /// are shared with the flow tier and live in [`manifest`](crate::detect::manifest).
 const DEFAULT_FUEL: u64 = 10_000_000;
 /// The allocation ceiling a detection that declares none runs under: the largest
-/// string, array, or map it may build, counted in elements.
-const DEFAULT_MAX_MEMORY: usize = 1_000_000;
+/// string, array, or map it may build, counted in elements. Also what
+/// [`Budget::new`](super::Budget::new) leaves the ceiling at until a caller tightens
+/// it, so the two agree on what "the default" is.
+pub(crate) const DEFAULT_MAX_MEMORY: usize = 1_000_000;
 
 impl Grant {
     /// The grant a [`DetectionManifest`] and the content hash of its body

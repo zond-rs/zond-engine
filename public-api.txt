@@ -666,12 +666,17 @@ impl core::marker::Unpin for zond_engine::detect::compute::RunOutcome
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::RunOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::RunOutcome
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::RunOutcome
-pub struct zond_engine::detect::compute::Budget
+#[non_exhaustive] pub struct zond_engine::detect::compute::Budget
 pub zond_engine::detect::compute::Budget::deadline: core::time::Duration
 pub zond_engine::detect::compute::Budget::fuel: u64
 pub zond_engine::detect::compute::Budget::max_bytes: u64
 pub zond_engine::detect::compute::Budget::max_connections: u32
 pub zond_engine::detect::compute::Budget::max_memory: usize
+impl zond_engine::detect::compute::Budget
+pub fn zond_engine::detect::compute::Budget::new(u64, core::time::Duration) -> Self
+pub fn zond_engine::detect::compute::Budget::with_max_bytes(self, u64) -> Self
+pub fn zond_engine::detect::compute::Budget::with_max_connections(self, u32) -> Self
+pub fn zond_engine::detect::compute::Budget::with_max_memory(self, usize) -> Self
 impl core::clone::Clone for zond_engine::detect::compute::Budget
 pub fn zond_engine::detect::compute::Budget::clone(&self) -> zond_engine::detect::compute::Budget
 impl core::cmp::Eq for zond_engine::detect::compute::Budget
@@ -688,7 +693,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::Budget
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::Budget
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::Budget
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::Budget
-pub struct zond_engine::detect::compute::CapErrorRecord
+#[non_exhaustive] pub struct zond_engine::detect::compute::CapErrorRecord
 pub zond_engine::detect::compute::CapErrorRecord::kind: alloc::string::String
 pub zond_engine::detect::compute::CapErrorRecord::reason: core::option::Option<alloc::string::String>
 impl core::clone::Clone for zond_engine::detect::compute::CapErrorRecord
@@ -712,7 +717,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::CapErrorRecord
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::CapErrorRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::CapErrorRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::CapErrorRecord
-pub struct zond_engine::detect::compute::CapTape
+#[non_exhaustive] pub struct zond_engine::detect::compute::CapTape
 pub zond_engine::detect::compute::CapTape::nows: alloc::vec::Vec<u64>
 pub zond_engine::detect::compute::CapTape::resolves: alloc::vec::Vec<zond_engine::detect::compute::ResolveExchange>
 pub zond_engine::detect::compute::CapTape::speaks: alloc::vec::Vec<zond_engine::detect::compute::SpeakExchange>
@@ -735,7 +740,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::CapTape
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::CapTape
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::CapTape
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::CapTape
-pub struct zond_engine::detect::compute::CapTapeRecord
+#[non_exhaustive] pub struct zond_engine::detect::compute::CapTapeRecord
 pub zond_engine::detect::compute::CapTapeRecord::nows: alloc::vec::Vec<u64>
 pub zond_engine::detect::compute::CapTapeRecord::resolves: alloc::vec::Vec<zond_engine::detect::compute::ResolveExchangeRecord>
 pub zond_engine::detect::compute::CapTapeRecord::speaks: alloc::vec::Vec<zond_engine::detect::compute::SpeakExchangeRecord>
@@ -762,7 +767,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::CapTapeRecord
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::CapTapeRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::CapTapeRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::CapTapeRecord
-pub struct zond_engine::detect::compute::Denial
+#[non_exhaustive] pub struct zond_engine::detect::compute::Denial
 pub zond_engine::detect::compute::Denial::capability: zond_engine::detect::compute::Capability
 pub zond_engine::detect::compute::Denial::reason: alloc::string::String
 impl core::clone::Clone for zond_engine::detect::compute::Denial
@@ -780,7 +785,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::Denial
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::Denial
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::Denial
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::Denial
-pub struct zond_engine::detect::compute::DetectionRunRecord
+#[non_exhaustive] pub struct zond_engine::detect::compute::DetectionRunRecord
 pub zond_engine::detect::compute::DetectionRunRecord::detection: zond_engine::record::DetectionIdRecord
 pub zond_engine::detect::compute::DetectionRunRecord::host: alloc::string::String
 pub zond_engine::detect::compute::DetectionRunRecord::port: u16
@@ -806,7 +811,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::DetectionRunRecord
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::DetectionRunRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::DetectionRunRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::DetectionRunRecord
-pub struct zond_engine::detect::compute::Grant
+#[non_exhaustive] pub struct zond_engine::detect::compute::Grant
 pub zond_engine::detect::compute::Grant::budget: zond_engine::detect::compute::Budget
 pub zond_engine::detect::compute::Grant::class: zond_engine::model::finding::DetectionClass
 pub zond_engine::detect::compute::Grant::detection: zond_engine::model::finding::DetectionId
@@ -881,7 +886,7 @@ impl<C> core::marker::Unpin for zond_engine::detect::compute::RecordingCapabilit
 impl<C> core::marker::UnsafeUnpin for zond_engine::detect::compute::RecordingCapabilities<C> where C: core::marker::UnsafeUnpin
 impl<C> core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::RecordingCapabilities<C> where C: core::panic::unwind_safe::RefUnwindSafe
 impl<C> core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::RecordingCapabilities<C> where C: core::panic::unwind_safe::UnwindSafe
-pub struct zond_engine::detect::compute::ResolveExchange
+#[non_exhaustive] pub struct zond_engine::detect::compute::ResolveExchange
 pub zond_engine::detect::compute::ResolveExchange::name: alloc::string::String
 pub zond_engine::detect::compute::ResolveExchange::result: core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, zond_engine::detect::compute::CapError>
 impl core::clone::Clone for zond_engine::detect::compute::ResolveExchange
@@ -901,7 +906,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::ResolveExchange
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::ResolveExchange
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::ResolveExchange
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::ResolveExchange
-pub struct zond_engine::detect::compute::ResolveExchangeRecord
+#[non_exhaustive] pub struct zond_engine::detect::compute::ResolveExchangeRecord
 pub zond_engine::detect::compute::ResolveExchangeRecord::addresses: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::detect::compute::ResolveExchangeRecord::error: core::option::Option<zond_engine::detect::compute::CapErrorRecord>
 pub zond_engine::detect::compute::ResolveExchangeRecord::name: alloc::string::String
@@ -986,7 +991,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::ScanInstant
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::ScanInstant
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::ScanInstant
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::ScanInstant
-pub struct zond_engine::detect::compute::SpeakExchange
+#[non_exhaustive] pub struct zond_engine::detect::compute::SpeakExchange
 pub zond_engine::detect::compute::SpeakExchange::reply: core::result::Result<alloc::vec::Vec<u8>, zond_engine::detect::compute::CapError>
 pub zond_engine::detect::compute::SpeakExchange::sent: alloc::vec::Vec<u8>
 impl core::clone::Clone for zond_engine::detect::compute::SpeakExchange
@@ -1006,7 +1011,7 @@ impl core::marker::Unpin for zond_engine::detect::compute::SpeakExchange
 impl core::marker::UnsafeUnpin for zond_engine::detect::compute::SpeakExchange
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::compute::SpeakExchange
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::SpeakExchange
-pub struct zond_engine::detect::compute::SpeakExchangeRecord
+#[non_exhaustive] pub struct zond_engine::detect::compute::SpeakExchangeRecord
 pub zond_engine::detect::compute::SpeakExchangeRecord::error: core::option::Option<zond_engine::detect::compute::CapErrorRecord>
 pub zond_engine::detect::compute::SpeakExchangeRecord::reply: core::option::Option<alloc::string::String>
 pub zond_engine::detect::compute::SpeakExchangeRecord::sent: alloc::string::String

@@ -47,6 +47,7 @@ use super::capability::{CapError, Capabilities, ScanInstant};
 
 /// One [`speak`](Capabilities::speak) as it happened: the bytes the module sent and
 /// the reply it got back, error included.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeakExchange {
     /// The bytes the module sent. Kept for provenance and for a later strict replay;
@@ -59,6 +60,7 @@ pub struct SpeakExchange {
 
 /// One [`resolve`](Capabilities::resolve) as it happened: the name asked and the
 /// addresses (or error) returned.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolveExchange {
     /// The name the module asked to resolve. Kept for provenance; positional replay
@@ -73,6 +75,7 @@ pub struct ResolveExchange {
 /// This is everything a run read from the world. Build a
 /// [`RecordedCapabilities`] from it and the run reproduces exactly, because there
 /// is nothing else a module can read.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapTape {
     /// Each `speak`, in the order the module made them.

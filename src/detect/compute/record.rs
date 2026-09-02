@@ -36,6 +36,11 @@ use crate::record::DetectionIdRecord;
 /// One detection run, as the journal holds it: which detection ran over which
 /// subject, and the tape of what it read. This is the line the journal writes per
 /// run, so a recorded scan can be replayed offline, detection by detection.
+///
+/// A versioned record, read back from a journal, never built by hand:
+/// `#[non_exhaustive]`, so a field a later format adds is not a breaking change for
+/// a caller reading one.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionRunRecord {
     /// The address the detection ran against.
@@ -56,6 +61,7 @@ pub struct DetectionRunRecord {
 }
 
 /// A capability tape, as a file holds it.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapTapeRecord {
     /// Each recorded `speak`, in call order.
@@ -70,6 +76,7 @@ pub struct CapTapeRecord {
 }
 
 /// One recorded `speak`: the bytes sent, and either the reply or the error.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpeakExchangeRecord {
     /// The bytes the module sent, as hex.
@@ -83,6 +90,7 @@ pub struct SpeakExchangeRecord {
 }
 
 /// One recorded `resolve`: the name asked, and either the addresses or the error.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolveExchangeRecord {
     /// The name the module asked to resolve.
@@ -96,6 +104,7 @@ pub struct ResolveExchangeRecord {
 }
 
 /// A capability error, by wire name, with the reason a denial carries.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapErrorRecord {
     /// The error kind, by wire name.
