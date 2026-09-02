@@ -30,7 +30,7 @@ use super::compute::db::{ComputeDb, compile_compute_source, load_embedded};
 use super::compute::{LoadedDetection, RhaiModule, RhaiRuntime};
 use super::flow::db::{CompiledFlow, FlowDb, embedded_flows};
 use super::flow::schema::FlowDetection;
-use super::flow::{ValidationError, check};
+use super::flow::{ValidationError, check, check_patterns};
 use super::host::db::{HostDb, compile_host_source, embedded_hosts};
 use super::host::stage::LoadedHostDetection;
 
@@ -113,6 +113,9 @@ pub enum DetectionError {
     /// A flow was structurally ill-formed. Carries every objection the validator
     /// raised, not the first.
     Flow(Vec<ValidationError>),
+    /// A flow was structurally sound but carried a pattern that will not compile,
+    /// which the runtime would read as a clean negative rather than an error.
+    Pattern(String),
     /// A compute module would not compile, or declared no inline source.
     Compute(String),
     /// A host detection was ill-formed.
@@ -131,6 +134,12 @@ impl fmt::Display for DetectionError {
                     write!(f, "\n  - the detection {error}")?;
                 }
                 Ok(())
+            }
+            DetectionError::Pattern(reason) => {
+                write!(
+                    f,
+                    "the flow carries a pattern that will not compile: {reason}"
+                )
             }
             DetectionError::Compute(reason) => {
                 write!(f, "the compute module could not be compiled: {reason}")
@@ -183,6 +192,11 @@ impl DetectionsBuilder {
         if !errors.is_empty() {
             return Err(DetectionError::Flow(errors));
         }
+        // `check` is structural and holds no pattern engine, so it cannot tell a
+        // pattern that will not compile from one that will. The build compiles the
+        // shipped corpus's patterns; do the same for a caller's, or a bad one reads
+        // as a clean negative at scan time rather than an error here.
+        check_patterns(&flow).map_err(DetectionError::Pattern)?;
         self.flows
             .push(CompiledFlow::from_parts(flow, content_hash.to_string()));
         Ok(self)
@@ -336,6 +350,36 @@ mod tests {
             panic!("a detection claiming the reserved namespace was accepted");
         };
         assert!(matches!(error, DetectionError::Compute(_)), "{error}");
+    }
+
+    #[test]
+    fn the_builder_refuses_a_flow_whose_pattern_will_not_compile() {
+        // Structurally sound, but the `expect` pattern is an unclosed character
+        // class. The runtime reads an uncompilable pattern as a clean negative, so
+        // the builder compiles it now and refuses, as the build does for the corpus.
+        let flow = r#"
+            [detection]
+            id      = "bad-pattern"
+            version = "1.0.0"
+            title   = "Bad pattern"
+            [detection.when]
+            service = "http"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            [[step]]
+            send        = "PING\r\n"
+            expect      = "[unclosed"
+            on_no_match = "continue"
+            [[step.finding]]
+            when     = "matched"
+            severity = "low"
+            summary  = "x"
+        "#;
+        let Err(error) = Detections::builder().flow(flow, "") else {
+            panic!("a flow with an uncompilable pattern was accepted");
+        };
+        assert!(matches!(error, DetectionError::Pattern(_)), "{error}");
     }
 
     #[test]

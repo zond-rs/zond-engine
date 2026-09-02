@@ -1070,6 +1070,7 @@ pub zond_engine::detect::corpus::DetectionError::Compute(alloc::string::String)
 pub zond_engine::detect::corpus::DetectionError::Flow(alloc::vec::Vec<zond_engine::detect::flow::ValidationError>)
 pub zond_engine::detect::corpus::DetectionError::Host(alloc::string::String)
 pub zond_engine::detect::corpus::DetectionError::Parse(alloc::string::String)
+pub zond_engine::detect::corpus::DetectionError::Pattern(alloc::string::String)
 impl core::error::Error for zond_engine::detect::corpus::DetectionError
 impl core::fmt::Debug for zond_engine::detect::corpus::DetectionError
 pub fn zond_engine::detect::corpus::DetectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1454,6 +1455,7 @@ pub zond_engine::detect::DetectionError::Compute(alloc::string::String)
 pub zond_engine::detect::DetectionError::Flow(alloc::vec::Vec<zond_engine::detect::flow::ValidationError>)
 pub zond_engine::detect::DetectionError::Host(alloc::string::String)
 pub zond_engine::detect::DetectionError::Parse(alloc::string::String)
+pub zond_engine::detect::DetectionError::Pattern(alloc::string::String)
 impl core::error::Error for zond_engine::detect::corpus::DetectionError
 impl core::fmt::Debug for zond_engine::detect::corpus::DetectionError
 pub fn zond_engine::detect::corpus::DetectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

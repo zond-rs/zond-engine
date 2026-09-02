@@ -47,6 +47,9 @@ mod interp;
 pub(crate) mod stage;
 
 pub use interp::{Probe, ProbeRefusal, run};
+// Not public: the builder runs it over a caller's flow, the way the build runs its
+// own pattern check over the shipped corpus. `check` is the public structural pass.
+pub(crate) use interp::check_patterns;
 pub use validate::{ValidationError, check};
 // The guard-parse error a `ValidationError::GuardParseError` carries, published so
 // a caller reading `check`'s result can match on it.

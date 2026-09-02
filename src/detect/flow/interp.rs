@@ -194,6 +194,43 @@ fn matches(spec: &MatchSpec, text: &str) -> bool {
         .is_ok_and(|compiled| compiled.identify(text, spec.version_group()).is_some())
 }
 
+/// Compiles every pattern a flow will match on, refusing one that will not
+/// compile or that a bind can never capture from.
+///
+/// The runtime reads an uncompilable pattern as a clean negative, so a shipped
+/// flow's patterns are compiled at build by `validate_flow_patterns`. `check` cannot
+/// do the same: it is a pure structural pass that holds no pattern engine. So the
+/// builder runs this over a caller's flow, mirroring that build check, rather than
+/// letting a bad pattern read as "no match" against a live target.
+pub(crate) fn check_patterns(flow: &FlowDetection) -> Result<(), String> {
+    for (index, step) in flow.step.iter().enumerate() {
+        for spec in &step.expect {
+            pattern::compile(spec.pattern(), MAX_COMPILED_REGEX_BYTES).map_err(|error| {
+                format!("step {index} `expect` has a pattern that will not compile: {error}")
+            })?;
+        }
+        for (var, spec) in &step.bind {
+            let compiled =
+                pattern::compile(spec.pattern(), MAX_COMPILED_REGEX_BYTES).map_err(|error| {
+                    format!(
+                        "step {index} bind `{var}` has a pattern that will not compile: {error}"
+                    )
+                })?;
+            let named = compiled.capture_names().iter().any(|name| name == var);
+            let numbered = spec
+                .version_group()
+                .is_some_and(|group| (group as usize) < compiled.captures_len());
+            if !named && !numbered {
+                return Err(format!(
+                    "step {index} binds `{var}`, but its pattern has no (?<{var}>…) group and \
+                     no valid version_group, so it can never capture"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The value `spec` binds out of `text` for a variable named `name`: a named
 /// capture group of that name, or the numeric `version_group` an imported pattern
 /// numbers instead.
