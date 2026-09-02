@@ -12,11 +12,11 @@ keywords = ["network", "scanner", "portscan", "discovery", "security"]
 categories = ["network-programming", "asynchronous"]
 # What a published crate does not need to carry.
 #
-# `audit/` is design records and point-in-time assessments, and `docs/` is
-# internal working notes — measurement logs, open defects. Neither is
-# user-facing. `audit/` is gitignored as well, so this line is the second of two
-# defences rather than the only one; `docs/` is tracked, so for it this line is
-# the only thing standing between a working note and crates.io. `.github/` is
+# `audit/` is design records and point-in-time assessments: not user-facing, and
+# gitignored as well, so this line is the second of two defences rather than the
+# only one. `docs/` held internal working notes and holds nothing now; it is named
+# here anyway, because the cost is a word and the alternative is that whoever
+# reintroduces the directory has to know to come back and add it. `.github/` is
 # this repository's own CI and belongs to nobody who depends on the crate, and
 # `deny.toml` is what that CI holds the dependency tree to.
 #

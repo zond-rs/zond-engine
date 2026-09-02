@@ -131,8 +131,8 @@ mod tests {
         assert!(!gate.applies(Some("redis"), 6379, Protocol::Tcp));
         assert!(!gate.applies(None, 80, Protocol::Tcp));
 
-        // ZA-4-016: a tunnelled label is two facts, and a web server inside TLS
-        // still speaks HTTP.
+        // A tunnelled label is two facts, and a web server inside TLS still
+        // speaks HTTP. A gate matching the label whole saw neither half.
         assert!(gate.applies(Some("ssl/http"), 443, Protocol::Tcp));
         assert!(gate.applies(Some("ssl/grafana"), 3000, Protocol::Tcp));
     }

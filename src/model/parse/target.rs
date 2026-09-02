@@ -724,7 +724,7 @@ impl TargetMapBuilder {
 /// token reach that verdict and are still not names, and telling the author what
 /// they wrote is worth more than a lookup that was always going to fail.
 ///
-/// **Both passes ask this**, which is the point of it being a function. The
+/// Both passes ask this, which is the point of it being a function. The
 /// synchronous build asks before it consults the lookup, and
 /// `resolve::targets`'s collection pass asks before it puts a name on the
 /// network. Written out once each, the two disagreed: the collector took

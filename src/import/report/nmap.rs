@@ -23,8 +23,8 @@
 //! Three places where a literal translation would record something the scan did
 //! not establish.
 //!
-//! **A host nmap calls `down` is [`Unknown`](HostStatus::Unknown) unless
-//! something said otherwise.** Nmap uses one word both for an intermediary
+//! A host nmap calls `down` is [`Unknown`](HostStatus::Unknown) unless
+//! something said otherwise. Nmap uses one word both for an intermediary
 //! reporting an address unreachable and for nothing coming back, where
 //! [`HostStatus::Down`] refuses to be inferred from silence. So the `reason`
 //! attribute decides: `host-unreach` and its relatives give
@@ -32,15 +32,15 @@
 //! [`Filtered`](HostStatus::Filtered), and everything else, a bare `no-response`
 //! included, gives `Unknown`.
 //!
-//! **A host nmap calls `up` for the reason `user-set` is `Unknown`.** That is
+//! A host nmap calls `up` for the reason `user-set` is `Unknown`. That is
 //! what nmap records when it was told to skip host discovery: no probe was sent
 //! and nothing answered, so `up` there is an instruction echoed back rather than
 //! a finding. Where such a host has a port that answered, the port proves the
 //! stack is alive and the status is promoted on that evidence, which is the
 //! inference this engine's own port scanner makes.
 //!
-//! **A service nmap identified by `method="table"` is recorded at confidence
-//! zero.** That method means nmap looked the port number up in a file, which is
+//! A service nmap identified by `method="table"` is recorded at confidence
+//! zero. That method means nmap looked the port number up in a file, which is
 //! what this engine's own
 //! [`baseline_service`](crate::fingerprint::baseline_service) does to every
 //! classified port. Recording it the same way keeps the two symmetrical, and

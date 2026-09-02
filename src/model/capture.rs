@@ -179,7 +179,7 @@ pub struct CaptureCounts {
     pub if_dropped: u64,
     /// How many captures ended before they were told to.
     ///
-    /// **Counted in captures, not frames**, unlike the three above, and here for
+    /// Counted in captures, not frames, unlike the three above, and here for
     /// the same reason [`dropped`](Self::dropped) is: it is a loss the scanner
     /// cannot infer. A capture whose reader stops is an interface that hears
     /// nothing for the rest of the run, and every reply that would have arrived

@@ -679,7 +679,8 @@ mod tests {
         )));
     }
 
-    /// The port half of ZA-4-008.
+    /// A finding arriving on an endpoint is a change, the port half of the
+    /// property `diff::host` holds for a whole host.
     #[test]
     fn a_finding_that_appeared_on_the_endpoint_is_reported() {
         let before = port(PortState::Open);

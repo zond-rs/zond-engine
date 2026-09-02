@@ -83,8 +83,8 @@ async fn unknown_banner_still_yields_an_open_port() {
     );
 }
 
-/// ZA-4-013: an unprivileged scan reads what a banner says about the *machine*
-/// and has to file it, the way the privileged path does.
+/// An unprivileged scan reads what a banner says about the *machine* and has to
+/// file it, the way the privileged path does.
 ///
 /// `SSH-2.0-OpenSSH_9.6p1 Debian-3` names an operating system as plainly as it
 /// names a product, and both come out of the one handshake this scanner makes.

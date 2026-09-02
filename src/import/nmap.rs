@@ -185,6 +185,29 @@ impl Accumulator {
     }
 }
 
+/// The most (address, port) pairs one `<host>` may expand to.
+///
+/// This reader is linear in the document everywhere except here. A host carrying
+/// K `<address>` elements and N `<port>` elements is K+N of document and K×N of
+/// work: the port list is built once, and then every address stringifies and
+/// re-parses the whole of it. Measured, release, one host: 500×500 is 33.5 KB and
+/// 20 ms, 1 000×1 000 is 67 KB and 47 ms, 2 000×2 000 is 134 KB and 158 ms, so
+/// bytes double and time quadruples.
+///
+/// Nothing bounded the product before this. `max_tokens` bounds the addresses,
+/// `MAX_ELEMENTS` bounds the ports, and neither sees the multiplication, so the
+/// ceiling was the two of them multiplied together, which is to say there was
+/// none.
+///
+/// 2^20 is past anything a real document can mean. A host has a handful of
+/// addresses, a MAC is skipped, so it is the IPv4 and IPv6 ones, and every port
+/// on both transports is 131 070, so this admits eight addresses at the
+/// absolute maximum port list, and one host costs at most about 40 ms at the
+/// measured rate. Refusing rather than truncating, because a target list
+/// quietly missing the hosts past a ceiling is the failure this crate's readers
+/// are arranged to prevent.
+const MAX_HOST_EXPANSION: usize = 1 << 20;
+
 /// Turns one finished host into targets.
 fn emit(
     host: Option<Accumulator>,
@@ -195,6 +218,22 @@ fn emit(
     let Some(host) = host else {
         return Ok(());
     };
+
+    // Checked before the work rather than described after it, which is the
+    // arrangement the report reader's host ceiling already uses.
+    let expansion = host.addresses.len().saturating_mul(host.ports.len());
+    if expansion > MAX_HOST_EXPANSION {
+        return Err(ImportError::Malformed {
+            format: FORMAT,
+            origin,
+            message: format!(
+                "one host expands to {expansion} address/port pairs, past the {MAX_HOST_EXPANSION} \
+                 this reader accepts: {} addresses times {} ports",
+                host.addresses.len(),
+                host.ports.len()
+            ),
+        });
+    }
 
     let mut ports = String::new();
     for (number, protocol) in &host.ports {
@@ -415,6 +454,65 @@ mod tests {
             ImportFormat::NmapXml.read(&mut Cursor::new(runaway), &options),
             Err(ImportError::LineTooLong { .. })
         ));
+    }
+
+    /// The one place this reader is not linear in the document, and the bound
+    /// that stops it running away.
+    ///
+    /// A host is K+N elements and K×N of work, because every address stringifies
+    /// and re-parses the whole port list. Nothing capped the product before:
+    /// `max_tokens` caps the addresses, `MAX_ELEMENTS` caps the ports, and neither
+    /// multiplies. Measured, release: 2 000×2 000 is 134 KB of document and 158
+    /// ms, so bytes double and time quadruples, and a document that fits in an
+    /// email costs minutes.
+    ///
+    /// Two addresses over the square root of the ceiling, which is a hundred
+    /// kilobytes of document and would have been the cheapest way to spend a
+    /// core.
+    #[test]
+    fn a_host_whose_addresses_times_its_ports_runs_away_is_refused() {
+        const SIDE: usize = 1025;
+
+        let addresses: String = (0..SIDE)
+            .map(|n| {
+                format!(
+                    "<address addr=\"10.0.{}.{}\" addrtype=\"ipv4\"/>",
+                    n / 256,
+                    n % 256
+                )
+            })
+            .collect();
+        let ports: String = (1..=SIDE)
+            .map(|port| format!("<port protocol=\"tcp\" portid=\"{port}\"/>"))
+            .collect();
+        let document = format!("<nmaprun><host>{addresses}<ports>{ports}</ports></host></nmaprun>");
+
+        let error = read(&document).expect_err("a host past the expansion ceiling reads");
+        assert!(
+            error.to_string().contains("pairs"),
+            "the refusal should name what ran away, said: {error}"
+        );
+    }
+
+    /// And the ceiling admits what a real document can mean, so the check above
+    /// is a bound rather than a refusal of multi-homed hosts.
+    #[test]
+    fn a_multi_homed_host_with_a_long_port_list_still_reads() {
+        let addresses = concat!(
+            "<address addr=\"10.0.0.1\" addrtype=\"ipv4\"/>",
+            "<address addr=\"10.0.0.2\" addrtype=\"ipv4\"/>",
+            "<address addr=\"2001:db8::1\" addrtype=\"ipv6\"/>",
+        );
+        let ports: String = (1..=4096)
+            .map(|port| format!("<port protocol=\"tcp\" portid=\"{port}\"/>"))
+            .collect();
+        let document = format!("<nmaprun><host>{addresses}<ports>{ports}</ports></host></nmaprun>");
+
+        assert_eq!(
+            read(&document).expect("reads").addresses,
+            3,
+            "three addresses, four thousand ports, well inside the ceiling"
+        );
     }
 
     /// Nmap's `args` and `services` attributes are genuinely long, and this

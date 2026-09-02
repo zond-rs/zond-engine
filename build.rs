@@ -188,8 +188,9 @@ const TUNNEL_PREFIX: &str = "ssl/";
 /// Warns about a gate naming a service nothing this engine runs can produce.
 ///
 /// Such a gate fits no port, ever. The detection is in the binary and in the
-/// corpus listing and never runs, which is the failure ZA-4-012 recorded and is
-/// invisible without a check here.
+/// corpus listing and never runs, and nothing says so without a check here: a
+/// detection that never matches looks exactly like a detection whose condition
+/// was never met.
 ///
 /// A warning rather than a refusal, because the corpus is not the only place a
 /// service name is minted. Three analyzers state one in Rust, and a tunnelled

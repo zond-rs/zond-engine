@@ -102,9 +102,19 @@ pub struct ReportOptions {
     /// The most bytes one document may be read from.
     ///
     /// Every reader here parses a whole document before it returns one, so this
-    /// is the ceiling on what an untrusted file may make the process allocate.
-    /// It is checked as the bytes are consumed, so a document past the ceiling
-    /// is refused on the way in rather than after it has been held.
+    /// bounds what an untrusted file may make the process do. It is checked as
+    /// the bytes are consumed, so a document past the ceiling is refused on the
+    /// way in rather than after it has been held.
+    ///
+    /// It bounds the document, and the process holds a multiple of it. Size
+    /// this to what the process can afford rather than to a file you are willing
+    /// to read. Measured, one host whose `ips` array carries four million
+    /// addresses: 59.9 MB of document, 502 MB resident at the peak, 8.4 times. A
+    /// `Vec<String>` of pointer-sized headers plus a heap allocation per address,
+    /// then the same strings moved into the record, then a `BTreeSet<IpAddr>`
+    /// built beside them before the record is freed. Nothing there is unbounded
+    /// or non-linear and the ratio is a constant, but at the 256 MiB default a
+    /// document this admits can leave the process holding something like 2 GB.
     ///
     /// The default is 256 MiB. An exported report of a hundred thousand hosts
     /// with their services and findings runs to a few tens of megabytes, so the

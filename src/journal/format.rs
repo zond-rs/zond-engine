@@ -103,6 +103,41 @@ pub enum JournalError {
     Io(#[from] std::io::Error),
 }
 
+/// The most one journal file, or one record inside it, may be read into memory.
+///
+/// A discipline bound rather than a tuned one, and it closes the last unbounded
+/// read in the crate. The import side, which parses documents arriving from a
+/// network, has `max_document_bytes`, `max_line_bytes`, and a reader that wraps
+/// its input in a `take` *before* it reads, because a file with no newline in
+/// it must not be read into memory to discover that it is too long. The journal
+/// side had none of that, while parsing files out of a directory
+/// [`file`](super::file) documents as belonging to a user where the reading
+/// process is usually root.
+///
+/// The exposure is smaller than the import side's: the allocation is proportional
+/// to the file and whoever planted it already owns the directory. What the bound
+/// buys is that a planted file cannot make a privileged process allocate until
+/// the kernel intervenes, and that this crate applies one standard to reading
+/// something it did not write.
+///
+/// 256 MiB, matching the import readers' default document ceiling, and past
+/// anything a journal holds. The largest record is one host with every port on
+/// both transports and the service detail behind each; the manifest is a plan and
+/// the cursor is a watermark with the out-of-order window beside it. None of them
+/// approaches this.
+pub(super) const MAX_READ_BYTES: u64 = 256 * 1024 * 1024;
+
+/// What a journal file being past [`MAX_READ_BYTES`] is reported as.
+pub(super) fn too_large(what: &str) -> JournalError {
+    JournalError::Malformed {
+        line: 0,
+        message: format!(
+            "{what} is larger than the {MAX_READ_BYTES} bytes a journal is read in; \
+             this is not a file this engine wrote"
+        ),
+    }
+}
+
 /// The first line of every journal file, so a file read on its own says what it
 /// is without a manifest beside it.
 ///
@@ -151,9 +186,19 @@ impl<W: Write> Writer<W> {
 
     /// Continues a journal that already carries a header, appending to it.
     ///
-    /// No header is written and none is checked. A caller appending has already
-    /// opened the file for reading and validated it, and re-validating here
-    /// would mean this type needed the file to be seekable.
+    /// No header is written and none is checked. Re-validating here would mean
+    /// this type needed the file to be seekable, which is the reason the check
+    /// belongs to the caller, and `store`'s `open_for_append` is the caller
+    /// that makes it, opening the file for reading, mending a missing header
+    /// and a torn tail, and only then opening the descriptor handed here.
+    ///
+    /// That was a precondition stated and unenforced for as long as this type
+    /// existed, and both halves of it cost the journal: appending after a torn
+    /// tail makes the tear stop being the last line, which is the only condition
+    /// under which [`Reader`] discards it, and appending to a file whose header
+    /// write never landed writes records nothing will ever read back. Neither is
+    /// this type's to detect, but both are worth naming here, because a
+    /// precondition with no reader is how they happened.
     pub fn append(inner: W) -> Self {
         Self { inner }
     }
@@ -184,6 +229,26 @@ impl From<serde_json::Error> for JournalError {
     }
 }
 
+/// Reads one line, refusing one past [`MAX_READ_BYTES`] rather than holding it.
+///
+/// The ceiling is applied through `take` *before* the read, so a file with no
+/// newline anywhere is refused after reading the ceiling rather than after
+/// reading the file. That is the same arrangement `import`'s line reader makes,
+/// and for the same reason: a bound checked after the allocation it exists to
+/// prevent is a description, not a bound.
+fn bounded_line<R: BufRead>(
+    inner: &mut R,
+    buffer: &mut String,
+    what: &str,
+) -> Result<usize, JournalError> {
+    let mut limited = std::io::Read::take(&mut *inner, MAX_READ_BYTES + 1);
+    let read = limited.read_line(buffer)?;
+    if read as u64 > MAX_READ_BYTES {
+        return Err(too_large(what));
+    }
+    Ok(read)
+}
+
 /// Reads a journal written by [`Writer`], validating its header on open.
 #[derive(Debug)]
 pub struct Reader<R: BufRead> {
@@ -202,7 +267,7 @@ impl<R: BufRead> Reader<R> {
     /// journal this build cannot promise to read.
     pub fn open(mut inner: R) -> Result<Self, JournalError> {
         let mut first = String::new();
-        let read = inner.read_line(&mut first)?;
+        let read = bounded_line(&mut inner, &mut first, "a journal header")?;
 
         if read == 0 {
             return Err(JournalError::NotAJournal);
@@ -249,7 +314,7 @@ impl<R: BufRead> Reader<R> {
             }
 
             let mut buffer = String::new();
-            if self.inner.read_line(&mut buffer)? == 0 {
+            if bounded_line(&mut self.inner, &mut buffer, "a journal record")? == 0 {
                 return Ok(None);
             }
 

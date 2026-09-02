@@ -261,7 +261,7 @@ job has. It ran them without the environment any of them asks for, so it came
 back part green: on an unprivileged macOS runner one of the two capture tests
 passes anyway and the other two fail. A step that is always partly red and never
 blocks is one everybody learns to scroll past, which is the same place the four
-`#[ignore]`d tests were before ZA-6-006 was written.
+`#[ignore]`d tests were before this job existed.
 
 **The nmap document is generated on every run rather than committed**, and that
 is the point of the test reading it. Every other nmap test here parses a document

@@ -1225,10 +1225,10 @@ fn write_ethernet(header: &Ethernet, payload: Vec<u8>, inner: Option<&Layer>) ->
     Ok(bytes)
 }
 
-/// Writes an IPv4 datagram. Each [`Field::Computed`] header value is derived from
-/// the bytes that ended up in it, and each [`Field::Exact`] is written as the
-/// caller gave it — which is what lets an evasion profile put a wrong one on the
-/// wire deliberately.
+/// Writes an IPv4 datagram. Each [`Field::Computed`] header value is derived
+/// from the bytes that ended up in it, and each [`Field::Exact`] is written as
+/// the caller gave it, which is what lets an evasion profile put a wrong one on
+/// the wire deliberately.
 fn write_ipv4(header: &Ipv4, payload: Vec<u8>, inner: Option<&Layer>) -> Result<Vec<u8>> {
     PacketError::check_options("an IPv4 header", header.options.len())?;
 

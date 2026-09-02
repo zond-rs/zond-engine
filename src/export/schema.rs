@@ -535,7 +535,7 @@ pub struct PhaseDto<'a> {
     /// `unroutable` is kept out: nothing broke. The engine worked out that part
     /// of what it was asked for had no strategy behind it and said so, which is
     /// a claim about the scan as written rather than about the machine or the
-    /// network. A reader acts on the two differently — a failure might not
+    /// network. A reader acts on the two differently, a failure might not
     /// recur, and a refusal will recur every time the same scan is run.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub refusals: Vec<RefusalDto<'a>>,

@@ -1840,7 +1840,7 @@ pub struct CaptureRecord {
     /// How many captures ended before they were told to.
     ///
     /// Defaulted on read, so a journal written before this was recorded opens
-    /// and reports none — which is what it knew. A scan whose receive path was
+    /// and reports none, which is what it knew. A scan whose receive path was
     /// intact writes zero, and the two are indistinguishable in an old journal
     /// for the same reason every other field added to this record is.
     #[serde(default)]

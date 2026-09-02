@@ -861,7 +861,9 @@ fn the_journal_and_the_report_spell_a_host_the_same_way() {
         "elapsed",
         "first_reply",
         "last_reply",
-        // The interface a link-local range is valid on. See ZA-4-009.
+        // The interface a link-local range is valid on, and only meaningful
+        // with it. The journal and the report have to spell it the same way or a
+        // resumed scan disagrees with the report of the scan it resumed.
         "zone",
         // The retry policy, flattened here and nested under `retry` there.
         "retry_effort",

@@ -51,10 +51,10 @@ use std::path::Path;
 /// moment where what a scan is recording can be read by anyone else. The
 /// directory is `0700` as well, which would cover it either way.
 ///
-/// **Create-only, which is what every caller means.** This used to create *or
+/// Create-only, which is what every caller means. This used to create *or
 /// truncate*, and the difference is a root process truncating and then chowning
 /// whatever the directory's owner had put at the name. `O_NOFOLLOW` already
-/// refuses a symlink there, so the residual case was a planted regular file —
+/// refuses a symlink there, so the residual case was a planted regular file:
 /// narrow, since the directory is `0700` and the planter would be its owner, but
 /// narrow is not the same as closed. `create_new` closes it: a name that already
 /// exists is refused rather than emptied.
@@ -74,13 +74,13 @@ pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
 
 /// Creates a staging file, discarding one an interrupted run left behind.
 ///
-/// [`create_private`] refuses a name that exists, which is right for the files a
-/// journal creates once and wrong for the two it re-creates every time it writes
-/// atomically: `cursor.json.tmp` on every checkpoint, `hosts.jsonl-tmp` on every
-/// compaction. Both are renamed away on success, so a leftover means a previous
-/// run died between the create and the rename, and refusing forever after that
-/// would wedge the journal — which is the failure `create_new` was adopted to
-/// avoid trading into.
+/// [`create_private`] refuses a name that exists, which is right for the files
+/// a journal creates once and wrong for the two it re-creates every time it
+/// writes atomically: `cursor.json.tmp` on every checkpoint, `hosts.jsonl-tmp`
+/// on every compaction. Both are renamed away on success, so a leftover means a
+/// previous run died between the create and the rename, and refusing forever
+/// after that would wedge the journal, which is the failure `create_new` was
+/// adopted to avoid trading into.
 ///
 /// The removal is safe in the way the truncation was not. `remove_file` unlinks
 /// the name, so a symlink planted there loses the link rather than the target,
@@ -113,13 +113,37 @@ pub(super) fn append_existing(path: &Path) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
+/// Opens an existing journal file for reading and writing, to inspect and mend
+/// it before anything is added to it.
+///
+/// [`append_existing`] can only add to the end, which is what makes it cheap and
+/// what makes it blind: an append-only descriptor cannot see whether the file
+/// carries a header or whether its last line ever finished. `store`'s
+/// `open_for_append` asks both questions through this handle first.
+///
+/// Neither creates and neither truncates, so a name that is not there is still
+/// an error and what is in the file is still whatever was written. The mode is
+/// not set for the same reason [`append_existing`] does not set it: the file
+/// exists, and the call that created it set it.
+pub(super) fn open_existing(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+
+    options.open(path)
+}
+
 /// Opens a journal's rendezvous file, creating it if it is not there yet.
 ///
 /// The one shape neither [`create_private`] nor [`create_staged`] fits: a file
 /// every racer must be able to *open*, where creating it is incidental and
-/// winning the create decides nothing. `journal::lock`'s `break` file is the only
-/// one — an advisory `flock` lives on the open descriptor, so what matters is
-/// that every process ends up on the same inode.
+/// winning the create decides nothing. `journal::lock`'s `break` file is the
+/// only one, an advisory `flock` lives on the open descriptor, so what matters
+/// is that every process ends up on the same inode.
 ///
 /// No truncate, because there is nothing in it to empty and a truncate would be
 /// one more thing a racer could do to a file another racer holds. The mode and
@@ -289,8 +313,8 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// And the staging names, which a crashed run does leave behind, are the one
-    /// place that refusal has to lift — or a journal wedges for good.
+    /// And the staging names, which a crashed run does leave behind, are the
+    /// one place that refusal has to lift, or a journal wedges for good.
     #[test]
     fn a_staged_name_left_by_a_crashed_run_is_discarded_rather_than_wedging() {
         let dir = scratch("staged");

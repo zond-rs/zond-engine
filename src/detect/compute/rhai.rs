@@ -352,22 +352,22 @@ impl ComputeRuntime for RhaiRuntime {
 ///
 /// # The module resolver, which is the one that reaches a file
 ///
-/// `Engine::new` also installs `FileModuleResolver` — rhai 1.26.0
-/// `engine.rs:294-300`, gated only on `no_module`, `no_std` and wasm, none of
+/// `Engine::new` also installs `FileModuleResolver` (rhai 1.26.0
+/// `engine.rs:294-300`), gated only on `no_module`, `no_std` and wasm, none of
 /// which apply here. With it, a module's `import` is resolved against the
 /// filesystem, relative to the process's working directory or by absolute path,
 /// and the resolved file is compiled and run. That is a module reaching the world
 /// by a path the host injected nothing for, which is the one thing the capability
 /// argument in [`detect`](crate::detect) says cannot happen.
 ///
-/// It was previously believed the stock resolver was rhai's `DummyModuleResolver`,
-/// on the evidence that `import "secrets" as s` failed with `Module not found`.
-/// It does — because no `./secrets.rhai` exists, which is what
-/// `FileModuleResolver` says about a path it cannot open. A probe naming a file
-/// that *does* exist loads and runs it, under a `passive` grant holding no verbs
-/// at all. `a_module_cannot_import_a_file_that_exists` is that probe, and it
-/// names a real file for exactly this reason: one naming an absent path passes
-/// either way and proves nothing.
+/// It was previously believed the stock resolver was rhai's
+/// `DummyModuleResolver`, on the evidence that `import "secrets" as s` failed
+/// with `Module not found`. It does, because no `./secrets.rhai` exists, which
+/// is what `FileModuleResolver` says about a path it cannot open. A probe
+/// naming a file that *does* exist loads and runs it, under a `passive` grant
+/// holding no verbs at all. `a_module_cannot_import_a_file_that_exists` is that
+/// probe, and it names a real file for exactly this reason: one naming an
+/// absent path passes either way and proves nothing.
 ///
 /// So the resolver is replaced rather than configured. `DummyModuleResolver`
 /// refuses every import, which is right for a module body: a detection is one
@@ -642,9 +642,14 @@ mod tests {
 
     /// A capabilities implementation that serves canned replies and records what
     /// the module did, the offline path that is also the replay path.
-    /// The guard that makes ZA-4-005's invariant hold rather than merely be
+    /// The guard that makes the no-re-entry rule hold rather than merely be
     /// written down, and it holds in a release build: the runtime refuses the
     /// second run instead of trusting an implementation it did not write.
+    ///
+    /// `Capabilities` is implementable outside this crate, so the rule is one
+    /// somebody else's code has to keep, and a re-entrant implementation would
+    /// put two live `&mut` on one value, the borrow this runtime erases to a
+    /// raw pointer for the span of a run.
     ///
     /// Two guards are asked for and no verb is ever called, so no `&mut` is
     /// reconstituted from either pointer and the test is sound even as it stages
@@ -894,10 +899,10 @@ mod tests {
     ///
     /// An import of an absent path fails whichever resolver is installed, so a
     /// test written that way passes against `FileModuleResolver` and proves
-    /// nothing — which is how the stock resolver was read as inert for as long as
-    /// it was. This one writes a module to disk first and imports it by absolute
-    /// path, so the only thing that can refuse it is the resolver [`harden`]
-    /// installs.
+    /// nothing, which is how the stock resolver was read as inert for as long
+    /// as it was. This one writes a module to disk first and imports it by
+    /// absolute path, so the only thing that can refuse it is the resolver
+    /// [`harden`] installs.
     ///
     /// The grant is `passive` with no verbs: the class whose whole security
     /// property is that the network verb is absent rather than refused. It read

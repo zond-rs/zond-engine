@@ -986,7 +986,7 @@ pub(super) async fn spawn_resolver(
 /// Takes the bare IPv6 link-local targets out of `target_map`, refusing each.
 ///
 /// A port scan reaches its targets over the routing table, which cannot carry a
-/// link-local address without an interface — and every interface holds an
+/// link-local address without an interface, and every interface holds an
 /// `fe80::/64`, so there is nothing to choose between them. The discovery path
 /// refuses these in the classifier; this is the same refusal for the path that
 /// skips it, which is any scan with

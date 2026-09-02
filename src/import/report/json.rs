@@ -46,20 +46,20 @@
 //!
 //! Three things, and the export is right about all of them.
 //!
-//! **Round-trip samples.** The document carries the summary statistics, meaning
+//! Round-trip samples. The document carries the summary statistics, meaning
 //! least, median, mean, greatest and jitter, and not the measurements behind them,
 //! since a sample's timestamp is a monotonic [`Instant`](std::time::Instant) that
 //! means nothing outside the process that took it. A host read back here reports
 //! no round trips rather than a fabricated set that averages correctly.
 //!
-//! **Per-source operating-system evidence.** The document carries the verdict
+//! Per-source operating-system evidence. The document carries the verdict
 //! and not the sources that corroborated it. A host read back keeps what it was
 //! identified as and starts its evidence fresh.
 //!
 //! Neither is compared by [`diff`](crate::diff), which reads verdicts and not the
 //! evidence behind them, so neither costs a comparison anything.
 //!
-//! **Where the machine that scanned was plugged in.** A phase's
+//! Where the machine that scanned was plugged in. A phase's
 //! [`attachments`](crate::report::Attachment) are dropped rather than rebuilt.
 //! They name a switch port on the network the scan ran from, so a document read
 //! on another machine describes a place this process was never standing.
@@ -408,7 +408,7 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
         f.write_str("a zond scan report")
     }
 
-    /// **A repeated key assigns again: last wins.** A document carrying one host
+    /// A repeated key assigns again: last wins. A document carrying one host
     /// and then a second `"hosts":[]` reads back with none. That is serde's own
     /// behaviour for the derived DTOs below, so this hand-written visitor matches
     /// it rather than being the one place in the document where a duplicate means
@@ -416,8 +416,8 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
     /// duplicates and last-wins is at least a rule that is the same every time.
     ///
     /// Worth knowing that this crate's other reader of a document somebody else
-    /// wrote answers the opposite — `xml`'s `Element::value` takes the *first* of
-    /// a repeated attribute. Neither is wrong; they are not unified because
+    /// wrote answers the opposite, since `xml`'s `Element::value` takes the first
+    /// of a repeated attribute. Neither is wrong, and they are not unified because
     /// unifying them means picking a winner for two formats whose own
     /// specifications disagree, and nothing downstream of either can tell the
     /// difference: both are deterministic, and the values are compared against
@@ -712,8 +712,8 @@ impl ScopeDto {
     }
 }
 
-/// How a phase's port coverage was expressed — the kind of specification and the
-/// text of it — rather than the ports it expanded to. `-` stays `-`.
+/// How a phase's port coverage was expressed, the kind of specification and the
+/// text of it, rather than the ports it expanded to. `-` stays `-`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PortScopeDto {
@@ -770,7 +770,7 @@ impl RangeDto {
 
 /// `settings`, the request a phase ran under.
 ///
-/// Read so a report says what was asked for and not only what came back — a port
+/// Read so a report says what was asked for and not only what came back, a port
 /// reported closed by a SYN scan and by a connect scan are different claims.
 /// Every named value here is checked, including the two records at the end.
 #[derive(Debug, Default, Deserialize)]
@@ -808,7 +808,7 @@ struct SettingsDto {
 /// record layer reads every one of them *downward*: an unrecognised flag name
 /// contributed nothing, an unparseable address was filtered out of the list, and
 /// a bad `spoof_mac` became `None`. A document claiming something this build
-/// cannot express therefore read back as a document claiming less, silently —
+/// cannot express therefore read back as a document claiming less, silently, and
 /// against this reader's own rule that an unknown named value is an error naming
 /// it rather than a field to skip.
 ///
@@ -1244,8 +1244,8 @@ impl ReasonDto {
 
 /// `os`, the operating-system verdict and how sure it is.
 ///
-/// The verdict only. The evidence behind it does not survive the document, by the
-/// export's deliberate choice — see the module docs.
+/// The verdict only. The evidence behind it does not survive the document, by
+/// the export's deliberate choice; see the module docs.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct OsDto {
@@ -1733,11 +1733,11 @@ mod tests {
     /// pair this reader passed through to a record layer documented to read them
     /// downward.
     ///
-    /// Each shape below used to be accepted and quietly diminished: `"nonsense"`
-    /// became no flags at all, `"syn|nonsense"` became `syn` — a claim the
-    /// document did not make — a bad `spoof_mac` or decoy vanished, and an
-    /// unparseable `zombie` took the whole idle-scan marker with it. All four now
-    /// refuse, naming the value.
+    /// Each shape below used to be accepted and quietly diminished:
+    /// `"nonsense"` became no flags at all, `"syn|nonsense"` became `syn`, a
+    /// claim the document did not make, a bad `spoof_mac` or decoy vanished,
+    /// and an unparseable `zombie` took the whole idle-scan marker with it. All
+    /// four now refuse, naming the value.
     #[test]
     fn an_evasion_setting_this_build_cannot_place_refuses_the_document() {
         let document = exported();

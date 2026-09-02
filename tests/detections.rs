@@ -387,8 +387,8 @@ async fn a_compute_module_grades_the_response_the_scan_already_gathered() {
     );
 }
 
-/// ZA-4-015: the generic HTTP detection has to reach a web application the
-/// corpus can put a name to, and not only a web server it cannot.
+/// The generic HTTP detection has to reach a web application the corpus can put
+/// a name to, and not only a web server it cannot.
 ///
 /// The same module, the same scan shape, against a port the service pass
 /// identifies as `grafana` rather than as `http`. Before the gate named the

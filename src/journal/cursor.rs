@@ -111,10 +111,10 @@ impl Cursor {
     ///
     /// Saturating, because the positions come out of a cursor file this process
     /// may not have written. A planted `u64::MAX` reaches the increment, and an
-    /// unchecked one panics in a debug build and wraps to zero in a release one —
-    /// which silently un-settles every target the scan had finished. Saturating
-    /// wedges the watermark at the ceiling instead, which is wrong in the safe
-    /// direction: a resume re-probes rather than skips.
+    /// unchecked one panics in a debug build and wraps to zero in a release
+    /// one, which silently un-settles every target the scan had finished.
+    /// Saturating wedges the watermark at the ceiling instead, which is wrong
+    /// in the safe direction: a resume re-probes rather than skips.
     fn catch_up(&mut self) {
         while self.above.remove(&self.watermark) {
             self.watermark = self.watermark.saturating_add(1);
@@ -351,7 +351,7 @@ mod persistence {
         /// unsorted list would answer `false` for a position that is present. That
         /// re-probes a settled target, which is safe and quietly wrong.
         pub fn read(path: &Path) -> Result<Self, JournalError> {
-            let text = fs::read_to_string(path)?;
+            let text = super::super::store::read_bounded(path, "a journal cursor")?;
             let mut checkpoint: Self = serde_json::from_str(&text)?;
             checkpoint.settled_above.sort_unstable();
             checkpoint.settled_above.dedup();

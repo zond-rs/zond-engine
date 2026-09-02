@@ -55,9 +55,18 @@
 //! since only the element's total markup is bounded rather than the value.
 //!
 //! Text between elements is skipped the same way until a caller asks for it with
-//! [`Parser::begin_text`], on entering an element whose content it wants. Entity
-//! references are resolved, and refused, only in text that was asked for. Nothing
-//! is interpreted that nobody reads.
+//! [`Parser::begin_text`], on entering an element whose content it wants. Text
+//! nobody asked for is passed over uninterpreted, so an entity reference standing
+//! in it is so many bytes.
+//!
+//! An attribute value is not treated that way. Every value is scanned as it is
+//! passed, so a reference in one is resolved, and an undeclared one refused,
+//! whether or not the attribute was wanted: a `banner`
+//! attribute no reader here looks at, carrying `&whoami;`, refuses the whole
+//! document. That is not the skip-what-nobody-reads rule leaking. An undeclared
+//! reference is a well-formedness error anywhere in an XML document, and a parser
+//! that accepted one quietly in the half of a tag it had no interest in would be
+//! calling a document well-formed on the strength of not having looked.
 //!
 //! ## Who uses it
 //!
@@ -139,6 +148,19 @@ impl Element {
     /// `None` means the element did not carry the attribute and nothing else. A
     /// value that is not UTF-8 refused the document when it was read, so no
     /// unreadable value ever reaches here.
+    ///
+    /// A duplicated attribute answers with the first. XML makes a repeated
+    /// attribute a fatal error and this parser stores both, so `<address
+    /// addr="10.0.0.2" addr="10.0.0.1"/>` reads as `10.0.0.2` rather than
+    /// refusing the document. Deliberate, and cheap to change if the argument
+    /// moves: first-wins is a rule, it is the same rule every time, and the
+    /// values are byte-compared against fixed names rather than merged, so
+    /// there is no reading in which two callers of this disagree about what an
+    /// element said. What it costs is that a document no conforming parser
+    /// accepts is reinterpreted here instead of refused, which is against this
+    /// module's usual instinct; what it buys is that the instinct does not turn
+    /// into a refusal nobody asked for. Nothing downstream depends on either
+    /// answer.
     pub(crate) fn value(&self, name: &[u8]) -> Option<&str> {
         self.values
             .iter()
@@ -430,10 +452,16 @@ impl<'a> Parser<'a> {
 
     /// Handles everything opening `<!`.
     ///
-    /// Where the refusals live. A comment and a CDATA section are inert and are
-    /// skipped, a `DOCTYPE` is inert only in the one form nmap writes, and
-    /// everything else that can appear here declares something. Declaring
-    /// anything is what this parser exists not to do.
+    /// Where the refusals live. A comment declares nothing and is skipped, a
+    /// CDATA section is character data and is read as such, a `DOCTYPE` is inert
+    /// only in the one form nmap writes, and everything else that can appear here
+    /// declares something. Declaring anything is what this parser exists not to
+    /// do.
+    ///
+    /// The comment and the section part company on that distinction. A comment
+    /// is not content in any document, dropping it inside captured text is what
+    /// XML says to do, where CDATA is exactly content, wearing a syntax that
+    /// lets it carry `<` and `&`. See [`capture_until`](Self::capture_until).
     fn declaration(&mut self) -> Result<(), ImportError> {
         self.bump()?; // '!'
 
@@ -441,7 +469,7 @@ impl<'a> Parser<'a> {
             return self.skip_until(b"-->");
         }
         if self.matches(b"[CDATA[")? {
-            return self.skip_until(b"]]>");
+            return self.capture_until(b"]]>");
         }
         if self.matches(b"DOCTYPE")? {
             return self.doctype();
@@ -460,6 +488,19 @@ impl<'a> Parser<'a> {
     /// An internal subset is where entity declarations live, and an external
     /// identifier is a document telling the parser to go and fetch something.
     /// Neither is accepted in any form, so neither has to be handled safely.
+    ///
+    /// The external-identifier arm is a courtesy, not the control. It
+    /// matches `SYSTEM` and `PUBLIC` literally and case-sensitively, so a
+    /// document spelling either differently, `SY STEM`, or lowercase `system`,
+    /// is skipped as inert bytes rather than refused by name. That costs
+    /// nothing, because there is nothing here to fetch *with*: this parser
+    /// performs no I/O beyond reading the stream it was handed, and parses no
+    /// declaration of any kind, so an external identifier that slips past the
+    /// match names a document nobody will open. The security property is the
+    /// absence of the capability; the message is there to tell an honest author
+    /// why their file was turned away. Nothing downstream should treat this
+    /// refusal as an XXE control to test against, the control is that the code
+    /// to fetch anything does not exist.
     fn doctype(&mut self) -> Result<(), ImportError> {
         loop {
             let Some(byte) = self.bump()? else {
@@ -743,6 +784,35 @@ impl<'a> Parser<'a> {
     /// is at most [`MAX_TERMINATOR_BYTES`] wide, so the comparison costs less
     /// than the arithmetic it replaces.
     fn skip_until(&mut self, terminator: &[u8]) -> Result<(), ImportError> {
+        self.scan_until(terminator, false)
+    }
+
+    /// [`skip_until`](Self::skip_until), keeping what it passes over as element
+    /// text when text is being kept.
+    ///
+    /// For CDATA, which is character data and not a construct. A section inside
+    /// an element whose content was asked for used to be skipped like a
+    /// comment, so `<cpe><![CDATA[cpe:/a:openbsd:openssh:8.9]]></cpe>` read
+    /// back as no CPE at all, a legal document yielding a report with a field
+    /// missing, and nothing saying so. Nmap does not write CDATA, so this
+    /// changed no document anyone has; a reader that drops legal content
+    /// silently is the defect whether or not the writer in front of it happens
+    /// to produce it.
+    ///
+    /// Bounded by [`keep_text`](Self::keep_text) like every other route into the
+    /// text buffer, so a section megabytes wide is refused at the same 512 bytes
+    /// rather than being the one way past the ceiling.
+    fn capture_until(&mut self, terminator: &[u8]) -> Result<(), ImportError> {
+        self.scan_until(terminator, self.capture)
+    }
+
+    /// The shared loop: read to `terminator`, keeping what precedes it or not.
+    ///
+    /// A byte is kept as it is *evicted* from the window, which is what keeps the
+    /// terminator itself out of the text: when the match lands the window holds
+    /// exactly the terminator and everything else has already gone through
+    /// [`keep_text`](Self::keep_text).
+    fn scan_until(&mut self, terminator: &[u8], keep: bool) -> Result<(), ImportError> {
         let width = terminator.len();
         debug_assert!(
             (1..=MAX_TERMINATOR_BYTES).contains(&width),
@@ -761,8 +831,12 @@ impl<'a> Parser<'a> {
             };
 
             if filled == width {
+                let evicted = window[0];
                 window.copy_within(1..width, 0);
                 window[width - 1] = byte;
+                if keep {
+                    self.keep_text(&[evicted])?;
+                }
             } else {
                 window[filled] = byte;
                 filled += 1;
@@ -974,6 +1048,79 @@ mod tests {
                 ("id", Some("7".to_string())),
                 ("name", Some("gw".to_string())),
             ]
+        );
+    }
+
+    /// CDATA is character data, and a reader that drops it loses a field without
+    /// saying so.
+    ///
+    /// `<cpe><![CDATA[…]]></cpe>` is legal, and used to read back as no CPE at
+    /// all: the section was dispatched to `declaration` and skipped like a
+    /// comment. An empty CPE qualifies nothing, so the document parsed, the
+    /// report came out a field short, and nothing anywhere reported a problem.
+    #[test]
+    fn cdata_inside_kept_text_is_read_rather_than_skipped() {
+        let document = r#"<a><![CDATA[cpe:/a:openbsd:openssh:8.9]]></a>"#;
+        let mut input = Cursor::new(document.as_bytes().to_vec());
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+
+        assert!(matches!(parser.next_event(), Ok(Event::Start { .. })));
+        parser.begin_text();
+        assert!(matches!(parser.next_event(), Ok(Event::End)));
+        assert_eq!(
+            parser.take_text().expect("reads"),
+            "cpe:/a:openbsd:openssh:8.9"
+        );
+    }
+
+    /// The two halves either side of a section join up, and the delimiters
+    /// themselves stay out of the text.
+    ///
+    /// The terminator is found through a sliding window, and a byte is kept as
+    /// it is evicted from it, so the check that matters is that `]]>` never
+    /// lands in the buffer and nothing before it is lost.
+    #[test]
+    fn text_around_a_cdata_section_joins_up_without_its_delimiters() {
+        let document = r#"<a>before <![CDATA[<inside> & ]]]]> after</a>"#;
+        let mut input = Cursor::new(document.as_bytes().to_vec());
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+
+        assert!(matches!(parser.next_event(), Ok(Event::Start { .. })));
+        parser.begin_text();
+        assert!(matches!(parser.next_event(), Ok(Event::End)));
+        assert_eq!(
+            parser.take_text().expect("reads"),
+            "before <inside> & ]] after"
+        );
+    }
+
+    /// A comment is not content, so it stays skipped where a section does not.
+    /// The two arrive at the same dispatch and part company there.
+    #[test]
+    fn a_comment_inside_kept_text_is_still_dropped() {
+        let document = r#"<a>before <!-- not content --> after</a>"#;
+        let mut input = Cursor::new(document.as_bytes().to_vec());
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+
+        assert!(matches!(parser.next_event(), Ok(Event::Start { .. })));
+        parser.begin_text();
+        assert!(matches!(parser.next_event(), Ok(Event::End)));
+        assert_eq!(parser.take_text().expect("reads"), "before  after");
+    }
+
+    /// A section is bounded by the same ceiling as every other route into the
+    /// text buffer, rather than being the one way past it.
+    #[test]
+    fn a_cdata_section_is_held_to_the_text_ceiling() {
+        let document = format!("<a><![CDATA[{}]]></a>", "x".repeat(MAX_TEXT_BYTES + 1));
+        let mut input = Cursor::new(document.into_bytes());
+        let mut parser = Parser::new(&mut input, 1024 * 1024, FORMAT, KEPT);
+
+        assert!(matches!(parser.next_event(), Ok(Event::Start { .. })));
+        parser.begin_text();
+        assert!(
+            parser.next_event().is_err(),
+            "a section wider than the ceiling was kept whole"
         );
     }
 

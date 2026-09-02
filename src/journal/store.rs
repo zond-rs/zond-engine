@@ -36,7 +36,7 @@ use std::time::{Duration, SystemTime};
 use super::cursor::Checkpoint;
 use super::file::{
     append_existing, claim_directory_for_invoking_user, create_private as create_private_file,
-    create_staged,
+    create_staged, open_existing,
 };
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
@@ -145,21 +145,33 @@ impl Journal {
     ) -> Result<Self, OpenError> {
         let (id, directory) = claim_directory(root)?;
         let manifest = JournalManifest::new(id, plan, privilege, summary);
+
+        // A scan that never started should leave no trace, and until this was
+        // one arm it was only true of one failure. The lock it could not take
+        // cleaned up after itself; a manifest write that ran out of disk, or a
+        // findings header that could not be flushed, propagated and left the
+        // directory behind, which lists as a scan that found nothing, or does
+        // not list at all. Both are the state that reasoning called unreadable.
+        match Self::furnish(&directory, manifest) {
+            Ok(journal) => Ok(journal),
+            Err(error) => {
+                let _ = fs::remove_dir_all(&directory);
+                Err(error)
+            }
+        }
+    }
+
+    /// Everything [`create`](Self::create) does once the directory is claimed.
+    ///
+    /// Split out so there is one place a failure past the claim is caught, rather
+    /// than each step having to remember to undo the directory on its way out.
+    fn furnish(directory: &Path, manifest: JournalManifest) -> Result<Self, OpenError> {
         write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
 
-        let lock = match Lock::acquire(&directory.join(LOCK)) {
-            Ok(lock) => lock,
-            Err(refused) => {
-                // Nothing has been written but the manifest, and a directory
-                // holding one of those and no lock reads as a journal that found
-                // nothing. A scan that never started should leave no trace.
-                let _ = fs::remove_dir_all(&directory);
-                return Err(refused.into());
-            }
-        };
+        let lock = Lock::acquire(&directory.join(LOCK))?;
 
         let mut journal = Self {
-            directory,
+            directory: directory.to_path_buf(),
             manifest,
             lock,
             resume_point: Checkpoint::default(),
@@ -264,7 +276,7 @@ impl Journal {
             return Ok(());
         }
 
-        let file = append_existing(&self.directory.join(HOSTS))?;
+        let file = open_for_append(&self.directory.join(HOSTS))?;
 
         let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
         for host in hosts {
@@ -292,13 +304,13 @@ impl Journal {
         // answer. `create_private` refuses a name that exists, so losing that
         // race is reported rather than costing every tape written before it.
         let path = self.directory.join(DETECTIONS);
-        let mut writer = match append_existing(&path) {
+        let mut writer = match open_for_append(&path) {
             Ok(file) => crate::journal::format::Writer::append(std::io::BufWriter::new(file)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(JournalError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 let file = create_private_file(&path)?;
                 crate::journal::format::Writer::create(std::io::BufWriter::new(file))?
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
         for run in runs {
             writer.write(run)?;
@@ -367,7 +379,7 @@ impl Journal {
             return Ok(());
         }
 
-        let file = append_existing(&self.directory.join(PHASES))?;
+        let file = open_for_append(&self.directory.join(PHASES))?;
 
         let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
         for phase in phases {
@@ -491,9 +503,26 @@ impl Entry {
 
     /// How many targets are settled, or `None` where the cursor could not be
     /// read.
+    ///
+    /// Counts only the positions above the watermark, which is the same filter
+    /// [`Cursor::from_checkpoint`](super::cursor::Cursor::from_checkpoint)
+    /// applies to the same list. `Checkpoint::read` deliberately does not drop
+    /// the entries below it, the read is shared, and the cursor is what
+    /// filters, so a list naming positions the watermark has already passed
+    /// used to be counted twice here and nowhere else. That inflates the total,
+    /// and [`is_complete`](Self::is_complete) can tip to `true` on the
+    /// inflation, which is what a retention sweep deletes on. Every writer this
+    /// crate ships keeps the list clean, so reaching it wants a damaged or
+    /// hand-edited file; the count is a claim about the scan either way, and
+    /// two readers of one file should not disagree about it.
     pub fn settled(&self) -> Option<u128> {
         self.checkpoint.as_ref().map(|checkpoint| {
-            u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128
+            let above = checkpoint
+                .settled_above
+                .iter()
+                .filter(|position| **position >= checkpoint.watermark)
+                .count();
+            u128::from(checkpoint.watermark) + above as u128
         })
     }
 }
@@ -628,6 +657,16 @@ fn phase_name(kind: ScanKind) -> &'static str {
 /// Refuses one a live scan is writing. A caller pruning by age should read
 /// [`Entry::lock`] and skip what is held rather than relying on this, so a
 /// sweep reports what it left alone.
+///
+/// The refusal is a check, not an exclusion. The lock is inspected and then
+/// the directory is removed, and a scan that takes the lock between the two has
+/// its journal deleted under it: it runs on with open descriptors, appending to
+/// unlinked inodes, and nothing it writes lands anywhere. Reading [`Entry::lock`]
+/// first, as above, is the same check raced one step earlier rather than a way
+/// out of it. The window is one `rename` against one `remove_dir_all` and both
+/// parties are the same user's own processes, so this is documented rather than
+/// closed. Closing it wants the lock held across the removal, which is a protocol
+/// change belonging to `lock` rather than here.
 pub fn remove(directory: &Path) -> Result<(), OpenError> {
     let state = super::lock::inspect(&directory.join(LOCK));
     if !state.is_resumable() {
@@ -767,10 +806,127 @@ pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, Jour
     Ok(runs)
 }
 
+/// Opens a findings file to add to it, making it whole first.
+///
+/// [`format::Writer::append`](super::format::Writer::append) states a
+/// precondition, "a caller appending has already opened the file for reading
+/// and validated it", and until this existed, no caller established it. All
+/// three append sites open by path and write. This is that caller, and it is
+/// one function rather than three checks because both failures below are the
+/// same defect from two ends: the append path cannot see what it is appending
+/// to, and `O_APPEND` guarantees it lands after whatever is there.
+///
+/// A torn tail stops being discardable the moment anything follows it. The
+/// format promises that a torn final line is discarded rather than an error,
+/// and [`format::Reader`](super::format::Reader) keeps that promise only while
+/// the torn line is *last*. A resumed sitting appends directly after the torn
+/// bytes; the tear becomes the prefix of the next record's line, that line is
+/// newline-terminated, and a JSON prefix followed by a JSON object is
+/// corruption by the reader's own rule. From then on the file can be neither
+/// read nor resumed, and the hours in front of the tear are stranded, the exact
+/// loss the torn-tail policy exists to prevent, arriving at the first append
+/// after the crash it was written to survive. Truncating to the last newline
+/// discards precisely what the reader would have discarded, one record inside
+/// the replay interval, and nothing else.
+///
+/// A file with no header is mended or refused, never blessed.
+/// [`Journal::open_findings`] creates the file and writes its header as two
+/// steps, so a process killed between them leaves a zero-length file. The resume
+/// path reads that as a journal that found nothing, which is true at that moment;
+/// appending into it then writes records under no header, every later read is
+/// `NotAJournal` mapped back to no findings, and the whole sitting is invisible
+/// while the cursor advances and reports the ground covered. Empty is mended,
+/// because there is nothing in the file to be mistaken for a record and
+/// completing the header is what the interrupted call was doing. Non-empty
+/// without a header is somebody else's file standing at this name, and naming it
+/// in an error is the only honest answer: prepending a header would turn its
+/// lines into records this engine claims to have written.
+fn open_for_append(path: &Path) -> Result<fs::File, JournalError> {
+    mend(path)?;
+    Ok(append_existing(path)?)
+}
+
+/// Gives a findings file a header if it has none and no torn tail if it has one.
+///
+/// The header is checked through [`format::Reader::open`](super::format::Reader)
+/// rather than by matching bytes here, so the rule this enforces is the same rule
+/// the reader applies, the version refusal included, which an append to a journal
+/// from a newer build should meet here as well as at the resume.
+///
+/// Order matters: the header is validated *before* anything is truncated, so a
+/// stranger's file at this name is refused intact rather than edited and then
+/// refused.
+fn mend(path: &Path) -> Result<(), JournalError> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = open_existing(path)?;
+    let length = file.metadata()?.len();
+
+    // The header write that did not finish, which is the whole of the window
+    // between `open_findings`' create and its write.
+    if length == 0 {
+        super::format::Writer::create(&mut file)?.flush()?;
+        return Ok(());
+    }
+
+    super::format::Reader::open(std::io::BufReader::new(&file))?;
+
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+
+    let keep = last_whole_line(&mut file, length)?;
+    file.set_len(keep)?;
+
+    // No whole line anywhere, so the header line is the torn one. It parsed, so
+    // the file is this engine's and there is simply nothing in it to keep;
+    // writing the header again is the same repair the empty case makes.
+    if keep == 0 {
+        file.seek(SeekFrom::Start(0))?;
+        super::format::Writer::create(&mut file)?.flush()?;
+    }
+
+    Ok(())
+}
+
+/// The offset just past the file's last newline: where a whole record last ended.
+///
+/// Read backwards a window at a time rather than by reading the file. This runs
+/// on every append, and a findings file grows with a scan's duration rather
+/// than with what it found, the reason [`Journal::compact`] exists, so a scan
+/// of any length would be paying for its own history on every checkpoint.
+fn last_whole_line(file: &mut fs::File, length: u64) -> Result<u64, JournalError> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    /// Comfortably more than a record, so the answer is almost always one read.
+    const WINDOW: usize = 8 * 1024;
+
+    let mut end = length;
+    while end > 0 {
+        let size = WINDOW.min(end as usize);
+        let start = end - size as u64;
+
+        file.seek(SeekFrom::Start(start))?;
+        let mut window = vec![0u8; size];
+        file.read_exact(&mut window)?;
+
+        if let Some(at) = window.iter().rposition(|byte| *byte == b'\n') {
+            return Ok(start + at as u64 + 1);
+        }
+
+        end = start;
+    }
+
+    Ok(0)
+}
+
 /// Reads a journal's manifest, refusing one written by a newer format than this
 /// build understands rather than reading it approximately.
 fn read_manifest(directory: &Path) -> Result<JournalManifest, JournalError> {
-    let text = fs::read_to_string(directory.join(MANIFEST))?;
+    let text = read_bounded(&directory.join(MANIFEST), "a journal manifest")?;
     let manifest: JournalManifest = serde_json::from_str(&text)?;
 
     if manifest.journal_version > super::JOURNAL_VERSION {
@@ -881,13 +1037,56 @@ fn claim_directory(root: &Path) -> Result<(String, PathBuf), JournalError> {
     .into())
 }
 
+/// Reads a whole journal file, refusing one past
+/// [`MAX_READ_BYTES`](super::format::MAX_READ_BYTES).
+///
+/// `fs::read_to_string` with a ceiling, and the ceiling applied through `take`
+/// before the read rather than to the length afterwards. The two files read
+/// whole, the manifest and the cursor, are the journal's own, in a directory
+/// this crate documents as belonging to a user while the process reading them
+/// is usually root; see [`MAX_READ_BYTES`](super::format::MAX_READ_BYTES) for
+/// what that is and is not worth.
+pub(super) fn read_bounded(path: &Path, what: &str) -> Result<String, JournalError> {
+    use std::io::Read;
+
+    let mut text = String::new();
+    let read = fs::File::open(path)?
+        .take(super::format::MAX_READ_BYTES + 1)
+        .read_to_string(&mut text)?;
+
+    if read as u64 > super::format::MAX_READ_BYTES {
+        return Err(super::format::too_large(what));
+    }
+
+    Ok(text)
+}
+
 /// Writes a whole file at a journal's own mode and ownership. For the files
 /// written once rather than a record at a time.
+///
+/// Staged and renamed, like [`Checkpoint::write_atomically`] and
+/// [`Journal::compact`], so the name either holds the whole file or does not
+/// exist. The manifest is its only caller and was the one file here written by
+/// truncate-and-write, the file every other read begins with, and so the one
+/// torn file no reader has a policy for: the torn-tail bargain covers records,
+/// and [`read_manifest`] answers a partial document with a parse error that
+/// [`list`] absorbs as a journal that is not there.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
     use std::io::Write;
 
-    let mut file = create_private_file(path)?;
-    file.write_all(bytes)?;
+    let temporary = path.with_extension("tmp");
+
+    // Scoped so the handle is closed before the rename, for the reason
+    // `write_atomically` gives: renaming over a file still held open is a hazard
+    // on platforms this may yet reach.
+    {
+        let mut file = create_staged(&temporary)?;
+        file.write_all(bytes)?;
+    }
+
+    // The destination becomes the temporary's inode, which already carries the
+    // mode and the ownership `create_staged` gave it.
+    fs::rename(&temporary, path)?;
     Ok(())
 }
 
@@ -2021,6 +2220,174 @@ mod tests {
 
         journal.close().expect("closes");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A cursor naming positions the watermark has already passed does not make
+    /// the scan look more finished than it is.
+    ///
+    /// `Checkpoint::read` keeps below-watermark entries on purpose, because the
+    /// read is shared and `Cursor::from_checkpoint` is what filters them. This
+    /// counted them, so the same file read two ways gave two answers, and the
+    /// inflated one is what `is_complete` reads, which is what a retention
+    /// sweep deletes on.
+    #[test]
+    fn a_cursor_repeating_settled_positions_does_not_inflate_the_count() {
+        let root = scratch("inflated-cursor");
+        let map = plan("192.0.2.1-192.0.2.4", "80,443");
+
+        let directory = {
+            let journal = begin(&root, &map);
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        // Four of the eight targets settled, and a list that names three of them
+        // again. A writer here never produces this; a damaged file does.
+        let checkpoint = Checkpoint {
+            watermark: 4,
+            settled_above: vec![0, 1, 2, 6],
+        };
+        checkpoint
+            .write_atomically(&directory.join(CURSOR))
+            .expect("writes");
+
+        let entry = list(&root)
+            .expect("lists")
+            .into_iter()
+            .next()
+            .expect("one journal");
+
+        assert_eq!(
+            entry.settled(),
+            Some(5),
+            "the watermark plus the one position genuinely above it"
+        );
+        assert!(
+            !entry.is_complete(),
+            "eight targets, five settled: a retention sweep must not take this"
+        );
+    }
+
+    /// The failure the torn-tail policy exists to survive, arriving one append
+    /// later.
+    ///
+    /// `format` promises a torn final line is discarded rather than an error,
+    /// and its reader keeps that promise only while the tear is *last*. A
+    /// resumed sitting appends directly after the torn bytes under `O_APPEND`,
+    /// so the tear becomes the prefix of the next record's line, and that line
+    /// is newline-terminated, which makes it corruption by the reader's own
+    /// rule. Measured before the mend: every read of the file from that moment
+    /// failed with `Malformed`, so the journal could be neither read back nor
+    /// resumed again, and everything in front of the tear was stranded.
+    ///
+    /// `format`'s `a_torn_final_line_ends_the_journal_without_an_error` reads a
+    /// tear. This is the sequence that appends past one.
+    #[test]
+    fn an_append_after_a_torn_tail_leaves_the_journal_readable() {
+        let root = scratch("torn-tail-append");
+        let map = plan("192.0.2.1-192.0.2.4", "80");
+        let first: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+        let second: std::net::IpAddr = "192.0.2.2".parse().expect("an address");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            journal.record_hosts(&[Host::new(first)]).expect("records");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        // The crash: a record that reached the file without its newline.
+        {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(directory.join(HOSTS))
+                .expect("opens");
+            file.write_all(br#"{"ip":"192.0.2.9","stat"#)
+                .expect("tears");
+        }
+
+        let (mut journal, _) = Journal::resume(&directory, &ports(&map), Privilege::Raw)
+            .expect("resumes past the tear");
+        journal.record_hosts(&[Host::new(second)]).expect("records");
+        journal.close().expect("closes");
+
+        let restored = read_findings(&directory).expect("the journal still reads");
+        let addresses: Vec<_> = restored.iter().map(Host::primary_ip).collect();
+        assert_eq!(
+            addresses,
+            vec![first, second],
+            "the whole record before the tear and the one after it both survive"
+        );
+    }
+
+    /// The header write that did not land, and the sitting that would otherwise
+    /// disappear into the file it leaves.
+    ///
+    /// `open_findings` creates the file and writes its header as two steps, so a
+    /// process killed between them leaves a zero-length file. Appending into that
+    /// writes records under no header: every later read is `NotAJournal`, which
+    /// the resume path maps back to "found nothing", while the cursor keeps
+    /// advancing and reports the ground covered. Silent, and total.
+    #[test]
+    fn an_append_to_a_findings_file_whose_header_never_landed_mends_it() {
+        let root = scratch("headerless-append");
+        let map = plan("192.0.2.1", "80");
+        let address: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+
+        let mut journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        fs::write(directory.join(HOSTS), b"").expect("empties");
+
+        journal
+            .record_hosts(&[Host::new(address)])
+            .expect("records");
+        journal.close().expect("closes");
+
+        let restored = read_findings(&directory).expect("reads");
+        assert_eq!(
+            restored.len(),
+            1,
+            "a record appended under no header is a record nothing reads back"
+        );
+    }
+
+    /// The other half of that check: a file this engine did not write is refused
+    /// rather than given a header.
+    ///
+    /// Mending an empty file completes an interrupted write of our own. Mending
+    /// a file with content in it would be something else, it would turn a
+    /// stranger's lines into records this engine claims to have written. The
+    /// refusal has to leave the file exactly as it found it, which is why the
+    /// header is checked before anything is truncated.
+    #[test]
+    fn an_append_to_a_file_this_engine_did_not_write_is_refused() {
+        let root = scratch("foreign-append");
+        let map = plan("192.0.2.1", "80");
+
+        let mut journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        // Complete lines, so nothing here is a torn tail, just not a journal.
+        let foreign: &[u8] = b"{\"not\":\"a journal\"}\n{\"still\":\"not\"}";
+        fs::write(directory.join(HOSTS), foreign).expect("plants");
+
+        assert!(
+            journal
+                .record_hosts(&[Host::new("192.0.2.1".parse().expect("an address"))])
+                .is_err(),
+            "a file with no header was appended to"
+        );
+        assert_eq!(
+            fs::read(directory.join(HOSTS)).expect("reads"),
+            foreign,
+            "the file was edited before it was refused"
+        );
+
+        journal.close().expect("closes");
     }
 
     /// A journal written under an older format reads, and is refused a resume by

@@ -535,7 +535,11 @@ mod tests {
         assert!(changes_between(&before, &after).is_empty());
     }
 
-    /// The property ZA-4-008 was filed for: a finding arriving is a change.
+    /// A finding arriving is a change.
+    ///
+    /// This comparison reported hosts, ports and services that moved and said
+    /// nothing when a finding appeared on one that had not, so a host that gained
+    /// a critical vulnerability between two runs compared as unchanged.
     #[test]
     fn a_finding_that_appeared_is_reported() {
         let before = host(1);

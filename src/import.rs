@@ -63,21 +63,21 @@
 //! client, a report off a shared drive, a settings file synced from a team
 //! repository. Three consequences run through the whole module.
 //!
-//! **Bounds are part of the API.** [`ImportLimits`] is a field of
+//! Bounds are part of the API. [`ImportLimits`] is a field of
 //! [`ImportOptions`] rather than a constant, and exceeding one is an error naming
 //! what exceeded it rather than a truncation. A target set quietly missing its
 //! tail is a scan that does not cover what it was asked to, with nothing in the
 //! report saying so.
 //!
-//! **A refused target is reported, never dropped.** Refusing the whole import
+//! A refused target is reported, never dropped. Refusing the whole import
 //! over one bad line ([`OnRefusal::Abort`], the default) and carrying on past it
 //! ([`OnRefusal::Collect`]) are both defensible, and which is right depends on
 //! whether a person is watching. What is not defensible is continuing silently,
 //! so collecting hands the refusals back in [`Imported::refusals`] where the
 //! caller has to look at them to ignore them.
 //!
-//! **Nothing an imported document says may name something that gets opened or
-//! run.** No include directive, no path that gets resolved, no command. A
+//! Nothing an imported document says may name something that gets opened or
+//! run. No include directive, no path that gets resolved, no command. A
 //! document changes numbers and chooses between named alternatives, and that is
 //! the entire vocabulary.
 

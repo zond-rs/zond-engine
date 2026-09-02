@@ -23,9 +23,9 @@ ignore = [
     # `assets/`, so no input on this path is chosen by anyone outside the build.
     # That bounds the exposure to a bug reachable from data we generate.
     #
-    # Recorded as ZA-0-009. Moving to bincode 2.x means both the encode and the
-    # decode side and a format change to the embedded blobs, which is its own
-    # piece of work rather than something to slip into a CI fix.
+    # Moving to bincode 2.x means both the encode and the decode side and a
+    # format change to the embedded blobs, which is its own piece of work rather
+    # than something to slip into a CI fix.
     "RUSTSEC-2025-0141",
 ]
 
