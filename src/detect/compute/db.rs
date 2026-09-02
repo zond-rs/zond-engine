@@ -21,14 +21,14 @@
 //! That happens here, once, when the database is first asked for: each body is
 //! loaded through the [`RhaiRuntime`](super::RhaiRuntime), and the runtime and the
 //! compiled set are held together, because the [stage](super::stage) needs both to
-//! run them. A body that will not compile is skipped with a warning rather than
-//! panicking a scan, the shipped corpus is proven to compile by a test, so a skip
-//! is a defence, not an expected path.
+//! run them. A body that will not compile aborts the load, the same policy the flow
+//! and host loaders hold on a corpus that will not re-parse: the shipped corpus is
+//! proven to compile by a test, so a failure is a broken build to surface loudly,
+//! not a detection to drop and leave a scan quietly reporting a clean bill it did
+//! not earn.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
-
-use tracing::warn;
 
 use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;
@@ -182,45 +182,42 @@ pub fn replay_run(run: &DetectionRunRecord) -> Result<Vec<Finding>, ReplayError>
     stage::replay_over_tape(db.runtime(), detection, &ctx, &slices, run.tape.rebuild())
 }
 
-/// Compiles one embedded module into a runnable detection, or [`None`] with a
-/// warning if it will not compile, which the corpus test proves cannot happen for
-/// what ships.
+/// Compiles one embedded module into a runnable detection.
+///
+/// Every failure is a corpus the build validated but the runtime could not load: a
+/// parse, a normalisation, or a compile the build's own checks passed. Each panics,
+/// naming the cause, rather than shipping a corpus quietly short a detection, which
+/// for a security tool is a false negative worse than a loud abort. The corpus test
+/// proves none of these can happen for what ships; this is the guard for a build
+/// that broke the invariant, and it is the same policy the flow and host loaders
+/// hold on a corpus that will not re-parse.
 fn load_module(
     runtime: &RhaiRuntime,
     content_hash: &str,
     toml: &str,
-) -> Option<LoadedDetection<RhaiModule>> {
+) -> LoadedDetection<RhaiModule> {
     let detection: ComputeDetection = toml::from_str(toml)
         .expect("an embedded module was validated at build but did not re-parse at runtime");
     let source = detection
         .compute
         .source
         .expect("the build normalises every module to an inline source");
-    match runtime.load(&ModuleBody::Rhai(source)) {
-        Ok(module) => Some(LoadedDetection::new(
-            detection.detection,
-            module,
-            content_hash,
-        )),
-        Err(error) => {
-            warn!(
-                id = detection.detection.id,
-                ?error,
-                "a shipped module did not compile"
-            );
-            None
-        }
-    }
+    let module = runtime.load(&ModuleBody::Rhai(source)).unwrap_or_else(|error| {
+        panic!(
+            "the embedded module '{}' was validated at build but did not compile at runtime: {error}",
+            detection.detection.id
+        )
+    });
+    LoadedDetection::new(detection.detection, module, content_hash)
 }
 
-/// Decodes the embedded module corpus and compiles each body on `runtime`, skipping
-/// any that will not compile with a warning (the corpus test proves none do).
+/// Decodes the embedded module corpus and compiles each body on `runtime`.
 pub(crate) fn load_embedded(runtime: &RhaiRuntime) -> Vec<LoadedDetection<RhaiModule>> {
     let entries: Vec<(String, String)> =
         bincode::deserialize(EMBEDDED).expect("embedded module database failed to deserialize");
     entries
         .into_iter()
-        .filter_map(|(content_hash, toml)| load_module(runtime, &content_hash, &toml))
+        .map(|(content_hash, toml)| load_module(runtime, &content_hash, &toml))
         .collect()
 }
 
@@ -305,13 +302,14 @@ mod tests {
             bincode::deserialize(EMBEDDED).expect("the module database decodes");
         assert!(!embedded.is_empty(), "the module corpus is empty");
 
-        // Every embedded entry became a compiled detection: a body that failed to
-        // load would be skipped, so an equal count is proof each one compiled.
+        // Reaching this proves every body compiled: `load_module` panics on one
+        // that does not, so a broken corpus fails here loudly rather than loading
+        // short. The count is then exact, one detection per embedded entry.
         let db = ComputeDb::global();
         assert_eq!(
             db.detections().len(),
             embedded.len(),
-            "a shipped module did not compile at load"
+            "the module corpus did not load one detection per embedded entry"
         );
     }
 
