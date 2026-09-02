@@ -37,7 +37,7 @@ use crate::model::finding::{DetectionClass, Severity};
 use crate::model::host::status::StatusProtocol;
 use crate::model::host::{Filtering, HostStatus, NetworkRole};
 use crate::model::port::{PortState, Protocol};
-use crate::model::technique::TcpScanTechnique;
+use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::record::wire::{
     attachment_source_name, confidence_name, detection_class_name, filtering_name,
     host_status_name, network_role_name, port_state_name, protocol_name, scan_kind_name,
@@ -181,6 +181,10 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
         (
             "/$defs/settings/properties/tcp_technique/enum",
             named(TcpScanTechnique::ALL.iter().map(|t| t.name()).collect()),
+        ),
+        (
+            "/$defs/settings/properties/sctp_technique/enum",
+            named(SctpScanTechnique::ALL.iter().map(|t| t.name()).collect()),
         ),
         (
             "/$defs/settings/properties/send_mode/enum",

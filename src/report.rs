@@ -77,7 +77,7 @@ use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::model::target::{TargetMap, TargetSet};
-use crate::model::technique::TcpScanTechnique;
+use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::system::privilege::Privilege;
 use crate::transport::probe::SendMode;
 
@@ -602,6 +602,13 @@ pub struct ScanSettings {
     /// this: one refused a connection attempt, the other reset a segment that
     /// was not one. A report without it cannot be read.
     pub tcp_technique: TcpScanTechnique,
+    /// Which chunk each SCTP port probe carried, and so what its answers mean.
+    ///
+    /// Recorded for the reason [`tcp_technique`](Self::tcp_technique) is. An
+    /// SCTP port reported `open_filtered` came from a COOKIE-ECHO scan, which
+    /// cannot report one open at all; the same port under an INIT scan would
+    /// have been settled either way.
+    pub sctp_technique: SctpScanTechnique,
     /// The retransmission budget and patience in force.
     pub retry: RetryConfig,
     /// The probe-rate ceiling, or `None` if the scanner's own default applied.
@@ -699,6 +706,7 @@ impl From<&ZondConfig> for ScanSettings {
         let ZondConfig {
             send_mode,
             tcp_technique,
+            sctp_technique,
             retry,
             max_probe_rate,
             host_timeout,
@@ -727,6 +735,7 @@ impl From<&ZondConfig> for ScanSettings {
         Self {
             send_mode: *send_mode,
             tcp_technique: *tcp_technique,
+            sctp_technique: *sctp_technique,
             retry: *retry,
             max_probe_rate: *max_probe_rate,
             host_timeout: *host_timeout,

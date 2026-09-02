@@ -1472,6 +1472,7 @@
       "required": [
         "send_mode",
         "tcp_technique",
+        "sctp_technique",
         "retry",
         "max_probe_rate",
         "host_timeout_us",
@@ -1503,6 +1504,13 @@
             "maimon",
             "ack",
             "window"
+          ]
+        },
+        "sctp_technique": {
+          "description": "Which chunk each SCTP port probe carried. An `init` draws an answer from an open port and a closed one alike, so it names open ports and its silence is a filter. A `cookie-echo` carries a cookie no endpoint minted: a closed port answers with an abort and a listener authenticates it, fails, and discards it in silence, so the scan cannot report a port open at all and its silence is `open_filtered`. Absent on a document written before the technique was a choice, which was an init scan.",
+          "enum": [
+            "init",
+            "cookie-echo"
           ]
         },
         "retry": {

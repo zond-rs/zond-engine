@@ -174,7 +174,7 @@ impl SweepProbe {
     const fn transport(self) -> ProbeKind {
         match self {
             Self::Syn { .. } => ProbeKind::TcpSyn,
-            Self::Init { src_port, .. } => ProbeKind::SctpInit {
+            Self::Init { src_port, .. } => ProbeKind::Sctp {
                 reply_port: src_port,
             },
         }

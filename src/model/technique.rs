@@ -112,6 +112,202 @@ pub enum TcpReply {
     ChallengeAck,
 }
 
+/// The two chunks an SCTP port probe can draw back, as classified off the wire
+/// by [`crate::protocols::sctp::classify_probe_response`].
+///
+/// Beside [`TcpReply`] and for its reason: what either chunk *means* depends on
+/// the probe that provoked it, which is [`SctpScanTechnique::verdict`]'s job. An
+/// ABORT is a closed port to either technique; an INIT-ACK is an open port to an
+/// INIT probe and cannot be an answer to a COOKIE-ECHO at all.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SctpReply {
+    /// An INIT-ACK: an endpoint accepted the association attempt. The SCTP
+    /// analogue of a SYN+ACK, and the only positive answer either technique can
+    /// draw.
+    InitAck,
+    /// An ABORT: a reachable stack refusing outright. The SCTP analogue of a
+    /// RST, and what both techniques read as a closed port.
+    Abort,
+}
+
+/// How an SCTP port is probed.
+///
+/// Two chunks, and the difference between them is the difference between the
+/// SYN scan and the FIN family one protocol over. An INIT is answered whichever
+/// way the port stands, so it names open ports and reads silence as a filter. A
+/// COOKIE-ECHO is answered only by a port with nothing behind it, so it cannot
+/// name an open port at all and reads silence as open-or-filtered.
+///
+/// Both need raw sockets. There is no unprivileged form of either, since no
+/// kernel builds an SCTP chunk on a caller's behalf the way it completes a TCP
+/// handshake, so a process without them has its SCTP ports refused rather than
+/// answered a different way.
+///
+/// Host discovery is not governed by this. A sweep asks whether an address is
+/// there, and only an INIT draws an answer from an address whose port is open,
+/// so the discovery probe is an INIT whatever a port scan was asked for.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SctpScanTechnique {
+    /// An INIT chunk. The default, and the only technique that identifies an
+    /// open SCTP port positively.
+    ///
+    /// RFC 4960 fixes both answers: a listener accepts with an INIT-ACK (§5.1)
+    /// and a stack with nothing on that port refuses with an ABORT (§8.4), so
+    /// every live endpoint says something and silence is a filter. Neither
+    /// answer completes an association, so no port is left half-open.
+    #[default]
+    Init,
+    /// A COOKIE-ECHO chunk carrying a cookie no endpoint minted.
+    ///
+    /// RFC 4960 §8.4 sends an out-of-the-blue COOKIE-ECHO down two different
+    /// paths depending on whether anything is listening. A listener
+    /// authenticates the cookie (§5.1.5), fails to, and discards the packet
+    /// without a word. A port with no endpoint behind it has nothing to
+    /// authenticate against and falls through to the rule that answers an
+    /// unrecognised packet with an ABORT. So the ABORT is a closed port and
+    /// silence is everything else.
+    ///
+    /// What it buys is passage. A filter written against SCTP scanning blocks
+    /// the INIT chunk, because that is the chunk a scan is expected to send and
+    /// the one that opens an association; a COOKIE-ECHO is neither, and rules
+    /// written for the first often say nothing about the second. What it costs
+    /// is the positive result: an open port and a filtered one are both silent
+    /// here, and no amount of waiting separates them. Run it to find out whether
+    /// a range that came back entirely filtered under an INIT scan is filtered
+    /// or merely INIT-filtered.
+    CookieEcho,
+}
+
+impl SctpScanTechnique {
+    /// Every technique, in the order they are documented.
+    ///
+    /// Here for the reason [`TcpScanTechnique::ALL`] is: a front end offering
+    /// the choice enumerates it from the engine rather than from a list of its
+    /// own that drifts the first time one is added.
+    pub const ALL: [Self; 2] = [Self::Init, Self::CookieEcho];
+
+    /// The canonical name, which is also what [`FromStr`] accepts and
+    /// [`fmt::Display`] renders.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::CookieEcho => "cookie-echo",
+        }
+    }
+
+    /// One line describing what the technique is for, short enough to sit
+    /// beside the name wherever a front end offers the choice.
+    pub const fn summary(self) -> &'static str {
+        match self {
+            Self::Init => "association attempt; the only one that confirms a listener",
+            Self::CookieEcho => "unminted cookie; a closed port answers, an open one stays silent",
+        }
+    }
+
+    /// What the technique concludes from `reply`, or `None` if that chunk
+    /// answers nothing this probe asked.
+    ///
+    /// The `None` case carries the same weight it does for TCP. Nothing a
+    /// COOKIE-ECHO can send provokes an INIT-ACK, so one arriving at that scan
+    /// is somebody else's association rather than an open port, and resolving a
+    /// port on it would report a listener on the strength of a coincidence.
+    pub const fn verdict(self, reply: SctpReply) -> Option<PortState> {
+        match (self, reply) {
+            (Self::Init, SctpReply::InitAck) => Some(PortState::Open),
+            (Self::Init | Self::CookieEcho, SctpReply::Abort) => Some(PortState::Closed),
+            (Self::CookieEcho, SctpReply::InitAck) => None,
+        }
+    }
+
+    /// What the technique concludes when every attempt goes unanswered.
+    ///
+    /// The same split the TCP techniques make. An INIT that draws nothing was
+    /// dropped, since a live stack answers one whichever way the port stands. A
+    /// COOKIE-ECHO that draws nothing was either dropped or handed to a listener
+    /// that discarded it in silence, and the probe cannot tell those apart.
+    pub const fn silence_means(self) -> PortState {
+        match self {
+            Self::Init => PortState::Filtered,
+            Self::CookieEcho => PortState::OpenFiltered,
+        }
+    }
+
+    /// Whether this technique can report a port [`PortState::Open`].
+    ///
+    /// [`Init`](Self::Init) alone, from the INIT-ACK a listener sends. A
+    /// COOKIE-ECHO scan's best answer is open-or-filtered, so anything that
+    /// wants open SCTP ports has to ask for the other one.
+    pub const fn finds_open_ports(self) -> bool {
+        matches!(self, Self::Init)
+    }
+
+    /// How a port nothing answered for is described in an audit line.
+    pub const fn silence_label(self) -> &'static str {
+        match self {
+            Self::Init => "filtered",
+            Self::CookieEcho => "open-filtered",
+        }
+    }
+}
+
+impl fmt::Display for SctpScanTechnique {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The error [`SctpScanTechnique::from_str`] returns, carrying the list of names
+/// that would have worked.
+///
+/// Built the way [`UnknownTechnique`] is, and separate from it so a message
+/// naming the alternatives names the ones for the right protocol.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "unknown SCTP scan technique '{input}', expected one of: {}",
+    Self::expected()
+)]
+pub struct UnknownSctpTechnique {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl UnknownSctpTechnique {
+    /// The accepted names, comma-separated, in the order they are documented.
+    fn expected() -> String {
+        SctpScanTechnique::ALL
+            .iter()
+            .map(|technique| technique.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl FromStr for SctpScanTechnique {
+    type Err = UnknownSctpTechnique;
+
+    /// Parses a technique name, ignoring case and surrounding whitespace.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::model::technique::SctpScanTechnique;
+    ///
+    /// assert_eq!("Cookie-Echo".parse(), Ok(SctpScanTechnique::CookieEcho));
+    /// assert!("cookie".parse::<SctpScanTechnique>().is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|technique| technique.name() == name)
+            .ok_or_else(|| UnknownSctpTechnique {
+                input: s.to_string(),
+            })
+    }
+}
+
 /// How a TCP port is probed.
 ///
 /// Every technique here needs raw sockets, and so root; the unprivileged connect
@@ -554,5 +750,79 @@ mod tests {
                 technique != TcpScanTechnique::Syn
             );
         }
+    }
+
+    // ── SCTP ─────────────────────────────────────────────────────────────────
+
+    /// The same round trip the TCP techniques hold to, so a name in a settings
+    /// file and a name in a report cannot drift apart.
+    #[test]
+    fn every_sctp_technique_parses_back_from_the_name_it_prints() {
+        for technique in SctpScanTechnique::ALL {
+            assert_eq!(technique.to_string().parse(), Ok(technique));
+        }
+    }
+
+    #[test]
+    fn an_unknown_sctp_name_is_rejected_with_the_ones_that_would_work() {
+        let error = "cookie".parse::<SctpScanTechnique>().expect_err("refused");
+        let message = error.to_string();
+        for technique in SctpScanTechnique::ALL {
+            assert!(
+                message.contains(technique.name()),
+                "the error should name {}",
+                technique.name()
+            );
+        }
+    }
+
+    /// An abort is a closed port whichever chunk drew it. An init-ack is an open
+    /// port to an init probe and nothing at all to a cookie-echo, which cannot
+    /// provoke one: reading it would report a listener on a coincidence.
+    #[test]
+    fn an_abort_closes_a_port_for_both_and_an_init_ack_only_for_one() {
+        assert_eq!(
+            SctpScanTechnique::Init.verdict(SctpReply::Abort),
+            Some(PortState::Closed)
+        );
+        assert_eq!(
+            SctpScanTechnique::CookieEcho.verdict(SctpReply::Abort),
+            Some(PortState::Closed)
+        );
+        assert_eq!(
+            SctpScanTechnique::Init.verdict(SctpReply::InitAck),
+            Some(PortState::Open)
+        );
+        assert_eq!(
+            SctpScanTechnique::CookieEcho.verdict(SctpReply::InitAck),
+            None
+        );
+    }
+
+    /// The trade the quieter chunk makes, and the reason it is not the default.
+    /// A listener answers an init and discards a cookie it cannot authenticate,
+    /// so only one of the two can name an open port and only one reads silence
+    /// as a filter.
+    #[test]
+    fn only_an_init_scan_names_an_open_sctp_port() {
+        assert!(SctpScanTechnique::Init.finds_open_ports());
+        assert!(!SctpScanTechnique::CookieEcho.finds_open_ports());
+
+        assert_eq!(SctpScanTechnique::Init.silence_means(), PortState::Filtered);
+        assert_eq!(
+            SctpScanTechnique::CookieEcho.silence_means(),
+            PortState::OpenFiltered
+        );
+    }
+
+    /// The audit line's word for silence is the state silence actually
+    /// produces, so a run's own summary cannot contradict its port table.
+    #[test]
+    fn the_silence_label_names_the_state_silence_produces() {
+        assert_eq!(SctpScanTechnique::Init.silence_label(), "filtered");
+        assert_eq!(
+            SctpScanTechnique::CookieEcho.silence_label(),
+            "open-filtered"
+        );
     }
 }

@@ -146,7 +146,7 @@ use crate::config::{ScanEffort, TimeoutScale};
 use crate::model::exclusion::Exclusions;
 use crate::model::ip::set::IpSet;
 use crate::model::port::PortSet;
-use crate::model::technique::TcpScanTechnique;
+use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::transport::probe::SendMode;
 
 /// The name a settings document is expected to have on disk.
@@ -364,6 +364,9 @@ pub struct Settings {
     /// Which segment a TCP port probe carries.
     #[serde(deserialize_with = "de_technique")]
     pub tcp_technique: Option<TcpScanTechnique>,
+    /// Which chunk an SCTP port probe carries.
+    #[serde(deserialize_with = "de_sctp_technique")]
+    pub sctp_technique: Option<SctpScanTechnique>,
     /// How hard the scan tries before accepting silence as an answer.
     #[serde(deserialize_with = "de_effort")]
     pub effort: Option<ScanEffort>,
@@ -437,6 +440,7 @@ impl Settings {
             host_timeout,
             scan_timeout,
             tcp_technique,
+            sctp_technique,
             effort,
             max_attempts,
             timeout_scale,
@@ -492,6 +496,9 @@ impl Settings {
         if let Some(value) = self.tcp_technique {
             config.tcp_technique = value;
         }
+        if let Some(value) = self.sctp_technique {
+            config.sctp_technique = value;
+        }
         if let Some(value) = self.effort {
             config.retry.effort = value;
         }
@@ -525,7 +532,7 @@ impl Settings {
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the
 /// struct, so that step is by hand.
-const KNOWN_KEYS: [&str; 13] = [
+const KNOWN_KEYS: [&str; 14] = [
     "exclude",
     "no_dns",
     "redact",
@@ -534,6 +541,7 @@ const KNOWN_KEYS: [&str; 13] = [
     "host_timeout",
     "scan_timeout",
     "tcp_technique",
+    "sctp_technique",
     "effort",
     "max_attempts",
     "timeout_scale",
@@ -855,6 +863,13 @@ fn de_send_mode<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SendMod
 fn de_technique<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<TcpScanTechnique>, D::Error> {
+    de_named(d)
+}
+
+/// [`de_send_mode`] for the SCTP technique.
+fn de_sctp_technique<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<SctpScanTechnique>, D::Error> {
     de_named(d)
 }
 

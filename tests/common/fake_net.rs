@@ -281,6 +281,13 @@ pub enum Loss {
 /// Policy::silent()
 /// Policy::open().loss_rate(0.3).duplicated()
 /// ```
+/// The offset of the first chunk, past SCTP's twelve-byte common header.
+const SCTP_COMMON_HDR: usize = 12;
+
+/// The COOKIE-ECHO chunk type (RFC 4960 §3.2), written out here rather than read
+/// from the crate, for the reason the rest of this file reads a probe by offset.
+const SCTP_COOKIE_ECHO: u8 = 10;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Policy {
     reply: Reply,
@@ -631,6 +638,9 @@ struct ParsedProbe {
     ack: u32,
     /// The TCP flags, which decide both how a host answers the probe and how
     /// its answer has to be shaped. Zero for UDP.
+    ///
+    /// For SCTP this carries the first chunk's type instead, which plays the
+    /// same part: an INIT and a COOKIE-ECHO are answered by opposite ports.
     flags: u8,
     /// The probe as sent, kept whole because an ICMP error has to quote it.
     bytes: Vec<u8>,
@@ -671,13 +681,22 @@ impl FakeLink {
             // first field of an INIT chunk's value (§3.3.2).
             Layer4::Sctp => {
                 let ports: &[u8; 4] = segment.first_chunk()?;
-                let tag: &[u8; 4] = segment.get(16..20)?.try_into().ok()?;
+                let chunk_type = *segment.get(SCTP_COMMON_HDR)?;
+                // Where the nonce sits differs by chunk, and a conformant peer
+                // sends the same field back either way. An INIT keeps it in the
+                // Initiate Tag, the first field of the chunk's value; a
+                // COOKIE-ECHO keeps it in the common header, which §8.4 obliges
+                // an out-of-the-blue abort to reflect.
+                let tag: &[u8; 4] = match chunk_type {
+                    SCTP_COOKIE_ECHO => segment.get(4..8)?.try_into().ok()?,
+                    _ => segment.get(16..20)?.try_into().ok()?,
+                };
                 Some(ParsedProbe {
                     port: u16::from_be_bytes([ports[2], ports[3]]),
                     reply_port: u16::from_be_bytes([ports[0], ports[1]]),
                     seq: u32::from_be_bytes(*tag),
                     ack: 0,
-                    flags: 0,
+                    flags: chunk_type,
                     bytes,
                 })
             }
@@ -794,6 +813,10 @@ impl FakeLink {
                 self.icmp_reply(probe, scanner, target, reason)
             }
 
+            // A listener answers an init and says nothing at all to a cookie it
+            // cannot authenticate (RFC 4960 §5.1.5), which is the whole of what
+            // a cookie-echo scan trades away.
+            (Layer4::Sctp, Reply::Open) if probe.flags == SCTP_COOKIE_ECHO => None,
             (Layer4::Sctp, Reply::Open) => self.sctp_answer(probe, target, true),
             (Layer4::Sctp, Reply::Closed) => self.sctp_answer(probe, target, false),
             (Layer4::Sctp, Reply::Unreachable(reason)) => {

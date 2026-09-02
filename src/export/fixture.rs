@@ -251,6 +251,10 @@ pub(crate) fn report() -> ScanReport {
         // rather than a pair of nulls no writer is held to.
         host_timeout: Some(Duration::from_secs(300)),
         scan_timeout: Some(Duration::from_secs(3600)),
+        // The technique nobody would reach for first, so the document carries a
+        // value the writer had to look up rather than the one it would emit for
+        // a default it never read.
+        sctp_technique: crate::model::technique::SctpScanTechnique::CookieEcho,
         ..Default::default()
     };
 

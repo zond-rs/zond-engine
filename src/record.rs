@@ -1486,6 +1486,12 @@ pub struct SettingsRecord {
     pub send_mode: String,
     /// Which segment each TCP port probe carried.
     pub tcp_technique: String,
+    /// Which chunk each SCTP port probe carried.
+    ///
+    /// Defaulted on the way in, so a record written before the technique was a
+    /// choice reads back as the INIT scan it was.
+    #[serde(default)]
+    pub sctp_technique: String,
     /// The retransmission effort in force.
     pub retry_effort: String,
     /// A caller's override of the attempt budget.
@@ -1595,6 +1601,7 @@ impl From<&ScanSettings> for SettingsRecord {
         Self {
             send_mode: settings.send_mode.name().to_owned(),
             tcp_technique: settings.tcp_technique.name().to_owned(),
+            sctp_technique: settings.sctp_technique.name().to_owned(),
             retry_effort: settings.retry.effort.name().to_owned(),
             retry_max_attempts: settings.retry.max_attempts.map(NonZeroU8::get),
             retry_timeout_scale: settings.retry.timeout_scale.map(TimeoutScale::get),
@@ -1632,6 +1639,7 @@ impl From<&SettingsRecord> for ScanSettings {
         Self {
             send_mode: record.send_mode.parse().unwrap_or_default(),
             tcp_technique: record.tcp_technique.parse().unwrap_or_default(),
+            sctp_technique: record.sctp_technique.parse().unwrap_or_default(),
             retry: RetryConfig {
                 effort: record.retry_effort.parse().unwrap_or_default(),
                 // Read downward, as every other field of this record is: a

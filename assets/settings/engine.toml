@@ -105,6 +105,21 @@
 #
 # tcp_technique = "syn"
 
+# Which chunk an SCTP port probe carries, and so what its answers mean.
+#
+#   init         the only technique that names an open SCTP port. A listener
+#                accepts with an init-ack and a closed port refuses with an
+#                abort, so silence is a filter.
+#   cookie-echo  a cookie no endpoint minted. Only a closed port answers, with
+#                an abort; a listener fails to authenticate it and says nothing,
+#                so open and filtered are indistinguishable here.
+#
+# Both need raw sockets. Reach for cookie-echo when an init scan came back
+# entirely filtered and the question is whether the filter is aimed at SCTP or
+# only at the chunk a scan is expected to send.
+#
+# sctp_technique = "init"
+
 # How raw probes are placed on the wire.
 #
 #   auto        a raw Layer-4 socket on Unix, Layer-2 frames on Windows.

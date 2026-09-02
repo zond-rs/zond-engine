@@ -100,7 +100,7 @@ use crate::import::{ImportError, ImportOrigin};
 use crate::model::host::Host;
 use crate::model::mac::MacAddr;
 use crate::model::port::PortSet;
-use crate::model::technique::TcpScanTechnique;
+use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::record::wire;
 use crate::record::{
     CaptureRecord, CertificateRecord, DetectionIdRecord, DiscoveryRecord, EvasionSettingsRecord,
@@ -408,6 +408,20 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
         f.write_str("a zond scan report")
     }
 
+    /// **A repeated key assigns again: last wins.** A document carrying one host
+    /// and then a second `"hosts":[]` reads back with none. That is serde's own
+    /// behaviour for the derived DTOs below, so this hand-written visitor matches
+    /// it rather than being the one place in the document where a duplicate means
+    /// something else. JSON's specification is famously undecided about
+    /// duplicates and last-wins is at least a rule that is the same every time.
+    ///
+    /// Worth knowing that this crate's other reader of a document somebody else
+    /// wrote answers the opposite — `xml`'s `Element::value` takes the *first* of
+    /// a repeated attribute. Neither is wrong; they are not unified because
+    /// unifying them means picking a winner for two formats whose own
+    /// specifications disagree, and nothing downstream of either can tell the
+    /// difference: both are deterministic, and the values are compared against
+    /// fixed names rather than merged.
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
         let mut schema_version = None;
         let mut engine = None;
@@ -764,6 +778,7 @@ impl RangeDto {
 struct SettingsDto {
     send_mode: String,
     tcp_technique: String,
+    sctp_technique: String,
     retry: RetryDto,
     max_probe_rate: Option<u32>,
     host_timeout_us: Option<u64>,
@@ -836,6 +851,16 @@ impl SettingsDto {
             "a TCP scan technique",
             &self.tcp_technique,
         )?;
+        // Absent on a document written before the technique was a choice, and
+        // on every document from a scanner that has no SCTP scan. Empty reads as
+        // unstated rather than as a name nobody wrote.
+        if !self.sctp_technique.is_empty() {
+            known(
+                self.sctp_technique.parse::<SctpScanTechnique>().ok(),
+                "an SCTP scan technique",
+                &self.sctp_technique,
+            )?;
+        }
         known(
             self.retry.effort.parse::<ScanEffort>().ok(),
             "a scan effort",
@@ -874,6 +899,7 @@ impl SettingsDto {
         Ok(SettingsRecord {
             send_mode: self.send_mode,
             tcp_technique: self.tcp_technique,
+            sctp_technique: self.sctp_technique,
             retry_effort: self.retry.effort,
             retry_max_attempts: self.retry.max_attempts,
             retry_timeout_scale: self.retry.timeout_scale,

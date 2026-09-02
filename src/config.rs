@@ -72,7 +72,7 @@ use std::time::Duration;
 
 use crate::evasion::EvasionProfile;
 use crate::model::exclusion::Exclusions;
-use crate::model::technique::TcpScanTechnique;
+use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::transport::probe::SendMode;
 
 /// Reads a level written as its name or as its number.
@@ -796,6 +796,11 @@ pub struct ProbeTuning {
     /// scanner: host discovery asks whether anything is there, which every one
     /// of these techniques answers equally badly, so it stays on SYN.
     pub tcp_technique: TcpScanTechnique,
+    /// Which chunk an SCTP port probe carries. Read only by the raw SCTP port
+    /// scanner, and for the reason above: a sweep sends an INIT whichever
+    /// technique a port scan was asked for, since a COOKIE-ECHO draws nothing
+    /// from the open port a sweep is hoping to hear from.
+    pub sctp_technique: SctpScanTechnique,
 
     /// How far a strategy may go to identify the operating system behind a host.
     ///
@@ -1158,6 +1163,20 @@ pub struct ZondConfig {
     /// is unaffected.
     pub tcp_technique: TcpScanTechnique,
 
+    /// Which chunk an SCTP port probe carries, and so what its answers mean.
+    ///
+    /// Defaults to [`SctpScanTechnique::Init`], the only technique that names an
+    /// open SCTP port. [`CookieEcho`](SctpScanTechnique::CookieEcho) trades that
+    /// for passage: it draws an answer only from a port with nothing behind it,
+    /// so its best verdict is open-or-filtered, and it crosses filters written
+    /// against the INIT chunk a scan is expected to send.
+    ///
+    /// Both need raw sockets, and neither has an unprivileged form. Affects the
+    /// port-scan phase only: a discovery sweep asks whether an address is there
+    /// and sends an INIT whatever this says, since a COOKIE-ECHO draws nothing
+    /// from a host whose port is open.
+    pub sctp_technique: SctpScanTechnique,
+
     /// How hard the scan tries before accepting silence as an answer.
     ///
     /// Every probing path has its own schedule, tuned to what its protocol
@@ -1219,6 +1238,7 @@ impl ZondConfig {
             retry,
             max_probe_rate,
             tcp_technique,
+            sctp_technique,
             os_detection,
             service_detection,
             evasion,
@@ -1248,6 +1268,7 @@ impl ZondConfig {
             retry: *retry,
             max_probe_rate: *max_probe_rate,
             tcp_technique: *tcp_technique,
+            sctp_technique: *sctp_technique,
             os_detection: *os_detection,
             service_detection: *service_detection,
             evasion: evasion.clone(),

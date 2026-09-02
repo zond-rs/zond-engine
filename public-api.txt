@@ -240,6 +240,7 @@ pub zond_engine::config::ProbeTuning::evasion: zond_engine::evasion::EvasionProf
 pub zond_engine::config::ProbeTuning::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ProbeTuning::os_detection: zond_engine::config::OsDetection
 pub zond_engine::config::ProbeTuning::retry: zond_engine::config::RetryConfig
+pub zond_engine::config::ProbeTuning::sctp_technique: zond_engine::model::technique::SctpScanTechnique
 pub zond_engine::config::ProbeTuning::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::config::ProbeTuning::service_detection: zond_engine::config::ServiceDetection
 pub zond_engine::config::ProbeTuning::tcp_technique: zond_engine::model::technique::TcpScanTechnique
@@ -375,6 +376,7 @@ pub zond_engine::config::ZondConfig::os_detection: zond_engine::config::OsDetect
 pub zond_engine::config::ZondConfig::redact: bool
 pub zond_engine::config::ZondConfig::retry: zond_engine::config::RetryConfig
 pub zond_engine::config::ZondConfig::scan_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::config::ZondConfig::sctp_technique: zond_engine::model::technique::SctpScanTechnique
 pub zond_engine::config::ZondConfig::segment_sweep: bool
 pub zond_engine::config::ZondConfig::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::config::ZondConfig::service_detection: zond_engine::config::ServiceDetection
@@ -3440,6 +3442,7 @@ pub zond_engine::export::schema::SettingsDto::os_detection: &'static str
 pub zond_engine::export::schema::SettingsDto::redact: bool
 pub zond_engine::export::schema::SettingsDto::retry: zond_engine::export::schema::RetryDto
 pub zond_engine::export::schema::SettingsDto::scan_timeout_us: core::option::Option<u64>
+pub zond_engine::export::schema::SettingsDto::sctp_technique: &'static str
 pub zond_engine::export::schema::SettingsDto::send_mode: &'static str
 pub zond_engine::export::schema::SettingsDto::service_detection: &'static str
 pub zond_engine::export::schema::SettingsDto::tcp_technique: &'static str
@@ -5338,6 +5341,7 @@ pub zond_engine::import::settings::Settings::max_probe_rate: core::option::Optio
 pub zond_engine::import::settings::Settings::no_dns: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::scan_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::import::settings::Settings::sctp_technique: core::option::Option<zond_engine::model::technique::SctpScanTechnique>
 pub zond_engine::import::settings::Settings::send_mode: core::option::Option<zond_engine::transport::probe::SendMode>
 pub zond_engine::import::settings::Settings::tcp_technique: core::option::Option<zond_engine::model::technique::TcpScanTechnique>
 pub zond_engine::import::settings::Settings::timeout_scale: core::option::Option<zond_engine::config::TimeoutScale>
@@ -5773,6 +5777,7 @@ pub zond_engine::import::Settings::max_probe_rate: core::option::Option<core::nu
 pub zond_engine::import::Settings::no_dns: core::option::Option<bool>
 pub zond_engine::import::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::Settings::scan_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::import::Settings::sctp_technique: core::option::Option<zond_engine::model::technique::SctpScanTechnique>
 pub zond_engine::import::Settings::send_mode: core::option::Option<zond_engine::transport::probe::SendMode>
 pub zond_engine::import::Settings::tcp_technique: core::option::Option<zond_engine::model::technique::TcpScanTechnique>
 pub zond_engine::import::Settings::timeout_scale: core::option::Option<zond_engine::config::TimeoutScale>
@@ -9602,6 +9607,65 @@ impl core::marker::UnsafeUnpin for zond_engine::model::target::TargetSet
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::target::TargetSet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::target::TargetSet
 pub mod zond_engine::model::technique
+#[non_exhaustive] pub enum zond_engine::model::technique::SctpReply
+pub zond_engine::model::technique::SctpReply::Abort
+pub zond_engine::model::technique::SctpReply::InitAck
+impl core::clone::Clone for zond_engine::model::technique::SctpReply
+pub fn zond_engine::model::technique::SctpReply::clone(&self) -> zond_engine::model::technique::SctpReply
+impl core::cmp::Eq for zond_engine::model::technique::SctpReply
+impl core::cmp::PartialEq for zond_engine::model::technique::SctpReply
+pub fn zond_engine::model::technique::SctpReply::eq(&self, &zond_engine::model::technique::SctpReply) -> bool
+impl core::fmt::Debug for zond_engine::model::technique::SctpReply
+pub fn zond_engine::model::technique::SctpReply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::model::technique::SctpReply
+impl core::marker::StructuralPartialEq for zond_engine::model::technique::SctpReply
+impl core::marker::Freeze for zond_engine::model::technique::SctpReply
+impl core::marker::Send for zond_engine::model::technique::SctpReply
+impl core::marker::Sync for zond_engine::model::technique::SctpReply
+impl core::marker::Unpin for zond_engine::model::technique::SctpReply
+impl core::marker::UnsafeUnpin for zond_engine::model::technique::SctpReply
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::technique::SctpReply
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::SctpReply
+#[non_exhaustive] pub enum zond_engine::model::technique::SctpScanTechnique
+pub zond_engine::model::technique::SctpScanTechnique::CookieEcho
+pub zond_engine::model::technique::SctpScanTechnique::Init
+impl zond_engine::model::technique::SctpScanTechnique
+pub const zond_engine::model::technique::SctpScanTechnique::ALL: [Self; 2]
+pub const fn zond_engine::model::technique::SctpScanTechnique::finds_open_ports(self) -> bool
+pub const fn zond_engine::model::technique::SctpScanTechnique::name(self) -> &'static str
+pub const fn zond_engine::model::technique::SctpScanTechnique::silence_label(self) -> &'static str
+pub const fn zond_engine::model::technique::SctpScanTechnique::silence_means(self) -> zond_engine::model::port::PortState
+pub const fn zond_engine::model::technique::SctpScanTechnique::summary(self) -> &'static str
+pub const fn zond_engine::model::technique::SctpScanTechnique::verdict(self, zond_engine::model::technique::SctpReply) -> core::option::Option<zond_engine::model::port::PortState>
+impl core::clone::Clone for zond_engine::model::technique::SctpScanTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::clone(&self) -> zond_engine::model::technique::SctpScanTechnique
+impl core::cmp::Eq for zond_engine::model::technique::SctpScanTechnique
+impl core::cmp::Ord for zond_engine::model::technique::SctpScanTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::cmp(&self, &zond_engine::model::technique::SctpScanTechnique) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::technique::SctpScanTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::eq(&self, &zond_engine::model::technique::SctpScanTechnique) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::technique::SctpScanTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::partial_cmp(&self, &zond_engine::model::technique::SctpScanTechnique) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for zond_engine::model::technique::SctpScanTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::default() -> zond_engine::model::technique::SctpScanTechnique
+impl core::fmt::Debug for zond_engine::model::technique::SctpScanTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::technique::SctpScanTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::technique::SctpScanTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::technique::SctpScanTechnique
+impl core::marker::StructuralPartialEq for zond_engine::model::technique::SctpScanTechnique
+impl core::str::traits::FromStr for zond_engine::model::technique::SctpScanTechnique
+pub type zond_engine::model::technique::SctpScanTechnique::Err = zond_engine::model::technique::UnknownSctpTechnique
+pub fn zond_engine::model::technique::SctpScanTechnique::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl core::marker::Freeze for zond_engine::model::technique::SctpScanTechnique
+impl core::marker::Send for zond_engine::model::technique::SctpScanTechnique
+impl core::marker::Sync for zond_engine::model::technique::SctpScanTechnique
+impl core::marker::Unpin for zond_engine::model::technique::SctpScanTechnique
+impl core::marker::UnsafeUnpin for zond_engine::model::technique::SctpScanTechnique
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::technique::SctpScanTechnique
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::SctpScanTechnique
 #[non_exhaustive] pub enum zond_engine::model::technique::TcpReply
 pub zond_engine::model::technique::TcpReply::ChallengeAck
 pub zond_engine::model::technique::TcpReply::Rst
@@ -9669,6 +9733,26 @@ impl core::marker::Unpin for zond_engine::model::technique::TcpScanTechnique
 impl core::marker::UnsafeUnpin for zond_engine::model::technique::TcpScanTechnique
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::technique::TcpScanTechnique
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::TcpScanTechnique
+pub struct zond_engine::model::technique::UnknownSctpTechnique
+pub zond_engine::model::technique::UnknownSctpTechnique::input: alloc::string::String
+impl core::clone::Clone for zond_engine::model::technique::UnknownSctpTechnique
+pub fn zond_engine::model::technique::UnknownSctpTechnique::clone(&self) -> zond_engine::model::technique::UnknownSctpTechnique
+impl core::cmp::Eq for zond_engine::model::technique::UnknownSctpTechnique
+impl core::cmp::PartialEq for zond_engine::model::technique::UnknownSctpTechnique
+pub fn zond_engine::model::technique::UnknownSctpTechnique::eq(&self, &zond_engine::model::technique::UnknownSctpTechnique) -> bool
+impl core::error::Error for zond_engine::model::technique::UnknownSctpTechnique
+impl core::fmt::Debug for zond_engine::model::technique::UnknownSctpTechnique
+pub fn zond_engine::model::technique::UnknownSctpTechnique::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::technique::UnknownSctpTechnique
+pub fn zond_engine::model::technique::UnknownSctpTechnique::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::technique::UnknownSctpTechnique
+impl core::marker::Freeze for zond_engine::model::technique::UnknownSctpTechnique
+impl core::marker::Send for zond_engine::model::technique::UnknownSctpTechnique
+impl core::marker::Sync for zond_engine::model::technique::UnknownSctpTechnique
+impl core::marker::Unpin for zond_engine::model::technique::UnknownSctpTechnique
+impl core::marker::UnsafeUnpin for zond_engine::model::technique::UnknownSctpTechnique
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::technique::UnknownSctpTechnique
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::UnknownSctpTechnique
 pub struct zond_engine::model::technique::UnknownTechnique
 pub zond_engine::model::technique::UnknownTechnique::input: alloc::string::String
 impl core::clone::Clone for zond_engine::model::technique::UnknownTechnique
@@ -10513,25 +10597,6 @@ pub const zond_engine::protocols::sctp::chunk_type::ABORT: u8
 pub const zond_engine::protocols::sctp::chunk_type::COOKIE_ECHO: u8
 pub const zond_engine::protocols::sctp::chunk_type::INIT: u8
 pub const zond_engine::protocols::sctp::chunk_type::INIT_ACK: u8
-#[non_exhaustive] pub enum zond_engine::protocols::sctp::SctpReply
-pub zond_engine::protocols::sctp::SctpReply::Abort
-pub zond_engine::protocols::sctp::SctpReply::InitAck
-impl core::clone::Clone for zond_engine::protocols::sctp::SctpReply
-pub fn zond_engine::protocols::sctp::SctpReply::clone(&self) -> zond_engine::protocols::sctp::SctpReply
-impl core::cmp::Eq for zond_engine::protocols::sctp::SctpReply
-impl core::cmp::PartialEq for zond_engine::protocols::sctp::SctpReply
-pub fn zond_engine::protocols::sctp::SctpReply::eq(&self, &zond_engine::protocols::sctp::SctpReply) -> bool
-impl core::fmt::Debug for zond_engine::protocols::sctp::SctpReply
-pub fn zond_engine::protocols::sctp::SctpReply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for zond_engine::protocols::sctp::SctpReply
-impl core::marker::StructuralPartialEq for zond_engine::protocols::sctp::SctpReply
-impl core::marker::Freeze for zond_engine::protocols::sctp::SctpReply
-impl core::marker::Send for zond_engine::protocols::sctp::SctpReply
-impl core::marker::Sync for zond_engine::protocols::sctp::SctpReply
-impl core::marker::Unpin for zond_engine::protocols::sctp::SctpReply
-impl core::marker::UnsafeUnpin for zond_engine::protocols::sctp::SctpReply
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::sctp::SctpReply
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::sctp::SctpReply
 pub struct zond_engine::protocols::sctp::Chunk<'a>
 pub zond_engine::protocols::sctp::Chunk::chunk_type: u8
 pub zond_engine::protocols::sctp::Chunk::flags: u8
@@ -10608,9 +10673,10 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::sct
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::sctp::Segment<'a>
 pub const zond_engine::protocols::sctp::IP_PROTOCOL_NUMBER: u8
 pub const zond_engine::protocols::sctp::MAX_CHUNK_VALUE: usize
+pub fn zond_engine::protocols::sctp::build_cookie_echo_probe(u16, u16, u32) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::sctp::build_init_probe(u16, u16, u32) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::sctp::chunk(u8, u8, &[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::sctp::classify_probe_response(&zond_engine::protocols::sctp::Segment<'_>) -> core::option::Option<zond_engine::protocols::sctp::SctpReply>
+pub fn zond_engine::protocols::sctp::classify_probe_response(&zond_engine::protocols::sctp::Segment<'_>) -> core::option::Option<zond_engine::model::technique::SctpReply>
 pub fn zond_engine::protocols::sctp::echoed_nonce(&zond_engine::protocols::sctp::Segment<'_>) -> u32
 pub fn zond_engine::protocols::sctp::parse(&[u8]) -> zond_engine::protocols::error::Result<zond_engine::protocols::sctp::Segment<'_>>
 pub fn zond_engine::protocols::sctp::quoted_init_tag(&[u8]) -> core::option::Option<u32>
@@ -11523,6 +11589,7 @@ pub zond_engine::record::SettingsRecord::retry_effort: alloc::string::String
 pub zond_engine::record::SettingsRecord::retry_max_attempts: core::option::Option<u8>
 pub zond_engine::record::SettingsRecord::retry_timeout_scale: core::option::Option<f64>
 pub zond_engine::record::SettingsRecord::scan_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::record::SettingsRecord::sctp_technique: alloc::string::String
 pub zond_engine::record::SettingsRecord::send_mode: alloc::string::String
 pub zond_engine::record::SettingsRecord::service_detection: alloc::string::String
 pub zond_engine::record::SettingsRecord::tcp_technique: alloc::string::String
@@ -12150,6 +12217,7 @@ pub zond_engine::report::ScanSettings::os_detection: zond_engine::config::OsDete
 pub zond_engine::report::ScanSettings::redact: bool
 pub zond_engine::report::ScanSettings::retry: zond_engine::config::RetryConfig
 pub zond_engine::report::ScanSettings::scan_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::report::ScanSettings::sctp_technique: zond_engine::model::technique::SctpScanTechnique
 pub zond_engine::report::ScanSettings::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::report::ScanSettings::service_detection: zond_engine::config::ServiceDetection
 pub zond_engine::report::ScanSettings::tcp_technique: zond_engine::model::technique::TcpScanTechnique
@@ -13502,6 +13570,7 @@ pub mod zond_engine::scanner::strategy::ports::sctp
 pub struct zond_engine::scanner::strategy::ports::sctp::SctpPortScanner
 impl zond_engine::scanner::strategy::ports::sctp::SctpPortScanner
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::new(zond_engine::system::interface::SourceResolver, zond_engine::scanner::session::ScanContext, usize, zond_engine::config::ProbeTuning) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::probing_with(self, zond_engine::model::technique::SctpScanTechnique) -> Self
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::with_transport(zond_engine::system::interface::SourceResolver, zond_engine::scanner::session::ScanContext, zond_engine::transport::probe::ProbeTransport, usize, u16) -> Self
 impl zond_engine::scanner::strategy::PortScanner for zond_engine::scanner::strategy::ports::sctp::SctpPortScanner
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::detect_services<'life0, 'life1, 'async_trait>(&'life0 mut self, &'life1 zond_engine::scanner::session::ScanContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -13708,6 +13777,7 @@ impl<T> !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy
 pub struct zond_engine::scanner::strategy::ports::SctpPortScanner
 impl zond_engine::scanner::strategy::ports::sctp::SctpPortScanner
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::new(zond_engine::system::interface::SourceResolver, zond_engine::scanner::session::ScanContext, usize, zond_engine::config::ProbeTuning) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::probing_with(self, zond_engine::model::technique::SctpScanTechnique) -> Self
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::with_transport(zond_engine::system::interface::SourceResolver, zond_engine::scanner::session::ScanContext, zond_engine::transport::probe::ProbeTransport, usize, u16) -> Self
 impl zond_engine::scanner::strategy::PortScanner for zond_engine::scanner::strategy::ports::sctp::SctpPortScanner
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::detect_services<'life0, 'life1, 'async_trait>(&'life0 mut self, &'life1 zond_engine::scanner::session::ScanContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -14794,8 +14864,8 @@ pub mod zond_engine::transport::probe
 #[non_exhaustive] pub enum zond_engine::transport::probe::ProbeKind
 pub zond_engine::transport::probe::ProbeKind::IcmpEcho
 pub zond_engine::transport::probe::ProbeKind::IcmpEcho::identifier: u16
-pub zond_engine::transport::probe::ProbeKind::SctpInit
-pub zond_engine::transport::probe::ProbeKind::SctpInit::reply_port: u16
+pub zond_engine::transport::probe::ProbeKind::Sctp
+pub zond_engine::transport::probe::ProbeKind::Sctp::reply_port: u16
 pub zond_engine::transport::probe::ProbeKind::TcpProbe
 pub zond_engine::transport::probe::ProbeKind::TcpProbe::icmp_errors: bool
 pub zond_engine::transport::probe::ProbeKind::TcpProbe::reply_port: u16
@@ -16034,6 +16104,7 @@ pub zond_engine::ZondConfig::os_detection: zond_engine::config::OsDetection
 pub zond_engine::ZondConfig::redact: bool
 pub zond_engine::ZondConfig::retry: zond_engine::config::RetryConfig
 pub zond_engine::ZondConfig::scan_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::ZondConfig::sctp_technique: zond_engine::model::technique::SctpScanTechnique
 pub zond_engine::ZondConfig::segment_sweep: bool
 pub zond_engine::ZondConfig::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::ZondConfig::service_detection: zond_engine::config::ServiceDetection

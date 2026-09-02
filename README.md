@@ -182,20 +182,33 @@ of them, a mobile core first, short enough that the order is a claim all the way
 down. It is the one port list that is never a default, since nothing probes SCTP
 unless a scan asked for it.
 
-The probe is an INIT chunk, and both answers it can draw are decisive: an
-INIT-ACK is an endpoint accepting the association, so the port is open, and an
+The default probe is an INIT chunk, and both answers it can draw are decisive:
+an INIT-ACK is an endpoint accepting the association, so the port is open, and an
 ABORT is a reachable stack refusing it, so the port is closed. Neither completes
-an association, and nothing sends the COOKIE-ECHO that would, so no port is left
-half-open. Silence is `filtered` rather than `open|filtered`, because a live
-endpoint answers either way.
+an association, so no port is left half-open. Silence is `filtered` rather than
+`open|filtered`, because a live endpoint answers either way.
 
-Discovery follows the ports. A scan that names an SCTP port also sweeps for
-hosts with an INIT, not only with a SYN, because the port phase probes what
-discovery found: a host behind a filter that passes SCTP and drops everything
+The other technique is the COOKIE-ECHO, set with `sctp_technique`. It carries a
+cookie no endpoint minted, and RFC 4960 sends that down two paths: a listener
+authenticates it, fails, and discards the packet without a word, while a port
+with nothing behind it answers with an ABORT. So an ABORT is still a closed port
+and everything else is `open|filtered`, with no way to tell an open port from a
+filtered one. What it buys is passage. A filter written against SCTP scanning
+blocks the INIT, because that is the chunk a scan is expected to send; rules
+written for the first often say nothing about the second. Reach for it when an
+INIT scan came back entirely filtered and the question is whether the filter is
+aimed at SCTP or only at the chunk everybody sends.
+
+Discovery follows the ports, and always with an INIT whichever technique the
+port scan was asked for, since a COOKIE-ECHO draws nothing from the open port a
+sweep is hoping to hear from. A scan that names an SCTP port sweeps for hosts
+with an INIT as well as with a SYN, because the port phase probes what discovery
+found: a host behind a filter that passes SCTP and drops everything
 else would otherwise be reported down with its ports never looked at. The sweep
 asks on the likeliest of the ports you named.
 
-Two things worth knowing. It needs raw sockets and has no unprivileged form, so
+Two things worth knowing. Neither technique has an unprivileged form and both
+need raw sockets, so
 an unprivileged scan that named SCTP ports is told they went unprobed rather than
 being handed a different question's answer. And a host with no SCTP stack at all
 answers ICMP protocol unreachable, so a range that comes back entirely filtered

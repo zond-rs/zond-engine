@@ -8,8 +8,12 @@
 
 //! # SCTP Port Probing
 //!
-//! Implements the privileged SCTP half of [`crate::scanner::scan`]. One INIT
-//! chunk per `(address, port)` pair, classified by the chunk that answers it.
+//! Implements the privileged SCTP half of [`crate::scanner::scan`]. One chunk
+//! per `(address, port)` pair, classified by the chunk that answers it. Which
+//! chunk goes out is
+//! [`SctpScanTechnique`]'s to say,
+//! and so is what an answer proves; this file is what puts one on the wire and
+//! what reads the packet that comes back.
 //!
 //! ## Both verdicts arrive, or something took the probe
 //!
@@ -18,8 +22,14 @@
 //! behind it refuses outright with an ABORT (RFC 4960 §5.1, §8.4). That makes
 //! this the SYN scan's shape rather than the UDP scan's: a live stack always
 //! says something, so silence is a filter and not an open port keeping quiet.
-//! Neither answer completes an association, and nothing here sends the
-//! COOKIE-ECHO that would, so no port is ever left half-open on the target.
+//! Neither answer completes an association, so no port is ever left half-open on
+//! the target.
+//!
+//! A COOKIE-ECHO scan is the other shape. Only the closed port answers, with an
+//! ABORT; the listener authenticates a cookie nobody minted, fails, and says
+//! nothing. Silence there is open-or-filtered and stays that way however long
+//! the scan waits, which is the price of a chunk that crosses filters written
+//! against the INIT.
 //!
 //! An ICMP unreachable is read as a filter, and one of its codes is worth
 //! knowing about: a host with no SCTP stack at all answers protocol
@@ -28,22 +38,24 @@
 //!
 //! ## Tying a reply to its probe
 //!
-//! Every probe carries a fresh Initiate Tag, which RFC 4960 §3.3.2 obliges the
-//! peer to echo in the verification tag of whatever it sends back. That names
-//! the attempt, so a retried probe still yields a usable round trip, and it is
-//! the SCTP equivalent of the nonce a TCP probe carries.
+//! Every probe carries a fresh 32-bit nonce that a conformant answer sends back
+//! in its verification tag, so a retried probe still yields a usable round trip.
+//! Which field the probe puts it in differs between the two chunks, and
+//! the [`sctp`] protocol module has the reasoning; what reaches here is the
+//! same tag either way.
 //!
-//! An ICMP error is weaker evidence of the attempt and strong enough evidence
-//! of the probe. The eight bytes RFC 792 guarantees reach the two ports and the
-//! common header's own verification tag, which for an INIT is zero, so the
-//! probe is named by its ports and resolved without a round trip being claimed.
+//! An ICMP error is where the two part company. The eight bytes RFC 792
+//! guarantees reach the two ports and the common header's verification tag,
+//! which is a COOKIE-ECHO's nonce and is zero for an INIT. So a COOKIE-ECHO
+//! probe is resolved by the exact attempt an error quotes, and an INIT probe is
+//! named by its ports and resolved without a round trip being claimed.
 //!
 //! ## What this scan does not do
 //!
 //! There is no service pass behind it: identifying what is behind an SCTP port
 //! needs an association, and nothing in this engine holds one. There is no
-//! unprivileged form either, so a host that cannot open the raw socket has its
-//! SCTP ports refused rather than answered a different way. The segment shaping
+//! unprivileged form of either technique, so a host that cannot open the raw
+//! socket has its SCTP ports refused rather than answered a different way. The segment shaping
 //! an [`EvasionProfile`](crate::evasion::EvasionProfile) applies is a TCP and
 //! UDP measure and is not applied here: an SCTP packet is covered by a CRC32c
 //! rather than a checksum a scanner can perturb meaningfully, and padding a
@@ -65,7 +77,8 @@ use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::PlannedTarget;
-use crate::protocols::sctp::{self, SctpReply};
+use crate::model::technique::{SctpReply, SctpScanTechnique};
+use crate::protocols::sctp;
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{PortScanner, StrategyError};
@@ -87,12 +100,14 @@ pub struct SctpToken {
     tag: u32,
 }
 
-/// Probes specific `(address, port)` pairs with raw SCTP INIT chunks.
+/// Probes specific `(address, port)` pairs with raw SCTP chunks.
 pub struct SctpPortScanner {
     /// Everything a raw port scan carries regardless of protocol. What stays in
-    /// this file is what an INIT probe is and what the chunk answering it
+    /// this file is what an SCTP probe is and what the chunk answering it
     /// proves.
     core: RawProbeScan<SctpToken>,
+    /// Which chunk this scan sends, and so what an answer to it means.
+    technique: SctpScanTechnique,
 }
 
 impl SctpPortScanner {
@@ -112,7 +127,7 @@ impl SctpPortScanner {
             .evasion
             .source_port_or(rand::random_range(50_000..u16::MAX));
         let transport = ProbeTransport::open_with(
-            ProbeKind::SctpInit {
+            ProbeKind::Sctp {
                 reply_port: src_port,
             },
             tuning.evasion.effective_send_mode(tuning.send_mode),
@@ -120,6 +135,7 @@ impl SctpPortScanner {
 
         Ok(Self {
             core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
+            technique: tuning.sctp_technique,
         })
     }
 
@@ -138,7 +154,19 @@ impl SctpPortScanner {
         let tuning = ProbeTuning::default();
         Self {
             core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
+            technique: tuning.sctp_technique,
         }
+    }
+
+    /// The same, sending `technique`'s chunk rather than the default INIT.
+    ///
+    /// The seam a test drives a COOKIE-ECHO scan through, and the one a caller
+    /// assembling their own scan reaches for when they are building the
+    /// transport themselves.
+    #[must_use]
+    pub fn probing_with(mut self, technique: SctpScanTechnique) -> Self {
+        self.technique = technique;
+        self
     }
 
     /// The core an SCTP port scan runs on.
@@ -198,9 +226,13 @@ impl SctpPortScanner {
             return;
         };
 
-        let state = match reply {
-            SctpReply::InitAck => PortState::Open,
-            SctpReply::Abort => PortState::Closed,
+        // A chunk the technique has no verdict for did not answer this probe.
+        // Nothing a COOKIE-ECHO sends can provoke an INIT-ACK, so one arriving
+        // there is another association's, and resolving a port on it would
+        // report a listener on the strength of a coincidence.
+        let Some(state) = self.technique.verdict(reply) else {
+            self.core.audit.record_off_target();
+            return;
         };
 
         self.resolve_probe(
@@ -222,9 +254,14 @@ impl SctpPortScanner {
     ///
     /// Checked as strictly as an SCTP reply: the quotation has to be an SCTP
     /// packet sent from this scan's own port, aimed at a probe still
-    /// outstanding. Which attempt it names is another matter, since the
-    /// Initiate Tag sits past the eight bytes an error is obliged to quote, so
-    /// the probe is usually resolved without a round trip being claimed.
+    /// outstanding.
+    ///
+    /// Which attempt it names depends on the technique, because the two put
+    /// their nonce in different places. A COOKIE-ECHO carries it in the common
+    /// header, inside the eight bytes RFC 792 guarantees, so an error names the
+    /// exact attempt and the round trip is credited. An INIT's Initiate Tag sits
+    /// sixteen bytes in, past what a sender has to quote, so the probe is
+    /// usually resolved without a round trip being claimed.
     fn handle_icmp_error(&mut self, reply: &CapturedSegment, now: Instant) {
         let Some(error) = icmp_error::parse(reply) else {
             return;
@@ -241,7 +278,14 @@ impl SctpPortScanner {
         }
 
         let key = (error.quoted.destination, quoted.destination);
-        let token = sctp::quoted_init_tag(error.quoted.payload).map(|tag| SctpToken { tag });
+        let token = match self.technique {
+            SctpScanTechnique::Init => sctp::quoted_init_tag(error.quoted.payload),
+            // Already read, and always present: it is the common header's own
+            // field. Zero would mean a quotation of something this scan did not
+            // send, since every probe leaves with a non-zero tag.
+            SctpScanTechnique::CookieEcho => Some(quoted.verification_tag).filter(|tag| *tag != 0),
+        }
+        .map(|tag| SctpToken { tag });
 
         match error.reason {
             // Nobody could reach the address at all, so the message says nothing
@@ -335,7 +379,7 @@ impl SctpPortScanner {
                 StatusReason::new(
                     StatusProtocol::Sctp,
                     match drawn_by {
-                        Some(SctpReply::Abort) => "abort to an init probe",
+                        Some(SctpReply::Abort) => "abort to an sctp probe",
                         _ => "init-ack from a probed port",
                     },
                 ),
@@ -414,16 +458,17 @@ impl RawPortScan for SctpPortScanner {
         Protocol::Sctp
     }
 
-    /// A filter. Both an open port and a closed one answer an INIT, so a probe
-    /// that draws nothing was stopped on the way out or on the way back.
+    /// The technique's answer. An INIT is answered by an open port and a closed
+    /// one alike, so silence there is a filter; a COOKIE-ECHO is answered only
+    /// by a closed port, so silence is open-or-filtered and stays so.
     fn silence_means(&self) -> PortState {
-        PortState::Filtered
+        self.technique.silence_means()
     }
 
     fn audit_labels(&self) -> AuditLabels {
         AuditLabels {
             tag: "sctp-port",
-            silence: "filtered",
+            silence: self.technique.silence_label(),
         }
     }
 
@@ -453,8 +498,8 @@ impl RawPortScan for SctpPortScanner {
     /// One send, first attempt or retry. `position` is `Some` only for a probe
     /// that has never gone out, since the ledger keeps it thereafter.
     ///
-    /// The Initiate Tag is drawn here rather than by the caller, because it is
-    /// the one thing that must never repeat between attempts: two probes
+    /// The nonce is drawn on the send path rather than by the caller, because it
+    /// is the one thing that must never repeat between attempts: two probes
     /// carrying the same tag are indistinguishable in their answers.
     fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
         let Some(src_addr) = self.core.resolver.resolve(ip) else {
@@ -467,8 +512,9 @@ impl RawPortScan for SctpPortScanner {
 
         let first_attempt = !self.core.ledger.contains(&(ip, port));
 
-        let sent = send_init_probe(
+        let sent = send_probe(
             self.core.transport.tx.as_ref(),
+            self.technique,
             self.core.src_port,
             src_addr,
             ip,
@@ -488,15 +534,16 @@ impl RawPortScan for SctpPortScanner {
     }
 }
 
-/// Sends one INIT probe at `dst_addr:dst_port` and returns the tag it went out
+/// Sends one probe at `dst_addr:dst_port` and returns the tag it went out
 /// carrying, so a later answer can be recognised as this attempt's.
 ///
 /// `reason` receives the failure when there is one. A scan whose probes never
 /// left reports every port filtered, which is what a firewall produces, and only
 /// this says otherwise.
 #[allow(clippy::too_many_arguments)]
-fn send_init_probe(
+fn send_probe(
     sender: &dyn ProbeSender,
+    technique: SctpScanTechnique,
     src_port: u16,
     src_addr: IpAddr,
     dst_addr: IpAddr,
@@ -505,10 +552,11 @@ fn send_init_probe(
     decoys: &[IpAddr],
     reason: &mut Option<String>,
 ) -> Option<SctpToken> {
-    // Non-zero, which RFC 4960 §3.3.2 requires of an Initiate Tag and which the
-    // builder leaves to its caller.
+    // Non-zero either way: RFC 4960 §3.3.2 requires it of an Initiate Tag, and a
+    // reflected verification tag of zero would not be distinguishable from a
+    // packet that carried none.
     let tag: u32 = rand::random_range(1..=u32::MAX);
-    let packet = sctp::build_init_probe(src_port, dst_port, tag);
+    let packet = build(technique, src_port, dst_port, tag);
 
     // A decoy from each address of the target's own family, carrying its own
     // port and tag so none of the probes is the odd one out.
@@ -516,7 +564,8 @@ fn send_init_probe(
         .iter()
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
         .map(|&decoy| {
-            let packet = sctp::build_init_probe(
+            let packet = build(
+                technique,
                 rand::random_range(50_000..u16::MAX),
                 dst_port,
                 rand::random_range(1..=u32::MAX),
@@ -536,7 +585,7 @@ fn send_init_probe(
         Ok(()) => {
             success!(
                 verbosity = 2,
-                "sent SCTP init probe to {dst_addr}:{dst_port}"
+                "sent SCTP {technique} probe to {dst_addr}:{dst_port}"
             );
             Some(SctpToken { tag })
         }
@@ -549,12 +598,21 @@ fn send_init_probe(
             if reason.is_none() {
                 error!(
                     verbosity = 2,
-                    "failed to send SCTP init probe to {dst_addr}:{dst_port}: {e:#}"
+                    "failed to send SCTP {technique} probe to {dst_addr}:{dst_port}: {e:#}"
                 );
                 *reason = Some(format!("{e:#}"));
             }
             None
         }
+    }
+}
+
+/// The packet `technique` puts on the wire, carrying `tag` wherever that
+/// technique's answer will send it back from.
+fn build(technique: SctpScanTechnique, src_port: u16, dst_port: u16, tag: u32) -> Vec<u8> {
+    match technique {
+        SctpScanTechnique::Init => sctp::build_init_probe(src_port, dst_port, tag),
+        SctpScanTechnique::CookieEcho => sctp::build_cookie_echo_probe(src_port, dst_port, tag),
     }
 }
 
@@ -568,10 +626,10 @@ impl PortScanner for SctpPortScanner {
         vec![Protocol::Sctp]
     }
 
-    /// Consumes `targets`, sending one INIT per SCTP target and classifying
+    /// Consumes `targets`, sending one chunk per SCTP target and classifying
     /// every chunk and ICMP error that comes back, until each probe is resolved
-    /// or the scan's deadline expires. Anything still outstanding at the end is
-    /// reported filtered.
+    /// or the scan's deadline expires. Anything still outstanding at the end
+    /// takes the technique's reading of silence.
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         super::drive(self, targets).await;
         Ok(())
@@ -626,13 +684,19 @@ mod tests {
     /// capture feeds, plus the session store to assert against and the probe log
     /// to read tags back out of.
     fn scanner_with_mock() -> (SctpPortScanner, ScanSession, SentProbes) {
+        scanner_probing(SctpScanTechnique::Init)
+    }
+
+    /// The same, sending `technique`'s chunk.
+    fn scanner_probing(technique: SctpScanTechnique) -> (SctpPortScanner, ScanSession, SentProbes) {
         let (session, ctx) = ScanSession::new();
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         let sender = MockSender::default();
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
         let resolver = SourceResolver::from_links(&[on_link_interface()]);
-        let scanner = SctpPortScanner::with_transport(resolver, ctx, transport, 8, SCAN_PORT);
+        let scanner = SctpPortScanner::with_transport(resolver, ctx, transport, 8, SCAN_PORT)
+            .probing_with(technique);
         (scanner, session, sent)
     }
 
@@ -659,6 +723,29 @@ mod tests {
         // The Initiate Tag: past the twelve-byte common header and the chunk's
         // own four-byte header, per RFC 4960 §3.3.2.
         u32::from_be_bytes([packet[16], packet[17], packet[18], packet[19]])
+    }
+
+    /// [`probe`] for a COOKIE-ECHO scan, whose nonce is the common header's own
+    /// verification tag (RFC 4960 §8.4) rather than a tag inside the chunk.
+    fn cookie_probe(scanner: &mut SctpPortScanner, sent: &SentProbes, port: u16) -> u32 {
+        let before = sent.lock().unwrap().len();
+        scanner.send_probe(PlannedTarget::new(
+            u64::from(port),
+            Target {
+                ip: TARGET,
+                port,
+                protocol: Protocol::Sctp,
+            },
+        ));
+
+        let sent = sent.lock().unwrap();
+        let (packet, _, _) = sent.get(before).expect("the probe reached the wire");
+        assert_eq!(
+            packet[12],
+            sctp::chunk_type::COOKIE_ECHO,
+            "a cookie-echo scan must not send an init"
+        );
+        u32::from_be_bytes([packet[4], packet[5], packet[6], packet[7]])
     }
 
     /// The packet a peer answers an INIT with: the common header carrying the
@@ -762,7 +849,7 @@ mod tests {
             host.reasons()
                 .iter()
                 .any(|reason| reason.protocol == StatusProtocol::Sctp
-                    && reason.details.as_deref() == Some("abort to an init probe")),
+                    && reason.details.as_deref() == Some("abort to an sctp probe")),
             "the abort was not recorded as the chunk it was"
         );
 
@@ -851,5 +938,68 @@ mod tests {
         assert_eq!(port_state(&session, 2905), Some(PortState::Filtered));
         let host = session.hosts().get(TARGET).expect("the host is recorded");
         assert!(!host.status().is_up());
+    }
+
+    // ── The cookie-echo technique ────────────────────────────────────────────
+
+    /// The verdict table one protocol over. An abort is a closed port to either
+    /// technique; silence is the difference, and it is handled by
+    /// `silence_means` rather than here.
+    #[test]
+    fn a_cookie_echo_reads_an_abort_as_a_closed_port() {
+        let (mut scanner, session, sent) = scanner_probing(SctpScanTechnique::CookieEcho);
+        let tag = cookie_probe(&mut scanner, &sent, 3868);
+        scanner.handle_reply(
+            &captured(reply(3868, SCAN_PORT, tag, ABORT)),
+            Instant::now(),
+        );
+
+        assert_eq!(port_state(&session, 3868), Some(PortState::Closed));
+    }
+
+    /// Nothing a cookie-echo sends can provoke an init-ack, so one arriving is
+    /// another association's traffic that happened to carry the right tag.
+    /// Resolving a port on it would report a listener on a coincidence.
+    #[test]
+    fn a_cookie_echo_does_not_read_an_init_ack_as_an_open_port() {
+        let (mut scanner, session, sent) = scanner_probing(SctpScanTechnique::CookieEcho);
+        let tag = cookie_probe(&mut scanner, &sent, 2905);
+        scanner.handle_reply(
+            &captured(reply(2905, SCAN_PORT, tag, INIT_ACK)),
+            Instant::now(),
+        );
+
+        assert_eq!(
+            port_state(&session, 2905),
+            None,
+            "an init-ack settled a port for a scan that could not have drawn one"
+        );
+    }
+
+    /// The price of the quieter chunk. A listener discards a cookie it cannot
+    /// authenticate without a word, so silence here cannot be told from a
+    /// filter, where an init scan would have called it filtered outright.
+    #[test]
+    fn a_cookie_echo_reads_silence_as_open_or_filtered() {
+        let (mut scanner, session, sent) = scanner_probing(SctpScanTechnique::CookieEcho);
+        let _ = cookie_probe(&mut scanner, &sent, 2905);
+        scanner.resolve_remaining();
+
+        assert_eq!(port_state(&session, 2905), Some(PortState::OpenFiltered));
+    }
+
+    /// An icmp error is still a filter and still not a closed port, whichever
+    /// chunk drew it: a closed SCTP port answers with an abort of its own.
+    ///
+    /// What differs is the attribution. A cookie-echo's nonce sits in the common
+    /// header, inside the eight bytes RFC 792 guarantees, so the error names the
+    /// exact attempt rather than only the probe.
+    #[test]
+    fn a_cookie_echo_resolves_an_icmp_error_by_the_attempt_it_quotes() {
+        let (mut scanner, session, sent) = scanner_probing(SctpScanTechnique::CookieEcho);
+        let tag = cookie_probe(&mut scanner, &sent, 3868);
+        scanner.handle_reply(&icmp_error(TARGET, IcmpCode(2), 3868, tag), Instant::now());
+
+        assert_eq!(port_state(&session, 3868), Some(PortState::Filtered));
     }
 }

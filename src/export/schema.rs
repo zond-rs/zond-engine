@@ -863,6 +863,13 @@ pub struct SettingsDto {
     /// a segment that was not one, and against a stack that resets everything it
     /// may be nothing at all.
     pub tcp_technique: &'static str,
+    /// Which chunk each SCTP port probe carried: `init` or `cookie-echo`.
+    ///
+    /// An SCTP port reported `open_filtered` came from a `cookie-echo` scan,
+    /// which draws an answer only from a closed port and so cannot report one
+    /// open at all. Under `init` the same port would have been settled either
+    /// way.
+    pub sctp_technique: &'static str,
     /// The retransmission budget and patience in force.
     pub retry: RetryDto,
     /// The probe-rate ceiling in probes per second, or `null` if the scanner's
@@ -1002,6 +1009,7 @@ impl SettingsDto {
         Self {
             send_mode: send_mode_name(settings.send_mode),
             tcp_technique: settings.tcp_technique.name(),
+            sctp_technique: settings.sctp_technique.name(),
             retry: RetryDto::new(&settings.retry),
             max_probe_rate: settings.max_probe_rate.map(std::num::NonZeroU32::get),
             host_timeout_us: micros_opt(settings.host_timeout),

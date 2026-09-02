@@ -1067,8 +1067,9 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         out,
         "wire",
         &format!(
-            "{} · send {} · {rate} · {dns} · os {} · service {} · detection {}",
+            "{} · sctp {} · send {} · {rate} · {dns} · os {} · service {} · detection {}",
             esc(settings.tcp_technique),
+            esc(settings.sctp_technique),
             esc(settings.send_mode),
             esc(settings.os_detection),
             esc(settings.service_detection),

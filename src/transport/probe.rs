@@ -178,8 +178,12 @@ pub enum ProbeKind {
         /// matched in userspace and this field is what a caller matches against.
         identifier: u16,
     },
-    /// SCTP INIT probes and the chunks they draw, over both address families.
-    SctpInit {
+    /// SCTP port probes and the chunks they draw, over both address families.
+    ///
+    /// One kind for both techniques: an INIT and a COOKIE-ECHO are the same
+    /// protocol from the same port, so the filter that narrows to one narrows to
+    /// the other.
+    Sctp {
         /// The port every probe in the scan leaves from, and so the port its
         /// answers come back to.
         ///
@@ -205,7 +209,7 @@ impl ProbeKind {
         match self {
             ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => TransportType::TcpLayer4,
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => TransportType::UdpLayer4,
-            ProbeKind::SctpInit { .. } => TransportType::SctpLayer4,
+            ProbeKind::Sctp { .. } => TransportType::SctpLayer4,
             ProbeKind::IcmpEcho { .. } => TransportType::IcmpLayer4,
         }
     }
@@ -226,7 +230,7 @@ impl ProbeKind {
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => {
                 IpProtocols::same(IpNextHeaderProtocols::Udp)
             }
-            ProbeKind::SctpInit { .. } => IpProtocols::same(IpNextHeaderProtocols::Sctp),
+            ProbeKind::Sctp { .. } => IpProtocols::same(IpNextHeaderProtocols::Sctp),
             // The one kind whose two families are different protocols rather
             // than one protocol over two address sizes.
             ProbeKind::IcmpEcho { .. } => IpProtocols {
@@ -303,7 +307,7 @@ impl ProbeKind {
             // from, and an ICMP error carries no ports of its own, so the error
             // half is admitted whole and matched against the quoted probe in
             // userspace.
-            ProbeKind::SctpInit { reply_port } => {
+            ProbeKind::Sctp { reply_port } => {
                 format!("icmp or icmp6 or (sctp and dst port {reply_port})")
             }
             // Unnarrowed, and it has to be. The identifier that separates this
@@ -1351,7 +1355,7 @@ mod filter_conformance {
     #[test]
     fn the_sctp_filter_admits_answers_to_the_scan_over_both_families() {
         const REPLY_PORT: u16 = 40_000;
-        let filter = ProbeKind::SctpInit {
+        let filter = ProbeKind::Sctp {
             reply_port: REPLY_PORT,
         }
         .filter();

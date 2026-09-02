@@ -29,7 +29,7 @@ use common::fake_net::{FakeNet, Layer4, Policy, Stack, Unreachable};
 use common::*;
 use zond_engine::model::host::{HostStatus, StatusProtocol, StatusReason};
 use zond_engine::model::port::PortState;
-use zond_engine::model::technique::TcpScanTechnique;
+use zond_engine::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use zond_engine::report::StopReason;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
@@ -127,8 +127,16 @@ async fn udp_scan(target: std::net::IpAddr, ports: &[(u16, Policy)]) -> (ScanSes
     (session, net)
 }
 
-/// The SCTP counterpart of [`syn_scan`].
+/// The SCTP counterpart of [`syn_scan`], sending the default INIT chunk.
 async fn sctp_scan(ports: &[(u16, Policy)]) -> (ScanSession, FakeNet) {
+    sctp_scan_with(SctpScanTechnique::Init, ports).await
+}
+
+/// The same, sending `technique`'s chunk.
+async fn sctp_scan_with(
+    technique: SctpScanTechnique,
+    ports: &[(u16, Policy)],
+) -> (ScanSession, FakeNet) {
     let mut net = FakeNet::new(Layer4::Sctp);
     for (port, policy) in ports {
         net = net.host(TARGET, *port, *policy);
@@ -141,7 +149,8 @@ async fn sctp_scan(ports: &[(u16, Policy)]) -> (ScanSession, FakeNet) {
         net.transport(),
         ports.len(),
         SCTP_SRC_PORT,
-    );
+    )
+    .probing_with(technique);
     let targets = ports.iter().map(|(port, _)| sctp(TARGET, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;
 
@@ -918,6 +927,55 @@ async fn an_init_scan_classifies_open_closed_and_filtered() {
         Some(PortState::Filtered),
         "silence is a filter here: a live endpoint answers an init either way"
     );
+}
+
+/// The three outcomes a COOKIE-ECHO probe can reach, which are two: only the
+/// closed port answers.
+///
+/// A listener authenticates a cookie no endpoint minted, fails, and discards the
+/// packet without a word (RFC 4960 §5.1.5), so the open port and the silent one
+/// come back identical. That is the trade the technique makes for a chunk a
+/// filter written against INIT may pass, and the report has to be honest about
+/// it: `open_filtered` on both.
+#[tokio::test]
+async fn a_cookie_echo_scan_finds_closed_ports_and_leaves_the_rest_ambiguous() {
+    let (session, _net) = sctp_scan_with(
+        SctpScanTechnique::CookieEcho,
+        &[
+            (2905, Policy::open()),
+            (3868, Policy::closed()),
+            (36412, Policy::silent()),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 3868),
+        Some(PortState::Closed),
+        "an abort is a closed port to this technique as much as to an init"
+    );
+    assert_eq!(
+        port_state(&session, TARGET, 2905),
+        Some(PortState::OpenFiltered),
+        "a listener says nothing, so an open port cannot be named"
+    );
+    assert_eq!(
+        port_state(&session, TARGET, 36412),
+        Some(PortState::OpenFiltered),
+        "and neither can it be told from a filter"
+    );
+}
+
+/// The chunk actually changes on the wire, which is the whole point: a filter
+/// dropping INIT chunks sees something else go past.
+#[tokio::test]
+async fn a_cookie_echo_scan_sends_the_other_chunk() {
+    let (_session, net) =
+        sctp_scan_with(SctpScanTechnique::CookieEcho, &[(3868, Policy::closed())]).await;
+
+    let probes = net.probes();
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].source_port, SCTP_SRC_PORT);
 }
 
 /// An ICMP refusal is a filter here rather than a closed port. A closed SCTP
