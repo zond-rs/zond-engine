@@ -10,7 +10,7 @@
 //!
 //! A [`Detections`] is the corpus the detection phase draws on: the Tier-1
 //! [flows](super::flow), the Tier-2 [compute modules](super::compute), and the
-//! [host correlations](super::host), compiled and ready to run. The default is the
+//! host correlations, compiled and ready to run. The default is the
 //! corpus this build ships, embedded from `assets/detect/`; a caller who embeds the
 //! engine and wants detections about their own software adds them with a
 //! [builder](DetectionsBuilder) and passes the result to

@@ -1339,7 +1339,6 @@ pub fn zond_engine::detect::flow::Probe::last_refusal(&self) -> core::option::Op
 pub fn zond_engine::detect::flow::Probe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn zond_engine::detect::flow::check(&zond_engine::detect::flow::schema::FlowDetection) -> alloc::vec::Vec<zond_engine::detect::flow::ValidationError>
 pub fn zond_engine::detect::flow::run(&zond_engine::detect::flow::schema::FlowDetection, &str, &mut dyn zond_engine::detect::flow::Probe) -> alloc::vec::Vec<zond_engine::model::finding::Finding>
-pub mod zond_engine::detect::host
 pub mod zond_engine::detect::manifest
 #[non_exhaustive] pub enum zond_engine::detect::manifest::Class
 pub zond_engine::detect::manifest::Class::ActiveBenign

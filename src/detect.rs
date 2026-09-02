@@ -33,8 +33,13 @@ pub mod authoring;
 pub mod compute;
 pub mod corpus;
 pub mod flow;
-pub mod host;
 pub mod manifest;
+
+// Internal, unlike the two port-level tiers: a caller adds host detections as TOML
+// through [`Detections::builder`](corpus::DetectionsBuilder), so nothing here is a
+// type they name. Publishing it would render an empty page, since the schema sits
+// behind a `pub(crate)` stage. The corpus is the seam; the tier is an implementation.
+pub(crate) mod host;
 
 mod convert;
 mod gate;

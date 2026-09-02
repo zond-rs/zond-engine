@@ -635,9 +635,9 @@ async fn udp_scan_without_a_profile(ports: &[(u16, Policy)]) -> (ScanSession, Fa
 /// and nothing anywhere said the fragment size was the reason.
 #[tokio::test]
 async fn a_scan_refuses_an_evasion_profile_it_could_never_honour() {
+    use zond_engine::detect::Detections;
     use zond_engine::evasion::EvasionError;
     use zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU;
-    use zond_engine::detect::Detections;
     use zond_engine::{ScanError, discover, scan};
 
     let mut cfg = common::test_config();

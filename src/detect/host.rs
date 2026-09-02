@@ -20,6 +20,13 @@
 //! computes a verdict, is a later addition; presence correlation is what the first
 //! detections need.
 //!
+//! Because it sends nothing, it is [`Passive`](crate::model::finding::DetectionClass::Passive)
+//! by construction: the [envelope](crate::config::DetectionEnvelope) that bounds how
+//! intrusive a port detection may run never excludes it, since passive is within
+//! every ceiling. That is why this tier, alone of the three, takes no envelope and
+//! declares no class. A detection that wanted to probe rather than correlate would be
+//! a [flow](super::flow) or a [compute module](super::compute), gated as those are.
+//!
 //! It is not [network roles](crate::model::host::NetworkRole). A role
 //! is a conclusion proven in its own protocol, never from a port number, so a host
 //! with 80 open is not a web server there. A host detection is the opposite reading:

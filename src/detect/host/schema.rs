@@ -12,7 +12,7 @@
 //! a host presents, and the findings to draw when the gate fits. Like the flow
 //! schema, these types deserialize free of the model so `build.rs` can validate the
 //! corpus with the same types the runtime reads; the lowering to the model's own
-//! vocabulary lives in [`convert`](crate::detect::convert).
+//! vocabulary is the tier's `convert` step.
 
 // `build.rs` compiles this file to validate the host corpus, and its checks read
 // only a subset of these fields and never the runtime `matches`. Within the library
@@ -30,7 +30,10 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostDetection {
+    /// The identity and gate: what the detection is, and which hosts it fits.
     pub detection: HostManifest,
+    /// The findings to draw for a host the gate fits. The build refuses an empty
+    /// list, since a detection that draws nothing concludes nothing.
     #[serde(default)]
     pub finding: Vec<FindingSpec>,
 }
@@ -40,9 +43,14 @@ pub struct HostDetection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostManifest {
+    /// A stable identifier for the detection, unique in the corpus. The build
+    /// refuses an empty one and reserves the engine's own prefix.
     pub id: String,
+    /// The detection's own version, stamped on its findings as provenance.
     pub version: String,
+    /// A one-line human name for the detection, the label a report prints for it.
     pub title: String,
+    /// The gate: the ports and services a host must present together to fit.
     pub host: HostGate,
 }
 
