@@ -55,6 +55,7 @@ pub const RESERVED_ID_PREFIX: &str = "zond:";
 /// One way a flow is ill-formed. Each is a hard error: a flow that produces any
 /// does not ship. The [`Display`](fmt::Display) form is the message the build
 /// prints beside the offending file.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
     /// More than [`MAX_FLOW_STEPS`] steps.

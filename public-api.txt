@@ -1204,6 +1204,32 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::sche
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::schema::Step
 pub const zond_engine::detect::flow::schema::MAX_FLOW_STEPS: usize
 pub const zond_engine::detect::flow::schema::MAX_LOOP_ITEMS: usize
+#[non_exhaustive] pub enum zond_engine::detect::flow::ParseError
+pub zond_engine::detect::flow::ParseError::Empty
+pub zond_engine::detect::flow::ParseError::Expected(&'static str)
+pub zond_engine::detect::flow::ParseError::IntOverflow(alloc::string::String)
+pub zond_engine::detect::flow::ParseError::TooDeep
+pub zond_engine::detect::flow::ParseError::Trailing
+pub zond_engine::detect::flow::ParseError::UnexpectedChar(char)
+pub zond_engine::detect::flow::ParseError::UnterminatedString
+impl core::clone::Clone for zond_engine::detect::flow::ParseError
+pub fn zond_engine::detect::flow::ParseError::clone(&self) -> zond_engine::detect::flow::ParseError
+impl core::cmp::Eq for zond_engine::detect::flow::ParseError
+impl core::cmp::PartialEq for zond_engine::detect::flow::ParseError
+pub fn zond_engine::detect::flow::ParseError::eq(&self, &zond_engine::detect::flow::ParseError) -> bool
+impl core::error::Error for zond_engine::detect::flow::ParseError
+impl core::fmt::Debug for zond_engine::detect::flow::ParseError
+pub fn zond_engine::detect::flow::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::detect::flow::ParseError
+pub fn zond_engine::detect::flow::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::detect::flow::ParseError
+impl core::marker::Freeze for zond_engine::detect::flow::ParseError
+impl core::marker::Send for zond_engine::detect::flow::ParseError
+impl core::marker::Sync for zond_engine::detect::flow::ParseError
+impl core::marker::Unpin for zond_engine::detect::flow::ParseError
+impl core::marker::UnsafeUnpin for zond_engine::detect::flow::ParseError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::ParseError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::ParseError
 #[non_exhaustive] pub enum zond_engine::detect::flow::ProbeRefusal
 pub zond_engine::detect::flow::ProbeRefusal::Bytes
 pub zond_engine::detect::flow::ProbeRefusal::Connections
@@ -1224,9 +1250,45 @@ impl core::marker::Unpin for zond_engine::detect::flow::ProbeRefusal
 impl core::marker::UnsafeUnpin for zond_engine::detect::flow::ProbeRefusal
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::ProbeRefusal
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::ProbeRefusal
+#[non_exhaustive] pub enum zond_engine::detect::flow::ValidationError
+pub zond_engine::detect::flow::ValidationError::EmptyId
+pub zond_engine::detect::flow::ValidationError::EmptyLoop(usize)
+pub zond_engine::detect::flow::ValidationError::EmptyTitle
+pub zond_engine::detect::flow::ValidationError::ExpectWithoutSend(usize)
+pub zond_engine::detect::flow::ValidationError::GuardParseError(usize, &'static str, zond_engine::detect::flow::ParseError)
+pub zond_engine::detect::flow::ValidationError::LoopTooLong(usize, usize)
+pub zond_engine::detect::flow::ValidationError::LoopVarShadows(usize, alloc::string::String)
+pub zond_engine::detect::flow::ValidationError::MalformedVersion(alloc::string::String)
+pub zond_engine::detect::flow::ValidationError::MatchedInStepGuard(usize)
+pub zond_engine::detect::flow::ValidationError::MatchedWithoutExpect(usize)
+pub zond_engine::detect::flow::ValidationError::NoFindings
+pub zond_engine::detect::flow::ValidationError::PassiveDoes(&'static str)
+pub zond_engine::detect::flow::ValidationError::ReservedId(alloc::string::String)
+pub zond_engine::detect::flow::ValidationError::SendWithoutSpeak
+pub zond_engine::detect::flow::ValidationError::TooManySteps(usize)
+pub zond_engine::detect::flow::ValidationError::UndefinedVariable(usize, alloc::string::String, &'static str)
+pub zond_engine::detect::flow::ValidationError::UnknownProtocol(alloc::string::String)
+impl core::clone::Clone for zond_engine::detect::flow::ValidationError
+pub fn zond_engine::detect::flow::ValidationError::clone(&self) -> zond_engine::detect::flow::ValidationError
+impl core::cmp::Eq for zond_engine::detect::flow::ValidationError
+impl core::cmp::PartialEq for zond_engine::detect::flow::ValidationError
+pub fn zond_engine::detect::flow::ValidationError::eq(&self, &zond_engine::detect::flow::ValidationError) -> bool
+impl core::fmt::Debug for zond_engine::detect::flow::ValidationError
+pub fn zond_engine::detect::flow::ValidationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::detect::flow::ValidationError
+pub fn zond_engine::detect::flow::ValidationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::detect::flow::ValidationError
+impl core::marker::Freeze for zond_engine::detect::flow::ValidationError
+impl core::marker::Send for zond_engine::detect::flow::ValidationError
+impl core::marker::Sync for zond_engine::detect::flow::ValidationError
+impl core::marker::Unpin for zond_engine::detect::flow::ValidationError
+impl core::marker::UnsafeUnpin for zond_engine::detect::flow::ValidationError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::ValidationError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::ValidationError
 pub trait zond_engine::detect::flow::Probe
 pub fn zond_engine::detect::flow::Probe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
 pub fn zond_engine::detect::flow::Probe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn zond_engine::detect::flow::check(&zond_engine::detect::flow::schema::FlowDetection) -> alloc::vec::Vec<zond_engine::detect::flow::ValidationError>
 pub fn zond_engine::detect::flow::run(&zond_engine::detect::flow::schema::FlowDetection, &str, &mut dyn zond_engine::detect::flow::Probe) -> alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub mod zond_engine::detect::host
 pub mod zond_engine::detect::manifest

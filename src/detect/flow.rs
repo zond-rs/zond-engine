@@ -47,6 +47,10 @@ mod interp;
 pub(crate) mod stage;
 
 pub use interp::{Probe, ProbeRefusal, run};
+pub use validate::{ValidationError, check};
+// The guard-parse error a `ValidationError::GuardParseError` carries, published so
+// a caller reading `check`'s result can match on it.
+pub use expr::ParseError;
 
 // Re-exported so the build-shared `schema` and `validate` can name the shared
 // manifest as `super::manifest` in both the library, where it lives one level up
