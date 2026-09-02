@@ -88,9 +88,24 @@ pub(crate) fn compile_host_source(
     toml: &str,
     content_hash: &str,
 ) -> Result<LoadedHostDetection, String> {
+    use crate::detect::flow::validate::{RESERVED_ID_PREFIX, is_version_triple};
+
     let detection: HostDetection = toml::from_str(toml).map_err(|error| error.to_string())?;
-    if detection.detection.id.trim().is_empty() {
+    let manifest = &detection.detection;
+    if manifest.id.trim().is_empty() {
         return Err("a host detection needs a non-empty id".to_string());
+    }
+    if manifest.id.starts_with(RESERVED_ID_PREFIX) {
+        return Err(format!(
+            "a host detection id `{}` claims the reserved `{RESERVED_ID_PREFIX}` namespace",
+            manifest.id
+        ));
+    }
+    if !is_version_triple(&manifest.version) {
+        return Err(format!(
+            "a host detection has version `{}`, not a major.minor.patch triple",
+            manifest.version
+        ));
     }
     if detection.finding.is_empty() {
         return Err("a host detection draws no finding, so it can conclude nothing".to_string());

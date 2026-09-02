@@ -295,6 +295,50 @@ mod tests {
     }
 
     #[test]
+    fn the_builder_refuses_a_host_detection_with_a_non_triple_version() {
+        // Everything else is well-formed; only the version is not major.minor.patch.
+        // The build refuses this for a shipped detection, so the builder must for a
+        // caller's, or a finding's provenance would silently record 0.0.0.
+        let host = r#"
+            [detection]
+            id      = "caller-host"
+            version = "1.0"
+            title   = "Caller host"
+            [detection.host]
+            ports_open = [88, 389]
+            [[finding]]
+            severity = "info"
+            summary  = "a caller host detection"
+        "#;
+        let Err(error) = Detections::builder().host(host, "") else {
+            panic!("a host detection with a two-part version was accepted");
+        };
+        assert!(matches!(error, DetectionError::Host(_)), "{error}");
+    }
+
+    #[test]
+    fn the_builder_refuses_a_detection_claiming_the_reserved_namespace() {
+        // The `zond:` prefix is the engine's own; a caller must not stamp it on a
+        // finding's provenance and pass their detection off as first-party.
+        let compute = r#"
+            [detection]
+            id      = "zond:caller"
+            version = "1.0.0"
+            title   = "Caller compute"
+            [detection.when]
+            service = "http"
+            [detection.capabilities]
+            class = "passive"
+            [compute]
+            source = "fn detect() {}"
+        "#;
+        let Err(error) = Detections::builder().compute(compute, "") else {
+            panic!("a detection claiming the reserved namespace was accepted");
+        };
+        assert!(matches!(error, DetectionError::Compute(_)), "{error}");
+    }
+
+    #[test]
     fn a_caller_flow_joins_the_embedded_corpus() {
         let detections = Detections::builder()
             .flow(SOUND_FLOW, "caller-hash")
