@@ -678,12 +678,13 @@ impl LocalScanner {
 
     /// Why the loop should stop, if it should.
     ///
-    /// The order is the priority: a run somebody aborted and a run that ran out
-    /// of time are reported as such even when the sweep had in fact finished,
-    /// because the caller's next question is whether the result is complete.
+    /// The order is the priority: a run somebody aborted, one whose wall-clock
+    /// budget ran out, and one whose own deadline expired are reported as such
+    /// even when the sweep had in fact finished, because the caller's next
+    /// question is whether the result is complete.
     fn stop_reason(&self, now: Instant, sending_finished: bool) -> Option<StopReason> {
-        if self.ctx.handle.should_stop() {
-            return Some(StopReason::Aborted);
+        if let Some(cause) = self.ctx.handle.stopped() {
+            return Some(cause.into());
         }
         if self.deadline.hard_deadline_passed() {
             return Some(StopReason::DeadlineExpired);

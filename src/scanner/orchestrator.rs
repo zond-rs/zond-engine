@@ -562,6 +562,8 @@ pub(super) async fn run_active_os_series(
     let targets: Vec<strategy::identify::series::SeriesTarget> = ctx
         .host_addresses()
         .into_iter()
+        // Read before the store is, so no host guard is held across the clock.
+        .filter(|key| !ctx.host_expired(key.addr()))
         .filter_map(|key| {
             ctx.read_host(&key, |host| {
                 if !host.status().is_up() {
@@ -671,6 +673,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
     let targets: Vec<crate::model::ip::scoped::ScopedIp> = ctx
         .host_addresses()
         .into_iter()
+        .filter(|ip| !ctx.host_expired(ip.addr()))
         .filter_map(|ip| {
             ctx.read_host(&ip, |host| {
                 let known = host.os().is_some_and(|os| os.kernel().is_some());
@@ -830,6 +833,9 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
 
     let mut subjects: Vec<strategy::topology::characterise::Subject> = Vec::new();
     for key in ctx.host_addresses() {
+        if ctx.host_expired(key.addr()) {
+            continue;
+        }
         // One open port to send the middlebox probe at, and one the scan found
         // filtered to aim the comparative probes at: a filter is doing
         // something at a filtered port, and nothing at an unfiltered one.
@@ -898,6 +904,7 @@ pub(super) async fn run_active_os_probe(
     let mut unnamed: Vec<IpAddr> = ctx
         .host_addresses()
         .into_iter()
+        .filter(|key| !ctx.host_expired(key.addr()))
         .filter(|key| {
             ctx.read_host(key, |host| {
                 host.status().is_up() && host.os().is_none_or(|os| os.accuracy() < 85)

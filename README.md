@@ -25,6 +25,10 @@
   the first packet and again at every finding — so a segment sweep cannot report
   a neighbour it was forbidden to look at. The report carries the excluded ranges
   and what they cost, which is what makes it evidence that a scope was kept to.
+* **Wall-clock bounds:** a budget per host and a budget for the whole run, so a
+  scheduled scan finishes whether or not the network cooperates. A host left
+  early is named in the report rather than reported quiet, and a run that spent
+  its budget says so rather than reading as one somebody interrupted.
 * **Comparing two scans:** what appeared, what went away, and what changed about
   what stayed — paired by address across scans that keyed the same machine
   differently, and read against what each scan says it walked, so a narrowed scan

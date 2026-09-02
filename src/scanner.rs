@@ -288,6 +288,11 @@ fn panic_or_cancellation(error: tokio::task::JoinError) -> ScanError {
 /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) on the
 /// session's handle; the report still arrives, describing however far the scan
 /// got.
+///
+/// A scan given
+/// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout) stops
+/// itself the same way when its budget runs out, which is what lets this be
+/// awaited by something nobody is watching.
 pub struct ScanTask {
     handle: JoinHandle<ScanReport>,
     /// The journal this scan writes to, closed once the scan ends.
@@ -398,7 +403,8 @@ impl IntoFuture for ScanTask {
 /// a scan early, call
 /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) on the
 /// session's handle; every phase checks that signal regularly, not only between
-/// targets.
+/// targets, and the same check is what ends a sweep that outlived
+/// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout).
 pub async fn discover(
     targets: IpSet,
     cfg: &ZondConfig,
@@ -407,6 +413,8 @@ pub async fn discover(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .host_timeout(cfg.host_timeout)
+        .scan_timeout(cfg.scan_timeout)
         .build();
     let handle = spawn_discovery(targets, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
@@ -478,6 +486,8 @@ pub async fn discover_with_journal(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .host_timeout(cfg.host_timeout)
+        .scan_timeout(cfg.scan_timeout)
         .resuming(&resume_point)
         .counting(positions)
         .build();
@@ -713,12 +723,18 @@ impl ListenScope {
 /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) is called on
 /// the session's handle. The returned [`ScanTask`] resolves when it stops, with
 /// the [`ScanReport`] describing what was heard.
+///
+/// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout) bounds
+/// a watch as it bounds a scan, and applies alongside whichever [`Until`] the
+/// scope named: the watch ends at whichever comes first.
 pub async fn listen(
     scope: ListenScope,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .host_timeout(cfg.host_timeout)
+        .scan_timeout(cfg.scan_timeout)
         .build();
     let handle = spawn_listen(scope, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
@@ -761,6 +777,8 @@ pub async fn listen_with_journal(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .host_timeout(cfg.host_timeout)
+        .scan_timeout(cfg.scan_timeout)
         .build();
 
     // Before the watch starts, so a caller reading the session sees every
@@ -871,6 +889,8 @@ pub async fn scan(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .host_timeout(cfg.host_timeout)
+        .scan_timeout(cfg.scan_timeout)
         .detections(detections)
         .build();
     let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default());
@@ -913,6 +933,8 @@ pub async fn scan_with_journal(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .host_timeout(cfg.host_timeout)
+        .scan_timeout(cfg.scan_timeout)
         .resuming(journal.resume_point())
         .detections(detections)
         .build();

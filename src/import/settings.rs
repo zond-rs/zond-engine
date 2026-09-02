@@ -137,6 +137,7 @@ use std::fmt;
 use std::io::BufRead;
 use std::num::{NonZeroU8, NonZeroU32};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -352,6 +353,14 @@ pub struct Settings {
     /// zero, which is not a slower scan but no scan.
     #[serde(deserialize_with = "de_probe_rate")]
     pub max_probe_rate: Option<NonZeroU32>,
+    /// How long a scan may spend on one host, in whole seconds. Refused if
+    /// zero, which is a scan that asks nothing rather than a quick one.
+    #[serde(deserialize_with = "de_timeout")]
+    pub host_timeout: Option<Duration>,
+    /// How long the whole scan may run, in whole seconds. Refused if zero, on
+    /// the same reading.
+    #[serde(deserialize_with = "de_timeout")]
+    pub scan_timeout: Option<Duration>,
     /// Which segment a TCP port probe carries.
     #[serde(deserialize_with = "de_technique")]
     pub tcp_technique: Option<TcpScanTechnique>,
@@ -425,6 +434,8 @@ impl Settings {
             redact,
             send_mode,
             max_probe_rate,
+            host_timeout,
+            scan_timeout,
             tcp_technique,
             effort,
             max_attempts,
@@ -472,6 +483,12 @@ impl Settings {
         if self.max_probe_rate.is_some() {
             config.max_probe_rate = self.max_probe_rate;
         }
+        if self.host_timeout.is_some() {
+            config.host_timeout = self.host_timeout;
+        }
+        if self.scan_timeout.is_some() {
+            config.scan_timeout = self.scan_timeout;
+        }
         if let Some(value) = self.tcp_technique {
             config.tcp_technique = value;
         }
@@ -508,12 +525,14 @@ impl Settings {
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the
 /// struct, so that step is by hand.
-const KNOWN_KEYS: [&str; 11] = [
+const KNOWN_KEYS: [&str; 13] = [
     "exclude",
     "no_dns",
     "redact",
     "send_mode",
     "max_probe_rate",
+    "host_timeout",
+    "scan_timeout",
     "tcp_technique",
     "effort",
     "max_attempts",
@@ -861,6 +880,26 @@ fn de_probe_rate<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<NonZer
              but no scan. Remove the key to leave each scanner its own pacing.",
         )
     })
+}
+
+/// Reads a wall-clock budget written in whole seconds, refusing zero.
+///
+/// Seconds because that is the unit somebody writing a schedule thinks in, and
+/// whole ones because no scan is bounded to a useful precision finer than that.
+/// Zero is refused for the reason [`de_probe_rate`] refuses a rate of zero: a
+/// budget that expires before the first probe is a scan that asks nothing, and
+/// nobody writing it into a file meant that.
+fn de_timeout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    let Some(seconds) = Option::<u64>::deserialize(d)? else {
+        return Ok(None);
+    };
+    if seconds == 0 {
+        return Err(serde::de::Error::custom(
+            "a timeout of 0 seconds expires before the first probe, which is a scan \
+             that asks nothing. Remove the key to leave the scan unbounded.",
+        ));
+    }
+    Ok(Some(Duration::from_secs(seconds)))
 }
 
 /// Reads `max_attempts`, refusing a budget of zero.

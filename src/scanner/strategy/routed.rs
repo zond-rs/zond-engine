@@ -328,8 +328,8 @@ impl HostScanner for RoutedScanner {
             self.sweep.service_retries(&self.ctx, now);
 
             let all_responded = self.sweep.all_responded(self.ips.len());
-            if self.ctx.handle.should_stop() {
-                break StopReason::Aborted;
+            if let Some(cause) = self.ctx.handle.stopped() {
+                break cause.into();
             }
             if all_responded {
                 break StopReason::AllResponded;

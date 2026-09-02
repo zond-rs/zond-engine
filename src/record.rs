@@ -1054,6 +1054,13 @@ pub struct PhaseRecord {
     /// Addresses the scanning host had no route to.
     #[serde(default)]
     pub unroutable: Vec<IpAddr>,
+    /// Addresses the sitting left before it had finished with them, because
+    /// their own budget ran out.
+    ///
+    /// Skipped when empty, which is every sitting that set no per-host budget,
+    /// and defaulted on the way in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timed_out: Vec<IpAddr>,
     /// What each strategy recorded about its own run.
     #[serde(default)]
     pub probe_stats: Vec<ProbeStatsRecord>,
@@ -1188,6 +1195,7 @@ impl From<&ScanPhase> for PhaseRecord {
             failures: phase.failures().iter().map(FailureRecord::from).collect(),
             refusals: phase.refusals().iter().map(RefusalRecord::from).collect(),
             unroutable: phase.unroutable().to_vec(),
+            timed_out: phase.timed_out().to_vec(),
             probe_stats: phase
                 .probe_stats()
                 .iter()
@@ -1220,6 +1228,7 @@ impl From<&PhaseRecord> for ScanPhase {
             failures: record.failures.iter().map(ScannerFailure::from).collect(),
             refusals: record.refusals.iter().map(Refusal::from).collect(),
             unroutable: record.unroutable.clone(),
+            timed_out: record.timed_out.clone(),
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(PhaseOrigin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),
@@ -1495,6 +1504,15 @@ pub struct SettingsRecord {
     /// The probe-rate ceiling, where one applied.
     #[serde(default)]
     pub max_probe_rate: Option<u32>,
+    /// The wall-clock budget each host was given, where one applied.
+    ///
+    /// Defaulted on the way in, so a record written before the budget existed
+    /// reads back as a sitting that set none. That is what it was.
+    #[serde(default)]
+    pub host_timeout: Option<Duration>,
+    /// The wall-clock budget the whole sitting was given, where one applied.
+    #[serde(default)]
+    pub scan_timeout: Option<Duration>,
     /// Whether name resolution could generate traffic.
     pub dns_enabled: bool,
     /// Whether identifying detail was masked.
@@ -1582,6 +1600,8 @@ impl From<&ScanSettings> for SettingsRecord {
             retry_timeout_scale: settings.retry.timeout_scale.map(TimeoutScale::get),
             retry_dampen_silent_hosts: settings.retry.dampen_silent_hosts,
             max_probe_rate: settings.max_probe_rate.map(NonZeroU32::get),
+            host_timeout: settings.host_timeout,
+            scan_timeout: settings.scan_timeout,
             dns_enabled: settings.dns_enabled,
             redact: settings.redact,
             os_detection: settings.os_detection.name().to_owned(),
@@ -1623,6 +1643,8 @@ impl From<&SettingsRecord> for ScanSettings {
                 dampen_silent_hosts: record.retry_dampen_silent_hosts,
             },
             max_probe_rate: record.max_probe_rate.and_then(NonZeroU32::new),
+            host_timeout: record.host_timeout,
+            scan_timeout: record.scan_timeout,
             dns_enabled: record.dns_enabled,
             redact: record.redact,
             os_detection: record.os_detection.parse().unwrap_or_default(),

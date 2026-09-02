@@ -425,8 +425,11 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// two of them depend on: an empty ledger means "everything has been
     /// answered or written off" only once there is nothing left to ask.
     ///
-    /// - **Aborted.** The caller asked to stop. Checked first, so a scan winds
-    ///   down promptly rather than after whatever else it was in the middle of.
+    /// - **Stopped.** The caller asked the scan to stop, or the wall-clock
+    ///   budget it was given ran out. Checked first, so a scan winds down
+    ///   promptly rather than after whatever else it was in the middle of;
+    ///   [`ScanHandle::stopped`](crate::scanner::handle::ScanHandle::stopped) says
+    ///   which of the two it was.
     /// - **Hard deadline.** The ceiling on the whole run, which nothing extends.
     /// - **Attempts spent.** Every probe asked as many times as its budget
     ///   allows and none is still outstanding. Waiting longer cannot change what
@@ -445,8 +448,8 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     ///
     /// What still bounds the run is the hard deadline, which nothing extends.
     pub fn stop_reason(&self, sending_finished: bool) -> Option<StopReason> {
-        if self.ctx.handle.should_stop() {
-            return Some(StopReason::Aborted);
+        if let Some(cause) = self.ctx.handle.stopped() {
+            return Some(cause.into());
         }
         if self.deadline.hard_deadline_passed() {
             return Some(StopReason::DeadlineExpired);
@@ -854,9 +857,9 @@ pub trait RawPortScan: PortScanner {
     ///
     /// So they take the same verdict silence takes, and are counted. The verdict
     /// is arguably too kind, nothing was asked, so nothing was learned, but a
-    /// port reported as this scan's silence alongside a stop reason of
-    /// `DeadlineExpired` is a fact somebody can act on, and an absent port is
-    /// not.
+    /// port reported as this scan's silence alongside a stop reason that says
+    /// the run was cut short is a fact somebody can act on, and an absent port
+    /// is not.
     ///
     /// What is already queued, and no more. Waiting for the dispatcher to
     /// finish emitting would let a scan of a very large range spend longer
@@ -865,19 +868,34 @@ pub trait RawPortScan: PortScanner {
     /// scan smaller than the dispatcher's buffer, which is every scan whose
     /// port list a person wrote, the queue is the whole remainder.
     fn resolve_unasked(&mut self, targets: &mut mpsc::Receiver<PlannedTarget>) -> u128 {
-        let protocol = self.protocol();
-        let silence = self.silence_means();
-
         let mut unasked = 0;
         while let Ok(target) = targets.try_recv() {
             unasked += 1;
-            if target.protocol() == protocol {
-                self.record_port(target.ip(), target.port(), silence, None);
-                // Nothing was sent, so nothing was learned.
-                self.settle(Outcome::Unasked);
-            }
+            self.record_unasked(target);
         }
         unasked
+    }
+
+    /// Gives one target the verdict of a probe that was never sent.
+    ///
+    /// The single account of a target nobody asked about, shared by the two
+    /// ways one arises: still queued when the loop ended, and reached after its
+    /// host had spent the budget in
+    /// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout).
+    /// Both were named and neither was probed, so both are written down the
+    /// same way, and neither leaves a port off the host.
+    ///
+    /// A target of another protocol belongs to the other scanner and is passed
+    /// over rather than recorded here, which would file a UDP port under a TCP
+    /// scan's silence.
+    fn record_unasked(&mut self, target: PlannedTarget) {
+        if target.protocol() != self.protocol() {
+            return;
+        }
+        let silence = self.silence_means();
+        self.record_port(target.ip(), target.port(), silence, None);
+        // Nothing was sent, so nothing was learned.
+        self.settle(Outcome::Unasked);
     }
 }
 
@@ -961,7 +979,15 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
                     match targets.try_recv() {
                         Ok(target) => {
                             probes += 1;
-                            scanner.send_probe(target);
+                            // A host that has spent its own budget is left
+                            // where it stands. The target is written down as
+                            // one nobody asked about rather than dropped, so
+                            // the shortfall reads the same as any other.
+                            if scanner.core().ctx.host_expired(target.ip()) {
+                                scanner.record_unasked(target);
+                            } else {
+                                scanner.send_probe(target);
+                            }
                         }
                         // Nothing waiting: the dispatcher has not caught up, and
                         // blocking here would hold the receive half across the

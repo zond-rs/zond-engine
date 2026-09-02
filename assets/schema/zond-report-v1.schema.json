@@ -773,6 +773,14 @@
             "minLength": 1
           }
         },
+        "timed_out": {
+          "description": "Addresses this phase stopped working on because their own wall-clock budget ran out, ascending. Absent where none did, which is every phase that set no per-host budget. An address here carries whatever the phase managed to ask about and nothing after that: the ports it never reached are present with the scan's silence verdict, so without this list a page of `filtered` reads as a quiet machine rather than as a scan that ran out of time.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "origin": {
           "description": "Which document this phase was folded in from, for a report merged out of several. Absent on a phase the engine that wrote this document measured itself, where the report's own `engine` block is the attribution.",
           "$ref": "#/$defs/origin"
@@ -1015,7 +1023,8 @@
             "all_responded",
             "attempts_spent",
             "deadline_expired",
-            "stream_closed"
+            "stream_closed",
+            "timed_out"
           ]
         },
         "complete": {
@@ -1465,6 +1474,8 @@
         "tcp_technique",
         "retry",
         "max_probe_rate",
+        "host_timeout_us",
+        "scan_timeout_us",
         "dns_enabled",
         "redact",
         "os_detection",
@@ -1504,6 +1515,28 @@
             "null"
           ],
           "minimum": 0
+        },
+        "host_timeout_us": {
+          "description": "The wall-clock budget each host was given before the scan left it, or null if none was set. It bounds what a host's entry can claim: three open ports out of a thousand is a different finding depending on whether the other nine hundred and ninety-seven were asked. The phase's `timed_out` list says which hosts actually ran out.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/duration_us"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scan_timeout_us": {
+          "description": "The wall-clock budget the whole phase was given before it wound down, or null if none was set. A phase that spent it stopped where it stood, and its scanners record `timed_out` as their stop reason.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/duration_us"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "dns_enabled": {
           "description": "Whether name resolution was permitted to generate traffic.",

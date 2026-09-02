@@ -792,6 +792,7 @@ fn phase() -> ScanPhase {
         refusals: Vec::new(),
         attachments: Vec::new(),
         unroutable: Vec::new(),
+        timed_out: Vec::new(),
     })
 }
 

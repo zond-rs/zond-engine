@@ -70,6 +70,8 @@
           "dampen_silent_hosts": true
         },
         "max_probe_rate": null,
+        "host_timeout_us": 300000000,
+        "scan_timeout_us": 3600000000,
         "dns_enabled": false,
         "redact": false,
         "os_detection": "passive",
@@ -80,6 +82,7 @@
       },
       "failures": [],
       "unroutable": [],
+      "timed_out": ["192.168.0.9"],
       "probe_stats": [
         {
           "scanner": "connect",
@@ -211,6 +214,8 @@
           "dampen_silent_hosts": true
         },
         "max_probe_rate": null,
+        "host_timeout_us": null,
+        "scan_timeout_us": 900000000,
         "dns_enabled": false,
         "redact": false,
         "os_detection": "passive",

@@ -751,6 +751,7 @@ impl Run {
             // ground it covered, so nothing is invented here.
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            timed_out: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });

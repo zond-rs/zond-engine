@@ -592,6 +592,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            timed_out: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -631,6 +632,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            timed_out: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -667,6 +669,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            timed_out: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });

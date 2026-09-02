@@ -527,6 +527,7 @@ pub fn stop_reason_name(reason: StopReason) -> &'static str {
         StopReason::AllResponded => "all_responded",
         StopReason::AttemptsSpent => "attempts_spent",
         StopReason::DeadlineExpired => "deadline_expired",
+        StopReason::TimedOut => "timed_out",
         StopReason::StreamClosed => "stream_closed",
     }
 }
@@ -538,6 +539,7 @@ pub fn stop_reason(name: &str) -> Option<StopReason> {
         "all_responded" => StopReason::AllResponded,
         "attempts_spent" => StopReason::AttemptsSpent,
         "deadline_expired" => StopReason::DeadlineExpired,
+        "timed_out" => StopReason::TimedOut,
         "stream_closed" => StopReason::StreamClosed,
         _ => return None,
     })

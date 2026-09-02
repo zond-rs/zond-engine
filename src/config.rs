@@ -68,6 +68,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::num::{NonZeroU8, NonZeroU32};
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::evasion::EvasionProfile;
 use crate::model::exclusion::Exclusions;
@@ -1086,6 +1087,65 @@ pub struct ZondConfig {
     /// applied.
     pub max_probe_rate: Option<NonZeroU32>,
 
+    /// The longest a scan will keep working on one host before leaving it with
+    /// what it has, or `None` for no bound.
+    ///
+    /// The clock starts on the first probe aimed at an address and covers every
+    /// later pass that sends to it: the port scan, the service pass, and the
+    /// identification, path and detection passes after that. Once it expires
+    /// the host is left alone, and the address is written into
+    /// [`ScanPhase::timed_out`](crate::report::ScanPhase::timed_out) so a short
+    /// port list is not read as a quiet machine.
+    ///
+    /// Reverse lookup is outside it. A PTR query is traffic to a resolver
+    /// rather than to the host, so it costs the host none of its budget, and
+    /// [`no_dns`](Self::no_dns) is the setting that governs whether it happens
+    /// at all.
+    ///
+    /// The bound is for a host that answers slowly rather than one that does
+    /// not answer at all. Silence already costs a known number of probes,
+    /// because the retry schedule ends; a tarpit, a rate-limited appliance or a
+    /// stack that replies to one probe in ten costs whatever it decides to.
+    ///
+    /// Discovery is outside it. A liveness sweep spends a fixed schedule per
+    /// address and finishes whether or not anything replies, so there is no
+    /// unbounded time there for a per-host budget to bound. See
+    /// [`scan_timeout`](Self::scan_timeout) for the bound that does reach it.
+    ///
+    /// What it stops is new probes rather than the ones already in flight, so a
+    /// host may go on answering for as long as the retry schedule of its last
+    /// window takes to run out. That tail is bounded by the schedule and does
+    /// not grow with how slowly the host answers, which is the thing this is
+    /// here to bound.
+    ///
+    /// Zero expires before the first probe, which is a scan that asks nothing
+    /// and records every host as cut short.
+    pub host_timeout: Option<Duration>,
+
+    /// The longest the whole call may run before it winds down, or `None` for
+    /// no bound.
+    ///
+    /// Measured from the moment the scan is assembled, and it reaches every
+    /// phase: discovery, the port scan, and everything that enriches what they
+    /// found. When it expires the strategies stop on their next pass and the
+    /// run ends the way an aborted one does, except that each scanner records
+    /// [`StopReason::TimedOut`](crate::report::StopReason::TimedOut) rather
+    /// than `Aborted`, since nobody asked it to stop.
+    ///
+    /// This is what makes an unattended run safe to schedule. The rest of this
+    /// struct bounds a probe, a retry or a host, and none of those bounds the
+    /// product: a range with enough slow addresses in it has no finishing time
+    /// a caller can work out in advance.
+    ///
+    /// Winding down is not cancelling. What was found is kept, and the ports
+    /// the scan never reached are recorded with its silence verdict rather than
+    /// left off the host.
+    ///
+    /// It bounds this call and not the job behind it, so each sitting of a
+    /// resumed scan is given the budget afresh. A job that must finish inside
+    /// one is the caller's to bound, by counting the sittings they start.
+    pub scan_timeout: Option<Duration>,
+
     /// Which segment a TCP port probe carries, and so what its answers mean.
     ///
     /// Defaults to [`TcpScanTechnique::Syn`], which is the only technique that
@@ -1174,6 +1234,13 @@ impl ZondConfig {
             exclusions: _,
             redact: _,
             detection: _,
+
+            // The two wall-clock bounds. Neither is a probe's business: the
+            // scan's rides on the `ScanHandle` every probing loop already
+            // reads, and the host's is held by the context the strategies
+            // share.
+            host_timeout: _,
+            scan_timeout: _,
         } = self;
 
         ProbeTuning {

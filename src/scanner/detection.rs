@@ -129,6 +129,12 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         if ctx.handle.should_stop() {
             break;
         }
+        // Nothing further is asked of a host that has spent its budget. A
+        // detection is the most expensive thing this engine does to one port,
+        // and a host already left early is the last place to spend it.
+        if ctx.host_expired(target.address.addr()) {
+            continue;
+        }
         pool.admit(detect_one(
             target,
             ctx.detections.clone(),

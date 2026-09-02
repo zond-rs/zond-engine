@@ -1046,6 +1046,21 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     } else {
         "dns disabled"
     };
+    // The two wall-clock bounds, on their own line rather than folded into the
+    // wire fact: each of them is a reason the page below may be short, and a
+    // reader working out why a host has three ports should not have to find
+    // that at the end of a run-on sentence about send modes.
+    let bounds: Vec<String> = [
+        settings
+            .host_timeout_us
+            .map(|us| format!("per host {}", duration(us))),
+        settings
+            .scan_timeout_us
+            .map(|us| format!("whole scan {}", duration(us))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     // The technique leads: `closed` from a SYN scan and `closed` from a FIN
     // scan are different findings, and the port table means nothing without it.
     fact(
@@ -1060,6 +1075,10 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
             esc(settings.detection),
         ),
     )?;
+
+    if !bounds.is_empty() {
+        fact(out, "time limit", &bounds.join(" · "))?;
+    }
 
     // The two settings that change what a state means, repeated from the notice
     // at the top because that notice was about every phase and a reader who has
@@ -1094,6 +1113,22 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
                 "{}{}",
                 addresses.join(", "),
                 dim(&[esc("named, never probed")])
+            ),
+        )?;
+    }
+
+    // Addresses the scan started on and left before it had finished. Their
+    // ports are on the page carrying the scan's silence verdict, so without
+    // this line they read as quiet machines.
+    if !phase.timed_out.is_empty() {
+        let addresses: Vec<String> = phase.timed_out.iter().map(|ip| esc(ip)).collect();
+        fact(
+            out,
+            "out of time",
+            &format!(
+                "{}{}",
+                addresses.join(", "),
+                dim(&[esc("left part-scanned")])
             ),
         )?;
     }

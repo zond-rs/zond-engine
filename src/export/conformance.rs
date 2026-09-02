@@ -417,6 +417,10 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // A phase that declined nothing leaves this out rather than writing an
         // empty list, which is what most phases do.
         ("phase", "refusals"),
+        // A phase that ran out of time on no host leaves this out rather than
+        // writing an empty list, which is every phase that set no per-host
+        // budget.
+        ("phase", "timed_out"),
         ("scope", "listened"),
         ("settings", "evasion"),
         ("settings", "idle_scan"),

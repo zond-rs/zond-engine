@@ -637,8 +637,8 @@ impl OsSeriesScanner {
         let mut reason = StopReason::AttemptsSpent;
 
         while let Some(batch) = self.batches.pop_front() {
-            if self.ctx.handle.should_stop() {
-                reason = StopReason::Aborted;
+            if let Some(cause) = self.ctx.handle.stopped() {
+                reason = cause.into();
                 break;
             }
 
@@ -649,8 +649,8 @@ impl OsSeriesScanner {
                 // long eats into its own quiet time rather than pushing the next
                 // sample out and widening every interval behind it.
                 self.drain_until(began + SPACING, false).await;
-                if self.ctx.handle.should_stop() {
-                    reason = StopReason::Aborted;
+                if let Some(cause) = self.ctx.handle.stopped() {
+                    reason = cause.into();
                     break;
                 }
             }
@@ -659,7 +659,7 @@ impl OsSeriesScanner {
                 .await;
             self.conclude(&batch);
 
-            if matches!(reason, StopReason::Aborted) {
+            if matches!(reason, StopReason::Aborted | StopReason::TimedOut) {
                 break;
             }
         }

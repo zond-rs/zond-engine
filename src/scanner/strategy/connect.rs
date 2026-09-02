@@ -321,11 +321,19 @@ impl PortScanner for ConnectUdpPortScanner {
         let mut probes = 0u128;
         let mut reason = StopReason::AttemptsSpent;
         while let Some(target) = rx.recv().await {
-            if self.ctx.handle.should_stop() {
-                reason = StopReason::Aborted;
+            if let Some(cause) = self.ctx.handle.stopped() {
+                reason = cause.into();
                 break;
             }
             probes += 1;
+            // A host past its own budget is left alone. Counted with the
+            // probes, because it was work routed here, and settled as unasked
+            // so a resume asks about it rather than trusting a verdict nobody
+            // earned.
+            if self.ctx.host_expired(target.ip()) {
+                self.ctx.record_outcome(Outcome::Unasked);
+                continue;
+            }
             pool.audit().record_send(true);
             pool.admit(udp_port_prober(target, shaping)).await;
         }
@@ -364,14 +372,20 @@ pub async fn scan(
     let mut probes = 0u128;
     let mut reason = StopReason::AttemptsSpent;
     while let Some(target) = rx.recv().await {
-        if ctx.handle.should_stop() {
-            reason = StopReason::Aborted;
+        if let Some(cause) = ctx.handle.stopped() {
+            reason = cause.into();
             // This one was taken off the queue and never asked, so it counts
             // with the rest still waiting behind it.
             ctx.record_outcome(Outcome::Unasked);
             break;
         }
         probes += 1;
+        // A host past its own budget is left alone, and its remaining ports
+        // are settled as unasked rather than given a verdict nothing earned.
+        if ctx.host_expired(target.ip()) {
+            ctx.record_outcome(Outcome::Unasked);
+            continue;
+        }
         pool.audit().record_send(true);
         pool.admit(port_prober(target, detection, shaping)).await;
     }
@@ -881,8 +895,8 @@ pub async fn discover(
     let mut probes = 0u128;
     let mut reason = StopReason::AttemptsSpent;
     while let Some(ip) = rx.recv().await {
-        if ctx.handle.should_stop() {
-            reason = StopReason::Aborted;
+        if let Some(cause) = ctx.handle.stopped() {
+            reason = cause.into();
             // Taken off the queue and never asked, so it counts with the rest
             // still waiting behind it.
             ctx.record_outcome(Outcome::Unasked);

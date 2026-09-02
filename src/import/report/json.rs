@@ -580,6 +580,7 @@ struct PhaseDto {
     refusals: Vec<RefusalDto>,
     probe_stats: Vec<ProbeStatsDto>,
     unroutable: Vec<String>,
+    timed_out: Vec<String>,
     origin: Option<PhaseOriginDto>,
 }
 
@@ -618,6 +619,11 @@ impl PhaseDto {
                 .collect::<Result<_, _>>()?,
             unroutable: self
                 .unroutable
+                .iter()
+                .map(|ip| address(ip))
+                .collect::<Result<_, _>>()?,
+            timed_out: self
+                .timed_out
                 .iter()
                 .map(|ip| address(ip))
                 .collect::<Result<_, _>>()?,
@@ -760,6 +766,8 @@ struct SettingsDto {
     tcp_technique: String,
     retry: RetryDto,
     max_probe_rate: Option<u32>,
+    host_timeout_us: Option<u64>,
+    scan_timeout_us: Option<u64>,
     dns_enabled: bool,
     redact: bool,
     os_detection: String,
@@ -871,6 +879,8 @@ impl SettingsDto {
             retry_timeout_scale: self.retry.timeout_scale,
             retry_dampen_silent_hosts: self.retry.dampen_silent_hosts,
             max_probe_rate: self.max_probe_rate,
+            host_timeout: self.host_timeout_us.map(micros),
+            scan_timeout: self.scan_timeout_us.map(micros),
             dns_enabled: self.dns_enabled,
             redact: self.redact,
             os_detection: self.os_detection,

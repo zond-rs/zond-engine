@@ -141,6 +141,7 @@ impl PhaseRecorder {
             failures: ctx.take_failures(),
             refusals: ctx.take_refusals(),
             unroutable: ctx.take_unroutable(),
+            timed_out: ctx.take_timed_out(),
             probes: ctx.take_probe_stats(),
             origin: None,
             attachments: ctx.take_attachments(),

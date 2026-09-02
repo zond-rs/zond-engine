@@ -73,6 +73,7 @@
 use dashmap::DashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tracing::error;
@@ -512,6 +513,71 @@ impl UnroutableLog {
     }
 }
 
+/// Addresses whose own budget ran out, gathered across a phase.
+///
+/// The same shape as [`UnroutableLog`] and for a related purpose: both are the
+/// phase saying what it did not finish covering, and neither is a fault. A set,
+/// so a host left early by three passes is named once.
+#[derive(Debug, Default)]
+pub(crate) struct TimedOutLog {
+    entries: Mutex<std::collections::BTreeSet<IpAddr>>,
+}
+
+impl TimedOutLog {
+    fn insert(&self, address: IpAddr) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.insert(address);
+    }
+
+    fn drain(&self) -> Vec<IpAddr> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries).into_iter().collect()
+    }
+}
+
+/// When each host's wall-clock budget started, for a scan given one.
+///
+/// A host's clock starts on the first probe aimed at it rather than when the
+/// phase did, because a shuffled scan of a wide range reaches an address
+/// whenever it reaches it, and a budget counted from the start of the run would
+/// give the last address in the plan no time at all.
+///
+/// `budget` is `None` for a scan that set no per-host bound, which is the
+/// ordinary case: the map is then never written to, and every question about a
+/// host is a read of an `Option` and nothing more.
+///
+/// ## What it costs
+///
+/// One instant per address the scan probes. That is bounded by the same thing
+/// the host store is bounded by, and each entry here is a fraction of the
+/// [`Host`] the store already keeps for the same address, so a scan that can
+/// afford its own findings can afford to time them.
+#[derive(Debug, Default)]
+pub(crate) struct HostClocks {
+    budget: Option<Duration>,
+    started: DashMap<IpAddr, Instant>,
+}
+
+impl HostClocks {
+    /// Whether `address` has used up its budget, starting its clock if this is
+    /// the first time it has been asked about.
+    ///
+    /// Always false for a scan with no budget, without touching the map.
+    fn expired(&self, address: IpAddr) -> bool {
+        let Some(budget) = self.budget else {
+            return false;
+        };
+        // Read before writing. Only the first probe aimed at a host takes the
+        // shard's write lock; the thousand after it are reads, and this is
+        // asked once per target on the send path.
+        if let Some(started) = self.started.get(&address) {
+            return started.elapsed() >= budget;
+        }
+        let started = *self.started.entry(address).or_insert_with(Instant::now);
+        started.elapsed() >= budget
+    }
+}
+
 /// The links a phase swept, gathered as its strategies run.
 ///
 /// A sweep of a local segment reaches every host on the link, not only the
@@ -733,6 +799,10 @@ pub struct ScanContext {
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
     /// Addresses this host has no route to, so nothing could be sent to them.
     pub(crate) unroutable: Arc<UnroutableLog>,
+    /// Addresses the scan stopped working on because their budget ran out.
+    pub(crate) timed_out: Arc<TimedOutLog>,
+    /// When each host's budget started, for a scan that set one.
+    pub(crate) clocks: Arc<HostClocks>,
     pub(crate) swept_links: Arc<SweptLinks>,
     /// Where this machine turned out to be plugged in, as the equipment said.
     pub(crate) attachments: Arc<Attachments>,
@@ -1060,6 +1130,31 @@ impl ScanContext {
         self.unroutable.drain()
     }
 
+    /// Whether `address` has spent the per-host budget this scan was given,
+    /// starting its clock on the first probe aimed at it.
+    ///
+    /// The one question every pass that probes a host asks before probing it
+    /// again, and the only place the answer is filed: a host that answers true
+    /// here for the first time is written into the phase's
+    /// [`timed_out`](crate::report::ScanPhase::timed_out) list by this call, so
+    /// no strategy can leave a host early without the report saying it did.
+    ///
+    /// Always false for a scan with no budget, which is what keeps this cheap
+    /// enough to ask per target. See
+    /// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout).
+    pub fn host_expired(&self, address: IpAddr) -> bool {
+        if !self.clocks.expired(address) {
+            return false;
+        }
+        self.timed_out.insert(address);
+        true
+    }
+
+    /// The addresses left early so far, taken.
+    pub(crate) fn take_timed_out(&self) -> Vec<IpAddr> {
+        self.timed_out.drain()
+    }
+
     /// Records that this phase swept a whole link, not merely the addresses on
     /// it that were named.
     ///
@@ -1239,7 +1334,7 @@ impl ScanContext {
 /// Builds a [`ScanSession`] and the [`ScanContext`] the strategies behind it
 /// write into.
 ///
-/// Four things a session can be given, three of which most callers leave alone.
+/// Six things a session can be given, five of which most callers leave alone.
 /// They used to be four constructors chaining into each other, which put the
 /// widest of them under the narrowest name: a caller who wanted exclusions
 /// *and* a resume point *and* an address numbering had to call `sweeping`, and
@@ -1260,6 +1355,8 @@ pub struct SessionBuilder {
     settled: crate::journal::cursor::Checkpoint,
     positions: Positions,
     detections: crate::detect::Detections,
+    host_timeout: Option<Duration>,
+    scan_timeout: Option<Duration>,
 }
 
 impl SessionBuilder {
@@ -1309,10 +1406,36 @@ impl SessionBuilder {
         self
     }
 
+    /// The wall-clock budget each host gets before the scan leaves it.
+    ///
+    /// A caller orchestrating their own scan sets this to have the same bound
+    /// [`scan`](crate::scanner::scan) applies from
+    /// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout).
+    /// Every strategy that probes a host reads it through
+    /// [`ScanContext::host_expired`].
+    pub fn host_timeout(mut self, budget: Option<Duration>) -> Self {
+        self.host_timeout = budget;
+        self
+    }
+
+    /// The wall-clock budget the whole scan gets before it winds down.
+    ///
+    /// Starts when [`build`](Self::build) is called, and reaches every strategy
+    /// through the [`ScanHandle`] they already read. See
+    /// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout).
+    pub fn scan_timeout(mut self, budget: Option<Duration>) -> Self {
+        self.scan_timeout = budget;
+        self
+    }
+
     /// Opens the session and the context.
+    ///
+    /// This is where a scan's own clock starts, so a caller holding a builder
+    /// for a while and building later gets the budget they asked for rather
+    /// than what is left of it.
     pub fn build(self) -> (ScanSession, ScanContext) {
         let store = Arc::new(DashMap::new());
-        let handle = ScanHandle::new();
+        let handle = ScanHandle::bounded(self.scan_timeout);
         let (events_tx, rx) = broadcast::channel(ScanEvents::CAPACITY);
 
         let session = ScanSession {
@@ -1329,6 +1452,11 @@ impl SessionBuilder {
             refusals: Arc::new(RefusalLog::default()),
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
+            timed_out: Arc::new(TimedOutLog::default()),
+            clocks: Arc::new(HostClocks {
+                budget: self.host_timeout,
+                started: DashMap::new(),
+            }),
             swept_links: Arc::new(SweptLinks::default()),
             attachments: Arc::new(Attachments::default()),
             exclusions: Arc::new(self.exclusions),
@@ -1709,5 +1837,45 @@ mod tests {
             Some(&ScopedIp::unscoped(last)),
             "the newest event survives, which is what drop-oldest means"
         );
+    }
+
+    /// A scan with no budget answers `false` for every host, however many times
+    /// it is asked, and files nothing.
+    #[test]
+    fn a_scan_with_no_host_budget_leaves_no_host() {
+        let (_session, ctx) = ScanSession::new();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+
+        assert!(!ctx.host_expired(ip));
+        assert!(!ctx.host_expired(ip));
+        assert!(ctx.take_timed_out().is_empty());
+    }
+
+    /// A spent budget is answered for every pass that asks, and the address is
+    /// filed once however many of them do.
+    #[test]
+    fn a_spent_host_budget_is_filed_once() {
+        let (_session, ctx) = ScanSession::builder()
+            .host_timeout(Some(Duration::ZERO))
+            .build();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+
+        assert!(ctx.host_expired(ip));
+        assert!(ctx.host_expired(ip));
+        assert_eq!(ctx.take_timed_out(), vec![ip]);
+    }
+
+    /// The clock starts on the first probe aimed at a host rather than when the
+    /// phase did, so a host the scan has not reached yet still has its whole
+    /// budget when it gets there.
+    #[test]
+    fn a_budget_still_running_leaves_the_host_alone() {
+        let (_session, ctx) = ScanSession::builder()
+            .host_timeout(Some(Duration::from_secs(3600)))
+            .build();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+
+        assert!(!ctx.host_expired(ip));
+        assert!(ctx.take_timed_out().is_empty());
     }
 }

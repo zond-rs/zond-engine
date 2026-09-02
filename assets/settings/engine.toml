@@ -66,6 +66,30 @@
 #
 # max_probe_rate = 20000
 
+# How long the scan may spend on one host, in whole seconds.
+#
+# The clock starts on the first probe aimed at an address and covers the port
+# scan and every pass after it. Once it runs out the host is left with what the
+# scan already has, and the report names the address as one it left early, so a
+# short port list is not read as a quiet machine.
+#
+# This is the bound for a host that answers slowly rather than one that answers
+# nothing: silence already costs a known number of probes, because the retry
+# schedule ends. A tarpit costs whatever it decides to.
+#
+# host_timeout = 300
+
+# How long the whole scan may run, in whole seconds.
+#
+# The bound that makes an unattended run safe to schedule. Everything else here
+# bounds a probe, a retry or a host, and none of those bounds the run: a range
+# with enough slow addresses in it has no finishing time worked out in advance.
+#
+# When it runs out the scan winds down where it stands and still writes its
+# report, with every scanner recording `timed_out` as the reason it stopped.
+#
+# scan_timeout = 3600
+
 # Which segment a TCP port probe carries, and so what its answers mean.
 #
 #   syn     the only technique that identifies an open port positively.

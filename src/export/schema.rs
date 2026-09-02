@@ -550,6 +550,16 @@ pub struct PhaseDto<'a> {
     /// An address here was never probed at all, which is a different finding
     /// from one that was probed and stayed silent.
     pub unroutable: Vec<String>,
+    /// Addresses the phase stopped working on because their own budget ran out,
+    /// ascending.
+    ///
+    /// Left out when empty, which is every phase that set no per-host budget.
+    /// An address here carries whatever the phase managed to ask about and
+    /// nothing after that: the ports it never reached are present with the
+    /// scan's silence verdict, so without this list a page of `filtered` reads
+    /// as a quiet machine rather than as a scan that ran out of time.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub timed_out: Vec<String>,
     /// What each instrumented scanner observed about its own run. Empty where
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
@@ -631,6 +641,11 @@ impl<'a> PhaseDto<'a> {
             refusals: phase.refusals().iter().map(RefusalDto::new).collect(),
             unroutable: phase
                 .unroutable()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            timed_out: phase
+                .timed_out()
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect(),
@@ -853,6 +868,19 @@ pub struct SettingsDto {
     /// The probe-rate ceiling in probes per second, or `null` if the scanner's
     /// own default applied.
     pub max_probe_rate: Option<u32>,
+    /// The wall-clock budget each host was given, or `null` if none was set.
+    ///
+    /// It bounds what a host's entry can claim. Three open ports out of a
+    /// thousand is a different finding depending on whether the other nine
+    /// hundred and ninety-seven were asked, and `timed_out` on the phase says
+    /// which hosts ran out.
+    pub host_timeout_us: Option<u64>,
+    /// The wall-clock budget the whole phase was given, or `null` if none was
+    /// set.
+    ///
+    /// A phase that spent it stopped where it stood, and its scanners record
+    /// `timed_out` as their stop reason.
+    pub scan_timeout_us: Option<u64>,
     /// Whether name resolution was permitted to generate traffic.
     pub dns_enabled: bool,
     /// Whether the caller asked the *scan* to mask identifying detail. Distinct
@@ -976,6 +1004,8 @@ impl SettingsDto {
             tcp_technique: settings.tcp_technique.name(),
             retry: RetryDto::new(&settings.retry),
             max_probe_rate: settings.max_probe_rate.map(std::num::NonZeroU32::get),
+            host_timeout_us: micros_opt(settings.host_timeout),
+            scan_timeout_us: micros_opt(settings.scan_timeout),
             dns_enabled: settings.dns_enabled,
             redact: settings.redact,
             os_detection: settings.os_detection.name(),

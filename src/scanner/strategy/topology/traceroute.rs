@@ -634,6 +634,12 @@ impl Tracer {
             if self.ctx.handle.should_stop() {
                 break;
             }
+            // A trace is a probe per router and answers a question about the
+            // path rather than about the host, so a host that has already
+            // spent its budget does not spend more of it here.
+            if self.ctx.host_expired(target) {
+                continue;
+            }
             self.walk(target, distance).await;
         }
 

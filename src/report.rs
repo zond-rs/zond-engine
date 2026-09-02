@@ -606,6 +606,21 @@ pub struct ScanSettings {
     pub retry: RetryConfig,
     /// The probe-rate ceiling, or `None` if the scanner's own default applied.
     pub max_probe_rate: Option<std::num::NonZeroU32>,
+    /// The wall-clock budget each host was given, or `None` if none was set.
+    ///
+    /// Recorded because it bounds what a host's entry can say. A machine with
+    /// three open ports out of a thousand is a different finding depending on
+    /// whether the other nine hundred and ninety-seven were asked; which hosts
+    /// actually ran out is [`ScanPhase::timed_out`].
+    pub host_timeout: Option<Duration>,
+    /// The wall-clock budget the whole phase was given, or `None` if none was
+    /// set.
+    ///
+    /// Recorded for the same reason as [`host_timeout`](Self::host_timeout),
+    /// one level up: a phase that stopped on this covered less than it was
+    /// asked to, and a reader comparing two runs of the same schedule needs to
+    /// know the bound was there before concluding the network changed.
+    pub scan_timeout: Option<Duration>,
     /// Whether name resolution was permitted to generate traffic.
     pub dns_enabled: bool,
     /// Whether the caller asked for identifying detail to be masked.
@@ -686,6 +701,8 @@ impl From<&ZondConfig> for ScanSettings {
             tcp_technique,
             retry,
             max_probe_rate,
+            host_timeout,
+            scan_timeout,
             no_dns,
             redact,
             os_detection,
@@ -712,6 +729,8 @@ impl From<&ZondConfig> for ScanSettings {
             tcp_technique: *tcp_technique,
             retry: *retry,
             max_probe_rate: *max_probe_rate,
+            host_timeout: *host_timeout,
+            scan_timeout: *scan_timeout,
             dns_enabled: !no_dns,
             redact: *redact,
             os_detection: *os_detection,
@@ -787,6 +806,18 @@ pub enum StopReason {
     DeadlineExpired,
     /// The capture stream closed underneath the scanner.
     StreamClosed,
+    /// The wall-clock budget the caller set on the whole scan ran out, and
+    /// every strategy wound down where it stood. See
+    /// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout).
+    ///
+    /// Apart from [`Aborted`](StopReason::Aborted) because the two answer a
+    /// scheduled run's first question differently: one says somebody was there
+    /// and stopped it, the other says the scan was given less time than the
+    /// network needed. Apart from
+    /// [`DeadlineExpired`](StopReason::DeadlineExpired) because that one is the
+    /// engine's own pacing running out against a single receive loop, which is
+    /// a fact about one strategy rather than about the run.
+    TimedOut,
 }
 
 impl StopReason {
@@ -797,12 +828,13 @@ impl StopReason {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [StopReason; 5] = [
+    pub const ALL: [StopReason; 6] = [
         Self::Aborted,
         Self::AllResponded,
         Self::AttemptsSpent,
         Self::DeadlineExpired,
         Self::StreamClosed,
+        Self::TimedOut,
     ];
 
     /// Whether the loop stopped because it had nothing left to do, rather than
@@ -824,6 +856,7 @@ impl fmt::Display for StopReason {
             StopReason::AttemptsSpent => "attempts spent",
             StopReason::DeadlineExpired => "deadline expired",
             StopReason::StreamClosed => "capture stream closed",
+            StopReason::TimedOut => "scan budget spent",
         };
         f.write_str(text)
     }
@@ -1484,6 +1517,9 @@ pub struct PhaseParts {
     pub refusals: Vec<Refusal>,
     /// Addresses this host had no route to.
     pub unroutable: Vec<IpAddr>,
+    /// Addresses whose per-host budget ran out before the phase finished with
+    /// them.
+    pub timed_out: Vec<IpAddr>,
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
@@ -1510,6 +1546,7 @@ impl ScanPhase {
             failures: parts.failures,
             refusals: parts.refusals,
             unroutable: parts.unroutable,
+            timed_out: parts.timed_out,
             probes: parts.probes,
             origin: parts.origin,
             attachments: parts.attachments,
@@ -1549,6 +1586,16 @@ pub struct ScanPhase {
     /// [`Refusal`] gives: both of these are the scan saying what it did not
     /// cover, and neither is the scan saying something went wrong.
     refusals: Vec<Refusal>,
+    /// Addresses the phase stopped working on because their own budget ran out.
+    ///
+    /// Beside `unroutable` for the reason that one is beside `failures`: this
+    /// is the phase saying what it did not finish covering, and nothing here
+    /// went wrong. The distinction it carries is the one a reader cannot make
+    /// otherwise, since a host left early is reported with the ports it never
+    /// reached taking the scan's silence verdict, and a page of filtered ports
+    /// looks the same whether the scan asked and heard nothing or ran out of
+    /// time to ask.
+    timed_out: Vec<IpAddr>,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<PhaseOrigin>,
@@ -1616,6 +1663,17 @@ impl ScanPhase {
     /// Strategies that did not run to completion.
     pub fn unroutable(&self) -> &[IpAddr] {
         &self.unroutable
+    }
+
+    /// Addresses the phase left before it had finished with them, because the
+    /// per-host budget in
+    /// [`ScanSettings::host_timeout`](ScanSettings::host_timeout) ran out.
+    ///
+    /// Empty for a phase that set no budget, and for one where every host fitted
+    /// inside it. A host named here still carries every port the phase managed
+    /// to ask about; what it does not carry is the rest of them.
+    pub fn timed_out(&self) -> &[IpAddr] {
+        &self.timed_out
     }
 
     /// The strategies in this phase that could not do their job.
@@ -2473,6 +2531,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            timed_out: Vec::new(),
             probes: Vec::new(),
             origin: None,
         }
@@ -2747,6 +2806,7 @@ mod tests {
         assert!(!StopReason::DeadlineExpired.is_complete());
         assert!(!StopReason::Aborted.is_complete());
         assert!(!StopReason::StreamClosed.is_complete());
+        assert!(!StopReason::TimedOut.is_complete());
     }
 
     #[test]

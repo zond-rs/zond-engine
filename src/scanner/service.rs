@@ -80,6 +80,13 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
         if ctx.handle.should_stop() {
             break;
         }
+        // A host whose budget ran out during the port scan is not asked what
+        // its open ports are running. The ports keep whatever the port phase
+        // recorded, which is a state without a service name, and the phase has
+        // already named the address as one it left early.
+        if ctx.host_expired(target.addr()) {
+            continue;
+        }
         pool.admit(fingerprint_one(target, port, protocol, detection))
             .await;
     }

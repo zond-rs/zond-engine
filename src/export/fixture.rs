@@ -209,7 +209,12 @@ fn probe_stats() -> ProbeStats {
 /// A one-phase discovery report over three hosts, a failed strategy and one
 /// instrumented scanner.
 pub(crate) fn report() -> ScanReport {
-    let (_session, ctx) = ScanSession::new();
+    // Built with a spent per-host budget so that asking about one host below
+    // files it, and the document carries the list a phase writes when it leaves
+    // a host early.
+    let (_session, ctx) = ScanSession::builder()
+        .host_timeout(Some(Duration::ZERO))
+        .build();
 
     let mut targets = IpSet::new();
     targets.insert_range("192.168.0.0/24".parse().expect("a valid range"));
@@ -242,6 +247,10 @@ pub(crate) fn report() -> ScanReport {
             zombie: "192.0.2.9".parse().expect("a valid zombie address"),
             zombie_port: Some(113),
         }),
+        // Both wall-clock bounds, so the settings block carries a value in each
+        // rather than a pair of nulls no writer is held to.
+        host_timeout: Some(Duration::from_secs(300)),
+        scan_timeout: Some(Duration::from_secs(3600)),
         ..Default::default()
     };
 
@@ -272,6 +281,14 @@ pub(crate) fn report() -> ScanReport {
         .with_port("GigabitEthernet1/0/14")
         .with_native_vlan(40)
         .with_management_address(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))),
+    );
+
+    // A host the phase gave up on, filed the way a strategy files one: by
+    // asking whether its budget is spent. `bare_host` is the one left early,
+    // which is why it carries so little.
+    assert!(
+        ctx.host_expired(ip(9)),
+        "the fixture's budget is spent before it is asked"
     );
 
     for host in [router(), filtered_host(), bare_host()] {
@@ -352,6 +369,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         failures: Vec::new(),
         refusals: Vec::new(),
         unroutable: Vec::new(),
+        timed_out: Vec::new(),
         probes: Vec::new(),
         origin: None,
     });

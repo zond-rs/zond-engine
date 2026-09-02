@@ -468,8 +468,8 @@ impl PortScanner for IdlePortScanner {
         let mut probes = 0u128;
         let mut reason = StopReason::AttemptsSpent;
         while let Some(planned) = targets.recv().await {
-            if self.ctx.handle.should_stop() {
-                reason = StopReason::Aborted;
+            if let Some(cause) = self.ctx.handle.stopped() {
+                reason = cause.into();
                 self.ctx.record_outcome(Outcome::Unasked);
                 break;
             }

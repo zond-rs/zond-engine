@@ -360,8 +360,8 @@ impl OsEchoScanner {
             // has no position to settle against.
             self.sweep.service_retries_without_settling(&self.ctx, now);
 
-            if self.ctx.handle.should_stop() {
-                break StopReason::Aborted;
+            if let Some(cause) = self.ctx.handle.stopped() {
+                break cause.into();
             }
             if self.pending.is_empty()
                 && self.sweep.retries.is_empty()
