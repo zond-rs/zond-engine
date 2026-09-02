@@ -80,6 +80,7 @@ pub enum ReplayError {
 /// `build.rs`.
 const EMBEDDED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/detect_modules.bin"));
 
+/// The process-wide compute database, decoded and compiled once on first use.
 static DB: OnceLock<ComputeDb> = OnceLock::new();
 
 /// The runtime view over the embedded module corpus: the runtime that compiled it

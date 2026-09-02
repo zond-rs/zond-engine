@@ -120,6 +120,14 @@ pub fn run(flow: &FlowDetection, content_hash: &str, probe: &mut dyn Probe) -> V
     findings
 }
 
+/// Runs one step and says whether the flow goes on.
+///
+/// In order: a false `when` guard skips the step whole; a `send` is interpolated and
+/// exchanged for a reply; the reply's `bind` captures are read into the environment;
+/// the step "matches" when every `expect` rule holds (or, with no reply, when it
+/// asked for none); and each finding whose own `when` the match result satisfies is
+/// emitted. Returns [`Flow::Halt`] when the step did not match and its `on_no_match`
+/// says to stop, [`Flow::Continue`] otherwise.
 fn run_step(
     flow: &FlowDetection,
     content_hash: &str,
@@ -181,6 +189,9 @@ fn run_step(
     Flow::Continue
 }
 
+/// The flow's fate, halt or continue, that a step's `on_no_match` names for when
+/// the step ends without a match, such as a `send` whose template names an unbound
+/// variable and so cannot run.
 fn on_no_match(step: &Step) -> Flow {
     match step.on_no_match {
         OnNoMatch::Halt => Flow::Halt,

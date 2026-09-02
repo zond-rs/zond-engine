@@ -32,6 +32,7 @@ use super::stage::LoadedHostDetection;
 /// `assets/detect/` by `build.rs`.
 const EMBEDDED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/detect_host.bin"));
 
+/// The process-wide host database, decoded once on first use.
 static DB: OnceLock<HostDb> = OnceLock::new();
 
 /// The runtime view over the embedded host corpus.

@@ -420,6 +420,8 @@ fn outcome_for(error: &CapError, capability: Capability) -> RunOutcome {
     }
 }
 
+/// Records why a run is about to terminate, so the caller can end it with an
+/// uncatchable [`terminated`] fault and the real cause is read back afterward.
 fn record_abort(outcome: RunOutcome) {
     ABORT.with(|cell| *cell.borrow_mut() = Some(outcome));
 }
@@ -577,15 +579,18 @@ fn reference_from_map(map: &Map) -> Option<Reference> {
     map_str(map, "url").map(Reference::url)
 }
 
+/// A string value from a Rhai map, or [`None`] if the key is absent or not a string.
 fn map_str(map: &Map, key: &str) -> Option<String> {
     map.get(key)
         .and_then(|value| value.clone().into_string().ok())
 }
 
+/// An integer value from a Rhai map, or [`None`] if the key is absent or not an int.
 fn map_int(map: &Map, key: &str) -> Option<i64> {
     map.get(key).and_then(|value| value.as_int().ok())
 }
 
+/// A fault for a module that returned a value the host could not read as a finding.
 fn bad_output(message: &str) -> RunOutcome {
     RunOutcome::Faulted(ModuleFault::BadOutput(message.to_string()))
 }

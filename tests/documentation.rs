@@ -78,6 +78,8 @@ const SCOPE: &[&str] = &[
     "src/scanner",
     "src/system.rs",
     "src/system",
+    "src/detect.rs",
+    "src/detect",
     "src/report.rs",
     "src/cve.rs",
     "src/evasion.rs",
@@ -220,11 +222,19 @@ fn every_item_the_standard_covers_is_documented() {
                 continue;
             }
 
-            // Attributes sit between the doc comment and the item.
+            // Attributes and ordinary `//` line comments sit between the doc
+            // comment and the item: an `#[allow]` above the signature, or a `//`
+            // note explaining a decision the doc block did not. Both are stepped
+            // over to reach the `///`. A `///` or `//!` is not, so an item still has
+            // to carry a doc comment of its own rather than borrow a neighbour's.
             let mut above = index;
             while above > 0 {
                 let previous = lines[above - 1].trim_start();
-                if previous.starts_with("#[") || previous.starts_with("#!") {
+                let is_attribute = previous.starts_with("#[") || previous.starts_with("#!");
+                let is_line_comment = previous.starts_with("//")
+                    && !previous.starts_with("///")
+                    && !previous.starts_with("//!");
+                if is_attribute || is_line_comment {
                     above -= 1;
                 } else {
                     break;

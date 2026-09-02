@@ -38,6 +38,7 @@ use super::{Probe, run};
 /// `assets/detect/` by `build.rs`.
 const EMBEDDED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/detect_flows.bin"));
 
+/// The process-wide flow database, decoded once on first use.
 static DB: OnceLock<FlowDb> = OnceLock::new();
 
 /// A validated flow and the content address of the bytes it was parsed from.
