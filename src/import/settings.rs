@@ -826,16 +826,20 @@ where
     text.parse().map(Some).map_err(serde::de::Error::custom)
 }
 
+/// Reads a [`SendMode`] by the name a person wrote, through [`de_named`] so an
+/// unknown one is refused by naming what is accepted.
 fn de_send_mode<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SendMode>, D::Error> {
     de_named(d)
 }
 
+/// [`de_send_mode`] for the TCP technique.
 fn de_technique<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<TcpScanTechnique>, D::Error> {
     de_named(d)
 }
 
+/// [`de_send_mode`] for the scan effort.
 fn de_effort<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ScanEffort>, D::Error> {
     de_named(d)
 }

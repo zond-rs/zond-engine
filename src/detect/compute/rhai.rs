@@ -332,7 +332,8 @@ impl ComputeRuntime for RhaiRuntime {
     }
 }
 
-/// Removes the stock-engine symbols the sandbox's contracts cannot survive.
+/// Removes the stock-engine symbols and the stock resolver the sandbox's
+/// contracts cannot survive.
 ///
 /// `Engine::new` ships a standard library the capability model does not account
 /// for: `sleep` parks the thread doing no work, so it spends no fuel and, until
@@ -348,8 +349,33 @@ impl ComputeRuntime for RhaiRuntime {
 /// symbol machinery does not reach, so they are shadowed by registrations that
 /// fault: the call is refused rather than served, `sleep` never parks the thread
 /// and `timestamp` never reads the wall clock.
+///
+/// # The module resolver, which is the one that reaches a file
+///
+/// `Engine::new` also installs `FileModuleResolver` — rhai 1.26.0
+/// `engine.rs:294-300`, gated only on `no_module`, `no_std` and wasm, none of
+/// which apply here. With it, a module's `import` is resolved against the
+/// filesystem, relative to the process's working directory or by absolute path,
+/// and the resolved file is compiled and run. That is a module reaching the world
+/// by a path the host injected nothing for, which is the one thing the capability
+/// argument in [`detect`](crate::detect) says cannot happen.
+///
+/// It was previously believed the stock resolver was rhai's `DummyModuleResolver`,
+/// on the evidence that `import "secrets" as s` failed with `Module not found`.
+/// It does — because no `./secrets.rhai` exists, which is what
+/// `FileModuleResolver` says about a path it cannot open. A probe naming a file
+/// that *does* exist loads and runs it, under a `passive` grant holding no verbs
+/// at all. `a_module_cannot_import_a_file_that_exists` is that probe, and it
+/// names a real file for exactly this reason: one naming an absent path passes
+/// either way and proves nothing.
+///
+/// So the resolver is replaced rather than configured. `DummyModuleResolver`
+/// refuses every import, which is right for a module body: a detection is one
+/// self-contained source, and there is nowhere legitimate for it to import
+/// *from*.
 fn harden(engine: &mut Engine) {
     engine.disable_symbol("eval");
+    engine.set_module_resolver(::rhai::module_resolvers::DummyModuleResolver::new());
     engine.register_fn("sleep", |_seconds: i64| -> Result<(), Box<EvalAltResult>> {
         Err(disabled_symbol("sleep"))
     });
@@ -861,6 +887,48 @@ mod tests {
                 Err(LoadError::Compile(_))
             ),
             "a module naming `eval` was not refused at load"
+        );
+    }
+
+    /// The probe that names a file which **exists**.
+    ///
+    /// An import of an absent path fails whichever resolver is installed, so a
+    /// test written that way passes against `FileModuleResolver` and proves
+    /// nothing — which is how the stock resolver was read as inert for as long as
+    /// it was. This one writes a module to disk first and imports it by absolute
+    /// path, so the only thing that can refuse it is the resolver [`harden`]
+    /// installs.
+    ///
+    /// The grant is `passive` with no verbs: the class whose whole security
+    /// property is that the network verb is absent rather than refused. It read
+    /// and ran a file anyway, before this was fixed.
+    #[test]
+    fn a_module_cannot_import_a_file_that_exists() {
+        let dir = std::env::temp_dir().join(format!("zond-rhai-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let smuggled = dir.join("smuggled.rhai");
+        std::fs::write(&smuggled, "fn smuggled_value() { 4242 }\n").expect("a module on disk");
+
+        // Without the extension: `FileModuleResolver` appends its own, and this is
+        // the spelling a module would use.
+        let path = dir.join("smuggled").to_string_lossy().replace('\\', "/");
+        let source = format!(
+            r#"
+            import "{path}" as m;
+            fn analyze(ctx, responses) {{
+                [ #{{ severity: "high", summary: "value " + m::smuggled_value(),
+                      confidence: "probable" }} ]
+            }}
+        "#
+        );
+
+        let mut caps = RecordedCaps::new(Vec::new());
+        let outcome = run(&source, grant(DetectionClass::Passive, false), &mut caps);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            matches!(outcome, Err(RunOutcome::Faulted(ModuleFault::Runtime(_)))),
+            "a module imported a file that exists on disk: {outcome:?}"
         );
     }
 

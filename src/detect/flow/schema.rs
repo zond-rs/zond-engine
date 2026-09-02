@@ -197,6 +197,10 @@ pub struct ForEach {
 }
 
 /// What a step does when its `expect` does not match.
+///
+/// Non-exhaustive: this is a policy knob in a flow language that is still
+/// growing, and "halt or continue" is where it starts rather than where it ends.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OnNoMatch {

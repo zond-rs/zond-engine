@@ -147,6 +147,8 @@ impl Element {
     }
 }
 
+/// The pull parser itself: a reader, the window of it currently being walked,
+/// and the counters every one of this module's refusals is measured against.
 pub(crate) struct Parser<'a> {
     input: &'a mut dyn BufRead,
     buffer: Vec<u8>,

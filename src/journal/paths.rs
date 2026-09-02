@@ -140,6 +140,7 @@ fn state_root() -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
+/// Where journals live on this platform, by the XDG state specification.
 #[cfg(not(windows))]
 fn state_root() -> Option<PathBuf> {
     // Only an absolute value counts, as the specification requires. A relative

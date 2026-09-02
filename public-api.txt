@@ -401,6 +401,8 @@ pub zond_engine::cve::CatalogueError::Io(core::io::error::Error)
 pub zond_engine::cve::CatalogueError::Malformed(alloc::string::String)
 pub zond_engine::cve::CatalogueError::ReservedId
 pub zond_engine::cve::CatalogueError::ReservedId::id: alloc::string::String
+pub zond_engine::cve::CatalogueError::TooLarge
+pub zond_engine::cve::CatalogueError::TooLarge::limit: u64
 pub zond_engine::cve::CatalogueError::UnreadableVersion
 pub zond_engine::cve::CatalogueError::UnreadableVersion::version: alloc::string::String
 impl core::convert::From<core::io::error::Error> for zond_engine::cve::CatalogueError
@@ -438,6 +440,7 @@ impl core::marker::Unpin for zond_engine::cve::Catalogue
 impl core::marker::UnsafeUnpin for zond_engine::cve::Catalogue
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::Catalogue
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::cve::Catalogue
+pub const zond_engine::cve::MAX_DOCUMENT_BYTES: u64
 pub fn zond_engine::cve::correlate(&mut zond_engine::model::host::Host)
 pub fn zond_engine::cve::correlate_report(&mut zond_engine::report::ScanReport, &zond_engine::cve::Catalogue)
 pub fn zond_engine::cve::correlate_with(&mut zond_engine::model::host::Host, &zond_engine::cve::Catalogue)
@@ -1140,7 +1143,7 @@ impl core::marker::Unpin for zond_engine::detect::flow::schema::MatchSpec
 impl core::marker::UnsafeUnpin for zond_engine::detect::flow::schema::MatchSpec
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::schema::MatchSpec
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::schema::MatchSpec
-pub enum zond_engine::detect::flow::schema::OnNoMatch
+#[non_exhaustive] pub enum zond_engine::detect::flow::schema::OnNoMatch
 pub zond_engine::detect::flow::schema::OnNoMatch::Continue
 pub zond_engine::detect::flow::schema::OnNoMatch::Halt
 impl core::clone::Clone for zond_engine::detect::flow::schema::OnNoMatch
@@ -10715,6 +10718,7 @@ pub fn zond_engine::record::wire::status_protocol_name(&zond_engine::model::host
 pub fn zond_engine::record::wire::stop_reason(&str) -> core::option::Option<zond_engine::report::StopReason>
 pub fn zond_engine::record::wire::stop_reason_name(zond_engine::report::StopReason) -> &'static str
 pub fn zond_engine::record::wire::tcp_flags(&str) -> u8
+pub fn zond_engine::record::wire::tcp_flags_checked(&str) -> core::option::Option<u8>
 pub fn zond_engine::record::wire::tcp_flags_name(u8) -> alloc::string::String
 pub struct zond_engine::record::AttachmentRecord
 pub zond_engine::record::AttachmentRecord::device_mac: core::option::Option<alloc::string::String>
@@ -13133,7 +13137,7 @@ impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::c
 pub async fn zond_engine::scanner::strategy::connect::discover(zond_engine::model::ip::set::IpSet, zond_engine::scanner::session::ScanContext, &zond_engine::evasion::EvasionProfile) -> core::result::Result<(), zond_engine::scanner::strategy::StrategyError>
 pub async fn zond_engine::scanner::strategy::connect::scan(tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>, usize, zond_engine::scanner::session::ScanContext, zond_engine::config::ServiceDetection, &zond_engine::evasion::EvasionProfile) -> core::result::Result<(), zond_engine::scanner::strategy::StrategyError>
 pub mod zond_engine::scanner::strategy::frames
-pub enum zond_engine::scanner::strategy::frames::ProtocolMatch
+#[non_exhaustive] pub enum zond_engine::scanner::strategy::frames::ProtocolMatch
 pub zond_engine::scanner::strategy::frames::ProtocolMatch::AllNodes
 pub zond_engine::scanner::strategy::frames::ProtocolMatch::AllNodes::identifier: u16
 pub zond_engine::scanner::strategy::frames::ProtocolMatch::AllNodes::sequence: u16
@@ -13347,7 +13351,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::id
 pub const zond_engine::scanner::strategy::identify::series::ACTIVE_SAMPLES: usize
 pub const zond_engine::scanner::strategy::identify::series::AGGRESSIVE_SAMPLES: usize
 pub mod zond_engine::scanner::strategy::local
-pub enum zond_engine::scanner::strategy::local::Scope
+#[non_exhaustive] pub enum zond_engine::scanner::strategy::local::Scope
 pub zond_engine::scanner::strategy::local::Scope::Sweep
 pub zond_engine::scanner::strategy::local::Scope::Targeted
 impl core::clone::Clone for zond_engine::scanner::strategy::local::Scope
@@ -13876,7 +13880,7 @@ impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::raw::SynToken
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::raw::SynToken
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::raw::SynToken
 pub mod zond_engine::scanner::strategy::routed
-pub enum zond_engine::scanner::strategy::routed::SweepProbe
+#[non_exhaustive] pub enum zond_engine::scanner::strategy::routed::SweepProbe
 pub zond_engine::scanner::strategy::routed::SweepProbe::Init
 pub zond_engine::scanner::strategy::routed::SweepProbe::Init::dst_port: u16
 pub zond_engine::scanner::strategy::routed::SweepProbe::Init::src_port: u16
@@ -13902,7 +13906,7 @@ impl core::marker::Unpin for zond_engine::scanner::strategy::routed::SweepProbe
 impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::routed::SweepProbe
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::routed::SweepProbe
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::routed::SweepProbe
-pub enum zond_engine::scanner::strategy::routed::SweepToken
+#[non_exhaustive] pub enum zond_engine::scanner::strategy::routed::SweepToken
 pub zond_engine::scanner::strategy::routed::SweepToken::Init(u32)
 pub zond_engine::scanner::strategy::routed::SweepToken::Syn(zond_engine::scanner::strategy::raw::SynToken)
 impl core::clone::Clone for zond_engine::scanner::strategy::routed::SweepToken

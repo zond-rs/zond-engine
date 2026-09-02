@@ -289,6 +289,8 @@ pub(crate) fn compare(
     }
 }
 
+/// A host's ports as a slice, so both sides of a comparison can be walked
+/// without re-running the iterator.
 fn collect_ports(host: &Host) -> Vec<&crate::model::port::Port> {
     host.ports().collect()
 }

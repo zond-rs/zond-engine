@@ -2035,6 +2035,7 @@ impl ScanReport {
     /// ```no_run
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// use zond_engine::{PortSet, ZondConfig, discover, scan};
+    /// use zond_engine::detect::Detections;
     /// use zond_engine::model::parse::ip::to_set;
     ///
     /// let cfg = ZondConfig::default();
@@ -2046,7 +2047,7 @@ impl ScanReport {
     /// let mut scanning = cfg.clone();
     /// scanning.assume_up = true;
     /// let targets = report.alive_targets(PortSet::try_from("22,80,443")?);
-    /// let (_, ports) = scan(targets, &scanning).await?;
+    /// let (_, ports) = scan(targets, &scanning, Detections::embedded()).await?;
     /// report.merge(ports.join().await?);
     /// # Ok(())
     /// # }

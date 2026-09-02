@@ -295,18 +295,44 @@ pub fn tcp_flags_name(byte: u8) -> String {
 /// [`tcp_flags_name`] read back. A name this version does not know contributes
 /// nothing, so a record written by a newer engine reads back as the flags this
 /// one understands rather than failing.
+///
+/// That leniency is right for a journal, which this process wrote, and wrong for
+/// a document somebody else did. A reader that wants the unknown name reported
+/// rather than dropped uses [`tcp_flags_checked`].
 pub fn tcp_flags(name: &str) -> u8 {
-    name.split('|').fold(0, |mask, part| {
-        mask | match part.trim() {
-            "fin" => tcp::flags::FIN,
-            "syn" => tcp::flags::SYN,
-            "rst" => tcp::flags::RST,
-            "psh" => tcp::flags::PSH,
-            "ack" => tcp::flags::ACK,
-            "urg" => tcp::flags::URG,
-            _ => 0,
-        }
-    })
+    tcp_flags_fold(name).0
+}
+
+/// [`tcp_flags`], refusing a name it does not know instead of skipping it.
+///
+/// The evasion settings in an exported report reach the record layer as strings,
+/// and `tcp_flags` reading `"nonsense"` as no flags at all made a document
+/// claiming something this build cannot express read back as a document claiming
+/// nothing. `"syn|nonsense"` was worse: it read back as `syn`, which is a claim
+/// the document did not make.
+///
+/// [`import::report::json`](crate::import::report::json) checks with this so an
+/// unrecognised flag name is refused by name, the way every other named value in
+/// that document already is.
+pub fn tcp_flags_checked(name: &str) -> Option<u8> {
+    match tcp_flags_fold(name) {
+        (mask, true) => Some(mask),
+        (_, false) => None,
+    }
+}
+
+/// The mask, and whether every name in `name` was one this build knows.
+fn tcp_flags_fold(name: &str) -> (u8, bool) {
+    name.split('|')
+        .fold((0, true), |(mask, known), part| match part.trim() {
+            "fin" => (mask | tcp::flags::FIN, known),
+            "syn" => (mask | tcp::flags::SYN, known),
+            "rst" => (mask | tcp::flags::RST, known),
+            "psh" => (mask | tcp::flags::PSH, known),
+            "ack" => (mask | tcp::flags::ACK, known),
+            "urg" => (mask | tcp::flags::URG, known),
+            _ => (mask, false),
+        })
 }
 
 /// The protocol behind a host's status.

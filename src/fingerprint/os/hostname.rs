@@ -230,10 +230,13 @@ enum Pattern {
     Generated(&'static str, Token),
 }
 
+/// A [`Pattern::Model`] in one word, so the table below reads as a table.
 const fn model(text: &'static str) -> Pattern {
     Pattern::Model(text)
 }
 
+/// [`model`] for the generated-name variant, which carries what follows the
+/// prefix as well as the prefix.
 const fn generated(text: &'static str, token: Token) -> Pattern {
     Pattern::Generated(text, token)
 }

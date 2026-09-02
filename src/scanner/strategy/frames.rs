@@ -32,6 +32,7 @@ use crate::protocols::{dhcp, ip, ndp};
 /// variants rather than one carrying a round-trip time. A protocol reads bytes;
 /// deciding which outstanding probe a frame retires is the scanner's job, since
 /// only the scanner knows what it sent and when.
+#[non_exhaustive]
 pub enum ProtocolMatch {
     /// The protocol does not recognize this frame. Another protocol may still
     /// claim it.

@@ -98,6 +98,7 @@ use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
 use crate::import::report::{ReportOptions, ReportReader};
 use crate::import::{ImportError, ImportOrigin};
 use crate::model::host::Host;
+use crate::model::mac::MacAddr;
 use crate::model::port::PortSet;
 use crate::model::technique::TcpScanTechnique;
 use crate::record::wire;
@@ -554,6 +555,9 @@ fn maybe<T, U>(
 // rather than refused.
 // ---------------------------------------------------------------------------
 
+/// `engine`, which is how a document is told apart from any other JSON that
+/// happens to carry a `hosts` key. `name` is required and checked; `version` is
+/// the fallback for a document written before `produced_by` existed.
 #[derive(Debug, Deserialize)]
 struct EngineDto {
     name: String,
@@ -561,6 +565,8 @@ struct EngineDto {
     version: String,
 }
 
+/// One `phases[]` entry: what a scan walked, under what settings, and what went
+/// wrong on the way. Everything a [`ScanReport`] knows that is not a host.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PhaseDto {
@@ -628,6 +634,11 @@ impl PhaseDto {
     }
 }
 
+/// `targets`, which is what a phase says it covered rather than what it found.
+///
+/// The half that makes a comparison honest: a narrowed scan reads as a narrowed
+/// scan rather than as a network that emptied out, and it can only do that
+/// because the coverage is written down beside the results.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ScopeDto {
@@ -681,6 +692,8 @@ impl ScopeDto {
     }
 }
 
+/// How a phase's port coverage was expressed — the kind of specification and the
+/// text of it — rather than the ports it expanded to. `-` stays `-`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PortScopeDto {
@@ -714,6 +727,8 @@ impl PortScopeDto {
     }
 }
 
+/// One address range, as its two ends. Used for both what a phase covered and
+/// what it was forbidden to touch.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct RangeDto {
@@ -733,6 +748,11 @@ impl RangeDto {
     }
 }
 
+/// `settings`, the request a phase ran under.
+///
+/// Read so a report says what was asked for and not only what came back — a port
+/// reported closed by a SYN scan and by a connect scan are different claims.
+/// Every named value here is checked, including the two records at the end.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct SettingsDto {
@@ -749,12 +769,51 @@ struct SettingsDto {
     traceroute: bool,
     characterise: bool,
     /// What the scan changed about its packets, absent when it changed nothing.
-    /// Deserialized straight into the journal's own record: the fields are plain
-    /// scalars with nothing to validate, unlike the named enums above.
+    /// Deserialized into the journal's own record, then checked by
+    /// [`checked_evasion`]: four of its fields are named vocabularies or
+    /// addresses, not the plain scalars this comment used to claim.
     evasion: Option<EvasionSettingsRecord>,
     /// The zombie a TCP port scan ran through, absent for an ordinary scan.
-    /// Deserialized straight into the journal's record, like the evasion one.
+    /// Checked the same way, by [`checked_idle_scan`].
     idle_scan: Option<IdleScanRecord>,
+}
+
+/// Holds the evasion record to the promise the module documentation makes.
+///
+/// Four of its fields are not plain scalars. `flags` is a named vocabulary,
+/// `spoof_mac` is a hardware address, `decoys` is a list of addresses, and the
+/// record layer reads every one of them *downward*: an unrecognised flag name
+/// contributed nothing, an unparseable address was filtered out of the list, and
+/// a bad `spoof_mac` became `None`. A document claiming something this build
+/// cannot express therefore read back as a document claiming less, silently —
+/// against this reader's own rule that an unknown named value is an error naming
+/// it rather than a field to skip.
+///
+/// `"syn|nonsense"` was the sharpest case: it read back as `syn`, which is not
+/// what the document said and not nothing either.
+fn checked_evasion(evasion: &EvasionSettingsRecord) -> Result<(), String> {
+    if let Some(flags) = &evasion.flags {
+        known(wire::tcp_flags_checked(flags), "a TCP flag set", flags)?;
+    }
+    if let Some(mac) = &evasion.spoof_mac {
+        known(mac.parse::<MacAddr>().ok(), "a hardware address", mac)?;
+    }
+    for decoy in &evasion.decoys {
+        known(decoy.parse::<IpAddr>().ok(), "an address", decoy)?;
+    }
+    Ok(())
+}
+
+/// [`checked_evasion`] for the idle-scan record, whose `zombie` is an address the
+/// record layer parsed downward: an unparseable one took the whole marker with
+/// it, so a document that said a scan ran through a zombie read back as one that
+/// said it did not.
+fn checked_idle_scan(idle: &IdleScanRecord) -> Result<(), String> {
+    known(
+        idle.zombie.parse::<IpAddr>().ok(),
+        "an address",
+        &idle.zombie,
+    )
 }
 
 impl SettingsDto {
@@ -797,6 +856,12 @@ impl SettingsDto {
                 &self.detection,
             )?;
         }
+        if let Some(evasion) = &self.evasion {
+            checked_evasion(evasion)?;
+        }
+        if let Some(idle) = &self.idle_scan {
+            checked_idle_scan(idle)?;
+        }
 
         Ok(SettingsRecord {
             send_mode: self.send_mode,
@@ -819,6 +884,7 @@ impl SettingsDto {
     }
 }
 
+/// `settings.retry`, nested here where the record flattens it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct RetryDto {
@@ -828,6 +894,9 @@ struct RetryDto {
     dampen_silent_hosts: bool,
 }
 
+/// One `failures[]` entry: a strategy that did not complete, and when. The
+/// difference between a network with nothing on it and a scan that never
+/// started.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct FailureDto {
@@ -878,6 +947,11 @@ impl RefusalDto {
     }
 }
 
+/// One `probe_stats[]` entry: what one scanner sent, saw and concluded.
+///
+/// The largest object in the document and the one that says whether a phase's
+/// silence is evidence. A sweep that sent ten thousand probes and saw nothing is
+/// a different fact from one whose capture dropped nine thousand frames.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ProbeStatsDto {
@@ -937,18 +1011,24 @@ impl ProbeStatsDto {
     }
 }
 
+/// One `answered_on[]` entry: how many hosts answered on this attempt number.
+/// The position in the array is the attempt; only the count is carried.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct AttemptCountDto {
     count: u64,
 }
 
+/// One `found_at[]` entry: how many hosts were found in this time bucket. The
+/// position in the array is the bucket; only the count is carried.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct BucketDto {
     count: u64,
 }
 
+/// `capture`, the kernel's own account of what the capture did and did not see.
+/// A dropped frame is a probe this scan sent and cannot reason about.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CaptureDto {
@@ -970,6 +1050,8 @@ impl CaptureDto {
     }
 }
 
+/// `window`, the in-flight window a scanner finished at and the largest it
+/// reached. How hard the scan was allowed to push, and whether it backed off.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct WindowDto {
@@ -981,10 +1063,20 @@ struct WindowDto {
 }
 
 impl WindowDto {
+    /// The document carries `u64` because JSON has one integer width and the
+    /// writer emits what a `usize` held. Reading it back on a narrower target is
+    /// where that stops being reversible, and `as usize` truncated: a capacity of
+    /// `2^32` came back as zero on a 32-bit build, which reads as a window that
+    /// closed rather than one this build cannot represent.
+    ///
+    /// Clamped instead. A window is a count of things this process could hold, so
+    /// `usize::MAX` is the honest reading of a number larger than this build can
+    /// count to, and it is wrong in the direction that says "a great many" rather
+    /// than "none".
     fn record(self) -> WindowRecord {
         WindowRecord {
-            capacity: self.capacity as usize,
-            peak: self.peak as usize,
+            capacity: usize::try_from(self.capacity).unwrap_or(usize::MAX),
+            peak: usize::try_from(self.peak).unwrap_or(usize::MAX),
             reductions: self.reductions,
             adaptive: self.adaptive,
             at_floor: self.at_floor,
@@ -996,6 +1088,7 @@ impl WindowDto {
 // One host
 // ---------------------------------------------------------------------------
 
+/// One `hosts[]` entry, and the whole of what a scan concluded about one machine.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct HostDto {
@@ -1086,6 +1179,9 @@ impl HostDto {
     }
 }
 
+/// One `reasons[]` entry: which protocol established a host's status, and from
+/// where. A host up by ARP and one up by a TCP reset are the same status reached
+/// two ways, and a reader who cannot tell them apart cannot weigh either.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ReasonDto {
@@ -1110,6 +1206,10 @@ impl ReasonDto {
     }
 }
 
+/// `os`, the operating-system verdict and how sure it is.
+///
+/// The verdict only. The evidence behind it does not survive the document, by the
+/// export's deliberate choice — see the module docs.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct OsDto {
@@ -1142,6 +1242,8 @@ impl OsDto {
     }
 }
 
+/// `hardware`, the link-layer addresses a host answered from. Present only where
+/// a scan was on the same segment as the host, since nothing routed carries one.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct HardwareDto {
@@ -1167,6 +1269,11 @@ impl HardwareDto {
     }
 }
 
+/// `telemetry`, which the schema defines and the document does not yet fill.
+///
+/// Empty rather than absent: the field is in the published schema, so a reader
+/// that refused an object here would refuse a valid document the moment the
+/// writer starts emitting one.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct TelemetryDto {}
@@ -1183,6 +1290,9 @@ impl TelemetryDto {
     }
 }
 
+/// One `path[]` entry: a router between this scan and the host, at its distance.
+/// `inferred` marks a hop taken from a path already measured to a neighbour
+/// rather than probed for again.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct HopDto {
@@ -1203,6 +1313,7 @@ impl HopDto {
     }
 }
 
+/// One `ports[]` entry: what a port was found to be, and what is behind it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PortDto {
@@ -1240,6 +1351,11 @@ impl PortDto {
     }
 }
 
+/// `service`, what the fingerprinter concluded is listening.
+///
+/// `confidence` travels with it because a service name is a judgement: a banner
+/// that names itself and a port number that is conventionally something are not
+/// the same claim, and a report that flattened them could not say so.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ServiceDto {
@@ -1355,6 +1471,8 @@ impl ReferenceDto {
     }
 }
 
+/// `security`, what a TLS handshake settled on. Absent for a port that speaks no
+/// TLS, which is different from one whose handshake failed.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct SecurityDto {
@@ -1375,6 +1493,11 @@ impl SecurityDto {
     }
 }
 
+/// `certificate`, the presented leaf as the scan read it.
+///
+/// Every string here is text the scanned host chose, which is why the writers
+/// that put it on a page escape it and why a reader here does no more than carry
+/// it across.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CertificateDto {
@@ -1403,6 +1526,9 @@ impl CertificateDto {
     }
 }
 
+/// `discovery`, how a port's state was established: which probe drew the answer,
+/// when, and what the reply's own headers said. The provenance for a single port,
+/// where `reasons` carries it for a host.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct DiscoveryDto {
@@ -1565,6 +1691,44 @@ mod tests {
         );
 
         assert!(matches!(read(&broken), Err(ImportError::Malformed { .. })));
+    }
+
+    /// The evasion and idle-scan records are named values too, and were the one
+    /// pair this reader passed through to a record layer documented to read them
+    /// downward.
+    ///
+    /// Each shape below used to be accepted and quietly diminished: `"nonsense"`
+    /// became no flags at all, `"syn|nonsense"` became `syn` — a claim the
+    /// document did not make — a bad `spoof_mac` or decoy vanished, and an
+    /// unparseable `zombie` took the whole idle-scan marker with it. All four now
+    /// refuse, naming the value.
+    #[test]
+    fn an_evasion_setting_this_build_cannot_place_refuses_the_document() {
+        let document = exported();
+
+        for (from, to) in [
+            (r#""flags":"syn|fin""#, r#""flags":"nonsense""#),
+            (r#""flags":"syn|fin""#, r#""flags":"syn|nonsense""#),
+            (
+                r#""spoof_mac":"de:ad:be:ef:00:01""#,
+                r#""spoof_mac":"zz:zz:zz:zz:zz:zz""#,
+            ),
+            (
+                r#""decoys":["192.0.2.61","192.0.2.62"]"#,
+                r#""decoys":["192.0.2.61","not-an-address"]"#,
+            ),
+            (r#""zombie":"192.0.2.9""#, r#""zombie":"not-an-address""#),
+        ] {
+            let broken = with_value(&document, from, to);
+            assert!(
+                matches!(read(&broken), Err(ImportError::Malformed { .. })),
+                "{to} was read rather than refused"
+            );
+        }
+
+        // And the fixture itself still reads, so the check is not simply refusing
+        // everything.
+        let _ = read(&document).expect("the fixture's own evasion record is valid");
     }
 
     /// An absent `detection` is not an unknown one: a document written before

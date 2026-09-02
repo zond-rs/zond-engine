@@ -446,6 +446,8 @@ struct Slice {
     count: usize,
 }
 
+/// One band of the host-status bar: its label, its tone class, and how many
+/// hosts fall in it.
 fn status_slice(status: HostStatus, count: usize) -> Slice {
     Slice {
         label: host_status_name(status),
@@ -454,6 +456,8 @@ fn status_slice(status: HostStatus, count: usize) -> Slice {
     }
 }
 
+/// [`status_slice`] for port states, which are counted across every host rather
+/// than per host.
 fn state_slice(state: PortState, count: usize) -> Slice {
     Slice {
         label: port_state_name(state),
@@ -462,6 +466,11 @@ fn state_slice(state: PortState, count: usize) -> Slice {
     }
 }
 
+/// Writes one proportional bar and its legend.
+///
+/// The widths are computed from counts, which is why they are the only numbers on
+/// this page interpolated into an attribute: a percentage this function derived
+/// cannot carry a value the scanned network chose.
 fn distribution(
     out: &mut dyn Write,
     title: &str,
@@ -505,6 +514,7 @@ fn distribution(
 // Hosts
 // ---------------------------------------------------------------------------
 
+/// The hosts section: the heading, the count, and one block per host.
 fn write_hosts(
     out: &mut dyn Write,
     report: &ScanReport,
@@ -528,6 +538,10 @@ fn write_hosts(
     Ok(())
 }
 
+/// One host: its identity, what it was found to be, and its ports.
+///
+/// Every value below comes through `HostDto`, which is where redaction is applied
+/// and where each string is wrapped in the one escaper this page has.
 fn write_host(
     out: &mut dyn Write,
     host: &Host,
@@ -676,6 +690,7 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
     Ok(())
 }
 
+/// A host's port table, or the line that says it has none.
 fn write_ports(out: &mut dyn Write, host: &Host, dto: &HostDto<'_>) -> Result<(), ExportError> {
     if dto.ports.is_empty() {
         writeln!(out, "<p class=\"empty\">no ports recorded</p>")?;
@@ -703,6 +718,7 @@ fn write_ports(out: &mut dyn Write, host: &Host, dto: &HostDto<'_>) -> Result<()
     Ok(())
 }
 
+/// One row of a host's port table, and the detail block that expands under it.
 fn write_port(out: &mut dyn Write, port: &Port, dto: &PortDto<'_>) -> Result<(), ExportError> {
     let service = dto.service.as_ref();
     let discovery = dto.discovery.as_ref();
@@ -908,6 +924,11 @@ fn write_scan_detail(out: &mut dyn Write, phases: &[PhaseDto<'_>]) -> Result<(),
     Ok(())
 }
 
+/// One phase: what it covered, what it ran under, what failed, and what each
+/// scanner in it sent and saw.
+///
+/// The longest writer on the page, because a phase is the part of the report that
+/// says whether its own silence is evidence.
 fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportError> {
     let privilege = match phase.privileged {
         Some(true) => "privileged",
@@ -1347,6 +1368,8 @@ fn histogram(
     Ok(())
 }
 
+/// One bar of a histogram, scaled against the tallest in it. A `peak` of zero
+/// draws an empty bar rather than dividing by it.
 fn histogram_row(
     out: &mut dyn Write,
     label: &str,
@@ -1372,6 +1395,11 @@ fn histogram_row(
 // Colophon
 // ---------------------------------------------------------------------------
 
+/// The footer: which engine wrote the page, against which schema, and when.
+///
+/// The engine attribution is a value on a merged report, taken from whatever
+/// wrote the document that was folded in, so it is escaped like any other string
+/// the page did not author.
 fn write_colophon(
     out: &mut dyn Write,
     report: &ScanReport,

@@ -353,7 +353,7 @@ mod persistence {
     use std::time::SystemTime;
 
     use super::{HEARTBEAT_STALE_AFTER, LockRecord, LockState, boot_identity, classify};
-    use crate::journal::file::create_private;
+    use crate::journal::file::{create_staged, open_or_create_private};
     use crate::journal::format::JournalError;
 
     /// Reads a lock file and says what it means.
@@ -543,7 +543,10 @@ mod persistence {
             let staged = path.with_extension(format!("lock-{}", std::process::id()));
 
             {
-                let mut file = create_private(&staged)?;
+                // Staged, not created: the name carries this process's id, and a
+                // pid is reused, so a run that died between the create and the
+                // hard link can have left one of these behind under the same name.
+                let mut file = create_staged(&staged)?;
                 file.write_all(
                     serde_json::to_string(record)
                         .map_err(std::io::Error::other)?
@@ -568,8 +571,10 @@ mod persistence {
             {
                 // Private from creation, as `create_exclusively` makes the
                 // original: a heartbeat replaces the file, and a replacement
-                // that widened its mode would undo that.
-                let mut file = create_private(&temporary)?;
+                // that widened its mode would undo that. Staged rather than
+                // created, because a heartbeat interrupted between the write and
+                // the rename leaves this name occupied.
+                let mut file = create_staged(&temporary)?;
                 file.write_all(
                     serde_json::to_string(record)
                         .map_err(std::io::Error::other)?
@@ -601,8 +606,11 @@ mod persistence {
             // Its own file rather than the lock, which is about to be removed:
             // an advisory lock follows the open file, and removing the name it
             // was taken on leaves the next process locking a different inode.
-            // Private and link-refusing like everything else a journal writes.
-            let file = create_private(&lock.with_extension("break"))?;
+            // Private and link-refusing like everything else a journal writes,
+            // but opened rather than created: every racer has to reach the same
+            // inode, so winning the create is not what decides anything here. The
+            // `flock` below is.
+            let file = open_or_create_private(&lock.with_extension("break"))?;
 
             // SAFETY: the descriptor is owned by `file` and open for the call.
             // `flock` waits for the lock, dereferences nothing, and the kernel

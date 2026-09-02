@@ -45,19 +45,56 @@
 use std::fs;
 use std::path::Path;
 
-/// Creates or truncates a file in a journal: private, and the invoking user's.
+/// Creates a file in a journal: private, the invoking user's, and new.
 ///
 /// The mode is set as the file is created rather than after, so there is no
 /// moment where what a scan is recording can be read by anyone else. The
 /// directory is `0700` as well, which would cover it either way.
+///
+/// **Create-only, which is what every caller means.** This used to create *or
+/// truncate*, and the difference is a root process truncating and then chowning
+/// whatever the directory's owner had put at the name. `O_NOFOLLOW` already
+/// refuses a symlink there, so the residual case was a planted regular file —
+/// narrow, since the directory is `0700` and the planter would be its owner, but
+/// narrow is not the same as closed. `create_new` closes it: a name that already
+/// exists is refused rather than emptied.
+///
+/// The two callers that stage through a temporary want a name that may be left
+/// over from an interrupted run; they use [`create_staged`], which is this with
+/// one deliberate retry.
 pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     private(&mut options);
 
     let file = options.open(path)?;
     claim(&file);
     Ok(file)
+}
+
+/// Creates a staging file, discarding one an interrupted run left behind.
+///
+/// [`create_private`] refuses a name that exists, which is right for the files a
+/// journal creates once and wrong for the two it re-creates every time it writes
+/// atomically: `cursor.json.tmp` on every checkpoint, `hosts.jsonl-tmp` on every
+/// compaction. Both are renamed away on success, so a leftover means a previous
+/// run died between the create and the rename, and refusing forever after that
+/// would wedge the journal — which is the failure `create_new` was adopted to
+/// avoid trading into.
+///
+/// The removal is safe in the way the truncation was not. `remove_file` unlinks
+/// the name, so a symlink planted there loses the link rather than the target,
+/// and the retry is still `create_new` under `O_NOFOLLOW`: if something wins the
+/// race and plants a file between the two calls, this fails rather than opening
+/// it. A refused checkpoint is a cost; a truncated stranger is a defect.
+pub(super) fn create_staged(path: &Path) -> std::io::Result<fs::File> {
+    match create_private(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs::remove_file(path)?;
+            create_private(path)
+        }
+        other => other,
+    }
 }
 
 /// Opens an existing journal file to add to it, keeping what is already there.
@@ -76,6 +113,27 @@ pub(super) fn append_existing(path: &Path) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
+/// Opens a journal's rendezvous file, creating it if it is not there yet.
+///
+/// The one shape neither [`create_private`] nor [`create_staged`] fits: a file
+/// every racer must be able to *open*, where creating it is incidental and
+/// winning the create decides nothing. `journal::lock`'s `break` file is the only
+/// one — an advisory `flock` lives on the open descriptor, so what matters is
+/// that every process ends up on the same inode.
+///
+/// No truncate, because there is nothing in it to empty and a truncate would be
+/// one more thing a racer could do to a file another racer holds. The mode and
+/// `O_NOFOLLOW` are the same as everywhere else here.
+pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    private(&mut options);
+
+    let file = options.open(path)?;
+    claim(&file);
+    Ok(file)
+}
+
 /// The mode and the refusal every journal file is opened under.
 #[cfg(unix)]
 fn private(options: &mut fs::OpenOptions) {
@@ -83,6 +141,9 @@ fn private(options: &mut fs::OpenOptions) {
     options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
 }
 
+/// The platforms with no mode to set at open. Nothing is promised about who else
+/// can read a journal there, which is one of the reasons the crate does not claim
+/// to support them.
 #[cfg(not(unix))]
 fn private(_options: &mut fs::OpenOptions) {}
 
@@ -105,6 +166,8 @@ pub(super) fn claim_directory_for_invoking_user(path: &Path) {
     }
 }
 
+/// The platforms with no `sudo` to have been invoked through, where a journal is
+/// already the invoking user's.
 #[cfg(not(unix))]
 pub(super) fn claim_directory_for_invoking_user(_path: &Path) {}
 
@@ -134,6 +197,8 @@ fn claim(file: &fs::File) {
     }
 }
 
+/// [`claim_directory_for_invoking_user`]'s file half, and inert for the same
+/// reason.
 #[cfg(not(unix))]
 fn claim(_file: &fs::File) {}
 
@@ -199,6 +264,58 @@ mod tests {
         assert_eq!(
             fs::metadata(&path).expect("stats").permissions().mode() & 0o777,
             0o600
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `O_NOFOLLOW` covers a link planted at a journal's name; it says nothing
+    /// about an ordinary file planted there. That one used to be truncated and
+    /// then chowned to the invoking user by a process that is usually root.
+    #[test]
+    fn a_file_already_at_a_journal_name_is_refused_rather_than_emptied() {
+        let dir = scratch("create-only");
+        let planted = dir.join("manifest.json");
+        fs::write(&planted, b"somebody else's bytes").expect("writes");
+
+        let refusal = create_private(&planted).expect_err("a name that exists was created over");
+        assert_eq!(refusal.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(&planted).expect("reads"),
+            b"somebody else's bytes",
+            "the planted file was truncated"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// And the staging names, which a crashed run does leave behind, are the one
+    /// place that refusal has to lift — or a journal wedges for good.
+    #[test]
+    fn a_staged_name_left_by_a_crashed_run_is_discarded_rather_than_wedging() {
+        let dir = scratch("staged");
+        let temporary = dir.join("cursor.json.tmp");
+        fs::write(&temporary, b"a checkpoint that never got renamed").expect("writes");
+
+        create_staged(&temporary)
+            .expect("a leftover staging file is discarded")
+            .write_all(b"the next one")
+            .expect("writes");
+
+        assert_eq!(fs::read(&temporary).expect("reads"), b"the next one");
+
+        // And it is still a link that cannot be followed: the removal unlinks the
+        // name, and the create behind it is the same refusing one.
+        let elsewhere = dir.join("elsewhere");
+        fs::write(&elsewhere, b"not the journal's to touch").expect("writes");
+        let linked = dir.join("hosts.jsonl-tmp");
+        std::os::unix::fs::symlink(&elsewhere, &linked).expect("links");
+
+        create_staged(&linked).expect("the link is unlinked and a real file created");
+        assert_eq!(
+            fs::read(&elsewhere).expect("reads"),
+            b"not the journal's to touch",
+            "the file behind the link was written through"
         );
 
         fs::remove_dir_all(&dir).ok();

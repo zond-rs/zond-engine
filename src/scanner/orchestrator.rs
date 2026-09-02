@@ -171,6 +171,20 @@ impl Enrichment {
         tuning: ProbeTuning,
     ) -> Self {
         let (dns_tx, resolver) = if caps.dns {
+            // **The one unbounded queue in the crate, and it is the right shape
+            // here.** Everything else a scan opens is bounded because its depth is
+            // set by how fast a producer runs; this one's depth is set by how many
+            // hosts exist, and every entry it holds accompanies a `Host` the store
+            // is already holding. An `IpAddr` is 17 bytes against that record's
+            // 480, so bounding this saves under four per cent of a cost the scan
+            // cannot avoid paying.
+            //
+            // What it would cost is worse than that. The two senders
+            // (`local::EnrichingScanner` and `routed::SweepScanner`) post from
+            // synchronous reply handlers, so a bounded channel is either
+            // `try_send`, which drops a hostname the scan will never look for
+            // again, or an `await` that makes two hot classification paths async
+            // to reclaim nothing.
             let (tx, rx) = mpsc::unbounded_channel();
             (Some(tx), Some(spawn_resolver(rx).await))
         } else {

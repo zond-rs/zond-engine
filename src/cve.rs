@@ -84,6 +84,20 @@ const RESERVED_PREFIX: &str = "zond:";
 /// The shipped seed's version, carried on every finding it produces.
 const SEED_VERSION: Version = Version::new(0, 1, 0);
 
+/// The most a catalogue document may be.
+///
+/// A ceiling in the shape [`import::settings`](crate::import::settings) already
+/// uses, and for a stronger reason. `read` takes a [`BufRead`] precisely so the
+/// bytes can come from a socket, and a CVE catalogue is by definition a feed:
+/// fetched from somewhere else, refreshed on a schedule, pointed at by an
+/// operator who did not write it. A feed that answers with a stream that does not
+/// end would otherwise take the process's memory with it, and `toml::from_str`
+/// then takes several times the document again to parse it.
+///
+/// Sixteen megabytes because the shipped seed is a few kilobytes and a catalogue
+/// two thousand times that is a mistake rather than a large feed.
+pub const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Why a catalogue could not be read.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -106,6 +120,13 @@ pub enum CatalogueError {
     ReservedId {
         /// What the document called itself.
         id: String,
+    },
+
+    /// The document was longer than [`MAX_DOCUMENT_BYTES`].
+    #[error("the catalogue is longer than the {limit} byte limit")]
+    TooLarge {
+        /// The limit it passed.
+        limit: u64,
     },
 
     /// The document's `version` is not `major.minor.patch`.
@@ -285,11 +306,24 @@ impl Catalogue {
     ///
     /// [`CatalogueError::Malformed`] for a document this does not understand,
     /// [`CatalogueError::UnreadableVersion`] for a version that is not
-    /// `major.minor.patch`, and [`CatalogueError::ReservedId`] for one naming
-    /// itself in this engine's own namespace.
+    /// `major.minor.patch`, [`CatalogueError::ReservedId`] for one naming itself
+    /// in this engine's own namespace, and [`CatalogueError::TooLarge`] for one
+    /// past [`MAX_DOCUMENT_BYTES`].
     pub fn read(input: &mut dyn BufRead) -> Result<Self, CatalogueError> {
+        // Bounded before the read rather than measured after: a feed with no end
+        // must not be held in memory to discover it had none. One byte past the
+        // ceiling is read so a document exactly at it is still accepted.
         let mut source = String::new();
-        input.read_to_string(&mut source)?;
+        let read = {
+            use std::io::Read as _;
+            std::io::Read::take(input, MAX_DOCUMENT_BYTES.saturating_add(1))
+                .read_to_string(&mut source)?
+        };
+        if read as u64 > MAX_DOCUMENT_BYTES {
+            return Err(CatalogueError::TooLarge {
+                limit: MAX_DOCUMENT_BYTES,
+            });
+        }
 
         let document: CatalogueDocument = toml::from_str(&source)
             .map_err(|error| CatalogueError::Malformed(error.to_string()))?;
@@ -749,6 +783,35 @@ affected = "== 2.4.49"
 
     /// The one namespace a catalogue may not claim, refused where the document
     /// is read because that is the authoring path."""
+    /// A catalogue is a feed, and `read` takes a reader so the bytes can come off
+    /// a socket. The ceiling has to refuse before the read rather than after it,
+    /// or a feed with no end is discovered to have none by running out of memory.
+    #[test]
+    fn a_catalogue_longer_than_the_ceiling_is_refused_without_being_held() {
+        use std::io::Cursor;
+
+        // A document one byte over, which is the boundary the `+ 1` in `read` is
+        // there to make exact.
+        let mut over = String::from("id = \"oversize\"\nversion = \"1.0.0\"\n");
+        let filler = MAX_DOCUMENT_BYTES as usize + 1 - over.len();
+        over.push_str(&"#".repeat(filler));
+        assert_eq!(over.len() as u64, MAX_DOCUMENT_BYTES + 1);
+
+        let error =
+            Catalogue::read(&mut Cursor::new(&over)).expect_err("an oversize document is refused");
+        assert!(
+            matches!(error, CatalogueError::TooLarge { limit } if limit == MAX_DOCUMENT_BYTES),
+            "got {error:?}"
+        );
+
+        // And one exactly at the ceiling still reads.
+        let at = &over[..MAX_DOCUMENT_BYTES as usize];
+        assert!(
+            Catalogue::read(&mut Cursor::new(at)).is_ok(),
+            "a document exactly at the ceiling was refused"
+        );
+    }
+
     #[test]
     fn a_catalogue_may_not_name_itself_in_this_engines_namespace() {
         use std::io::Cursor;

@@ -140,6 +140,8 @@ impl fmt::Display for MacAddr {
     }
 }
 
+/// The manufacturer database, loaded once. `None` records a load that failed;
+/// see [`oui_db`] for why a failure is remembered rather than retried.
 static OUI_DB: OnceLock<Option<Oui>> = OnceLock::new();
 
 /// The OUI database, loaded once, or `None` if it could not be loaded at all.

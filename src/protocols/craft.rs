@@ -1205,6 +1205,9 @@ fn write_layer(
     }
 }
 
+/// Writes an Ethernet frame: the header, then whatever `inner` builds, then
+/// `payload`. The outermost of the writers, and the one every framed layer
+/// eventually returns to.
 fn write_ethernet(header: &Ethernet, payload: Vec<u8>, inner: Option<&Layer>) -> Result<Vec<u8>> {
     let mut bytes = vec![0u8; ETH_HDR_LEN];
     {
@@ -1222,6 +1225,10 @@ fn write_ethernet(header: &Ethernet, payload: Vec<u8>, inner: Option<&Layer>) ->
     Ok(bytes)
 }
 
+/// Writes an IPv4 datagram. Each [`Field::Computed`] header value is derived from
+/// the bytes that ended up in it, and each [`Field::Exact`] is written as the
+/// caller gave it — which is what lets an evasion profile put a wrong one on the
+/// wire deliberately.
 fn write_ipv4(header: &Ipv4, payload: Vec<u8>, inner: Option<&Layer>) -> Result<Vec<u8>> {
     PacketError::check_options("an IPv4 header", header.options.len())?;
 
@@ -1271,6 +1278,8 @@ fn write_ipv4(header: &Ipv4, payload: Vec<u8>, inner: Option<&Layer>) -> Result<
     Ok(bytes)
 }
 
+/// [`write_ipv4`] for IPv6, which has fewer fields to compute and no checksum of
+/// its own.
 fn write_ipv6(header: &Ipv6, payload: Vec<u8>, inner: Option<&Layer>) -> Result<Vec<u8>> {
     let payload_length = match header.payload_length {
         Field::Exact(value) => value,
@@ -1299,6 +1308,11 @@ fn write_ipv6(header: &Ipv6, payload: Vec<u8>, inner: Option<&Layer>) -> Result<
     Ok(bytes)
 }
 
+/// Writes a TCP segment.
+///
+/// `addresses` are the enclosing IP header's, needed for the pseudo-header the
+/// checksum covers; `None` leaves the checksum as the header asked for, which is
+/// how a segment is built without knowing yet where it will be sent from.
 fn write_tcp(
     header: &Tcp,
     payload: Vec<u8>,
@@ -1346,6 +1360,8 @@ fn write_tcp(
     Ok(bytes)
 }
 
+/// [`write_tcp`] for UDP, whose checksum covers the same pseudo-header and whose
+/// `addresses` mean the same thing.
 fn write_udp(
     header: &Udp,
     payload: Vec<u8>,
@@ -1449,6 +1465,11 @@ pub fn corrupt_internet_checksum(correct: u16) -> u16 {
     }
 }
 
+/// Writes an SCTP packet: the common header, the caller's chunks, then the
+/// CRC-32c over the whole of it, which is why the checksum field is written twice.
+///
+/// Infallible, unlike its neighbours: every length here is a fixed width and the
+/// chunks arrive already framed.
 fn write_sctp(header: &Sctp, payload: Vec<u8>) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(SCTP_COMMON_HDR_LEN + header.chunks.len() + payload.len());
     bytes.extend_from_slice(&header.source_port.to_be_bytes());

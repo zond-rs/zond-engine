@@ -615,11 +615,18 @@ impl Run {
             }
         }
 
+        // Saturating, because nothing bounds how many `<scaninfo>` elements a
+        // document may carry and each one names its own count. Two naming
+        // `u128::MAX` would panic a debug build and wrap a release one into a
+        // probe count of nearly zero, which is the worse of the two: a wrapped
+        // total reads as a plausible number. A saturated one is visibly the
+        // ceiling.
         if let Some(count) = element
             .value(b"numservices")
             .and_then(|n| n.parse::<u128>().ok())
         {
-            *self.probes.get_or_insert(0) += count;
+            let probes = self.probes.get_or_insert(0);
+            *probes = probes.saturating_add(count);
         }
 
         // The scan type says both which segment went out and whether it took a

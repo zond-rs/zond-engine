@@ -556,6 +556,9 @@ mod wire_privilege {
         Privilege::Connect
     }
 
+    /// Writes a [`Privilege`] as the one bit a journal needs: whether the scan
+    /// held raw sockets. The enum's other distinctions are about *why* it did
+    /// not, which a resume cannot act on.
     pub(super) fn serialize<S: Serializer>(
         privilege: &Privilege,
         serializer: S,
@@ -563,6 +566,7 @@ mod wire_privilege {
         privilege.is_raw().serialize(serializer)
     }
 
+    /// Reads the bit [`serialize`] wrote back into a [`Privilege`].
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Privilege, D::Error> {

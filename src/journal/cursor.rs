@@ -108,9 +108,16 @@ impl Cursor {
     }
 
     /// Advances the watermark over every consecutive settled position.
+    ///
+    /// Saturating, because the positions come out of a cursor file this process
+    /// may not have written. A planted `u64::MAX` reaches the increment, and an
+    /// unchecked one panics in a debug build and wraps to zero in a release one —
+    /// which silently un-settles every target the scan had finished. Saturating
+    /// wedges the watermark at the ceiling instead, which is wrong in the safe
+    /// direction: a resume re-probes rather than skips.
     fn catch_up(&mut self) {
         while self.above.remove(&self.watermark) {
-            self.watermark += 1;
+            self.watermark = self.watermark.saturating_add(1);
         }
     }
 
@@ -133,8 +140,12 @@ impl Cursor {
     }
 
     /// How many targets are settled in total.
+    ///
+    /// Saturating for the same reason the watermark's own advance is: the
+    /// watermark can come from a file this process did not write, and a count
+    /// that wrapped would report a nearly-finished scan as barely started.
     pub fn settled_count(&self) -> u64 {
-        self.watermark + self.above.len() as u64
+        self.watermark.saturating_add(self.above.len() as u64)
     }
 
     /// How many settled positions are waiting on a gap below them.
@@ -299,7 +310,7 @@ mod persistence {
     use std::path::Path;
 
     use super::Checkpoint;
-    use crate::journal::file::create_private;
+    use crate::journal::file::create_staged;
     use crate::journal::format::JournalError;
 
     impl Checkpoint {
@@ -323,12 +334,12 @@ mod persistence {
             // Scoped so the handle is closed before the rename. Renaming over a
             // file still held open is a hazard on platforms this may yet reach.
             {
-                let mut file = create_private(&temporary)?;
+                let mut file = create_staged(&temporary)?;
                 file.write_all(serde_json::to_string(self)?.as_bytes())?;
             }
 
             // The destination becomes the temporary's inode, which already
-            // carries the mode and the ownership `create_private` gave it.
+            // carries the mode and the ownership `create_staged` gave it.
             fs::rename(&temporary, path)?;
             Ok(())
         }

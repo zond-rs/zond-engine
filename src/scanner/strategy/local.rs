@@ -253,6 +253,10 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
 
 /// How much of the segment a [`LocalScanner`] run touches.
+///
+/// Non-exhaustive: "everything here" and "only what was named" are the two a scan
+/// needs today, and neither is an argument that there is no third.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// Probe every address in range and record every responder, including

@@ -293,6 +293,8 @@ pub fn open_sender(transport_type: TransportType) -> Result<TransportSenderHandl
     }
 }
 
+/// Opens one raw transport channel, naming this crate's error rather than
+/// letting `pnet`'s reach a caller.
 fn open_channel(
     channel_type: TransportChannelType,
 ) -> Result<(TransportSender, TransportReceiver), RawSocketError> {

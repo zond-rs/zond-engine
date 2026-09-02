@@ -242,6 +242,8 @@ fn interface_info(iface: netdev::Interface) -> Option<InterfaceInfo> {
     })
 }
 
+/// The same six bytes in the type the packet builders take. Two crates spell one
+/// address, and this is the single place the spelling changes.
 fn to_pnet_mac(mac: netdev::MacAddr) -> MacAddr {
     let [a, b, c, d, e, f] = mac.octets();
     MacAddr::new(a, b, c, d, e, f)

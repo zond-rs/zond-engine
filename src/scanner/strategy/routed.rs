@@ -119,6 +119,9 @@ const SYN_DISCOVERY_PORT: u16 = 443;
 /// filter that passes one transport and drops the other answers exactly one of
 /// these probes, and sweeping it with the wrong one reports it down while its
 /// ports are listening.
+/// Non-exhaustive: a probe kind per transport, and the transports a sweep can
+/// ask with is a list that has grown twice already.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepProbe {
     /// A TCP SYN, never completed.
@@ -235,6 +238,9 @@ impl SweepProbe {
 }
 
 /// What identifies one attempt of a sweep's probe on the wire.
+/// Non-exhaustive, and for the same reason as [`SweepProbe`]: one token kind per
+/// probe kind, so the two grow together.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepToken {
     /// A SYN's sequence number and source port. See [`SynToken`].

@@ -130,10 +130,13 @@ pub fn extract_hosts(data: &[u8]) -> Result<Vec<MdnsHost>> {
         .collect())
 }
 
+/// The name a record is about, without the root label a wire name ends in.
 fn owner_name(name: &dns_parser::Name<'_>) -> String {
     trim_root(&name.to_string())
 }
 
+/// Drops the trailing dot a fully-qualified name carries, which is on the wire
+/// and is not what anybody writes or reads.
 fn trim_root(name: &str) -> String {
     name.trim_end_matches('.').to_string()
 }

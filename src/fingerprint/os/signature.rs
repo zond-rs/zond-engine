@@ -426,6 +426,8 @@ impl Example {
     }
 }
 
+/// `#[serde(default)]` for a flag whose default is on: a rule that says nothing
+/// about it means yes.
 fn yes() -> bool {
     true
 }
@@ -454,6 +456,8 @@ pub struct OsDefinition {
     pub example: Vec<Example>,
 }
 
+/// `#[serde(default)]` for a predicate's weight: unweighted means weighted one,
+/// not weighted zero.
 fn default_weight() -> f32 {
     1.0
 }

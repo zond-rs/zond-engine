@@ -71,6 +71,8 @@ use super::signature::{OsDefinition, RuleError};
 /// The rules compiled from `assets/fingerprinting/os/` by `build.rs`.
 const EMBEDDED_RULES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/os_rules.bin"));
 
+/// The decoded rule set, built on first use and shared after, as
+/// [`fingerprint::db`](crate::fingerprint::db) does with its signatures.
 static DB: OnceLock<RuleDb> = OnceLock::new();
 
 /// A rule [`RuleDb::try_from_rules`] refused, and why.

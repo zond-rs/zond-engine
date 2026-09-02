@@ -49,6 +49,8 @@ use super::prefilter::{LiteralPrefilter, Prefilter};
 /// The signature set compiled from `assets/fingerprinting/` by `build.rs`.
 const EMBEDDED_DB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fingerprints.bin"));
 
+/// The decoded corpus, built on first use and shared after. Decoding is not
+/// cheap and the result never changes, so it is done once per process.
 static DB: OnceLock<SignatureDb> = OnceLock::new();
 
 /// A definition [`SignatureDb::try_from_definitions`] refused, and why.

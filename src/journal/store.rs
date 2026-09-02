@@ -36,6 +36,7 @@ use std::time::{Duration, SystemTime};
 use super::cursor::Checkpoint;
 use super::file::{
     append_existing, claim_directory_for_invoking_user, create_private as create_private_file,
+    create_staged,
 };
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
@@ -288,8 +289,8 @@ impl Journal {
 
         // Appending is tried first and the file created only where there is
         // none, rather than asking whether one exists and then acting on the
-        // answer. `create_private` truncates, so losing that race would cost
-        // every tape written before it.
+        // answer. `create_private` refuses a name that exists, so losing that
+        // race is reported rather than costing every tape written before it.
         let path = self.directory.join(DETECTIONS);
         let mut writer = match append_existing(&path) {
             Ok(file) => crate::journal::format::Writer::append(std::io::BufWriter::new(file)),
@@ -337,7 +338,7 @@ impl Journal {
         let temporary = destination.with_extension("jsonl-tmp");
 
         {
-            let file = create_private_file(&temporary)?;
+            let file = create_staged(&temporary)?;
             let mut writer = crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
             for host in all {
                 writer.write(&HostRecord::from(host))?;
@@ -766,6 +767,8 @@ pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, Jour
     Ok(runs)
 }
 
+/// Reads a journal's manifest, refusing one written by a newer format than this
+/// build understands rather than reading it approximately.
 fn read_manifest(directory: &Path) -> Result<JournalManifest, JournalError> {
     let text = fs::read_to_string(directory.join(MANIFEST))?;
     let manifest: JournalManifest = serde_json::from_str(&text)?;
@@ -780,6 +783,7 @@ fn read_manifest(directory: &Path) -> Result<JournalManifest, JournalError> {
     Ok(manifest)
 }
 
+/// Reads how far a scan got, which is where a resume starts.
 fn read_checkpoint(directory: &Path) -> Result<Checkpoint, JournalError> {
     match Checkpoint::read(&directory.join(CURSOR)) {
         Ok(checkpoint) => Ok(checkpoint),
@@ -877,6 +881,8 @@ fn claim_directory(root: &Path) -> Result<(String, PathBuf), JournalError> {
     .into())
 }
 
+/// Writes a whole file at a journal's own mode and ownership. For the files
+/// written once rather than a record at a time.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
     use std::io::Write;
 
@@ -904,6 +910,8 @@ fn create_private_directory(path: &Path) -> std::io::Result<()> {
     fs::DirBuilder::new().mode(0o700).create(path)
 }
 
+/// The platforms with no mode to set at creation, where the directory is created
+/// and nothing more is promised about it.
 #[cfg(not(unix))]
 fn create_private_directory(path: &Path) -> std::io::Result<()> {
     fs::create_dir(path)
