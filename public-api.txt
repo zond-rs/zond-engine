@@ -1158,7 +1158,7 @@ impl core::marker::Unpin for zond_engine::detect::flow::schema::OnNoMatch
 impl core::marker::UnsafeUnpin for zond_engine::detect::flow::schema::OnNoMatch
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::schema::OnNoMatch
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::schema::OnNoMatch
-pub struct zond_engine::detect::flow::schema::FindingSpec
+#[non_exhaustive] pub struct zond_engine::detect::flow::schema::FindingSpec
 pub zond_engine::detect::flow::schema::FindingSpec::confidence: core::option::Option<alloc::string::String>
 pub zond_engine::detect::flow::schema::FindingSpec::detail: core::option::Option<alloc::string::String>
 pub zond_engine::detect::flow::schema::FindingSpec::excerpt_from: core::option::Option<alloc::string::String>
@@ -1181,7 +1181,7 @@ impl core::marker::Unpin for zond_engine::detect::flow::schema::FindingSpec
 impl core::marker::UnsafeUnpin for zond_engine::detect::flow::schema::FindingSpec
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::schema::FindingSpec
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::schema::FindingSpec
-pub struct zond_engine::detect::flow::schema::FlowDetection
+#[non_exhaustive] pub struct zond_engine::detect::flow::schema::FlowDetection
 pub zond_engine::detect::flow::schema::FlowDetection::detection: zond_engine::detect::manifest::DetectionManifest
 pub zond_engine::detect::flow::schema::FlowDetection::step: alloc::vec::Vec<zond_engine::detect::flow::schema::Step>
 impl core::clone::Clone for zond_engine::detect::flow::schema::FlowDetection
@@ -1197,7 +1197,7 @@ impl core::marker::Unpin for zond_engine::detect::flow::schema::FlowDetection
 impl core::marker::UnsafeUnpin for zond_engine::detect::flow::schema::FlowDetection
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::schema::FlowDetection
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::schema::FlowDetection
-pub struct zond_engine::detect::flow::schema::ForEach
+#[non_exhaustive] pub struct zond_engine::detect::flow::schema::ForEach
 pub zond_engine::detect::flow::schema::ForEach::items: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::detect::flow::schema::ForEach::var: alloc::string::String
 impl core::clone::Clone for zond_engine::detect::flow::schema::ForEach
@@ -1213,7 +1213,7 @@ impl core::marker::Unpin for zond_engine::detect::flow::schema::ForEach
 impl core::marker::UnsafeUnpin for zond_engine::detect::flow::schema::ForEach
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::schema::ForEach
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::schema::ForEach
-pub struct zond_engine::detect::flow::schema::MatchDetail
+#[non_exhaustive] pub struct zond_engine::detect::flow::schema::MatchDetail
 pub zond_engine::detect::flow::schema::MatchDetail::pattern: alloc::string::String
 pub zond_engine::detect::flow::schema::MatchDetail::product: core::option::Option<alloc::string::String>
 pub zond_engine::detect::flow::schema::MatchDetail::vendor: core::option::Option<alloc::string::String>
@@ -1231,7 +1231,7 @@ impl core::marker::Unpin for zond_engine::detect::flow::schema::MatchDetail
 impl core::marker::UnsafeUnpin for zond_engine::detect::flow::schema::MatchDetail
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::schema::MatchDetail
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::schema::MatchDetail
-pub struct zond_engine::detect::flow::schema::Step
+#[non_exhaustive] pub struct zond_engine::detect::flow::schema::Step
 pub zond_engine::detect::flow::schema::Step::bind: alloc::collections::btree::map::BTreeMap<alloc::string::String, zond_engine::detect::flow::schema::MatchSpec>
 pub zond_engine::detect::flow::schema::Step::expect: alloc::vec::Vec<zond_engine::detect::flow::schema::MatchSpec>
 pub zond_engine::detect::flow::schema::Step::finding: alloc::vec::Vec<zond_engine::detect::flow::schema::FindingSpec>
@@ -1387,7 +1387,7 @@ impl core::marker::Unpin for zond_engine::detect::manifest::Speak
 impl core::marker::UnsafeUnpin for zond_engine::detect::manifest::Speak
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::manifest::Speak
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::manifest::Speak
-pub struct zond_engine::detect::manifest::CapabilitySpec
+#[non_exhaustive] pub struct zond_engine::detect::manifest::CapabilitySpec
 pub zond_engine::detect::manifest::CapabilitySpec::class: zond_engine::detect::manifest::Class
 pub zond_engine::detect::manifest::CapabilitySpec::max_bytes: core::option::Option<u32>
 pub zond_engine::detect::manifest::CapabilitySpec::max_connections: core::option::Option<u16>
@@ -1407,7 +1407,7 @@ impl core::marker::Unpin for zond_engine::detect::manifest::CapabilitySpec
 impl core::marker::UnsafeUnpin for zond_engine::detect::manifest::CapabilitySpec
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::manifest::CapabilitySpec
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::manifest::CapabilitySpec
-pub struct zond_engine::detect::manifest::DetectionManifest
+#[non_exhaustive] pub struct zond_engine::detect::manifest::DetectionManifest
 pub zond_engine::detect::manifest::DetectionManifest::capabilities: zond_engine::detect::manifest::CapabilitySpec
 pub zond_engine::detect::manifest::DetectionManifest::id: alloc::string::String
 pub zond_engine::detect::manifest::DetectionManifest::title: alloc::string::String
@@ -1426,7 +1426,7 @@ impl core::marker::Unpin for zond_engine::detect::manifest::DetectionManifest
 impl core::marker::UnsafeUnpin for zond_engine::detect::manifest::DetectionManifest
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::manifest::DetectionManifest
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::manifest::DetectionManifest
-pub struct zond_engine::detect::manifest::Rule
+#[non_exhaustive] pub struct zond_engine::detect::manifest::Rule
 pub zond_engine::detect::manifest::Rule::port: core::option::Option<u16>
 pub zond_engine::detect::manifest::Rule::ports: alloc::vec::Vec<u16>
 pub zond_engine::detect::manifest::Rule::protocol: core::option::Option<alloc::string::String>

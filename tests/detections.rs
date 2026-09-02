@@ -60,7 +60,7 @@ use zond_engine::detect::compute::{
     ComputeRuntime, Grant, LiveCapabilities, LoadError, ModuleBody, ModuleFault, RhaiRuntime,
     RunOutcome,
 };
-use zond_engine::detect::manifest::{CapabilitySpec, Class, DetectionManifest, Rule, Speak};
+use zond_engine::detect::manifest::DetectionManifest;
 use zond_engine::evasion::EvasionProfile;
 use zond_engine::fingerprint::PortContext;
 use zond_engine::model::finding::{DetectionClass, Finding, Reference, Severity};
@@ -619,20 +619,23 @@ fn a_passive_detection_that_asks_to_speak_is_handed_no_socket_at_all() {
         }
     });
 
-    let manifest = DetectionManifest {
-        id: "misdeclared-passive".to_string(),
-        version: "1.0.0".to_string(),
-        title: "Declares passive, asks to speak".to_string(),
-        when: Rule::default(),
-        capabilities: CapabilitySpec {
-            class: Class::Passive,
-            speak: Some(Speak::Target),
-            resolve: true,
-            max_bytes: None,
-            max_millis: Some(500),
-            max_connections: None,
-        },
-    };
+    // Parsed, not built: the authoring schema is `non_exhaustive`, and a parse also
+    // reaches the manifest without the validation the builder applies, which is the
+    // whole point here, a passive detection that asks to speak, one the build refuses.
+    let manifest: DetectionManifest = toml::from_str(
+        r#"
+        id      = "misdeclared-passive"
+        version = "1.0.0"
+        title   = "Declares passive, asks to speak"
+        [when]
+        [capabilities]
+        class      = "passive"
+        speak      = "target"
+        resolve    = true
+        max_millis = 500
+        "#,
+    )
+    .expect("the manifest parses");
     let grant = Grant::from_manifest(&manifest, &"0".repeat(64)).expect("the manifest resolves");
     assert!(!grant.speak, "a passive detection was granted speak");
     assert!(!grant.resolve, "a passive detection was granted resolve");

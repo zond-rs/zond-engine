@@ -45,6 +45,12 @@ use serde::Deserialize;
 
 /// `[detection]`, what a detection is and what it asks to be handed, shared
 /// by every tier that runs one.
+///
+/// Deserialized, never built by hand: `non_exhaustive` so a
+/// field a later capability adds is not a breaking change for a caller who parses a
+/// detection. A caller adds one as TOML through
+/// [`Detections::builder`](crate::detect::Detections::builder), not as a literal.
+#[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DetectionManifest {
@@ -65,6 +71,10 @@ pub struct DetectionManifest {
 
 /// `[detection.when]`, the rule that gates the whole detection, nmap's portrule.
 /// Every set field ANDs; an empty table means "any port the level offers".
+///
+/// `non_exhaustive` for the reason [`DetectionManifest`] is;
+/// [`Rule::default`] still builds the empty gate.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
@@ -118,6 +128,9 @@ pub struct Rule {
 /// it is a specification a detection writes, distinct from the served
 /// [`Capabilities`](super::compute::Capabilities) a compute module holds at run
 /// and the [`Grant`](super::compute::Grant) an envelope produces from it.
+///
+/// `non_exhaustive` for the reason [`DetectionManifest`] is.
+#[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilitySpec {

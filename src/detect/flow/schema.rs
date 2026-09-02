@@ -64,6 +64,12 @@ pub const MAX_FLOW_STEPS: usize = 16;
 pub const MAX_LOOP_ITEMS: usize = 64;
 
 /// A whole flow file: one detection, then its steps.
+///
+/// Deserialized, never built by hand: `non_exhaustive` so a
+/// field the flow language grows is not a breaking change for a caller who parses
+/// one. A caller adds a flow as TOML through
+/// [`Detections::builder`](crate::detect::Detections::builder), not as a literal.
+#[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlowDetection {
@@ -78,6 +84,9 @@ pub struct FlowDetection {
 
 /// One `[[step]]`, a straight-line node. There is no jump field; the absence is
 /// the no-backward-jumps guarantee made structural.
+///
+/// `non_exhaustive` for the reason [`FlowDetection`] is.
+#[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
@@ -150,6 +159,9 @@ impl MatchSpec {
 /// fingerprint module and `build.rs` can share it. `product`/`vendor` name what a
 /// gate identifies, for a finding's evidence; the matcher reads only `pattern`
 /// and `version_group`.
+///
+/// `non_exhaustive` for the reason [`FlowDetection`] is.
+#[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchDetail {
@@ -171,6 +183,9 @@ pub struct MatchDetail {
 }
 
 /// A bounded loop over a literal list.
+///
+/// `non_exhaustive` for the reason [`FlowDetection`] is.
+#[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForEach {
@@ -195,6 +210,9 @@ pub enum OnNoMatch {
 
 /// `[[step.finding]]`, the typed output. Maps onto the model's
 /// [`Finding`](crate::model::finding::Finding).
+///
+/// `non_exhaustive` for the reason [`FlowDetection`] is.
+#[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FindingSpec {
