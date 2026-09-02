@@ -45,7 +45,10 @@ use super::manifest::DetectionManifest;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComputeDetection {
+    /// The `[detection]` table: identity, the port gate, and the class and budget
+    /// the module asks for, identical to a flow's.
     pub detection: DetectionManifest,
+    /// The `[compute]` body and the language it is written in.
     pub compute: ComputeSection,
 }
 
@@ -53,6 +56,7 @@ pub struct ComputeDetection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComputeSection {
+    /// The language the body is written in.
     pub language: Language,
     /// The code inline. Exactly one of `source` or [`body`](Self::body) is set.
     #[serde(default)]
