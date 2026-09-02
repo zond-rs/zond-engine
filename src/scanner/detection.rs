@@ -60,14 +60,11 @@ use std::time::{Duration, Instant};
 use crate::config::DetectionEnvelope;
 use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
-use crate::detect::compute::db::ComputeDb;
 use crate::detect::compute::stage as compute_stage;
 use crate::detect::compute::{
     CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities, RunOutcome,
 };
-use crate::detect::flow::db::FlowDb;
 use crate::detect::flow::{Probe, ProbeRefusal, stage};
-use crate::detect::host::db::HostDb;
 use crate::detect::host::stage as host_stage;
 use crate::detect::manifest::{
     CapabilitySpec, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS,
@@ -98,15 +95,12 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         return;
     }
 
-    let flows = FlowDb::global();
-    let modules = ComputeDb::global();
-
     // Host-level detections correlate a host's ports into a Host finding. They read
     // only what the service phase already found, so they run independently of the
     // per-port pass below.
     detect_hosts(ctx);
 
-    let targets = interested_ports(ctx, flows, modules, envelope);
+    let targets = interested_ports(ctx, envelope);
     if targets.is_empty() {
         return;
     }
@@ -137,8 +131,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         }
         pool.admit(detect_one(
             target,
-            flows,
-            modules,
+            ctx.detections.clone(),
             envelope,
             Arc::clone(&ctx.tapes),
         ))
@@ -166,12 +159,7 @@ struct PortTarget {
 /// costs nothing here rather than a blocking task that does nothing. The responses
 /// are *taken* from the context, so they are freed as the snapshot is built rather
 /// than held to the end of the scan.
-fn interested_ports(
-    ctx: &ScanContext,
-    flows: &FlowDb,
-    modules: &ComputeDb,
-    envelope: DetectionEnvelope,
-) -> Vec<PortTarget> {
+fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortTarget> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
         let address = host.value().scoped_ip();
@@ -189,14 +177,19 @@ fn interested_ports(
             let number = port.number();
             let protocol = port.protocol();
             let service = port.service().map(|service| service.name().to_string());
-            let wanted = stage::interested(flows, &envelope, service.as_deref(), number, protocol)
-                || compute_stage::interested(
-                    modules.detections(),
-                    &envelope,
-                    service.as_deref(),
-                    number,
-                    protocol,
-                );
+            let wanted = stage::interested(
+                ctx.detections.flows(),
+                &envelope,
+                service.as_deref(),
+                number,
+                protocol,
+            ) || compute_stage::interested(
+                ctx.detections.modules().detections(),
+                &envelope,
+                service.as_deref(),
+                number,
+                protocol,
+            );
             if wanted {
                 let responses = ctx.take_responses(&address, number, protocol);
                 targets.push(PortTarget {
@@ -216,8 +209,7 @@ fn interested_ports(
 /// [`None`] if the port yielded nothing or has no reachable address.
 async fn detect_one(
     target: PortTarget,
-    flows: &'static FlowDb,
-    modules: &'static ComputeDb,
+    detections: crate::detect::Detections,
     envelope: DetectionEnvelope,
     tapes: Arc<Tapes>,
 ) -> Option<PortResult> {
@@ -233,6 +225,8 @@ async fn detect_one(
     // Both tiers are synchronous and hold a blocking socket, so they run off the
     // reactor. `spawn_blocking` fails only if the runtime is shutting down.
     let produced = tokio::task::spawn_blocking(move || {
+        let flows = detections.flows();
+        let modules = detections.modules();
         let (mut findings, flow_refusals) = stage::detect_port(
             flows,
             &envelope,
@@ -358,7 +352,7 @@ fn record(
 /// finding wherever a host's open ports and identified services fit a detection's
 /// gate. It reads what the earlier phases recorded and sends nothing.
 fn detect_hosts(ctx: &ScanContext) {
-    let host_db = HostDb::global();
+    let host_db = ctx.detections.hosts();
     if host_db.detections().is_empty() {
         return;
     }

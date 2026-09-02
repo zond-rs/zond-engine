@@ -777,6 +777,10 @@ pub struct ScanContext {
     /// The tapes of detection runs, captured for the journal to write down so a
     /// recorded scan can be replayed offline.
     pub(crate) tapes: Arc<Tapes>,
+    /// The corpus the detection phase runs, the shipped one unless a caller set
+    /// their own on the config. Cheap to clone: the compiled tiers sit behind
+    /// `Arc`s.
+    pub(crate) detections: crate::detect::Detections,
 }
 
 impl ScanContext {
@@ -1255,6 +1259,7 @@ pub struct SessionBuilder {
     exclusions: Exclusions,
     settled: crate::journal::cursor::Checkpoint,
     positions: Positions,
+    detections: crate::detect::Detections,
 }
 
 impl SessionBuilder {
@@ -1295,6 +1300,15 @@ impl SessionBuilder {
         self
     }
 
+    /// The corpus the detection phase runs, the shipped one unless set otherwise.
+    ///
+    /// [`scan`](crate::scanner::scan) sets the corpus it was given here; a caller
+    /// orchestrating their own scan sets it directly so their detections run in it.
+    pub fn detections(mut self, detections: crate::detect::Detections) -> Self {
+        self.detections = detections;
+        self
+    }
+
     /// Opens the session and the context.
     pub fn build(self) -> (ScanSession, ScanContext) {
         let store = Arc::new(DashMap::new());
@@ -1323,6 +1337,7 @@ impl SessionBuilder {
             positions: Arc::new(self.positions),
             responses: Arc::new(Responses::default()),
             tapes: Arc::new(Tapes::default()),
+            detections: self.detections,
         };
 
         (session, ctx)

@@ -94,19 +94,31 @@ impl ComputeDb {
     /// The process-wide database. The first call decodes the embedded blob and
     /// compiles each module; subsequent calls are a pointer read.
     pub(crate) fn global() -> &'static ComputeDb {
-        DB.get_or_init(|| {
-            let runtime = RhaiRuntime::new();
-            let entries: Vec<(String, String)> = bincode::deserialize(EMBEDDED)
-                .expect("embedded module database failed to deserialize");
-            let detections = entries
-                .into_iter()
-                .filter_map(|(content_hash, toml)| load_module(&runtime, &content_hash, &toml))
-                .collect();
-            ComputeDb {
-                runtime,
-                detections,
-            }
-        })
+        DB.get_or_init(ComputeDb::from_embedded)
+    }
+
+    /// The embedded corpus, compiled fresh on its own runtime. The default
+    /// [`Detections`](crate::detect::Detections) holds one of these.
+    pub(crate) fn from_embedded() -> ComputeDb {
+        let runtime = RhaiRuntime::new();
+        let detections = load_embedded(&runtime);
+        ComputeDb {
+            runtime,
+            detections,
+        }
+    }
+
+    /// A database over `runtime` and an explicit detection set, for a caller
+    /// assembling a corpus of their own. The modules must already be compiled on a
+    /// runtime whose bounds match; a Rhai `AST` is portable across runtimes.
+    pub(crate) fn from_parts(
+        runtime: RhaiRuntime,
+        detections: Vec<LoadedDetection<RhaiModule>>,
+    ) -> ComputeDb {
+        ComputeDb {
+            runtime,
+            detections,
+        }
     }
 
     /// The runtime the corpus was compiled with, which the stage runs modules on.
@@ -199,6 +211,40 @@ fn load_module(
             None
         }
     }
+}
+
+/// Decodes the embedded module corpus and compiles each body on `runtime`, skipping
+/// any that will not compile with a warning (the corpus test proves none do).
+pub(crate) fn load_embedded(runtime: &RhaiRuntime) -> Vec<LoadedDetection<RhaiModule>> {
+    let entries: Vec<(String, String)> =
+        bincode::deserialize(EMBEDDED).expect("embedded module database failed to deserialize");
+    entries
+        .into_iter()
+        .filter_map(|(content_hash, toml)| load_module(runtime, &content_hash, &toml))
+        .collect()
+}
+
+/// Compiles one caller-supplied compute detection on `runtime`, reporting why it
+/// could not be rather than skipping it. Only an inline `source` is accepted: a
+/// `body` file reference is a build-time convenience the runtime never resolves.
+pub(crate) fn compile_compute_source(
+    runtime: &RhaiRuntime,
+    toml: &str,
+    content_hash: &str,
+) -> Result<LoadedDetection<RhaiModule>, String> {
+    let detection: ComputeDetection = toml::from_str(toml).map_err(|error| error.to_string())?;
+    let source = detection
+        .compute
+        .source
+        .ok_or_else(|| "a compute detection needs an inline `source`".to_string())?;
+    let module = runtime
+        .load(&ModuleBody::Rhai(source))
+        .map_err(|error| error.to_string())?;
+    Ok(LoadedDetection::new(
+        detection.detection,
+        module,
+        content_hash,
+    ))
 }
 
 #[cfg(test)]

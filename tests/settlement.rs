@@ -23,6 +23,7 @@ mod common;
 
 use common::fake_net::{FakeNet, Layer4, Policy};
 use common::*;
+use zond_engine::detect::Detections;
 use zond_engine::journal::cursor::Checkpoint;
 use zond_engine::journal::settle::Outcome;
 use zond_engine::model::ip::set::IpSet;
@@ -272,9 +273,14 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     .expect("creates");
     let directory = journal.directory().to_path_buf();
 
-    let (_session, task) = zond_engine::scanner::scan_with_journal(plan.clone(), &cfg, journal)
-        .await
-        .expect("the scan starts");
+    let (_session, task) = zond_engine::scanner::scan_with_journal(
+        plan.clone(),
+        &cfg,
+        Detections::embedded(),
+        journal,
+    )
+    .await
+    .expect("the scan starts");
     let first = task.join().await.expect("the scan finishes");
     let first_phases = first.phases().len();
 
@@ -304,9 +310,14 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     );
     let _ = &checkpoint;
 
-    let (_session, task) = zond_engine::scanner::scan_with_journal(plan.clone(), &cfg, journal)
-        .await
-        .expect("the second sitting starts");
+    let (_session, task) = zond_engine::scanner::scan_with_journal(
+        plan.clone(),
+        &cfg,
+        Detections::embedded(),
+        journal,
+    )
+    .await
+    .expect("the second sitting starts");
     let second = task.join().await.expect("it finishes");
 
     let listed = zond_engine::journal::store::list(&root).expect("lists");
@@ -413,9 +424,10 @@ async fn a_journalled_scan_lets_a_watcher_finish() {
         "loopback",
     )
     .expect("creates");
-    let (session, task) = zond_engine::scanner::scan_with_journal(plan, &cfg, journal)
-        .await
-        .expect("the scan starts");
+    let (session, task) =
+        zond_engine::scanner::scan_with_journal(plan, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the scan starts");
 
     let (_hosts, mut events, _handle) = session.into_parts();
 

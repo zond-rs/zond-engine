@@ -40,6 +40,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use zond_engine::config::ZondConfig;
+use zond_engine::detect::Detections;
 use zond_engine::model::host::{Host, HostStatus};
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::{PortSet, PortState, Protocol};
@@ -200,9 +201,17 @@ impl Outcome {
     }
 }
 
-/// Runs a port scan to completion and collects its store and events.
+/// Runs a port scan to completion and collects its store and events. Runs the
+/// shipped corpus; [`run_scan_with`] takes a caller's own.
 pub async fn run_scan(map: TargetMap, cfg: &ZondConfig) -> Outcome {
-    let (session, task) = scanner::scan(map, cfg).await.expect("scan starts");
+    run_scan_with(map, cfg, Detections::embedded()).await
+}
+
+/// [`run_scan`] with a specific detection corpus, for the tests that add their own.
+pub async fn run_scan_with(map: TargetMap, cfg: &ZondConfig, detections: Detections) -> Outcome {
+    let (session, task) = scanner::scan(map, cfg, detections)
+        .await
+        .expect("scan starts");
     drive(session, task).await
 }
 

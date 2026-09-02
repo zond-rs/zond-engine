@@ -1064,6 +1064,55 @@ pub fn zond_engine::detect::compute::RhaiRuntime::instantiate(&self, &Self::Modu
 pub fn zond_engine::detect::compute::RhaiRuntime::load(&self, &zond_engine::detect::compute::ModuleBody) -> core::result::Result<Self::Module, zond_engine::detect::compute::LoadError>
 pub fn zond_engine::detect::compute::RhaiRuntime::run(&self, &mut Self::Instance, &zond_engine::fingerprint::PortContext, &[&[u8]], &mut dyn zond_engine::detect::compute::Capabilities) -> core::result::Result<alloc::vec::Vec<zond_engine::model::finding::Finding>, zond_engine::detect::compute::RunOutcome>
 pub fn zond_engine::detect::compute::replay_run(&zond_engine::detect::compute::DetectionRunRecord) -> core::result::Result<alloc::vec::Vec<zond_engine::model::finding::Finding>, zond_engine::detect::compute::ReplayError>
+pub mod zond_engine::detect::corpus
+#[non_exhaustive] pub enum zond_engine::detect::corpus::DetectionError
+pub zond_engine::detect::corpus::DetectionError::Compute(alloc::string::String)
+pub zond_engine::detect::corpus::DetectionError::Flow(alloc::vec::Vec<zond_engine::detect::flow::ValidationError>)
+pub zond_engine::detect::corpus::DetectionError::Host(alloc::string::String)
+pub zond_engine::detect::corpus::DetectionError::Parse(alloc::string::String)
+impl core::error::Error for zond_engine::detect::corpus::DetectionError
+impl core::fmt::Debug for zond_engine::detect::corpus::DetectionError
+pub fn zond_engine::detect::corpus::DetectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::detect::corpus::DetectionError
+pub fn zond_engine::detect::corpus::DetectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::corpus::DetectionError
+impl core::marker::Send for zond_engine::detect::corpus::DetectionError
+impl core::marker::Sync for zond_engine::detect::corpus::DetectionError
+impl core::marker::Unpin for zond_engine::detect::corpus::DetectionError
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::DetectionError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::DetectionError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::DetectionError
+pub struct zond_engine::detect::corpus::Detections
+impl zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::Detections::builder() -> zond_engine::detect::corpus::DetectionsBuilder
+pub fn zond_engine::detect::corpus::Detections::embedded() -> Self
+impl core::clone::Clone for zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::Detections::clone(&self) -> zond_engine::detect::corpus::Detections
+impl core::default::Default for zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::Detections::default() -> Self
+impl core::fmt::Debug for zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::Detections::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::corpus::Detections
+impl core::marker::Send for zond_engine::detect::corpus::Detections
+impl core::marker::Sync for zond_engine::detect::corpus::Detections
+impl core::marker::Unpin for zond_engine::detect::corpus::Detections
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::Detections
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::Detections
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::Detections
+pub struct zond_engine::detect::corpus::DetectionsBuilder
+impl zond_engine::detect::corpus::DetectionsBuilder
+pub fn zond_engine::detect::corpus::DetectionsBuilder::build(self) -> zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::DetectionsBuilder::compute(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
+pub fn zond_engine::detect::corpus::DetectionsBuilder::flow(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
+pub fn zond_engine::detect::corpus::DetectionsBuilder::host(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
+pub fn zond_engine::detect::corpus::DetectionsBuilder::without_embedded(self) -> Self
+impl !core::marker::Freeze for zond_engine::detect::corpus::DetectionsBuilder
+impl core::marker::Send for zond_engine::detect::corpus::DetectionsBuilder
+impl core::marker::Sync for zond_engine::detect::corpus::DetectionsBuilder
+impl core::marker::Unpin for zond_engine::detect::corpus::DetectionsBuilder
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::DetectionsBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::DetectionsBuilder
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::DetectionsBuilder
 pub mod zond_engine::detect::flow
 pub mod zond_engine::detect::flow::schema
 #[non_exhaustive] pub enum zond_engine::detect::flow::schema::MatchSpec
@@ -1401,6 +1450,54 @@ impl core::marker::Unpin for zond_engine::detect::manifest::Rule
 impl core::marker::UnsafeUnpin for zond_engine::detect::manifest::Rule
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::manifest::Rule
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::manifest::Rule
+#[non_exhaustive] pub enum zond_engine::detect::DetectionError
+pub zond_engine::detect::DetectionError::Compute(alloc::string::String)
+pub zond_engine::detect::DetectionError::Flow(alloc::vec::Vec<zond_engine::detect::flow::ValidationError>)
+pub zond_engine::detect::DetectionError::Host(alloc::string::String)
+pub zond_engine::detect::DetectionError::Parse(alloc::string::String)
+impl core::error::Error for zond_engine::detect::corpus::DetectionError
+impl core::fmt::Debug for zond_engine::detect::corpus::DetectionError
+pub fn zond_engine::detect::corpus::DetectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::detect::corpus::DetectionError
+pub fn zond_engine::detect::corpus::DetectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::corpus::DetectionError
+impl core::marker::Send for zond_engine::detect::corpus::DetectionError
+impl core::marker::Sync for zond_engine::detect::corpus::DetectionError
+impl core::marker::Unpin for zond_engine::detect::corpus::DetectionError
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::DetectionError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::DetectionError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::DetectionError
+pub struct zond_engine::detect::Detections
+impl zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::Detections::builder() -> zond_engine::detect::corpus::DetectionsBuilder
+pub fn zond_engine::detect::corpus::Detections::embedded() -> Self
+impl core::clone::Clone for zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::Detections::clone(&self) -> zond_engine::detect::corpus::Detections
+impl core::default::Default for zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::Detections::default() -> Self
+impl core::fmt::Debug for zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::Detections::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::corpus::Detections
+impl core::marker::Send for zond_engine::detect::corpus::Detections
+impl core::marker::Sync for zond_engine::detect::corpus::Detections
+impl core::marker::Unpin for zond_engine::detect::corpus::Detections
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::Detections
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::Detections
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::Detections
+pub struct zond_engine::detect::DetectionsBuilder
+impl zond_engine::detect::corpus::DetectionsBuilder
+pub fn zond_engine::detect::corpus::DetectionsBuilder::build(self) -> zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::DetectionsBuilder::compute(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
+pub fn zond_engine::detect::corpus::DetectionsBuilder::flow(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
+pub fn zond_engine::detect::corpus::DetectionsBuilder::host(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
+pub fn zond_engine::detect::corpus::DetectionsBuilder::without_embedded(self) -> Self
+impl !core::marker::Freeze for zond_engine::detect::corpus::DetectionsBuilder
+impl core::marker::Send for zond_engine::detect::corpus::DetectionsBuilder
+impl core::marker::Sync for zond_engine::detect::corpus::DetectionsBuilder
+impl core::marker::Unpin for zond_engine::detect::corpus::DetectionsBuilder
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::DetectionsBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::DetectionsBuilder
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::DetectionsBuilder
 pub mod zond_engine::diff
 pub mod zond_engine::diff::change
 #[non_exhaustive] pub enum zond_engine::diff::change::Coverage
@@ -12952,6 +13049,7 @@ pub struct zond_engine::scanner::session::SessionBuilder
 impl zond_engine::scanner::session::SessionBuilder
 pub fn zond_engine::scanner::session::SessionBuilder::build(self) -> (zond_engine::scanner::session::ScanSession, zond_engine::scanner::session::ScanContext)
 pub fn zond_engine::scanner::session::SessionBuilder::counting(self, zond_engine::model::ip::set::Positions) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::detections(self, zond_engine::detect::corpus::Detections) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::excluding(self, zond_engine::model::exclusion::Exclusions) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
 impl core::default::Default for zond_engine::scanner::session::SessionBuilder
@@ -12963,8 +13061,8 @@ impl core::marker::Send for zond_engine::scanner::session::SessionBuilder
 impl core::marker::Sync for zond_engine::scanner::session::SessionBuilder
 impl core::marker::Unpin for zond_engine::scanner::session::SessionBuilder
 impl core::marker::UnsafeUnpin for zond_engine::scanner::session::SessionBuilder
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::SessionBuilder
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::SessionBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::SessionBuilder
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::SessionBuilder
 pub mod zond_engine::scanner::strategy
 pub mod zond_engine::scanner::strategy::composite
 pub struct zond_engine::scanner::strategy::composite::CompositePortScanner
@@ -14050,8 +14148,8 @@ pub async fn zond_engine::scanner::discover(zond_engine::model::ip::set::IpSet, 
 pub async fn zond_engine::scanner::discover_with_journal(zond_engine::model::ip::set::IpSet, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::scanner::listen(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::scanner::listen_with_journal(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
-pub async fn zond_engine::scanner::scan(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
-pub async fn zond_engine::scanner::scan_with_journal(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
+pub async fn zond_engine::scanner::scan(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::detect::corpus::Detections) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
+pub async fn zond_engine::scanner::scan_with_journal(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::detect::corpus::Detections, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub mod zond_engine::system
 pub mod zond_engine::system::interface
 #[non_exhaustive] pub enum zond_engine::system::interface::Addressing
@@ -15923,5 +16021,5 @@ pub async fn zond_engine::discover(zond_engine::model::ip::set::IpSet, &zond_eng
 pub async fn zond_engine::discover_with_journal(zond_engine::model::ip::set::IpSet, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::listen(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::listen_with_journal(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
-pub async fn zond_engine::scan(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
-pub async fn zond_engine::scan_with_journal(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
+pub async fn zond_engine::scan(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::detect::corpus::Detections) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
+pub async fn zond_engine::scan_with_journal(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::detect::corpus::Detections, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>

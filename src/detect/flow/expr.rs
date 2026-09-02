@@ -178,8 +178,8 @@ pub enum ParseError {
     Expected(&'static str),
     /// A complete expression, then more tokens the grammar cannot attach.
     Trailing,
-    /// The guard nests parentheses deeper than [`MAX_GUARD_DEPTH`], which the
-    /// parser refuses rather than recursing into a stack overflow.
+    /// The guard nests parentheses deeper than the parser's bound, which it
+    /// refuses rather than recursing into a stack overflow.
     TooDeep,
 }
 

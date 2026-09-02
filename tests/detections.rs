@@ -27,14 +27,14 @@
 //!
 //! ## What a test outside the crate can run
 //!
-//! Only the shipped corpus. `build.rs` compiles `assets/detect/` into the
-//! binary and `FlowDb`/`ComputeDb` are crate-private, so a test cannot add a
-//! detection to what a scan will run. Everything below is provoked out of the
-//! real corpus: the Grafana flow for Tier 1 and the missing-headers module for
-//! Tier 2. A loopback listener on an ephemeral port is identified as `http`
-//! while its root page names no product, and as `grafana` once that page says
-//! so, which is the two halves of the Grafana flow's gate. The missing-headers
-//! module gates on `http` alone, so its server keeps the quiet root page.
+//! The shipped corpus, and a caller's own. Most tests below are provoked out of
+//! the shipped corpus: the Grafana flow for Tier 1 and the missing-headers module
+//! for Tier 2. A loopback listener on an ephemeral port is identified as `http`
+//! while its root page names no product, and as `grafana` once that page says so,
+//! which is the two halves of the Grafana flow's gate. The missing-headers module
+//! gates on `http` alone, so its server keeps the quiet root page. The last test
+//! builds a corpus of its own with [`Detections::builder`] and runs it in a scan,
+//! which is the whole of the library-first promise for detections.
 //!
 //! The two refusal tests near the bottom drive the public compute seam directly
 //! rather than a scan, because refusing a detection happens before a scan would
@@ -55,6 +55,7 @@ use tokio::time::timeout;
 use common::*;
 use zond_engine::config::limits::CONNECT_CONCURRENCY;
 use zond_engine::config::{DetectionEnvelope, ServiceDetection, ZondConfig};
+use zond_engine::detect::Detections;
 use zond_engine::detect::compute::{
     ComputeRuntime, Grant, LiveCapabilities, LoadError, ModuleBody, ModuleFault, RhaiRuntime,
     RunOutcome,
@@ -693,5 +694,74 @@ async fn a_scan_hands_a_passive_detection_the_responses_it_already_drew() {
         )
         .is_some(),
         "a whole scan drew the response and then handed the module nothing"
+    );
+}
+
+/// A caller-supplied detection runs in an ordinary scan, alongside the shipped
+/// corpus, exactly as a first-party one does.
+///
+/// This is the whole of the library-first promise for detections: an embedder
+/// writes a detection about their own software, passes it to the scan, and it runs
+/// on the same seam and under the same envelope as the corpus this build ships,
+/// without forking the crate. The scan finds the port, names it `http`, and the
+/// caller's flow probes it and files what it concluded.
+#[tokio::test]
+async fn a_caller_supplied_detection_runs_in_a_scan() {
+    if skip_when_privileged() {
+        return;
+    }
+
+    const CALLER_FLOW: &str = r#"
+        [detection]
+        id      = "caller-http-check"
+        version = "1.0.0"
+        title   = "Caller HTTP check"
+        [detection.when]
+        service = "http"
+        [detection.capabilities]
+        class = "active-benign"
+        speak = "target"
+        [[step]]
+        send        = "GET / HTTP/1.0\r\n\r\n"
+        expect      = "HTTP/"
+        on_no_match = "continue"
+        [[step.finding]]
+        when     = "matched"
+        severity = "medium"
+        summary  = "the caller's detection reached a web server"
+    "#;
+
+    let server = spawn_web_server(0).await;
+    let cfg = test_config();
+    let detections = Detections::builder()
+        .flow(CALLER_FLOW, "caller-hash")
+        .expect("the caller flow validates")
+        .build();
+
+    let outcome = run_scan_with(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &cfg,
+        detections,
+    )
+    .await;
+
+    let caller = finding(&outcome.report, server.port, "caller-http-check")
+        .expect("the caller's detection did not run");
+    assert_eq!(caller.severity(), Severity::Medium);
+    assert_eq!(
+        caller.detection().content_hash(),
+        "caller-hash",
+        "the caller's provenance was not carried onto the finding"
+    );
+
+    // The shipped corpus still ran beside it: the missing-headers module fired too.
+    assert!(
+        finding(
+            &outcome.report,
+            server.port,
+            "http-missing-security-headers"
+        )
+        .is_some(),
+        "setting a caller corpus dropped the shipped detections"
     );
 }

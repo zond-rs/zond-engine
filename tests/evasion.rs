@@ -637,6 +637,7 @@ async fn udp_scan_without_a_profile(ports: &[(u16, Policy)]) -> (ScanSession, Fa
 async fn a_scan_refuses_an_evasion_profile_it_could_never_honour() {
     use zond_engine::evasion::EvasionError;
     use zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU;
+    use zond_engine::detect::Detections;
     use zond_engine::{ScanError, discover, scan};
 
     let mut cfg = common::test_config();
@@ -654,10 +655,14 @@ async fn a_scan_refuses_an_evasion_profile_it_could_never_honour() {
         "got {refused:?}"
     );
 
-    let refused = scan(common::target_map(common::LOOPBACK, "80"), &cfg)
-        .await
-        .err()
-        .expect("and so is the port scan");
+    let refused = scan(
+        common::target_map(common::LOOPBACK, "80"),
+        &cfg,
+        Detections::embedded(),
+    )
+    .await
+    .err()
+    .expect("and so is the port scan");
     assert!(
         matches!(
             refused,

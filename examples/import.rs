@@ -164,7 +164,9 @@ fn both_entry_points() {
     println!("to discover:  {} hosts", sweep.len());
 
     println!();
-    println!("    let (session, task) = scanner::scan(imported.map, &config).await?;");
+    println!(
+        "    let (session, task) = scanner::scan(imported.map, &config, Detections::embedded()).await?;"
+    );
     println!("    let (session, task) = scanner::discover(sweep, &config).await?;");
 }
 

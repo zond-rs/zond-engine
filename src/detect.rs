@@ -31,9 +31,12 @@
 
 pub mod authoring;
 pub mod compute;
+pub mod corpus;
 pub mod flow;
 pub mod host;
 pub mod manifest;
 
 mod convert;
 mod gate;
+
+pub use corpus::{DetectionError, Detections, DetectionsBuilder};

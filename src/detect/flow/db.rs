@@ -73,44 +73,50 @@ impl FlowDb {
     /// The process-wide database. The first call decodes the embedded blob and
     /// re-parses each validated source; subsequent calls are a pointer read.
     pub(crate) fn global() -> &'static FlowDb {
-        DB.get_or_init(|| {
-            let sources: Vec<(String, String)> = bincode::deserialize(EMBEDDED)
-                .expect("embedded flow database failed to deserialize");
-            let flows = sources
-                .into_iter()
-                .map(|(content_hash, source)| {
-                    let flow = toml::from_str(&source).expect(
-                        "an embedded flow was validated at build but did not re-parse at runtime",
-                    );
-                    CompiledFlow { flow, content_hash }
-                })
-                .collect();
-            FlowDb { flows }
-        })
+        DB.get_or_init(FlowDb::from_embedded)
     }
 
     /// Every flow in the corpus.
     pub(crate) fn flows(&self) -> impl Iterator<Item = &CompiledFlow> {
         self.flows.iter()
     }
+
+    /// The embedded corpus, decoded fresh. The default [`Detections`](crate::detect::Detections)
+    /// holds one of these; [`global`](Self::global) caches another for the paths
+    /// that reach the corpus without a scan context (replay, the crate's tests).
+    pub(crate) fn from_embedded() -> FlowDb {
+        FlowDb {
+            flows: embedded_flows(),
+        }
+    }
+
+    /// A database over an explicit flow set, for a caller assembling a corpus of
+    /// their own or a test driving flows the shipped corpus does not carry.
+    pub(crate) fn from_flows(flows: Vec<CompiledFlow>) -> Self {
+        Self { flows }
+    }
 }
 
-#[cfg(test)]
 impl CompiledFlow {
-    /// Builds a compiled flow directly, for tests that need a synthetic corpus
-    /// rather than the embedded one.
+    /// Builds a compiled flow from a validated detection and the content address of
+    /// the bytes it was parsed from.
     pub(crate) fn from_parts(flow: FlowDetection, content_hash: String) -> Self {
         Self { flow, content_hash }
     }
 }
 
-#[cfg(test)]
-impl FlowDb {
-    /// A database over an explicit flow set, for tests that need to drive the
-    /// runtime with flows the shipped corpus does not carry.
-    pub(crate) fn from_flows(flows: Vec<CompiledFlow>) -> Self {
-        Self { flows }
-    }
+/// The embedded flow corpus as compiled flows, for combining with a caller's own.
+pub(crate) fn embedded_flows() -> Vec<CompiledFlow> {
+    let sources: Vec<(String, String)> =
+        bincode::deserialize(EMBEDDED).expect("embedded flow database failed to deserialize");
+    sources
+        .into_iter()
+        .map(|(content_hash, source)| {
+            let flow = toml::from_str(&source)
+                .expect("an embedded flow was validated at build but did not re-parse at runtime");
+            CompiledFlow { flow, content_hash }
+        })
+        .collect()
 }
 
 #[cfg(test)]

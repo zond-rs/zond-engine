@@ -113,6 +113,7 @@ use std::pin::Pin;
 use tokio::task::JoinHandle;
 
 use crate::config::ZondConfig;
+use crate::detect::Detections;
 use crate::journal::cursor::Checkpoint;
 use crate::model::{ip::set::IpSet, target::TargetMap};
 #[cfg(feature = "journal-format")]
@@ -854,14 +855,23 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
 /// from a single reply rather than a completed handshake. Without root, or with
 /// no address to probe from, probes fall back to one TCP connect attempt per
 /// target.
+///
+/// `detections` is the corpus the detection phase runs. Pass
+/// [`Detections::embedded`](crate::detect::Detections::embedded) for the ones this
+/// build ships, or a [`Detections::builder`](crate::detect::Detections::builder)
+/// result to add your own. What each detection may do to the target is still the
+/// [envelope](ZondConfig::detection)'s to decide; this is only which detections
+/// exist. A [`Detections`] is cheap to clone, so one corpus serves many scans.
 pub async fn scan(
     target_map: TargetMap,
     cfg: &ZondConfig,
+    detections: Detections,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .detections(detections)
         .build();
     let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default());
     Ok((session, ScanTask::new(handle)))
@@ -889,10 +899,13 @@ pub async fn scan(
 /// starts from what earlier runs found and its report describes the whole job:
 /// one phase per sitting, each keeping its own timings, settings and statistics,
 /// rather than the last sitting presented as the whole of it.
+///
+/// `detections` is the corpus to run, exactly as [`scan`] takes it.
 #[cfg(feature = "journal-format")]
 pub async fn scan_with_journal(
     target_map: TargetMap,
     cfg: &ZondConfig,
+    detections: Detections,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
@@ -901,6 +914,7 @@ pub async fn scan_with_journal(
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
         .resuming(journal.resume_point())
+        .detections(detections)
         .build();
 
     // Before the scan starts, so a caller watching the session sees the earlier
