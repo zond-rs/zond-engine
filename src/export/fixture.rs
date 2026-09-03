@@ -629,6 +629,7 @@ fn hostile_host() -> Host {
         .with_family(HOSTILE)
         .with_device(HOSTILE)
         .with_generation(HOSTILE)
+        .with_kernel(HOSTILE)
         .with_evidence(HOSTILE);
     os.add_cpe(HOSTILE);
     host.set_os(os);
@@ -645,6 +646,7 @@ fn hostile_port() -> Port {
         .with_product(HOSTILE)
         .with_vendor(HOSTILE)
         .with_version(HOSTILE)
+        .with_extrainfo(HOSTILE)
         .with_cpe(HOSTILE);
 
     let certificate = CertificateInfo::new(
@@ -690,6 +692,23 @@ pub(crate) fn hostile() -> ScanReport {
     );
 
     ctx.record_failure(ScannerKind::Local, HOSTILE.to_string());
+    // A neighbour's own account of itself, which is the most attacker-chosen
+    // data a report carries: LLDP and CDP are unauthenticated by design, so
+    // every string here was written by whoever is on the segment. It reaches
+    // the HTML page's own table and the nmap document, and until this line no
+    // escaping test had ever seen one.
+    ctx.record_attachment(
+        crate::report::Attachment::new(
+            crate::model::ip::scoped::Zone::new(1, HOSTILE),
+            crate::report::AttachmentSource::Lldp,
+            std::time::UNIX_EPOCH + Duration::from_secs(1_767_225_600),
+        )
+        .with_device_name(HOSTILE)
+        .with_device_mac(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x02))
+        .with_port(HOSTILE)
+        .with_native_vlan(42)
+        .with_management_address(ip(9)),
+    );
     ctx.record_probe_stats(probe_stats());
     ctx.store.insert(
         crate::model::ip::scoped::ScopedIp::unscoped(ip(3)),
