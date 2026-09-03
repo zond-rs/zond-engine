@@ -1241,9 +1241,34 @@ impl ScanContext {
     /// these hosts have just appeared. They are not marked as *changed*, though:
     /// they came from the journal, and writing them straight back would be work
     /// with nothing new in it.
+    ///
+    /// **The exclusions this sitting was given apply to what comes back.**
+    /// [`Exclusions`](crate::model::exclusion::Exclusions) promises that no
+    /// excluded address appears in the report, and names two places it is
+    /// enforced: before anything is opened, and at
+    /// [`write_host`](Self::write_host) on every finding. This is a third way
+    /// into the store, added for resume, and it went through neither — so a scan
+    /// interrupted before an exclusion was added restored the addresses that
+    /// exclusion now forbids, and reported them.
+    ///
+    /// The journal itself is left alone. It is an honest record of a sitting
+    /// that was allowed to make it, and rewriting history to match a policy that
+    /// arrived later would be the wrong repair. What changes is only what this
+    /// sitting is willing to say.
     pub fn restore_hosts(&self, hosts: &[Host]) {
         for host in hosts {
             let key = host.scoped_ip();
+            let ip = key.addr();
+
+            if self.exclusions.excludes(&ip) {
+                info!(
+                    verbosity = 2,
+                    "excluded address {ip} is in the journal from an earlier sitting; \
+                     leaving it out of this one"
+                );
+                continue;
+            }
+
             match self.store.get_mut(&key) {
                 Some(mut existing) => existing.merge(host.clone()),
                 None => {
@@ -1904,5 +1929,52 @@ mod tests {
 
         assert!(!ctx.host_expired(ip));
         assert!(ctx.take_timed_out().is_empty());
+    }
+
+    /// **A resume does not restore what this sitting is forbidden to report.**
+    ///
+    /// `Exclusions` promises that no excluded address appears in the report, and
+    /// names the two places it is enforced. `restore_hosts` was a third way into
+    /// the store and went through neither, so a scan interrupted before an
+    /// exclusion was added brought the forbidden addresses back with it — under
+    /// the operator's *current* configuration, in the engine's own continuation
+    /// of its own scan.
+    #[test]
+    fn a_resume_leaves_out_an_address_this_sitting_may_not_report() {
+        let excluded: IpAddr = "10.0.5.7".parse().expect("literal");
+        let allowed: IpAddr = "10.0.6.7".parse().expect("literal");
+
+        let mut ips = crate::model::ip::set::IpSet::new();
+        ips.insert_range("10.0.5.0/24".parse().expect("a valid range"));
+        let (mut session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(ips))
+            .build();
+
+        let restored = |ip: IpAddr| {
+            let mut host = Host::new(ip);
+            host.set_status(HostStatus::Up);
+            host
+        };
+        ctx.restore_hosts(&[restored(excluded), restored(allowed)]);
+
+        assert!(
+            !ctx.store.contains_key(&ScopedIp::unscoped(excluded)),
+            "the journal's own record of an excluded address must not come back"
+        );
+        assert!(
+            ctx.store.contains_key(&ScopedIp::unscoped(allowed)),
+            "and everything else still does"
+        );
+        assert_eq!(ctx.store.len(), 1);
+
+        // One announcement, for the one host that was restored.
+        let Some(ScanEvent::HostUpdated(announced)) = session.events().try_recv() else {
+            panic!("a restored host is announced");
+        };
+        assert_eq!(announced.addr(), allowed);
+        assert!(
+            session.events().try_recv().is_none(),
+            "an excluded address is not announced either"
+        );
     }
 }
