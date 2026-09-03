@@ -471,7 +471,7 @@ pub struct Emission {
     pub source_mac: Option<MacAddr>,
     /// The largest each IP fragment this probe is split into may be, in bytes,
     /// or `None` to send it whole. Only a self-built Ethernet frame carries
-    /// fragments this engine chose, and only for IPv4. See
+    /// fragments this engine chose, for either address family. See
     /// [`requires_link_layer`](Self::requires_link_layer).
     pub fragment: Option<u16>,
 }
@@ -520,8 +520,8 @@ impl Emission {
     }
 
     /// The same emission split into IP fragments no larger than `mtu` bytes.
-    /// Only a self-built Ethernet frame can carry the fragments, and only for
-    /// IPv4; see [`requires_link_layer`](Self::requires_link_layer).
+    /// Only a self-built Ethernet frame can carry the fragments, for either
+    /// address family; see [`requires_link_layer`](Self::requires_link_layer).
     #[must_use]
     pub const fn with_fragment(mut self, mtu: u16) -> Self {
         self.fragment = Some(mtu);

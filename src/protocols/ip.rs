@@ -41,13 +41,17 @@ use pnet_packet::icmpv6::echo_reply::EchoReplyPacket;
 use pnet_packet::icmpv6::{Icmpv6Packet, Icmpv6Type, Icmpv6Types};
 use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet_packet::ipv4::Ipv4Packet;
-use pnet_packet::ipv6::Ipv6Packet;
+use pnet_packet::ipv6::{Ipv6Packet, MutableFragmentPacket};
 
 const WORD_LEN: usize = 4;
 
 /// The eight-byte unit an IPv4 fragment offset counts in (RFC 791 §3.1), so a
 /// fragment that is not the last must carry a whole number of these.
 const FRAGMENT_UNIT: usize = 8;
+
+/// The IPv6 fragment extension header (RFC 8200 §4.5): a next-header byte, a
+/// reserved byte, the offset-and-flags halfword, and a 32-bit identification.
+const FRAGMENT_HEADER_LEN: usize = 8;
 
 /// The smallest MTU [`fragment_ipv4`] will split a datagram to: a header and one
 /// whole eight-byte unit.
@@ -59,6 +63,16 @@ const FRAGMENT_UNIT: usize = 8;
 ///
 /// [`EvasionProfile::validate`]: crate::evasion::EvasionProfile::validate
 pub const SMALLEST_FRAGMENT_MTU: u16 = (IP_V4_HDR_LEN + FRAGMENT_UNIT) as u16;
+
+/// The smallest MTU [`fragment_ipv6`] will split a datagram to: the base header,
+/// the fragment extension header, and one whole eight-byte unit.
+///
+/// Larger than [`SMALLEST_FRAGMENT_MTU`] by the extension header and by the
+/// wider base header, because a v6 fragment carries both where a v4 fragment
+/// carries neither. A caller sizing a fragment for a target whose family it
+/// knows chooses against whichever of the two applies.
+pub const SMALLEST_FRAGMENT_MTU_V6: u16 =
+    (IP_V6_HDR_LEN + FRAGMENT_HEADER_LEN + FRAGMENT_UNIT) as u16;
 
 /// Builds a 20-byte IPv4 header (no options) for a packet carrying
 /// `payload_length` bytes of `next_protocol` from `src_addr` to `dst_addr`.
@@ -201,6 +215,140 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
         };
 
         let mut packet = piece.header_bytes(chunk.len() as u16)?;
+        packet.extend_from_slice(chunk);
+        fragments.push(packet);
+
+        offset += chunk.len();
+    }
+
+    Ok(fragments)
+}
+
+/// Splits an IPv6 datagram into fragments that each fit within `mtu` bytes.
+///
+/// The v6 counterpart of [`fragment_ipv4`], and the reason
+/// [`EvasionProfile::fragment`](crate::evasion::EvasionProfile::fragment) is no
+/// longer a v4-only setting. It differs from
+/// its twin in where the fragmentation lives: IPv6 keeps its base header fixed
+/// and carries the offset, the flag and the identification in a fragment
+/// extension header (RFC 8200 §4.5) that sits between the base header and the
+/// piece. So each returned packet is the base header, then eight bytes of
+/// fragment header, then the piece.
+///
+/// `header` is the IPv6 header the caller would otherwise send whole, and
+/// `payload` is the finished Layer-4 segment behind it. The segment is split as
+/// opaque bytes and never re-checksummed: a v6 checksum covers a pseudo-header
+/// that names the datagram's own length once, and reassembly restores it, so the
+/// sum a receiver verifies is the one the whole segment was signed with.
+///
+/// The base header each fragment repeats points at the fragment header
+/// ([`Ipv6Frag`](IpNextHeaderProtocols::Ipv6Frag)), and the fragment header
+/// carries the upper-layer protocol the base header would otherwise have named.
+/// A [`Computed`](craft::Field::Computed) next header resolves the way
+/// [`header_bytes`](craft::Ipv6::header_bytes) would resolve it with no inner
+/// layer, to TCP, which is what every fragmenting caller in this crate is in
+/// fact carrying.
+///
+/// Every fragment shares one 32-bit identification, generated once. Unlike
+/// IPv4's, it is not a field a caller can set: it exists only to group a
+/// datagram's fragments, and nothing outside fragmentation reads it.
+///
+/// A datagram that already fits `mtu` comes back as one ordinary IPv6 packet
+/// with no fragment header at all, the way [`fragment_ipv4`] returns an
+/// unfragmented datagram: a probe that needed no splitting should not carry the
+/// evidence that it was split.
+///
+/// # Errors
+///
+/// [`PacketError::MtuTooSmall`] when `mtu` cannot hold the base header, the
+/// fragment header and at least one eight-byte unit of payload. The floor is
+/// [`SMALLEST_FRAGMENT_MTU_V6`], higher than the v4 floor by exactly those two
+/// headers.
+///
+/// [`PacketError::TooLong`] when the payload is larger than a thirteen-bit
+/// offset counting eight-byte units can address. A v6 base header cannot itself
+/// overflow on a length this holds, so unlike [`fragment_ipv4`] the bound is the
+/// offset field rather than the length field; the two happen to be the same
+/// number of payload bytes.
+pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<Vec<Vec<u8>>> {
+    let mtu = mtu as usize;
+
+    // The offset field addresses eight-byte units in thirteen bits, so no
+    // fragment may begin beyond 65 528 bytes into the payload. Every segment
+    // this engine fragments is far below that; the guard refuses a larger one
+    // rather than wrapping its final offset, the way fragment_ipv4 guards its
+    // own length field.
+    if payload.len() > u16::MAX as usize {
+        return Err(PacketError::too_long(
+            "the IPv6 fragmentable payload",
+            IP_V6_HDR_LEN + FRAGMENT_HEADER_LEN,
+            payload.len(),
+        ));
+    }
+
+    // The whole datagram fits: hand it back as an ordinary IPv6 packet, no
+    // fragment header, rather than fragmenting what needs no fragmenting.
+    if IP_V6_HDR_LEN + payload.len() <= mtu {
+        let mut packet = header.header_bytes(payload.len() as u16);
+        packet.extend_from_slice(payload);
+        return Ok(vec![packet]);
+    }
+
+    // Every fragment but the last carries a whole number of eight-byte units,
+    // and each carries the fragment header on top of the base one.
+    let overhead = IP_V6_HDR_LEN + FRAGMENT_HEADER_LEN;
+    let max_chunk = (mtu.saturating_sub(overhead) / FRAGMENT_UNIT) * FRAGMENT_UNIT;
+    if max_chunk == 0 {
+        return Err(PacketError::MtuTooSmall {
+            mtu,
+            minimum: SMALLEST_FRAGMENT_MTU_V6 as usize,
+        });
+    }
+
+    // The upper-layer protocol moves into the fragment header; the base header
+    // points at the fragment header instead. Resolved once for the whole
+    // datagram.
+    let upper = header
+        .next_header
+        .exact()
+        .unwrap_or(IpNextHeaderProtocols::Tcp);
+
+    // One identification for the whole datagram, so a receiver can group the
+    // pieces. Thirty-two bits here, against IPv4's sixteen.
+    let identification: u32 = rand::random();
+
+    // The base header each fragment repeats: pointing at the fragment header,
+    // with a payload length re-derived per piece.
+    let base = craft::Ipv6 {
+        next_header: craft::Field::Exact(IpNextHeaderProtocols::Ipv6Frag),
+        payload_length: craft::Field::Computed,
+        ..header.clone()
+    };
+
+    let mut fragments = Vec::new();
+    let mut offset = 0;
+    while offset < payload.len() {
+        let chunk = &payload[offset..(offset + max_chunk).min(payload.len())];
+        let more_fragments = offset + chunk.len() < payload.len();
+
+        let mut packet = base.header_bytes((FRAGMENT_HEADER_LEN + chunk.len()) as u16);
+
+        let mut extension = [0u8; FRAGMENT_HEADER_LEN];
+        {
+            let mut fragment = MutableFragmentPacket::new(&mut extension)
+                .expect("an eight-byte buffer holds a fragment header");
+            fragment.set_next_header(upper);
+            fragment.set_reserved(0);
+            // The offset occupies the top thirteen bits and the More Fragments
+            // flag bit zero, with the two reserved bits between them left clear.
+            // Written as the one field the wire carries rather than through
+            // pnet's `set_fragment_offset`, which masks on a two-bit boundary
+            // and would need the value pre-shifted to mean the same thing.
+            let units = (offset / FRAGMENT_UNIT) as u16;
+            fragment.set_fragment_offset_with_flags((units << 3) | u16::from(more_fragments));
+            fragment.set_id(identification);
+        }
+        packet.extend_from_slice(&extension);
         packet.extend_from_slice(chunk);
         fragments.push(packet);
 
@@ -447,6 +595,7 @@ mod tests {
     use proptest::prelude::*;
 
     const V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+    const V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
 
     /// The largest payload the total-length field can describe, and the first
     /// one it cannot.
@@ -876,6 +1025,192 @@ mod tests {
                     reassembled.len()
                 );
                 reassembled.extend_from_slice(body);
+            }
+            prop_assert_eq!(reassembled, payload);
+        }
+    }
+
+    // ── IPv6 fragmentation ─────────────────────────────────────────────────────
+
+    /// Reads one emitted v6 fragment into what a receiver needs to reassemble:
+    /// its offset in eight-byte units, whether more follow, the upper-layer
+    /// protocol the fragment header names, and the piece it carries.
+    ///
+    /// The piece is the base-header payload past the eight-byte extension, since
+    /// pnet models the fragment header's own payload as zero-length.
+    fn parse_v6(fragment: &[u8]) -> (u16, bool, IpNextHeaderProtocol, Vec<u8>) {
+        use pnet_packet::ipv6::FragmentPacket;
+
+        let packet = Ipv6Packet::new(fragment).expect("a v6 fragment parses");
+        assert_eq!(
+            packet.get_next_header(),
+            IpNextHeaderProtocols::Ipv6Frag,
+            "a fragment's base header points at the fragment extension"
+        );
+        let extension = FragmentPacket::new(packet.payload()).expect("a fragment header");
+        let offset_with_flags = extension.get_fragment_offset_with_flags();
+        (
+            offset_with_flags >> 3,
+            offset_with_flags & 1 != 0,
+            extension.get_next_header(),
+            packet.payload()[FRAGMENT_HEADER_LEN..].to_vec(),
+        )
+    }
+
+    /// The heart of it in v6, over three fragments: each starts one run of
+    /// eight-byte units past the one before, more-fragments is set on every piece
+    /// but the last, and every fragment header names the upper-layer protocol the
+    /// base header gave up.
+    #[test]
+    fn offsets_and_flags_march_across_three_fragments_v6() {
+        // Base 40 and fragment header 8 leave, at MTU 72, 24 bytes (three units),
+        // so a 60-byte payload splits 24, 24, 12.
+        let mtu = (IP_V6_HDR_LEN + FRAGMENT_HEADER_LEN + 24) as u16;
+        let payload: Vec<u8> = (0..60u8).collect();
+        let header = craft::Ipv6 {
+            next_header: craft::Field::Exact(IpNextHeaderProtocols::Udp),
+            ..craft::Ipv6::new(V6, V6)
+        };
+        let fragments = fragment_ipv6(&header, &payload, mtu).expect("fragments");
+        assert_eq!(fragments.len(), 3);
+
+        let parsed: Vec<_> = fragments.iter().map(|f| parse_v6(f)).collect();
+        assert_eq!(
+            [parsed[0].0, parsed[1].0, parsed[2].0],
+            [0, 3, 6],
+            "offsets count eight-byte units: 0, 24/8, 48/8"
+        );
+        assert_eq!(
+            [parsed[0].1, parsed[1].1, parsed[2].1],
+            [true, true, false],
+            "more-fragments follows every piece but the last"
+        );
+        for fragment in &parsed {
+            assert_eq!(
+                fragment.2,
+                IpNextHeaderProtocols::Udp,
+                "each fragment header carries the protocol the base header gave up"
+            );
+        }
+    }
+
+    /// A datagram that already fits comes back whole: one ordinary IPv6 packet,
+    /// no fragment header, its next-header still the upper-layer protocol.
+    #[test]
+    fn a_datagram_that_fits_is_returned_whole_v6() {
+        let payload = vec![0xABu8; 100];
+        let header = craft::Ipv6 {
+            next_header: craft::Field::Exact(IpNextHeaderProtocols::Tcp),
+            ..craft::Ipv6::new(V6, V6)
+        };
+        let fragments = fragment_ipv6(&header, &payload, 1500).expect("one packet");
+        assert_eq!(fragments.len(), 1);
+
+        let packet = Ipv6Packet::new(&fragments[0]).expect("parses");
+        assert_eq!(
+            packet.get_next_header(),
+            IpNextHeaderProtocols::Tcp,
+            "an unfragmented datagram carries no fragment header"
+        );
+        assert_eq!(packet.payload(), payload, "and the payload arrives intact");
+    }
+
+    /// A receiver groups a datagram's fragments by identification, so every
+    /// fragment carries the same one.
+    #[test]
+    fn every_fragment_shares_one_identification_v6() {
+        use pnet_packet::ipv6::FragmentPacket;
+
+        let payload = vec![0u8; 200];
+        let fragments = fragment_ipv6(&craft::Ipv6::new(V6, V6), &payload, 96).expect("fragments");
+        assert!(fragments.len() >= 2, "the payload must actually split");
+
+        let ids: Vec<u32> = fragments
+            .iter()
+            .map(|f| {
+                let packet = Ipv6Packet::new(f).expect("parses");
+                FragmentPacket::new(packet.payload())
+                    .expect("a fragment header")
+                    .get_id()
+            })
+            .collect();
+        assert!(
+            ids.iter().all(|id| *id == ids[0]),
+            "one identification for the datagram, got {ids:?}"
+        );
+    }
+
+    /// An MTU with no room for the two headers and one eight-byte unit is refused
+    /// rather than split into a run of headers that never reaches the payload.
+    /// The floor is exact, and higher than the v4 floor by the extension header
+    /// and the wider base header.
+    #[test]
+    fn an_mtu_with_no_room_to_progress_is_refused_v6() {
+        let payload = vec![0u8; 40];
+        let floor = SMALLEST_FRAGMENT_MTU_V6;
+        let refused = fragment_ipv6(&craft::Ipv6::new(V6, V6), &payload, floor - 1);
+        assert!(
+            matches!(refused, Err(PacketError::MtuTooSmall { .. })),
+            "got {refused:?}"
+        );
+        fragment_ipv6(&craft::Ipv6::new(V6, V6), &payload, floor)
+            .expect("the floor is one unit of room");
+    }
+
+    /// A payload larger than a thirteen-bit offset can address is refused rather
+    /// than wrapped into a final fragment that claims the wrong place.
+    #[test]
+    fn a_payload_too_large_for_the_offset_field_is_refused_v6() {
+        let largest = u16::MAX as usize;
+        fragment_ipv6(&craft::Ipv6::new(V6, V6), &vec![0u8; largest], 1500)
+            .expect("the largest addressable payload still fragments");
+
+        let refused = fragment_ipv6(&craft::Ipv6::new(V6, V6), &vec![0u8; largest + 1], 1500);
+        assert!(
+            matches!(refused, Err(PacketError::TooLong { .. })),
+            "got {refused:?}"
+        );
+    }
+
+    proptest! {
+        /// The v6 counterpart of the reassembly check: over any payload and any
+        /// workable MTU, the fragments' pieces in offset order are exactly the
+        /// original bytes, each non-last piece is a whole number of eight-byte
+        /// units, every packet fits the MTU, and only the last clears
+        /// more-fragments.
+        #[test]
+        fn fragments_reassemble_into_the_original_datagram_v6(
+            payload in prop::collection::vec(any::<u8>(), 0..4096usize),
+            mtu in (SMALLEST_FRAGMENT_MTU_V6)..=1500,
+        ) {
+            let fragments = fragment_ipv6(&craft::Ipv6::new(V6, V6), &payload, mtu)
+                .expect("a workable MTU fragments");
+            let split = fragments.len() > 1;
+
+            let mut reassembled = Vec::new();
+            for (i, fragment) in fragments.iter().enumerate() {
+                prop_assert!(fragment.len() <= mtu as usize);
+                let last = i + 1 == fragments.len();
+
+                // A datagram that fit is a plain packet with no fragment header;
+                // only a split one carries the extension this walks.
+                if !split {
+                    let packet = Ipv6Packet::new(fragment).expect("parses");
+                    reassembled.extend_from_slice(packet.payload());
+                    continue;
+                }
+
+                let (offset, more_fragments, _, body) = parse_v6(fragment);
+                prop_assert_eq!(more_fragments, !last, "more-fragments is set on every piece but the last");
+                if !last {
+                    prop_assert_eq!(body.len() % FRAGMENT_UNIT, 0, "a non-last fragment is whole units");
+                }
+                prop_assert_eq!(
+                    offset as usize * FRAGMENT_UNIT,
+                    reassembled.len(),
+                    "the offset counts the bytes before this piece"
+                );
+                reassembled.extend_from_slice(&body);
             }
             prop_assert_eq!(reassembled, payload);
         }

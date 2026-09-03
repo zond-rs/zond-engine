@@ -17,8 +17,8 @@
 //! What remains falls in three groups. A caller can describe a packet no header
 //! can measure ([`TooLong`], [`OptionsTooLong`], [`OptionsMisaligned`],
 //! [`UnwritableName`]), ask for something the protocols do not offer
-//! ([`FamilyMismatch`], [`WrongFamily`], [`MtuTooSmall`], [`HeaderHasOptions`],
-//! [`UnsupportedFragmentation`]), or hand a reader bytes that are not what they
+//! ([`FamilyMismatch`], [`WrongFamily`], [`MtuTooSmall`], [`HeaderHasOptions`]),
+//! or hand a reader bytes that are not what they
 //! were read as ([`Truncated`], [`Unreadable`], [`UnexpectedMessage`],
 //! [`UnsupportedEtherType`]).
 //!
@@ -34,7 +34,6 @@
 //! [`WrongFamily`]: PacketError::WrongFamily
 //! [`MtuTooSmall`]: PacketError::MtuTooSmall
 //! [`HeaderHasOptions`]: PacketError::HeaderHasOptions
-//! [`UnsupportedFragmentation`]: PacketError::UnsupportedFragmentation
 //! [`Truncated`]: PacketError::Truncated
 //! [`Unreadable`]: PacketError::Unreadable
 //! [`UnexpectedMessage`]: PacketError::UnexpectedMessage
@@ -129,22 +128,6 @@ pub enum PacketError {
     HeaderHasOptions {
         /// How many option bytes the header carried.
         options: usize,
-    },
-
-    /// A datagram was handed to the fragmenter for a family this engine does
-    /// not fragment.
-    ///
-    /// IPv6 puts fragmentation in an extension header rather than in the header
-    /// itself, and a sender is meant to discover the path MTU instead of
-    /// splitting on the way out. Nothing here builds that header, so the request
-    /// is refused by name rather than answered with a datagram that is not
-    /// fragmented at all.
-    #[error(
-        "cannot fragment to {dst}: IPv6 fragments through an extension header this engine does not build"
-    )]
-    UnsupportedFragmentation {
-        /// The destination that was asked for.
-        dst: IpAddr,
     },
 
     /// A header's options do not fit the field that measures them.
