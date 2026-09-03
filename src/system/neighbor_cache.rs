@@ -318,6 +318,34 @@ mod platform {
         Some(IpAddr::V6(Ipv6Addr::from(octets)))
     }
 
+    fn read_mac(bytes: &[u8]) -> Option<MacAddr> {
+        if bytes.len() < mem::size_of::<sockaddr_dl>() {
+            return None;
+        }
+        // SAFETY: the length check guarantees a whole `sockaddr_dl`.
+        let sdl: sockaddr_dl =
+            unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const sockaddr_dl) };
+
+        // The address lives inside a variable-length trailer after the interface
+        // name, and is only a MAC when it is six bytes long.
+        const ETHER_ADDR_LEN: usize = 6;
+        if sdl.sdl_alen as usize != ETHER_ADDR_LEN {
+            return None;
+        }
+
+        let start = sdl.sdl_nlen as usize;
+        let data = &sdl.sdl_data;
+        let end = start + ETHER_ADDR_LEN;
+        if end > data.len() {
+            return None;
+        }
+
+        let octets: Vec<u8> = data[start..end].iter().map(|b| *b as u8).collect();
+        Some(MacAddr::new(
+            octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
+        ))
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -443,34 +471,6 @@ mod platform {
 
             assert!(parse(&buffer).is_empty());
         }
-    }
-
-    fn read_mac(bytes: &[u8]) -> Option<MacAddr> {
-        if bytes.len() < mem::size_of::<sockaddr_dl>() {
-            return None;
-        }
-        // SAFETY: the length check guarantees a whole `sockaddr_dl`.
-        let sdl: sockaddr_dl =
-            unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const sockaddr_dl) };
-
-        // The address lives inside a variable-length trailer after the interface
-        // name, and is only a MAC when it is six bytes long.
-        const ETHER_ADDR_LEN: usize = 6;
-        if sdl.sdl_alen as usize != ETHER_ADDR_LEN {
-            return None;
-        }
-
-        let start = sdl.sdl_nlen as usize;
-        let data = &sdl.sdl_data;
-        let end = start + ETHER_ADDR_LEN;
-        if end > data.len() {
-            return None;
-        }
-
-        let octets: Vec<u8> = data[start..end].iter().map(|b| *b as u8).collect();
-        Some(MacAddr::new(
-            octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
-        ))
     }
 }
 
