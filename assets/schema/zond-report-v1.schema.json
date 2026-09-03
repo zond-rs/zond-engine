@@ -817,6 +817,7 @@
         },
         "state": {
           "enum": [
+            "unasked",
             "closed_filtered",
             "filtered",
             "unfiltered",
@@ -1824,7 +1825,8 @@
             "closed",
             "unfiltered",
             "filtered",
-            "closed_filtered"
+            "closed_filtered",
+            "unasked"
           ],
           "properties": {
             "open": {
@@ -1843,6 +1845,10 @@
               "$ref": "#/$defs/count"
             },
             "closed_filtered": {
+              "$ref": "#/$defs/count"
+            },
+            "unasked": {
+              "description": "Ports the scan named and never probed, so nothing was established about them. Non-zero means the run fell short of its own plan; the phase's stop_reason and timed_out say why.",
               "$ref": "#/$defs/count"
             }
           }

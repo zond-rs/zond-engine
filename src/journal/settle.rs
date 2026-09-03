@@ -8,14 +8,16 @@
 
 //! # What became of a target, and whether a resume may skip it
 //!
-//! A raw port scan gives the same verdict to a target whose retry budget ran
-//! out, one still mid-schedule when the scan stopped, and one never probed at
-//! all. `RawPortScan::resolve_unasked` explains why, and is right: for a report,
-//! a too-kind verdict beats a silently truncated port list.
+//! A raw port scan gives the same verdict to a target whose retry budget ran out
+//! and to one still mid-schedule when the scan stopped. Both were asked and
+//! neither answered; how many times the question was repeated is the difference,
+//! and a report reads them as one silence. A target no probe was sent to is
+//! recorded [`PortState::Unasked`](crate::model::port::PortState::Unasked)
+//! instead, since it is a fact about the scan rather than a reading of silence.
 //!
-//! For a resume that is the worst bug available: a cursor advanced over a target
-//! nobody probed produces a second sitting that skips it and a merged report
-//! claiming coverage it never had.
+//! A resume can afford neither blurring. A cursor advanced over a target nobody
+//! probed produces a second sitting that skips it and a merged report claiming
+//! coverage it never had.
 //!
 //! [`Outcome`] makes the distinction unforgeable. Only the settled variants carry
 //! a position, and a position is the only thing a cursor can advance over.
@@ -26,7 +28,7 @@
 //! | [`Exhausted`](Outcome::Exhausted) | `Due::Exhausted` | yes |
 //! | [`Skipped`](Outcome::Skipped) | the liveness pass found no host | yes |
 //! | [`Interrupted`](Outcome::Interrupted) | `ledger.drain_unresolved()` | no |
-//! | [`Unasked`](Outcome::Unasked) | still queued when the scan stopped | no |
+//! | [`Unasked`](Outcome::Unasked) | no probe was sent | no |
 //! | [`Unroutable`](Outcome::Unroutable) | no scanner for the protocol, or no route | no |
 //!
 //! Unsettled outcomes are counted, not stored. Their total is worth reporting;
@@ -114,7 +116,9 @@ pub enum Outcome {
     /// cut off rather than spent.
     Interrupted,
 
-    /// Still queued when the scan stopped, so nothing was sent.
+    /// No probe was sent: the target was still queued when the scan stopped, its
+    /// host had already spent its own budget, or this machine's sender refused
+    /// the send.
     Unasked,
 
     /// No scanner spoke its protocol, or the host had no route. Usually a missing

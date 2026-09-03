@@ -383,9 +383,18 @@ fn write_host(
         writeln!(out, "</hostnames>")?;
     }
 
-    if host.port_count() > 0 {
+    // A port nobody asked about is left out rather than written down. Nmap's
+    // `<ports>` is the record of what was probed, and its vocabulary has no word
+    // for a port no probe was sent to, so filing one under any of the six states
+    // it does have would put a verdict this scan never reached into a file
+    // another tool parses. See `PortState::Unasked`.
+    let mut probed = host
+        .ports()
+        .filter(|port| port_state(port.state()).is_some());
+    if let Some(first) = probed.next() {
         writeln!(out, "<ports>")?;
-        for port in host.ports() {
+        write_port(out, first)?;
+        for port in probed {
             write_port(out, port)?;
         }
         writeln!(out, "</ports>")?;
@@ -517,7 +526,15 @@ fn write_finding_scripts<'a>(
 }
 
 /// Writes one `<port>` element.
+///
+/// Writes nothing for a port this format cannot state, which is a port no probe
+/// was sent to; the caller filters those out, and this returns rather than
+/// writing an element with no `<state>` in it.
 fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
+    let (Some(state), Some(reason)) = (port_state(port.state()), port_reason(port.state())) else {
+        return Ok(());
+    };
+
     writeln!(
         out,
         r#"<port protocol="{}" portid="{}">"#,
@@ -527,8 +544,8 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
     writeln!(
         out,
         r#"<state state="{}" reason="{}" reason_ttl="0"/>"#,
-        port_state(port.state()),
-        Attr(port_reason(port.state())),
+        state,
+        Attr(reason),
     )?;
 
     if let Some(service) = port.service() {
@@ -569,36 +586,48 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
 // Vocabulary
 // ---------------------------------------------------------------------------
 
-/// This engine's port states in nmap's spelling.
+/// This engine's port states in nmap's spelling, and [`None`] for the one that
+/// has none.
 ///
 /// An exhaustive match, so a new state cannot be added without somebody deciding
-/// what this format calls it. All six correspond exactly: they are the six states
-/// a probe can distinguish.
-fn port_state(state: PortState) -> &'static str {
-    match state {
+/// what this format calls it. Six of the seven correspond exactly: they are the
+/// six verdicts a probe can distinguish, which is the same six nmap's own probes
+/// reach.
+///
+/// [`PortState::Unasked`] is the one that does not, and it is not an oversight in
+/// nmap: a port nmap did not scan is a port nmap does not write, so the format
+/// says what it has to say about this by omission. Answering [`None`] is how that
+/// reaches the caller, which drops the element rather than picking the least
+/// wrong of the six.
+fn port_state(state: PortState) -> Option<&'static str> {
+    Some(match state {
         PortState::Open => "open",
         PortState::Closed => "closed",
         PortState::Filtered => "filtered",
         PortState::Unfiltered => "unfiltered",
         PortState::OpenFiltered => "open|filtered",
         PortState::ClosedFiltered => "closed|filtered",
-    }
+        PortState::Unasked => return None,
+    })
 }
 
 /// What nmap would have written as the evidence for a state.
 ///
 /// Nmap's `reason` names the packet that decided a state. This engine records its
 /// evidence per host rather than per port, so these say only as much as is
-/// certainly true rather than naming a packet nobody saw.
-fn port_reason(state: PortState) -> &'static str {
-    match state {
+/// certainly true rather than naming a packet nobody saw. `no-response` is as far
+/// down as the vocabulary goes, and a port no probe was sent to did not fail to
+/// respond, so it answers [`None`] here for the reason [`port_state`] does.
+fn port_reason(state: PortState) -> Option<&'static str> {
+    Some(match state {
         PortState::Open => "syn-ack",
         PortState::Closed => "reset",
         PortState::Filtered
         | PortState::Unfiltered
         | PortState::OpenFiltered
         | PortState::ClosedFiltered => "no-response",
-    }
+        PortState::Unasked => return None,
+    })
 }
 
 /// This engine's host statuses in nmap's spelling.
@@ -750,6 +779,16 @@ mod tests {
         String::from_utf8(out).expect("the document is UTF-8")
     }
 
+    /// A report of nothing but `hosts`, exported.
+    fn export(hosts: &[Host]) -> String {
+        let report = ScanReport::recorded("zond", Vec::new(), hosts.to_vec());
+        let mut out = Vec::new();
+        NmapXmlExporter::new(ExportOptions::new())
+            .export(&report, &mut out)
+            .expect("the report exports");
+        String::from_utf8(out).expect("the document is UTF-8")
+    }
+
     /// The point of the whole format. A consumer keys on the root element and
     /// its output version, and gets a document in nmap's shape.
     #[test]
@@ -782,11 +821,15 @@ mod tests {
         );
     }
 
-    /// Every state has a name in this vocabulary and the six correspond
-    /// exactly, so a document is never less specific about a port than the scan
-    /// was.
+    /// Every verdict a probe reaches has a name in this vocabulary, so a document
+    /// is never less specific about a port than the scan was.
+    ///
+    /// Read off [`PortState::ALL`] rather than a list written out here, which is
+    /// what a state added later has to pass through: the six verdicts map, and
+    /// the one state that is not a verdict declines to, which the test below
+    /// holds it to.
     #[test]
-    fn every_port_state_maps_to_a_state_nmap_defines() {
+    fn every_port_state_a_probe_reaches_maps_to_a_state_nmap_defines() {
         const NMAP_STATES: [&str; 6] = [
             "open",
             "closed",
@@ -796,20 +839,61 @@ mod tests {
             "closed|filtered",
         ];
 
-        for state in [
-            PortState::Open,
-            PortState::Closed,
-            PortState::Filtered,
-            PortState::Unfiltered,
-            PortState::OpenFiltered,
-            PortState::ClosedFiltered,
-        ] {
+        for state in PortState::ALL {
+            let Some(name) = port_state(state) else {
+                assert_eq!(
+                    state,
+                    PortState::Unasked,
+                    "{state:?} has no name in nmap's vocabulary and is not the \
+                     one state that has none"
+                );
+                continue;
+            };
             assert!(
-                NMAP_STATES.contains(&port_state(state)),
-                "{state:?} maps to '{}', which nmap does not define",
-                port_state(state)
+                NMAP_STATES.contains(&name),
+                "{state:?} maps to '{name}', which nmap does not define"
             );
         }
+    }
+
+    /// A port no probe was sent to is not written at all.
+    ///
+    /// Nmap does not emit a `<port>` for a port it did not scan, so there is no
+    /// state to file one under and no honest way to invent one. Writing it as
+    /// `filtered`, the nearest of the six, would tell every tool that reads this
+    /// format that a firewall dropped a probe this scan never sent.
+    #[test]
+    fn a_port_nobody_asked_about_is_left_out_of_the_document() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 9)));
+        host.set_status(HostStatus::Up);
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        host.add_port(Port::new(23, Protocol::Tcp, PortState::Unasked));
+
+        let document = export(&[host]);
+
+        assert!(
+            document.contains(r#"portid="22""#),
+            "the probed port is missing"
+        );
+        assert!(
+            !document.contains(r#"portid="23""#),
+            "a port nobody asked about was written down anyway"
+        );
+    }
+
+    /// And a host whose every port went unasked writes no `<ports>` at all,
+    /// rather than an empty one.
+    #[test]
+    fn a_host_with_nothing_probed_writes_no_ports_element() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 10)));
+        host.set_status(HostStatus::Up);
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Unasked));
+
+        assert!(!export(&[host]).contains("<ports>"));
     }
 
     /// A multi-homed host comes back keyed by the address it went out under.

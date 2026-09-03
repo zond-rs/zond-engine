@@ -1068,6 +1068,24 @@ mod tests {
     /// The probes a [`MockSender`] recorded, shared with the scanner under test.
     type SentProbes = std::sync::Arc<std::sync::Mutex<Vec<crate::transport::probe::SentProbe>>>;
 
+    /// A sender that refuses everything, which is what an interface whose queue
+    /// has filled or whose neighbour will not resolve looks like from up here.
+    struct RefusingSender;
+
+    impl crate::transport::probe::ProbeSender for RefusingSender {
+        fn send(
+            &self,
+            _segment: &[u8],
+            _src: IpAddr,
+            _dst: IpAddr,
+            _emission: Emission,
+        ) -> Result<(), crate::transport::probe::SendError> {
+            Err(crate::transport::probe::SendError::Refused(
+                "no route to host".to_string(),
+            ))
+        }
+    }
+
     /// A SYN scanner wired to a recording [`MockSender`] and an idle capture
     /// stream, plus the session store to assert against and the probe log to
     /// read tokens back out of.
@@ -1192,6 +1210,44 @@ mod tests {
         let discovery = port_discovery(&session, 80).expect("the port carries its evidence");
         assert_eq!(discovery.reason(), &ScanResponse::TcpSynAck);
         assert_eq!(discovery.ttl(), None);
+    }
+
+    /// A probe this machine would not send leaves the port on the host saying
+    /// nothing was established, rather than leaving it off.
+    ///
+    /// It once left it off. A link that stops accepting sends refuses every probe
+    /// behind the one that noticed, and the ports went nowhere at all: not
+    /// filtered, not unknown, absent, while the audit counted thousands of failed
+    /// sends beside a host that looked cleanly scanned. That is the shortfall a
+    /// reader cannot see, and it is the same one `resolve_unasked` was written to
+    /// close for the targets still in the queue.
+    #[test]
+    fn a_probe_the_sender_refused_leaves_the_port_unasked() {
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
+        let transport = ProbeTransport::from_parts(Box::new(RefusingSender), reply_rx);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let mut scanner =
+            TcpPortScanner::with_transport(resolver, ctx, TcpScanTechnique::Syn, transport, 8);
+
+        scanner.send_probe(PlannedTarget::new(
+            80,
+            Target {
+                ip: TARGET,
+                port: 80,
+                protocol: Protocol::Tcp,
+            },
+        ));
+
+        assert_eq!(
+            port_state(&session, 80),
+            Some(PortState::Unasked),
+            "a port whose probe never left this machine went missing from the host"
+        );
+        assert!(
+            !scanner.core.ledger.contains(&(TARGET, 80)),
+            "a probe that never went out must not be waiting for an answer"
+        );
     }
 
     /// A port nothing answered has no packet to name.

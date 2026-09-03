@@ -633,8 +633,8 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             self.ctx.record_failure(
                 kind,
                 format!(
-                    "{} probes could not be sent, so their ports are reported \
-                     {silence_verdict} without having been asked: {}",
+                    "{} probes could not be sent, so their ports are recorded \
+                     unasked rather than {silence_verdict}: {}",
                     self.audit.sends_failed,
                     self.send_failure.as_deref().unwrap_or("cause unrecorded"),
                 ),
@@ -714,6 +714,16 @@ pub trait RawPortScan: PortScanner {
     /// the ledger so it comes back when the probe retires.
     fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant) {
         self.send(ip, port, Some(position), now);
+
+        // The ledger is what says whether the probe left: `send` arms it only
+        // once the segment is on the wire, and declines to send at all where the
+        // target has no route. Nothing comes due for a probe that was never
+        // armed and nothing drains it, so without this the target is the one
+        // that vanishes from the host entirely. A retry is not this case, since
+        // that probe is still on the ledger with attempts left.
+        if !self.core().ledger.contains(&(ip, port)) {
+            self.record_unasked_endpoint(ip, port);
+        }
     }
 
     /// Resends a probe already outstanding. The ledger keeps its position.
@@ -740,11 +750,10 @@ pub trait RawPortScan: PortScanner {
     /// Records what became of one target, which is a different question from
     /// the verdict [`record_port`](Self::record_port) gave it.
     ///
-    /// Every outcome reaches `record_port` with the same silence verdict: the
-    /// engine's considered choice, since an absent port is the shortfall a
-    /// reader cannot see. Only the earned ones carry a position, and only a
-    /// position lets a resume skip a target. See
-    /// [`Outcome`].
+    /// Every target reaches `record_port`, whether it was answered, asked and
+    /// left quiet, or never asked at all, since an absent port is the shortfall
+    /// a reader cannot see. Only the earned outcomes carry a position, and only
+    /// a position lets a resume skip a target. See [`Outcome`].
     fn settle(&mut self, outcome: Outcome) {
         self.core().ctx.record_outcome(outcome);
     }
@@ -846,7 +855,7 @@ pub trait RawPortScan: PortScanner {
         }
     }
 
-    /// Gives the verdict to every target that was never asked at all.
+    /// Records every target still queued when the scan stopped.
     ///
     /// A scan that hits its deadline with targets still queued used to leave
     /// them with no record whatsoever: not a filtered port, not an unknown one,
@@ -855,11 +864,13 @@ pub trait RawPortScan: PortScanner {
     /// one a reader cannot see: a truncated port list and a complete one look
     /// identical, and the count in the summary agrees with itself.
     ///
-    /// So they take the same verdict silence takes, and are counted. The verdict
-    /// is arguably too kind, nothing was asked, so nothing was learned, but a
-    /// port reported as this scan's silence alongside a stop reason that says
-    /// the run was cut short is a fact somebody can act on, and an absent port
-    /// is not.
+    /// So they are written down and counted. They used to be written down under
+    /// whatever the scan read silence as, argued for here as too kind but better
+    /// than absence. Both halves of that were true, and the choice really was
+    /// between those two. [`PortState::Unasked`] is the third option that did not
+    /// exist then: the port stays on the host, which is what the argument was
+    /// protecting, and it says what happened to it rather than borrowing the
+    /// verdict of a port that was probed and stayed quiet.
     ///
     /// What is already queued, and no more. Waiting for the dispatcher to
     /// finish emitting would let a scan of a very large range spend longer
@@ -876,25 +887,30 @@ pub trait RawPortScan: PortScanner {
         unasked
     }
 
-    /// Gives one target the verdict of a probe that was never sent.
-    ///
-    /// The single account of a target nobody asked about, shared by the two
-    /// ways one arises: still queued when the loop ended, and reached after its
-    /// host had spent the budget in
-    /// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout).
-    /// Both were named and neither was probed, so both are written down the
-    /// same way, and neither leaves a port off the host.
+    /// Records one planned target no probe was sent to.
     ///
     /// A target of another protocol belongs to the other scanner and is passed
     /// over rather than recorded here, which would file a UDP port under a TCP
-    /// scan's silence.
+    /// scan's account of itself.
     fn record_unasked(&mut self, target: PlannedTarget) {
         if target.protocol() != self.protocol() {
             return;
         }
-        let silence = self.silence_means();
-        self.record_port(target.ip(), target.port(), silence, None);
-        // Nothing was sent, so nothing was learned.
+        self.record_unasked_endpoint(target.ip(), target.port());
+    }
+
+    /// The single account of an endpoint nobody asked about, shared by the three
+    /// ways one arises: still queued when the loop ended, reached after its host
+    /// had spent the budget in
+    /// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout),
+    /// and refused by this machine's own sender before it reached the wire.
+    ///
+    /// All three were named and none was probed, so all three are written down
+    /// the same way, and none leaves a port off the host.
+    fn record_unasked_endpoint(&mut self, ip: IpAddr, port: u16) {
+        self.record_port(ip, port, PortState::Unasked, None);
+        // Nothing was sent, so nothing was learned, and a resume owes this
+        // target the probe this sitting did not spend on it.
         self.settle(Outcome::Unasked);
     }
 }
@@ -930,9 +946,9 @@ pub struct AuditLabels {
 ///    to probe, a reply to read, or the moment the next probe is due.
 ///
 /// Anything still outstanding when the loop ends takes the scan's silence
-/// verdict, and so does anything still queued and never asked, so a scan cut
-/// short by its own deadline reports the ports it never reached instead of
-/// leaving them off the host entirely, which is the one shortfall a reader
+/// verdict, and anything still queued is recorded [`PortState::Unasked`], so a
+/// scan cut short by its own deadline reports the ports it never reached instead
+/// of leaving them off the host entirely, which is the one shortfall a reader
 /// cannot see. See [`RawPortScan::resolve_unasked`] for how far that reaches.
 pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<PlannedTarget>) {
     // The rate backstop. What paces the scan is `RawProbeScan::window`, which

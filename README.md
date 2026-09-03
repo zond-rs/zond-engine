@@ -38,7 +38,9 @@
 * **Comparing two scans:** what appeared, what went away, and what changed about
   what stayed — paired by address across scans that keyed the same machine
   differently, and read against what each scan says it walked, so a narrowed scan
-  does not read as a network that emptied out.
+  does not read as a network that emptied out. Every host and endpoint is graded
+  routine, notable or urgent, so a nightly comparison of a live network says which
+  three lines of it somebody has to read.
 * **Folding several scans into one:** a `/16` scanned in eight chunks, one range
   seen from inside the perimeter and from outside, or a year of archived nmap
   files against tonight's run. A later source overrides only where it made a
@@ -137,7 +139,7 @@ it is worth.
   session and the finished report.
 * `fingerprint`: service and operating-system identification over an open port.
 * `diff`: what changed between two scans, whoever ran them, judged by what each
-  says it walked.
+  says it walked, and graded by how much it is worth acting on.
 * `merge`: any number of scans folded into one report — a `/16` scanned in
   chunks, two vantage points on one range, a year of archived nmap files against
   tonight's run.

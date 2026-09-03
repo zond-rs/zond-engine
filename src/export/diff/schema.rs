@@ -25,7 +25,7 @@ use serde::ser::{SerializeSeq, Serializer};
 use crate::diff::host::Reassessment;
 use crate::diff::{
     CertificateChange, Confirmed, Coverage, DiffSummary, HostChange, HostDelta, PortChange,
-    PortDelta, Presence, ScanDiff, SecurityChange, ServiceChange,
+    PortDelta, Presence, ScanDiff, SecurityChange, ServiceChange, Significance,
 };
 use crate::export::ExportOptions;
 use crate::export::schema::{EngineDto, HostDto};
@@ -58,7 +58,17 @@ pub fn coverage_name(coverage: Coverage) -> &'static str {
         Coverage::Covered => "covered",
         Coverage::Withheld => "withheld",
         Coverage::OutOfScope => "out_of_scope",
+        Coverage::Unreached => "unreached",
         Coverage::Unstated => "unstated",
+    }
+}
+
+/// How much a change is worth somebody's attention.
+pub fn significance_name(significance: Significance) -> &'static str {
+    match significance {
+        Significance::Routine => "routine",
+        Significance::Notable => "notable",
+        Significance::Urgent => "urgent",
     }
 }
 
@@ -91,6 +101,13 @@ pub struct DiffDto<'a> {
     /// Derivable from an empty `hosts`, and stated because it is the first
     /// question every consumer asks.
     pub unchanged: bool,
+    /// How much the strongest change anywhere below is worth somebody's
+    /// attention: `routine`, `notable` or `urgent`.
+    ///
+    /// The field a scheduled comparison is triaged by. `routine` for a document
+    /// where nothing moved, since nothing to do and nothing worth doing rank the
+    /// same; `unchanged` is what separates them.
+    pub significance: &'static str,
     /// Counts over everything below.
     pub summary: SummaryDto,
     /// Every host that differs, ascending by address. Hosts that did not are
@@ -152,6 +169,7 @@ impl<'a> DiffDto<'a> {
             baseline: ProvenanceDto::new(diff.baseline()),
             current: ProvenanceDto::new(diff.current()),
             unchanged: diff.is_empty(),
+            significance: significance_name(diff.significance()),
             summary: SummaryDto::new(&diff.summary()),
             hosts: HostDeltasDto {
                 deltas: diff.hosts(),
@@ -283,8 +301,14 @@ pub struct HostDeltaDto<'a> {
     /// Whether this is a finding about the network rather than about the scan.
     ///
     /// True when both scans hold a record, and when the one that does not is
-    /// known to have covered the address anyway. This is the field to alert on.
+    /// known to have covered the address anyway.
     pub confirmed: bool,
+    /// How much the strongest change on this host, or on any of its endpoints, is
+    /// worth somebody's attention: `routine`, `notable` or `urgent`.
+    ///
+    /// The field to alert on, and already `routine` where `confirmed` is false,
+    /// so a rule keying on this one does not have to read that one as well.
+    pub significance: &'static str,
     /// How many records each scan held for this host. `{1, 1}` ordinarily.
     pub records: RecordsDto,
     /// Whether the two scans grouped this host's addresses differently: what one
@@ -311,6 +335,7 @@ impl<'a> HostDeltaDto<'a> {
             presence: presence_name(delta.presence()),
             coverage: delta.presence().counterpart_coverage().map(coverage_name),
             confirmed: delta.presence().is_confirmed(),
+            significance: significance_name(delta.significance()),
             records: RecordsDto {
                 baseline: baseline_records,
                 current: current_records,
@@ -355,8 +380,12 @@ pub struct PortDeltaDto {
     /// What the scan lacking a record says about having probed this endpoint.
     /// `null` when both hold one.
     pub coverage: Option<&'static str>,
-    /// Whether this is a finding about the network. The field to alert on.
+    /// Whether this is a finding about the network.
     pub confirmed: bool,
+    /// How much the strongest change on this endpoint is worth somebody's
+    /// attention: `routine`, `notable` or `urgent`. The field to alert on, and
+    /// already `routine` where `confirmed` is false.
+    pub significance: &'static str,
     /// Whether the endpoint accepts connections now and did not before.
     pub opened: bool,
     /// Whether it accepted connections before and does not now.
@@ -374,6 +403,7 @@ impl PortDeltaDto {
             presence: presence_name(delta.presence()),
             coverage: delta.presence().counterpart_coverage().map(coverage_name),
             confirmed: delta.presence().is_confirmed(),
+            significance: significance_name(delta.significance()),
             opened: delta.is_opened(),
             closed: delta.is_closed(),
             changes: delta

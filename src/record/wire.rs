@@ -74,9 +74,10 @@ pub fn host_status(name: &str) -> Option<HostStatus> {
     })
 }
 
-/// What a probe established about a port.
+/// What a scan established about a port.
 pub fn port_state_name(state: PortState) -> &'static str {
     match state {
+        PortState::Unasked => "unasked",
         PortState::ClosedFiltered => "closed_filtered",
         PortState::Filtered => "filtered",
         PortState::Unfiltered => "unfiltered",
@@ -89,6 +90,7 @@ pub fn port_state_name(state: PortState) -> &'static str {
 /// [`port_state_name`] read back.
 pub fn port_state(name: &str) -> Option<PortState> {
     Some(match name {
+        "unasked" => PortState::Unasked,
         "closed_filtered" => PortState::ClosedFiltered,
         "filtered" => PortState::Filtered,
         "unfiltered" => PortState::Unfiltered,

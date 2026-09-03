@@ -1519,9 +1519,11 @@ pub mod zond_engine::diff::change
 #[non_exhaustive] pub enum zond_engine::diff::change::Coverage
 pub zond_engine::diff::change::Coverage::Covered
 pub zond_engine::diff::change::Coverage::OutOfScope
+pub zond_engine::diff::change::Coverage::Unreached
 pub zond_engine::diff::change::Coverage::Unstated
 pub zond_engine::diff::change::Coverage::Withheld
 impl zond_engine::diff::change::Coverage
+pub const zond_engine::diff::change::Coverage::ALL: [zond_engine::diff::change::Coverage; 5]
 pub fn zond_engine::diff::change::Coverage::is_covered(&self) -> bool
 pub fn zond_engine::diff::change::Coverage::is_excluded(&self) -> bool
 impl core::clone::Clone for zond_engine::diff::change::Coverage
@@ -1626,6 +1628,8 @@ pub zond_engine::diff::host::HostChange::Roles::gained: alloc::vec::Vec<zond_eng
 pub zond_engine::diff::host::HostChange::Roles::lost: alloc::vec::Vec<zond_engine::model::host::NetworkRole>
 pub zond_engine::diff::host::HostChange::Status(zond_engine::diff::change::Change<zond_engine::model::host::status::HostStatus>)
 pub zond_engine::diff::host::HostChange::Vendor(zond_engine::diff::change::Change<core::option::Option<alloc::string::String>>)
+impl zond_engine::diff::host::HostChange
+pub fn zond_engine::diff::host::HostChange::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::host::HostChange
 pub fn zond_engine::diff::host::HostChange::clone(&self) -> zond_engine::diff::host::HostChange
 impl core::cmp::PartialEq for zond_engine::diff::host::HostChange
@@ -1651,6 +1655,8 @@ pub fn zond_engine::diff::host::HostDelta::is_regrouped(&self) -> bool
 pub fn zond_engine::diff::host::HostDelta::ports(&self) -> &[zond_engine::diff::port::PortDelta]
 pub fn zond_engine::diff::host::HostDelta::presence(&self) -> zond_engine::diff::change::Presence
 pub fn zond_engine::diff::host::HostDelta::records(&self) -> (usize, usize)
+impl zond_engine::diff::host::HostDelta
+pub fn zond_engine::diff::host::HostDelta::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::host::HostDelta
 pub fn zond_engine::diff::host::HostDelta::clone(&self) -> zond_engine::diff::host::HostDelta
 impl core::fmt::Debug for zond_engine::diff::host::HostDelta
@@ -1740,6 +1746,8 @@ pub zond_engine::diff::port::PortChange::Findings::resolved: alloc::vec::Vec<zon
 pub zond_engine::diff::port::PortChange::Security(zond_engine::diff::port::SecurityChange)
 pub zond_engine::diff::port::PortChange::Service(zond_engine::diff::port::ServiceChange)
 pub zond_engine::diff::port::PortChange::State(zond_engine::diff::change::Change<zond_engine::model::port::PortState>)
+impl zond_engine::diff::port::PortChange
+pub fn zond_engine::diff::port::PortChange::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::port::PortChange
 pub fn zond_engine::diff::port::PortChange::clone(&self) -> zond_engine::diff::port::PortChange
 impl core::cmp::PartialEq for zond_engine::diff::port::PortChange
@@ -1811,6 +1819,8 @@ pub fn zond_engine::diff::port::PortDelta::is_opened(&self) -> bool
 pub fn zond_engine::diff::port::PortDelta::number(&self) -> u16
 pub fn zond_engine::diff::port::PortDelta::presence(&self) -> zond_engine::diff::change::Presence
 pub fn zond_engine::diff::port::PortDelta::protocol(&self) -> zond_engine::model::port::Protocol
+impl zond_engine::diff::port::PortDelta
+pub fn zond_engine::diff::port::PortDelta::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::port::PortDelta
 pub fn zond_engine::diff::port::PortDelta::clone(&self) -> zond_engine::diff::port::PortDelta
 impl core::cmp::PartialEq for zond_engine::diff::port::PortDelta
@@ -1825,6 +1835,37 @@ impl core::marker::Unpin for zond_engine::diff::port::PortDelta
 impl core::marker::UnsafeUnpin for zond_engine::diff::port::PortDelta
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::port::PortDelta
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::port::PortDelta
+pub mod zond_engine::diff::significance
+#[non_exhaustive] pub enum zond_engine::diff::significance::Significance
+pub zond_engine::diff::significance::Significance::Notable
+pub zond_engine::diff::significance::Significance::Routine
+pub zond_engine::diff::significance::Significance::Urgent
+impl zond_engine::diff::significance::Significance
+pub const zond_engine::diff::significance::Significance::ALL: [zond_engine::diff::significance::Significance; 3]
+pub const fn zond_engine::diff::significance::Significance::label(self) -> &'static str
+pub const fn zond_engine::diff::significance::Significance::of_severity(zond_engine::model::finding::Severity) -> Self
+impl core::clone::Clone for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::clone(&self) -> zond_engine::diff::significance::Significance
+impl core::cmp::Eq for zond_engine::diff::significance::Significance
+impl core::cmp::Ord for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::cmp(&self, &zond_engine::diff::significance::Significance) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::eq(&self, &zond_engine::diff::significance::Significance) -> bool
+impl core::cmp::PartialOrd for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::partial_cmp(&self, &zond_engine::diff::significance::Significance) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::diff::significance::Significance
+impl core::marker::StructuralPartialEq for zond_engine::diff::significance::Significance
+impl core::marker::Freeze for zond_engine::diff::significance::Significance
+impl core::marker::Send for zond_engine::diff::significance::Significance
+impl core::marker::Sync for zond_engine::diff::significance::Significance
+impl core::marker::Unpin for zond_engine::diff::significance::Significance
+impl core::marker::UnsafeUnpin for zond_engine::diff::significance::Significance
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::significance::Significance
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::significance::Significance
 #[non_exhaustive] pub enum zond_engine::diff::CertificateChange
 pub zond_engine::diff::CertificateChange::Expired
 pub zond_engine::diff::CertificateChange::Expired::certificate: alloc::boxed::Box<zond_engine::model::port::security::CertificateInfo>
@@ -1854,9 +1895,11 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::port::Certifica
 #[non_exhaustive] pub enum zond_engine::diff::Coverage
 pub zond_engine::diff::Coverage::Covered
 pub zond_engine::diff::Coverage::OutOfScope
+pub zond_engine::diff::Coverage::Unreached
 pub zond_engine::diff::Coverage::Unstated
 pub zond_engine::diff::Coverage::Withheld
 impl zond_engine::diff::change::Coverage
+pub const zond_engine::diff::change::Coverage::ALL: [zond_engine::diff::change::Coverage; 5]
 pub fn zond_engine::diff::change::Coverage::is_covered(&self) -> bool
 pub fn zond_engine::diff::change::Coverage::is_excluded(&self) -> bool
 impl core::clone::Clone for zond_engine::diff::change::Coverage
@@ -1900,6 +1943,8 @@ pub zond_engine::diff::HostChange::Roles::gained: alloc::vec::Vec<zond_engine::m
 pub zond_engine::diff::HostChange::Roles::lost: alloc::vec::Vec<zond_engine::model::host::NetworkRole>
 pub zond_engine::diff::HostChange::Status(zond_engine::diff::change::Change<zond_engine::model::host::status::HostStatus>)
 pub zond_engine::diff::HostChange::Vendor(zond_engine::diff::change::Change<core::option::Option<alloc::string::String>>)
+impl zond_engine::diff::host::HostChange
+pub fn zond_engine::diff::host::HostChange::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::host::HostChange
 pub fn zond_engine::diff::host::HostChange::clone(&self) -> zond_engine::diff::host::HostChange
 impl core::cmp::PartialEq for zond_engine::diff::host::HostChange
@@ -1946,6 +1991,8 @@ pub zond_engine::diff::PortChange::Findings::resolved: alloc::vec::Vec<zond_engi
 pub zond_engine::diff::PortChange::Security(zond_engine::diff::port::SecurityChange)
 pub zond_engine::diff::PortChange::Service(zond_engine::diff::port::ServiceChange)
 pub zond_engine::diff::PortChange::State(zond_engine::diff::change::Change<zond_engine::model::port::PortState>)
+impl zond_engine::diff::port::PortChange
+pub fn zond_engine::diff::port::PortChange::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::port::PortChange
 pub fn zond_engine::diff::port::PortChange::clone(&self) -> zond_engine::diff::port::PortChange
 impl core::cmp::PartialEq for zond_engine::diff::port::PortChange
@@ -2036,6 +2083,36 @@ impl core::marker::Unpin for zond_engine::diff::port::ServiceChange
 impl core::marker::UnsafeUnpin for zond_engine::diff::port::ServiceChange
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::port::ServiceChange
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::port::ServiceChange
+#[non_exhaustive] pub enum zond_engine::diff::Significance
+pub zond_engine::diff::Significance::Notable
+pub zond_engine::diff::Significance::Routine
+pub zond_engine::diff::Significance::Urgent
+impl zond_engine::diff::significance::Significance
+pub const zond_engine::diff::significance::Significance::ALL: [zond_engine::diff::significance::Significance; 3]
+pub const fn zond_engine::diff::significance::Significance::label(self) -> &'static str
+pub const fn zond_engine::diff::significance::Significance::of_severity(zond_engine::model::finding::Severity) -> Self
+impl core::clone::Clone for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::clone(&self) -> zond_engine::diff::significance::Significance
+impl core::cmp::Eq for zond_engine::diff::significance::Significance
+impl core::cmp::Ord for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::cmp(&self, &zond_engine::diff::significance::Significance) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::eq(&self, &zond_engine::diff::significance::Significance) -> bool
+impl core::cmp::PartialOrd for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::partial_cmp(&self, &zond_engine::diff::significance::Significance) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::diff::significance::Significance
+pub fn zond_engine::diff::significance::Significance::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::diff::significance::Significance
+impl core::marker::StructuralPartialEq for zond_engine::diff::significance::Significance
+impl core::marker::Freeze for zond_engine::diff::significance::Significance
+impl core::marker::Send for zond_engine::diff::significance::Significance
+impl core::marker::Sync for zond_engine::diff::significance::Significance
+impl core::marker::Unpin for zond_engine::diff::significance::Significance
+impl core::marker::UnsafeUnpin for zond_engine::diff::significance::Significance
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::significance::Significance
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::significance::Significance
 pub struct zond_engine::diff::Change<T>
 pub zond_engine::diff::Change::after: T
 pub zond_engine::diff::Change::before: T
@@ -2152,6 +2229,8 @@ pub fn zond_engine::diff::host::HostDelta::is_regrouped(&self) -> bool
 pub fn zond_engine::diff::host::HostDelta::ports(&self) -> &[zond_engine::diff::port::PortDelta]
 pub fn zond_engine::diff::host::HostDelta::presence(&self) -> zond_engine::diff::change::Presence
 pub fn zond_engine::diff::host::HostDelta::records(&self) -> (usize, usize)
+impl zond_engine::diff::host::HostDelta
+pub fn zond_engine::diff::host::HostDelta::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::host::HostDelta
 pub fn zond_engine::diff::host::HostDelta::clone(&self) -> zond_engine::diff::host::HostDelta
 impl core::fmt::Debug for zond_engine::diff::host::HostDelta
@@ -2174,6 +2253,8 @@ pub fn zond_engine::diff::port::PortDelta::is_opened(&self) -> bool
 pub fn zond_engine::diff::port::PortDelta::number(&self) -> u16
 pub fn zond_engine::diff::port::PortDelta::presence(&self) -> zond_engine::diff::change::Presence
 pub fn zond_engine::diff::port::PortDelta::protocol(&self) -> zond_engine::model::port::Protocol
+impl zond_engine::diff::port::PortDelta
+pub fn zond_engine::diff::port::PortDelta::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::port::PortDelta
 pub fn zond_engine::diff::port::PortDelta::clone(&self) -> zond_engine::diff::port::PortDelta
 impl core::cmp::PartialEq for zond_engine::diff::port::PortDelta
@@ -2219,6 +2300,8 @@ pub fn zond_engine::diff::ScanDiff::current(&self) -> &zond_engine::diff::Proven
 pub fn zond_engine::diff::ScanDiff::hosts(&self) -> &[zond_engine::diff::host::HostDelta]
 pub fn zond_engine::diff::ScanDiff::is_empty(&self) -> bool
 pub fn zond_engine::diff::ScanDiff::summary(&self) -> zond_engine::diff::DiffSummary
+impl zond_engine::diff::ScanDiff
+pub fn zond_engine::diff::ScanDiff::significance(&self) -> zond_engine::diff::significance::Significance
 impl core::clone::Clone for zond_engine::diff::ScanDiff
 pub fn zond_engine::diff::ScanDiff::clone(&self) -> zond_engine::diff::ScanDiff
 impl core::fmt::Debug for zond_engine::diff::ScanDiff
@@ -2439,6 +2522,7 @@ pub zond_engine::export::diff::schema::DiffDto::engine: zond_engine::export::sch
 pub zond_engine::export::diff::schema::DiffDto::generated_at: alloc::string::String
 pub zond_engine::export::diff::schema::DiffDto::hosts: zond_engine::export::diff::schema::HostDeltasDto<'a>
 pub zond_engine::export::diff::schema::DiffDto::schema_version: u32
+pub zond_engine::export::diff::schema::DiffDto::significance: &'static str
 pub zond_engine::export::diff::schema::DiffDto::summary: zond_engine::export::diff::schema::SummaryDto
 pub zond_engine::export::diff::schema::DiffDto::unchanged: bool
 impl<'a> zond_engine::export::diff::schema::DiffDto<'a>
@@ -2465,6 +2549,7 @@ pub zond_engine::export::diff::schema::HostDeltaDto::ports: alloc::vec::Vec<zond
 pub zond_engine::export::diff::schema::HostDeltaDto::presence: &'static str
 pub zond_engine::export::diff::schema::HostDeltaDto::records: zond_engine::export::diff::schema::RecordsDto
 pub zond_engine::export::diff::schema::HostDeltaDto::regrouped: bool
+pub zond_engine::export::diff::schema::HostDeltaDto::significance: &'static str
 impl<'a> zond_engine::export::diff::schema::HostDeltaDto<'a>
 pub fn zond_engine::export::diff::schema::HostDeltaDto<'a>::new(&'a zond_engine::diff::host::HostDelta, &zond_engine::export::ExportOptions) -> Self
 impl<'a> core::fmt::Debug for zond_engine::export::diff::schema::HostDeltaDto<'a>
@@ -2503,6 +2588,7 @@ pub zond_engine::export::diff::schema::PortDeltaDto::opened: bool
 pub zond_engine::export::diff::schema::PortDeltaDto::port: u16
 pub zond_engine::export::diff::schema::PortDeltaDto::presence: &'static str
 pub zond_engine::export::diff::schema::PortDeltaDto::protocol: &'static str
+pub zond_engine::export::diff::schema::PortDeltaDto::significance: &'static str
 impl zond_engine::export::diff::schema::PortDeltaDto
 pub fn zond_engine::export::diff::schema::PortDeltaDto::new(&zond_engine::diff::port::PortDelta, &zond_engine::export::ExportOptions) -> Self
 impl core::fmt::Debug for zond_engine::export::diff::schema::PortDeltaDto
@@ -2577,6 +2663,7 @@ pub const zond_engine::export::diff::schema::DIFF_SCHEMA_VERSION: u32
 pub const zond_engine::export::diff::schema::ENGINE_NAME: &str
 pub fn zond_engine::export::diff::schema::coverage_name(zond_engine::diff::change::Coverage) -> &'static str
 pub fn zond_engine::export::diff::schema::presence_name(zond_engine::diff::change::Presence) -> &'static str
+pub fn zond_engine::export::diff::schema::significance_name(zond_engine::diff::significance::Significance) -> &'static str
 #[non_exhaustive] pub enum zond_engine::export::diff::DiffFormat
 pub zond_engine::export::diff::DiffFormat::Html
 pub zond_engine::export::diff::DiffFormat::Json
@@ -3231,6 +3318,7 @@ pub zond_engine::export::schema::PortStateCounts::closed_filtered: usize
 pub zond_engine::export::schema::PortStateCounts::filtered: usize
 pub zond_engine::export::schema::PortStateCounts::open: usize
 pub zond_engine::export::schema::PortStateCounts::open_filtered: usize
+pub zond_engine::export::schema::PortStateCounts::unasked: usize
 pub zond_engine::export::schema::PortStateCounts::unfiltered: usize
 impl core::clone::Clone for zond_engine::export::schema::PortStateCounts
 pub fn zond_engine::export::schema::PortStateCounts::clone(&self) -> zond_engine::export::schema::PortStateCounts
@@ -9333,9 +9421,10 @@ pub zond_engine::model::port::PortState::ClosedFiltered
 pub zond_engine::model::port::PortState::Filtered
 pub zond_engine::model::port::PortState::Open
 pub zond_engine::model::port::PortState::OpenFiltered
+pub zond_engine::model::port::PortState::Unasked
 pub zond_engine::model::port::PortState::Unfiltered
 impl zond_engine::model::port::PortState
-pub const zond_engine::model::port::PortState::ALL: [zond_engine::model::port::PortState; 6]
+pub const zond_engine::model::port::PortState::ALL: [zond_engine::model::port::PortState; 7]
 impl core::clone::Clone for zond_engine::model::port::PortState
 pub fn zond_engine::model::port::PortState::clone(&self) -> zond_engine::model::port::PortState
 impl core::cmp::Eq for zond_engine::model::port::PortState
@@ -14239,6 +14328,7 @@ pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::probe(&mut 
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14291,6 +14381,7 @@ pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::probe(&mut se
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14343,6 +14434,7 @@ pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::probe(&mut se
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14446,6 +14538,7 @@ pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::probe(&mut 
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14497,6 +14590,7 @@ pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::probe(&mut se
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14548,6 +14642,7 @@ pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::probe(&mut se
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14573,6 +14668,7 @@ pub fn zond_engine::scanner::strategy::ports::RawPortScan::probe(&mut self, core
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::RawPortScan::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14591,6 +14687,7 @@ pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::probe(&mut 
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14609,6 +14706,7 @@ pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::probe(&mut se
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -14627,6 +14725,7 @@ pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::probe(&mut se
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
@@ -15808,9 +15907,10 @@ pub zond_engine::PortState::ClosedFiltered
 pub zond_engine::PortState::Filtered
 pub zond_engine::PortState::Open
 pub zond_engine::PortState::OpenFiltered
+pub zond_engine::PortState::Unasked
 pub zond_engine::PortState::Unfiltered
 impl zond_engine::model::port::PortState
-pub const zond_engine::model::port::PortState::ALL: [zond_engine::model::port::PortState; 6]
+pub const zond_engine::model::port::PortState::ALL: [zond_engine::model::port::PortState; 7]
 impl core::clone::Clone for zond_engine::model::port::PortState
 pub fn zond_engine::model::port::PortState::clone(&self) -> zond_engine::model::port::PortState
 impl core::cmp::Eq for zond_engine::model::port::PortState

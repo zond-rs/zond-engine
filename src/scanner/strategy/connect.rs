@@ -323,19 +323,27 @@ impl PortScanner for ConnectUdpPortScanner {
         while let Some(target) = rx.recv().await {
             if let Some(cause) = self.ctx.handle.stopped() {
                 reason = cause.into();
+                record_unasked(&self.ctx, &target);
                 break;
             }
             probes += 1;
             // A host past its own budget is left alone. Counted with the
-            // probes, because it was work routed here, and settled as unasked
-            // so a resume asks about it rather than trusting a verdict nobody
-            // earned.
+            // probes, because it was work routed here, and recorded unasked so a
+            // resume asks about it rather than trusting a verdict nobody earned.
             if self.ctx.host_expired(target.ip()) {
-                self.ctx.record_outcome(Outcome::Unasked);
+                record_unasked(&self.ctx, &target);
                 continue;
             }
             pool.audit().record_send(true);
             pool.admit(udp_port_prober(target, shaping)).await;
+        }
+
+        // Anything still queued was never sent, and carries no position to
+        // settle. The TCP scan above has always done this; leaving it out here
+        // both lost the ports and left the sitting's settlement counts short of
+        // the targets it was handed.
+        while let Ok(target) = rx.try_recv() {
+            record_unasked(&self.ctx, &target);
         }
 
         pool.drain().await;
@@ -374,16 +382,16 @@ pub async fn scan(
     while let Some(target) = rx.recv().await {
         if let Some(cause) = ctx.handle.stopped() {
             reason = cause.into();
-            // This one was taken off the queue and never asked, so it counts
-            // with the rest still waiting behind it.
-            ctx.record_outcome(Outcome::Unasked);
+            // This one was taken off the queue and never asked, so it is
+            // recorded with the rest still waiting behind it.
+            record_unasked(&ctx, &target);
             break;
         }
         probes += 1;
-        // A host past its own budget is left alone, and its remaining ports
-        // are settled as unasked rather than given a verdict nothing earned.
+        // A host past its own budget is left alone, and its remaining ports are
+        // recorded unasked rather than given a verdict nothing earned.
         if ctx.host_expired(target.ip()) {
-            ctx.record_outcome(Outcome::Unasked);
+            record_unasked(&ctx, &target);
             continue;
         }
         pool.audit().record_send(true);
@@ -391,8 +399,8 @@ pub async fn scan(
     }
 
     // Anything still queued was never sent, and carries no position to settle.
-    while rx.try_recv().is_ok() {
-        ctx.record_outcome(Outcome::Unasked);
+    while let Ok(target) = rx.try_recv() {
+        record_unasked(&ctx, &target);
     }
 
     // Every target dispatched; wait out the probes still in flight.
@@ -491,6 +499,29 @@ fn settled(number: u16, state: PortState, reason: Option<ScanResponse>) -> Port 
     }
 }
 
+/// Records a planned target no probe was ever sent to.
+///
+/// Three ways one arises in this strategy: the scan stopped with targets still
+/// queued, the target's host had already spent
+/// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout), and
+/// this machine failed the connect locally before anything left it.
+///
+/// All three leave the port on the host rather than off it, for the reason
+/// [`port_prober`]'s refusal branch gives about `Closed`: a port list whose shape
+/// depends on how a run ended is a different answer rather than a smaller one,
+/// and a comparison of two scans reads the difference as the network moving.
+/// What the port says is [`PortState::Unasked`], which is the whole of what this
+/// run established about it, and the outcome carries no position, so a resume
+/// asks the question this sitting did not.
+fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
+    let port =
+        crate::fingerprint::baseline_port(target.port(), target.protocol(), PortState::Unasked);
+    ctx.update_host(target.ip(), |host| {
+        host.add_port(port);
+    });
+    ctx.record_outcome(Outcome::Unasked);
+}
+
 /// Probes a single [`Target`] over a full TCP connect handshake and classifies
 /// its port. Returns `Some(..)` for a non-closed port and `None` for a closed
 /// port or a target this strategy doesn't handle.
@@ -565,18 +596,18 @@ async fn port_prober(
                     outcome: Outcome::Answered { position },
                     role: None,
                 }),
-                // Anything else failed without the target having answered - a
-                // local routing failure, an exhausted resource - so the port is
-                // filtered and the host has proved nothing.
-                // A local failure, no route, no socket left, says nothing
-                // about the target, and the next sitting may well get further.
-                // No evidence recorded: nothing was sent and nothing answered,
-                // so there is no packet to name. A port carrying `no reply`
-                // here would credit the target with a silence it was never
-                // asked for.
+                // Anything else failed without a segment leaving this machine -
+                // a local routing failure, an exhausted resource - so nothing
+                // was asked and the host has proved nothing. The next sitting
+                // may well get further.
+                //
+                // No evidence recorded, since there is no packet to name, and
+                // no verdict either: this used to file `Filtered`, which credits
+                // the target with a silence it was never asked for in the one
+                // field a reader takes for a finding.
                 _ => Some(Probed {
                     ip: target.ip,
-                    port: Some(settled(target.port, PortState::Filtered, None)),
+                    port: Some(settled(target.port, PortState::Unasked, None)),
                     responses: Vec::new(),
                     about_the_host: Vec::new(),
                     answered: false,
@@ -758,6 +789,12 @@ async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> Pro
         })
     };
 
+    // Three ways this machine can fail before a datagram leaves it, below, and
+    // each records the port unasked rather than dropping it. The target was
+    // named by the plan, and a port that disappears from the host when the
+    // scanner runs out of sockets is the shortfall a reader cannot see. The
+    // outcome is `Unroutable` rather than `Unasked` for the reason the TCP
+    // prober gives: this host gave up, which the next sitting may not.
     let socket = match shaped_udp_socket(target.ip, shaping).await {
         Ok(socket) => socket,
         Err(e) => {
@@ -765,7 +802,7 @@ async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> Pro
                 verbosity = 2,
                 "no UDP socket for probing {socket_addr}: {e}"
             );
-            return None;
+            return record(PortState::Unasked, false, Outcome::Unroutable);
         }
     };
 
@@ -774,7 +811,7 @@ async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> Pro
             verbosity = 2,
             "cannot address UDP probe to {socket_addr}: {e}"
         );
-        return None;
+        return record(PortState::Unasked, false, Outcome::Unroutable);
     }
 
     if let Err(e) = socket.send(payload::for_port(target.port)).await {
@@ -789,7 +826,7 @@ async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> Pro
                     verbosity = 2,
                     "failed to send UDP probe to {socket_addr}: {e}"
                 );
-                None
+                record(PortState::Unasked, false, Outcome::Unroutable)
             }
         };
     }

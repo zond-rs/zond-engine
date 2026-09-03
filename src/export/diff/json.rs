@@ -197,6 +197,77 @@ mod tests {
         found
     }
 
+    /// The field a scheduled comparison is triaged by, at all three levels it is
+    /// written: the endpoint, the host above it, and the document.
+    ///
+    /// A host is graded by the worst thing on it, so the grades have to nest.
+    /// A consumer that alerts on the document and then looks for the host, and
+    /// the host and then the endpoint, must not be sent somewhere the grade
+    /// evaporates.
+    #[test]
+    fn a_grade_is_carried_at_every_level_and_nests() {
+        let document = document();
+
+        let mut worst = "routine";
+        for host in document["hosts"].as_array().expect("hosts") {
+            let host_grade = host["significance"].as_str().expect("a host grade");
+            let address = host["address"].as_str().expect("an address");
+
+            for port in host["ports"].as_array().expect("ports") {
+                let port_grade = port["significance"].as_str().expect("an endpoint grade");
+                assert!(
+                    rank(port_grade) <= rank(host_grade),
+                    "{address} is {host_grade} and carries a {port_grade} endpoint"
+                );
+            }
+
+            if rank(host_grade) > rank(worst) {
+                worst = host_grade;
+            }
+        }
+
+        assert_eq!(
+            document["significance"].as_str(),
+            Some(worst),
+            "the document is not graded by its worst host"
+        );
+        assert_eq!(
+            worst, "urgent",
+            "the fixture opens a port, so something here is urgent"
+        );
+    }
+
+    /// The grades in the order the type ranks them, so a test can compare two
+    /// without depending on the strings sorting that way. They do not.
+    fn rank(grade: &str) -> usize {
+        ["routine", "notable", "urgent"]
+            .iter()
+            .position(|known| *known == grade)
+            .unwrap_or_else(|| panic!("'{grade}' is not a grade this document may carry"))
+    }
+
+    /// An endpoint that started accepting connections is the change the grade
+    /// exists to lift out of a page of drift.
+    #[test]
+    fn an_endpoint_that_opened_is_the_urgent_one() {
+        let document = document();
+
+        let opened: Vec<&str> = document["hosts"]
+            .as_array()
+            .expect("hosts")
+            .iter()
+            .flat_map(|host| host["ports"].as_array().expect("ports"))
+            .filter(|port| port["opened"] == Value::Bool(true))
+            .map(|port| port["significance"].as_str().expect("a grade"))
+            .collect();
+
+        assert!(!opened.is_empty(), "the fixture opens a port");
+        assert!(
+            opened.iter().all(|grade| *grade == "urgent"),
+            "an endpoint that opened was graded {opened:?}"
+        );
+    }
+
     /// The vocabulary is the contract: a rule somebody writes today keys on
     /// these strings.
     #[test]

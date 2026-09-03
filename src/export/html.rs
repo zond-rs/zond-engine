@@ -120,6 +120,10 @@ fn port_tone(state: PortState) -> &'static str {
         | PortState::Unfiltered
         | PortState::ClosedFiltered => TONE_PARTIAL,
         PortState::Closed => TONE_INERT,
+        // The tone a host of unknown status is drawn in, for the same reason:
+        // nothing was learned here, and a shade that reads as a finding would
+        // give the bar a band that is about the scan rather than the network.
+        PortState::Unasked => TONE_NONE,
     }
 }
 
@@ -432,6 +436,7 @@ fn write_distributions(out: &mut dyn Write, summary: &SummaryDto) -> Result<(), 
             state_slice(PortState::Unfiltered, states.unfiltered),
             state_slice(PortState::Filtered, states.filtered),
             state_slice(PortState::ClosedFiltered, states.closed_filtered),
+            state_slice(PortState::Unasked, states.unasked),
         ],
     )?;
 

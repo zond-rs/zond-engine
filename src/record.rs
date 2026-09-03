@@ -656,9 +656,11 @@ impl From<&Port> for PortRecord {
 impl From<&PortRecord> for Port {
     fn from(record: &PortRecord) -> Self {
         // An unrecognised transport or state reads as the least this engine
-        // could have established, never as more.
+        // could have established, never as more. A state name this build cannot
+        // read is one a later build wrote, and `Unasked` is the state that holds
+        // no verdict at all.
         let protocol = wire::protocol(&record.protocol).unwrap_or(Protocol::Tcp);
-        let state = wire::port_state(&record.state).unwrap_or(PortState::Filtered);
+        let state = wire::port_state(&record.state).unwrap_or(PortState::Unasked);
 
         let mut port = Port::new(record.port, protocol, state);
         if let Some(service) = &record.service {
@@ -2400,7 +2402,12 @@ mod tests {
 
         assert_eq!(rebuilt.status(), HostStatus::Unknown);
         let port = rebuilt.ports().next().expect("the port is still recorded");
-        assert_eq!(port.state(), PortState::Filtered);
+        assert_eq!(
+            port.state(),
+            PortState::Unasked,
+            "a verdict this build cannot read is no verdict, which is what the \
+             bottom of the ordering says"
+        );
         assert_eq!(port.protocol(), Protocol::Tcp);
     }
 

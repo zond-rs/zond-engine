@@ -30,6 +30,8 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 use crate::config::{OsDetection, ScanEffort, ServiceDetection};
+use crate::diff::{Coverage, Significance};
+use crate::export::diff::schema::{coverage_name, significance_name};
 use crate::export::schema::{SCHEMA_VERSION, scan_effort_name, send_mode_name};
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
 use crate::model::confidence::Confidence;
@@ -340,11 +342,68 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
     ]
 }
 
+/// Every enumerated value in the comparison document, the same way.
+///
+/// A shorter list than the report's, because a comparison is built out of the
+/// report's own vocabulary and re-uses its names for everything it carries over.
+/// What is its own is the coverage answer and the significance grade, neither of
+/// which exists anywhere else.
+///
+/// [`Presence`](crate::diff::Presence) is the other closed enum in the document
+/// and is not here, for the reason `port_scope` is not in the report's list: two
+/// of its three variants carry data, so it publishes no `ALL`.
+fn diff_enumerations() -> Vec<(&'static str, Vec<String>)> {
+    let coverage: Vec<String> = Coverage::ALL
+        .iter()
+        .copied()
+        .map(|coverage| coverage_name(coverage).to_owned())
+        .collect();
+
+    let significance: Vec<String> = Significance::ALL
+        .iter()
+        .copied()
+        .map(|significance| significance_name(significance).to_owned())
+        .collect();
+
+    // Both answers are asked of a host and of an endpoint, and the grade again of
+    // the document as a whole, so each list is spelled several times and every
+    // copy is held to the same build.
+    vec![
+        (
+            "/$defs/host_delta/properties/coverage/oneOf/0/enum",
+            coverage.clone(),
+        ),
+        (
+            "/$defs/port_delta/properties/coverage/oneOf/0/enum",
+            coverage,
+        ),
+        ("/properties/significance/enum", significance.clone()),
+        (
+            "/$defs/host_delta/properties/significance/enum",
+            significance.clone(),
+        ),
+        (
+            "/$defs/port_delta/properties/significance/enum",
+            significance,
+        ),
+    ]
+}
+
+#[test]
+fn the_comparison_schema_lists_exactly_the_enumerated_values_the_engine_writes() {
+    let schema: Value = serde_json::from_str(DIFF_SCHEMA).expect("valid JSON");
+    check_enumerations(&schema, diff_enumerations());
+}
+
 #[test]
 fn the_schema_lists_exactly_the_enumerated_values_the_engine_writes() {
     let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
+    check_enumerations(&schema, enumerations());
+}
 
-    for (pointer, emitted) in enumerations() {
+/// Holds one document's schema to one build's vocabulary, both ways.
+fn check_enumerations(schema: &Value, enumerations: Vec<(&'static str, Vec<String>)>) {
+    for (pointer, emitted) in enumerations {
         let accepted: BTreeSet<String> = schema
             .pointer(pointer)
             .unwrap_or_else(|| panic!("the schema has no enumeration at {pointer}"))

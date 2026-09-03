@@ -43,7 +43,7 @@
 
 use std::io::Write;
 
-use crate::diff::{HostDelta, Presence, ScanDiff};
+use crate::diff::{HostDelta, Presence, ScanDiff, Significance};
 use crate::export::diff::DiffExporter;
 use crate::export::diff::schema::{ChangeDto, DiffDto, HostDeltaDto, PortDeltaDto};
 use crate::export::schema::ENGINE_NAME;
@@ -237,6 +237,31 @@ fn write_tiles(out: &mut dyn Write, document: &DiffDto<'_>) -> Result<(), Export
         "certificates",
         &esc("rotated, expiring or lapsed"),
     )?;
+
+    // The tile a scheduled comparison is read for, and the only one that answers
+    // how much of the page is worth anybody's evening. Everything above counts
+    // what moved; this counts what moving it means.
+    let graded = |grade: Significance| {
+        document
+            .hosts
+            .deltas()
+            .iter()
+            .filter(|delta| delta.significance() >= grade)
+            .count()
+    };
+    let urgent = graded(Significance::Urgent);
+    let note = match urgent {
+        0 => "nothing urgent".to_string(),
+        1 => "1 urgent".to_string(),
+        many => format!("{many} urgent"),
+    };
+    write::tile(
+        out,
+        graded(Significance::Notable),
+        "hosts to look at",
+        &esc(&note),
+    )?;
+
     writeln!(out, "</div>")?;
     Ok(())
 }
@@ -301,6 +326,19 @@ fn write_host(
         write!(out, "<span class=\"host-name\">{}</span>", Text(hostname))?;
     }
     write!(out, "<span class=\"tag {tone}\">{word}</span>")?;
+
+    // Only where it says something. A grade on every card is a column of the
+    // word "routine", which is most of a diff and is the part a reader is
+    // skipping. `TONE_FOUND` is the page's "worth looking at" tone rather than
+    // its "good news" one, and urgent is what it is for; notable takes the bare
+    // tag, which reads as neutral against it.
+    match delta.significance() {
+        Significance::Urgent => {
+            write!(out, "<span class=\"tag {TONE_FOUND}\">urgent</span>")?;
+        }
+        Significance::Notable => write!(out, "<span class=\"tag\">notable</span>")?,
+        Significance::Routine => {}
+    }
 
     if dto.regrouped {
         write!(
@@ -416,6 +454,7 @@ fn coverage_word(coverage: crate::diff::Coverage) -> &'static str {
         Coverage::Covered => "covered",
         Coverage::Withheld => "a policy forbade it",
         Coverage::OutOfScope => "outside what it walked",
+        Coverage::Unreached => "it ran short of it",
         Coverage::Unstated => "it does not say",
     }
 }
@@ -490,6 +529,43 @@ mod tests {
         for word in ["appeared", "gone", "changed"] {
             assert!(page.contains(word), "{word} is not said anywhere");
         }
+    }
+
+    /// A reader arriving at a page of forty changed hosts needs to know which
+    /// three to open, and this is the whole of what tells them.
+    #[test]
+    fn the_page_says_which_hosts_are_worth_opening() {
+        let page = compared();
+
+        assert!(
+            page.contains("hosts to look at"),
+            "the headline tile is missing: {page}"
+        );
+        assert!(
+            page.contains("urgent"),
+            "nothing on the page is graded urgent"
+        );
+        assert!(
+            page.contains(">notable<"),
+            "nothing on the page is graded notable"
+        );
+
+        // And the grade a whole diff would carry is not printed on every card,
+        // since a column of one word is a column a reader skips.
+        assert!(
+            !page.contains(">routine<"),
+            "routine is written out where it says nothing: {page}"
+        );
+    }
+
+    /// Two scans of a network that only drifted have nothing to open, and the
+    /// page says so rather than leaving the tile to be read as a failure.
+    #[test]
+    fn a_page_with_nothing_urgent_on_it_says_nothing_urgent() {
+        let (before, _) = fixture::compared();
+        let quiet = page(&ScanDiff::between(&before, &before));
+
+        assert!(quiet.contains("nothing urgent"), "{quiet}");
     }
 
     /// The number the whole comparison is arranged to protect. A page that

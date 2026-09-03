@@ -458,6 +458,7 @@ impl SummaryDto {
                 unfiltered: state(PortState::Unfiltered),
                 filtered: state(PortState::Filtered),
                 closed_filtered: state(PortState::ClosedFiltered),
+                unasked: state(PortState::Unasked),
             },
             services_identified: summary.services_identified,
             hosts_by_family: FamilyCounts {
@@ -499,6 +500,10 @@ pub struct PortStateCounts {
     pub filtered: usize,
     /// Either closed or dropped.
     pub closed_filtered: usize,
+    /// Named by the scan and never probed, so nothing was established. A
+    /// non-zero count here is the visible half of a run that fell short; the
+    /// phase's `timed_out` and `stop_reason` say why.
+    pub unasked: usize,
 }
 
 // ---------------------------------------------------------------------------

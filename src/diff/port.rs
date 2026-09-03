@@ -67,11 +67,16 @@ impl PortDelta {
     }
 
     /// The baseline scan's record, if it has one.
+    ///
+    /// [`None`] where the baseline's own record is [`PortState::Unasked`], since
+    /// a port nobody probed is a scan holding no finding for that endpoint. The
+    /// module documentation of [`diff`](crate::diff) is the argument for that
+    /// reading.
     pub fn baseline(&self) -> Option<&Port> {
         self.baseline.as_ref()
     }
 
-    /// The current scan's record, if it has one.
+    /// The current scan's record, if it has one, read the same way.
     pub fn current(&self) -> Option<&Port> {
         self.current.as_ref()
     }
@@ -93,10 +98,11 @@ impl PortDelta {
     /// Whether this endpoint accepts connections now and did not before.
     ///
     /// Reads the records. An endpoint the baseline has no record for counts,
-    /// since a report is the whole of what a scan wrote down. Whether the
-    /// baseline looked at all is [`presence`](Self::presence)'s question, and
-    /// [`Presence::is_confirmed`] is the test that separates a port that opened
-    /// from one nobody had checked.
+    /// since a report is the whole of what a scan wrote down, and so does one the
+    /// baseline recorded [`Unasked`](PortState::Unasked), which is a scan saying
+    /// outright that it holds none. Whether the baseline looked at all is
+    /// [`presence`](Self::presence)'s question, and [`Presence::is_confirmed`] is
+    /// the test that separates a port that opened from one nobody had checked.
     pub fn is_opened(&self) -> bool {
         self.state_of(self.current.as_ref()) == Some(PortState::Open)
             && self.state_of(self.baseline.as_ref()) != Some(PortState::Open)
@@ -271,6 +277,15 @@ pub(crate) struct Clocks {
 ///
 /// Endpoints that are identical in both scans are left out entirely, so the
 /// result is what moved and nothing else.
+///
+/// ## An unasked port is not a record
+///
+/// A port a scan named and never probed is on its host at
+/// [`PortState::Unasked`], and it is indexed here as a side holding no record at
+/// all for that endpoint rather than as one whose state happens to be that.
+/// It answers [`Coverage::Unreached`] instead, which is the same machinery that
+/// already keeps a narrowed scope from reading as a network that emptied. The
+/// module documentation of [`diff`](crate::diff) is the whole argument.
 pub(crate) fn compare<'a>(
     baseline: &[&'a Port],
     current: &[&'a Port],
@@ -284,9 +299,20 @@ pub(crate) fn compare<'a>(
     let index = |ports: &[&'a Port]| -> BTreeMap<(u16, Protocol), &'a Port> {
         ports
             .iter()
+            .filter(|port| port.state() != PortState::Unasked)
             .map(|port| ((port.number(), port.protocol()), *port))
             .collect()
     };
+    let unreached = |ports: &[&'a Port]| -> BTreeSet<(u16, Protocol)> {
+        ports
+            .iter()
+            .filter(|port| port.state() == PortState::Unasked)
+            .map(|port| (port.number(), port.protocol()))
+            .collect()
+    };
+
+    let baseline_unreached = unreached(baseline);
+    let current_unreached = unreached(current);
     let baseline = index(baseline);
     let current = index(current);
 
@@ -299,8 +325,14 @@ pub(crate) fn compare<'a>(
 
         let (presence, changes) = match (before, after) {
             (Some(_), Some(_)) => (Presence::Both, changes_between(before, after, clocks)),
-            (Some(_), None) => (presence.removed(number, protocol), Vec::new()),
-            (None, Some(_)) => (presence.added(number, protocol), Vec::new()),
+            (Some(_), None) => (
+                presence.removed(number, protocol, &current_unreached),
+                Vec::new(),
+            ),
+            (None, Some(_)) => (
+                presence.added(number, protocol, &baseline_unreached),
+                Vec::new(),
+            ),
             (None, None) => unreachable!("a key comes from one side or the other"),
         };
 
@@ -331,15 +363,45 @@ pub(crate) struct PresenceFor<'a> {
 }
 
 impl PresenceFor<'_> {
-    fn added(&self, number: u16, protocol: Protocol) -> Presence {
+    fn added(
+        &self,
+        number: u16,
+        protocol: Protocol,
+        unreached: &BTreeSet<(u16, Protocol)>,
+    ) -> Presence {
         Presence::Added {
-            before: (self.baseline)(number, protocol),
+            before: Self::coverage(self.baseline, number, protocol, unreached),
         }
     }
 
-    fn removed(&self, number: u16, protocol: Protocol) -> Presence {
+    fn removed(
+        &self,
+        number: u16,
+        protocol: Protocol,
+        unreached: &BTreeSet<(u16, Protocol)>,
+    ) -> Presence {
         Presence::Removed {
-            after: (self.current)(number, protocol),
+            after: Self::coverage(self.current, number, protocol, unreached),
+        }
+    }
+
+    /// What one side says about having probed an endpoint it holds no record
+    /// for.
+    ///
+    /// Its own record answers first where it has one. A scope is what a scan set
+    /// out to walk and [`PortState::Unasked`] is how far it got, so a port the
+    /// scan wrote down as never probed is not covered however wide the scope it
+    /// declared was.
+    fn coverage(
+        scope: &dyn Fn(u16, Protocol) -> Coverage,
+        number: u16,
+        protocol: Protocol,
+        unreached: &BTreeSet<(u16, Protocol)>,
+    ) -> Coverage {
+        if unreached.contains(&(number, protocol)) {
+            Coverage::Unreached
+        } else {
+            scope(number, protocol)
         }
     }
 }

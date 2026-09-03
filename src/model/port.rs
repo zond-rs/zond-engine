@@ -128,7 +128,8 @@ impl Protocol {
 /// The ordering ranks evidence, not how alarming a state is. `Open` outranks
 /// `Closed` because a SYN+ACK settles the question where a RST from a filtered
 /// path does not, and the two ambiguous states sit below the states they are
-/// ambiguous between.
+/// ambiguous between. `Unasked` is beneath all of them because it is the absence
+/// of evidence rather than a weak grade of it.
 ///
 /// Which reply produces which state depends on the probe that drew it, since a
 /// RST means a closed port to a SYN and an unfiltered path to an ACK. That
@@ -137,6 +138,28 @@ impl Protocol {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortState {
+    /// No probe was sent, so nothing was established either way.
+    ///
+    /// Every state below is a reading of an answer or of a silence that followed
+    /// a question. This one is what a port says when the question was never put:
+    /// a scan that ran out of wall clock with targets still queued, a
+    /// host that spent
+    /// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout)
+    /// before the scan reached this port, a probe the operating system refused
+    /// to send.
+    ///
+    /// Such a port stays on the record rather than being left off the host,
+    /// because a truncated port list and a complete one look identical and the
+    /// count agrees with itself either way. Before this state existed the only
+    /// way to keep it was to file it under whatever the scan read silence as,
+    /// which put a port nobody looked at beside ports that were probed and
+    /// stayed quiet. A comparison then read the pair as a port that had changed.
+    ///
+    /// Being the bottom of the ordering, it never overrides anything:
+    /// [`Port::merge`] folding a probed record onto an unasked one keeps the
+    /// probe's verdict.
+    Unasked,
+
     /// Closed or filtered, and the probe cannot say which. What an idle scan
     /// concludes when the target's IP ID did not advance.
     ClosedFiltered,
@@ -177,8 +200,8 @@ pub enum PortState {
 }
 
 impl PortState {
-    /// Every verdict a probe can reach, in declaration order, which is least
-    /// definitive first and is the order this type's [`Ord`] ranks by.
+    /// Every state a port can be recorded in, in declaration order, which is
+    /// least definitive first and is the order this type's [`Ord`] ranks by.
     ///
     /// Here for the reason [`Protocol::ALL`] gives, and read by the gate holding
     /// the exported schema to what this build can write.
@@ -186,10 +209,11 @@ impl PortState {
     /// It was written in neither the declaration's order nor any other, with
     /// `Filtered` before `ClosedFiltered` and `Closed` before `Unfiltered`. The
     /// gate compares names as a set and did not care, so nothing said so; a
-    /// caller rendering a legend from it would have got the six in an order the
+    /// caller rendering a legend from it would have got them in an order the
     /// type says is wrong. `model`'s own test now holds every `ALL` to its
     /// enum's declaration order.
-    pub const ALL: [PortState; 6] = [
+    pub const ALL: [PortState; 7] = [
+        Self::Unasked,
         Self::ClosedFiltered,
         Self::Filtered,
         Self::Unfiltered,
@@ -514,6 +538,34 @@ mod tests {
             &ScanResponse::NoResponse,
             "but its account of itself is better than none"
         );
+    }
+
+    /// Nothing established outranks nothing at all, in both directions, so a
+    /// sitting that never reached a port cannot undo what an earlier one learned
+    /// about it and cannot invent anything either.
+    #[test]
+    fn an_unasked_port_loses_to_every_verdict() {
+        for verdict in PortState::ALL {
+            if verdict == PortState::Unasked {
+                continue;
+            }
+            assert!(
+                PortState::Unasked < verdict,
+                "{verdict:?} does not outrank a port nobody probed"
+            );
+        }
+
+        let mut probed = Port::new(22, Protocol::Tcp, PortState::Closed);
+        probed.merge(Port::new(22, Protocol::Tcp, PortState::Unasked));
+        assert_eq!(
+            probed.state(),
+            PortState::Closed,
+            "a later sitting that never asked unlearned the first one's answer"
+        );
+
+        let mut unasked = Port::new(22, Protocol::Tcp, PortState::Unasked);
+        unasked.merge(Port::new(22, Protocol::Tcp, PortState::Closed));
+        assert_eq!(unasked.state(), PortState::Closed);
     }
 
     /// The telemetry explains the verdict, so replacing the verdict replaces the

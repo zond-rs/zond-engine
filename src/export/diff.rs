@@ -32,12 +32,19 @@
 //!
 //! ## What a consumer must not lose
 //!
-//! Every host and every endpoint carries `confirmed`. It is derived, from the
-//! presence and the other scan's coverage, and stated anyway, because it is the
-//! field an alerting rule keys on and re-deriving it is the step somebody will
-//! skip. A comparison whose `confirmed` is ignored reports hosts as gone every
-//! time a scan is narrowed, which is the failure [`diff`](crate::diff) is
-//! arranged to prevent.
+//! Every host and every endpoint carries `confirmed` and `significance`, and the
+//! document carries one of its own. Both are derived, from the presence and the
+//! other scan's coverage and from
+//! [`Significance`](crate::diff::Significance)'s table, and both are stated
+//! anyway, because they are the fields an alerting rule keys on and re-deriving
+//! them is the step somebody will skip. A comparison whose `confirmed` is ignored
+//! reports hosts as gone every time a scan is narrowed, which is the failure
+//! [`diff`](crate::diff) is arranged to prevent; one whose `significance` is
+//! ignored pages somebody at three in the morning because a reverse name moved.
+//!
+//! A rule that reads only one of them should read `significance`, which already
+//! answers `routine` for anything the comparison cannot vouch for. `confirmed` is
+//! then the reason rather than a second condition.
 //!
 //! ## The records on either side
 //!

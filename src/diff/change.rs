@@ -165,14 +165,20 @@ impl Presence {
     }
 }
 
-/// What a report says about whether a target was within what it walked.
+/// What a report says about whether it looked at a target.
 ///
-/// Read off the [`TargetScope`](crate::report::TargetScope) of the report's
-/// phases, which record the ranges a scan iterated after its exclusion policy was
-/// applied and the ranges that policy withheld. A report carrying no scope, such
-/// as one rebuilt from a foreign scanner's output or from a scan that stopped
-/// before it wrote a phase down, answers [`Unstated`](Self::Unstated)
+/// Mostly read off the [`TargetScope`](crate::report::TargetScope) of the
+/// report's phases, which record the ranges a scan iterated after its exclusion
+/// policy was applied and the ranges that policy withheld. A report carrying no
+/// scope, such as one rebuilt from a foreign scanner's output or from a scan that
+/// stopped before it wrote a phase down, answers [`Unstated`](Self::Unstated)
 /// rather than guessing.
+///
+/// [`Unreached`](Self::Unreached) is the one answer that comes from somewhere
+/// else, and it overrules the scope where the two meet: a scope says what a scan
+/// set out to walk, and a port recorded
+/// [`Unasked`](crate::model::port::PortState::Unasked) is the scan saying how far
+/// it actually got.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Coverage {
@@ -184,11 +190,35 @@ pub enum Coverage {
     /// The report states what it walked, and this target was not in it. Nobody
     /// asked about this target, which is different from being forbidden to.
     OutOfScope,
+    /// The scan named this target, meant to probe it, and ran short before it
+    /// did. The record itself says so, by carrying the endpoint at
+    /// [`PortState::Unasked`](crate::model::port::PortState::Unasked).
+    ///
+    /// The one answer that is a measurement rather than a reading of intent, and
+    /// it is what keeps a scan cut short by its own wall clock from reporting
+    /// every port it did not reach as one that closed.
+    Unreached,
     /// The report does not say what it covered, so whether it looked is unknown.
     Unstated,
 }
 
 impl Coverage {
+    /// Every answer, in declaration order.
+    ///
+    /// Here for the reason
+    /// [`PortState::ALL`](crate::model::port::PortState::ALL) gives: the enum is
+    /// `#[non_exhaustive]`, and an answer added without a name in the exported
+    /// comparison schema is one a document can carry and no consumer's validator
+    /// will accept. The export conformance suite reads this and the schema's own
+    /// list and fails unless they hold the same names.
+    pub const ALL: [Coverage; 5] = [
+        Self::Covered,
+        Self::Withheld,
+        Self::OutOfScope,
+        Self::Unreached,
+        Self::Unstated,
+    ];
+
     /// Whether the report is known to have walked the target.
     pub fn is_covered(&self) -> bool {
         matches!(self, Coverage::Covered)
@@ -196,6 +226,10 @@ impl Coverage {
 
     /// Whether the report is known not to have walked the target, for either
     /// reason.
+    ///
+    /// A target the scan meant to reach and did not is not excluded from
+    /// anything, so [`Unreached`](Self::Unreached) answers false here and false
+    /// to [`is_covered`](Self::is_covered) alike.
     pub fn is_excluded(&self) -> bool {
         matches!(self, Coverage::Withheld | Coverage::OutOfScope)
     }
@@ -207,6 +241,7 @@ impl fmt::Display for Coverage {
             Coverage::Covered => write!(f, "covered"),
             Coverage::Withheld => write!(f, "withheld"),
             Coverage::OutOfScope => write!(f, "out of scope"),
+            Coverage::Unreached => write!(f, "unreached"),
             Coverage::Unstated => write!(f, "unstated"),
         }
     }

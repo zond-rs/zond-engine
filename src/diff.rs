@@ -15,7 +15,7 @@
 //! how any of it is shown.
 //!
 //! ```no_run
-//! use zond_engine::diff::ScanDiff;
+//! use zond_engine::diff::{ScanDiff, Significance};
 //! # use zond_engine::report::ScanReport;
 //! # fn example(last_week: &ScanReport, today: &ScanReport) {
 //! let diff = ScanDiff::between(last_week, today);
@@ -27,6 +27,9 @@
 //! );
 //!
 //! for host in diff.hosts() {
+//!     if host.significance() < Significance::Notable {
+//!         continue;
+//!     }
 //!     for port in host.ports() {
 //!         if port.is_opened() {
 //!             println!("{}:{} is open", host.address(), port.number());
@@ -35,6 +38,18 @@
 //! }
 //! # }
 //! ```
+//!
+//! ## Which of it matters
+//!
+//! Two scans of a live network are never equal, so a comparison that only listed
+//! what moved would hand somebody a page of reverse names to read every morning.
+//! [`Significance`] is the grade that separates the line they needed from the
+//! rest, and [`significance`] is the whole of the policy behind it,
+//! written down in one place.
+//!
+//! It answers how much a change is worth acting on, and nothing about whether it
+//! happened: that is [`Presence::is_confirmed`], below. The two meet only at the
+//! delta, where a caller wants one number to sort by.
 //!
 //! ## Two scans, not two of this engine's scans
 //!
@@ -86,6 +101,21 @@
 //! answers `Unstated` too. Where the address itself was withheld or out of scope
 //! the endpoint inherits that, since nothing was probed there at all.
 //!
+//! One endpoint answers better than its scope can. A port the scan named and
+//! never reached is recorded
+//! [`PortState::Unasked`](crate::model::port::PortState::Unasked). A scope says
+//! what a scan set out to walk and that says how far it got, so the record
+//! overrules the scope and the endpoint answers [`Coverage::Unreached`].
+//!
+//! Such a port is read here as a side holding no record at all, rather than as a
+//! record whose state happens to be that one. The alternative reads worse in
+//! every case: 443 unasked against 443 open is a state that moved, so the delta
+//! would be a [`Presence::Both`] where [`Presence::is_confirmed`] answers true,
+//! and a consumer alerting on that field is told a port opened on the strength of
+//! a scan that never looked. Read as no record it is the appearance it is, and a
+//! run the wall clock cut short reports the ports it never got to as ports it
+//! never got to rather than as ports that closed.
+//!
 //! ## Which record continues which
 //!
 //! Hosts do not pair by address alone: a machine can change address between two
@@ -112,6 +142,7 @@ pub mod host;
 pub mod pairing;
 pub mod port;
 mod scope;
+pub mod significance;
 
 use std::time::{Duration, SystemTime};
 
@@ -124,6 +155,7 @@ pub use crate::diff::pairing::HostIdentity;
 pub use crate::diff::port::{
     CertificateChange, PortChange, PortDelta, SecurityChange, ServiceChange,
 };
+pub use crate::diff::significance::Significance;
 
 use crate::diff::port::Clocks;
 use crate::diff::scope::ScopeIndex;
@@ -1074,6 +1106,252 @@ mod tests {
         let summary = diff.summary();
         assert_eq!(summary.ports_opened.total, 1);
         assert_eq!(summary.ports_opened.confirmed, 0);
+    }
+
+    /// The false alarm this whole reading exists to stop. The baseline's scope
+    /// says it walked 443, and the baseline's own record says it never got there,
+    /// so the record wins and an open port today is news about the scan rather
+    /// than about the network.
+    #[test]
+    fn a_port_the_baseline_ran_short_of_is_not_a_confirmed_opening() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut before = host(10);
+        before.add_port(Port::new(443, Protocol::Tcp, PortState::Unasked));
+        let mut after = host(10);
+        after.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+
+        let diff = ScanDiff::between(
+            &port_scanned(
+                vec![before],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at,
+            ),
+            &port_scanned(
+                vec![after],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at + DAY,
+            ),
+        );
+
+        let delta = &diff.hosts()[0].ports()[0];
+        assert_eq!(
+            delta.presence(),
+            Presence::Added {
+                before: Coverage::Unreached
+            },
+            "an unasked port read as a verdict the baseline reached"
+        );
+        assert!(
+            delta.baseline().is_none(),
+            "a port nobody probed is not a record of anything"
+        );
+        assert!(
+            delta.changes().is_empty(),
+            "an appearance carries no field-level changes"
+        );
+
+        let summary = diff.summary();
+        assert_eq!(summary.ports_opened.total, 1);
+        assert_eq!(
+            summary.ports_opened.confirmed, 0,
+            "a scan that ran short confirmed an opening it never looked for"
+        );
+    }
+
+    /// The mirror, which is the one a scheduled scan hits: tonight's run spent
+    /// its wall-clock budget before reaching a port that was open last night.
+    /// Nothing closed.
+    #[test]
+    fn a_port_the_later_scan_ran_short_of_is_not_a_confirmed_closing() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut before = host(10);
+        before.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        let mut after = host(10);
+        after.add_port(Port::new(443, Protocol::Tcp, PortState::Unasked));
+
+        let diff = ScanDiff::between(
+            &port_scanned(
+                vec![before],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at,
+            ),
+            &port_scanned(
+                vec![after],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at + DAY,
+            ),
+        );
+
+        let delta = &diff.hosts()[0].ports()[0];
+        assert_eq!(
+            delta.presence(),
+            Presence::Removed {
+                after: Coverage::Unreached
+            },
+        );
+
+        let summary = diff.summary();
+        assert_eq!(summary.ports_closed.total, 1);
+        assert_eq!(summary.ports_closed.confirmed, 0);
+    }
+
+    /// A port the baseline never reached and tonight's scan holds no record for
+    /// at all is not a port that went away. Neither side has a finding, so there
+    /// is nothing to compare and no delta is emitted: reporting one would file
+    /// the baseline's own admission that it never looked as a disappearance.
+    #[test]
+    fn an_endpoint_neither_scan_has_a_finding_for_is_reported_by_neither() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut before = host(10);
+        before.add_port(Port::new(443, Protocol::Tcp, PortState::Unasked));
+
+        let diff = ScanDiff::between(
+            &port_scanned(
+                vec![before],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at,
+            ),
+            &port_scanned(
+                vec![host(10)],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at + DAY,
+            ),
+        );
+
+        assert!(diff.is_empty(), "{:?}", diff.hosts());
+    }
+
+    /// The two axes meeting, which is the whole of what the grade adds over a
+    /// change list. Both scans walked 443; last week nothing was listening and
+    /// tonight something is, so somebody has to know.
+    #[test]
+    fn a_port_that_opened_on_ground_both_scans_walked_is_urgent() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut before = host(10);
+        before.add_port(Port::new(443, Protocol::Tcp, PortState::Closed));
+        let mut after = host(10);
+        after.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+
+        let diff = ScanDiff::between(
+            &port_scanned(
+                vec![before],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at,
+            ),
+            &port_scanned(
+                vec![after],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at + DAY,
+            ),
+        );
+
+        assert_eq!(
+            diff.hosts()[0].ports()[0].significance(),
+            Significance::Urgent
+        );
+        assert_eq!(diff.hosts()[0].significance(), Significance::Urgent);
+        assert_eq!(diff.significance(), Significance::Urgent);
+    }
+
+    /// And the same opening, where the baseline ran out of wall clock before it
+    /// reached the port. The change would mean the same thing; the comparison
+    /// cannot say it happened, so it does not rank as though it did.
+    #[test]
+    fn the_same_opening_against_a_scan_that_ran_short_is_routine() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut before = host(10);
+        before.add_port(Port::new(443, Protocol::Tcp, PortState::Unasked));
+        let mut after = host(10);
+        after.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+
+        let diff = ScanDiff::between(
+            &port_scanned(
+                vec![before],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at,
+            ),
+            &port_scanned(
+                vec![after],
+                "192.168.0.0/24",
+                PortScope::Every(ports("1-1024")),
+                at + DAY,
+            ),
+        );
+
+        let port = &diff.hosts()[0].ports()[0];
+        assert!(port.is_opened(), "the record still says the port is open");
+        assert_eq!(
+            port.significance(),
+            Significance::Routine,
+            "a port nobody had checked ranked as one that opened"
+        );
+        assert_eq!(diff.significance(), Significance::Routine);
+    }
+
+    /// A scan widened to a range nobody had scanned before turns up hosts with
+    /// open ports on them, and none of it is news. This is the alarm every
+    /// monitoring tool raises the first time somebody edits a target list, and
+    /// the grade is where a caller keying on one field is stopped from raising
+    /// it.
+    #[test]
+    fn a_host_found_by_a_wider_scan_is_routine_open_ports_and_all() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut arrival = host(200);
+        arrival.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+
+        let diff = ScanDiff::between(
+            &scoped(vec![host(10)], "192.168.0.0/26", &[], at),
+            &scoped(vec![host(10), arrival], "192.168.0.0/24", &[], at + DAY),
+        );
+
+        let appeared = diff
+            .hosts()
+            .iter()
+            .find(|delta| delta.address() == ip(200))
+            .expect("the new host is in the diff");
+
+        assert!(!appeared.presence().is_confirmed());
+        assert_eq!(
+            appeared.significance(),
+            Significance::Routine,
+            "a host on ground nobody had walked was graded as one that arrived"
+        );
+        assert_eq!(diff.significance(), Significance::Routine);
+    }
+
+    /// A whole night of a network being a network. Nothing here is worth waking
+    /// anybody, and the grade says so.
+    #[test]
+    fn a_diff_of_nothing_but_drift_is_routine() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut before = host(10);
+        before.set_hostname(Some("old.example.test".to_string()));
+        let mut after = host(10);
+        after.set_hostname(Some("new.example.test".to_string()));
+
+        let diff = ScanDiff::between(
+            &scoped(vec![before], "192.168.0.0/24", &[], at),
+            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+        );
+
+        assert!(!diff.is_empty(), "the hostname did move");
+        assert_eq!(diff.significance(), Significance::Routine);
     }
 
     #[test]

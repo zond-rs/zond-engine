@@ -12,6 +12,7 @@
     "baseline",
     "current",
     "unchanged",
+    "significance",
     "summary",
     "hosts"
   ],
@@ -39,6 +40,14 @@
     "unchanged": {
       "description": "Whether the two scans describe the same network. Derivable from an empty `hosts`, and stated because it is the first question every consumer asks.",
       "type": "boolean"
+    },
+    "significance": {
+      "description": "How much the strongest change anywhere in the document is worth somebody's attention. The field a scheduled comparison is triaged by. `routine` for a document where nothing moved, since nothing to do and nothing worth doing rank the same; `unchanged` is what separates them.",
+      "enum": [
+        "routine",
+        "notable",
+        "urgent"
+      ]
     },
     "summary": {
       "$ref": "#/$defs/summary"
@@ -179,6 +188,7 @@
         "presence",
         "coverage",
         "confirmed",
+        "significance",
         "records",
         "regrouped",
         "changes",
@@ -207,6 +217,7 @@
                 "covered",
                 "withheld",
                 "out_of_scope",
+                "unreached",
                 "unstated"
               ]
             },
@@ -216,8 +227,16 @@
           ]
         },
         "confirmed": {
-          "description": "Whether this is a finding about the network rather than about the scan. This is the field to alert on.",
+          "description": "Whether this is a finding about the network rather than about the scan.",
           "type": "boolean"
+        },
+        "significance": {
+          "description": "How much the strongest change on this host, or on any of its endpoints, is worth somebody's attention. The field to alert on, and already `routine` where `confirmed` is false, so a rule keying on this one does not have to read that one as well.",
+          "enum": [
+            "routine",
+            "notable",
+            "urgent"
+          ]
         },
         "records": {
           "$ref": "#/$defs/records"
@@ -273,6 +292,7 @@
         "presence",
         "coverage",
         "confirmed",
+        "significance",
         "opened",
         "closed",
         "changes"
@@ -302,6 +322,7 @@
                 "covered",
                 "withheld",
                 "out_of_scope",
+                "unreached",
                 "unstated"
               ]
             },
@@ -311,8 +332,16 @@
           ]
         },
         "confirmed": {
-          "description": "Whether this is a finding about the network rather than about the scan. True when both scans hold a record, and when the one that does not is known to have probed the endpoint anyway. This is the field to alert on.",
+          "description": "Whether this is a finding about the network rather than about the scan. True when both scans hold a record, and when the one that does not is known to have probed the endpoint anyway.",
           "type": "boolean"
+        },
+        "significance": {
+          "description": "How much the strongest change on this endpoint is worth somebody's attention. The field to alert on, and already `routine` where `confirmed` is false.",
+          "enum": [
+            "routine",
+            "notable",
+            "urgent"
+          ]
         },
         "opened": {
           "description": "Whether the endpoint accepts connections now and did not before.",
