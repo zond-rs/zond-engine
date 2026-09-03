@@ -71,6 +71,12 @@ use std::io::{BufRead, Write};
 use ring::rand::SystemRandom;
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 
+/// The largest signature document [`Signature::read`] will take.
+///
+/// One this crate writes is five lines of a few hundred bytes. The ceiling is
+/// for the file that did not come from here.
+const MAX_DOCUMENT_BYTES: u64 = 64 * 1024;
+
 /// The one signature algorithm, named so a document says which produced it.
 ///
 /// Ed25519 (RFC 8032). One algorithm rather than a choice: a verifier that reads
@@ -305,8 +311,23 @@ impl Signature {
     ///
     /// [`SignatureError::Malformed`] for anything this did not write.
     pub fn read(input: &mut dyn BufRead) -> Result<Self, SignatureError> {
+        use std::io::Read as _;
+
+        // Bounded, because this is the one file in the pair that arrives from
+        // somewhere else: a report is handed over with its signature beside it,
+        // and a reader that sizes its allocation from the sender is taking the
+        // sender's word for it. `journal::store` reads its manifest the same way
+        // and for the same reason. A signature this crate writes is five short
+        // lines; the ceiling is generous against that and still a ceiling.
         let mut source = String::new();
-        input.read_to_string(&mut source)?;
+        let read = (&mut *input)
+            .take(MAX_DOCUMENT_BYTES + 1)
+            .read_to_string(&mut source)?;
+        if read as u64 > MAX_DOCUMENT_BYTES {
+            return Err(SignatureError::Malformed(format!(
+                "the signature document is larger than {MAX_DOCUMENT_BYTES} bytes"
+            )));
+        }
 
         let document: SignatureDocument = toml::from_str(&source)
             .map_err(|error| SignatureError::Malformed(error.to_string()))?;
@@ -419,7 +440,20 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 /// [`encode_hex`] read back, or `None` for anything that is not an even run of
-/// hex digits.
+/// lowercase hex digits.
+///
+/// Exactly `[0-9a-f]`, which is narrower than it looks like it needs to be and
+/// is the point. This went through `u8::from_str_radix(_, 16)`, which accepts a
+/// leading `+`: `"+f"` decoded to `0x0f`, so `public_key`, `digest` and
+/// `signature` each had many valid spellings and a re-spelled document verified.
+///
+/// That was not a bypass — every decision in [`Signature::verify`] is made on
+/// decoded bytes against a key the caller supplied, and the length is preserved
+/// either way — but it made the document non-canonical, and
+/// [`Signature::public_key`] is documented as the field a recipient uses to tell
+/// *which* key to go and look up. A key that verifies while printing a string
+/// nobody's keyring matches is the wrong kind of correct. Accepting only what
+/// [`encode_hex`] emits makes the two one-to-one.
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
@@ -427,8 +461,12 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
     text.as_bytes()
         .chunks(2)
         .map(|pair| {
-            let text = std::str::from_utf8(pair).ok()?;
-            u8::from_str_radix(text, 16).ok()
+            let digit = |byte: u8| match byte {
+                b'0'..=b'9' => Some(byte - b'0'),
+                b'a'..=b'f' => Some(byte - b'a' + 10),
+                _ => None,
+            };
+            Some(digit(pair[0])? << 4 | digit(pair[1])?)
         })
         .collect()
 }
@@ -727,5 +765,77 @@ mod tests {
         assert_eq!(decode_hex("abc"), None, "an odd length is not hex");
         assert_eq!(decode_hex("zz"), None);
         assert_eq!(decode_hex(""), Some(Vec::new()));
+    }
+
+    /// **A signature document has one spelling.**
+    ///
+    /// `u8::from_str_radix` accepts a leading `+`, so `"+f"` decoded to `0x0f`
+    /// and every hex field had many encodings that all verified. Not a bypass —
+    /// the length is preserved and every decision is made on decoded bytes — but
+    /// `public_key` is what a recipient looks a key up by, and a document that
+    /// verifies while printing a string no keyring matches is the wrong kind of
+    /// correct.
+    #[test]
+    fn only_lowercase_hex_decodes() {
+        assert_eq!(decode_hex("0f"), Some(vec![0x0f]));
+        assert_eq!(decode_hex("00ff"), Some(vec![0x00, 0xff]));
+
+        for refused in [
+            "+f", "+0", "+f+f", " f", "0X", "0x", "-1", "FF", "0F", "f", "g0",
+        ] {
+            assert_eq!(
+                decode_hex(refused),
+                None,
+                "{refused:?} is not what encode_hex emits"
+            );
+        }
+    }
+
+    /// And the round trip is exact, so nothing this crate writes is refused by
+    /// the narrowing above.
+    #[test]
+    fn every_byte_survives_the_round_trip() {
+        let all: Vec<u8> = (0..=255u8).collect();
+        assert_eq!(decode_hex(&encode_hex(&all)), Some(all));
+    }
+
+    /// A re-spelled public key no longer verifies, because it no longer decodes.
+    #[test]
+    fn a_respelled_key_is_refused_rather_than_accepted() {
+        let document = b"a signed report";
+        let (key, signature) = signed(document);
+        let trusted = key.public_key();
+        assert!(signature.verify(document, &trusted).is_ok());
+
+        let respelled = signature.public_key().replacen("0", "+", 1);
+        if respelled == signature.public_key() {
+            return; // no leading-zero nibble in this key; nothing to re-spell
+        }
+        let forged = Signature {
+            algorithm: signature.algorithm().to_string(),
+            digest_algorithm: DIGEST.to_string(),
+            public_key: respelled,
+            digest: signature.digest().to_string(),
+            signature: encode_hex(&decode_hex(&signature.signature).expect("hex")),
+        };
+        assert!(matches!(
+            forged.verify(document, &trusted),
+            Err(SignatureError::Malformed(_))
+        ));
+    }
+
+    /// A document larger than the ceiling is refused rather than allocated.
+    #[test]
+    fn an_oversized_document_is_refused() {
+        let padding = "#".repeat(MAX_DOCUMENT_BYTES as usize + 1);
+        let document = format!(
+            "algorithm = \"ed25519\"\ndigest_algorithm = \"sha256\"\n\
+             public_key = \"00\"\ndigest = \"00\"\nsignature = \"00\"\n{padding}\n"
+        );
+        let mut input = std::io::Cursor::new(document.as_bytes());
+        assert!(matches!(
+            Signature::read(&mut input),
+            Err(SignatureError::Malformed(_))
+        ));
     }
 }
