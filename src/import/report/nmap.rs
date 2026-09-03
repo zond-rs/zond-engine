@@ -98,7 +98,7 @@ use crate::import::xml::{Element, Event, Parser};
 use crate::import::{ImportError, ImportOrigin};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::os::OsFingerprint;
-use crate::model::host::{Host, HostStatus, StatusProtocol, StatusReason};
+use crate::model::host::{Host, HostStatus, IpProtocolState, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::discovery::{Discovery, ScanResponse};
@@ -394,7 +394,10 @@ impl State {
             }
             Tag::Port => {
                 if let (Some(host), Some(port)) = (self.host.as_mut(), self.port.take()) {
-                    host.ports.push(port.into_port());
+                    match port.ip_protocol {
+                        true => host.ip_protocols.push(port.into_ip_protocol()),
+                        false => host.ports.push(port.into_port()),
+                    }
                 }
             }
             _ => {}
@@ -813,6 +816,7 @@ struct HostAcc {
     state: Option<String>,
     reason: Option<String>,
     ports: Vec<Port>,
+    ip_protocols: Vec<(u8, IpProtocolState)>,
     os: Option<OsFingerprint>,
     started: Option<SystemTime>,
     ended: Option<SystemTime>,
@@ -965,6 +969,9 @@ impl HostAcc {
         for port in self.ports {
             host.add_port(port);
         }
+        for (number, state) in self.ip_protocols {
+            host.record_ip_protocol(number, state);
+        }
 
         // A port that accepted a connection or refused one was answered by the
         // host's own stack, whatever the discovery phase concluded. This is the
@@ -1040,6 +1047,10 @@ struct PortAcc {
     state: PortState,
     reason: Option<String>,
     service: Option<Service>,
+    /// Whether this element was `protocol="ip"`, which is a protocol verdict
+    /// wearing a port's shape rather than a port. [`protocol`](Self::protocol)
+    /// is then meaningless and is not read.
+    ip_protocol: bool,
 }
 
 impl PortAcc {
@@ -1056,6 +1067,26 @@ impl PortAcc {
         let protocol = match element.value(b"protocol") {
             Some("tcp") => Protocol::Tcp,
             Some("udp") => Protocol::Udp,
+            // Not a transport at all. Nmap reports a protocol scan by reusing
+            // this element with `protocol="ip"`, where `portid` is an IP
+            // protocol number rather than a port; this engine keeps the two
+            // apart and reads it into the host's protocol verdicts instead. See
+            // `export::nmap::write_ip_protocols`, which writes the same shape.
+            Some("ip") => {
+                let number = u8::try_from(number).map_err(|_| {
+                    parser.malformed(format!(
+                        "'{number}' is not an IP protocol number, which is a byte"
+                    ))
+                })?;
+                return Ok(Self {
+                    number: u16::from(number),
+                    protocol: Protocol::Tcp,
+                    state: PortState::Filtered,
+                    reason: None,
+                    service: None,
+                    ip_protocol: true,
+                });
+            }
             Some(other) => {
                 return Err(parser.malformed(format!(
                     "port {number} names transport '{other}', which this engine cannot scan"
@@ -1070,6 +1101,7 @@ impl PortAcc {
             state: PortState::Filtered,
             reason: None,
             service: None,
+            ip_protocol: false,
         })
     }
 
@@ -1156,6 +1188,32 @@ impl PortAcc {
         }
 
         port
+    }
+
+    /// The protocol verdict this record describes, for an element that was
+    /// `protocol="ip"`.
+    ///
+    /// The state comes back through the port vocabulary it was written in, since
+    /// nmap has one set of words for both questions. `unfiltered` and
+    /// `closed|filtered` cannot be reached by a protocol scan and are read as the
+    /// nearest thing a protocol verdict can say rather than refused, because a
+    /// document is a foreign tool's and refusing a whole host over one word
+    /// nmap's own scan would not have written is the wrong trade.
+    fn into_ip_protocol(self) -> (u8, IpProtocolState) {
+        let state = match self.state {
+            PortState::Open => IpProtocolState::Open,
+            PortState::Closed => IpProtocolState::Closed,
+            PortState::Filtered => IpProtocolState::Filtered,
+            PortState::OpenFiltered => IpProtocolState::OpenFiltered,
+            // Neither is a conclusion a protocol scan draws. `unfiltered` says a
+            // probe arrived and nothing more, and `closed|filtered` says the two
+            // could not be told apart; both amount to the same silence here.
+            PortState::Unfiltered | PortState::ClosedFiltered => IpProtocolState::OpenFiltered,
+            PortState::Unasked => IpProtocolState::Unasked,
+        };
+
+        // Held to a byte on the way in, which is what `open` checked.
+        (self.number as u8, state)
     }
 }
 

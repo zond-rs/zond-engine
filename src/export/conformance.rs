@@ -37,14 +37,14 @@ use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, Severity};
 use crate::model::host::status::StatusProtocol;
-use crate::model::host::{Filtering, HostStatus, NetworkRole};
+use crate::model::host::{Filtering, HostStatus, IpProtocolState, NetworkRole};
 use crate::model::port::{PortState, Protocol};
 use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::model::tls::{SuiteFault, SuiteStrength, TlsVersion};
 use crate::record::wire::{
     attachment_source_name, confidence_name, detection_class_name, filtering_name,
-    host_status_name, network_role_name, port_state_name, protocol_name, scan_kind_name,
-    scanner_kind_name, severity_name, stop_reason_name,
+    host_status_name, ip_protocol_state_name, network_role_name, port_state_name, protocol_name,
+    scan_kind_name, scanner_kind_name, severity_name, stop_reason_name,
 };
 use crate::report::{AttachmentSource, ScanKind, ScannerKind, StopReason};
 use crate::transport::probe::SendMode;
@@ -266,6 +266,16 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
         (
             "/$defs/host/properties/filtering/items/enum",
             named(Filtering::ALL.iter().copied().map(filtering_name).collect()),
+        ),
+        (
+            "/$defs/host/properties/ip_protocols/items/properties/state/enum",
+            named(
+                IpProtocolState::ALL
+                    .iter()
+                    .copied()
+                    .map(ip_protocol_state_name)
+                    .collect(),
+            ),
         ),
         (
             "/$defs/port/properties/state/enum",

@@ -403,6 +403,7 @@
             "role_lost",
             "filtering_gained",
             "filtering_lost",
+            "ip_protocol",
             "port_state",
             "service_identified",
             "service_lost",

@@ -449,6 +449,7 @@
         "reasons",
         "roles",
         "filtering",
+        "ip_protocols",
         "os",
         "hardware",
         "telemetry",
@@ -544,6 +545,48 @@
               "port_trusting_acl",
               "stateless_filter"
             ]
+          }
+        },
+        "ip_protocols": {
+          "description": "What the scan concluded about each IP protocol it asked this host about, ascending by number. Empty for a scan that did not ask, which is every scan whose `settings.ip_protocols` is empty. This is a question one layer below the ports: whether the host's stack takes delivery of the protocol at all, not what is listening behind it. `open` therefore means the host accepted the datagram, never that something is listening.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "protocol",
+              "name",
+              "state"
+            ],
+            "properties": {
+              "protocol": {
+                "description": "The IP protocol number.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "name": {
+                "description": "The IANA registry keyword for the number, or null where the registry has none worth printing. A courtesy for a reader; the number is the finding.",
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state": {
+                "description": "`closed` is the host's own stack refusing the protocol, by an ICMP protocol unreachable. `open` is the host taking delivery of it. `filtered` is the path refusing delivery, which says nothing about the host. `open_filtered` is silence, which is the ordinary answer: most protocols answer an unsolicited bare header with nothing whether or not the stack implements them. `unasked` is a protocol the scan named and no probe reached.",
+                "enum": [
+                  "unasked",
+                  "open_filtered",
+                  "filtered",
+                  "closed",
+                  "open"
+                ]
+              }
+            }
           }
         },
         "os": {
@@ -1582,6 +1625,7 @@
         "detection",
         "traceroute",
         "characterise",
+        "ip_protocols",
         "tls_enumeration"
       ],
       "properties": {
@@ -1691,6 +1735,15 @@
         "characterise": {
           "description": "Whether the phase characterised the filter in front of each host that answered. A host with no filtering finding is two different things - a scan that did not look, and one that looked and the filter showed nothing - and only this separates them.",
           "type": "boolean"
+        },
+        "ip_protocols": {
+          "description": "Which IP protocols the phase asked each host that answered about, ascending. Empty for a phase that ran no such pass. The numbers rather than a flag, because the question is per protocol: a host with no verdict for 47 is one the pass never named, and only this says which it did.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
         },
         "evasion": {
           "description": "What the scan changed about the packets it sent, present only when it changed something - so an ordinary scan omits this object entirely and reads exactly as one produced before the option existed. Each field is present only for a technique the scan actually used. A finding read against it means more than one read without: a filtered port under a probe from a trusted source port is a different fact about the network than the same port under an ordinary one.",

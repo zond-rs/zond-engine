@@ -60,7 +60,8 @@
 //! endpoint that stopped accepting connections, a host that appeared or went
 //! away, a service that changed name or version, an operating system that changed
 //! under an address, a hardware address, an inferred role, a conclusion about the
-//! filter in front of a host, a negotiated TLS version, a certificate presented,
+//! filter in front of a host, an IP protocol its stack started or stopped taking
+//! delivery of, a negotiated TLS version, a certificate presented,
 //! withdrawn or now inside its expiry threshold, and a finding at
 //! [`Medium`](crate::model::finding::Severity::Medium).
 //!
@@ -175,12 +176,14 @@ impl HostChange {
             },
 
             // A different system under an address, a different card answering for
-            // it, a role it did not have, or a filter in front of it that changed
-            // behaviour. Each is somebody having changed something.
+            // it, a role it did not have, a filter in front of it that changed
+            // behaviour, or a protocol its stack takes delivery of that it did
+            // not. Each is somebody having changed something.
             HostChange::Os(_)
             | HostChange::Macs { .. }
             | HostChange::Roles { .. }
-            | HostChange::Filtering { .. } => Significance::Notable,
+            | HostChange::Filtering { .. }
+            | HostChange::IpProtocols { .. } => Significance::Notable,
 
             // A reverse name is DNS, an address list is DHCP, and a vendor is
             // whatever the hardware address already said. None of them is the

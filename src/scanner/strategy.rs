@@ -218,6 +218,10 @@ pub mod identify;
 pub mod passive;
 // Which ports are open, and the machinery all four raw port scanners share.
 pub mod ports;
+// Which IP protocols a host takes delivery of, one layer below the ports. Runs
+// after them, and only against hosts that answered, for the reason `topology`
+// gives about its own two passes.
+pub mod protocols;
 // What every raw strategy is built from: how a probe reaches the wire, and the
 // timings a probe over a routed path is held to.
 pub mod raw;

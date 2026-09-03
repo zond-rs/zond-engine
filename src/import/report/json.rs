@@ -792,6 +792,7 @@ struct SettingsDto {
     detection: String,
     traceroute: bool,
     characterise: bool,
+    ip_protocols: Vec<u8>,
     tls_enumeration: bool,
     /// What the scan changed about its packets, absent when it changed nothing.
     /// Deserialized into the journal's own record, then checked by
@@ -916,11 +917,25 @@ impl SettingsDto {
             detection: self.detection,
             traceroute: self.traceroute,
             characterise: self.characterise,
+            ip_protocols: self.ip_protocols,
             tls_enumeration: self.tls_enumeration,
             evasion: self.evasion,
             idle_scan: self.idle_scan,
         })
     }
+}
+
+/// One entry of `host.ip_protocols`.
+///
+/// `name` is not read. It is the registry keyword the exporter writes for a
+/// reader, derivable from the number, and a document naming it differently is
+/// describing the same protocol; taking it would let a foreign document rename
+/// GRE.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct IpProtocolDto {
+    protocol: u8,
+    state: String,
 }
 
 /// `settings.retry`, nested here where the record flattens it.
@@ -1139,6 +1154,7 @@ struct HostDto {
     reasons: Vec<ReasonDto>,
     roles: Vec<String>,
     filtering: Vec<String>,
+    ip_protocols: Vec<IpProtocolDto>,
     os: Option<OsDto>,
     hardware: Option<HardwareDto>,
     telemetry: TelemetryDto,
@@ -1164,6 +1180,13 @@ impl HostDto {
                 wire::filtering(filtering),
                 "a filtering conclusion",
                 filtering,
+            )?;
+        }
+        for entry in &self.ip_protocols {
+            known(
+                wire::ip_protocol_state(&entry.state),
+                "an IP protocol state",
+                &entry.state,
             )?;
         }
 
@@ -1202,6 +1225,17 @@ impl HostDto {
                 .collect::<Result<_, _>>()?,
             roles: self.roles,
             filtering: self.filtering,
+            // The registry keyword the document carries is dropped: it is
+            // derivable from the number, and the journal holds only what it
+            // cannot derive.
+            ip_protocols: self
+                .ip_protocols
+                .into_iter()
+                .map(|entry| crate::record::IpProtocolRecord {
+                    protocol: entry.protocol,
+                    state: entry.state,
+                })
+                .collect(),
             first_seen,
             last_seen,
             ports: self

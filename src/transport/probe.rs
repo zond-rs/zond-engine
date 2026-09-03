@@ -192,6 +192,26 @@ pub enum ProbeKind {
         /// packet quoted inside an ICMP error is checked against.
         reply_port: u16,
     },
+    /// Bare datagrams of one arbitrary IP protocol, and the ICMP messages they
+    /// draw.
+    ///
+    /// What an [IP protocol scan](crate::scanner::strategy::protocols) sends. The
+    /// number is the next-header value the probe goes out under, and it is what
+    /// the scan is asking about rather than a way of reaching something.
+    ///
+    /// It does not narrow the filter, which is the same expression for every
+    /// number, because there is nothing to narrow on. Most of the protocols
+    /// worth asking about have no header this crate parses, no ports and no
+    /// reply of their own; what answers a probe is the host's ICMP, and an ICMP
+    /// message carries no field naming what provoked it beyond the packet it
+    /// quotes. So the errors are admitted whole and matched against the
+    /// quotation in userspace, the way [`UdpProbe`](Self::UdpProbe) already
+    /// matches its own.
+    IpProtocol {
+        /// The next-header value the probes carry, and the protocol the scan is
+        /// asking whether the host takes delivery of.
+        number: u8,
+    },
     /// UDP port probes and their ICMP unreachable / direct UDP replies.
     UdpProbe {
         /// The source port every probe in the scan is sent from, and so the
@@ -211,6 +231,7 @@ impl ProbeKind {
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => TransportType::UdpLayer4,
             ProbeKind::Sctp { .. } => TransportType::SctpLayer4,
             ProbeKind::IcmpEcho { .. } => TransportType::IcmpLayer4,
+            ProbeKind::IpProtocol { number } => TransportType::IpProtocol(number),
         }
     }
 
@@ -237,6 +258,9 @@ impl ProbeKind {
                 v4: IpNextHeaderProtocols::Icmp,
                 v6: IpNextHeaderProtocols::Icmpv6,
             },
+            // The one kind whose number is the question rather than the means,
+            // and so the one a caller chooses outright.
+            ProbeKind::IpProtocol { number } => IpProtocols::same(IpNextHeaderProtocol(number)),
         }
     }
 
@@ -302,6 +326,13 @@ impl ProbeKind {
             ProbeKind::UdpProbe { reply_port } => {
                 format!("icmp or icmp6 or (udp and dst port {reply_port})")
             }
+            // The ICMP halves of the two filters above, and nothing else. A
+            // protocol probe's answer is an ICMP message about it or no answer
+            // at all, so this admits every error and reads the quotation in
+            // userspace; see [`ProbeKind::IpProtocol`] for what that costs the
+            // pass and why the cost is the protocol landscape rather than this
+            // expression.
+            ProbeKind::IpProtocol { .. } => "icmp or icmp6".to_string(),
             // The same shape as the UDP filter, and for the same reasons: every
             // answer an INIT can draw comes back to the one port the scan sends
             // from, and an ICMP error carries no ports of its own, so the error

@@ -1334,6 +1334,68 @@ mod tests {
         assert_eq!(diff.significance(), Significance::Routine);
     }
 
+    /// A host that started taking delivery of a protocol is a change, and the
+    /// grade says it is worth reading: a machine that answers for GRE where it
+    /// did not is one end of a tunnel that was not there last week.
+    #[test]
+    fn a_protocol_a_host_started_accepting_is_a_notable_change() {
+        use crate::model::host::IpProtocolState;
+
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut before = host(10);
+        before.record_ip_protocol(47, IpProtocolState::Closed);
+        let mut after = host(10);
+        after.record_ip_protocol(47, IpProtocolState::Open);
+
+        let diff = ScanDiff::between(
+            &scoped(vec![before], "192.168.0.0/24", &[], at),
+            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+        );
+
+        let delta = &diff.hosts()[0];
+        let moved = delta
+            .changes()
+            .iter()
+            .find_map(|change| match change {
+                HostChange::IpProtocols { changed } => Some(changed),
+                _ => None,
+            })
+            .expect("the protocol moved");
+
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].protocol, 47);
+        assert_eq!(moved[0].state.before, IpProtocolState::Closed);
+        assert_eq!(moved[0].state.after, IpProtocolState::Open);
+        assert_eq!(diff.significance(), Significance::Notable);
+    }
+
+    /// The second scan asking about a protocol the first never did is the scan
+    /// changing, not the network. It is the same reading an unasked port gets,
+    /// and it is what stops turning the pass on reading as every host on the
+    /// network having changed overnight.
+    #[test]
+    fn a_protocol_only_one_scan_established_anything_about_is_not_a_change() {
+        use crate::model::host::IpProtocolState;
+
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let mut before = host(10);
+        // Named and never reached, which is what a run cut short leaves, and
+        // absent entirely for 89, which is what a scan that never asked leaves.
+        before.record_ip_protocol(47, IpProtocolState::Unasked);
+        let mut after = host(10);
+        after.record_ip_protocol(47, IpProtocolState::Open);
+        after.record_ip_protocol(89, IpProtocolState::Closed);
+
+        let diff = ScanDiff::between(
+            &scoped(vec![before], "192.168.0.0/24", &[], at),
+            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+        );
+
+        assert!(diff.is_empty(), "{:?}", diff.hosts());
+    }
+
     /// A whole night of a network being a network. Nothing here is worth waking
     /// anybody, and the grade says so.
     #[test]

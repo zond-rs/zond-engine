@@ -84,7 +84,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::export::schema::{ENGINE_NAME, protocol_name, reference_text, severity_name};
 use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::model::finding::Finding;
-use crate::model::host::{Host, HostStatus};
+use crate::model::host::{Host, HostStatus, IpProtocolState};
 use crate::model::port::{Port, PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
 use crate::report::{ScanPhase, ScanReport};
@@ -383,6 +383,8 @@ fn write_host(
         writeln!(out, "</hostnames>")?;
     }
 
+    write_ip_protocols(out, host)?;
+
     // A port nobody asked about is left out rather than written down. Nmap's
     // `<ports>` is the record of what was probed, and its vocabulary has no word
     // for a port no probe was sent to, so filing one under any of the six states
@@ -523,6 +525,98 @@ fn write_finding_scripts<'a>(
         )?;
     }
     Ok(())
+}
+
+/// Writes the host's IP protocol verdicts, in the shape nmap's own protocol scan
+/// writes them.
+///
+/// Nmap reports `-sO` as `<port protocol="ip" portid="N">`, reusing the port
+/// element for a number that is not a port, and every tool that reads nmap XML
+/// reads it that way. This engine keeps the two apart in its own model, for the
+/// reason [`protocol`](crate::model::host::protocol) gives, and writes nmap's
+/// shape here because the format is nmap's and a document in a private dialect
+/// would be one nothing downstream understands.
+///
+/// Its own `<ports>` element, following the transport one. Nmap emits a second
+/// block the same way when a scan asked both questions, and merging them would
+/// put 47/ip beside 47/tcp under one heading as though they were the same
+/// endpoint.
+///
+/// A protocol nobody asked about is left out, for the reason
+/// [`port_state`] gives about an unasked port: the format has no word for it.
+fn write_ip_protocols(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
+    let mut asked = host
+        .ip_protocols()
+        .iter()
+        .filter(|(_, state)| state.is_established());
+
+    let Some(first) = asked.next() else {
+        return Ok(());
+    };
+
+    writeln!(out, "<ports>")?;
+    for (number, state) in std::iter::once(first).chain(asked) {
+        writeln!(out, r#"<port protocol="ip" portid="{number}">"#)?;
+        writeln!(
+            out,
+            r#"<state state="{}" reason="{}" reason_ttl="0"/>"#,
+            ip_protocol_state(*state),
+            Attr(ip_protocol_reason(*state)),
+        )?;
+        if let Some(name) = crate::model::host::ip_protocol_name(*number) {
+            writeln!(
+                out,
+                r#"<service name="{}" method="table" conf="3"/>"#,
+                Attr(name),
+            )?;
+        }
+        writeln!(out, "</port>")?;
+    }
+    writeln!(out, "</ports>")?;
+    Ok(())
+}
+
+/// This engine's IP protocol verdicts in nmap's spelling.
+///
+/// The four correspond exactly, because nmap's protocol scan reaches the same
+/// four conclusions from the same messages. [`Unasked`](IpProtocolState::Unasked)
+/// has no spelling for the reason [`PortState::Unasked`] has none, and the
+/// caller filters it out before reaching here.
+fn ip_protocol_state(state: IpProtocolState) -> &'static str {
+    match state {
+        IpProtocolState::Open => "open",
+        IpProtocolState::Closed => "closed",
+        IpProtocolState::Filtered => "filtered",
+        IpProtocolState::OpenFiltered => "open|filtered",
+        // Filtered out by `write_ip_protocols`, which writes only what was
+        // established. Reported as the format's nearest word rather than left to
+        // a wildcard, so a state added later is a compile error here.
+        IpProtocolState::Unasked => "open|filtered",
+    }
+}
+
+/// What nmap would have written as the evidence for a protocol verdict.
+///
+/// Three of the four name the message that produced them and are exactly true: a
+/// protocol unreachable is the only thing that closes a protocol here, an
+/// administrative prohibition the only thing that filters one, and silence the
+/// only thing that leaves it open-filtered.
+///
+/// `open` is the one that cannot be named. It is reached two ways, by an echo
+/// reply and by a port unreachable proving the stack took delivery, and this
+/// engine records the verdict without recording which; see
+/// [`protocols`](crate::scanner::strategy::protocols). Every token nmap defines
+/// names a specific packet, so writing one would name a packet that may not have
+/// been sent. `response` is not nmap's word and is the honest one: consumers key
+/// on `state`, and an unfamiliar reason costs a reader a moment where a false one
+/// costs them the truth.
+fn ip_protocol_reason(state: IpProtocolState) -> &'static str {
+    match state {
+        IpProtocolState::Closed => "proto-unreach",
+        IpProtocolState::Filtered => "admin-prohibited",
+        IpProtocolState::Open => "response",
+        IpProtocolState::OpenFiltered | IpProtocolState::Unasked => "no-response",
+    }
 }
 
 /// Writes one `<port>` element.
@@ -854,6 +948,58 @@ mod tests {
                 "{state:?} maps to '{name}', which nmap does not define"
             );
         }
+    }
+
+    /// A protocol verdict survives the round trip through nmap's own shape for
+    /// one, which is a `<port>` element with `protocol="ip"`.
+    ///
+    /// Written in that shape because the format is nmap's and every tool that
+    /// reads it reads protocol scans that way. It has to come back as a protocol
+    /// rather than as a port, or this engine would read its own document as a
+    /// host with a port 47 nobody found.
+    #[test]
+    fn a_protocol_verdict_is_written_as_nmap_writes_one_and_reads_back_as_one() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use crate::model::host::IpProtocolState;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 11)));
+        host.set_status(HostStatus::Up);
+        host.record_ip_protocol(47, IpProtocolState::Open);
+        host.record_ip_protocol(89, IpProtocolState::Closed);
+        // Named and never reached, so there is nothing for the format to say.
+        host.record_ip_protocol(103, IpProtocolState::Unasked);
+
+        let document = export(&[host]);
+        assert!(
+            document.contains(r#"<port protocol="ip" portid="47">"#),
+            "{document}"
+        );
+        assert!(document.contains(r#"<service name="gre""#), "{document}");
+        assert!(
+            !document.contains(r#"portid="103""#),
+            "a protocol nobody reached was written down anyway"
+        );
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(document.into_bytes()))
+            .expect("this crate's own document reads back");
+        let restored = restored.hosts().next().expect("the host survived");
+
+        assert_eq!(
+            restored.ip_protocols().get(&47),
+            Some(&IpProtocolState::Open)
+        );
+        assert_eq!(
+            restored.ip_protocols().get(&89),
+            Some(&IpProtocolState::Closed)
+        );
+        assert_eq!(
+            restored.port_count(),
+            0,
+            "a protocol came back as a port, which is the one reading that must not happen"
+        );
     }
 
     /// A port no probe was sent to is not written at all.

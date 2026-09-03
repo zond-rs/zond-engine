@@ -610,6 +610,39 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
         fact(out, "os", &format!("{name}{}", dim(&detail)))?;
     }
 
+    if !dto.ip_protocols.is_empty() {
+        // The two verdicts a reader acts on. Listing the silent ones as well
+        // would put a dozen `open_filtered` rows on every host and bury the two
+        // lines that mean something, and silence is what the count says.
+        let named = |state: &str| -> Vec<String> {
+            dto.ip_protocols
+                .iter()
+                .filter(|entry| entry.state == state)
+                .map(|entry| match entry.name {
+                    Some(name) => esc(name),
+                    None => entry.protocol.to_string(),
+                })
+                .collect()
+        };
+
+        let accepted = named("open");
+        let refused = named("closed");
+        let mut detail = Vec::new();
+        if !refused.is_empty() {
+            detail.push(format!("refuses {}", refused.join(", ")));
+        }
+        detail.push(format!("{} asked about", dto.ip_protocols.len()));
+
+        let value = match accepted.is_empty() {
+            false => accepted.join(", "),
+            // Not a failure and worth saying plainly. Most protocols answer an
+            // unsolicited header with nothing whether or not the stack
+            // implements them, so silence everywhere is the ordinary result.
+            true => "none answered".to_string(),
+        };
+        fact(out, "ip protocols", &format!("{value}{}", dim(&detail)))?;
+    }
+
     if let Some(hardware) = &dto.hardware {
         let mut value = hardware.mac.as_deref().map(esc).unwrap_or_default();
         let mut detail = Vec::new();

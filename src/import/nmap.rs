@@ -171,6 +171,14 @@ impl Accumulator {
             .map_err(|_| parser.malformed(format!("'{number}' is not a port number")))?;
 
         let name = element.value(b"protocol").unwrap_or("tcp");
+        // Not a port at all. Nmap reports a protocol scan by reusing this
+        // element with `protocol="ip"`, where `portid` is an IP protocol number;
+        // it names no target this reader can put in a port list, so it is passed
+        // over rather than refused. Refusing would throw away every real target
+        // in a document because one host was also protocol-scanned.
+        if name == "ip" {
+            return Ok(());
+        }
         // A transport this build cannot name is a port it cannot probe
         // correctly, and reading it as TCP would scan something else and call
         // that a success.

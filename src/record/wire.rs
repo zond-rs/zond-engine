@@ -42,7 +42,7 @@ use std::borrow::Cow;
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, Reference, Severity};
 use crate::model::host::OsSource;
-use crate::model::host::{Filtering, HostStatus, NetworkRole, StatusProtocol};
+use crate::model::host::{Filtering, HostStatus, IpProtocolState, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::protocols::tcp;
@@ -97,6 +97,29 @@ pub fn port_state(name: &str) -> Option<PortState> {
         "closed" => PortState::Closed,
         "open_filtered" => PortState::OpenFiltered,
         "open" => PortState::Open,
+        _ => return None,
+    })
+}
+
+/// What a scan established about a host accepting one IP protocol.
+pub fn ip_protocol_state_name(state: IpProtocolState) -> &'static str {
+    match state {
+        IpProtocolState::Unasked => "unasked",
+        IpProtocolState::OpenFiltered => "open_filtered",
+        IpProtocolState::Filtered => "filtered",
+        IpProtocolState::Closed => "closed",
+        IpProtocolState::Open => "open",
+    }
+}
+
+/// [`ip_protocol_state_name`] read back.
+pub fn ip_protocol_state(name: &str) -> Option<IpProtocolState> {
+    Some(match name {
+        "unasked" => IpProtocolState::Unasked,
+        "open_filtered" => IpProtocolState::OpenFiltered,
+        "filtered" => IpProtocolState::Filtered,
+        "closed" => IpProtocolState::Closed,
+        "open" => IpProtocolState::Open,
         _ => return None,
     })
 }
@@ -620,6 +643,13 @@ mod tests {
 
         for value in ScanKind::ALL {
             assert_eq!(scan_kind(scan_kind_name(value)), Some(value));
+        }
+
+        for value in IpProtocolState::ALL {
+            assert_eq!(
+                ip_protocol_state(ip_protocol_state_name(value)),
+                Some(value)
+            );
         }
 
         for value in Filtering::ALL {

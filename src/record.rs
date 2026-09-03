@@ -78,7 +78,7 @@ use crate::model::finding::{
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
 use crate::model::host::telemetry::HostTelemetry;
-use crate::model::host::{HardwareInfo, Host, StatusProtocol, StatusReason};
+use crate::model::host::{HardwareInfo, Host, IpProtocolState, StatusProtocol, StatusReason};
 use crate::model::host::{OsEvidence, OsSource};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
@@ -140,6 +140,15 @@ pub struct HostRecord {
     /// What the filter in front of the host was shown to be doing, by wire name.
     #[serde(default)]
     pub filtering: Vec<String>,
+    /// What a scan concluded about each IP protocol it asked this host about,
+    /// ascending by number. Empty for a scan that did not ask.
+    ///
+    /// A list rather than a map keyed by number, so that every key in this
+    /// document is a field name. A map's keys would be data wearing the shape of
+    /// field names, which is a difference nothing reading the file generically
+    /// can see; the report writes the same list, one field wider.
+    #[serde(default)]
+    pub ip_protocols: Vec<IpProtocolRecord>,
     /// When it was first seen.
     pub first_seen: SystemTime,
     /// When it was last seen.
@@ -196,6 +205,14 @@ impl From<&Host> for HostRecord {
                 filtering.sort();
                 filtering
             },
+            ip_protocols: host
+                .ip_protocols()
+                .iter()
+                .map(|(number, state)| IpProtocolRecord {
+                    protocol: *number,
+                    state: wire::ip_protocol_state_name(*state).to_owned(),
+                })
+                .collect(),
             first_seen: host.first_seen(),
             last_seen: host.last_seen(),
             ports: host.ports().map(PortRecord::from).collect(),
@@ -244,6 +261,13 @@ impl From<&HostRecord> for Host {
         }
         for filtering in record.filtering.iter().filter_map(|f| wire::filtering(f)) {
             host.add_filtering(filtering);
+        }
+        // A state name this build cannot read is one a later build wrote, and
+        // `Unasked` is the state that claims nothing, which is the same reading
+        // `PortRecord` gives an unrecognised port state.
+        for entry in &record.ip_protocols {
+            let state = wire::ip_protocol_state(&entry.state).unwrap_or(IpProtocolState::Unasked);
+            host.record_ip_protocol(entry.protocol, state);
         }
         for port in &record.ports {
             host.add_port(port.into());
@@ -677,6 +701,15 @@ impl From<&PortRecord> for Port {
         }
         port
     }
+}
+
+/// What a scan concluded about one IP protocol on one host, as a file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IpProtocolRecord {
+    /// The IP protocol number.
+    pub protocol: u8,
+    /// What the scan established, by wire name.
+    pub state: String,
 }
 
 /// A finding, as a file holds it.
@@ -1597,6 +1630,12 @@ pub struct SettingsRecord {
     /// Whether it characterised the filter in front of each host.
     #[serde(default)]
     pub characterise: bool,
+
+    /// Which IP protocols it asked each host about, ascending. Empty for a
+    /// phase that ran no such pass, which is a phase written before there was
+    /// one too.
+    #[serde(default)]
+    pub ip_protocols: Vec<u8>,
     /// Whether it established what each TLS port accepts.
     ///
     /// Defaulted on the way in, so a record written before the pass existed
@@ -1683,6 +1722,7 @@ impl From<&ScanSettings> for SettingsRecord {
             detection: wire::detection_class_name(settings.detection.ceiling()).to_owned(),
             traceroute: settings.traceroute,
             characterise: settings.characterise,
+            ip_protocols: settings.ip_protocols.clone(),
             tls_enumeration: settings.tls_enumeration,
             evasion: settings.evasion.as_ref().map(|e| EvasionSettingsRecord {
                 source_port: e.source_port,
@@ -1730,6 +1770,7 @@ impl From<&SettingsRecord> for ScanSettings {
                 .unwrap_or_default(),
             traceroute: record.traceroute,
             characterise: record.characterise,
+            ip_protocols: record.ip_protocols.clone(),
             tls_enumeration: record.tls_enumeration,
             evasion: record.evasion.as_ref().map(|e| EvasionRecord {
                 source_port: e.source_port,
@@ -2181,6 +2222,10 @@ mod tests {
 
         host.add_network_role(NetworkRole::Tarpit);
         host.add_network_role(NetworkRole::Truncated);
+
+        host.record_ip_protocol(47, IpProtocolState::Open);
+        host.record_ip_protocol(89, IpProtocolState::Closed);
+        host.record_ip_protocol(103, IpProtocolState::Unasked);
 
         host.add_port(maximal_port());
         host.add_port(Port::new(53, Protocol::Udp, PortState::OpenFiltered));

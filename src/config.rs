@@ -64,6 +64,7 @@ pub mod limits;
 
 pub use crate::config::envelope::DetectionEnvelope;
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::net::IpAddr;
 use std::num::{NonZeroU8, NonZeroU32};
@@ -1012,6 +1013,29 @@ pub struct ZondConfig {
     /// under, which is why it is a separate pass rather than a scan option.
     pub characterise: bool,
 
+    /// Which IP protocols to ask each host that answered whether it takes
+    /// delivery of, one layer below the ports.
+    ///
+    /// Empty by default, which runs no pass at all, and empty for the reason
+    /// [`characterise`](Self::characterise) is off: it costs a probe per host
+    /// per protocol and answers a different question from the one a port scan
+    /// was asked. What it finds is what a firewall's *protocol* policy is, which
+    /// on a perimeter review is often the more revealing of the two, and what a
+    /// host with no open TCP port is nonetheless terminating: a tunnel endpoint
+    /// answers for 47, 50 or 51 and a router for 89 or 112.
+    ///
+    /// [`DEFAULT_PROTOCOLS`](crate::scanner::strategy::protocols::DEFAULT_PROTOCOLS)
+    /// is the set worth asking about, for a caller who wants the pass without
+    /// choosing the numbers. The whole `0..=255` range is what nmap's protocol
+    /// scan walks and is a poor default here, since each number costs a raw
+    /// socket; a caller who wants the sweep asks for it.
+    ///
+    /// A pass of its own, run after the ports are known and only against hosts
+    /// that answered, whose results are
+    /// [`IpProtocolState`](crate::model::host::IpProtocolState) verdicts on the
+    /// host. It does not touch the port verdicts.
+    pub ip_protocols: BTreeSet<u8>,
+
     /// Whether to establish what each TLS port *accepts*, rather than only what
     /// one handshake negotiated.
     ///
@@ -1282,6 +1306,7 @@ impl ZondConfig {
             assume_up: _,
             traceroute: _,
             characterise: _,
+            ip_protocols: _,
             tls_enumeration: _,
             idle_scan: _,
             exclusions: _,

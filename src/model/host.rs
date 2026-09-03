@@ -42,12 +42,14 @@ use std::{
 pub mod hardware;
 pub mod os;
 pub mod path;
+pub mod protocol;
 pub mod status;
 pub mod telemetry;
 
 pub use hardware::HardwareInfo;
 pub use os::{OsEvidence, OsFingerprint, OsSource};
 pub use path::{Hop, NetworkPath};
+pub use protocol::{IpProtocolState, ip_protocol_name};
 pub use status::{HostStatus, StatusProtocol, StatusReason};
 pub use telemetry::HostTelemetry;
 
@@ -533,6 +535,21 @@ pub struct Host {
     /// What the filter in front of this host was shown to be doing, if anything.
     filtering: HashSet<Filtering>,
 
+    /// Which IP protocols the host's stack was shown to take delivery of.
+    ///
+    /// Empty unless a scan asked, which is a pass of its own: see
+    /// [`ZondConfig::ip_protocols`](crate::config::ZondConfig::ip_protocols).
+    /// Kept here rather than among the ports because a protocol number is not a
+    /// port and the numbers include the transports; [`protocol`] is the whole
+    /// argument.
+    ///
+    /// A plain map rather than an alias for one. `IpProtocols` is already the
+    /// name of a v4/v6 pair of next-header values over in
+    /// [`transport::probe`](crate::transport::probe::IpProtocols), and two public
+    /// types of one name meaning different things is a worse cost than spelling
+    /// the map out.
+    ip_protocols: BTreeMap<u8, IpProtocolState>,
+
     /// What a detection concluded was wrong with this host, keyed on the claim so
     /// that the same finding reached twice records once.
     ///
@@ -618,6 +635,7 @@ impl Host {
             path: NetworkPath::new(),
             network_roles: HashSet::new(),
             filtering: HashSet::new(),
+            ip_protocols: BTreeMap::new(),
             findings: BTreeMap::new(),
             first_seen: now,
             last_seen: now,
@@ -725,6 +743,16 @@ impl Host {
     /// What the filter in front of this host was shown to be doing.
     pub fn filtering(&self) -> &HashSet<Filtering> {
         &self.filtering
+    }
+
+    /// What a scan concluded about each IP protocol it asked this host about,
+    /// ascending by number.
+    ///
+    /// Empty for every scan that did not ask, which is most of them. A protocol
+    /// present at [`IpProtocolState::Unasked`] is one the scan named and did not
+    /// reach, which is a different thing from one it never named.
+    pub fn ip_protocols(&self) -> &BTreeMap<u8, IpProtocolState> {
+        &self.ip_protocols
     }
 
     /// Returns the timestamp of the first discovery event.
@@ -1116,6 +1144,41 @@ impl Host {
         is_new
     }
 
+    /// Raises what is recorded about `number` to `state`, if that establishes
+    /// more, and returns whether the record changed.
+    ///
+    /// Promotes and never lowers, on [`IpProtocolState`]'s own ordering and for
+    /// the reason [`Port::set_state`] promotes: a second probe that learned less
+    /// does not get to unlearn what the first established. A pass cut short
+    /// after naming a protocol and before reaching it therefore leaves
+    /// [`Unasked`](IpProtocolState::Unasked) standing only where nothing else
+    /// was ever recorded.
+    ///
+    /// Bumps `last_seen` only where the host itself answered. A silence and a
+    /// router's refusal are not the host being heard from, which is the same
+    /// distinction [`record_evidence`](Self::record_evidence) draws.
+    pub fn record_ip_protocol(&mut self, number: u8, state: IpProtocolState) -> bool {
+        let recorded = match self.ip_protocols.get_mut(&number) {
+            Some(held) if state > *held => {
+                *held = state;
+                true
+            }
+            Some(_) => false,
+            // Recorded even at `Unasked`, which is a protocol the scan named and
+            // did not reach. Leaving it off would make that indistinguishable
+            // from one nobody named.
+            None => {
+                self.ip_protocols.insert(number, state);
+                true
+            }
+        };
+
+        if matches!(state, IpProtocolState::Open | IpProtocolState::Closed) {
+            self.last_seen = SystemTime::now();
+        }
+        recorded
+    }
+
     /// Returns the minimum recorded RTT.
     pub fn min_rtt(&self) -> Option<std::time::Duration> {
         self.telemetry.min_rtt()
@@ -1253,6 +1316,7 @@ impl Host {
             path,
             network_roles,
             filtering,
+            ip_protocols,
             findings,
             first_seen: other_first_seen,
             last_seen: other_last_seen,
@@ -1335,6 +1399,15 @@ impl Host {
         // fold that dropped the other side's discarded the whole finding.
         self.filtering.extend(filtering);
 
+        // Through the recorder rather than by extending the map, so a record
+        // that only got as far as naming a protocol cannot lower one that
+        // reached it. Two sittings of a job routinely disagree that way: the
+        // second is cut short and holds `Unasked` where the first holds a
+        // verdict.
+        for (number, state) in ip_protocols {
+            self.record_ip_protocol(number, state);
+        }
+
         // Findings accumulate: a claim missing from one record is a detection
         // that did not run there, never a retraction, so a fold adds and never
         // removes. A claim on both corroborates through `add_finding`.
@@ -1404,6 +1477,65 @@ mod tests {
     use std::net::Ipv4Addr;
 
     static IP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 100));
+
+    /// A pass that only got as far as naming a protocol must not unlearn one
+    /// that reached it, in either direction: a promotion is a promotion and a
+    /// merge is two of them.
+    #[test]
+    fn a_protocol_verdict_is_promoted_and_never_lowered() {
+        use crate::model::host::IpProtocolState;
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+
+        assert!(host.record_ip_protocol(47, IpProtocolState::Unasked));
+        assert_eq!(
+            host.ip_protocols().get(&47),
+            Some(&IpProtocolState::Unasked)
+        );
+
+        assert!(host.record_ip_protocol(47, IpProtocolState::Closed));
+        assert!(
+            !host.record_ip_protocol(47, IpProtocolState::OpenFiltered),
+            "a weaker verdict is not news"
+        );
+        assert_eq!(host.ip_protocols().get(&47), Some(&IpProtocolState::Closed));
+
+        assert!(host.record_ip_protocol(47, IpProtocolState::Open));
+        assert_eq!(host.ip_protocols().get(&47), Some(&IpProtocolState::Open));
+    }
+
+    /// The same rule across a fold. Two sittings of one job disagree exactly
+    /// this way when the second is cut short.
+    #[test]
+    fn merging_keeps_the_stronger_protocol_verdict_from_either_side() {
+        use crate::model::host::IpProtocolState;
+
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+
+        let mut reached = Host::new(ip);
+        reached.record_ip_protocol(47, IpProtocolState::Open);
+        reached.record_ip_protocol(89, IpProtocolState::Unasked);
+
+        let mut cut_short = Host::new(ip);
+        cut_short.record_ip_protocol(47, IpProtocolState::Unasked);
+        cut_short.record_ip_protocol(89, IpProtocolState::Closed);
+        cut_short.record_ip_protocol(50, IpProtocolState::OpenFiltered);
+
+        let mut folded = reached.clone();
+        folded.merge(cut_short.clone());
+        let mut other_way = cut_short;
+        other_way.merge(reached);
+
+        for host in [&folded, &other_way] {
+            assert_eq!(host.ip_protocols().get(&47), Some(&IpProtocolState::Open));
+            assert_eq!(host.ip_protocols().get(&89), Some(&IpProtocolState::Closed));
+            assert_eq!(
+                host.ip_protocols().get(&50),
+                Some(&IpProtocolState::OpenFiltered),
+                "a protocol only one side asked about survives the fold"
+            );
+        }
+    }
 
     /// Every field of the record being folded in, not merely the ones somebody
     /// remembered.

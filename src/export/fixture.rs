@@ -31,7 +31,8 @@ use crate::model::finding::{
     DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
 };
 use crate::model::host::{
-    Filtering, Hop, Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
+    Filtering, Hop, Host, HostStatus, IpProtocolState, NetworkRole, OsFingerprint, StatusProtocol,
+    StatusReason,
 };
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
@@ -104,6 +105,15 @@ fn router() -> Host {
     host.add_filtering(Filtering::StatefulFilter);
     host.add_filtering(Filtering::PortTrustingAcl);
     host.add_filtering(Filtering::StatelessFilter);
+
+    // One of each verdict, so a document carrying this fixture exercises every
+    // state the schema accepts rather than whichever one a live scan happened to
+    // reach.
+    host.record_ip_protocol(1, IpProtocolState::Open);
+    host.record_ip_protocol(47, IpProtocolState::Closed);
+    host.record_ip_protocol(50, IpProtocolState::Filtered);
+    host.record_ip_protocol(89, IpProtocolState::OpenFiltered);
+    host.record_ip_protocol(103, IpProtocolState::Unasked);
 
     host
 }

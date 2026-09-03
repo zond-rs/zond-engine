@@ -76,6 +76,15 @@ pub(super) const ICMPV6_NO_ROUTE: Icmpv6Code = Icmpv6Code(0);
 /// Code 3: the address itself is unreachable, whatever the port.
 pub(super) const ICMPV6_ADDR_UNREACHABLE: Icmpv6Code = Icmpv6Code(3);
 
+/// The ICMPv6 Parameter Problem code for a Next Header value the receiver does
+/// not implement (RFC 4443 §3.4).
+///
+/// ICMPv6 has no protocol-unreachable code, so this message under this code is
+/// the whole of how a v6 host says it does not speak a protocol. It arrives
+/// under a different *type* from every other error this module reads, which is
+/// why [`parse_v6`] branches on the type rather than only on the code.
+pub(super) const ICMPV6_UNRECOGNISED_NEXT_HEADER: Icmpv6Code = Icmpv6Code(1);
+
 /// The four unused bytes between an ICMPv6 Destination Unreachable header and
 /// the packet it quotes (RFC 4443 §3.1).
 ///
@@ -102,12 +111,30 @@ pub enum Unreachable {
     /// prohibition, a reject route. It proves only that the probe did not
     /// arrive.
     Prohibited,
+    /// The host's own stack does not implement the IP protocol the probe was
+    /// sent under.
+    ///
+    /// Told apart from [`Prohibited`](Self::Prohibited), which it used to be
+    /// folded into, because they are opposite claims: a prohibition is the path
+    /// speaking for the host and this is the host speaking for itself, which
+    /// also proves it is there. A probe's own protocol is the one thing a
+    /// scanner picks rather than discovers, so for a transport scan the message
+    /// is a curiosity and for
+    /// [`protocols`](crate::scanner::strategy::protocols) it is the whole
+    /// verdict.
+    ///
+    /// The two families deliver it under different headers. ICMPv4 has a
+    /// Destination Unreachable code for it; ICMPv6 has none, and reports an
+    /// unrecognised Next Header as a Parameter Problem instead (RFC 4443 §3.4,
+    /// type 4 code 1). Resolving both to one meaning here is what this enum is
+    /// for.
+    Protocol,
     /// The address itself could not be reached at all. A statement about the
     /// host, not about the port that happened to be asked for.
     Host,
 }
 
-/// One parsed Destination Unreachable: what it says, and the packet it quotes.
+/// One parsed ICMP error about a probe: what it says, and the packet it quotes.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct IcmpError<'a> {
@@ -119,10 +146,16 @@ pub struct IcmpError<'a> {
     pub quoted: IpSegment<'a>,
 }
 
-/// Reads `reply` as a Destination Unreachable, whichever family it arrived over.
+/// Reads `reply` as an ICMP error about a probe, whichever family it arrived
+/// over.
+///
+/// A Destination Unreachable in both families, and over IPv6 also a Parameter
+/// Problem naming an unrecognised Next Header, which is that family's way of
+/// saying what IPv4 says with a protocol-unreachable code.
 ///
 /// `None` for any other captured segment, for a code that reports on neither the
-/// port nor the path, and for a message whose quotation cannot be parsed.
+/// port, the protocol nor the path, and for a message whose quotation cannot be
+/// parsed.
 pub fn parse(reply: &CapturedSegment) -> Option<IcmpError<'_>> {
     match reply.protocol {
         IpNextHeaderProtocols::Icmp => parse_v4(&reply.bytes),
@@ -216,15 +249,33 @@ fn parse_v4(bytes: &[u8]) -> Option<IcmpError<'_>> {
 }
 
 /// [`parse`] for an ICMPv6 message.
+///
+/// Two types, because the family splits one meaning across them. Destination
+/// Unreachable carries the path's refusals and the address's; a host saying it
+/// does not implement a Next Header answers with a Parameter Problem instead,
+/// and ICMPv4 has no such split. Both quote the offending packet after a
+/// four-byte field, so the quotation sits at one offset either way: unused bytes
+/// for the first, the Pointer for the second.
 fn parse_v6(bytes: &[u8]) -> Option<IcmpError<'_>> {
-    let unreachable = Icmpv6Packet::new(bytes)?;
-    if unreachable.get_icmpv6_type() != Icmpv6Types::DestinationUnreachable {
-        return None;
-    }
+    let message = Icmpv6Packet::new(bytes)?;
+
+    let reason = match message.get_icmpv6_type() {
+        Icmpv6Types::DestinationUnreachable => reason_v6(message.get_icmpv6_code())?,
+        Icmpv6Types::ParameterProblem
+            if message.get_icmpv6_code() == ICMPV6_UNRECOGNISED_NEXT_HEADER =>
+        {
+            Unreachable::Protocol
+        }
+        // The other two Parameter Problem codes are about a header this engine
+        // built, not about the target: an erroneous field or an unrecognised
+        // option is a defect here and reading one as a verdict about the host
+        // would report this scanner's mistake as the network's.
+        _ => return None,
+    };
 
     let quoted_at = Icmpv6Packet::minimum_packet_size() + ICMPV6_UNUSED_LEN;
     Some(IcmpError {
-        reason: reason_v6(unreachable.get_icmpv6_code())?,
+        reason,
         quoted: frame::parse_ip_segment(bytes.get(quoted_at..)?)?,
     })
 }
@@ -232,15 +283,16 @@ fn parse_v6(bytes: &[u8]) -> Option<IcmpError<'_>> {
 /// What an ICMPv4 Destination Unreachable code establishes, or `None` if it says
 /// nothing usable.
 ///
-/// "Protocol unreachable" and the three administrative prohibitions describe the
-/// *path*. "Host unreachable" is neither port nor path: a router could not
-/// deliver to the address at all. The remaining codes - network unknown,
-/// fragmentation needed, source route failed - say nothing either way.
+/// The three administrative prohibitions describe the *path*. "Protocol
+/// unreachable" describes the host's own stack and is kept apart from them; see
+/// [`Unreachable::Protocol`]. "Host unreachable" is neither: a router could not
+/// deliver to the address at all. The remaining codes, network unknown,
+/// fragmentation needed, source route failed, say nothing either way.
 fn reason_v4(code: IcmpCode) -> Option<Unreachable> {
     match code {
         IcmpCodes::DestinationPortUnreachable => Some(Unreachable::Port),
-        IcmpCodes::DestinationProtocolUnreachable
-        | IcmpCodes::NetworkAdministrativelyProhibited
+        IcmpCodes::DestinationProtocolUnreachable => Some(Unreachable::Protocol),
+        IcmpCodes::NetworkAdministrativelyProhibited
         | IcmpCodes::HostAdministrativelyProhibited
         | IcmpCodes::CommunicationAdministrativelyProhibited => Some(Unreachable::Prohibited),
         IcmpCodes::DestinationHostUnreachable => Some(Unreachable::Host),
@@ -403,9 +455,73 @@ mod tests {
         CapturedSegment::synthetic(TARGET_V6, IpNextHeaderProtocols::Icmpv6, bytes)
     }
 
+    /// An ICMPv6 Parameter Problem under `code`, quoting a probe of ours.
+    ///
+    /// A different type from every other error here, and the only way a v6 host
+    /// says it does not implement a protocol.
+    fn parameter_problem_v6(code: Icmpv6Code) -> CapturedSegment {
+        let quoted = quoted_packet(LOCAL_V6, TARGET_V6);
+        // The Pointer field, which sits where a Destination Unreachable's unused
+        // bytes do and is why the quotation is at the same offset in both.
+        let mut payload = vec![0u8; ICMPV6_UNUSED_LEN];
+        payload.extend_from_slice(&quoted);
+
+        let mut bytes = vec![0u8; Icmpv6Packet::minimum_packet_size() + payload.len()];
+        let mut packet = MutableIcmpv6Packet::new(&mut bytes).unwrap();
+        packet.set_icmpv6_type(Icmpv6Types::ParameterProblem);
+        packet.set_icmpv6_code(code);
+        packet.set_payload(&payload);
+
+        CapturedSegment::synthetic(TARGET_V6, IpNextHeaderProtocols::Icmpv6, bytes)
+    }
+
     /// What `reply` establishes, for the tests that assert on the reason alone.
     fn reason_of(reply: &CapturedSegment) -> Unreachable {
         parse(reply).expect("the message parses").reason
+    }
+
+    /// A host refusing a protocol is not the path refusing delivery, and the two
+    /// were one answer until there was a scan that cared which.
+    ///
+    /// A prohibition says the probe never arrived. This says it arrived and the
+    /// stack had nothing to hand it to, which also proves the host is there.
+    #[test]
+    fn a_protocol_unreachable_is_the_host_speaking_and_not_the_path() {
+        assert_eq!(
+            reason_of(&error_v4(IcmpCodes::DestinationProtocolUnreachable)),
+            Unreachable::Protocol
+        );
+        assert_eq!(
+            reason_of(&error_v4(
+                IcmpCodes::CommunicationAdministrativelyProhibited
+            )),
+            Unreachable::Prohibited,
+            "a prohibition is still a prohibition"
+        );
+    }
+
+    /// ICMPv6 has no protocol-unreachable code and reports the same thing under
+    /// another type entirely, so a reader that only ever opened Destination
+    /// Unreachable messages could not see it at all.
+    #[test]
+    fn the_ipv6_form_of_a_protocol_refusal_arrives_as_a_parameter_problem() {
+        assert_eq!(
+            reason_of(&parameter_problem_v6(ICMPV6_UNRECOGNISED_NEXT_HEADER)),
+            Unreachable::Protocol
+        );
+    }
+
+    /// The other two Parameter Problem codes are about a header this engine
+    /// built. Reading one as a verdict would report a defect here as a fact
+    /// about the network.
+    #[test]
+    fn a_parameter_problem_about_our_own_header_says_nothing_about_the_host() {
+        for code in [Icmpv6Code(0), Icmpv6Code(2)] {
+            assert!(
+                parse(&parameter_problem_v6(code)).is_none(),
+                "code {code:?} was read as a verdict"
+            );
+        }
     }
 
     /// The quotation names the host the probe was aimed at, not the address the

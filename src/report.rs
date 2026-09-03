@@ -676,6 +676,15 @@ pub struct ScanSettings {
     /// apart.
     pub characterise: bool,
 
+    /// Which IP protocols the phase asked each host that answered about,
+    /// ascending.
+    ///
+    /// Recorded for the reason [`characterise`](Self::characterise) is, and it
+    /// carries the numbers rather than a flag because the question is per
+    /// protocol: a host with no verdict for 47 is one the pass never named, and
+    /// only this says which those were.
+    pub ip_protocols: Vec<u8>,
+
     /// Whether the phase established what each TLS port accepts, rather than
     /// only what one handshake negotiated.
     ///
@@ -727,6 +736,7 @@ impl From<&ZondConfig> for ScanSettings {
             detection,
             traceroute,
             characterise,
+            ip_protocols,
             tls_enumeration,
             evasion,
             idle_scan,
@@ -757,6 +767,7 @@ impl From<&ZondConfig> for ScanSettings {
             detection: *detection,
             traceroute: *traceroute,
             characterise: *characterise,
+            ip_protocols: ip_protocols.iter().copied().collect(),
             tls_enumeration: *tls_enumeration,
             evasion: EvasionRecord::from_profile(evasion),
             idle_scan: *idle_scan,

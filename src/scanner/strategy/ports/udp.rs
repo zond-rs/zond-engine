@@ -337,7 +337,11 @@ enum Verdict {
 fn verdict_of(reason: Unreachable) -> Verdict {
     match reason {
         Unreachable::Port => Verdict::Port(PortState::Closed),
-        Unreachable::Prohibited => Verdict::Port(PortState::Filtered),
+        // A prohibition is the path refusing delivery. A protocol unreachable is
+        // the host saying it has no UDP stack, which is a stranger thing and
+        // still not a closed port: no listener was ever looked for. Both leave
+        // the port unprobed in effect, which is what filtered says.
+        Unreachable::Prohibited | Unreachable::Protocol => Verdict::Port(PortState::Filtered),
         Unreachable::Host => Verdict::Host,
     }
 }

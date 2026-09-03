@@ -17,6 +17,11 @@
   says what the evidence actually supports.
 * **Service fingerprinting:** identify the service, product and version behind an
   open port using an embedded signature database.
+* **IP protocol scanning:** which protocols a host's stack takes delivery of, one
+  layer below the ports — GRE, ESP, AH, OSPF and the rest, which have no ports to
+  enumerate and so make a tunnel endpoint or a router look like an empty host. It
+  reads a firewall's *protocol* policy rather than its port policy, which on a
+  perimeter review is often the more revealing of the two.
 * **TLS cipher and protocol enumeration:** what a TLS endpoint *accepts*, not
   only what one handshake negotiated. Offers each version in turn and narrows the
   cipher list until the server stops answering, so a report can say whether an

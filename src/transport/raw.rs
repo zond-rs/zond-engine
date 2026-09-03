@@ -33,7 +33,10 @@
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
-use pnet_packet::{Packet, ip::IpNextHeaderProtocols};
+use pnet_packet::{
+    Packet,
+    ip::{IpNextHeaderProtocol, IpNextHeaderProtocols},
+};
 use pnet_transport::{
     self as transport, TransportChannelType, TransportProtocol, TransportReceiver, TransportSender,
 };
@@ -89,6 +92,22 @@ pub enum TransportType {
     /// send an INIT and read what comes back, which is the whole of what a scan
     /// does with one.
     SctpLayer4,
+    /// Datagrams of one arbitrary IP protocol, over both families where
+    /// available.
+    ///
+    /// The four above name a protocol this crate speaks; this one carries a
+    /// number and speaks nothing. It is what an
+    /// [IP protocol scan](crate::scanner::strategy::protocols) sends: a header
+    /// under a chosen next-header value, to find out whether the host's stack
+    /// takes delivery of it at all.
+    ///
+    /// One socket per number, because the kernel derives a Layer-4 socket's
+    /// next-header value from the socket rather than from the packet. A pass
+    /// asking about a dozen protocols opens a dozen, which is the price of not
+    /// writing the IP header by hand; a header this crate wrote would have to be
+    /// routed by this crate as well, and the reason the raw path exists is that
+    /// the kernel does that better.
+    IpProtocol(u8),
 }
 
 /// Routes an outgoing packet to whichever underlying raw socket matches its
@@ -272,6 +291,24 @@ pub fn open_sender(transport_type: TransportType) -> Result<TransportSenderHandl
             let v6 = open_channel(CHANNEL_TYPE_SCTP_V6)
                 .ok()
                 .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
+            Ok(TransportSenderHandle {
+                v4: Some(Socket::new(v4_tx)),
+                v6,
+            })
+        }
+        TransportType::IpProtocol(number) => {
+            let protocol = IpNextHeaderProtocol(number);
+            let (v4_tx, _v4_rx) = open_channel(TransportChannelType::Layer4(
+                TransportProtocol::Ipv4(protocol),
+            ))?;
+            // As for TCP: a host without IPv6 raw sockets still probes over
+            // IPv4, and a kernel that refuses one protocol's socket outright
+            // narrows the pass rather than ending it.
+            let v6 = open_channel(TransportChannelType::Layer4(TransportProtocol::Ipv6(
+                protocol,
+            )))
+            .ok()
+            .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
             Ok(TransportSenderHandle {
                 v4: Some(Socket::new(v4_tx)),
                 v6,

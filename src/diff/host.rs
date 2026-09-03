@@ -34,7 +34,7 @@ use crate::diff::port::{self, Clocks, PortDelta, PresenceFor};
 use crate::diff::scope::ScopeIndex;
 use crate::model::finding::{ClaimId, Finding, Severity};
 use crate::model::host::os::OsFingerprint;
-use crate::model::host::{Filtering, Host, HostStatus, NetworkRole};
+use crate::model::host::{Filtering, Host, HostStatus, IpProtocolState, NetworkRole};
 use crate::model::mac::MacAddr;
 
 /// One host, as the two scans hold it.
@@ -189,6 +189,20 @@ pub enum HostChange {
         /// Conclusions the baseline drew and the current scan does not.
         lost: Vec<Filtering>,
     },
+    /// The IP protocols whose verdict moved, ascending by number.
+    ///
+    /// Only the protocols *both* scans established something about. One that
+    /// only one of them asked about is a difference in what was asked rather
+    /// than in the network, which is the same reading
+    /// [`PortState::Unasked`](crate::model::port::PortState::Unasked) gets in
+    /// [`port`]: a scan that named a protocol and never
+    /// reached it holds
+    /// [`IpProtocolState::Unasked`] there, and comparing that against a verdict would report the second scan
+    /// having looked as the host having changed.
+    IpProtocols {
+        /// What moved, ascending by protocol number.
+        changed: Vec<IpProtocolChange>,
+    },
     /// Findings that appeared on the host, and findings no longer claimed about
     /// it.
     ///
@@ -203,6 +217,15 @@ pub enum HostChange {
         /// Findings both scans claim, where the severity moved.
         reassessed: Vec<Reassessment>,
     },
+}
+
+/// One IP protocol both scans established something about, graded differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpProtocolChange {
+    /// The protocol number.
+    pub protocol: u8,
+    /// Where the verdict moved.
+    pub state: Change<IpProtocolState>,
 }
 
 /// One claim both scans make, graded differently.
@@ -359,6 +382,11 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         changes.push(HostChange::Filtering { gained, lost });
     }
 
+    let changed = ip_protocols_between(before, after);
+    if !changed.is_empty() {
+        changes.push(HostChange::IpProtocols { changed });
+    }
+
     let (appeared, resolved, reassessed) = findings_between(before.findings(), after.findings());
     if !appeared.is_empty() || !resolved.is_empty() || !reassessed.is_empty() {
         changes.push(HostChange::Findings {
@@ -369,6 +397,35 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
     }
 
     changes
+}
+
+/// The IP protocols whose verdict moved between two records of one host.
+///
+/// A protocol either scan holds at
+/// [`Unasked`](crate::model::host::IpProtocolState::Unasked), or does not hold at
+/// all, is left out: that scan established nothing about it, and a verdict
+/// compared against nothing is the second scan having looked rather than the
+/// host having changed.
+fn ip_protocols_between(before: &Host, after: &Host) -> Vec<IpProtocolChange> {
+    let established = |host: &Host, number: &u8| {
+        host.ip_protocols()
+            .get(number)
+            .copied()
+            .filter(IpProtocolState::is_established)
+    };
+
+    before
+        .ip_protocols()
+        .keys()
+        .filter_map(|number| {
+            let was = established(before, number)?;
+            let is = established(after, number)?;
+            Change::between(was, is).map(|state| IpProtocolChange {
+                protocol: *number,
+                state,
+            })
+        })
+        .collect()
 }
 
 /// The findings one subject gained and lost between two scans.

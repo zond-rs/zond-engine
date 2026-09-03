@@ -90,6 +90,7 @@ use crate::model::capture::CaptureCounts;
 use crate::model::finding::{Finding, Reference};
 use crate::model::host::{
     HardwareInfo, Hop, Host, HostStatus, HostTelemetry, OsFingerprint, StatusReason,
+    ip_protocol_name,
 };
 use crate::model::ip::range::IpRange;
 use crate::model::port::{CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service};
@@ -122,9 +123,9 @@ pub use crate::report::ENGINE_VERSION;
 // than called through, since a caller should not have to know where they live.
 pub use crate::record::wire::{
     attachment_source_name, confidence_name, detection_class_name, filtering_name,
-    host_status_name, network_role_name, port_scope_name, port_state_name, protocol_name,
-    reference_kind_name, scan_kind_name, scan_response_name, scanner_kind_name, severity_name,
-    status_protocol_name, stop_reason_name, tcp_flags_name,
+    host_status_name, ip_protocol_state_name, network_role_name, port_scope_name, port_state_name,
+    protocol_name, reference_kind_name, scan_kind_name, scan_response_name, scanner_kind_name,
+    severity_name, status_protocol_name, stop_reason_name, tcp_flags_name,
 };
 
 /// The wire name of a send mode.
@@ -929,6 +930,10 @@ pub struct SettingsDto {
     /// answered.
     pub characterise: bool,
 
+    /// Which IP protocols the phase asked each host that answered about,
+    /// ascending. Empty for a phase that ran no such pass.
+    pub ip_protocols: Vec<u8>,
+
     /// Whether the phase established what each TLS port accepts, rather than
     /// only what one handshake negotiated.
     ///
@@ -1035,6 +1040,7 @@ impl SettingsDto {
             detection: detection_class_name(settings.detection.ceiling()),
             traceroute: settings.traceroute,
             characterise: settings.characterise,
+            ip_protocols: settings.ip_protocols.clone(),
             tls_enumeration: settings.tls_enumeration,
             evasion: settings.evasion.as_ref().map(EvasionDto::new),
             idle_scan: settings.idle_scan.map(|idle| IdleScanDto {
@@ -1369,6 +1375,9 @@ pub struct HostDto<'a> {
     pub roles: Vec<&'static str>,
     /// What the filter in front of the host was shown to be doing, sorted.
     pub filtering: Vec<&'static str>,
+    /// What the scan concluded about each IP protocol it asked this host about,
+    /// ascending by number. Empty for a scan that did not ask.
+    pub ip_protocols: Vec<IpProtocolDto>,
     /// The identified operating system.
     pub os: Option<OsDto<'a>>,
     /// Physical hardware identity, masked under redaction.
@@ -1438,6 +1447,15 @@ impl<'a> HostDto<'a> {
             reasons,
             roles,
             filtering,
+            ip_protocols: host
+                .ip_protocols()
+                .iter()
+                .map(|(number, state)| IpProtocolDto {
+                    protocol: *number,
+                    name: ip_protocol_name(*number),
+                    state: ip_protocol_state_name(*state),
+                })
+                .collect(),
             os: host.os().map(OsDto::new),
             hardware: host
                 .hardware()
@@ -1595,6 +1613,26 @@ impl<'a> OsDto<'a> {
             device: os.device(),
         }
     }
+}
+
+/// One IP protocol the scan asked a host about, and what it concluded.
+///
+/// The number is the finding and the name is a courtesy: a reader recognises
+/// `gre` faster than `47`, and a number the IANA registry has no keyword for is
+/// reported as the number alone rather than invented for.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct IpProtocolDto {
+    /// The IP protocol number.
+    pub protocol: u8,
+    /// Its registry keyword, where it has one worth printing.
+    pub name: Option<&'static str>,
+    /// `open`, `closed`, `filtered`, `open_filtered` or `unasked`. What each
+    /// means here is
+    /// [`IpProtocolState`](crate::model::host::IpProtocolState)'s own
+    /// documentation, and the words are not a port's: `open` is the host taking
+    /// delivery of the protocol rather than something listening behind it.
+    pub state: &'static str,
 }
 
 /// Physical hardware identity.

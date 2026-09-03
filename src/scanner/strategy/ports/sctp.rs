@@ -296,21 +296,24 @@ impl SctpPortScanner {
             // a closed SCTP port answers with an ABORT of its own, so an ICMP
             // error means the probe was stopped rather than served. Protocol
             // unreachable is the common one, and it says the host has no SCTP
-            // stack at all.
-            Unreachable::Port | Unreachable::Prohibited => self.resolve_probe(
-                key,
-                token,
-                PortState::Filtered,
-                Answer {
-                    drawn_by: None,
-                    sender: Some(reply.source),
-                    // The distance to whatever refused the probe rather than to
-                    // the target, which is how a middlebox answering on the
-                    // host's behalf gives itself away.
-                    ttl: reply.observation.map(IpObservation::remaining_hops),
-                },
-                now,
-            ),
+            // stack at all - which is not a closed port, so it lands here with
+            // the rest. The pass that asks about protocols reads it for what it
+            // says.
+            Unreachable::Port | Unreachable::Prohibited | Unreachable::Protocol => self
+                .resolve_probe(
+                    key,
+                    token,
+                    PortState::Filtered,
+                    Answer {
+                        drawn_by: None,
+                        sender: Some(reply.source),
+                        // The distance to whatever refused the probe rather than to
+                        // the target, which is how a middlebox answering on the
+                        // host's behalf gives itself away.
+                        ttl: reply.observation.map(IpObservation::remaining_hops),
+                    },
+                    now,
+                ),
         }
     }
 

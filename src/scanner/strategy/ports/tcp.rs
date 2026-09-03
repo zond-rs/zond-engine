@@ -410,13 +410,15 @@ impl TcpPortScanner {
             // outstanding to retire on its own schedule like any other
             // unanswered one.
             Unreachable::Host => self.core.record_host_down(key.0, reply.source),
-            // Everything else is a refusal, and for a TCP probe both kinds read
+            // Everything else is a refusal, and for a TCP probe all three read
             // the same way. An administrative prohibition says so outright. A
             // *port* unreachable would mean a closed port had it answered a UDP
             // probe, but no TCP stack emits one - so something in the path
             // rejected the probe on the host's behalf, which is a filter and
-            // not a closed port.
-            Unreachable::Port | Unreachable::Prohibited => {
+            // not a closed port. A *protocol* unreachable would mean a host with
+            // no TCP stack at all, which is not a closed port either; it is read
+            // for what it is by the pass that asks about protocols on purpose.
+            Unreachable::Port | Unreachable::Prohibited | Unreachable::Protocol => {
                 self.resolve_probe(
                     key,
                     token,

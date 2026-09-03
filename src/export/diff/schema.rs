@@ -32,7 +32,10 @@ use crate::export::schema::{EngineDto, HostDto};
 use crate::format::time::rfc3339;
 use crate::model::finding::Finding;
 use crate::model::host::os::OsFingerprint;
-use crate::record::wire::{host_status_name, port_state_name, protocol_name, scan_kind_name};
+use crate::model::host::{IpProtocolState, ip_protocol_name};
+use crate::record::wire::{
+    host_status_name, ip_protocol_state_name, port_state_name, protocol_name, scan_kind_name,
+};
 
 pub use crate::format::{DIFF_SCHEMA_VERSION, ENGINE_NAME};
 
@@ -501,6 +504,7 @@ impl ChangeDto {
     /// | `vendor` | the vendor its hardware address resolves to |
     /// | `role_gained`, `role_lost` | one inferred role each |
     /// | `filtering_gained`, `filtering_lost` | one conclusion about the filter in front of it each |
+    /// | `ip_protocol` | one IP protocol its stack takes delivery of, or no longer does |
     ///
     /// Matched exhaustively and with no wildcard, so a variant added to
     /// [`HostChange`] stops this compiling until somebody decides what it is
@@ -554,11 +558,38 @@ impl ChangeDto {
                 let lost: Vec<&'static str> = lost.iter().copied().map(name).collect();
                 Self::set("filtering_gained", "filtering_lost", &gained, &lost)
             }
+            // One change per protocol, so a rule keys on the number rather than
+            // parsing a list, which is the same flattening every set change here
+            // gets. The number leads the value because it is the subject: a
+            // consumer alerting on `47` wants the line to say 47.
+            HostChange::IpProtocols { changed } => changed
+                .iter()
+                .map(|moved| {
+                    Self::between(
+                        "ip_protocol",
+                        Self::describe_ip_protocol(moved.protocol, moved.state.before),
+                        Self::describe_ip_protocol(moved.protocol, moved.state.after),
+                    )
+                })
+                .collect(),
             HostChange::Findings {
                 appeared,
                 resolved,
                 reassessed,
             } => Self::findings(appeared, resolved, reassessed),
+        }
+    }
+
+    /// One IP protocol verdict, as `47 gre: open`.
+    ///
+    /// The number, its registry keyword where it has one, and the verdict, in one
+    /// string. A change is a pair of these, so a consumer reads what moved
+    /// without holding the protocol number from another field.
+    fn describe_ip_protocol(number: u8, state: IpProtocolState) -> String {
+        let verdict = ip_protocol_state_name(state);
+        match ip_protocol_name(number) {
+            Some(name) => format!("{number} {name}: {verdict}"),
+            None => format!("{number}: {verdict}"),
         }
     }
 

@@ -871,6 +871,36 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
     strategy::topology::characterise::characterise(ctx, subjects).await;
 }
 
+/// Asks each host that answered which IP protocols its stack takes delivery of,
+/// where the caller named any.
+///
+/// A sibling of [`run_characterise`]: it runs last, only against hosts that
+/// answered, and does nothing unless
+/// [`ip_protocols`](crate::config::ZondConfig::ip_protocols) names some. Unlike
+/// that pass it needs no port to aim at, since what it asks about sits below the
+/// ports; a host with nothing open is exactly the one worth asking, because a
+/// tunnel endpoint or a router terminates a protocol and listens on nothing.
+pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
+    if cfg.ip_protocols.is_empty() {
+        return;
+    }
+
+    let mut targets = Vec::new();
+    for key in ctx.host_addresses() {
+        if ctx.host_expired(key.addr()) {
+            continue;
+        }
+        if ctx.read_host(&key, |host| host.status().is_up()) != Some(true) {
+            continue;
+        }
+        if let Some(host) = routable(key) {
+            targets.push(host);
+        }
+    }
+
+    strategy::protocols::probe(ctx, &targets, &cfg.ip_protocols).await;
+}
+
 /// Establishes what each TLS port accepts, where the caller asked for it.
 ///
 /// A pass of its own, and it runs last among the port-level passes because what

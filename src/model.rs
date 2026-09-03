@@ -68,7 +68,7 @@ mod tests {
     use super::confidence::Confidence;
     use super::finding::{DetectionClass, Severity};
     use super::host::status::{HostStatus, StatusProtocol};
-    use super::host::{Filtering, NetworkRole};
+    use super::host::{Filtering, IpProtocolState, NetworkRole};
     use super::parse::ip::Keyword;
     use super::port::{PortState, Protocol};
     use super::technique::TcpScanTechnique;
@@ -146,6 +146,7 @@ mod tests {
         holds_declaration_order("NetworkRole", &NetworkRole::ALL, |v| *v as usize);
         holds_declaration_order("Filtering", &Filtering::ALL, |v| *v as usize);
         holds_declaration_order("HostStatus", &HostStatus::ALL, |v| *v as usize);
+        holds_declaration_order("IpProtocolState", &IpProtocolState::ALL, |v| *v as usize);
         holds_declaration_order("Protocol", &Protocol::ALL, |v| *v as usize);
         holds_declaration_order("PortState", &PortState::ALL, |v| *v as usize);
         holds_declaration_order("TcpScanTechnique", &TcpScanTechnique::ALL, |v| *v as usize);

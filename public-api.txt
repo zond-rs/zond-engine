@@ -370,6 +370,7 @@ pub zond_engine::config::ZondConfig::evasion: zond_engine::evasion::EvasionProfi
 pub zond_engine::config::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
 pub zond_engine::config::ZondConfig::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::config::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
+pub zond_engine::config::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
 pub zond_engine::config::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ZondConfig::no_dns: bool
 pub zond_engine::config::ZondConfig::os_detection: zond_engine::config::OsDetection
@@ -1619,6 +1620,8 @@ pub zond_engine::diff::host::HostChange::Findings::appeared: alloc::vec::Vec<zon
 pub zond_engine::diff::host::HostChange::Findings::reassessed: alloc::vec::Vec<zond_engine::diff::host::Reassessment>
 pub zond_engine::diff::host::HostChange::Findings::resolved: alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub zond_engine::diff::host::HostChange::Hostname(zond_engine::diff::change::Change<core::option::Option<alloc::string::String>>)
+pub zond_engine::diff::host::HostChange::IpProtocols
+pub zond_engine::diff::host::HostChange::IpProtocols::changed: alloc::vec::Vec<zond_engine::diff::host::IpProtocolChange>
 pub zond_engine::diff::host::HostChange::Macs
 pub zond_engine::diff::host::HostChange::Macs::gained: alloc::vec::Vec<zond_engine::model::mac::MacAddr>
 pub zond_engine::diff::host::HostChange::Macs::lost: alloc::vec::Vec<zond_engine::model::mac::MacAddr>
@@ -1668,6 +1671,24 @@ impl core::marker::Unpin for zond_engine::diff::host::HostDelta
 impl core::marker::UnsafeUnpin for zond_engine::diff::host::HostDelta
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::host::HostDelta
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::host::HostDelta
+pub struct zond_engine::diff::host::IpProtocolChange
+pub zond_engine::diff::host::IpProtocolChange::protocol: u8
+pub zond_engine::diff::host::IpProtocolChange::state: zond_engine::diff::change::Change<zond_engine::model::host::protocol::IpProtocolState>
+impl core::clone::Clone for zond_engine::diff::host::IpProtocolChange
+pub fn zond_engine::diff::host::IpProtocolChange::clone(&self) -> zond_engine::diff::host::IpProtocolChange
+impl core::cmp::Eq for zond_engine::diff::host::IpProtocolChange
+impl core::cmp::PartialEq for zond_engine::diff::host::IpProtocolChange
+pub fn zond_engine::diff::host::IpProtocolChange::eq(&self, &zond_engine::diff::host::IpProtocolChange) -> bool
+impl core::fmt::Debug for zond_engine::diff::host::IpProtocolChange
+pub fn zond_engine::diff::host::IpProtocolChange::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::diff::host::IpProtocolChange
+impl core::marker::Freeze for zond_engine::diff::host::IpProtocolChange
+impl core::marker::Send for zond_engine::diff::host::IpProtocolChange
+impl core::marker::Sync for zond_engine::diff::host::IpProtocolChange
+impl core::marker::Unpin for zond_engine::diff::host::IpProtocolChange
+impl core::marker::UnsafeUnpin for zond_engine::diff::host::IpProtocolChange
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::host::IpProtocolChange
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::host::IpProtocolChange
 pub struct zond_engine::diff::host::Reassessment
 pub zond_engine::diff::host::Reassessment::finding: zond_engine::model::finding::Finding
 pub zond_engine::diff::host::Reassessment::severity: zond_engine::diff::change::Change<zond_engine::model::finding::Severity>
@@ -1934,6 +1955,8 @@ pub zond_engine::diff::HostChange::Findings::appeared: alloc::vec::Vec<zond_engi
 pub zond_engine::diff::HostChange::Findings::reassessed: alloc::vec::Vec<zond_engine::diff::host::Reassessment>
 pub zond_engine::diff::HostChange::Findings::resolved: alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub zond_engine::diff::HostChange::Hostname(zond_engine::diff::change::Change<core::option::Option<alloc::string::String>>)
+pub zond_engine::diff::HostChange::IpProtocols
+pub zond_engine::diff::HostChange::IpProtocols::changed: alloc::vec::Vec<zond_engine::diff::host::IpProtocolChange>
 pub zond_engine::diff::HostChange::Macs
 pub zond_engine::diff::HostChange::Macs::gained: alloc::vec::Vec<zond_engine::model::mac::MacAddr>
 pub zond_engine::diff::HostChange::Macs::lost: alloc::vec::Vec<zond_engine::model::mac::MacAddr>
@@ -3140,6 +3163,7 @@ pub zond_engine::export::schema::HostDto::findings: alloc::vec::Vec<zond_engine:
 pub zond_engine::export::schema::HostDto::first_seen: alloc::string::String
 pub zond_engine::export::schema::HostDto::hardware: core::option::Option<zond_engine::export::schema::HardwareDto<'a>>
 pub zond_engine::export::schema::HostDto::hostname: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::HostDto::ip_protocols: alloc::vec::Vec<zond_engine::export::schema::IpProtocolDto>
 pub zond_engine::export::schema::HostDto::ips: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::export::schema::HostDto::last_seen: alloc::string::String
 pub zond_engine::export::schema::HostDto::os: core::option::Option<zond_engine::export::schema::OsDto<'a>>
@@ -3200,6 +3224,23 @@ impl core::marker::Unpin for zond_engine::export::schema::IdleScanDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::IdleScanDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::IdleScanDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::IdleScanDto
+#[non_exhaustive] pub struct zond_engine::export::schema::IpProtocolDto
+pub zond_engine::export::schema::IpProtocolDto::name: core::option::Option<&'static str>
+pub zond_engine::export::schema::IpProtocolDto::protocol: u8
+pub zond_engine::export::schema::IpProtocolDto::state: &'static str
+impl core::clone::Clone for zond_engine::export::schema::IpProtocolDto
+pub fn zond_engine::export::schema::IpProtocolDto::clone(&self) -> zond_engine::export::schema::IpProtocolDto
+impl core::fmt::Debug for zond_engine::export::schema::IpProtocolDto
+pub fn zond_engine::export::schema::IpProtocolDto::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for zond_engine::export::schema::IpProtocolDto
+pub fn zond_engine::export::schema::IpProtocolDto::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl core::marker::Freeze for zond_engine::export::schema::IpProtocolDto
+impl core::marker::Send for zond_engine::export::schema::IpProtocolDto
+impl core::marker::Sync for zond_engine::export::schema::IpProtocolDto
+impl core::marker::Unpin for zond_engine::export::schema::IpProtocolDto
+impl core::marker::UnsafeUnpin for zond_engine::export::schema::IpProtocolDto
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::IpProtocolDto
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::IpProtocolDto
 #[non_exhaustive] pub struct zond_engine::export::schema::OsDto<'a>
 pub zond_engine::export::schema::OsDto::accuracy: u8
 pub zond_engine::export::schema::OsDto::cpes: alloc::vec::Vec<&'a str>
@@ -3569,6 +3610,7 @@ pub zond_engine::export::schema::SettingsDto::dns_enabled: bool
 pub zond_engine::export::schema::SettingsDto::evasion: core::option::Option<zond_engine::export::schema::EvasionDto>
 pub zond_engine::export::schema::SettingsDto::host_timeout_us: core::option::Option<u64>
 pub zond_engine::export::schema::SettingsDto::idle_scan: core::option::Option<zond_engine::export::schema::IdleScanDto>
+pub zond_engine::export::schema::SettingsDto::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::export::schema::SettingsDto::max_probe_rate: core::option::Option<u32>
 pub zond_engine::export::schema::SettingsDto::os_detection: &'static str
 pub zond_engine::export::schema::SettingsDto::redact: bool
@@ -3668,6 +3710,7 @@ pub fn zond_engine::export::schema::confidence_name(zond_engine::model::confiden
 pub fn zond_engine::export::schema::detection_class_name(zond_engine::model::finding::DetectionClass) -> &'static str
 pub fn zond_engine::export::schema::filtering_name(zond_engine::model::host::Filtering) -> &'static str
 pub fn zond_engine::export::schema::host_status_name(zond_engine::model::host::status::HostStatus) -> &'static str
+pub fn zond_engine::export::schema::ip_protocol_state_name(zond_engine::model::host::protocol::IpProtocolState) -> &'static str
 pub fn zond_engine::export::schema::network_role_name(zond_engine::model::host::NetworkRole) -> &'static str
 pub fn zond_engine::export::schema::port_scope_name(&zond_engine::report::PortScope) -> &'static str
 pub fn zond_engine::export::schema::port_state_name(zond_engine::model::port::PortState) -> &'static str
@@ -7453,6 +7496,40 @@ impl core::marker::Unpin for zond_engine::model::host::path::NetworkPath
 impl core::marker::UnsafeUnpin for zond_engine::model::host::path::NetworkPath
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::path::NetworkPath
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::path::NetworkPath
+pub mod zond_engine::model::host::protocol
+#[non_exhaustive] pub enum zond_engine::model::host::protocol::IpProtocolState
+pub zond_engine::model::host::protocol::IpProtocolState::Closed
+pub zond_engine::model::host::protocol::IpProtocolState::Filtered
+pub zond_engine::model::host::protocol::IpProtocolState::Open
+pub zond_engine::model::host::protocol::IpProtocolState::OpenFiltered
+pub zond_engine::model::host::protocol::IpProtocolState::Unasked
+impl zond_engine::model::host::protocol::IpProtocolState
+pub const zond_engine::model::host::protocol::IpProtocolState::ALL: [zond_engine::model::host::protocol::IpProtocolState; 5]
+pub fn zond_engine::model::host::protocol::IpProtocolState::is_accepted(&self) -> bool
+pub fn zond_engine::model::host::protocol::IpProtocolState::is_established(&self) -> bool
+impl core::clone::Clone for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::clone(&self) -> zond_engine::model::host::protocol::IpProtocolState
+impl core::cmp::Eq for zond_engine::model::host::protocol::IpProtocolState
+impl core::cmp::Ord for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::cmp(&self, &zond_engine::model::host::protocol::IpProtocolState) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::eq(&self, &zond_engine::model::host::protocol::IpProtocolState) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::partial_cmp(&self, &zond_engine::model::host::protocol::IpProtocolState) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::StructuralPartialEq for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::Freeze for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::Send for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::Sync for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::Unpin for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::UnsafeUnpin for zond_engine::model::host::protocol::IpProtocolState
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::protocol::IpProtocolState
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::protocol::IpProtocolState
+pub const fn zond_engine::model::host::protocol::ip_protocol_name(u8) -> core::option::Option<&'static str>
 pub mod zond_engine::model::host::status
 #[non_exhaustive] pub enum zond_engine::model::host::status::HostStatus
 pub zond_engine::model::host::status::HostStatus::Down
@@ -7691,6 +7768,38 @@ impl core::marker::Unpin for zond_engine::model::host::status::HostStatus
 impl core::marker::UnsafeUnpin for zond_engine::model::host::status::HostStatus
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::status::HostStatus
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::HostStatus
+#[non_exhaustive] pub enum zond_engine::model::host::IpProtocolState
+pub zond_engine::model::host::IpProtocolState::Closed
+pub zond_engine::model::host::IpProtocolState::Filtered
+pub zond_engine::model::host::IpProtocolState::Open
+pub zond_engine::model::host::IpProtocolState::OpenFiltered
+pub zond_engine::model::host::IpProtocolState::Unasked
+impl zond_engine::model::host::protocol::IpProtocolState
+pub const zond_engine::model::host::protocol::IpProtocolState::ALL: [zond_engine::model::host::protocol::IpProtocolState; 5]
+pub fn zond_engine::model::host::protocol::IpProtocolState::is_accepted(&self) -> bool
+pub fn zond_engine::model::host::protocol::IpProtocolState::is_established(&self) -> bool
+impl core::clone::Clone for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::clone(&self) -> zond_engine::model::host::protocol::IpProtocolState
+impl core::cmp::Eq for zond_engine::model::host::protocol::IpProtocolState
+impl core::cmp::Ord for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::cmp(&self, &zond_engine::model::host::protocol::IpProtocolState) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::eq(&self, &zond_engine::model::host::protocol::IpProtocolState) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::partial_cmp(&self, &zond_engine::model::host::protocol::IpProtocolState) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::protocol::IpProtocolState
+pub fn zond_engine::model::host::protocol::IpProtocolState::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::StructuralPartialEq for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::Freeze for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::Send for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::Sync for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::Unpin for zond_engine::model::host::protocol::IpProtocolState
+impl core::marker::UnsafeUnpin for zond_engine::model::host::protocol::IpProtocolState
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::protocol::IpProtocolState
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::protocol::IpProtocolState
 #[non_exhaustive] pub enum zond_engine::model::host::NetworkRole
 pub zond_engine::model::host::NetworkRole::DhcpServer
 pub zond_engine::model::host::NetworkRole::DnsServer
@@ -7862,6 +7971,7 @@ pub fn zond_engine::model::host::Host::findings(&self) -> impl core::iter::trait
 pub fn zond_engine::model::host::Host::first_seen(&self) -> std::time::SystemTime
 pub fn zond_engine::model::host::Host::hardware(&self) -> core::option::Option<&zond_engine::model::host::hardware::HardwareInfo>
 pub fn zond_engine::model::host::Host::hostname(&self) -> core::option::Option<&str>
+pub fn zond_engine::model::host::Host::ip_protocols(&self) -> &alloc::collections::btree::map::BTreeMap<u8, zond_engine::model::host::protocol::IpProtocolState>
 pub fn zond_engine::model::host::Host::ips(&self) -> &alloc::collections::btree::set::BTreeSet<core::net::ip_addr::IpAddr>
 pub fn zond_engine::model::host::Host::is_alive(&self) -> bool
 pub fn zond_engine::model::host::Host::last_seen(&self) -> std::time::SystemTime
@@ -7883,6 +7993,7 @@ pub fn zond_engine::model::host::Host::reasons(&self) -> &std::collections::hash
 pub fn zond_engine::model::host::Host::record_evidence(&mut self, zond_engine::model::host::status::HostStatus, zond_engine::model::host::status::StatusReason)
 pub fn zond_engine::model::host::Host::record_hop(&mut self, zond_engine::model::host::path::Hop)
 pub fn zond_engine::model::host::Host::record_hop_counter(&mut self, u8)
+pub fn zond_engine::model::host::Host::record_ip_protocol(&mut self, u8, zond_engine::model::host::protocol::IpProtocolState) -> bool
 pub fn zond_engine::model::host::Host::record_mac(&mut self, zond_engine::model::mac::MacAddr)
 pub fn zond_engine::model::host::Host::record_os_evidence(&mut self, zond_engine::model::host::os::OsEvidence) -> bool
 pub fn zond_engine::model::host::Host::restore_seen(&mut self, std::time::SystemTime, std::time::SystemTime)
@@ -8083,6 +8194,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::statu
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::StatusReason
 pub const zond_engine::model::host::MAX_PORTS_PER_HOST: usize
 pub const zond_engine::model::host::TARPIT_OPEN_PORTS: usize
+pub const fn zond_engine::model::host::ip_protocol_name(u8) -> core::option::Option<&'static str>
 pub mod zond_engine::model::ip
 pub mod zond_engine::model::ip::range
 #[non_exhaustive] pub enum zond_engine::model::ip::range::IpError
@@ -11503,6 +11615,8 @@ pub fn zond_engine::record::wire::filtering(&str) -> core::option::Option<zond_e
 pub fn zond_engine::record::wire::filtering_name(zond_engine::model::host::Filtering) -> &'static str
 pub fn zond_engine::record::wire::host_status(&str) -> core::option::Option<zond_engine::model::host::status::HostStatus>
 pub fn zond_engine::record::wire::host_status_name(zond_engine::model::host::status::HostStatus) -> &'static str
+pub fn zond_engine::record::wire::ip_protocol_state(&str) -> core::option::Option<zond_engine::model::host::protocol::IpProtocolState>
+pub fn zond_engine::record::wire::ip_protocol_state_name(zond_engine::model::host::protocol::IpProtocolState) -> &'static str
 pub fn zond_engine::record::wire::network_role(&str) -> core::option::Option<zond_engine::model::host::NetworkRole>
 pub fn zond_engine::record::wire::network_role_name(zond_engine::model::host::NetworkRole) -> &'static str
 pub fn zond_engine::record::wire::os_source(&str) -> core::option::Option<zond_engine::model::host::os::OsSource>
@@ -11849,6 +11963,7 @@ pub zond_engine::record::HostRecord::findings: alloc::vec::Vec<zond_engine::reco
 pub zond_engine::record::HostRecord::first_seen: std::time::SystemTime
 pub zond_engine::record::HostRecord::hardware: core::option::Option<zond_engine::record::HardwareRecord>
 pub zond_engine::record::HostRecord::hostname: core::option::Option<alloc::string::String>
+pub zond_engine::record::HostRecord::ip_protocols: alloc::vec::Vec<zond_engine::record::IpProtocolRecord>
 pub zond_engine::record::HostRecord::ips: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::record::HostRecord::last_seen: std::time::SystemTime
 pub zond_engine::record::HostRecord::os: core::option::Option<zond_engine::record::OsRecord>
@@ -11905,6 +12020,28 @@ impl core::marker::Unpin for zond_engine::record::IdleScanRecord
 impl core::marker::UnsafeUnpin for zond_engine::record::IdleScanRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::IdleScanRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::IdleScanRecord
+pub struct zond_engine::record::IpProtocolRecord
+pub zond_engine::record::IpProtocolRecord::protocol: u8
+pub zond_engine::record::IpProtocolRecord::state: alloc::string::String
+impl core::clone::Clone for zond_engine::record::IpProtocolRecord
+pub fn zond_engine::record::IpProtocolRecord::clone(&self) -> zond_engine::record::IpProtocolRecord
+impl core::cmp::Eq for zond_engine::record::IpProtocolRecord
+impl core::cmp::PartialEq for zond_engine::record::IpProtocolRecord
+pub fn zond_engine::record::IpProtocolRecord::eq(&self, &zond_engine::record::IpProtocolRecord) -> bool
+impl core::fmt::Debug for zond_engine::record::IpProtocolRecord
+pub fn zond_engine::record::IpProtocolRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::record::IpProtocolRecord
+impl serde_core::ser::Serialize for zond_engine::record::IpProtocolRecord
+pub fn zond_engine::record::IpProtocolRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::record::IpProtocolRecord
+pub fn zond_engine::record::IpProtocolRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::record::IpProtocolRecord
+impl core::marker::Send for zond_engine::record::IpProtocolRecord
+impl core::marker::Sync for zond_engine::record::IpProtocolRecord
+impl core::marker::Unpin for zond_engine::record::IpProtocolRecord
+impl core::marker::UnsafeUnpin for zond_engine::record::IpProtocolRecord
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::IpProtocolRecord
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::IpProtocolRecord
 pub struct zond_engine::record::OsEvidenceRecord
 pub zond_engine::record::OsEvidenceRecord::confidence: f32
 pub zond_engine::record::OsEvidenceRecord::cpe: core::option::Option<alloc::string::String>
@@ -12340,6 +12477,7 @@ pub zond_engine::record::SettingsRecord::dns_enabled: bool
 pub zond_engine::record::SettingsRecord::evasion: core::option::Option<zond_engine::record::EvasionSettingsRecord>
 pub zond_engine::record::SettingsRecord::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::record::SettingsRecord::idle_scan: core::option::Option<zond_engine::record::IdleScanRecord>
+pub zond_engine::record::SettingsRecord::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::record::SettingsRecord::max_probe_rate: core::option::Option<u32>
 pub zond_engine::record::SettingsRecord::os_detection: alloc::string::String
 pub zond_engine::record::SettingsRecord::redact: bool
@@ -12972,6 +13110,7 @@ pub zond_engine::report::ScanSettings::dns_enabled: bool
 pub zond_engine::report::ScanSettings::evasion: core::option::Option<zond_engine::report::EvasionRecord>
 pub zond_engine::report::ScanSettings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::report::ScanSettings::idle_scan: core::option::Option<zond_engine::config::IdleScan>
+pub zond_engine::report::ScanSettings::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::report::ScanSettings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::report::ScanSettings::os_detection: zond_engine::config::OsDetection
 pub zond_engine::report::ScanSettings::redact: bool
@@ -14151,6 +14290,7 @@ pub mod zond_engine::scanner::strategy::icmp_error
 pub zond_engine::scanner::strategy::icmp_error::Unreachable::Host
 pub zond_engine::scanner::strategy::icmp_error::Unreachable::Port
 pub zond_engine::scanner::strategy::icmp_error::Unreachable::Prohibited
+pub zond_engine::scanner::strategy::icmp_error::Unreachable::Protocol
 impl core::clone::Clone for zond_engine::scanner::strategy::icmp_error::Unreachable
 pub fn zond_engine::scanner::strategy::icmp_error::Unreachable::clone(&self) -> zond_engine::scanner::strategy::icmp_error::Unreachable
 impl core::cmp::Eq for zond_engine::scanner::strategy::icmp_error::Unreachable
@@ -14781,6 +14921,9 @@ pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::settle(&mut s
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::silence_means(&self) -> zond_engine::model::port::PortState
 pub async fn zond_engine::scanner::strategy::ports::drive<S: zond_engine::scanner::strategy::ports::RawPortScan>(&mut S, tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>)
 pub type zond_engine::scanner::strategy::ports::ProbeTarget = (core::net::ip_addr::IpAddr, u16)
+pub mod zond_engine::scanner::strategy::protocols
+pub const zond_engine::scanner::strategy::protocols::DEFAULT_PROTOCOLS: [u8; 13]
+pub async fn zond_engine::scanner::strategy::protocols::probe(&zond_engine::scanner::session::ScanContext, &[core::net::ip_addr::IpAddr], &alloc::collections::btree::set::BTreeSet<u8>)
 pub mod zond_engine::scanner::strategy::raw
 pub struct zond_engine::scanner::strategy::raw::SynToken
 pub zond_engine::scanner::strategy::raw::SynToken::seq: u32
@@ -15660,6 +15803,8 @@ pub mod zond_engine::transport::probe
 #[non_exhaustive] pub enum zond_engine::transport::probe::ProbeKind
 pub zond_engine::transport::probe::ProbeKind::IcmpEcho
 pub zond_engine::transport::probe::ProbeKind::IcmpEcho::identifier: u16
+pub zond_engine::transport::probe::ProbeKind::IpProtocol
+pub zond_engine::transport::probe::ProbeKind::IpProtocol::number: u8
 pub zond_engine::transport::probe::ProbeKind::Sctp
 pub zond_engine::transport::probe::ProbeKind::Sctp::reply_port: u16
 pub zond_engine::transport::probe::ProbeKind::TcpProbe
@@ -15885,6 +16030,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::R
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::RawSocketError
 #[non_exhaustive] pub enum zond_engine::transport::raw::TransportType
 pub zond_engine::transport::raw::TransportType::IcmpLayer4
+pub zond_engine::transport::raw::TransportType::IpProtocol(u8)
 pub zond_engine::transport::raw::TransportType::SctpLayer4
 pub zond_engine::transport::raw::TransportType::TcpLayer4
 pub zond_engine::transport::raw::TransportType::UdpLayer4
@@ -16303,6 +16449,7 @@ pub fn zond_engine::model::host::Host::findings(&self) -> impl core::iter::trait
 pub fn zond_engine::model::host::Host::first_seen(&self) -> std::time::SystemTime
 pub fn zond_engine::model::host::Host::hardware(&self) -> core::option::Option<&zond_engine::model::host::hardware::HardwareInfo>
 pub fn zond_engine::model::host::Host::hostname(&self) -> core::option::Option<&str>
+pub fn zond_engine::model::host::Host::ip_protocols(&self) -> &alloc::collections::btree::map::BTreeMap<u8, zond_engine::model::host::protocol::IpProtocolState>
 pub fn zond_engine::model::host::Host::ips(&self) -> &alloc::collections::btree::set::BTreeSet<core::net::ip_addr::IpAddr>
 pub fn zond_engine::model::host::Host::is_alive(&self) -> bool
 pub fn zond_engine::model::host::Host::last_seen(&self) -> std::time::SystemTime
@@ -16324,6 +16471,7 @@ pub fn zond_engine::model::host::Host::reasons(&self) -> &std::collections::hash
 pub fn zond_engine::model::host::Host::record_evidence(&mut self, zond_engine::model::host::status::HostStatus, zond_engine::model::host::status::StatusReason)
 pub fn zond_engine::model::host::Host::record_hop(&mut self, zond_engine::model::host::path::Hop)
 pub fn zond_engine::model::host::Host::record_hop_counter(&mut self, u8)
+pub fn zond_engine::model::host::Host::record_ip_protocol(&mut self, u8, zond_engine::model::host::protocol::IpProtocolState) -> bool
 pub fn zond_engine::model::host::Host::record_mac(&mut self, zond_engine::model::mac::MacAddr)
 pub fn zond_engine::model::host::Host::record_os_evidence(&mut self, zond_engine::model::host::os::OsEvidence) -> bool
 pub fn zond_engine::model::host::Host::restore_seen(&mut self, std::time::SystemTime, std::time::SystemTime)
@@ -16895,6 +17043,7 @@ pub zond_engine::ZondConfig::evasion: zond_engine::evasion::EvasionProfile
 pub zond_engine::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
 pub zond_engine::ZondConfig::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
+pub zond_engine::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
 pub zond_engine::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::ZondConfig::no_dns: bool
 pub zond_engine::ZondConfig::os_detection: zond_engine::config::OsDetection
