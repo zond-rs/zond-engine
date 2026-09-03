@@ -277,9 +277,10 @@ pub enum ClockClass {
     /// It sent the option and left the value at zero, which is a stack policy
     /// rather than a clock.
     Zero,
-    /// Fewer than two timestamps to compare, or samples more than half a
-    /// second apart, past which a tick and a coincidence read the same. Both
-    /// come to the same answer: no rate can be taken from this series.
+    /// Fewer than two timestamps to compare, samples more than half a second
+    /// apart, past which a tick and a coincidence read the same, or two samples
+    /// that arrived at the same instant and so span no time to have ticked in.
+    /// All three come to the same answer: no rate can be taken from this series.
     TooFew,
     /// The values move, but not as one clock read repeatedly does.
     ///
@@ -603,14 +604,25 @@ pub fn read_clock(series: &[SeriesSample]) -> Reading<ClockClass> {
     // Per interval, wrapping at the 32-bit edge. A clock crossing its wrap is
     // still a clock, and the endpoint-only reading would turn one into a
     // ten-digit rate.
+    //
+    // Intervals of no length are dropped rather than divided by. Two replies can
+    // be read at one instant, and the quotient is then an infinity or, where the
+    // clock did not move either, a NaN that compares false against every bound
+    // below and left the series reported as ticking at "NaN Hz".
     let rates: Vec<f64> = sampled
         .windows(2)
-        .map(|pair| {
+        .filter_map(|pair| {
             let ticks = pair[1].1.wrapping_sub(pair[0].1);
             let secs = pair[1].0.duration_since(pair[0].0).as_secs_f64();
-            f64::from(ticks) / secs
+            (secs > 0.0).then(|| f64::from(ticks) / secs)
         })
         .collect();
+    if rates.is_empty() {
+        return Reading {
+            class: ClockClass::TooFew,
+            line: format!("{raw} - no interval to read a rate over"),
+        };
+    }
 
     // The spread check is the whole defence against the plausible-endpoints
     // trap: every interval has to agree with every other, not just the
@@ -660,6 +672,43 @@ fn gcd(a: u32, b: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+
+    /// Two replies read at one instant span no time, and a clock rate over no
+    /// time is not a rate.
+    ///
+    /// The quotient is an infinity where the clock moved and a NaN where it did
+    /// not, and a NaN compares false against every bound the rate is checked
+    /// against: not above the ceiling, not outside the spread, not below one
+    /// hertz. It reached the end and cast to zero, so a series that measured
+    /// nothing was reported as ticking, at "NaN Hz" in the line a person reads.
+    #[test]
+    fn an_interval_of_no_length_yields_no_rate() {
+        let t0 = Instant::now();
+        let sample = |at: Instant, tsval: u32| SeriesSample {
+            at,
+            flags: 0x12,
+            sequence: 1,
+            ip_id: None,
+            tsval: Some(tsval),
+        };
+
+        // Non-zero throughout, so the all-zero branch above does not take it.
+        let stopped = read_clock(&[sample(t0, 7), sample(t0, 7)]);
+        assert_eq!(stopped.class, ClockClass::TooFew, "{}", stopped.line);
+        assert!(
+            !stopped.line.contains("NaN"),
+            "and the line says so in words: {}",
+            stopped.line
+        );
+
+        let moved = read_clock(&[sample(t0, 7), sample(t0, 9)]);
+        assert_eq!(moved.class, ClockClass::TooFew, "{}", moved.line);
+
+        // The ordinary reading is untouched: 100 ticks in 100 ms is a kilohertz.
+        let t1 = t0 + Duration::from_millis(100);
+        let ordinary = read_clock(&[sample(t0, 4096), sample(t1, 4196)]);
+        assert_eq!(ordinary.class, ClockClass::Hertz(1000), "{}", ordinary.line);
+    }
 
     /// The regression the fastest-interval reading exists for.
     ///
