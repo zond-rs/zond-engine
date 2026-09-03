@@ -58,6 +58,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::limits;
 use crate::config::{ProbeTuning, ZondConfig};
+use crate::model::exclusion::Exclusions;
 use crate::model::ip::range::{IpRange, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::model::port::Protocol;
@@ -458,7 +459,13 @@ impl DiscoveryPlan {
     /// the only source the engine has for an IPv6 address nobody named.
     /// [`Scope::Targeted`] does neither: probing addresses nobody asked about is
     /// defensible for `lan` and surprising for `zond <address>`.
-    pub fn build(targets: IpSet, scope: Scope) -> Self {
+    /// `exclusions` is what a sweep's own discoveries are held to. The target
+    /// list has already been withheld against them by the time it arrives here
+    /// — that is `withhold_targets`, before anything is opened — but a sweep
+    /// adds addresses the list never had, from the host's neighbour table, and
+    /// those were never subtracted from anything. See
+    /// [`seed_from_neighbor_table`].
+    pub fn build(targets: IpSet, scope: Scope, exclusions: &Exclusions) -> Self {
         let mut steps = Vec::new();
         let mut refusals = Vec::new();
 
@@ -498,7 +505,7 @@ impl DiscoveryPlan {
         // from the host itself. A targeted run may not.
         if matches!(scope, Scope::Sweep) {
             include_swept_link(&mut local);
-            seed_from_neighbor_table(&mut local);
+            seed_from_neighbor_table(&mut local, exclusions);
         }
 
         for (interface, mut targets) in local {
@@ -930,10 +937,10 @@ fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
 /// Nothing seeded here is treated as a discovered host. Every entry is an
 /// address that answered *once*, from a table that goes stale, so each becomes a
 /// probe like any other and earns its place in the report by answering now.
-fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>) {
+fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>, exclusions: &Exclusions) {
     let table = neighbor_cache::ipv6_neighbors();
     if !table.is_empty() {
-        seed_from_neighbor_table_with(local, &table);
+        seed_from_neighbor_table_with(local, &table, exclusions);
     }
 }
 
@@ -942,10 +949,34 @@ fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>) {
 fn seed_from_neighbor_table_with(
     local: &mut HashMap<Link, IpSet>,
     table: &[neighbor_cache::Neighbor],
+    exclusions: &Exclusions,
 ) {
     for (intf, targets) in local.iter_mut() {
         let mut seeded = 0usize;
         for addr in candidates_for(intf, table) {
+            // **The policy, not one of this function's own three filters.**
+            //
+            // `withhold_targets` subtracts excluded addresses from the list
+            // before anything is opened, and that is the whole of the send-side
+            // guarantee — but it can only subtract what the list had. These
+            // addresses were never in it: they come from the host's own
+            // neighbour table, which is exactly the case `Exclusions` names when
+            // it says an exclusion that holds for the list and not for what the
+            // sweep discovers is worse than no exclusion at all.
+            //
+            // Without this a swept segment sent a unicast solicitation to an
+            // address somebody had been told would not be probed. `write_host`
+            // then dropped the finding, so the *report* stayed clean and the
+            // packet still went out — which is the half of the promise that
+            // cannot be checked from the report afterwards.
+            if exclusions.excludes(&addr) {
+                info!(
+                    verbosity = 2,
+                    "neighbour {addr} is excluded, so it is not taken as a candidate"
+                );
+                continue;
+            }
+
             let IpAddr::V6(addr) = addr else { continue };
             // The zone matters for exactly the addresses that cannot be probed
             // without one, and is dropped for the rest for the reason
@@ -1181,7 +1212,7 @@ mod tests {
         let table = vec![entry("fe80::bb", 7), entry("2001:db8::aa", 7)];
         let mut local = std::collections::HashMap::from([(intf, IpSet::new())]);
 
-        seed_from_neighbor_table_with(&mut local, &table);
+        seed_from_neighbor_table_with(&mut local, &table, &Exclusions::none());
 
         let targets = local.into_values().next().unwrap();
         let zones: Vec<Option<u32>> = targets.v6().iter().map(|range| range.zone()).collect();
@@ -1318,5 +1349,44 @@ mod tests {
 
         assert!(plan.covers(Protocol::Tcp));
         assert!(!plan.covers(Protocol::Udp));
+    }
+
+    /// **A sweep does not take an excluded neighbour as a candidate.**
+    ///
+    /// The target list is withheld against the exclusions before a plan is
+    /// built, and that is the whole of the send-side guarantee — but a sweep
+    /// adds addresses the list never had, from the host's own neighbour table,
+    /// and those were never subtracted from anything. `Exclusions` names exactly
+    /// this case: an exclusion that holds for the list and not for what the
+    /// sweep discovers is worse than no exclusion at all.
+    ///
+    /// The recording gate at `write_host` would have dropped the finding, so the
+    /// report stayed clean either way. What it could not undo is the packet, and
+    /// that is the half of the promise a reader cannot check afterwards.
+    #[test]
+    fn a_swept_plan_does_not_take_an_excluded_neighbour_as_a_candidate() {
+        let intf = interface_with(7, "en0", Vec::new());
+        let table = vec![entry("2001:db8::aa", 7), entry("2001:dead::bb", 7)];
+        let mut local = std::collections::HashMap::from([(intf, IpSet::new())]);
+
+        let mut forbidden = IpSet::new();
+        forbidden.insert_range("2001:db8::/64".parse().expect("a valid range"));
+        seed_from_neighbor_table_with(&mut local, &table, &Exclusions::new(forbidden));
+
+        let targets = local.into_values().next().expect("the one interface");
+        let carried: Vec<std::net::Ipv6Addr> = targets
+            .v6()
+            .iter()
+            .map(|range| range.start_addr())
+            .collect();
+
+        assert!(
+            !carried.contains(&"2001:db8::aa".parse().expect("literal")),
+            "an excluded neighbour must not become a target"
+        );
+        assert!(
+            carried.contains(&"2001:dead::bb".parse().expect("literal")),
+            "and everything else still is"
+        );
     }
 }

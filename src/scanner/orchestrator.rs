@@ -1228,7 +1228,11 @@ pub(super) async fn run_port_phase(
     // phase on, it has: the pass that established they are there is the same one
     // that reads their hardware addresses and names.
     let enrichment = if cfg.assume_up && built.opened_raw() {
-        let plan = super::plan::DiscoveryPlan::build(target_ips(&target_map), Scope::Targeted);
+        let plan = super::plan::DiscoveryPlan::build(
+            target_ips(&target_map),
+            Scope::Targeted,
+            &cfg.exclusions,
+        );
         Some(Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await)
     } else {
         None

@@ -13854,7 +13854,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::plan::PortSc
 pub struct zond_engine::scanner::plan::DiscoveryPlan
 impl zond_engine::scanner::plan::DiscoveryPlan
 pub fn zond_engine::scanner::plan::DiscoveryPlan::also_over_sctp(&mut self, u16)
-pub fn zond_engine::scanner::plan::DiscoveryPlan::build(zond_engine::model::ip::set::IpSet, zond_engine::scanner::strategy::local::Scope) -> Self
+pub fn zond_engine::scanner::plan::DiscoveryPlan::build(zond_engine::model::ip::set::IpSet, zond_engine::scanner::strategy::local::Scope, &zond_engine::model::exclusion::Exclusions) -> Self
 pub fn zond_engine::scanner::plan::DiscoveryPlan::into_steps(self) -> alloc::vec::Vec<zond_engine::scanner::plan::DiscoveryStep>
 pub fn zond_engine::scanner::plan::DiscoveryPlan::refusals(&self) -> &[zond_engine::scanner::plan::RefusedStep]
 pub fn zond_engine::scanner::plan::DiscoveryPlan::steps(&self) -> &[zond_engine::scanner::plan::DiscoveryStep]
