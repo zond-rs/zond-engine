@@ -23,7 +23,7 @@
 //! why the counts here are gross rather than net. Two units naming one address
 //! are two questions about it, and both get asked.
 
-use crate::model::ip::set::IpSet;
+use crate::model::ip::set::{IpSet, Positions};
 use crate::model::port::{PortSet, Protocol};
 use std::{net::IpAddr, sync::Arc};
 use thiserror::Error;
@@ -280,6 +280,152 @@ impl TargetMap {
     }
 }
 
+/// The same targets [`TargetMap::iter`] yields, addressed by position instead of
+/// walked in order.
+///
+/// [`iter`](TargetMap::iter) is what numbers a plan: the nth target it yields is
+/// position n, and a journal records how far a scan got as one of those numbers.
+/// That is enough for a scan that asks its targets in plan order and not enough
+/// for one that does not, which needs to go the other way and ask what target a
+/// position names. This is that direction.
+///
+/// The two are one numbering or they are nothing, since the dispatcher decides
+/// what to probe by one and the cursor decides what was probed by the other. The
+/// property is stated as [`target_at`](Self::target_at) agreeing with
+/// `iter().nth()` for every position, and `model`'s own tests hold it there.
+///
+/// Costs a few words per unit and nothing per target. A unit's addresses are
+/// numbered by [`Positions`], which is a table of its ranges, and its ports are
+/// the list it already holds; a position is resolved by one binary search and two
+/// divisions.
+#[derive(Debug, Clone)]
+pub struct TargetIndex {
+    /// The numbered units, in the order [`TargetMap::iter`] walks them.
+    units: Vec<UnitIndex>,
+    /// How many targets are numbered.
+    total: u64,
+    /// Whether that is every target the map holds.
+    complete: bool,
+}
+
+/// One unit of a [`TargetIndex`], and where its targets sit in the numbering.
+#[derive(Debug, Clone)]
+struct UnitIndex {
+    /// The unit's addresses, numbered.
+    addresses: Positions,
+    /// The unit's ports, in the order its iterator pairs them with an address.
+    ports: Arc<[(u16, Protocol)]>,
+    /// The position of the unit's first target.
+    start: u64,
+    /// How many targets it holds: its addresses times its ports.
+    len: u64,
+}
+
+impl TargetIndex {
+    /// Numbers `map`'s targets.
+    ///
+    /// Numbering stops at the first unit that cannot be counted whole, and every
+    /// unit after it is left out for the reason [`Positions`] leaves out a range
+    /// it cannot number: positions have to stay contiguous, and a gap in the
+    /// middle would move every position above it. What that costs is
+    /// [`is_complete`](Self::is_complete) answering false, and a caller that
+    /// needs the whole plan addressed reads that before it reads anything else.
+    ///
+    /// A unit is uncountable when its addresses are, which is an IPv6 range of a
+    /// `/64` or wider, or when its address count times its port count overflows
+    /// the numbering. Both describe a plan no scan finishes.
+    pub fn of(map: &TargetMap) -> Self {
+        let mut units = Vec::with_capacity(map.units.len());
+        let mut total: u64 = 0;
+        let mut complete = true;
+
+        for unit in &map.units {
+            let addresses = Positions::of(unit.ips());
+            let ports: Arc<[(u16, Protocol)]> = unit.ports().to_vec().into();
+
+            // A unit with no ports yields no targets, so it takes no positions
+            // and does not interrupt the numbering. `iter` skips it the same way.
+            if ports.is_empty() {
+                continue;
+            }
+
+            let counted = u64::try_from(ports.len())
+                .ok()
+                .and_then(|ports| addresses.total().checked_mul(ports))
+                .filter(|_| addresses.unnumbered().is_empty());
+
+            let Some(len) = counted.filter(|len| total.checked_add(*len).is_some()) else {
+                complete = false;
+                break;
+            };
+
+            units.push(UnitIndex {
+                addresses,
+                ports,
+                start: total,
+                len,
+            });
+            total += len;
+        }
+
+        Self {
+            units,
+            total,
+            complete,
+        }
+    }
+
+    /// How many targets are numbered.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// Whether every target the map holds is numbered.
+    ///
+    /// False for a plan whose addresses outrun the numbering, where
+    /// [`total`](Self::total) counts a prefix of what
+    /// [`TargetMap::iter`] yields rather than all of it. A caller walking
+    /// positions rather than the iterator has to read this, or it asks about
+    /// part of the plan and reports having asked about all of it.
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    /// The target at `position`, or [`None`] past the end of the numbering.
+    pub fn target_at(&self, position: u64) -> Option<Target> {
+        let unit = self.unit_at(position)?;
+        let local = position - unit.start;
+
+        // The unit's iterator pairs each address with every port before moving
+        // to the next address, so the port index runs fastest.
+        let ports = unit.ports.len() as u64;
+        let (port, protocol) = unit.ports[(local % ports) as usize];
+        let ip = unit.addresses.address_at(local / ports)?;
+
+        Some(Target { ip, port, protocol })
+    }
+
+    /// The unit holding `position`.
+    fn unit_at(&self, position: u64) -> Option<&UnitIndex> {
+        if position >= self.total {
+            return None;
+        }
+        let index = match self
+            .units
+            .binary_search_by_key(&position, |unit| unit.start)
+        {
+            Ok(index) => index,
+            // The unit before the first one starting above `position`, which is
+            // the one holding it: units are contiguous and ascending by `start`.
+            Err(0) => return None,
+            Err(index) => index - 1,
+        };
+        self.units
+            .get(index)
+            .filter(|unit| position < unit.start + unit.len)
+    }
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -299,6 +445,116 @@ mod tests {
 
     fn ports(written: &str) -> PortSet {
         written.parse().expect("a valid port specification")
+    }
+
+    /// A plan that runs several units, of both families, with ports that do not
+    /// divide evenly into anything.
+    ///
+    /// Awkward on purpose. Every off-by-one available lives at a unit boundary or
+    /// at the wrap from one address's last port to the next address's first, so a
+    /// fixture whose units are the same size and whose port counts are powers of
+    /// two would pass while getting both wrong.
+    fn awkward() -> TargetMap {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(ips("192.0.2.0/29"), ports("22, 80, u:53")));
+        map.add_unit(TargetSet::new(ips("198.51.100.7"), ports("443")));
+        map.add_unit(TargetSet::new(
+            ips("203.0.113.0/30, 192.0.2.200-192.0.2.203"),
+            ports("1-5, s:2905"),
+        ));
+        map.add_unit(TargetSet::new(ips("2001:db8::/126"), ports("80, u:161")));
+        map
+    }
+
+    /// The whole of what an index promises. A position names the target the
+    /// plan's own walk gives it, or the dispatcher and the cursor are counting
+    /// two different things and a resume skips ground nobody probed.
+    #[test]
+    fn a_position_names_the_target_the_plans_own_walk_numbers_it() {
+        let map = awkward();
+        let index = TargetIndex::of(&map);
+
+        let walked: Vec<Target> = map.iter().collect();
+        assert!(index.is_complete());
+        assert_eq!(index.total(), walked.len() as u64);
+
+        for (position, expected) in walked.iter().enumerate() {
+            assert_eq!(
+                index.target_at(position as u64).as_ref(),
+                Some(expected),
+                "position {position}"
+            );
+        }
+        assert_eq!(index.target_at(index.total()), None, "past the end");
+    }
+
+    /// A unit naming no port yields no target, so it takes no positions. It used
+    /// to be the case that skipping it and counting it were the same thing;
+    /// they are not, and counting it would put a gap in the middle of the
+    /// numbering that moves every position above it.
+    #[test]
+    fn a_unit_with_no_ports_takes_no_positions() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(ips("192.0.2.1"), ports("22")));
+        map.add_unit(TargetSet::new(ips("192.0.2.0/24"), PortSet::new()));
+        map.add_unit(TargetSet::new(ips("192.0.2.2"), ports("80")));
+
+        let index = TargetIndex::of(&map);
+        let walked: Vec<Target> = map.iter().collect();
+
+        assert_eq!(index.total(), 2);
+        assert_eq!(index.total(), walked.len() as u64);
+        assert_eq!(index.target_at(0).as_ref(), walked.first());
+        assert_eq!(index.target_at(1).as_ref(), walked.get(1));
+    }
+
+    /// An address range the numbering cannot reach makes the whole index
+    /// incomplete, and it says so rather than numbering the part that fits and
+    /// leaving a caller to walk a prefix believing it walked a plan.
+    #[test]
+    fn a_plan_wider_than_the_numbering_is_incomplete_and_says_so() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(ips("192.0.2.1"), ports("22")));
+        map.add_unit(TargetSet::new(ips("2001:db8::/48"), ports("80")));
+        map.add_unit(TargetSet::new(ips("198.51.100.1"), ports("443")));
+
+        let index = TargetIndex::of(&map);
+
+        assert!(!index.is_complete());
+        assert_eq!(index.total(), 1, "only the units before the wide one");
+        assert_eq!(
+            index.target_at(1),
+            None,
+            "a position the numbering never reached names nothing"
+        );
+    }
+
+    /// Where the numbering gives out, checked rather than asserted from the
+    /// documentation of the thing that does it. A `/64` holds one address more
+    /// than a position can count, so it is the first prefix that cannot be
+    /// addressed and a `/65` is the first that can be split.
+    #[test]
+    fn a_sixty_four_is_the_first_prefix_the_numbering_cannot_reach() {
+        let indexed = |prefix: &str| {
+            let mut map = TargetMap::new();
+            map.add_unit(TargetSet::new(ips(prefix), ports("80")));
+            TargetIndex::of(&map).is_complete()
+        };
+
+        assert!(indexed("2001:db8::/65"), "a /65 fits");
+        assert!(!indexed("2001:db8::/64"), "a /64 is one address too many");
+        assert!(!indexed("2001:db8::/48"), "and anything wider is too");
+    }
+
+    /// An empty plan numbers nothing and is still complete: there is nothing it
+    /// failed to reach.
+    #[test]
+    fn an_empty_plan_numbers_nothing() {
+        let index = TargetIndex::of(&TargetMap::new());
+
+        assert!(index.is_complete());
+        assert_eq!(index.total(), 0);
+        assert_eq!(index.target_at(0), None);
     }
 
     /// What decides whether a scan opens a socket for SCTP, which nothing

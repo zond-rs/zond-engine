@@ -154,6 +154,7 @@ pub mod audit;
 pub mod checkpoint;
 pub mod detection;
 pub mod dispatcher;
+pub mod order;
 pub mod payload;
 pub mod pool;
 pub mod rdns;
@@ -415,6 +416,10 @@ pub async fn discover(
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
+        // Drawn here and kept nowhere, since nothing is recording this sweep.
+        // A caller who wants the order back is journalling, and that is what
+        // writes the seed down.
+        .ordering(Some(rand::random()))
         .build();
     let handle = spawn_discovery(targets, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
@@ -477,6 +482,10 @@ pub async fn discover_with_journal(
     // to still be there, and the two sittings would count different things.
     let positions = addresses.positions();
     let resume_point = journal.resume_point().clone();
+    // The order the first sitting was going to sweep in. A later one continuing
+    // in a fresh order would change the shape of the run halfway through, which
+    // is a signature of its own.
+    let order_seed = journal.manifest().order_seed;
 
     let sweep = if resume_point == Checkpoint::default() {
         targets
@@ -490,6 +499,7 @@ pub async fn discover_with_journal(
         .scan_timeout(cfg.scan_timeout)
         .resuming(&resume_point)
         .counting(positions)
+        .ordering(order_seed)
         .build();
 
     ctx.restore_hosts(journal.restored());
@@ -892,6 +902,9 @@ pub async fn scan(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .detections(detections)
+        // See `discover`: drawn here and kept nowhere, because nothing is
+        // recording this scan.
+        .ordering(Some(rand::random()))
         .build();
     let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default());
     Ok((session, ScanTask::new(handle)))
@@ -937,6 +950,9 @@ pub async fn scan_with_journal(
         .scan_timeout(cfg.scan_timeout)
         .resuming(journal.resume_point())
         .detections(detections)
+        // See `discover_with_journal`: the order is the job's rather than this
+        // sitting's, so it comes back off the manifest.
+        .ordering(journal.manifest().order_seed)
         .build();
 
     // Before the scan starts, so a caller watching the session sees the earlier

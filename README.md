@@ -31,6 +31,11 @@
   the first packet and again at every finding — so a segment sweep cannot report
   a neighbour it was forbidden to look at. The report carries the excluded ranges
   and what they cost, which is what makes it evidence that a scope was kept to.
+* **Plan-wide target randomization:** the order a scan asks about its targets is
+  a keyed rearrangement of the whole plan rather than a shuffle inside a window,
+  so a `/16` is not walked in address order at any grain. The order is a function
+  of a seed the journal records, so a resumed scan continues in the order it
+  started in rather than changing shape halfway through.
 * **Wall-clock bounds:** a budget per host and a budget for the whole run, so a
   scheduled scan finishes whether or not the network cooperates. A host left
   early is named in the report rather than reported quiet, and a run that spent

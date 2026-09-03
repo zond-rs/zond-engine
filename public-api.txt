@@ -6383,6 +6383,7 @@ pub zond_engine::journal::manifest::JournalManifest::id: alloc::string::String
 pub zond_engine::journal::manifest::JournalManifest::journal_version: u32
 pub zond_engine::journal::manifest::JournalManifest::kind: alloc::string::String
 pub zond_engine::journal::manifest::JournalManifest::links: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::journal::manifest::JournalManifest::order_seed: core::option::Option<u64>
 pub zond_engine::journal::manifest::JournalManifest::plan: zond_engine::journal::manifest::PlanFingerprint
 pub zond_engine::journal::manifest::JournalManifest::privilege: zond_engine::system::privilege::Privilege
 pub zond_engine::journal::manifest::JournalManifest::summary: alloc::string::String
@@ -8121,6 +8122,7 @@ pub zond_engine::model::ip::range::IpRange::V6(zond_engine::model::ip::range::Ip
 impl zond_engine::model::ip::range::IpRange
 pub fn zond_engine::model::ip::range::IpRange::contains(&self, &core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::ip::range::IpRange::end_addr(&self) -> core::net::ip_addr::IpAddr
+pub fn zond_engine::model::ip::range::IpRange::iter(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = core::net::ip_addr::IpAddr> + core::marker::Send + '_)>
 pub fn zond_engine::model::ip::range::IpRange::len(&self) -> u128
 pub fn zond_engine::model::ip::range::IpRange::start_addr(&self) -> core::net::ip_addr::IpAddr
 impl core::clone::Clone for zond_engine::model::ip::range::IpRange
@@ -8453,6 +8455,7 @@ pub zond_engine::model::ip::IpRange::V6(zond_engine::model::ip::range::Ipv6Range
 impl zond_engine::model::ip::range::IpRange
 pub fn zond_engine::model::ip::range::IpRange::contains(&self, &core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::ip::range::IpRange::end_addr(&self) -> core::net::ip_addr::IpAddr
+pub fn zond_engine::model::ip::range::IpRange::iter(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = core::net::ip_addr::IpAddr> + core::marker::Send + '_)>
 pub fn zond_engine::model::ip::range::IpRange::len(&self) -> u128
 pub fn zond_engine::model::ip::range::IpRange::start_addr(&self) -> core::net::ip_addr::IpAddr
 impl core::clone::Clone for zond_engine::model::ip::range::IpRange
@@ -9802,6 +9805,23 @@ impl core::marker::Unpin for zond_engine::model::target::Target
 impl core::marker::UnsafeUnpin for zond_engine::model::target::Target
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::target::Target
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::target::Target
+pub struct zond_engine::model::target::TargetIndex
+impl zond_engine::model::target::TargetIndex
+pub fn zond_engine::model::target::TargetIndex::is_complete(&self) -> bool
+pub fn zond_engine::model::target::TargetIndex::of(&zond_engine::model::target::TargetMap) -> Self
+pub fn zond_engine::model::target::TargetIndex::target_at(&self, u64) -> core::option::Option<zond_engine::model::target::Target>
+pub fn zond_engine::model::target::TargetIndex::total(&self) -> u64
+impl core::clone::Clone for zond_engine::model::target::TargetIndex
+pub fn zond_engine::model::target::TargetIndex::clone(&self) -> zond_engine::model::target::TargetIndex
+impl core::fmt::Debug for zond_engine::model::target::TargetIndex
+pub fn zond_engine::model::target::TargetIndex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::model::target::TargetIndex
+impl core::marker::Send for zond_engine::model::target::TargetIndex
+impl core::marker::Sync for zond_engine::model::target::TargetIndex
+impl core::marker::Unpin for zond_engine::model::target::TargetIndex
+impl core::marker::UnsafeUnpin for zond_engine::model::target::TargetIndex
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::target::TargetIndex
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::target::TargetIndex
 pub struct zond_engine::model::target::TargetMap
 pub zond_engine::model::target::TargetMap::units: alloc::vec::Vec<zond_engine::model::target::TargetSet>
 impl zond_engine::model::target::TargetMap
@@ -13259,7 +13279,7 @@ impl zond_engine::scanner::dispatcher::Dispatcher
 pub fn zond_engine::scanner::dispatcher::Dispatcher::new(zond_engine::model::target::TargetMap) -> Self
 pub fn zond_engine::scanner::dispatcher::Dispatcher::only_live(self, zond_engine::model::ip::set::IpSet) -> Self
 pub fn zond_engine::scanner::dispatcher::Dispatcher::resuming(self, zond_engine::journal::cursor::Checkpoint) -> Self
-pub fn zond_engine::scanner::dispatcher::Dispatcher::run_shuffled(self, &zond_engine::scanner::session::ScanContext) -> tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>
+pub fn zond_engine::scanner::dispatcher::Dispatcher::run(self, &zond_engine::scanner::session::ScanContext) -> tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>
 pub fn zond_engine::scanner::dispatcher::Dispatcher::with_batch_size(self, usize) -> Self
 impl core::marker::Freeze for zond_engine::scanner::dispatcher::Dispatcher
 impl core::marker::Send for zond_engine::scanner::dispatcher::Dispatcher
@@ -13269,7 +13289,7 @@ impl core::marker::UnsafeUnpin for zond_engine::scanner::dispatcher::Dispatcher
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::dispatcher::Dispatcher
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::dispatcher::Dispatcher
 pub const zond_engine::scanner::dispatcher::DEFAULT_BATCH: usize
-pub fn zond_engine::scanner::dispatcher::shuffled_addresses(zond_engine::model::ip::set::IpSet, usize, &zond_engine::scanner::handle::ScanHandle) -> tokio::sync::mpsc::bounded::Receiver<core::net::ip_addr::IpAddr>
+pub fn zond_engine::scanner::dispatcher::dispatch_addresses(zond_engine::model::ip::set::IpSet, usize, core::option::Option<u64>, &zond_engine::scanner::handle::ScanHandle) -> tokio::sync::mpsc::bounded::Receiver<core::net::ip_addr::IpAddr>
 pub mod zond_engine::scanner::handle
 #[non_exhaustive] pub enum zond_engine::scanner::handle::StopCause
 pub zond_engine::scanner::handle::StopCause::Aborted
@@ -13313,6 +13333,30 @@ impl core::marker::Unpin for zond_engine::scanner::handle::ScanHandle
 impl core::marker::UnsafeUnpin for zond_engine::scanner::handle::ScanHandle
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::handle::ScanHandle
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::handle::ScanHandle
+pub mod zond_engine::scanner::order
+pub struct zond_engine::scanner::order::Permutation
+impl zond_engine::scanner::order::Permutation
+pub fn zond_engine::scanner::order::Permutation::at(&self, u64) -> core::option::Option<u64>
+pub fn zond_engine::scanner::order::Permutation::is_empty(&self) -> bool
+pub fn zond_engine::scanner::order::Permutation::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = u64> + core::marker::Send + 'static
+pub fn zond_engine::scanner::order::Permutation::len(&self) -> u64
+pub fn zond_engine::scanner::order::Permutation::new(u64, u64) -> Self
+impl core::clone::Clone for zond_engine::scanner::order::Permutation
+pub fn zond_engine::scanner::order::Permutation::clone(&self) -> zond_engine::scanner::order::Permutation
+impl core::cmp::Eq for zond_engine::scanner::order::Permutation
+impl core::cmp::PartialEq for zond_engine::scanner::order::Permutation
+pub fn zond_engine::scanner::order::Permutation::eq(&self, &zond_engine::scanner::order::Permutation) -> bool
+impl core::fmt::Debug for zond_engine::scanner::order::Permutation
+pub fn zond_engine::scanner::order::Permutation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::scanner::order::Permutation
+impl core::marker::StructuralPartialEq for zond_engine::scanner::order::Permutation
+impl core::marker::Freeze for zond_engine::scanner::order::Permutation
+impl core::marker::Send for zond_engine::scanner::order::Permutation
+impl core::marker::Sync for zond_engine::scanner::order::Permutation
+impl core::marker::Unpin for zond_engine::scanner::order::Permutation
+impl core::marker::UnsafeUnpin for zond_engine::scanner::order::Permutation
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::order::Permutation
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::order::Permutation
 pub mod zond_engine::scanner::pacing
 pub mod zond_engine::scanner::pacing::congestion
 pub struct zond_engine::scanner::pacing::congestion::CongestionWindow
@@ -13915,6 +13959,7 @@ pub fn zond_engine::scanner::session::SessionBuilder::counting(self, zond_engine
 pub fn zond_engine::scanner::session::SessionBuilder::detections(self, zond_engine::detect::corpus::Detections) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::excluding(self, zond_engine::model::exclusion::Exclusions) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::host_timeout(self, core::option::Option<core::time::Duration>) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::ordering(self, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::scan_timeout(self, core::option::Option<core::time::Duration>) -> Self
 impl core::default::Default for zond_engine::scanner::session::SessionBuilder

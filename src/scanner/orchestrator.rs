@@ -1212,7 +1212,7 @@ pub(super) async fn run_port_phase(
     if let Some(live) = live {
         dispatcher = dispatcher.only_live(live);
     }
-    let rx = dispatcher.run_shuffled(ctx);
+    let rx = dispatcher.run(ctx);
 
     run_port_scan(built.scanner, rx, ctx, cfg.service_detection, cfg.detection).await;
     finish_enrichment(enrichment, caps, ctx).await;

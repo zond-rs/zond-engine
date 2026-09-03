@@ -381,6 +381,19 @@ pub enum IpRange {
 }
 
 impl IpRange {
+    /// Every address the range holds, ascending.
+    ///
+    /// Boxed because the two families iterate as different types and this
+    /// carries either, which is why [`IpSet::iter`](super::set::IpSet::iter) is
+    /// boxed as well. The same warning applies: a range is a description rather
+    /// than a list, and iterating a wide IPv6 one does not finish.
+    pub fn iter(&self) -> Box<dyn Iterator<Item = IpAddr> + Send + '_> {
+        match self {
+            IpRange::V4(range) => Box::new(range.iter()),
+            IpRange::V6(range) => Box::new(range.iter()),
+        }
+    }
+
     /// Returns the start address of the range as an [`IpAddr`].
     pub fn start_addr(&self) -> IpAddr {
         match self {

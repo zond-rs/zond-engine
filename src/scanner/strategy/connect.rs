@@ -38,7 +38,7 @@ use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
-use crate::scanner::dispatcher::shuffled_addresses;
+use crate::scanner::dispatcher::dispatch_addresses;
 use crate::scanner::handle::ScanHandle;
 use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
@@ -901,7 +901,7 @@ fn finish(
 /// finished with.
 ///
 /// Addresses are drawn from
-/// [`shuffled_addresses`] to
+/// [`dispatch_addresses`] to
 /// spread load across the network instead of hammering one subnet at a time, and
 /// each connect waits out the [`CONNECT_PROBE_TIMEOUT`] so that hosts on slow or
 /// distant links still register.
@@ -920,7 +920,7 @@ pub async fn discover(
         .collect::<Vec<_>>()
         .into();
 
-    let mut rx = shuffled_addresses(ips, 1024, &ctx.handle);
+    let mut rx = dispatch_addresses(ips, 1024, ctx.order_seed, &ctx.handle);
     let folder = ctx.clone();
     let mut pool = ProbePool::new(
         DISCOVERY_CONCURRENCY,

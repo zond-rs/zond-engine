@@ -841,6 +841,12 @@ pub struct ScanContext {
     /// advance its watermark over probes nobody sent, so a context that does not
     /// count addresses answers `None` to every address and nothing is recorded.
     pub(crate) positions: Arc<Positions>,
+    /// The key the order this scan asks its targets in is a function of.
+    ///
+    /// [`None`] for a scan that walks its plan in order. Read by the dispatcher
+    /// and by nothing else, since it decides what to ask next rather than
+    /// anything about what an answer means.
+    pub(crate) order_seed: Option<u64>,
     /// Each open port's gathered responses, kept from the service phase for the
     /// detection phase to hand a passive detection.
     pub(crate) responses: Arc<Responses>,
@@ -1357,6 +1363,7 @@ pub struct SessionBuilder {
     detections: crate::detect::Detections,
     host_timeout: Option<Duration>,
     scan_timeout: Option<Duration>,
+    order_seed: Option<u64>,
 }
 
 impl SessionBuilder {
@@ -1394,6 +1401,25 @@ impl SessionBuilder {
     /// plan's watermark from advancing over probes nobody sent.
     pub fn counting(mut self, positions: Positions) -> Self {
         self.positions = positions;
+        self
+    }
+
+    /// The key the order this scan asks its targets in is a function of.
+    ///
+    /// Set it and the scan walks its plan in a rearrangement of the whole index
+    /// space rather than in address order, which is what keeps a sweep of a
+    /// range from being the one shape every correlating sensor is written
+    /// against. See [`Permutation`](crate::scanner::order::Permutation).
+    ///
+    /// Leave it alone and the targets come out in plan order, shuffled within a
+    /// batch, which is what a scan whose plan cannot be addressed by position
+    /// falls back to anyway.
+    ///
+    /// A caller journalling their scan should pass what the journal recorded, so
+    /// a resumed sitting continues in the order the first one was going to use.
+    /// [`scan_with_journal`](crate::scanner::scan_with_journal) does.
+    pub fn ordering(mut self, seed: Option<u64>) -> Self {
+        self.order_seed = seed;
         self
     }
 
@@ -1463,6 +1489,7 @@ impl SessionBuilder {
             changed: Arc::new(ChangedHosts::default()),
             settlements: Arc::new(Settlements::resuming(&self.settled)),
             positions: Arc::new(self.positions),
+            order_seed: self.order_seed,
             responses: Arc::new(Responses::default()),
             tapes: Arc::new(Tapes::default()),
             detections: self.detections,

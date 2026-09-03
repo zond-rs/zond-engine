@@ -530,6 +530,19 @@ pub struct JournalManifest {
     /// How many targets that plan holds, so a caller can report progress without
     /// walking it.
     pub total_targets: u128,
+    /// The key the order this journal's targets are asked in is a function of.
+    ///
+    /// Not part of the plan, and not part of [`PlanFingerprint`]: it decides the
+    /// order the same targets are asked in and nothing about which targets those
+    /// are, so a sitting resumed under a different one still covers the job. What it buys is that a resumed
+    /// sitting does not have to. A scan that switched to a fresh order halfway
+    /// through would emit a change of shape mid-run, which is a signature of its
+    /// own; see [`Permutation`](crate::scanner::order::Permutation).
+    ///
+    /// [`None`] in a journal written before the order was keyed, which is
+    /// resumed the way it was started: in plan order, shuffled within a batch.
+    #[serde(default)]
+    pub order_seed: Option<u64>,
     /// A human-readable summary of what was scanned, for a caller listing
     /// journals. **Not** load-bearing: nothing is decided from this text, which
     /// is why it is free to change shape between versions.
@@ -607,6 +620,10 @@ impl JournalManifest {
                 .collect(),
             privilege,
             total_targets: plan.total_targets(),
+            // Drawn here because a journal is created once and the order is a
+            // property of the job rather than of a sitting. Every sitting after
+            // the first reads it back, which is what it is written down for.
+            order_seed: Some(rand::random()),
             summary: summary.into(),
         }
     }
@@ -923,6 +940,46 @@ mod tests {
         written["privileged"] = serde_json::Value::Bool(false);
         let read: JournalManifest = serde_json::from_value(written).expect("a connect scan reads");
         assert_eq!(read.privilege, Privilege::Connect, "the polarity is intact");
+    }
+
+    /// The order a journal's targets are asked in survives the round trip, and a
+    /// journal written before the field existed reads as no order rather than as
+    /// the one seed 0 names.
+    ///
+    /// The difference is what a sitting resuming an old journal gets: the walk
+    /// that journal was written under, rather than a rearrangement it never used.
+    #[cfg(feature = "journal-format")]
+    #[test]
+    fn a_manifest_that_records_no_order_asks_for_none() {
+        let map = plan(&[("192.0.2.1", "80")]);
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &ports(&map), Privilege::Raw, "");
+        assert!(manifest.order_seed.is_some(), "a fresh journal draws one");
+
+        let mut written = serde_json::to_value(&manifest).expect("a manifest serializes");
+        let read: JournalManifest =
+            serde_json::from_value(written.clone()).expect("and reads back");
+        assert_eq!(read.order_seed, manifest.order_seed);
+
+        written
+            .as_object_mut()
+            .expect("an object")
+            .remove("order_seed");
+        let read: JournalManifest =
+            serde_json::from_value(written).expect("an older journal reads");
+        assert_eq!(read.order_seed, None);
+    }
+
+    /// Two journals of the same plan ask about it in different orders, so the
+    /// seed is drawn per journal rather than derived from anything the plan says.
+    #[cfg(feature = "journal-format")]
+    #[test]
+    fn two_journals_of_one_plan_ask_about_it_differently() {
+        let map = plan(&[("192.0.2.0/24", "1-1024")]);
+        let one = JournalManifest::new("01J8Z5Q7VN", &ports(&map), Privilege::Raw, "");
+        let other = JournalManifest::new("01J8Z5Q7VP", &ports(&map), Privilege::Raw, "");
+
+        assert_eq!(one.plan, other.plan, "the same plan");
+        assert_ne!(one.order_seed, other.order_seed, "asked in its own order");
     }
 
     /// A journal written before the field existed reads as a connect scan,

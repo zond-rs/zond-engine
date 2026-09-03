@@ -25,11 +25,16 @@
 //! out of order the scan settled rather than of how large the scan is. A `/8` on
 //! a thousand ports checkpoints in the same handful of bytes a `/24` does.
 //!
-//! This enumeration is load-bearing. The dispatcher walks it to decide what to
-//! probe and this walks it to decide what was probed, so the two have to be one
-//! walk; see `Dispatcher::run_shuffled`, which calls the same method. Shuffling
-//! does not affect it, since the dispatcher permutes within a batch, changing the
-//! order targets are asked in rather than the order they are numbered in.
+//! This enumeration is load-bearing. The dispatcher decides what to probe by it
+//! and this decides what was probed by it, so the two have to be one numbering.
+//! The order the targets are asked in is a different question and is nobody's
+//! business here: a scan given a seed walks a
+//! [`Permutation`](crate::scanner::order::Permutation) of the whole index space
+//! and numbers what comes out by where the plan holds it, which it reads through
+//! [`TargetIndex`](crate::model::target::TargetIndex). That the index and this
+//! walk agree at every position is `model`'s own test,
+//! `a_position_names_the_target_the_plans_own_walk_numbers_it`, and it is what
+//! keeps the two from being two numberings.
 //!
 //! ## The watermark chases the settled set
 //!

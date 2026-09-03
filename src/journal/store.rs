@@ -1926,6 +1926,7 @@ mod tests {
                 sweep: false,
                 privilege: Privilege::Raw,
                 total_targets: total,
+                order_seed: None,
                 summary: String::new(),
             },
             checkpoint: Some(Checkpoint {
