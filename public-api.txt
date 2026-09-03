@@ -10293,6 +10293,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::TlsVersio
 pub struct zond_engine::model::tls::CipherSuite
 impl zond_engine::model::tls::CipherSuite
 pub const zond_engine::model::tls::CipherSuite::ALL: [Self; 85]
+pub const zond_engine::model::tls::CipherSuite::MOST_OFFERED_UNDER_ONE_VERSION: usize
 pub fn zond_engine::model::tls::CipherSuite::offered_under(zond_engine::model::tls::TlsVersion) -> impl core::iter::traits::iterator::Iterator<Item = Self>
 impl zond_engine::model::tls::CipherSuite
 pub const fn zond_engine::model::tls::CipherSuite::authentication(self) -> zond_engine::model::tls::Authentication

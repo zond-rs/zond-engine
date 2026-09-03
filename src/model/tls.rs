@@ -1413,6 +1413,38 @@ impl CipherSuite {
             .into_iter()
             .filter(move |suite| suite.is_offered_under(version))
     }
+
+    /// How many suites [`offered_under`](Self::offered_under) yields for the
+    /// version that has the most of them.
+    ///
+    /// The tight bound on how many questions an enumeration can put to one
+    /// endpoint under one version, and so the only defensible ceiling to stop
+    /// one at: a walk that narrows its offer by a suite per answer cannot ask
+    /// more times than the version had suites. Derived here rather than written
+    /// down, so a suite added to the registry raises it and no ceiling
+    /// elsewhere has to be remembered.
+    ///
+    /// TLS 1.2 is the version that decides it, carrying every suite that is not
+    /// 1.3-only.
+    pub const MOST_OFFERED_UNDER_ONE_VERSION: usize = {
+        let mut most = 0;
+        let mut version = 0;
+        while version < TlsVersion::ALL.len() {
+            let mut offered = 0;
+            let mut suite = 0;
+            while suite < Self::ALL.len() {
+                if Self::ALL[suite].is_offered_under(TlsVersion::ALL[version]) {
+                    offered += 1;
+                }
+                suite += 1;
+            }
+            if offered > most {
+                most = offered;
+            }
+            version += 1;
+        }
+        most
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -1665,16 +1697,27 @@ impl TlsSupport {
                 detection_id(),
                 format!("{version} is still accepted"),
                 severity,
-                // The server negotiated it. There is no inference between the
-                // evidence and the claim.
+                // The server selected terms under it, in answer to a hello
+                // offering it. There is no inference between the evidence and
+                // the claim.
                 Confidence::Certain,
                 DetectionClass::ActiveBenign,
             ) else {
                 continue;
             };
 
+            // What the scan actually observed, and not a word more. An
+            // enumeration offers a version and reads the ServerHello that comes
+            // back; it derives no key, sends no Finished and completes no
+            // handshake — see `protocols::tls`. The excerpt said "completed a
+            // negotiation", which claimed an exchange that never happens here,
+            // and claimed it most loudly for a HelloRetryRequest, whose whole
+            // meaning is that the server wants to start again. A report signed
+            // as evidence has to survive being read closely by somebody who
+            // disagrees with it.
             let mut finding = finding.with_excerpt(Excerpt::new(format!(
-                "the endpoint completed a {version} negotiation; {withdrawn_by} withdrew it"
+                "the endpoint answered a {version} hello by selecting a suite under it; \
+                 {withdrawn_by} withdrew it"
             )));
             if let Some(reference) = rfc_reference(withdrawn_by) {
                 finding = finding.with_reference(reference);

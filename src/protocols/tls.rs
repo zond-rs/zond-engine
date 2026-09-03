@@ -404,10 +404,27 @@ fn read_server_hello(body: &[u8]) -> Option<ServerResponse> {
     if *body.first()? != handshake_type::SERVER_HELLO {
         return None;
     }
-    // The three-byte handshake length is not read: the record bounds the walk
-    // already, and a length field disagreeing with it is a malformed message
-    // rather than a second opinion worth honouring.
+
+    // The handshake length, which says whether the whole message is here.
+    //
+    // It used to be skipped, on the reasoning that the record already bounds the
+    // walk. That holds for a record which arrived whole and fails for one that
+    // did not, and a peer decides which it sends: closing the connection part
+    // way through a ServerHello leaves a body containing the version, the
+    // random, the suite and no extensions, which every offset below then reads
+    // successfully. A truncated TLS 1.3 hello was therefore reported as TLS 1.2,
+    // because `supported_versions` had not arrived and the legacy field RFC 8446
+    // §4.1.2 freezes at `0x0303` was taken at face value — the single reading
+    // this module's own documentation exists to prevent.
+    //
+    // `<=` rather than `==`: RFC 8446 §5.1 lets a sender coalesce several
+    // handshake messages into one record, so bytes beyond this message are
+    // somebody else's and not a disagreement.
+    let declared = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]) as usize;
     let after_header = body.get(4..)?;
+    if declared > after_header.len() {
+        return None;
+    }
 
     let legacy_version = u16::from_be_bytes([*after_header.first()?, *after_header.get(1)?]);
     let random: &[u8; 32] = after_header.get(2..34)?.try_into().ok()?;
@@ -888,5 +905,195 @@ mod tests {
             record.extend_from_slice(&body);
             let _ = read_response(&record);
         }
+    }
+
+    // ── Reading a stranger's bytes ───────────────────────────────────────────
+
+    /// **The truncation property**, the one `wire/ethernet_frame` holds for
+    /// frames: reading more bytes never changes what a shorter read already
+    /// reported. A reader that satisfies it cannot be walked off the end of a
+    /// short buffer, and cannot be made to answer differently by a peer that
+    /// dribbles a record out in pieces.
+    ///
+    /// Held here across every prefix of a well-formed ServerHello. The record
+    /// is only whole at the last prefix, so every earlier one must yield
+    /// `None` — never a `Hello` assembled out of bytes that had not arrived.
+    #[test]
+    fn a_prefix_of_a_record_never_reads_as_more_than_the_whole_does() {
+        let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
+        let record = server_hello(0x0303, 0x1301, [0x5A; 32], Some(&extensions));
+        let whole = read_response(&record);
+        assert!(
+            whole.is_some(),
+            "the fixture has to be readable to test this"
+        );
+
+        for cut in 0..record.len() {
+            let short = read_response(&record[..cut]);
+            assert!(
+                short.is_none() || short == whole,
+                "a {cut}-byte prefix read as {short:?}, where the whole record reads as {whole:?}"
+            );
+        }
+    }
+
+    /// The same property for the alert path, which has its own early return.
+    #[test]
+    fn a_prefix_of_an_alert_never_invents_one() {
+        let alert = vec![content_type::ALERT, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28];
+        let whole = read_response(&alert);
+        assert_eq!(
+            whole,
+            Some(ServerResponse::Alert {
+                level: 2,
+                description: 40
+            })
+        );
+        for cut in 0..alert.len() {
+            assert!(read_response(&alert[..cut]).is_none(), "cut at {cut}");
+        }
+    }
+
+    /// Every length field in a ServerHello is a stranger's, and each one is a
+    /// separate opportunity to be walked past the end of the buffer. None of
+    /// them may panic, whatever it claims.
+    #[test]
+    fn no_length_field_can_walk_the_reader_off_the_end() {
+        let base = server_hello(
+            0x0303,
+            0xC02F,
+            [0u8; 32],
+            Some(&[0x00, 0x2B, 0x00, 0x02, 0x03, 0x04]),
+        );
+
+        // Every byte of the message, set to every extreme a length field can
+        // take. Cheap, exhaustive over the positions, and it needs no oracle:
+        // the assertion is that the call returns at all.
+        for at in 0..base.len() {
+            for poison in [0x00u8, 0x01, 0x7F, 0x80, 0xFE, 0xFF] {
+                let mut bytes = base.clone();
+                bytes[at] = poison;
+                let _ = read_response(&bytes);
+                let _ = record_length(&bytes);
+            }
+        }
+    }
+
+    /// A record whose declared length runs past what arrived is read for what
+    /// arrived, and one whose declared length is past what TLS permits is
+    /// refused outright rather than waited for. Together these are what stop a
+    /// peer deciding how much this process buffers.
+    #[test]
+    fn a_lying_record_length_neither_panics_nor_is_believed() {
+        let mut record = server_hello(0x0303, 0xC02F, [0u8; 32], None);
+
+        // Claims far more than it carries.
+        record[3..5].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        assert_eq!(
+            record_length(&record),
+            None,
+            "a record past MAX_RECORD_LEN is refused rather than buffered toward"
+        );
+        // And is still read for the bytes that are really there.
+        assert!(read_response(&record).is_some());
+
+        // Claims fewer bytes than the ServerHello needs, so the walk runs out.
+        record[3..5].copy_from_slice(&8u16.to_be_bytes());
+        assert_eq!(read_response(&record), None);
+    }
+
+    /// An extension block whose entries claim more than the block holds ends the
+    /// search rather than reading past it, and the reader still answers from the
+    /// legacy version field.
+    #[test]
+    fn an_overlong_extension_does_not_escape_its_block() {
+        // One extension declaring 0xFFFF bytes of value and carrying none.
+        let extensions = [0x00, 0x2B, 0xFF, 0xFF];
+        let record = server_hello(0x0303, 0xC02F, [0u8; 32], Some(&extensions));
+
+        assert_eq!(
+            read_response(&record),
+            Some(ServerResponse::Hello {
+                version: Some(TlsVersion::Tls12),
+                suite: 0xC02F,
+                retry: false,
+            }),
+            "the block is bounded and the legacy field answers"
+        );
+    }
+
+    /// A session id is a stranger's length too, and the largest one shifts the
+    /// suite past the end of every real message.
+    #[test]
+    fn a_session_id_longer_than_the_message_is_refused() {
+        let mut body = vec![handshake_type::SERVER_HELLO, 0, 0, 0];
+        body.extend_from_slice(&0x0303u16.to_be_bytes());
+        body.extend_from_slice(&[0u8; 32]);
+        body.push(255); // claims 255 bytes of session id
+        body.extend_from_slice(&0xC02Fu16.to_be_bytes());
+        body.push(0);
+        let length = body.len() - 4;
+        body[1..4].copy_from_slice(&three_byte_len(length));
+
+        let mut record = vec![content_type::HANDSHAKE, 0x03, 0x03];
+        record.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        record.extend_from_slice(&body);
+
+        assert_eq!(read_response(&record), None);
+    }
+
+    /// **The defect the handshake length now catches**, named so it stays
+    /// caught.
+    ///
+    /// A TLS 1.3 ServerHello cut off before its `supported_versions` extension
+    /// leaves a body that reads perfectly well and says `0x0303` in the legacy
+    /// field. Answering from that field reports a 1.3 server as 1.2 — which is
+    /// the exact misreading this module was built to prevent, arriving by the
+    /// one route the design did not cover: a peer that stops sending.
+    #[test]
+    fn a_truncated_tls13_hello_is_refused_rather_than_read_as_tls12() {
+        let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
+        let record = server_hello(0x0303, 0x1301, [0x5A; 32], Some(&extensions));
+
+        // Everything up to but not including the extension block: version,
+        // random, empty session id, suite, compression.
+        let short = RECORD_HEADER_LEN + 4 + 2 + 32 + 1 + 2 + 1;
+        assert!(short < record.len());
+
+        assert_eq!(
+            read_response(&record[..short]),
+            None,
+            "a hello whose extensions have not arrived settles nothing"
+        );
+        assert!(matches!(
+            read_response(&record),
+            Some(ServerResponse::Hello {
+                version: Some(TlsVersion::Tls13),
+                ..
+            })
+        ));
+    }
+
+    /// Several handshake messages in one record is legal (RFC 8446 §5.1), so
+    /// bytes past this message are not a disagreement with its length.
+    #[test]
+    fn a_coalesced_record_is_read_for_its_first_message() {
+        let mut record = server_hello(0x0303, 0xC02F, [0u8; 32], None);
+        let body_len = record.len() - RECORD_HEADER_LEN;
+
+        // Append a second handshake message and widen the record to cover it.
+        let trailer = [0x0Bu8, 0x00, 0x00, 0x03, 0xAA, 0xBB, 0xCC];
+        record.extend_from_slice(&trailer);
+        let widened = (body_len + trailer.len()) as u16;
+        record[3..5].copy_from_slice(&widened.to_be_bytes());
+
+        assert_eq!(
+            read_response(&record),
+            Some(ServerResponse::Hello {
+                version: Some(TlsVersion::Tls12),
+                suite: 0xC02F,
+                retry: false,
+            })
+        );
     }
 }
