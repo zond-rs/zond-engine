@@ -28,8 +28,15 @@
 //! only through the verbs the host injects, so the same fact holds as for a flow:
 //! a detection's power is what it was handed, and safety, metering and
 //! replay all follow from it rather than being bolted on.
+//!
+//! ## Somebody else's detections
+//!
+//! A sandbox nobody can put a stranger's detection into buys nothing, so
+//! [`bundle`] is the other half: a signed set of detections that a caller loads by
+//! naming the key they trust, held to that key before a byte of it is compiled.
 
 pub mod authoring;
+pub mod bundle;
 pub mod compute;
 pub mod corpus;
 pub mod flow;

@@ -503,6 +503,94 @@ impl core::marker::Unpin for zond_engine::detect::authoring::Severity
 impl core::marker::UnsafeUnpin for zond_engine::detect::authoring::Severity
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::authoring::Severity
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::authoring::Severity
+pub mod zond_engine::detect::bundle
+#[non_exhaustive] pub enum zond_engine::detect::bundle::BundleError
+pub zond_engine::detect::bundle::BundleError::Altered
+pub zond_engine::detect::bundle::BundleError::Altered::name: alloc::string::String
+pub zond_engine::detect::bundle::BundleError::Duplicate
+pub zond_engine::detect::bundle::BundleError::Duplicate::name: alloc::string::String
+pub zond_engine::detect::bundle::BundleError::Manifest(alloc::string::String)
+pub zond_engine::detect::bundle::BundleError::Missing
+pub zond_engine::detect::bundle::BundleError::Missing::name: alloc::string::String
+pub zond_engine::detect::bundle::BundleError::Signature(zond_engine::signature::SignatureError)
+pub zond_engine::detect::bundle::BundleError::TooMany
+pub zond_engine::detect::bundle::BundleError::TooMany::named: usize
+pub zond_engine::detect::bundle::BundleError::Unnamed
+pub zond_engine::detect::bundle::BundleError::Unnamed::name: alloc::string::String
+impl core::convert::From<zond_engine::signature::SignatureError> for zond_engine::detect::bundle::BundleError
+pub fn zond_engine::detect::bundle::BundleError::from(zond_engine::signature::SignatureError) -> Self
+impl core::error::Error for zond_engine::detect::bundle::BundleError
+impl core::fmt::Debug for zond_engine::detect::bundle::BundleError
+pub fn zond_engine::detect::bundle::BundleError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::detect::bundle::BundleError
+pub fn zond_engine::detect::bundle::BundleError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::bundle::BundleError
+impl core::marker::Send for zond_engine::detect::bundle::BundleError
+impl core::marker::Sync for zond_engine::detect::bundle::BundleError
+impl core::marker::Unpin for zond_engine::detect::bundle::BundleError
+impl core::marker::UnsafeUnpin for zond_engine::detect::bundle::BundleError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::bundle::BundleError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::bundle::BundleError
+#[non_exhaustive] pub enum zond_engine::detect::bundle::Tier
+pub zond_engine::detect::bundle::Tier::Compute
+pub zond_engine::detect::bundle::Tier::Flow
+pub zond_engine::detect::bundle::Tier::Host
+impl zond_engine::detect::bundle::Tier
+pub const fn zond_engine::detect::bundle::Tier::name(self) -> &'static str
+impl core::clone::Clone for zond_engine::detect::bundle::Tier
+pub fn zond_engine::detect::bundle::Tier::clone(&self) -> zond_engine::detect::bundle::Tier
+impl core::cmp::Eq for zond_engine::detect::bundle::Tier
+impl core::cmp::PartialEq for zond_engine::detect::bundle::Tier
+pub fn zond_engine::detect::bundle::Tier::eq(&self, &zond_engine::detect::bundle::Tier) -> bool
+impl core::fmt::Debug for zond_engine::detect::bundle::Tier
+pub fn zond_engine::detect::bundle::Tier::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::detect::bundle::Tier
+impl core::marker::StructuralPartialEq for zond_engine::detect::bundle::Tier
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::detect::bundle::Tier
+pub fn zond_engine::detect::bundle::Tier::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::detect::bundle::Tier
+impl core::marker::Send for zond_engine::detect::bundle::Tier
+impl core::marker::Sync for zond_engine::detect::bundle::Tier
+impl core::marker::Unpin for zond_engine::detect::bundle::Tier
+impl core::marker::UnsafeUnpin for zond_engine::detect::bundle::Tier
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::bundle::Tier
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::bundle::Tier
+pub struct zond_engine::detect::bundle::Bundle
+impl zond_engine::detect::bundle::Bundle
+pub fn zond_engine::detect::bundle::Bundle::entries(&self) -> &[zond_engine::detect::bundle::Entry]
+pub fn zond_engine::detect::bundle::Bundle::manifest(&str, &str, &alloc::collections::btree::map::BTreeMap<alloc::string::String, (zond_engine::detect::bundle::Tier, alloc::string::String)>) -> alloc::string::String
+pub fn zond_engine::detect::bundle::Bundle::name(&self) -> &str
+pub fn zond_engine::detect::bundle::Bundle::verified(&str, &zond_engine::signature::Signature, &[u8], alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>) -> core::result::Result<Self, zond_engine::detect::bundle::BundleError>
+pub fn zond_engine::detect::bundle::Bundle::version(&self) -> &str
+impl core::clone::Clone for zond_engine::detect::bundle::Bundle
+pub fn zond_engine::detect::bundle::Bundle::clone(&self) -> zond_engine::detect::bundle::Bundle
+impl core::fmt::Debug for zond_engine::detect::bundle::Bundle
+pub fn zond_engine::detect::bundle::Bundle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::bundle::Bundle
+impl core::marker::Send for zond_engine::detect::bundle::Bundle
+impl core::marker::Sync for zond_engine::detect::bundle::Bundle
+impl core::marker::Unpin for zond_engine::detect::bundle::Bundle
+impl core::marker::UnsafeUnpin for zond_engine::detect::bundle::Bundle
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::bundle::Bundle
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::bundle::Bundle
+pub struct zond_engine::detect::bundle::Entry
+impl zond_engine::detect::bundle::Entry
+pub fn zond_engine::detect::bundle::Entry::name(&self) -> &str
+pub fn zond_engine::detect::bundle::Entry::sha256(&self) -> &str
+pub fn zond_engine::detect::bundle::Entry::source(&self) -> &str
+pub fn zond_engine::detect::bundle::Entry::tier(&self) -> zond_engine::detect::bundle::Tier
+impl core::clone::Clone for zond_engine::detect::bundle::Entry
+pub fn zond_engine::detect::bundle::Entry::clone(&self) -> zond_engine::detect::bundle::Entry
+impl core::fmt::Debug for zond_engine::detect::bundle::Entry
+pub fn zond_engine::detect::bundle::Entry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::bundle::Entry
+impl core::marker::Send for zond_engine::detect::bundle::Entry
+impl core::marker::Sync for zond_engine::detect::bundle::Entry
+impl core::marker::Unpin for zond_engine::detect::bundle::Entry
+impl core::marker::UnsafeUnpin for zond_engine::detect::bundle::Entry
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::bundle::Entry
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::bundle::Entry
+pub const zond_engine::detect::bundle::MAX_DETECTIONS: usize
 pub mod zond_engine::detect::compute
 #[non_exhaustive] pub enum zond_engine::detect::compute::BudgetTrap
 pub zond_engine::detect::compute::BudgetTrap::Bytes
@@ -1119,6 +1207,7 @@ impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::Dete
 pub struct zond_engine::detect::corpus::DetectionsBuilder
 impl zond_engine::detect::corpus::DetectionsBuilder
 pub fn zond_engine::detect::corpus::DetectionsBuilder::build(self) -> zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::DetectionsBuilder::bundle(self, zond_engine::detect::bundle::Bundle) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::compute(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::flow(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::host(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
@@ -1504,6 +1593,7 @@ impl !core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::Dete
 pub struct zond_engine::detect::DetectionsBuilder
 impl zond_engine::detect::corpus::DetectionsBuilder
 pub fn zond_engine::detect::corpus::DetectionsBuilder::build(self) -> zond_engine::detect::corpus::Detections
+pub fn zond_engine::detect::corpus::DetectionsBuilder::bundle(self, zond_engine::detect::bundle::Bundle) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::compute(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::flow(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::host(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
@@ -3726,87 +3816,6 @@ pub fn zond_engine::export::schema::status_protocol_name(&zond_engine::model::ho
 pub fn zond_engine::export::schema::stop_reason_name(zond_engine::report::StopReason) -> &'static str
 pub fn zond_engine::export::schema::tcp_flags_name(u8) -> alloc::string::String
 pub fn zond_engine::export::schema::total_elapsed_us(&[zond_engine::export::schema::PhaseDto<'_>]) -> u64
-pub mod zond_engine::export::signature
-#[non_exhaustive] pub enum zond_engine::export::signature::SignatureError
-pub zond_engine::export::signature::SignatureError::Altered
-pub zond_engine::export::signature::SignatureError::Invalid
-pub zond_engine::export::signature::SignatureError::Io(core::io::error::Error)
-pub zond_engine::export::signature::SignatureError::Malformed(alloc::string::String)
-pub zond_engine::export::signature::SignatureError::UnknownAlgorithm
-pub zond_engine::export::signature::SignatureError::UnknownAlgorithm::implemented: &'static str
-pub zond_engine::export::signature::SignatureError::UnknownAlgorithm::named: alloc::string::String
-pub zond_engine::export::signature::SignatureError::UnreadableKey
-pub zond_engine::export::signature::SignatureError::UntrustedKey
-impl core::convert::From<core::io::error::Error> for zond_engine::export::signature::SignatureError
-pub fn zond_engine::export::signature::SignatureError::from(core::io::error::Error) -> Self
-impl core::error::Error for zond_engine::export::signature::SignatureError
-pub fn zond_engine::export::signature::SignatureError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
-impl core::fmt::Debug for zond_engine::export::signature::SignatureError
-pub fn zond_engine::export::signature::SignatureError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for zond_engine::export::signature::SignatureError
-pub fn zond_engine::export::signature::SignatureError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for zond_engine::export::signature::SignatureError
-impl core::marker::Send for zond_engine::export::signature::SignatureError
-impl core::marker::Sync for zond_engine::export::signature::SignatureError
-impl core::marker::Unpin for zond_engine::export::signature::SignatureError
-impl core::marker::UnsafeUnpin for zond_engine::export::signature::SignatureError
-impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::signature::SignatureError
-impl !core::panic::unwind_safe::UnwindSafe for zond_engine::export::signature::SignatureError
-pub struct zond_engine::export::signature::Signature
-impl zond_engine::export::signature::Signature
-pub fn zond_engine::export::signature::Signature::algorithm(&self) -> &str
-pub fn zond_engine::export::signature::Signature::digest(&self) -> &str
-pub fn zond_engine::export::signature::Signature::public_key(&self) -> &str
-pub fn zond_engine::export::signature::Signature::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<Self, zond_engine::export::signature::SignatureError>
-pub fn zond_engine::export::signature::Signature::to_document(&self) -> alloc::string::String
-pub fn zond_engine::export::signature::Signature::verify(&self, &[u8], &[u8]) -> core::result::Result<(), zond_engine::export::signature::SignatureError>
-impl core::clone::Clone for zond_engine::export::signature::Signature
-pub fn zond_engine::export::signature::Signature::clone(&self) -> zond_engine::export::signature::Signature
-impl core::cmp::Eq for zond_engine::export::signature::Signature
-impl core::cmp::PartialEq for zond_engine::export::signature::Signature
-pub fn zond_engine::export::signature::Signature::eq(&self, &zond_engine::export::signature::Signature) -> bool
-impl core::fmt::Debug for zond_engine::export::signature::Signature
-pub fn zond_engine::export::signature::Signature::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for zond_engine::export::signature::Signature
-impl core::marker::Freeze for zond_engine::export::signature::Signature
-impl core::marker::Send for zond_engine::export::signature::Signature
-impl core::marker::Sync for zond_engine::export::signature::Signature
-impl core::marker::Unpin for zond_engine::export::signature::Signature
-impl core::marker::UnsafeUnpin for zond_engine::export::signature::Signature
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::signature::Signature
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::signature::Signature
-pub struct zond_engine::export::signature::Signing<'a>
-impl<'a> zond_engine::export::signature::Signing<'a>
-pub fn zond_engine::export::signature::Signing<'a>::finish(self, &zond_engine::export::signature::SigningKey) -> zond_engine::export::signature::Signature
-pub fn zond_engine::export::signature::Signing<'a>::new(&'a mut dyn core::io::write::Write) -> Self
-impl core::fmt::Debug for zond_engine::export::signature::Signing<'_>
-pub fn zond_engine::export::signature::Signing<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::io::write::Write for zond_engine::export::signature::Signing<'_>
-pub fn zond_engine::export::signature::Signing<'_>::flush(&mut self) -> core::io::error::Result<()>
-pub fn zond_engine::export::signature::Signing<'_>::write(&mut self, &[u8]) -> core::io::error::Result<usize>
-impl<'a> core::marker::Freeze for zond_engine::export::signature::Signing<'a>
-impl<'a> !core::marker::Send for zond_engine::export::signature::Signing<'a>
-impl<'a> !core::marker::Sync for zond_engine::export::signature::Signing<'a>
-impl<'a> core::marker::Unpin for zond_engine::export::signature::Signing<'a>
-impl<'a> core::marker::UnsafeUnpin for zond_engine::export::signature::Signing<'a>
-impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::signature::Signing<'a>
-impl<'a> !core::panic::unwind_safe::UnwindSafe for zond_engine::export::signature::Signing<'a>
-pub struct zond_engine::export::signature::SigningKey
-impl zond_engine::export::signature::SigningKey
-pub fn zond_engine::export::signature::SigningKey::from_pkcs8(&[u8]) -> core::result::Result<Self, zond_engine::export::signature::SignatureError>
-pub fn zond_engine::export::signature::SigningKey::generate() -> core::result::Result<(alloc::vec::Vec<u8>, Self), zond_engine::export::signature::SignatureError>
-pub fn zond_engine::export::signature::SigningKey::public_key(&self) -> alloc::vec::Vec<u8>
-impl core::fmt::Debug for zond_engine::export::signature::SigningKey
-pub fn zond_engine::export::signature::SigningKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for zond_engine::export::signature::SigningKey
-impl core::marker::Send for zond_engine::export::signature::SigningKey
-impl core::marker::Sync for zond_engine::export::signature::SigningKey
-impl core::marker::Unpin for zond_engine::export::signature::SigningKey
-impl core::marker::UnsafeUnpin for zond_engine::export::signature::SigningKey
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::signature::SigningKey
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::signature::SigningKey
-pub const zond_engine::export::signature::ALGORITHM: &str
-pub const zond_engine::export::signature::DIGEST: &str
 #[non_exhaustive] pub enum zond_engine::export::ExportError
 pub zond_engine::export::ExportError::Io(core::io::error::Error)
 pub zond_engine::export::ExportError::Render
@@ -15225,6 +15234,109 @@ pub async fn zond_engine::scanner::listen(zond_engine::scanner::ListenScope, &zo
 pub async fn zond_engine::scanner::listen_with_journal(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::scanner::scan(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::detect::corpus::Detections) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::scanner::scan_with_journal(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::detect::corpus::Detections, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
+pub mod zond_engine::signature
+#[non_exhaustive] pub enum zond_engine::signature::SignatureError
+pub zond_engine::signature::SignatureError::Altered
+pub zond_engine::signature::SignatureError::Invalid
+pub zond_engine::signature::SignatureError::Io(core::io::error::Error)
+pub zond_engine::signature::SignatureError::Malformed(alloc::string::String)
+pub zond_engine::signature::SignatureError::UnknownAlgorithm
+pub zond_engine::signature::SignatureError::UnknownAlgorithm::implemented: &'static str
+pub zond_engine::signature::SignatureError::UnknownAlgorithm::named: alloc::string::String
+pub zond_engine::signature::SignatureError::UnreadableKey
+pub zond_engine::signature::SignatureError::UntrustedKey
+impl core::convert::From<core::io::error::Error> for zond_engine::signature::SignatureError
+pub fn zond_engine::signature::SignatureError::from(core::io::error::Error) -> Self
+impl core::convert::From<zond_engine::signature::SignatureError> for zond_engine::detect::bundle::BundleError
+pub fn zond_engine::detect::bundle::BundleError::from(zond_engine::signature::SignatureError) -> Self
+impl core::error::Error for zond_engine::signature::SignatureError
+pub fn zond_engine::signature::SignatureError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::signature::SignatureError
+pub fn zond_engine::signature::SignatureError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::signature::SignatureError
+pub fn zond_engine::signature::SignatureError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::signature::SignatureError
+impl core::marker::Send for zond_engine::signature::SignatureError
+impl core::marker::Sync for zond_engine::signature::SignatureError
+impl core::marker::Unpin for zond_engine::signature::SignatureError
+impl core::marker::UnsafeUnpin for zond_engine::signature::SignatureError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::signature::SignatureError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::signature::SignatureError
+pub struct zond_engine::signature::Domain(_)
+impl zond_engine::signature::Domain
+pub const zond_engine::signature::Domain::DETECTIONS: Self
+pub const zond_engine::signature::Domain::REPORT: Self
+impl core::clone::Clone for zond_engine::signature::Domain
+pub fn zond_engine::signature::Domain::clone(&self) -> zond_engine::signature::Domain
+impl core::cmp::Eq for zond_engine::signature::Domain
+impl core::cmp::PartialEq for zond_engine::signature::Domain
+pub fn zond_engine::signature::Domain::eq(&self, &zond_engine::signature::Domain) -> bool
+impl core::fmt::Debug for zond_engine::signature::Domain
+pub fn zond_engine::signature::Domain::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::signature::Domain
+impl core::marker::StructuralPartialEq for zond_engine::signature::Domain
+impl core::marker::Freeze for zond_engine::signature::Domain
+impl core::marker::Send for zond_engine::signature::Domain
+impl core::marker::Sync for zond_engine::signature::Domain
+impl core::marker::Unpin for zond_engine::signature::Domain
+impl core::marker::UnsafeUnpin for zond_engine::signature::Domain
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::signature::Domain
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::signature::Domain
+pub struct zond_engine::signature::Signature
+impl zond_engine::signature::Signature
+pub fn zond_engine::signature::Signature::algorithm(&self) -> &str
+pub fn zond_engine::signature::Signature::digest(&self) -> &str
+pub fn zond_engine::signature::Signature::public_key(&self) -> &str
+pub fn zond_engine::signature::Signature::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<Self, zond_engine::signature::SignatureError>
+pub fn zond_engine::signature::Signature::to_document(&self) -> alloc::string::String
+pub fn zond_engine::signature::Signature::verify(&self, &[u8], &[u8], zond_engine::signature::Domain) -> core::result::Result<(), zond_engine::signature::SignatureError>
+impl core::clone::Clone for zond_engine::signature::Signature
+pub fn zond_engine::signature::Signature::clone(&self) -> zond_engine::signature::Signature
+impl core::cmp::Eq for zond_engine::signature::Signature
+impl core::cmp::PartialEq for zond_engine::signature::Signature
+pub fn zond_engine::signature::Signature::eq(&self, &zond_engine::signature::Signature) -> bool
+impl core::fmt::Debug for zond_engine::signature::Signature
+pub fn zond_engine::signature::Signature::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::signature::Signature
+impl core::marker::Freeze for zond_engine::signature::Signature
+impl core::marker::Send for zond_engine::signature::Signature
+impl core::marker::Sync for zond_engine::signature::Signature
+impl core::marker::Unpin for zond_engine::signature::Signature
+impl core::marker::UnsafeUnpin for zond_engine::signature::Signature
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::signature::Signature
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::signature::Signature
+pub struct zond_engine::signature::Signing<'a>
+impl<'a> zond_engine::signature::Signing<'a>
+pub fn zond_engine::signature::Signing<'a>::finish(self, &zond_engine::signature::SigningKey, zond_engine::signature::Domain) -> zond_engine::signature::Signature
+pub fn zond_engine::signature::Signing<'a>::new(&'a mut dyn core::io::write::Write) -> Self
+impl core::fmt::Debug for zond_engine::signature::Signing<'_>
+pub fn zond_engine::signature::Signing<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::io::write::Write for zond_engine::signature::Signing<'_>
+pub fn zond_engine::signature::Signing<'_>::flush(&mut self) -> core::io::error::Result<()>
+pub fn zond_engine::signature::Signing<'_>::write(&mut self, &[u8]) -> core::io::error::Result<usize>
+impl<'a> core::marker::Freeze for zond_engine::signature::Signing<'a>
+impl<'a> !core::marker::Send for zond_engine::signature::Signing<'a>
+impl<'a> !core::marker::Sync for zond_engine::signature::Signing<'a>
+impl<'a> core::marker::Unpin for zond_engine::signature::Signing<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::signature::Signing<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::signature::Signing<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for zond_engine::signature::Signing<'a>
+pub struct zond_engine::signature::SigningKey
+impl zond_engine::signature::SigningKey
+pub fn zond_engine::signature::SigningKey::from_pkcs8(&[u8]) -> core::result::Result<Self, zond_engine::signature::SignatureError>
+pub fn zond_engine::signature::SigningKey::generate() -> core::result::Result<(alloc::vec::Vec<u8>, Self), zond_engine::signature::SignatureError>
+pub fn zond_engine::signature::SigningKey::public_key(&self) -> alloc::vec::Vec<u8>
+impl core::fmt::Debug for zond_engine::signature::SigningKey
+pub fn zond_engine::signature::SigningKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::signature::SigningKey
+impl core::marker::Send for zond_engine::signature::SigningKey
+impl core::marker::Sync for zond_engine::signature::SigningKey
+impl core::marker::Unpin for zond_engine::signature::SigningKey
+impl core::marker::UnsafeUnpin for zond_engine::signature::SigningKey
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::signature::SigningKey
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::signature::SigningKey
+pub const zond_engine::signature::ALGORITHM: &str
+pub const zond_engine::signature::DIGEST: &str
 pub mod zond_engine::system
 pub mod zond_engine::system::interface
 #[non_exhaustive] pub enum zond_engine::system::interface::Addressing

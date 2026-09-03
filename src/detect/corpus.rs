@@ -22,10 +22,20 @@
 //! no code at all. A caller's detection is held to the same gate and the same
 //! budgets as a shipped one, and it is validated as it is added, so the corpus a
 //! scan runs is never one the build would have refused.
+//!
+//! ## A caller's own, and somebody else's
+//!
+//! The three source calls take bytes the caller holds and is choosing to run,
+//! which is their own act. [`bundle`](DetectionsBuilder::bundle) is the other
+//! door, and it takes a [`Bundle`] rather than bytes: the
+//! only way to hold one is to have checked a signature against a key, so a
+//! stranger's detections cannot enter this corpus without somebody having named
+//! whose they are. There is no setting that changes that in either direction.
 
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
+use super::bundle::{Bundle, Tier};
 use super::compute::db::{ComputeDb, compile_compute_source, load_embedded};
 use super::compute::{LoadedDetection, RhaiModule, RhaiRuntime};
 use super::flow::db::{CompiledFlow, FlowDb, embedded_flows};
@@ -217,6 +227,35 @@ impl DetectionsBuilder {
         Ok(self)
     }
 
+    /// Adds every detection a verified [`Bundle`] carries.
+    ///
+    /// The tier comes from the bundle's manifest, which is the document the
+    /// signature covers, so an attacker who served the sources cannot have a
+    /// compute module compiled as a flow or a flow run with a module's
+    /// capabilities. The `content_hash` each detection is stamped with is the one
+    /// the manifest recorded and the signature covered, so a finding names bytes
+    /// somebody signed rather than bytes that happened to be on disk.
+    ///
+    /// Each source is still validated and compiled exactly as one a caller wrote
+    /// by hand: a signature says who published a detection, never that it is
+    /// well-formed, and this refuses an ill-formed one from a trusted publisher as
+    /// readily as from anybody.
+    ///
+    /// # Errors
+    ///
+    /// The same objections the three calls above raise, for the first source in
+    /// the bundle that draws one. A bundle is added whole or not at all.
+    pub fn bundle(mut self, bundle: Bundle) -> Result<Self, DetectionError> {
+        for entry in bundle.entries() {
+            self = match entry.tier() {
+                Tier::Flow => self.flow(entry.source(), entry.sha256())?,
+                Tier::Compute => self.compute(entry.source(), entry.sha256())?,
+                Tier::Host => self.host(entry.source(), entry.sha256())?,
+            };
+        }
+        Ok(self)
+    }
+
     /// Assembles the corpus. The shipped detections come first unless
     /// [`without_embedded`](Self::without_embedded) was set; the caller's follow.
     #[must_use]
@@ -274,6 +313,110 @@ mod tests {
         severity = "low"
         summary  = "the corpus test fired"
     "#;
+
+    /// A verified bundle reaches the corpus and its detections run, stamped with
+    /// the hash the manifest recorded rather than one the loader computed.
+    ///
+    /// The provenance is the point: a finding names the exact bytes somebody
+    /// signed, so a reader who doubts it can go and check that signature against
+    /// those bytes.
+    #[test]
+    fn a_verified_bundle_reaches_the_corpus_stamped_with_the_hash_that_was_signed() {
+        use crate::detect::bundle::{Bundle, Tier};
+        use crate::signature::{Domain, Signing, SigningKey};
+        use std::collections::BTreeMap;
+        use std::io::Write;
+
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "sound.toml".to_string(),
+            (Tier::Flow, SOUND_FLOW.to_string()),
+        );
+
+        let manifest = Bundle::manifest("acme", "1", &sources);
+        let (_, key) = SigningKey::generate().expect("a key");
+        let mut sink = Vec::new();
+        let mut writer = Signing::new(&mut sink);
+        writer
+            .write_all(manifest.as_bytes())
+            .expect("the manifest is written");
+        let signature = writer.finish(&key, Domain::DETECTIONS);
+
+        let plain: BTreeMap<String, String> = sources
+            .iter()
+            .map(|(name, (_, source))| (name.clone(), source.clone()))
+            .collect();
+        let bundle = Bundle::verified(&manifest, &signature, &key.public_key(), plain)
+            .expect("the bundle verifies");
+        let signed_hash = bundle.entries()[0].sha256().to_string();
+
+        let corpus = Detections::builder()
+            .without_embedded()
+            .bundle(bundle)
+            .expect("a sound bundle is added")
+            .build();
+
+        let hashes: Vec<&str> = corpus
+            .flows()
+            .flows()
+            .map(|flow| flow.content_hash())
+            .collect();
+        assert_eq!(hashes, vec![signed_hash.as_str()]);
+    }
+
+    /// A signature says who published a detection and never that it is
+    /// well-formed. A bundle from a key the caller trusts is held to exactly the
+    /// validation a hand-written source is.
+    #[test]
+    fn a_bundle_from_a_trusted_key_is_still_validated() {
+        use crate::detect::bundle::{Bundle, Tier};
+        use crate::signature::{Domain, Signing, SigningKey};
+        use std::collections::BTreeMap;
+        use std::io::Write;
+
+        // Structurally sound TOML that declares no finding, which the validator
+        // refuses: a flow that can conclude nothing is dead code in a scan.
+        let dead = r#"
+            [detection]
+            id = "x"
+            version = "1.0.0"
+            title = "x"
+            [detection.when]
+            [detection.capabilities]
+            class = "passive"
+            [[step]]
+            send = "x"
+            expect = "y"
+            on_no_match = "continue"
+        "#;
+
+        let mut sources = BTreeMap::new();
+        sources.insert("dead.toml".to_string(), (Tier::Flow, dead.to_string()));
+
+        let manifest = Bundle::manifest("acme", "1", &sources);
+        let (_, key) = SigningKey::generate().expect("a key");
+        let mut sink = Vec::new();
+        let mut writer = Signing::new(&mut sink);
+        writer
+            .write_all(manifest.as_bytes())
+            .expect("the manifest is written");
+        let signature = writer.finish(&key, Domain::DETECTIONS);
+
+        let plain: BTreeMap<String, String> = sources
+            .iter()
+            .map(|(name, (_, source))| (name.clone(), source.clone()))
+            .collect();
+        let bundle = Bundle::verified(&manifest, &signature, &key.public_key(), plain)
+            .expect("the signature is good, which is a separate question");
+
+        assert!(
+            matches!(
+                Detections::builder().bundle(bundle),
+                Err(DetectionError::Flow(_))
+            ),
+            "a signed detection skipped the validation an unsigned one gets"
+        );
+    }
 
     #[test]
     fn the_builder_rejects_an_ill_formed_flow() {

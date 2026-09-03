@@ -79,6 +79,13 @@
   anything, so it attests to the document and never to the honesty of the run.
   Keys are the caller's, and verification takes the trusted public key as an
   argument rather than reading one out of the file being checked.
+* **Detections from somebody else, safely:** a detection reaches the network only
+  through the verbs its class grants, which is a sandbox nmap cannot retrofit onto
+  an NSE script. That is worth nothing unless a stranger's detection can go into
+  it, so a published set is signed as one manifest naming every detection and the
+  hash of its source — binding the membership, not just the bytes, so an attacker
+  serving the files cannot drop the one that would have found them. The only way
+  to load one is to name the key you trust; there is no flag to leave unset.
 * **Reports in and out:** export a finished scan as JSON, JSONL, CSV, a
   self-contained HTML page, or nmap-compatible XML; read targets back from a list,
   CSV, this engine's own JSON, or an nmap XML file somebody else produced.

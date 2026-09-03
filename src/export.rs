@@ -72,7 +72,6 @@
 pub mod diff;
 pub mod redact;
 pub mod schema;
-pub mod signature;
 
 #[cfg(any(
     feature = "export-json",

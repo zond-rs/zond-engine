@@ -235,6 +235,11 @@
 //!   requires compiling the code that writes it.
 //! - [`export`], [`import`]: the file formats themselves, which sit above the
 //!   report because they describe it and it does not know they exist.
+//! - [`signature`](mod@crate::signature): detached Ed25519 over a document, for
+//!   the two things here worth signing. It sits beside the formats rather than
+//!   inside one, because its two callers point in opposite directions: an
+//!   [`export`] signs bytes on the way out, and [`detect`] checks a signature
+//!   over bytes on the way in before it compiles them.
 //!
 //! # Platforms
 //!
@@ -275,6 +280,7 @@ pub mod record;
 pub mod report;
 pub mod resolve;
 pub mod scanner;
+pub mod signature;
 pub mod system;
 pub mod transport;
 pub(crate) mod version;

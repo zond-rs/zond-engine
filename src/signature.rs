@@ -6,20 +6,31 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Signing an exported report
+//! # Signing a document, and checking one
 //!
-//! A report is evidence in a way most scanner output is not: it records the
+//! Two things in this crate are worth signing, and they are signed the same way.
+//!
+//! A **report** is evidence in a way most scanner output is not: it records the
 //! ranges a scan was forbidden and how many addresses they withheld, what each
 //! phase covered, and which hosts it ran out of time on. What it cannot do on its
 //! own is survive being handed to somebody. An ASV report, a SOC 2 artifact and a
 //! client-facing pentest appendix are all, today, a file anyone can edit.
 //!
-//! This signs one. The caller supplies a key, the document is written through
+//! A **detection bundle** is the other direction: bytes arriving from a stranger
+//! that this process is about to compile and run. See
+//! [`detect::bundle`](crate::detect::bundle), which is what makes a signature
+//! there load-bearing rather than decorative.
+//!
+//! Either way the caller supplies a key, the document is written through
 //! [`Signing`], and what comes back is a [`Signature`] to keep beside it.
+//!
+//! Not to be confused with the signatures [`fingerprint`](crate::fingerprint)
+//! deals in, which is the older sense of the word: the match rules that name a
+//! service. Nothing here is about those.
 //!
 //! ```no_run
 //! use zond_engine::export::{ExportFormat, ExportOptions};
-//! use zond_engine::export::signature::{SigningKey, Signing};
+//! use zond_engine::signature::{Domain, SigningKey, Signing};
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! # let report = zond_engine::report::ScanReport::recorded("0.0.0", vec![], []);
 //! # let pkcs8 = std::fs::read("signing-key.pk8")?;
@@ -30,7 +41,7 @@
 //! ExportFormat::Json
 //!     .exporter(ExportOptions::new())
 //!     .export(&report, &mut writer)?;
-//! let signature = writer.finish(&key);
+//! let signature = writer.finish(&key, Domain::REPORT);
 //!
 //! std::fs::write("scan.json.sig", signature.to_document())?;
 //! # Ok(())
@@ -81,11 +92,27 @@ pub const ALGORITHM: &str = "ed25519";
 
 /// What the signed bytes are a signature *of*.
 ///
-/// Prefixed to the digest before signing, so a signature over a zond report
-/// cannot be presented as a signature over anything else the same key ever
-/// signed. Domain separation costs one constant and closes a class of attack
-/// that is otherwise entirely outside this crate's control.
-const CONTEXT: &[u8] = b"zond.report.signature.v1\0";
+/// Prefixed to the digest before signing, so a signature over one kind of
+/// document cannot be presented as a signature over another kind the same key
+/// ever signed. Domain separation costs one constant per kind and closes a class
+/// of attack that is otherwise entirely outside this crate's control.
+///
+/// A caller states the domain at both ends, the way they state the trusted key,
+/// and for the same reason: a verifier that read the domain out of the document
+/// it is checking could be talked into checking the wrong one. There is no way
+/// to construct a domain this crate did not define, so the only mistake
+/// available is naming the wrong one of the two, which the types below make
+/// visible at the call site rather than silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Domain(&'static [u8]);
+
+impl Domain {
+    /// An exported [`ScanReport`](crate::report::ScanReport), in any format.
+    pub const REPORT: Self = Self(b"zond.report.signature.v1\0");
+
+    /// A [detection bundle](crate::detect::bundle)'s manifest.
+    pub const DETECTIONS: Self = Self(b"zond.detections.signature.v1\0");
+}
 
 /// The digest the signature covers, named in the document beside it.
 pub const DIGEST: &str = "sha256";
@@ -243,7 +270,12 @@ impl Signature {
     /// was signed, [`SignatureError::Invalid`] where the signature does not
     /// verify, and [`SignatureError::UnknownAlgorithm`] for a document naming
     /// something this build does not implement.
-    pub fn verify(&self, document: &[u8], trusted_key: &[u8]) -> Result<(), SignatureError> {
+    pub fn verify(
+        &self,
+        document: &[u8],
+        trusted_key: &[u8],
+        domain: Domain,
+    ) -> Result<(), SignatureError> {
         if self.algorithm != ALGORITHM {
             return Err(SignatureError::UnknownAlgorithm {
                 named: self.algorithm.clone(),
@@ -277,7 +309,7 @@ impl Signature {
             .ok_or_else(|| SignatureError::Malformed("the signature is not hex".to_string()))?;
 
         UnparsedPublicKey::new(&ED25519, trusted_key)
-            .verify(&signed_payload(&digest), &signature)
+            .verify(&signed_payload(domain, &digest), &signature)
             .map_err(|_| SignatureError::Invalid)
     }
 
@@ -354,9 +386,9 @@ impl<'a> Signing<'a> {
     ///
     /// Consumes the wrapper, so a document cannot gain bytes after the signature
     /// over it was produced.
-    pub fn finish(self, key: &SigningKey) -> Signature {
+    pub fn finish(self, key: &SigningKey, domain: Domain) -> Signature {
         let digest = self.digest.finish().as_ref().to_vec();
-        let signature = key.pair.sign(&signed_payload(&digest));
+        let signature = key.pair.sign(&signed_payload(domain, &digest));
 
         Signature {
             algorithm: ALGORITHM.to_string(),
@@ -394,9 +426,9 @@ impl std::fmt::Debug for Signing<'_> {
 /// Never the document itself, which may be gigabytes, and never the digest
 /// alone, which a signature could then be lifted from and presented as a
 /// signature over something else this key signed.
-fn signed_payload(digest: &[u8]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(CONTEXT.len() + digest.len());
-    payload.extend_from_slice(CONTEXT);
+fn signed_payload(domain: Domain, digest: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(domain.0.len() + digest.len());
+    payload.extend_from_slice(domain.0);
     payload.extend_from_slice(digest);
     payload
 }
@@ -452,7 +484,7 @@ mod tests {
         let mut sink = Vec::new();
         let mut writer = Signing::new(&mut sink);
         writer.write_all(document).expect("writes");
-        let signature = writer.finish(&key);
+        let signature = writer.finish(&key, Domain::REPORT);
         (key, signature)
     }
 
@@ -464,7 +496,11 @@ mod tests {
         let (key, signature) = signed(document);
 
         assert_eq!(signature.algorithm(), ALGORITHM);
-        assert!(signature.verify(document, &key.public_key()).is_ok());
+        assert!(
+            signature
+                .verify(document, &key.public_key(), Domain::REPORT)
+                .is_ok()
+        );
     }
 
     /// One byte changed and the document no longer matches what was signed.
@@ -479,7 +515,7 @@ mod tests {
         altered[last] = b'9';
 
         assert!(matches!(
-            signature.verify(&altered, &key.public_key()),
+            signature.verify(&altered, &key.public_key(), Domain::REPORT),
             Err(SignatureError::Altered)
         ));
     }
@@ -502,7 +538,7 @@ mod tests {
         let (attacker, forged_signature) = signed(&forged);
         assert!(
             forged_signature
-                .verify(&forged, &attacker.public_key())
+                .verify(&forged, &attacker.public_key(), Domain::REPORT)
                 .is_ok(),
             "the forgery is internally consistent, which is the point"
         );
@@ -510,9 +546,44 @@ mod tests {
         // And it is refused the moment it is held to the key the recipient
         // actually trusts.
         assert!(matches!(
-            forged_signature.verify(&forged, &trusted.public_key()),
+            forged_signature.verify(&forged, &trusted.public_key(), Domain::REPORT),
             Err(SignatureError::UntrustedKey)
         ));
+    }
+
+    /// The attack domain separation exists to stop, now that there are two
+    /// domains to separate.
+    ///
+    /// A publisher who signs reports for a client and detection bundles for the
+    /// same client, with one key, must not have a signature over one presented as
+    /// a signature over the other. The bytes could even be the same bytes: a
+    /// detection manifest is a TOML document and so is nothing else here, but the
+    /// point is that the key holder never has to think about it.
+    #[test]
+    fn a_signature_in_one_domain_does_not_verify_in_the_other() {
+        let document = b"the same bytes either way".to_vec();
+
+        let (_, key) = SigningKey::generate().expect("a key");
+        let mut sink = Vec::new();
+        let mut writer = Signing::new(&mut sink);
+        writer
+            .write_all(&document)
+            .expect("the document is written");
+        let over_a_report = writer.finish(&key, Domain::REPORT);
+
+        assert!(
+            over_a_report
+                .verify(&document, &key.public_key(), Domain::REPORT)
+                .is_ok(),
+            "the signature is good in its own domain"
+        );
+        assert!(
+            matches!(
+                over_a_report.verify(&document, &key.public_key(), Domain::DETECTIONS),
+                Err(SignatureError::Invalid)
+            ),
+            "a report's signature was accepted as a bundle's"
+        );
     }
 
     /// A signature over one document does not verify another, even under the
@@ -521,7 +592,7 @@ mod tests {
     fn a_signature_does_not_carry_across_documents() {
         let (key, signature) = signed(b"the first report");
         assert!(matches!(
-            signature.verify(b"the second report", &key.public_key()),
+            signature.verify(b"the second report", &key.public_key(), Domain::REPORT),
             Err(SignatureError::Altered)
         ));
     }
@@ -537,7 +608,10 @@ mod tests {
         let read = Signature::read(&mut text.as_bytes()).expect("reads back");
 
         assert_eq!(read, signature);
-        assert!(read.verify(&document, &key.public_key()).is_ok());
+        assert!(
+            read.verify(&document, &key.public_key(), Domain::REPORT)
+                .is_ok()
+        );
     }
 
     /// A signature whose recorded digest was edited to match a doctored document
@@ -554,7 +628,7 @@ mod tests {
         // The digest now matches the document, and the signature covers the old
         // one, so this is where it comes apart.
         assert!(matches!(
-            forged.verify(&doctored, &key.public_key()),
+            forged.verify(&doctored, &key.public_key(), Domain::REPORT),
             Err(SignatureError::Invalid)
         ));
     }
@@ -568,14 +642,14 @@ mod tests {
         let mut downgraded = signature.clone();
         downgraded.algorithm = "none".to_string();
         assert!(matches!(
-            downgraded.verify(b"a report", &key.public_key()),
+            downgraded.verify(b"a report", &key.public_key(), Domain::REPORT),
             Err(SignatureError::UnknownAlgorithm { .. })
         ));
 
         let mut weakened = signature.clone();
         weakened.digest_algorithm = "md5".to_string();
         assert!(matches!(
-            weakened.verify(b"a report", &key.public_key()),
+            weakened.verify(b"a report", &key.public_key(), Domain::REPORT),
             Err(SignatureError::UnknownAlgorithm { .. })
         ));
     }
@@ -607,8 +681,12 @@ mod tests {
             // `write_all` loops on the short writes, which is what puts the
             // whole document through in pieces.
             writer.write_all(&document).expect("writes");
-            let signature = writer.finish(&key);
-            assert!(signature.verify(&document, &key.public_key()).is_ok());
+            let signature = writer.finish(&key, Domain::REPORT);
+            assert!(
+                signature
+                    .verify(&document, &key.public_key(), Domain::REPORT)
+                    .is_ok()
+            );
         }
         assert_eq!(trickle.0, document, "every byte reached the inner writer");
     }
@@ -634,7 +712,7 @@ mod tests {
                 .exporter(ExportOptions::new())
                 .export(&report, &mut writer)
                 .expect("the report exports");
-            writer.finish(&key)
+            writer.finish(&key, Domain::REPORT)
         };
 
         assert!(!document.is_empty(), "something was written");
@@ -643,12 +721,20 @@ mod tests {
             encode_hex(&sha256(&document)),
             "the signature covers the bytes that were written and no others"
         );
-        assert!(signature.verify(&document, &key.public_key()).is_ok());
+        assert!(
+            signature
+                .verify(&document, &key.public_key(), Domain::REPORT)
+                .is_ok()
+        );
 
         // And the document beside it verifies the same file, which is the pair
         // a recipient is handed.
         let sidecar = Signature::read(&mut signature.to_document().as_bytes()).expect("reads");
-        assert!(sidecar.verify(&document, &key.public_key()).is_ok());
+        assert!(
+            sidecar
+                .verify(&document, &key.public_key(), Domain::REPORT)
+                .is_ok()
+        );
 
         // A report re-exported with a different policy is a different document,
         // and the signature must not follow it across.
@@ -658,7 +744,7 @@ mod tests {
             .export(&report, &mut redacted)
             .expect("the report exports");
         assert!(matches!(
-            signature.verify(&redacted, &key.public_key()),
+            signature.verify(&redacted, &key.public_key(), Domain::REPORT),
             Err(SignatureError::Altered)
         ));
     }
@@ -685,13 +771,16 @@ mod tests {
         let mut broken = signature.clone();
         broken.public_key = "not hex".to_string();
         assert!(matches!(
-            broken.verify(b"a report", &key.public_key()),
+            broken.verify(b"a report", &key.public_key(), Domain::REPORT),
             Err(SignatureError::Malformed(_))
         ));
 
         let mut odd = signature.clone();
         odd.signature = "abc".to_string();
-        assert!(odd.verify(b"a report", &key.public_key()).is_err());
+        assert!(
+            odd.verify(b"a report", &key.public_key(), Domain::REPORT)
+                .is_err()
+        );
     }
 
     /// Bytes that are not a key are refused, and the error says no more than
