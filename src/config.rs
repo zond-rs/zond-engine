@@ -1012,6 +1012,38 @@ pub struct ZondConfig {
     /// under, which is why it is a separate pass rather than a scan option.
     pub characterise: bool,
 
+    /// Whether to establish what each TLS port *accepts*, rather than only what
+    /// one handshake negotiated.
+    ///
+    /// Off by default, and off because of what it costs rather than what it
+    /// finds. Service detection completes one handshake per TLS port and records
+    /// the version and suite that came out of it. This offers the endpoint each
+    /// version in turn and narrows the cipher list until it stops answering, so
+    /// the report says what the endpoint *would* negotiate: the question every
+    /// PCI scan, ASV report and internal audit actually asks, and the one a
+    /// single handshake cannot answer.
+    ///
+    /// The cost is connections. A current server accepting a handful of suites
+    /// costs a dozen; one accepting everything under three versions costs a few
+    /// dozen, and that is the configuration this exists to find. Each is a bare
+    /// TCP connection carrying one ClientHello, torn down before any handshake
+    /// completes, so no session is ever established and no application sees one.
+    /// A target's connection log sees every one of them.
+    ///
+    /// A pass of its own, run after service detection, since what it needs first
+    /// is the list of ports that speak TLS at all. Bounded per host by
+    /// [`host_timeout`](Self::host_timeout), which is worth setting alongside
+    /// this on anything unattended.
+    ///
+    /// ```
+    /// # use zond_engine::ZondConfig;
+    /// # use std::time::Duration;
+    /// let mut cfg = ZondConfig::default();
+    /// cfg.tls_enumeration = true;
+    /// cfg.host_timeout = Some(Duration::from_secs(120));
+    /// ```
+    pub tls_enumeration: bool,
+
     /// Scan TCP ports through a third-party zombie rather than by addressing the
     /// target directly, when set. See [`IdleScan`].
     ///
@@ -1250,6 +1282,7 @@ impl ZondConfig {
             assume_up: _,
             traceroute: _,
             characterise: _,
+            tls_enumeration: _,
             idle_scan: _,
             exclusions: _,
             redact: _,

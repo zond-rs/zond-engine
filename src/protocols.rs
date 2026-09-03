@@ -107,6 +107,7 @@ pub mod ndp;
 pub mod sctp;
 pub mod sizes;
 pub mod tcp;
+pub mod tls;
 pub mod udp;
 
 // Reading a string a stranger wrote, shared by the three announcement protocols

@@ -39,6 +39,7 @@ use crate::model::mac::MacAddr;
 use crate::model::port::{
     CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
 };
+use crate::model::tls::{CipherSuite, TlsSupport, TlsVersion, VersionSupport};
 use crate::protocols::tcp::flags;
 use crate::report::ScannerKind;
 use crate::report::WindowSummary;
@@ -143,9 +144,41 @@ fn https_port() -> Port {
         .with_cipher_suite("TLS_AES_256_GCM_SHA384")
         .with_alpn("h2")
         .with_alpn("http/1.1")
-        .with_certificate(certificate);
+        .with_certificate(certificate)
+        .with_support(accepted());
 
     Port::new(443, Protocol::Tcp, PortState::Open).with_security(security)
+}
+
+/// What an enumeration found this endpoint accepts.
+///
+/// The shape the document has to be able to say, rather than a plausible
+/// server: a withdrawn version beside a current one, a suite with nothing wrong
+/// with it beside one that is simply broken, and a number the engine could not
+/// name. A fixture that only held a well-configured server would leave every
+/// interesting field of the block untested.
+fn accepted() -> TlsSupport {
+    let suite = |code: u16| CipherSuite::from_code(code).expect("a suite in the registry");
+
+    TlsSupport::new()
+        .accepting(VersionSupport::new(
+            TlsVersion::Tls10,
+            // Insecure and weak together, so the grading reaches the document.
+            vec![suite(0x000A), suite(0x002F)],
+            Vec::new(),
+        ))
+        .accepting(VersionSupport::new(
+            TlsVersion::Tls12,
+            vec![suite(0xC030), suite(0x009C)],
+            // A suite this build does not carry, which a reader still has to be
+            // told about.
+            vec![0xFF01],
+        ))
+        .accepting(VersionSupport::new(
+            TlsVersion::Tls13,
+            vec![suite(0x1302)],
+            Vec::new(),
+        ))
 }
 
 /// A host that answered nothing but is known to be there.

@@ -1019,6 +1019,10 @@ fn spawn_scan(
 
         run_port_phase(target_map, live, &ctx, caps, &cfg, settled).await;
 
+        // Straight after the ports, because what it needs is the list of ports a
+        // handshake completed against and the service pass is what produces it.
+        orchestrator::run_tls_enumeration(&ctx, &cfg).await;
+
         // Ordered by what each pass leaves the next. The series probe takes
         // every host with a TCP answer, so the echo probe is left with the
         // machines that answered nothing at all.

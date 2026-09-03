@@ -52,6 +52,7 @@ pub mod parse;
 pub mod port;
 pub mod target;
 pub mod technique;
+pub mod tls;
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║

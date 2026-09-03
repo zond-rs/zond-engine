@@ -25,6 +25,8 @@
 //! report every time it was opened.
 
 use std::sync::Arc;
+
+use crate::model::tls::TlsSupport;
 use std::time::{Duration, SystemTime};
 
 /// Information about transport security (TLS/SSL) successfully negotiated on a port.
@@ -47,6 +49,19 @@ pub struct Security {
 
     /// Public key information and lifecycle summaries for the presented X.509 certificate.
     certificate: Option<CertificateInfo>,
+
+    /// What the endpoint turned out to *accept*, where a scan asked.
+    ///
+    /// A different fact from every field above it, and the reason the two sit
+    /// together: those record what one handshake negotiated, and this records
+    /// what the endpoint would negotiate given the choice. A port reporting
+    /// `TLSv1.3` above and TLS 1.0 here is not a contradiction; it is a server
+    /// that prefers the modern version and still accepts the withdrawn one,
+    /// which is the configuration an audit is looking for.
+    ///
+    /// Empty for every scan that did not ask. See
+    /// [`ZondConfig::tls_enumeration`](crate::config::ZondConfig::tls_enumeration).
+    support: TlsSupport,
 }
 
 impl Security {
@@ -57,7 +72,24 @@ impl Security {
             cipher_suite: None,
             alpn: Vec::new(),
             certificate: None,
+            support: TlsSupport::new(),
         }
+    }
+
+    /// What the endpoint accepts, where a scan enumerated it. Empty otherwise.
+    pub fn support(&self) -> &TlsSupport {
+        &self.support
+    }
+
+    /// Records what an enumeration established the endpoint accepts.
+    pub fn set_support(&mut self, support: TlsSupport) {
+        self.support = support;
+    }
+
+    /// Builder form of [`set_support`](Self::set_support).
+    pub fn with_support(mut self, support: TlsSupport) -> Self {
+        self.support = support;
+        self
     }
 
     /// Returns the negotiated TLS version, if any.
@@ -134,11 +166,20 @@ impl Security {
             cipher_suite,
             alpn,
             certificate,
+            support,
         } = other;
 
         self.tls_version = self.tls_version.take().or(tls_version);
         self.cipher_suite = self.cipher_suite.take().or(cipher_suite);
         self.certificate = self.certificate.take().or(certificate);
+
+        // Filled where nothing is recorded, and left alone where something is.
+        // Two enumerations of one endpoint answer the same question, so the
+        // second says nothing the first did not; a partial one folded over a
+        // complete one would lose what the complete one found.
+        if self.support.is_empty() {
+            self.support = support;
+        }
 
         for protocol in alpn {
             if !self.alpn.contains(&protocol) {

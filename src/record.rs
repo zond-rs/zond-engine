@@ -88,6 +88,7 @@ use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::security::{CertificateInfo, Security};
 use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::model::target::{TargetMap, TargetSet};
+use crate::model::tls::{CipherSuite, TlsSupport, TlsVersion, VersionSupport};
 use crate::report::ScannerKind;
 use crate::report::WindowSummary;
 use crate::report::{
@@ -885,6 +886,32 @@ pub struct SecurityRecord {
     /// The certificate presented.
     #[serde(default)]
     pub certificate: Option<CertificateRecord>,
+    /// What the endpoint accepts, one entry per version, where a scan asked.
+    ///
+    /// Skipped when empty, which is every sitting that did not enumerate, and
+    /// defaulted on the way in so a record written before the pass existed
+    /// reads back as one that did not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepts: Vec<AcceptedVersionRecord>,
+}
+
+/// One version an endpoint accepted, and the suites chosen under it.
+///
+/// Suites are written as their wire numbers rather than their names. A number is
+/// what the server actually sent, it is half the size, and a build that has since
+/// added or renamed a suite reads an old record correctly instead of matching on
+/// a string it no longer uses. A number this build does not carry reads back into
+/// `unrecognised`, which is where it belonged in the first place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptedVersionRecord {
+    /// The version, by the name it prints.
+    pub version: String,
+    /// The suites accepted, by wire number, in the order the server chose them.
+    #[serde(default)]
+    pub suites: Vec<u16>,
+    /// Suites the scanning build could not name, by wire number.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unrecognised: Vec<u16>,
 }
 
 impl From<&Security> for SecurityRecord {
@@ -894,6 +921,16 @@ impl From<&Security> for SecurityRecord {
             cipher_suite: security.cipher_suite().map(str::to_owned),
             alpn: security.alpn().iter().map(|p| p.to_string()).collect(),
             certificate: security.certificate().map(CertificateRecord::from),
+            accepts: security
+                .support()
+                .versions()
+                .iter()
+                .map(|held| AcceptedVersionRecord {
+                    version: held.version().name().to_owned(),
+                    suites: held.suites().iter().map(|suite| suite.code()).collect(),
+                    unrecognised: held.unrecognised().to_vec(),
+                })
+                .collect(),
         }
     }
 }
@@ -913,6 +950,28 @@ impl From<&SecurityRecord> for Security {
         if let Some(certificate) = &record.certificate {
             security = security.with_certificate(certificate.into());
         }
+
+        let mut support = TlsSupport::new();
+        for held in &record.accepts {
+            // A version this build cannot name is dropped rather than guessed
+            // at: there is nothing to file its suites under.
+            let Ok(version) = held.version.parse::<TlsVersion>() else {
+                continue;
+            };
+            let mut suites = Vec::with_capacity(held.suites.len());
+            let mut unrecognised = held.unrecognised.clone();
+            for code in &held.suites {
+                match CipherSuite::from_code(*code) {
+                    Some(suite) => suites.push(suite),
+                    // Written by a build that carried it and read by one that
+                    // does not. Kept as a number, which is what it always was.
+                    None => unrecognised.push(*code),
+                }
+            }
+            support.record(VersionSupport::new(version, suites, unrecognised));
+        }
+        security.set_support(support);
+
         security
     }
 }
@@ -1536,6 +1595,12 @@ pub struct SettingsRecord {
     /// Whether it characterised the filter in front of each host.
     #[serde(default)]
     pub characterise: bool,
+    /// Whether it established what each TLS port accepts.
+    ///
+    /// Defaulted on the way in, so a record written before the pass existed
+    /// reads back as a sitting that did not enumerate. That is what it was.
+    #[serde(default)]
+    pub tls_enumeration: bool,
     /// What the sitting changed about the packets it sent, omitted when it
     /// changed nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1616,6 +1681,7 @@ impl From<&ScanSettings> for SettingsRecord {
             detection: wire::detection_class_name(settings.detection.ceiling()).to_owned(),
             traceroute: settings.traceroute,
             characterise: settings.characterise,
+            tls_enumeration: settings.tls_enumeration,
             evasion: settings.evasion.as_ref().map(|e| EvasionSettingsRecord {
                 source_port: e.source_port,
                 ttl: e.ttl,
@@ -1662,6 +1728,7 @@ impl From<&SettingsRecord> for ScanSettings {
                 .unwrap_or_default(),
             traceroute: record.traceroute,
             characterise: record.characterise,
+            tls_enumeration: record.tls_enumeration,
             evasion: record.evasion.as_ref().map(|e| EvasionRecord {
                 source_port: e.source_port,
                 ttl: e.ttl,

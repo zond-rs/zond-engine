@@ -380,6 +380,9 @@ pub struct Settings {
     pub timeout_scale: Option<TimeoutScale>,
     /// Whether a host that answers nothing may have its probe budget cut.
     pub dampen_silent_hosts: Option<bool>,
+    /// Whether to establish what each TLS port accepts, rather than only what
+    /// one handshake negotiated.
+    pub tls_enumeration: Option<bool>,
     /// The ports a scan covers when the caller names none.
     ///
     /// Held as written rather than parsed on the way in, since a port
@@ -445,6 +448,7 @@ impl Settings {
             max_attempts,
             timeout_scale,
             dampen_silent_hosts,
+            tls_enumeration,
             default_ports,
         );
 
@@ -511,6 +515,9 @@ impl Settings {
         if let Some(value) = self.dampen_silent_hosts {
             config.retry.dampen_silent_hosts = value;
         }
+        if let Some(value) = self.tls_enumeration {
+            config.tls_enumeration = value;
+        }
         // Added to what the configuration already forbids rather than replacing
         // it, for the reason `overlay` gives. A caller who resolved an exclusion
         // from the command line before applying a document must not
@@ -532,7 +539,7 @@ impl Settings {
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the
 /// struct, so that step is by hand.
-const KNOWN_KEYS: [&str; 14] = [
+const KNOWN_KEYS: [&str; 15] = [
     "exclude",
     "no_dns",
     "redact",
@@ -546,6 +553,7 @@ const KNOWN_KEYS: [&str; 14] = [
     "max_attempts",
     "timeout_scale",
     "dampen_silent_hosts",
+    "tls_enumeration",
     "default_ports",
 ];
 

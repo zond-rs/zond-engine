@@ -55,6 +55,7 @@ mod snmp;
 mod ssh;
 mod tls;
 mod tls_cert;
+mod tls_enum;
 mod tls_summary;
 
 #[cfg(test)]
@@ -83,6 +84,7 @@ pub use signature::{
 pub(crate) use signature::unescape;
 pub use ssh::SshAnalyzer;
 pub use tls_cert::TlsCertAnalyzer;
+pub use tls_enum::{EXCHANGE_TIMEOUT, MAX_OFFERS_PER_VERSION, enumerate_tls};
 
 use std::net::SocketAddr;
 use std::time::Duration;

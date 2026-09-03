@@ -381,6 +381,7 @@ pub zond_engine::config::ZondConfig::segment_sweep: bool
 pub zond_engine::config::ZondConfig::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::config::ZondConfig::service_detection: zond_engine::config::ServiceDetection
 pub zond_engine::config::ZondConfig::tcp_technique: zond_engine::model::technique::TcpScanTechnique
+pub zond_engine::config::ZondConfig::tls_enumeration: bool
 pub zond_engine::config::ZondConfig::traceroute: bool
 impl zond_engine::config::ZondConfig
 pub fn zond_engine::config::ZondConfig::probe_tuning(&self) -> zond_engine::config::ProbeTuning
@@ -2740,6 +2741,46 @@ pub mod zond_engine::export::redact
 pub fn zond_engine::export::redact::hostname(&str) -> alloc::string::String
 pub fn zond_engine::export::redact::mac_addr(&zond_engine::model::mac::MacAddr) -> alloc::string::String
 pub mod zond_engine::export::schema
+#[non_exhaustive] pub struct zond_engine::export::schema::AcceptedSuiteDto
+pub zond_engine::export::schema::AcceptedSuiteDto::code: alloc::string::String
+pub zond_engine::export::schema::AcceptedSuiteDto::faults: alloc::vec::Vec<&'static str>
+pub zond_engine::export::schema::AcceptedSuiteDto::name: &'static str
+pub zond_engine::export::schema::AcceptedSuiteDto::strength: &'static str
+impl zond_engine::export::schema::AcceptedSuiteDto
+pub fn zond_engine::export::schema::AcceptedSuiteDto::new(&zond_engine::model::tls::CipherSuite) -> Self
+impl core::clone::Clone for zond_engine::export::schema::AcceptedSuiteDto
+pub fn zond_engine::export::schema::AcceptedSuiteDto::clone(&self) -> zond_engine::export::schema::AcceptedSuiteDto
+impl core::fmt::Debug for zond_engine::export::schema::AcceptedSuiteDto
+pub fn zond_engine::export::schema::AcceptedSuiteDto::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for zond_engine::export::schema::AcceptedSuiteDto
+pub fn zond_engine::export::schema::AcceptedSuiteDto::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl core::marker::Freeze for zond_engine::export::schema::AcceptedSuiteDto
+impl core::marker::Send for zond_engine::export::schema::AcceptedSuiteDto
+impl core::marker::Sync for zond_engine::export::schema::AcceptedSuiteDto
+impl core::marker::Unpin for zond_engine::export::schema::AcceptedSuiteDto
+impl core::marker::UnsafeUnpin for zond_engine::export::schema::AcceptedSuiteDto
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::AcceptedSuiteDto
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::AcceptedSuiteDto
+#[non_exhaustive] pub struct zond_engine::export::schema::AcceptedVersionDto
+pub zond_engine::export::schema::AcceptedVersionDto::deprecated: bool
+pub zond_engine::export::schema::AcceptedVersionDto::suites: alloc::vec::Vec<zond_engine::export::schema::AcceptedSuiteDto>
+pub zond_engine::export::schema::AcceptedVersionDto::unrecognised: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::export::schema::AcceptedVersionDto::version: &'static str
+impl zond_engine::export::schema::AcceptedVersionDto
+pub fn zond_engine::export::schema::AcceptedVersionDto::new(&zond_engine::model::tls::VersionSupport) -> Self
+impl core::clone::Clone for zond_engine::export::schema::AcceptedVersionDto
+pub fn zond_engine::export::schema::AcceptedVersionDto::clone(&self) -> zond_engine::export::schema::AcceptedVersionDto
+impl core::fmt::Debug for zond_engine::export::schema::AcceptedVersionDto
+pub fn zond_engine::export::schema::AcceptedVersionDto::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for zond_engine::export::schema::AcceptedVersionDto
+pub fn zond_engine::export::schema::AcceptedVersionDto::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl core::marker::Freeze for zond_engine::export::schema::AcceptedVersionDto
+impl core::marker::Send for zond_engine::export::schema::AcceptedVersionDto
+impl core::marker::Sync for zond_engine::export::schema::AcceptedVersionDto
+impl core::marker::Unpin for zond_engine::export::schema::AcceptedVersionDto
+impl core::marker::UnsafeUnpin for zond_engine::export::schema::AcceptedVersionDto
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::AcceptedVersionDto
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::AcceptedVersionDto
 #[non_exhaustive] pub struct zond_engine::export::schema::AttachmentDto<'a>
 pub zond_engine::export::schema::AttachmentDto::device_mac: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::AttachmentDto::device_name: core::option::Option<alloc::borrow::Cow<'a, str>>
@@ -3388,6 +3429,7 @@ impl core::marker::UnsafeUnpin for zond_engine::export::schema::ScopeDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ScopeDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ScopeDto
 #[non_exhaustive] pub struct zond_engine::export::schema::SecurityDto<'a>
+pub zond_engine::export::schema::SecurityDto::accepts: alloc::vec::Vec<zond_engine::export::schema::AcceptedVersionDto>
 pub zond_engine::export::schema::SecurityDto::alpn: alloc::vec::Vec<&'a str>
 pub zond_engine::export::schema::SecurityDto::certificate: core::option::Option<zond_engine::export::schema::CertificateDto<'a>>
 pub zond_engine::export::schema::SecurityDto::cipher_suite: core::option::Option<&'a str>
@@ -3446,6 +3488,7 @@ pub zond_engine::export::schema::SettingsDto::sctp_technique: &'static str
 pub zond_engine::export::schema::SettingsDto::send_mode: &'static str
 pub zond_engine::export::schema::SettingsDto::service_detection: &'static str
 pub zond_engine::export::schema::SettingsDto::tcp_technique: &'static str
+pub zond_engine::export::schema::SettingsDto::tls_enumeration: bool
 pub zond_engine::export::schema::SettingsDto::traceroute: bool
 impl zond_engine::export::schema::SettingsDto
 pub fn zond_engine::export::schema::SettingsDto::new(&zond_engine::report::ScanSettings) -> Self
@@ -4965,8 +5008,10 @@ impl core::marker::Unpin for zond_engine::fingerprint::TlsInfo
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::TlsInfo
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::TlsInfo
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::TlsInfo
+pub const zond_engine::fingerprint::EXCHANGE_TIMEOUT: core::time::Duration
 pub const zond_engine::fingerprint::MAX_COMPILED_REGEX_BYTES: usize
 pub const zond_engine::fingerprint::MAX_IDENTITY_BYTES: usize
+pub const zond_engine::fingerprint::MAX_OFFERS_PER_VERSION: usize
 pub const zond_engine::fingerprint::MAX_UDP_PROBE_BYTES: usize
 pub trait zond_engine::fingerprint::Analyzer: core::marker::Send + core::marker::Sync
 pub fn zond_engine::fingerprint::Analyzer::analyze(&self, &zond_engine::fingerprint::PortContext, &zond_engine::fingerprint::ResponseSet, &zond_engine::fingerprint::Collected) -> alloc::vec::Vec<zond_engine::fingerprint::model::Evidence>
@@ -4998,6 +5043,7 @@ pub fn zond_engine::fingerprint::analyzers() -> &'static [&'static dyn zond_engi
 pub fn zond_engine::fingerprint::baseline_port(u16, zond_engine::model::port::Protocol, zond_engine::model::port::PortState) -> zond_engine::model::port::Port
 pub fn zond_engine::fingerprint::baseline_service(u16) -> core::option::Option<zond_engine::model::port::service::Service>
 pub fn zond_engine::fingerprint::decode_udp_reply(u16, &[u8]) -> core::option::Option<alloc::string::String>
+pub async fn zond_engine::fingerprint::enumerate_tls(core::net::socket_addr::SocketAddr) -> zond_engine::model::tls::TlsSupport
 pub async fn zond_engine::fingerprint::fingerprint_tcp(tokio::net::tcp::stream::TcpStream, zond_engine::model::port::Port, zond_engine::config::ServiceDetection) -> zond_engine::model::port::Port
 pub async fn zond_engine::fingerprint::fingerprint_tcp_detailed(tokio::net::tcp::stream::TcpStream, zond_engine::model::port::Port, zond_engine::config::ServiceDetection) -> (zond_engine::model::port::Port, alloc::vec::Vec<zond_engine::model::host::os::OsEvidence>, alloc::vec::Vec<alloc::string::String>)
 pub async fn zond_engine::fingerprint::fingerprint_udp_detailed(core::net::socket_addr::SocketAddr, zond_engine::model::port::Port) -> core::option::Option<(zond_engine::model::port::Port, alloc::vec::Vec<zond_engine::model::host::os::OsEvidence>, alloc::vec::Vec<alloc::string::String>)>
@@ -5345,6 +5391,7 @@ pub zond_engine::import::settings::Settings::sctp_technique: core::option::Optio
 pub zond_engine::import::settings::Settings::send_mode: core::option::Option<zond_engine::transport::probe::SendMode>
 pub zond_engine::import::settings::Settings::tcp_technique: core::option::Option<zond_engine::model::technique::TcpScanTechnique>
 pub zond_engine::import::settings::Settings::timeout_scale: core::option::Option<zond_engine::config::TimeoutScale>
+pub zond_engine::import::settings::Settings::tls_enumeration: core::option::Option<bool>
 impl zond_engine::import::settings::Settings
 pub fn zond_engine::import::settings::Settings::apply_to(&self, &mut zond_engine::config::ZondConfig)
 pub fn zond_engine::import::settings::Settings::new() -> Self
@@ -5781,6 +5828,7 @@ pub zond_engine::import::Settings::sctp_technique: core::option::Option<zond_eng
 pub zond_engine::import::Settings::send_mode: core::option::Option<zond_engine::transport::probe::SendMode>
 pub zond_engine::import::Settings::tcp_technique: core::option::Option<zond_engine::model::technique::TcpScanTechnique>
 pub zond_engine::import::Settings::timeout_scale: core::option::Option<zond_engine::config::TimeoutScale>
+pub zond_engine::import::Settings::tls_enumeration: core::option::Option<bool>
 impl zond_engine::import::settings::Settings
 pub fn zond_engine::import::settings::Settings::apply_to(&self, &mut zond_engine::config::ZondConfig)
 pub fn zond_engine::import::settings::Settings::new() -> Self
@@ -8991,10 +9039,13 @@ pub fn zond_engine::model::port::security::Security::is_cert_valid(&self) -> boo
 pub fn zond_engine::model::port::security::Security::is_cert_valid_at(&self, std::time::SystemTime) -> bool
 pub fn zond_engine::model::port::security::Security::merge(&mut self, zond_engine::model::port::security::Security)
 pub fn zond_engine::model::port::security::Security::new() -> Self
+pub fn zond_engine::model::port::security::Security::set_support(&mut self, zond_engine::model::tls::TlsSupport)
+pub fn zond_engine::model::port::security::Security::support(&self) -> &zond_engine::model::tls::TlsSupport
 pub fn zond_engine::model::port::security::Security::tls_version(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::port::security::Security::with_alpn(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::security::Security::with_certificate(self, zond_engine::model::port::security::CertificateInfo) -> Self
 pub fn zond_engine::model::port::security::Security::with_cipher_suite(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub fn zond_engine::model::port::security::Security::with_support(self, zond_engine::model::tls::TlsSupport) -> Self
 pub fn zond_engine::model::port::security::Security::with_tls_version(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 impl core::clone::Clone for zond_engine::model::port::security::Security
 pub fn zond_engine::model::port::security::Security::clone(&self) -> zond_engine::model::port::security::Security
@@ -9412,10 +9463,13 @@ pub fn zond_engine::model::port::security::Security::is_cert_valid(&self) -> boo
 pub fn zond_engine::model::port::security::Security::is_cert_valid_at(&self, std::time::SystemTime) -> bool
 pub fn zond_engine::model::port::security::Security::merge(&mut self, zond_engine::model::port::security::Security)
 pub fn zond_engine::model::port::security::Security::new() -> Self
+pub fn zond_engine::model::port::security::Security::set_support(&mut self, zond_engine::model::tls::TlsSupport)
+pub fn zond_engine::model::port::security::Security::support(&self) -> &zond_engine::model::tls::TlsSupport
 pub fn zond_engine::model::port::security::Security::tls_version(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::port::security::Security::with_alpn(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::security::Security::with_certificate(self, zond_engine::model::port::security::CertificateInfo) -> Self
 pub fn zond_engine::model::port::security::Security::with_cipher_suite(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub fn zond_engine::model::port::security::Security::with_support(self, zond_engine::model::tls::TlsSupport) -> Self
 pub fn zond_engine::model::port::security::Security::with_tls_version(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 impl core::clone::Clone for zond_engine::model::port::security::Security
 pub fn zond_engine::model::port::security::Security::clone(&self) -> zond_engine::model::port::security::Security
@@ -9773,6 +9827,365 @@ impl core::marker::Unpin for zond_engine::model::technique::UnknownTechnique
 impl core::marker::UnsafeUnpin for zond_engine::model::technique::UnknownTechnique
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::technique::UnknownTechnique
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::UnknownTechnique
+pub mod zond_engine::model::tls
+#[non_exhaustive] pub enum zond_engine::model::tls::Authentication
+pub zond_engine::model::tls::Authentication::Anonymous
+pub zond_engine::model::tls::Authentication::Dss
+pub zond_engine::model::tls::Authentication::Ecdsa
+pub zond_engine::model::tls::Authentication::Negotiated
+pub zond_engine::model::tls::Authentication::Rsa
+impl core::clone::Clone for zond_engine::model::tls::Authentication
+pub fn zond_engine::model::tls::Authentication::clone(&self) -> zond_engine::model::tls::Authentication
+impl core::cmp::Eq for zond_engine::model::tls::Authentication
+impl core::cmp::Ord for zond_engine::model::tls::Authentication
+pub fn zond_engine::model::tls::Authentication::cmp(&self, &zond_engine::model::tls::Authentication) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::Authentication
+pub fn zond_engine::model::tls::Authentication::eq(&self, &zond_engine::model::tls::Authentication) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::Authentication
+pub fn zond_engine::model::tls::Authentication::partial_cmp(&self, &zond_engine::model::tls::Authentication) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::Authentication
+pub fn zond_engine::model::tls::Authentication::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::Authentication
+pub fn zond_engine::model::tls::Authentication::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::Authentication
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::Authentication
+impl core::marker::Freeze for zond_engine::model::tls::Authentication
+impl core::marker::Send for zond_engine::model::tls::Authentication
+impl core::marker::Sync for zond_engine::model::tls::Authentication
+impl core::marker::Unpin for zond_engine::model::tls::Authentication
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::Authentication
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::Authentication
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::Authentication
+#[non_exhaustive] pub enum zond_engine::model::tls::BulkCipher
+pub zond_engine::model::tls::BulkCipher::AesCbc(u16)
+pub zond_engine::model::tls::BulkCipher::AesCcm
+pub zond_engine::model::tls::BulkCipher::AesCcm::bits: u16
+pub zond_engine::model::tls::BulkCipher::AesCcm::short_tag: bool
+pub zond_engine::model::tls::BulkCipher::AesGcm(u16)
+pub zond_engine::model::tls::BulkCipher::CamelliaCbc(u16)
+pub zond_engine::model::tls::BulkCipher::ChaCha20Poly1305
+pub zond_engine::model::tls::BulkCipher::Des
+pub zond_engine::model::tls::BulkCipher::IdeaCbc
+pub zond_engine::model::tls::BulkCipher::Null
+pub zond_engine::model::tls::BulkCipher::Rc4
+pub zond_engine::model::tls::BulkCipher::SeedCbc
+pub zond_engine::model::tls::BulkCipher::TripleDes
+impl zond_engine::model::tls::BulkCipher
+pub const fn zond_engine::model::tls::BulkCipher::has_64_bit_block(self) -> bool
+pub const fn zond_engine::model::tls::BulkCipher::is_aead(self) -> bool
+pub const fn zond_engine::model::tls::BulkCipher::is_cbc(self) -> bool
+impl core::clone::Clone for zond_engine::model::tls::BulkCipher
+pub fn zond_engine::model::tls::BulkCipher::clone(&self) -> zond_engine::model::tls::BulkCipher
+impl core::cmp::Eq for zond_engine::model::tls::BulkCipher
+impl core::cmp::Ord for zond_engine::model::tls::BulkCipher
+pub fn zond_engine::model::tls::BulkCipher::cmp(&self, &zond_engine::model::tls::BulkCipher) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::BulkCipher
+pub fn zond_engine::model::tls::BulkCipher::eq(&self, &zond_engine::model::tls::BulkCipher) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::BulkCipher
+pub fn zond_engine::model::tls::BulkCipher::partial_cmp(&self, &zond_engine::model::tls::BulkCipher) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::BulkCipher
+pub fn zond_engine::model::tls::BulkCipher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::BulkCipher
+pub fn zond_engine::model::tls::BulkCipher::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::BulkCipher
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::BulkCipher
+impl core::marker::Freeze for zond_engine::model::tls::BulkCipher
+impl core::marker::Send for zond_engine::model::tls::BulkCipher
+impl core::marker::Sync for zond_engine::model::tls::BulkCipher
+impl core::marker::Unpin for zond_engine::model::tls::BulkCipher
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::BulkCipher
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::BulkCipher
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::BulkCipher
+#[non_exhaustive] pub enum zond_engine::model::tls::KeyExchange
+pub zond_engine::model::tls::KeyExchange::Anonymous
+pub zond_engine::model::tls::KeyExchange::Dhe
+pub zond_engine::model::tls::KeyExchange::Ecdh
+pub zond_engine::model::tls::KeyExchange::Ecdhe
+pub zond_engine::model::tls::KeyExchange::Negotiated
+pub zond_engine::model::tls::KeyExchange::Rsa
+impl zond_engine::model::tls::KeyExchange
+pub const fn zond_engine::model::tls::KeyExchange::is_forward_secret(self) -> bool
+impl core::clone::Clone for zond_engine::model::tls::KeyExchange
+pub fn zond_engine::model::tls::KeyExchange::clone(&self) -> zond_engine::model::tls::KeyExchange
+impl core::cmp::Eq for zond_engine::model::tls::KeyExchange
+impl core::cmp::Ord for zond_engine::model::tls::KeyExchange
+pub fn zond_engine::model::tls::KeyExchange::cmp(&self, &zond_engine::model::tls::KeyExchange) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::KeyExchange
+pub fn zond_engine::model::tls::KeyExchange::eq(&self, &zond_engine::model::tls::KeyExchange) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::KeyExchange
+pub fn zond_engine::model::tls::KeyExchange::partial_cmp(&self, &zond_engine::model::tls::KeyExchange) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::KeyExchange
+pub fn zond_engine::model::tls::KeyExchange::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::KeyExchange
+pub fn zond_engine::model::tls::KeyExchange::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::KeyExchange
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::KeyExchange
+impl core::marker::Freeze for zond_engine::model::tls::KeyExchange
+impl core::marker::Send for zond_engine::model::tls::KeyExchange
+impl core::marker::Sync for zond_engine::model::tls::KeyExchange
+impl core::marker::Unpin for zond_engine::model::tls::KeyExchange
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::KeyExchange
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::KeyExchange
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::KeyExchange
+#[non_exhaustive] pub enum zond_engine::model::tls::Mac
+pub zond_engine::model::tls::Mac::Aead
+pub zond_engine::model::tls::Mac::Md5
+pub zond_engine::model::tls::Mac::Null
+pub zond_engine::model::tls::Mac::Sha1
+pub zond_engine::model::tls::Mac::Sha256
+pub zond_engine::model::tls::Mac::Sha384
+impl core::clone::Clone for zond_engine::model::tls::Mac
+pub fn zond_engine::model::tls::Mac::clone(&self) -> zond_engine::model::tls::Mac
+impl core::cmp::Eq for zond_engine::model::tls::Mac
+impl core::cmp::Ord for zond_engine::model::tls::Mac
+pub fn zond_engine::model::tls::Mac::cmp(&self, &zond_engine::model::tls::Mac) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::Mac
+pub fn zond_engine::model::tls::Mac::eq(&self, &zond_engine::model::tls::Mac) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::Mac
+pub fn zond_engine::model::tls::Mac::partial_cmp(&self, &zond_engine::model::tls::Mac) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::Mac
+pub fn zond_engine::model::tls::Mac::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::Mac
+pub fn zond_engine::model::tls::Mac::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::Mac
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::Mac
+impl core::marker::Freeze for zond_engine::model::tls::Mac
+impl core::marker::Send for zond_engine::model::tls::Mac
+impl core::marker::Sync for zond_engine::model::tls::Mac
+impl core::marker::Unpin for zond_engine::model::tls::Mac
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::Mac
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::Mac
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::Mac
+#[non_exhaustive] pub enum zond_engine::model::tls::SuiteFault
+pub zond_engine::model::tls::SuiteFault::Anonymous
+pub zond_engine::model::tls::SuiteFault::CbcMode
+pub zond_engine::model::tls::SuiteFault::Export
+pub zond_engine::model::tls::SuiteFault::Md5Mac
+pub zond_engine::model::tls::SuiteFault::NoForwardSecrecy
+pub zond_engine::model::tls::SuiteFault::NullCipher
+pub zond_engine::model::tls::SuiteFault::Rc4
+pub zond_engine::model::tls::SuiteFault::Sha1Mac
+pub zond_engine::model::tls::SuiteFault::SmallBlock
+impl zond_engine::model::tls::SuiteFault
+pub const zond_engine::model::tls::SuiteFault::ALL: [Self; 9]
+pub const fn zond_engine::model::tls::SuiteFault::is_disqualifying(self) -> bool
+pub const fn zond_engine::model::tls::SuiteFault::name(self) -> &'static str
+pub const fn zond_engine::model::tls::SuiteFault::severity(self) -> zond_engine::model::finding::Severity
+pub const fn zond_engine::model::tls::SuiteFault::summary(self) -> &'static str
+impl core::clone::Clone for zond_engine::model::tls::SuiteFault
+pub fn zond_engine::model::tls::SuiteFault::clone(&self) -> zond_engine::model::tls::SuiteFault
+impl core::cmp::Eq for zond_engine::model::tls::SuiteFault
+impl core::cmp::Ord for zond_engine::model::tls::SuiteFault
+pub fn zond_engine::model::tls::SuiteFault::cmp(&self, &zond_engine::model::tls::SuiteFault) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::SuiteFault
+pub fn zond_engine::model::tls::SuiteFault::eq(&self, &zond_engine::model::tls::SuiteFault) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::SuiteFault
+pub fn zond_engine::model::tls::SuiteFault::partial_cmp(&self, &zond_engine::model::tls::SuiteFault) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::SuiteFault
+pub fn zond_engine::model::tls::SuiteFault::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::tls::SuiteFault
+pub fn zond_engine::model::tls::SuiteFault::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::SuiteFault
+pub fn zond_engine::model::tls::SuiteFault::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::SuiteFault
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::SuiteFault
+impl core::marker::Freeze for zond_engine::model::tls::SuiteFault
+impl core::marker::Send for zond_engine::model::tls::SuiteFault
+impl core::marker::Sync for zond_engine::model::tls::SuiteFault
+impl core::marker::Unpin for zond_engine::model::tls::SuiteFault
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::SuiteFault
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::SuiteFault
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::SuiteFault
+#[non_exhaustive] pub enum zond_engine::model::tls::SuiteStrength
+pub zond_engine::model::tls::SuiteStrength::Insecure
+pub zond_engine::model::tls::SuiteStrength::Strong
+pub zond_engine::model::tls::SuiteStrength::Weak
+impl zond_engine::model::tls::SuiteStrength
+pub const zond_engine::model::tls::SuiteStrength::ALL: [Self; 3]
+pub const fn zond_engine::model::tls::SuiteStrength::name(self) -> &'static str
+impl core::clone::Clone for zond_engine::model::tls::SuiteStrength
+pub fn zond_engine::model::tls::SuiteStrength::clone(&self) -> zond_engine::model::tls::SuiteStrength
+impl core::cmp::Eq for zond_engine::model::tls::SuiteStrength
+impl core::cmp::Ord for zond_engine::model::tls::SuiteStrength
+pub fn zond_engine::model::tls::SuiteStrength::cmp(&self, &zond_engine::model::tls::SuiteStrength) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::SuiteStrength
+pub fn zond_engine::model::tls::SuiteStrength::eq(&self, &zond_engine::model::tls::SuiteStrength) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::SuiteStrength
+pub fn zond_engine::model::tls::SuiteStrength::partial_cmp(&self, &zond_engine::model::tls::SuiteStrength) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::SuiteStrength
+pub fn zond_engine::model::tls::SuiteStrength::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::tls::SuiteStrength
+pub fn zond_engine::model::tls::SuiteStrength::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::SuiteStrength
+pub fn zond_engine::model::tls::SuiteStrength::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::SuiteStrength
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::SuiteStrength
+impl core::marker::Freeze for zond_engine::model::tls::SuiteStrength
+impl core::marker::Send for zond_engine::model::tls::SuiteStrength
+impl core::marker::Sync for zond_engine::model::tls::SuiteStrength
+impl core::marker::Unpin for zond_engine::model::tls::SuiteStrength
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::SuiteStrength
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::SuiteStrength
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::SuiteStrength
+#[non_exhaustive] pub enum zond_engine::model::tls::TlsVersion
+pub zond_engine::model::tls::TlsVersion::Ssl30
+pub zond_engine::model::tls::TlsVersion::Tls10
+pub zond_engine::model::tls::TlsVersion::Tls11
+pub zond_engine::model::tls::TlsVersion::Tls12
+pub zond_engine::model::tls::TlsVersion::Tls13
+impl zond_engine::model::tls::TlsVersion
+pub const zond_engine::model::tls::TlsVersion::ALL: [Self; 5]
+pub const fn zond_engine::model::tls::TlsVersion::code(self) -> u16
+pub const fn zond_engine::model::tls::TlsVersion::deprecated_by(self) -> core::option::Option<&'static str>
+pub const fn zond_engine::model::tls::TlsVersion::from_code(u16) -> core::option::Option<Self>
+pub const fn zond_engine::model::tls::TlsVersion::is_deprecated(self) -> bool
+pub const fn zond_engine::model::tls::TlsVersion::name(self) -> &'static str
+pub const fn zond_engine::model::tls::TlsVersion::severity(self) -> core::option::Option<zond_engine::model::finding::Severity>
+impl core::clone::Clone for zond_engine::model::tls::TlsVersion
+pub fn zond_engine::model::tls::TlsVersion::clone(&self) -> zond_engine::model::tls::TlsVersion
+impl core::cmp::Eq for zond_engine::model::tls::TlsVersion
+impl core::cmp::Ord for zond_engine::model::tls::TlsVersion
+pub fn zond_engine::model::tls::TlsVersion::cmp(&self, &zond_engine::model::tls::TlsVersion) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::TlsVersion
+pub fn zond_engine::model::tls::TlsVersion::eq(&self, &zond_engine::model::tls::TlsVersion) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::TlsVersion
+pub fn zond_engine::model::tls::TlsVersion::partial_cmp(&self, &zond_engine::model::tls::TlsVersion) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::TlsVersion
+pub fn zond_engine::model::tls::TlsVersion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::tls::TlsVersion
+pub fn zond_engine::model::tls::TlsVersion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::TlsVersion
+pub fn zond_engine::model::tls::TlsVersion::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::TlsVersion
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::TlsVersion
+impl core::str::traits::FromStr for zond_engine::model::tls::TlsVersion
+pub type zond_engine::model::tls::TlsVersion::Err = zond_engine::model::tls::UnknownTlsVersion
+pub fn zond_engine::model::tls::TlsVersion::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl core::marker::Freeze for zond_engine::model::tls::TlsVersion
+impl core::marker::Send for zond_engine::model::tls::TlsVersion
+impl core::marker::Sync for zond_engine::model::tls::TlsVersion
+impl core::marker::Unpin for zond_engine::model::tls::TlsVersion
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::TlsVersion
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::TlsVersion
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::TlsVersion
+pub struct zond_engine::model::tls::CipherSuite
+impl zond_engine::model::tls::CipherSuite
+pub const zond_engine::model::tls::CipherSuite::ALL: [Self; 85]
+pub fn zond_engine::model::tls::CipherSuite::offered_under(zond_engine::model::tls::TlsVersion) -> impl core::iter::traits::iterator::Iterator<Item = Self>
+impl zond_engine::model::tls::CipherSuite
+pub const fn zond_engine::model::tls::CipherSuite::authentication(self) -> zond_engine::model::tls::Authentication
+pub const fn zond_engine::model::tls::CipherSuite::bulk_cipher(self) -> zond_engine::model::tls::BulkCipher
+pub const fn zond_engine::model::tls::CipherSuite::code(self) -> u16
+pub fn zond_engine::model::tls::CipherSuite::faults(self) -> alloc::vec::Vec<zond_engine::model::tls::SuiteFault>
+pub fn zond_engine::model::tls::CipherSuite::from_code(u16) -> core::option::Option<Self>
+pub const fn zond_engine::model::tls::CipherSuite::has_fault(self, zond_engine::model::tls::SuiteFault) -> bool
+pub const fn zond_engine::model::tls::CipherSuite::is_export(self) -> bool
+pub const fn zond_engine::model::tls::CipherSuite::is_forward_secret(self) -> bool
+pub const fn zond_engine::model::tls::CipherSuite::is_offered_under(self, zond_engine::model::tls::TlsVersion) -> bool
+pub const fn zond_engine::model::tls::CipherSuite::key_exchange(self) -> zond_engine::model::tls::KeyExchange
+pub const fn zond_engine::model::tls::CipherSuite::mac(self) -> zond_engine::model::tls::Mac
+pub const fn zond_engine::model::tls::CipherSuite::name(self) -> &'static str
+pub fn zond_engine::model::tls::CipherSuite::strength(self) -> zond_engine::model::tls::SuiteStrength
+pub fn zond_engine::model::tls::CipherSuite::worst_fault(self) -> core::option::Option<zond_engine::model::tls::SuiteFault>
+impl core::clone::Clone for zond_engine::model::tls::CipherSuite
+pub fn zond_engine::model::tls::CipherSuite::clone(&self) -> zond_engine::model::tls::CipherSuite
+impl core::cmp::Eq for zond_engine::model::tls::CipherSuite
+impl core::cmp::Ord for zond_engine::model::tls::CipherSuite
+pub fn zond_engine::model::tls::CipherSuite::cmp(&self, &zond_engine::model::tls::CipherSuite) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::CipherSuite
+pub fn zond_engine::model::tls::CipherSuite::eq(&self, &zond_engine::model::tls::CipherSuite) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::CipherSuite
+pub fn zond_engine::model::tls::CipherSuite::partial_cmp(&self, &zond_engine::model::tls::CipherSuite) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::CipherSuite
+pub fn zond_engine::model::tls::CipherSuite::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::tls::CipherSuite
+pub fn zond_engine::model::tls::CipherSuite::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::CipherSuite
+pub fn zond_engine::model::tls::CipherSuite::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::CipherSuite
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::CipherSuite
+impl core::marker::Freeze for zond_engine::model::tls::CipherSuite
+impl core::marker::Send for zond_engine::model::tls::CipherSuite
+impl core::marker::Sync for zond_engine::model::tls::CipherSuite
+impl core::marker::Unpin for zond_engine::model::tls::CipherSuite
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::CipherSuite
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::CipherSuite
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::CipherSuite
+pub struct zond_engine::model::tls::TlsSupport
+impl zond_engine::model::tls::TlsSupport
+pub fn zond_engine::model::tls::TlsSupport::accepting(self, zond_engine::model::tls::VersionSupport) -> Self
+pub fn zond_engine::model::tls::TlsSupport::accepts(&self, zond_engine::model::tls::TlsVersion) -> bool
+pub fn zond_engine::model::tls::TlsSupport::ceiling(&self) -> core::option::Option<zond_engine::model::tls::TlsVersion>
+pub fn zond_engine::model::tls::TlsSupport::deprecated_versions(&self) -> impl core::iter::traits::iterator::Iterator<Item = zond_engine::model::tls::TlsVersion> + '_
+pub fn zond_engine::model::tls::TlsSupport::faults(&self) -> alloc::vec::Vec<zond_engine::model::tls::SuiteFault>
+pub fn zond_engine::model::tls::TlsSupport::floor(&self) -> core::option::Option<zond_engine::model::tls::TlsVersion>
+pub fn zond_engine::model::tls::TlsSupport::is_empty(&self) -> bool
+pub fn zond_engine::model::tls::TlsSupport::new() -> Self
+pub fn zond_engine::model::tls::TlsSupport::record(&mut self, zond_engine::model::tls::VersionSupport)
+pub fn zond_engine::model::tls::TlsSupport::suites(&self) -> alloc::vec::Vec<zond_engine::model::tls::CipherSuite>
+pub fn zond_engine::model::tls::TlsSupport::versions(&self) -> &[zond_engine::model::tls::VersionSupport]
+pub fn zond_engine::model::tls::TlsSupport::weakest(&self) -> core::option::Option<zond_engine::model::tls::SuiteStrength>
+impl zond_engine::model::tls::TlsSupport
+pub fn zond_engine::model::tls::TlsSupport::findings(&self) -> alloc::vec::Vec<zond_engine::model::finding::Finding>
+impl core::clone::Clone for zond_engine::model::tls::TlsSupport
+pub fn zond_engine::model::tls::TlsSupport::clone(&self) -> zond_engine::model::tls::TlsSupport
+impl core::cmp::Eq for zond_engine::model::tls::TlsSupport
+impl core::cmp::PartialEq for zond_engine::model::tls::TlsSupport
+pub fn zond_engine::model::tls::TlsSupport::eq(&self, &zond_engine::model::tls::TlsSupport) -> bool
+impl core::default::Default for zond_engine::model::tls::TlsSupport
+pub fn zond_engine::model::tls::TlsSupport::default() -> zond_engine::model::tls::TlsSupport
+impl core::fmt::Debug for zond_engine::model::tls::TlsSupport
+pub fn zond_engine::model::tls::TlsSupport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::TlsSupport
+impl core::marker::Freeze for zond_engine::model::tls::TlsSupport
+impl core::marker::Send for zond_engine::model::tls::TlsSupport
+impl core::marker::Sync for zond_engine::model::tls::TlsSupport
+impl core::marker::Unpin for zond_engine::model::tls::TlsSupport
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::TlsSupport
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::TlsSupport
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::TlsSupport
+pub struct zond_engine::model::tls::UnknownTlsVersion
+pub zond_engine::model::tls::UnknownTlsVersion::input: alloc::string::String
+impl core::clone::Clone for zond_engine::model::tls::UnknownTlsVersion
+pub fn zond_engine::model::tls::UnknownTlsVersion::clone(&self) -> zond_engine::model::tls::UnknownTlsVersion
+impl core::cmp::Eq for zond_engine::model::tls::UnknownTlsVersion
+impl core::cmp::PartialEq for zond_engine::model::tls::UnknownTlsVersion
+pub fn zond_engine::model::tls::UnknownTlsVersion::eq(&self, &zond_engine::model::tls::UnknownTlsVersion) -> bool
+impl core::error::Error for zond_engine::model::tls::UnknownTlsVersion
+impl core::fmt::Debug for zond_engine::model::tls::UnknownTlsVersion
+pub fn zond_engine::model::tls::UnknownTlsVersion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::tls::UnknownTlsVersion
+pub fn zond_engine::model::tls::UnknownTlsVersion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::UnknownTlsVersion
+impl core::marker::Freeze for zond_engine::model::tls::UnknownTlsVersion
+impl core::marker::Send for zond_engine::model::tls::UnknownTlsVersion
+impl core::marker::Sync for zond_engine::model::tls::UnknownTlsVersion
+impl core::marker::Unpin for zond_engine::model::tls::UnknownTlsVersion
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::UnknownTlsVersion
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::UnknownTlsVersion
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::UnknownTlsVersion
+pub struct zond_engine::model::tls::VersionSupport
+impl zond_engine::model::tls::VersionSupport
+pub fn zond_engine::model::tls::VersionSupport::new(zond_engine::model::tls::TlsVersion, alloc::vec::Vec<zond_engine::model::tls::CipherSuite>, alloc::vec::Vec<u16>) -> Self
+pub fn zond_engine::model::tls::VersionSupport::suites(&self) -> &[zond_engine::model::tls::CipherSuite]
+pub fn zond_engine::model::tls::VersionSupport::unrecognised(&self) -> &[u16]
+pub fn zond_engine::model::tls::VersionSupport::version(&self) -> zond_engine::model::tls::TlsVersion
+pub fn zond_engine::model::tls::VersionSupport::weakest(&self) -> core::option::Option<zond_engine::model::tls::SuiteStrength>
+impl core::clone::Clone for zond_engine::model::tls::VersionSupport
+pub fn zond_engine::model::tls::VersionSupport::clone(&self) -> zond_engine::model::tls::VersionSupport
+impl core::cmp::Eq for zond_engine::model::tls::VersionSupport
+impl core::cmp::PartialEq for zond_engine::model::tls::VersionSupport
+pub fn zond_engine::model::tls::VersionSupport::eq(&self, &zond_engine::model::tls::VersionSupport) -> bool
+impl core::fmt::Debug for zond_engine::model::tls::VersionSupport
+pub fn zond_engine::model::tls::VersionSupport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::VersionSupport
+impl core::marker::Freeze for zond_engine::model::tls::VersionSupport
+impl core::marker::Send for zond_engine::model::tls::VersionSupport
+impl core::marker::Sync for zond_engine::model::tls::VersionSupport
+impl core::marker::Unpin for zond_engine::model::tls::VersionSupport
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::VersionSupport
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::VersionSupport
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::VersionSupport
 pub mod zond_engine::protocols
 pub mod zond_engine::protocols::arp
 pub fn zond_engine::protocols::arp::build_request(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
@@ -10752,6 +11165,55 @@ pub fn zond_engine::protocols::tcp::parse(&[u8]) -> zond_engine::protocols::erro
 pub const fn zond_engine::protocols::tcp::probe_flags(zond_engine::model::technique::TcpScanTechnique) -> u8
 pub fn zond_engine::protocols::tcp::quoted_nonce(zond_engine::model::technique::TcpScanTechnique, &zond_engine::protocols::tcp::QuotedProbe) -> core::option::Option<u32>
 pub fn zond_engine::protocols::tcp::quoted_probe(&[u8]) -> core::option::Option<zond_engine::protocols::tcp::QuotedProbe>
+pub mod zond_engine::protocols::tls
+#[non_exhaustive] pub enum zond_engine::protocols::tls::ServerResponse
+pub zond_engine::protocols::tls::ServerResponse::Alert
+pub zond_engine::protocols::tls::ServerResponse::Alert::description: u8
+pub zond_engine::protocols::tls::ServerResponse::Alert::level: u8
+pub zond_engine::protocols::tls::ServerResponse::Hello
+pub zond_engine::protocols::tls::ServerResponse::Hello::retry: bool
+pub zond_engine::protocols::tls::ServerResponse::Hello::suite: u16
+pub zond_engine::protocols::tls::ServerResponse::Hello::version: core::option::Option<zond_engine::model::tls::TlsVersion>
+impl zond_engine::protocols::tls::ServerResponse
+pub const fn zond_engine::protocols::tls::ServerResponse::accepted(self) -> bool
+impl core::clone::Clone for zond_engine::protocols::tls::ServerResponse
+pub fn zond_engine::protocols::tls::ServerResponse::clone(&self) -> zond_engine::protocols::tls::ServerResponse
+impl core::cmp::Eq for zond_engine::protocols::tls::ServerResponse
+impl core::cmp::PartialEq for zond_engine::protocols::tls::ServerResponse
+pub fn zond_engine::protocols::tls::ServerResponse::eq(&self, &zond_engine::protocols::tls::ServerResponse) -> bool
+impl core::fmt::Debug for zond_engine::protocols::tls::ServerResponse
+pub fn zond_engine::protocols::tls::ServerResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::protocols::tls::ServerResponse
+impl core::marker::StructuralPartialEq for zond_engine::protocols::tls::ServerResponse
+impl core::marker::Freeze for zond_engine::protocols::tls::ServerResponse
+impl core::marker::Send for zond_engine::protocols::tls::ServerResponse
+impl core::marker::Sync for zond_engine::protocols::tls::ServerResponse
+impl core::marker::Unpin for zond_engine::protocols::tls::ServerResponse
+impl core::marker::UnsafeUnpin for zond_engine::protocols::tls::ServerResponse
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::tls::ServerResponse
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::tls::ServerResponse
+pub struct zond_engine::protocols::tls::Offer<'a>
+pub zond_engine::protocols::tls::Offer::server_name: core::option::Option<&'a str>
+pub zond_engine::protocols::tls::Offer::suites: &'a [zond_engine::model::tls::CipherSuite]
+pub zond_engine::protocols::tls::Offer::version: zond_engine::model::tls::TlsVersion
+impl<'a> core::clone::Clone for zond_engine::protocols::tls::Offer<'a>
+pub fn zond_engine::protocols::tls::Offer<'a>::clone(&self) -> zond_engine::protocols::tls::Offer<'a>
+impl<'a> core::fmt::Debug for zond_engine::protocols::tls::Offer<'a>
+pub fn zond_engine::protocols::tls::Offer<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for zond_engine::protocols::tls::Offer<'a>
+impl<'a> core::marker::Freeze for zond_engine::protocols::tls::Offer<'a>
+impl<'a> core::marker::Send for zond_engine::protocols::tls::Offer<'a>
+impl<'a> core::marker::Sync for zond_engine::protocols::tls::Offer<'a>
+impl<'a> core::marker::Unpin for zond_engine::protocols::tls::Offer<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::protocols::tls::Offer<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::tls::Offer<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::tls::Offer<'a>
+pub const zond_engine::protocols::tls::HELLO_RETRY_RANDOM: [u8; 32]
+pub const zond_engine::protocols::tls::MAX_RECORD_LEN: usize
+pub const zond_engine::protocols::tls::RECORD_HEADER_LEN: usize
+pub fn zond_engine::protocols::tls::client_hello(&zond_engine::protocols::tls::Offer<'_>) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::tls::read_response(&[u8]) -> core::option::Option<zond_engine::protocols::tls::ServerResponse>
+pub fn zond_engine::protocols::tls::record_length(&[u8]) -> core::option::Option<usize>
 pub mod zond_engine::protocols::udp
 pub fn zond_engine::protocols::udp::build_packet(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u16, u16, alloc::vec::Vec<u8>) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::udp::build_packet_shaped(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u16, u16, alloc::vec::Vec<u8>, core::option::Option<u16>) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
@@ -10795,6 +11257,29 @@ pub fn zond_engine::record::wire::stop_reason_name(zond_engine::report::StopReas
 pub fn zond_engine::record::wire::tcp_flags(&str) -> u8
 pub fn zond_engine::record::wire::tcp_flags_checked(&str) -> core::option::Option<u8>
 pub fn zond_engine::record::wire::tcp_flags_name(u8) -> alloc::string::String
+pub struct zond_engine::record::AcceptedVersionRecord
+pub zond_engine::record::AcceptedVersionRecord::suites: alloc::vec::Vec<u16>
+pub zond_engine::record::AcceptedVersionRecord::unrecognised: alloc::vec::Vec<u16>
+pub zond_engine::record::AcceptedVersionRecord::version: alloc::string::String
+impl core::clone::Clone for zond_engine::record::AcceptedVersionRecord
+pub fn zond_engine::record::AcceptedVersionRecord::clone(&self) -> zond_engine::record::AcceptedVersionRecord
+impl core::cmp::Eq for zond_engine::record::AcceptedVersionRecord
+impl core::cmp::PartialEq for zond_engine::record::AcceptedVersionRecord
+pub fn zond_engine::record::AcceptedVersionRecord::eq(&self, &zond_engine::record::AcceptedVersionRecord) -> bool
+impl core::fmt::Debug for zond_engine::record::AcceptedVersionRecord
+pub fn zond_engine::record::AcceptedVersionRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::record::AcceptedVersionRecord
+impl serde_core::ser::Serialize for zond_engine::record::AcceptedVersionRecord
+pub fn zond_engine::record::AcceptedVersionRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::record::AcceptedVersionRecord
+pub fn zond_engine::record::AcceptedVersionRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::record::AcceptedVersionRecord
+impl core::marker::Send for zond_engine::record::AcceptedVersionRecord
+impl core::marker::Sync for zond_engine::record::AcceptedVersionRecord
+impl core::marker::Unpin for zond_engine::record::AcceptedVersionRecord
+impl core::marker::UnsafeUnpin for zond_engine::record::AcceptedVersionRecord
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::AcceptedVersionRecord
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::AcceptedVersionRecord
 pub struct zond_engine::record::AttachmentRecord
 pub zond_engine::record::AttachmentRecord::device_mac: core::option::Option<alloc::string::String>
 pub zond_engine::record::AttachmentRecord::device_name: core::option::Option<alloc::string::String>
@@ -11516,6 +12001,7 @@ impl core::marker::UnsafeUnpin for zond_engine::record::ScopeRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::ScopeRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::ScopeRecord
 pub struct zond_engine::record::SecurityRecord
+pub zond_engine::record::SecurityRecord::accepts: alloc::vec::Vec<zond_engine::record::AcceptedVersionRecord>
 pub zond_engine::record::SecurityRecord::alpn: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::record::SecurityRecord::certificate: core::option::Option<zond_engine::record::CertificateRecord>
 pub zond_engine::record::SecurityRecord::cipher_suite: core::option::Option<alloc::string::String>
@@ -11593,6 +12079,7 @@ pub zond_engine::record::SettingsRecord::sctp_technique: alloc::string::String
 pub zond_engine::record::SettingsRecord::send_mode: alloc::string::String
 pub zond_engine::record::SettingsRecord::service_detection: alloc::string::String
 pub zond_engine::record::SettingsRecord::tcp_technique: alloc::string::String
+pub zond_engine::record::SettingsRecord::tls_enumeration: bool
 pub zond_engine::record::SettingsRecord::traceroute: bool
 impl core::clone::Clone for zond_engine::record::SettingsRecord
 pub fn zond_engine::record::SettingsRecord::clone(&self) -> zond_engine::record::SettingsRecord
@@ -12221,6 +12708,7 @@ pub zond_engine::report::ScanSettings::sctp_technique: zond_engine::model::techn
 pub zond_engine::report::ScanSettings::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::report::ScanSettings::service_detection: zond_engine::config::ServiceDetection
 pub zond_engine::report::ScanSettings::tcp_technique: zond_engine::model::technique::TcpScanTechnique
+pub zond_engine::report::ScanSettings::tls_enumeration: bool
 pub zond_engine::report::ScanSettings::traceroute: bool
 impl core::clone::Clone for zond_engine::report::ScanSettings
 pub fn zond_engine::report::ScanSettings::clone(&self) -> zond_engine::report::ScanSettings
@@ -16109,6 +16597,7 @@ pub zond_engine::ZondConfig::segment_sweep: bool
 pub zond_engine::ZondConfig::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::ZondConfig::service_detection: zond_engine::config::ServiceDetection
 pub zond_engine::ZondConfig::tcp_technique: zond_engine::model::technique::TcpScanTechnique
+pub zond_engine::ZondConfig::tls_enumeration: bool
 pub zond_engine::ZondConfig::traceroute: bool
 impl zond_engine::config::ZondConfig
 pub fn zond_engine::config::ZondConfig::probe_tuning(&self) -> zond_engine::config::ProbeTuning

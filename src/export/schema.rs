@@ -93,6 +93,7 @@ use crate::model::host::{
 };
 use crate::model::ip::range::IpRange;
 use crate::model::port::{CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service};
+use crate::model::tls::{CipherSuite, VersionSupport};
 use crate::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, Refusal, ScanPhase,
     ScanReport, ScanSettings, ScanSummary, ScannerFailure, TargetScope,
@@ -922,6 +923,14 @@ pub struct SettingsDto {
     /// Whether the phase characterised the filter in front of each host that
     /// answered.
     pub characterise: bool,
+
+    /// Whether the phase established what each TLS port accepts, rather than
+    /// only what one handshake negotiated.
+    ///
+    /// A port whose `security` block lists no accepted versions is two things: a
+    /// scan that never enumerated, and one that did and found an endpoint
+    /// refusing every offer. Only this tells them apart.
+    pub tls_enumeration: bool,
     /// What the scan changed about the packets it sent, omitted when it changed
     /// nothing. See [`EvasionDto`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1021,6 +1030,7 @@ impl SettingsDto {
             detection: detection_class_name(settings.detection.ceiling()),
             traceroute: settings.traceroute,
             characterise: settings.characterise,
+            tls_enumeration: settings.tls_enumeration,
             evasion: settings.evasion.as_ref().map(EvasionDto::new),
             idle_scan: settings.idle_scan.map(|idle| IdleScanDto {
                 zombie: idle.zombie.to_string(),
@@ -1856,6 +1866,15 @@ pub struct SecurityDto<'a> {
     pub alpn: Vec<&'a str>,
     /// The presented X.509 certificate.
     pub certificate: Option<CertificateDto<'a>>,
+    /// What the endpoint turned out to accept, one entry per version, oldest
+    /// first. Left out where the scan did not enumerate.
+    ///
+    /// A different fact from `tls_version` and `cipher_suite` above, which are
+    /// what one handshake settled on. A port naming `TLSv1.3` there and listing
+    /// `TLSv1.0` here is a server that prefers the modern version and still
+    /// accepts the withdrawn one, which is the configuration an audit looks for.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accepts: Vec<AcceptedVersionDto>,
 }
 
 impl<'a> SecurityDto<'a> {
@@ -1868,6 +1887,80 @@ impl<'a> SecurityDto<'a> {
             certificate: security
                 .certificate()
                 .map(|cert| CertificateDto::new(cert, options)),
+            accepts: security
+                .support()
+                .versions()
+                .iter()
+                .map(AcceptedVersionDto::new)
+                .collect(),
+        }
+    }
+}
+
+/// One protocol version an endpoint accepted, and the suites it chose under it.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct AcceptedVersionDto {
+    /// The version, spelled the way every tool prints it: `SSLv3`, `TLSv1.0`
+    /// through `TLSv1.3`.
+    pub version: &'static str,
+    /// Whether a standards body has withdrawn it, and so whether its presence is
+    /// itself the finding.
+    pub deprecated: bool,
+    /// The suites accepted, in the order the server chose them. The first is
+    /// that server's own preference among everything offered, where the server
+    /// has one.
+    pub suites: Vec<AcceptedSuiteDto>,
+    /// Suites the server chose that this build does not carry, by number,
+    /// rendered as `0x` hex. Absent where there were none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unrecognised: Vec<String>,
+}
+
+impl AcceptedVersionDto {
+    /// Renders one version's worth of what an endpoint accepts.
+    pub fn new(support: &VersionSupport) -> Self {
+        Self {
+            version: support.version().name(),
+            deprecated: support.version().is_deprecated(),
+            suites: support.suites().iter().map(AcceptedSuiteDto::new).collect(),
+            unrecognised: support
+                .unrecognised()
+                .iter()
+                .map(|code| format!("0x{code:04X}"))
+                .collect(),
+        }
+    }
+}
+
+/// One cipher suite an endpoint accepted, and what is wrong with it.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct AcceptedSuiteDto {
+    /// The IANA name, which is what every other tool prints.
+    pub name: &'static str,
+    /// The wire number, as `0x` hex, for a reader matching against a registry.
+    pub code: String,
+    /// `strong`, `weak` or `insecure`, derived from the faults below rather than
+    /// stored beside them.
+    pub strength: &'static str,
+    /// Everything wrong with the suite, least costly first. Empty for a suite
+    /// with nothing against it.
+    pub faults: Vec<&'static str>,
+}
+
+impl AcceptedSuiteDto {
+    /// Renders one accepted suite.
+    pub fn new(suite: &CipherSuite) -> Self {
+        Self {
+            name: suite.name(),
+            code: format!("0x{:04X}", suite.code()),
+            strength: suite.strength().name(),
+            faults: suite
+                .faults()
+                .into_iter()
+                .map(|fault| fault.name())
+                .collect(),
         }
     }
 }

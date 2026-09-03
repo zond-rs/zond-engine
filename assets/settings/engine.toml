@@ -90,6 +90,26 @@
 #
 # scan_timeout = 3600
 
+# Whether to establish what each TLS port accepts, rather than only what one
+# handshake negotiated.
+#
+# Service detection completes one handshake per TLS port and records the version
+# and cipher that came out of it. This offers the endpoint each version in turn
+# and narrows the cipher list until it stops answering, so the report says what
+# the endpoint *would* negotiate: whether it still accepts TLS 1.0, RC4, 3DES or
+# an export cipher. That is the question a PCI scan or an internal audit asks,
+# and one handshake cannot answer it.
+#
+# The cost is connections. A current server costs about a dozen; one accepting
+# everything under three versions costs a few dozen. Each is a bare TCP
+# connection carrying one ClientHello and torn down before any handshake
+# completes, so no session is established and no application sees one. The
+# target's connection log sees every one of them.
+#
+# Worth setting host_timeout alongside this on anything unattended.
+#
+# tls_enumeration = false
+
 # Which segment a TCP port probe carries, and so what its answers mean.
 #
 #   syn     the only technique that identifies an open port positively.

@@ -101,13 +101,14 @@ use crate::model::host::Host;
 use crate::model::mac::MacAddr;
 use crate::model::port::PortSet;
 use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
+use crate::model::tls::TlsVersion;
 use crate::record::wire;
 use crate::record::{
-    CaptureRecord, CertificateRecord, DetectionIdRecord, DiscoveryRecord, EvasionSettingsRecord,
-    FailureRecord, FindingRecord, HardwareRecord, HopRecord, HostRecord, IdleScanRecord, OsRecord,
-    PhaseOriginRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord,
-    ReferenceRecord, RefusalRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord,
-    StatusReasonRecord, TelemetryRecord, WindowRecord,
+    AcceptedVersionRecord, CaptureRecord, CertificateRecord, DetectionIdRecord, DiscoveryRecord,
+    EvasionSettingsRecord, FailureRecord, FindingRecord, HardwareRecord, HopRecord, HostRecord,
+    IdleScanRecord, OsRecord, PhaseOriginRecord, PhaseRecord, PortRecord, PortsRecord,
+    ProbeStatsRecord, RangeRecord, ReferenceRecord, RefusalRecord, ScopeRecord, SecurityRecord,
+    ServiceRecord, SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
 };
 use crate::report::{ScanPhase, ScanReport};
 use crate::transport::probe::SendMode;
@@ -791,6 +792,7 @@ struct SettingsDto {
     detection: String,
     traceroute: bool,
     characterise: bool,
+    tls_enumeration: bool,
     /// What the scan changed about its packets, absent when it changed nothing.
     /// Deserialized into the journal's own record, then checked by
     /// [`checked_evasion`]: four of its fields are named vocabularies or
@@ -914,6 +916,7 @@ impl SettingsDto {
             detection: self.detection,
             traceroute: self.traceroute,
             characterise: self.characterise,
+            tls_enumeration: self.tls_enumeration,
             evasion: self.evasion,
             idle_scan: self.idle_scan,
         })
@@ -1516,6 +1519,7 @@ struct SecurityDto {
     cipher_suite: Option<String>,
     alpn: Vec<String>,
     certificate: Option<CertificateDto>,
+    accepts: Vec<AcceptedVersionDto>,
 }
 
 impl SecurityDto {
@@ -1525,8 +1529,65 @@ impl SecurityDto {
             cipher_suite: self.cipher_suite,
             alpn: self.alpn,
             certificate: maybe(self.certificate, CertificateDto::record)?,
+            accepts: self
+                .accepts
+                .into_iter()
+                .map(AcceptedVersionDto::record)
+                .collect::<Result<_, _>>()?,
         })
     }
+}
+
+/// `security.accepts`, what an enumeration established the endpoint accepts.
+///
+/// The exported form names each suite and gives its number in hex; only the
+/// number is read back. A name is the writing engine's word for a suite and the
+/// number is what the server actually sent, so the number is what survives a
+/// document written by one build and read by another.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct AcceptedVersionDto {
+    version: String,
+    suites: Vec<AcceptedSuiteDto>,
+    unrecognised: Vec<String>,
+}
+
+impl AcceptedVersionDto {
+    fn record(self) -> Result<AcceptedVersionRecord, String> {
+        known(
+            self.version.parse::<TlsVersion>().ok(),
+            "a TLS version",
+            &self.version,
+        )?;
+        Ok(AcceptedVersionRecord {
+            version: self.version,
+            suites: self
+                .suites
+                .into_iter()
+                .map(|suite| hex_code(&suite.code))
+                .collect::<Result<_, _>>()?,
+            unrecognised: self
+                .unrecognised
+                .iter()
+                .map(|code| hex_code(code))
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+/// One entry of `security.accepts[].suites`. Only the number is read; see
+/// [`AcceptedVersionDto`].
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct AcceptedSuiteDto {
+    code: String,
+}
+
+/// A cipher suite number as the schema writes it: `0x` and four hex digits.
+fn hex_code(text: &str) -> Result<u16, String> {
+    text.strip_prefix("0x")
+        .and_then(|digits| u16::from_str_radix(digits, 16).ok())
+        .ok_or_else(|| format!("'{text}' is not a cipher suite number"))
 }
 
 /// `certificate`, the presented leaf as the scan read it.

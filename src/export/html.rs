@@ -841,6 +841,48 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
             dim(&detail)
         );
 
+        // What the endpoint accepts, which is the finding a single negotiated
+        // version cannot carry: one line per version, worst suite first, so a
+        // reader scanning the page sees the withdrawn version and the broken
+        // cipher without opening anything.
+        for accepted in &security.accepts {
+            let mut detail = Vec::new();
+            if accepted.deprecated {
+                detail.push(esc("withdrawn"));
+            }
+            let insecure = accepted
+                .suites
+                .iter()
+                .filter(|suite| suite.strength != "strong")
+                .count();
+            if insecure > 0 {
+                detail.push(format!(
+                    "{insecure} of {} below strong",
+                    accepted.suites.len()
+                ));
+            }
+            if !accepted.unrecognised.is_empty() {
+                detail.push(format!("{} unnamed", accepted.unrecognised.len()));
+            }
+
+            let suites: Vec<String> = accepted
+                .suites
+                .iter()
+                .map(|suite| match suite.faults.is_empty() {
+                    true => esc(suite.name),
+                    false => format!("{} ({})", esc(suite.name), esc(&suite.faults.join(", "))),
+                })
+                .collect();
+
+            let _ = write!(
+                facts,
+                "<dt>accepts</dt><dd>{}{}<br>{}</dd>",
+                esc(accepted.version),
+                dim(&detail),
+                dim(&[suites.join(" · ")])
+            );
+        }
+
         if let Some(certificate) = &security.certificate {
             let mut detail = vec![format!("issued by {}", esc(certificate.issuer))];
             if !certificate.sans.is_empty() {

@@ -676,6 +676,15 @@ pub struct ScanSettings {
     /// apart.
     pub characterise: bool,
 
+    /// Whether the phase established what each TLS port accepts, rather than
+    /// only what one handshake negotiated.
+    ///
+    /// Recorded for the reason [`characterise`](Self::characterise) is. A port
+    /// whose security block names one version and lists no accepted suites is
+    /// two different findings: a scan that never enumerated, and one that did
+    /// and found an endpoint refusing every offer it was given.
+    pub tls_enumeration: bool,
+
     /// What the scan changed about the packets it sent, or `None` if it changed
     /// nothing. A filtered port found with a probe from a trusted source port is
     /// a different fact than the same port found with an ordinary probe; see
@@ -718,6 +727,7 @@ impl From<&ZondConfig> for ScanSettings {
             detection,
             traceroute,
             characterise,
+            tls_enumeration,
             evasion,
             idle_scan,
 
@@ -747,6 +757,7 @@ impl From<&ZondConfig> for ScanSettings {
             detection: *detection,
             traceroute: *traceroute,
             characterise: *characterise,
+            tls_enumeration: *tls_enumeration,
             evasion: EvasionRecord::from_profile(evasion),
             idle_scan: *idle_scan,
         }

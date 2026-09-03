@@ -1409,6 +1409,102 @@
               "type": "null"
             }
           ]
+        },
+        "accepts": {
+          "description": "What the endpoint turned out to accept, one entry per protocol version, oldest first. Absent where the scan did not enumerate; see `settings.tls_enumeration`. A different fact from `tls_version` and `cipher_suite`, which are what one handshake settled on: a port naming TLSv1.3 there and listing TLSv1.0 here is a server that prefers the modern version and still accepts the withdrawn one.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/accepted_version"
+          }
+        }
+      }
+    },
+    "accepted_version": {
+      "description": "One protocol version an endpoint accepted, and the cipher suites it chose under it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "deprecated",
+        "suites"
+      ],
+      "properties": {
+        "version": {
+          "description": "The version, spelled the way every tool prints it.",
+          "enum": [
+            "SSLv3",
+            "TLSv1.0",
+            "TLSv1.1",
+            "TLSv1.2",
+            "TLSv1.3"
+          ]
+        },
+        "deprecated": {
+          "description": "Whether a standards body has withdrawn this version: RFC 7568 for SSLv3, RFC 8996 for TLSv1.0 and TLSv1.1. An endpoint still accepting one is the finding, whatever suites sit under it.",
+          "type": "boolean"
+        },
+        "suites": {
+          "description": "The suites accepted, in the order the server chose them. The first is that server's own preference among everything offered, where the server has one; a server that takes the client's preference yields the same order and nothing here tells the two apart.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/accepted_suite"
+          }
+        },
+        "unrecognised": {
+          "description": "Suites the server chose that the scanning engine does not carry, by wire number in hex. Absent where there were none. A server negotiating one of these is negotiating something the report cannot grade, which is worth knowing rather than dropping.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^0x[0-9A-F]{4}$"
+          }
+        }
+      }
+    },
+    "accepted_suite": {
+      "description": "One cipher suite an endpoint accepted, and what is wrong with it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "code",
+        "strength",
+        "faults"
+      ],
+      "properties": {
+        "name": {
+          "description": "The IANA registry name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "description": "The wire number, in hex.",
+          "type": "string",
+          "pattern": "^0x[0-9A-F]{4}$"
+        },
+        "strength": {
+          "description": "Derived from `faults` rather than stored beside them: `strong` for a suite with nothing against it, `insecure` where its worst fault disqualifies it, `weak` otherwise.",
+          "enum": [
+            "strong",
+            "weak",
+            "insecure"
+          ]
+        },
+        "faults": {
+          "description": "Everything wrong with the suite, least costly first. Empty for a suite with nothing against it.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "no_forward_secrecy",
+              "sha1_mac",
+              "cbc_mode",
+              "small_block",
+              "rc4",
+              "md5_mac",
+              "export_grade",
+              "anonymous",
+              "null_cipher"
+            ]
+          }
         }
       }
     },
@@ -1483,7 +1579,8 @@
         "service_detection",
         "detection",
         "traceroute",
-        "characterise"
+        "characterise",
+        "tls_enumeration"
       ],
       "properties": {
         "send_mode": {
@@ -1583,6 +1680,10 @@
         },
         "traceroute": {
           "description": "Whether the phase measured the route to each host that answered. A host with no path is two different findings - a scan that did not look, and a scan that looked and got nothing back - and only this separates them.",
+          "type": "boolean"
+        },
+        "tls_enumeration": {
+          "description": "Whether the phase established what each TLS port accepts, rather than only what one handshake negotiated. A port whose security block lists no accepted versions is two things: a scan that never enumerated, and one that did and found an endpoint refusing every offer. Only this tells them apart.",
           "type": "boolean"
         },
         "characterise": {

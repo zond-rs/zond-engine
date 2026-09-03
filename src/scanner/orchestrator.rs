@@ -871,6 +871,138 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
     strategy::topology::characterise::characterise(ctx, subjects).await;
 }
 
+/// Establishes what each TLS port accepts, where the caller asked for it.
+///
+/// A pass of its own, and it runs last among the port-level passes because what
+/// it needs first is the list of ports that speak TLS at all. Service detection
+/// produces that: a port with a `security` record is one a handshake completed
+/// against, which is the only evidence this engine has that an endpoint is worth
+/// enumerating. A port nobody handshook is skipped rather than guessed at, so a
+/// scan run with service detection off enumerates nothing and says so through
+/// the setting it recorded.
+///
+/// ## What it costs the target
+///
+/// One bare TCP connection per offer, each carrying a single ClientHello and
+/// torn down before a handshake completes. Nothing is negotiated and no
+/// application-level session exists, so a target's *application* logs stay
+/// empty; its connection log does not, and on a server accepting many suites
+/// this is dozens of entries against one port. That is the whole reason the
+/// pass is opt-in.
+///
+/// Ports are walked with the same concurrency the service pass uses, and a host
+/// that has spent [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout)
+/// is left alone: this is the most expensive thing the engine does to a single
+/// endpoint, and the last place to spend a budget that has already run out.
+pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
+    if !cfg.tls_enumeration {
+        return;
+    }
+
+    // Snapshotted before anything awaits, so no store guard is held across a
+    // connection.
+    let targets = tls_ports(ctx);
+    if targets.is_empty() {
+        return;
+    }
+
+    info!("enumerating what {} TLS port(s) accept", targets.len());
+
+    let mut pool = ProbePool::new(
+        CONNECT_CONCURRENCY,
+        ctx.clone(),
+        ScannerKind::Service,
+        |found: Option<(
+            crate::model::ip::scoped::ScopedIp,
+            u16,
+            crate::model::tls::TlsSupport,
+        )>,
+         _audit| {
+            if let Some((key, number, support)) = found {
+                record_tls_support(ctx, key, number, support);
+            }
+        },
+    );
+
+    for (address, number) in targets {
+        if ctx.handle.should_stop() {
+            break;
+        }
+        if ctx.host_expired(address.addr()) {
+            continue;
+        }
+        pool.admit(enumerate_one(address, number)).await;
+    }
+
+    pool.drain().await;
+}
+
+/// Every `(address, port)` a handshake already completed against.
+///
+/// The `security` record is the filter: it is written only where a TLS
+/// handshake succeeded, so it names exactly the endpoints an enumeration has a
+/// reason to ask. Guessing from the port number instead would spend a dozen
+/// connections on every open port a scan happened to find.
+fn tls_ports(ctx: &ScanContext) -> Vec<(crate::model::ip::scoped::ScopedIp, u16)> {
+    let mut targets = Vec::new();
+    for host in ctx.store.iter() {
+        let address = host.value().scoped_ip();
+        for port in host.value().ports() {
+            // TCP only: a `security` record is written by a completed TLS
+            // handshake, and nothing here speaks DTLS.
+            if port.protocol() == Protocol::Tcp
+                && port.state() == PortState::Open
+                && port.security().is_some()
+            {
+                targets.push((address.clone(), port.number()));
+            }
+        }
+    }
+    targets
+}
+
+/// Enumerates one endpoint, or `None` where its address cannot be dialled.
+async fn enumerate_one(
+    address: crate::model::ip::scoped::ScopedIp,
+    number: u16,
+) -> Option<(
+    crate::model::ip::scoped::ScopedIp,
+    u16,
+    crate::model::tls::TlsSupport,
+)> {
+    let socket = address.to_socket_addr(number)?;
+    let support = crate::fingerprint::enumerate_tls(socket).await;
+    // An endpoint that accepted nothing is left alone rather than recorded as
+    // an empty enumeration: the two are the same value, and writing it back
+    // would announce a host update that carries no new fact.
+    (!support.is_empty()).then_some((address, number, support))
+}
+
+/// Folds what an endpoint accepts back into its port.
+///
+/// Through [`Host::add_port`](crate::model::host::Host::add_port) rather than by
+/// reaching into the recorded port, so the fold takes the same confidence-driven
+/// path every other pass does. The port carried here holds nothing but the
+/// enumeration: `Security::merge` fills what is missing and displaces nothing,
+/// so the version and certificate the service pass recorded survive intact.
+fn record_tls_support(
+    ctx: &ScanContext,
+    key: crate::model::ip::scoped::ScopedIp,
+    number: u16,
+    support: crate::model::tls::TlsSupport,
+) {
+    let findings = support.findings();
+    let mut carrier = crate::model::port::Port::new(number, Protocol::Tcp, PortState::Open)
+        .with_security(crate::model::port::Security::new().with_support(support));
+    for finding in findings {
+        carrier.add_finding(finding);
+    }
+
+    ctx.update_host(key, |host| {
+        host.add_port(carrier);
+    });
+}
+
 /// Runs the active operating-system echo probe, where the caller asked for it
 /// and the passive sources left hosts unnamed.
 ///
@@ -2023,5 +2155,214 @@ mod tests {
             .find(|port| port.number() == 80)
             .expect("port 80");
         assert_eq!(port.findings().count(), 0);
+    }
+
+    // ── The TLS enumeration pass ─────────────────────────────────────────────
+
+    /// A server accepting exactly one suite under TLS 1.2 and refusing
+    /// everything else.
+    ///
+    /// It reads the offer rather than counting connections, because the pass
+    /// walks the five versions concurrently: a server answering "the first
+    /// connection" would answer whichever version happened to arrive first, and
+    /// the walk would credit none of them.
+    async fn tls_endpoint(suite: u16) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+        let addr = listener.local_addr().expect("has an address");
+
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut hello = vec![0u8; 4096];
+                let Ok(read) = stream.read(&mut hello).await else {
+                    continue;
+                };
+                let record = match answer_to(&hello[..read], suite) {
+                    Some(record) => record,
+                    // Fatal handshake_failure: these terms are refused.
+                    None => vec![0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28],
+                };
+                let _ = stream.write_all(&record).await;
+            }
+        });
+
+        addr
+    }
+
+    /// A ServerHello for `suite` where the hello offered TLS 1.2 and named it,
+    /// and `None` otherwise. Walked by offset off the RFC layout.
+    fn answer_to(hello: &[u8], suite: u16) -> Option<Vec<u8>> {
+        // Record header, handshake header, then the version field.
+        let version = u16::from_be_bytes([*hello.get(9)?, *hello.get(10)?]);
+        if version != 0x0303 {
+            return None;
+        }
+
+        // Past the random, then the session id, then the suite list.
+        let after_random = 5 + 4 + 2 + 32;
+        let session_len = usize::from(*hello.get(after_random)?);
+        let rest = hello.get(after_random + 1 + session_len..)?;
+        let len = usize::from(u16::from_be_bytes([*rest.first()?, *rest.get(1)?]));
+        let offered = rest.get(2..2 + len)?;
+        if !offered
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .any(|pair| u16::from_be_bytes(*pair) == suite)
+        {
+            return None;
+        }
+
+        let mut body = vec![2u8, 0, 0, 0];
+        body.extend_from_slice(&0x0303u16.to_be_bytes());
+        body.extend_from_slice(&[0x5A; 32]);
+        body.push(0);
+        body.extend_from_slice(&suite.to_be_bytes());
+        body.push(0);
+        let length = (body.len() - 4) as u32;
+        body[1..4].copy_from_slice(&length.to_be_bytes()[1..]);
+
+        let mut record = vec![0x16, 0x03, 0x03];
+        record.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        record.extend_from_slice(&body);
+        Some(record)
+    }
+
+    /// A context holding one host with one open TLS port at `port`, which is
+    /// what the pass selects on.
+    fn context_with_tls_port(port: u16) -> (crate::scanner::session::ScanSession, ScanContext) {
+        use crate::model::host::Host;
+        use crate::model::port::{Port, Security};
+
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        let address: IpAddr = "127.0.0.1".parse().expect("an address");
+
+        let mut host = Host::new(address);
+        host.set_status(crate::model::host::HostStatus::Up);
+        // The `security` record is the filter the pass selects on: it is written
+        // only where a handshake completed, so a port without one is skipped.
+        host.add_port(
+            Port::new(port, Protocol::Tcp, PortState::Open)
+                .with_security(Security::new().with_tls_version("TLSv1.2")),
+        );
+        ctx.store.insert(host.scoped_ip(), host);
+
+        (session, ctx)
+    }
+
+    /// What the port carries after a pass, or `None` where it carries no
+    /// enumeration.
+    fn recorded_support(ctx: &ScanContext, port: u16) -> Option<crate::model::tls::TlsSupport> {
+        let address: IpAddr = "127.0.0.1".parse().expect("an address");
+        ctx.read_host(
+            crate::model::ip::scoped::ScopedIp::unscoped(address),
+            |host| {
+                host.ports()
+                    .find(|held| held.number() == port)
+                    .and_then(|held| held.security())
+                    .map(|security| security.support().clone())
+            },
+        )
+        .flatten()
+    }
+
+    /// The dial governs the pass. Off, nothing is asked and nothing is written,
+    /// which is what keeps a default scan from paying for this.
+    #[tokio::test]
+    async fn the_pass_asks_nothing_unless_it_is_switched_on() {
+        let addr = tls_endpoint(0xC02F).await;
+        let (_session, ctx) = context_with_tls_port(addr.port());
+
+        let cfg = crate::config::ZondConfig::default();
+        assert!(!cfg.tls_enumeration, "off by default");
+        run_tls_enumeration(&ctx, &cfg).await;
+
+        let support = recorded_support(&ctx, addr.port()).expect("the port is still there");
+        assert!(
+            support.is_empty(),
+            "nothing was asked, so nothing is recorded"
+        );
+    }
+
+    /// Switched on, the pass reaches the endpoint, writes what it accepts back
+    /// onto the port, and leaves the handshake's own record intact.
+    ///
+    /// The write-back is the part worth testing: it folds through the same
+    /// confidence-driven merge every other pass uses, and a merge in the wrong
+    /// direction would drop the enumeration without a word.
+    #[tokio::test]
+    async fn the_pass_records_what_the_endpoint_accepts() {
+        // A suite with a fault, so the findings path is exercised too.
+        let addr = tls_endpoint(0x000A).await;
+        let (_session, ctx) = context_with_tls_port(addr.port());
+
+        let cfg = crate::config::ZondConfig {
+            tls_enumeration: true,
+            ..Default::default()
+        };
+        run_tls_enumeration(&ctx, &cfg).await;
+
+        let support = recorded_support(&ctx, addr.port()).expect("the port is still there");
+        assert!(support.accepts(crate::model::tls::TlsVersion::Tls12));
+        assert_eq!(support.suites().len(), 1);
+
+        let address: IpAddr = "127.0.0.1".parse().expect("an address");
+        ctx.read_host(
+            crate::model::ip::scoped::ScopedIp::unscoped(address),
+            |host| {
+                let port = host
+                    .ports()
+                    .find(|held| held.number() == addr.port())
+                    .expect("the port");
+
+                assert_eq!(
+                    port.security().and_then(|s| s.tls_version()),
+                    Some("TLSv1.2"),
+                    "the handshake's own record survives the fold"
+                );
+                assert!(
+                    port.findings().count() > 0,
+                    "a suite with a fault produces a finding on the port"
+                );
+            },
+        )
+        .expect("the host is recorded");
+    }
+
+    /// A host that has spent its budget is left alone. This is the most
+    /// expensive thing the engine does to one endpoint and the last place to
+    /// spend a budget that has already run out.
+    #[tokio::test]
+    async fn a_host_out_of_time_is_not_enumerated() {
+        let addr = tls_endpoint(0xC02F).await;
+
+        let (_session, ctx) = {
+            use crate::model::host::Host;
+            use crate::model::port::{Port, Security};
+
+            let (session, ctx) = crate::scanner::session::ScanSession::builder()
+                .host_timeout(Some(std::time::Duration::ZERO))
+                .build();
+            let address: IpAddr = "127.0.0.1".parse().expect("an address");
+            let mut host = Host::new(address);
+            host.set_status(crate::model::host::HostStatus::Up);
+            host.add_port(
+                Port::new(addr.port(), Protocol::Tcp, PortState::Open)
+                    .with_security(Security::new().with_tls_version("TLSv1.2")),
+            );
+            ctx.store.insert(host.scoped_ip(), host);
+            (session, ctx)
+        };
+
+        let cfg = crate::config::ZondConfig {
+            tls_enumeration: true,
+            ..Default::default()
+        };
+        run_tls_enumeration(&ctx, &cfg).await;
+
+        let support = recorded_support(&ctx, addr.port()).expect("the port is still there");
+        assert!(support.is_empty(), "a spent budget skips the endpoint");
     }
 }

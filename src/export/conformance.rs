@@ -38,6 +38,7 @@ use crate::model::host::status::StatusProtocol;
 use crate::model::host::{Filtering, HostStatus, NetworkRole};
 use crate::model::port::{PortState, Protocol};
 use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
+use crate::model::tls::{SuiteFault, SuiteStrength, TlsVersion};
 use crate::record::wire::{
     attachment_source_name, confidence_name, detection_class_name, filtering_name,
     host_status_name, network_role_name, port_state_name, protocol_name, scan_kind_name,
@@ -181,6 +182,18 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
         (
             "/$defs/settings/properties/tcp_technique/enum",
             named(TcpScanTechnique::ALL.iter().map(|t| t.name()).collect()),
+        ),
+        (
+            "/$defs/accepted_version/properties/version/enum",
+            named(TlsVersion::ALL.iter().map(|v| v.name()).collect()),
+        ),
+        (
+            "/$defs/accepted_suite/properties/strength/enum",
+            named(SuiteStrength::ALL.iter().map(|s| s.name()).collect()),
+        ),
+        (
+            "/$defs/accepted_suite/properties/faults/items/enum",
+            named(SuiteFault::ALL.iter().map(|f| f.name()).collect()),
         ),
         (
             "/$defs/settings/properties/sctp_technique/enum",
@@ -408,6 +421,9 @@ fn an_ordinary_report_matches_the_schema() {
 fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
     /// `$defs` entry, then field.
     const OMITTED: &[(&str, &str)] = &[
+        // A version whose every accepted suite is one this build carries, which
+        // is every version against every server anyone has configured.
+        ("accepted_version", "unrecognised"),
         ("attachment", "device_mac"),
         ("attachment", "device_name"),
         ("attachment", "management_address"),
@@ -426,6 +442,8 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // budget.
         ("phase", "timed_out"),
         ("scope", "listened"),
+        // A port on a scan that did not enumerate, which is the default.
+        ("security", "accepts"),
         ("settings", "evasion"),
         ("settings", "idle_scan"),
     ];
@@ -914,6 +932,16 @@ fn the_journal_and_the_report_spell_a_host_the_same_way() {
         "retry",
         "services",
         "systems",
+        // What an accepted cipher suite is worth. The journal stores each suite
+        // by its wire number alone and the report spells out the name, the
+        // grade and the faults, all of which are derived from the number by the
+        // build doing the reading. Storing them would let a record disagree with
+        // the engine that reads it back, which is the one thing a derivation
+        // cannot do.
+        "code",
+        "strength",
+        "faults",
+        "deprecated",
     ];
 
     let report = fixture::report();

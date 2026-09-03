@@ -17,6 +17,12 @@
   says what the evidence actually supports.
 * **Service fingerprinting:** identify the service, product and version behind an
   open port using an embedded signature database.
+* **TLS cipher and protocol enumeration:** what a TLS endpoint *accepts*, not
+  only what one handshake negotiated. Offers each version in turn and narrows the
+  cipher list until the server stops answering, so a report can say whether an
+  endpoint still takes TLS 1.0, RC4, 3DES or an export cipher. Every accepted
+  suite is graded from its own parts, and the withdrawn versions and broken
+  ciphers become findings with the RFC that withdrew them attached.
 * **Path measurement:** the routers between this machine and each host that
   answered, traced with whatever probe already reached it — a SYN to an open port
   where the scan found one, an echo otherwise. Paths shared between hosts are
@@ -256,6 +262,53 @@ distance is read out of a reply.
 Paths appear in the JSON report as `path` on each host, and in the nmap-XML
 export as `<trace>` and `<distance>` — the one finding this engine produces that
 nmap's format already has a first-class place for.
+
+## Asking what a TLS port accepts
+
+A handshake tells you what an endpoint negotiated with the client that turned
+up. An audit asks something else: what would it negotiate with a client that
+asked for something worse? Set `tls_enumeration` and the scan finds out.
+
+```rust
+let mut cfg = ZondConfig::default();
+cfg.tls_enumeration = true;
+cfg.host_timeout = Some(Duration::from_secs(120));
+```
+
+It runs after service detection, against the ports a handshake already completed
+against, and it offers each version from SSL 3.0 to TLS 1.3 in turn. Each answer
+names one cipher suite, which is removed from the offer before the next
+question, so the walk ends when the server stops answering. What comes out is
+every version accepted and every suite under it, in the order the server chose
+them.
+
+None of this goes through `rustls`, which the certificate path uses. That
+library implements TLS 1.2 and 1.3 and the nine AEAD suites of its ring
+provider, and declines by design to speak SSL 3.0, RC4, 3DES or an export
+cipher, which are exactly the configurations a report is asked about. So the
+ClientHello is built by hand and the ServerHello read by hand, and no handshake
+is ever completed: the connection is torn down once the answer is read, so
+nothing is negotiated and no application-level session exists.
+
+Each accepted suite is graded from its own parts rather than from a table beside
+them. `TLS_RSA_WITH_3DES_EDE_CBC_SHA` says it exchanges keys with static RSA,
+encrypts with 3DES in CBC mode and authenticates with SHA-1, and the report
+names all four faults that follow: no forward secrecy, a SHA-1 MAC, CBC mode,
+and a 64-bit block. A suite added to the registry is graded by the same rule, so
+nothing can arrive ungraded.
+
+Findings are grouped by fault rather than by suite. An endpoint accepting nine
+RC4 suites has one problem and one line of configuration to fix, so it produces
+one finding with the suites in its excerpt. A withdrawn version is its own
+finding, separately from whatever ciphers sit under it, and cites the RFC that
+withdrew it.
+
+Two things worth knowing. It costs connections: about a dozen against a current
+server, a few dozen against one that accepts everything under three versions,
+and the target's connection log sees all of them. And it sends no SNI, because
+the name a target was resolved from is not recorded by the time this runs, so an
+endpoint that refuses a nameless hello reads as one that accepted nothing. Both
+are why the pass is opt-in and why `host_timeout` is worth setting beside it.
 
 ## Excluding addresses from a scan
 
