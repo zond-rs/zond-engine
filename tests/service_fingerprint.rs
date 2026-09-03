@@ -115,3 +115,64 @@ async fn a_banner_naming_an_operating_system_reaches_the_host_record() {
         "got {os:?}"
     );
 }
+
+/// A host that contradicts itself must not be better attested than one that
+/// spoke once.
+///
+/// The banner is the most freely chosen thing a host emits, and a scan reads one
+/// per port, so this is the shape a machine can arrange for itself: three SSH
+/// banners naming three Debian releases it cannot all be running. Combined item
+/// by item they read as three witnesses agreeing on Linux and resolved to 91,
+/// eight of them to 95, past the point a caller treats an answer as settled.
+///
+/// Written here rather than beside `resolve`'s own tests because the evidence
+/// has to arrive the way a scan delivers it. `identify` is called once per port
+/// by the service pass, which is what files three items under one source, and
+/// hand-built evidence is what let this stand.
+#[tokio::test]
+async fn a_host_contradicting_itself_gains_no_confidence() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    let honest = spawn_banner_server(b"SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3\r\n").await;
+    let once = run_scan(
+        target_map(LOOPBACK, &honest.port.to_string()),
+        &test_config(),
+    )
+    .await;
+    let baseline = once
+        .host(LOOPBACK)
+        .and_then(|host| host.os().map(|os| os.accuracy()))
+        .expect("one banner names a system");
+
+    let servers = [
+        spawn_banner_server(b"SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4\r\n").await,
+        spawn_banner_server(b"SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3\r\n").await,
+        spawn_banner_server(b"SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u2\r\n").await,
+    ];
+    let ports: Vec<String> = servers.iter().map(|s| s.port.to_string()).collect();
+    let outcome = run_scan(target_map(LOOPBACK, &ports.join(",")), &test_config()).await;
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+
+    // Non-vacuity: the three did reach the record separately. Were they folded
+    // into one item on the way in, this would pass without saying anything about
+    // the arithmetic it is here to pin.
+    assert_eq!(
+        host.os_evidence().count(),
+        3,
+        "three distinct claims, which is what makes the count meaningful"
+    );
+
+    let os = host.os().expect("the family is still named");
+    assert_eq!(
+        os.accuracy(),
+        baseline,
+        "three contradictory banners are one source speaking three times, got {os:?}"
+    );
+    assert!(
+        os.generation().is_none(),
+        "and the release the three disagree about is not reported, got {os:?}"
+    );
+}
