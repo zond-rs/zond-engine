@@ -13478,6 +13478,7 @@ pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::host_has_answe
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::host_rtt(&self, &core::net::ip_addr::IpAddr) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::is_empty(&self) -> bool
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::len(&self) -> usize
+pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::names_attempt(&self, &K, core::option::Option<&T>) -> bool
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::new(zond_engine::scanner::pacing::retry::RetryPolicy, usize) -> Self
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::next_due(&self) -> core::option::Option<std::time::Instant>
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::rearm(&mut self, core::net::ip_addr::IpAddr, K, T, std::time::Instant)
@@ -14552,7 +14553,7 @@ pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::admitting(&self, 
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::finish(&mut self, zond_engine::report::ScannerKind, &str, &str, u128, zond_engine::report::StopReason)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::judge_timeout(&mut self, core::net::ip_addr::IpAddr)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_answer<P: core::marker::Copy>(&mut self, &zond_engine::scanner::pacing::retry::Resolution<P>)
-pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_host_down(&mut self, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr)
+pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_host_down(&mut self, &zond_engine::scanner::strategy::ports::ProbeTarget, core::option::Option<T>, core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_send(&mut self, bool, bool)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::seed_timing(&mut self)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::stop_reason(&self, bool) -> core::option::Option<zond_engine::report::StopReason>

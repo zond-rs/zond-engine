@@ -322,7 +322,9 @@ impl SctpPortScanner {
             // Nobody could reach the address at all, so the message says nothing
             // about the port it happened to quote and the probe is left to
             // retire on its own schedule.
-            Unreachable::Host => self.core.record_host_down(key.0, reply.source),
+            Unreachable::Host => {
+                self.core.record_host_down(&key, token, reply.source);
+            }
             // Every other code is a refusal, and none of them is a closed port:
             // a closed SCTP port answers with an ABORT of its own, so an ICMP
             // error means the probe was stopped rather than served. Protocol
