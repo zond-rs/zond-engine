@@ -56,6 +56,31 @@
 //! status is backed by a packet. So `Unknown` is silence wearing a variant, and
 //! a newer source's `Unknown` never overrides an older verdict.
 //!
+//! ### What a merge does not enforce, and a scan does
+//!
+//! [`Exclusions`](crate::model::exclusion::Exclusions) is not a parameter here,
+//! and that is worth saying rather than leaving to be discovered. The exclusion
+//! promise — no packet addressed to an excluded address, and no excluded address
+//! in the report — is enforced at the two points a *scan* has: before anything is
+//! opened, and at
+//! [`write_host`](crate::scanner::session::ScanContext::write_host) on every
+//! finding. A merge is not a scan. It probes nothing, so the first point does not
+//! apply, and it folds documents somebody else's scans produced, so the second
+//! has nothing to gate.
+//!
+//! So a source that walked an address this caller now excludes contributes that
+//! address, and the merged report carries it. That is the honest outcome — the
+//! document really does record what that scan found — and it is a caller's to
+//! act on: an engagement whose scope narrowed between one scan and the next has
+//! a policy question that no fold can answer for it.
+//!
+//! What the merged report does give them is the means to see it. Every source's
+//! phase is kept, each with the scope it walked and the ranges it withheld, so
+//! an address can be traced to the source that claimed it and checked against
+//! that source's own scope. The exclusion module's point that the promise is
+//! *checkable from the report* holds per phase, which is where a merged report
+//! keeps it.
+//!
 //! ### What a merge does not need, and a comparison does
 //!
 //! A comparison needs [`Coverage`](crate::diff::Coverage), because a host in one
