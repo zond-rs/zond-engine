@@ -405,6 +405,61 @@ mod tests {
         );
     }
 
+    /// Every source's ceiling in one place, because no single place held them.
+    ///
+    /// The threshold a caller reads to decide whether to stop probing is 85, and
+    /// each source is priced below it on purpose: a banner because the software
+    /// is not always the host, a stack reading because one packet's fields are
+    /// one observation, a hostname because somebody typed it. What none of those
+    /// arguments said is that they have to hold *together*, and the price list
+    /// lives in four modules that do not read each other.
+    ///
+    /// So the rule is stated here: whatever one source says, however often it
+    /// says it, a second source is still needed to settle a host. The match is
+    /// exhaustive, so a sixth source cannot be added without pricing it against
+    /// this.
+    #[test]
+    fn no_single_source_settles_a_host() {
+        use super::super::{AGENT_CEILING, BANNER_CEILING, MAX_STACK_ACCURACY};
+
+        let every = [
+            OsSource::TcpStack,
+            OsSource::HardwareVendor,
+            OsSource::ServiceBanner,
+            OsSource::SnmpAgent,
+            OsSource::Hostname,
+        ];
+
+        for source in every {
+            let ceiling = match source {
+                OsSource::TcpStack => f32::from(MAX_STACK_ACCURACY) / 100.0,
+                OsSource::HardwareVendor => super::super::hardware::CONFIDENCE,
+                OsSource::ServiceBanner => BANNER_CEILING,
+                OsSource::SnmpAgent => AGENT_CEILING,
+                OsSource::Hostname => super::super::hostname::CONFIDENCE,
+            };
+
+            // More claims than a host will retain, all from this one source and
+            // all naming the family they are counted for.
+            let many: Vec<OsEvidence> = (0..20)
+                .map(|nth| OsEvidence {
+                    version: Some(nth.to_string()),
+                    ..evidence("Linux", ceiling, source)
+                })
+                .collect();
+
+            // Two of them price themselves under the reporting floor and name
+            // nothing at all alone, which is the same answer more emphatically.
+            if let Some(resolved) = resolve(many) {
+                assert!(
+                    !resolved.to_fingerprint().is_highly_confident(),
+                    "{source:?} settled a host on its own at {}",
+                    resolved.accuracy
+                );
+            }
+        }
+    }
+
     /// A host answering the same question many ways is one witness, whatever it
     /// says. This is the property the ceilings rest on: a banner is held to
     /// [`BANNER_CEILING`](super::super::BANNER_CEILING) and a stack reading to
