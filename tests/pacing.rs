@@ -26,6 +26,8 @@
 
 mod common;
 
+use std::time::{Duration, Instant};
+
 use common::fake_net::{FakeNet, Layer4, Policy};
 use common::*;
 use zond_engine::model::port::PortState;
@@ -190,4 +192,141 @@ async fn a_host_that_refuses_everything_is_answering_and_not_losing() {
 
     assert_eq!(states.len(), WIDE as usize);
     assert!(states.iter().all(|&state| state == PortState::Closed));
+}
+
+// ---------------------------------------------------------------------------
+// The gap between two probes at one host
+// ---------------------------------------------------------------------------
+
+/// Few enough ports that the whole scan fits inside a test's patience at a gap
+/// wide enough to measure.
+const SPACED_PORTS: u16 = 8;
+
+/// Wide enough that eight of them are unmistakably longer than the scan would
+/// otherwise take, and short enough that the test costs a fifth of a second.
+const GAP: Duration = Duration::from_millis(25);
+
+/// A scan spaced at one host still leaves every port with the verdict it earned,
+/// and takes at least as long as the spacing it was given.
+///
+/// The two halves are the whole feature. A probe held for its host's next slot
+/// has been taken off the stream and owes a verdict, so a queue that lost one
+/// would report an open port as whatever the technique reads silence as — the
+/// same answer a firewall produces, and indistinguishable from it. And a gap
+/// that did not actually delay anything would be a bound the report records and
+/// the scan never applied.
+///
+/// The timing assertion is a lower bound on purpose. An upper bound would be a
+/// claim about the machine the test runs on.
+#[tokio::test]
+async fn a_scan_spaced_at_one_host_still_answers_every_port_and_takes_the_time() {
+    let ports: Vec<u16> = (FIRST..FIRST + SPACED_PORTS).collect();
+
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for &port in &ports {
+        net = net.host(TARGET, port, Policy::open());
+    }
+
+    let (session, ctx) = ScanSession::builder()
+        .host_probe_interval(Some(GAP))
+        .build();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        ports.len(),
+    );
+
+    let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
+    let started = Instant::now();
+    run_port_scanner(&mut scanner, targets).await;
+    let elapsed = started.elapsed();
+
+    let host = session
+        .hosts()
+        .get(TARGET)
+        .expect("the target answered and so is on record");
+
+    for &port in &ports {
+        let recorded = host
+            .ports()
+            .find(|recorded| recorded.number() == port)
+            .unwrap_or_else(|| panic!("port {port} was given to the scan and has no verdict"));
+        assert_eq!(
+            recorded.state(),
+            PortState::Open,
+            "port {port} answered, and being held for the gap is not a reason to lose that"
+        );
+    }
+
+    // The first probe waits for nothing, so the run is bounded below by the
+    // seven gaps between the eight of them.
+    let least = GAP * u32::from(SPACED_PORTS - 1);
+    assert!(
+        elapsed >= least,
+        "eight probes at one host with a {GAP:?} gap cannot finish in {elapsed:?}"
+    );
+}
+
+/// A scan that stops while probes are still held reports them as never asked.
+///
+/// The failure this guards against is the worst one the queue can produce. A
+/// held first attempt has been taken off the target stream and is on no ledger,
+/// so nothing else accounts for it: without the account at the end of the loop
+/// it is not a wrong verdict but a *missing* one, the port simply absent from
+/// the host, which is the shortfall a reader cannot see.
+///
+/// `Unasked` and not `Filtered` is the whole point. Both would leave the port
+/// with no service behind it, and only one of them is true.
+#[tokio::test]
+async fn probes_still_held_when_a_scan_stops_are_recorded_as_never_asked() {
+    let ports: Vec<u16> = (FIRST..FIRST + SPACED_PORTS).collect();
+
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for &port in &ports {
+        net = net.host(TARGET, port, Policy::open());
+    }
+
+    // A gap far wider than the budget, so the scan stops with most of its
+    // probes still waiting for a slot they will never get.
+    let (session, ctx) = ScanSession::builder()
+        .host_probe_interval(Some(Duration::from_secs(30)))
+        .scan_timeout(Some(Duration::from_millis(150)))
+        .build();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        ports.len(),
+    );
+
+    let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
+    run_port_scanner(&mut scanner, targets).await;
+
+    let host = session
+        .hosts()
+        .get(TARGET)
+        .expect("the first probe was sent, so the target is on record");
+
+    let mut unasked = 0;
+    for &port in &ports {
+        let recorded = host
+            .ports()
+            .find(|recorded| recorded.number() == port)
+            .unwrap_or_else(|| {
+                panic!("port {port} was given to the scan and is absent from the host entirely")
+            });
+        match recorded.state() {
+            PortState::Unasked => unasked += 1,
+            PortState::Open => {}
+            other => panic!("port {port} was held or answered, and reads as {other:?}"),
+        }
+    }
+
+    assert!(
+        unasked > 0,
+        "the gap outlasted the budget, so some ports must be reported as never asked"
+    );
 }

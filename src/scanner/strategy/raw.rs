@@ -132,13 +132,38 @@ pub(super) const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// [`pacing_for`], where getting this wrong is silent.
 pub(super) const MIN_SEND_TICK: Duration = Duration::from_millis(1);
 
-/// The rate a scan runs at, given what the caller asked for.
+/// The rate a scan runs at, given the bounds the caller asked for.
 ///
 /// A configured zero is a caller error rather than an instruction to stall, and
 /// falls back to the engine's own rate the same way an unset one does. Pacing at
 /// one probe a second would honour the number and not the intent.
-pub(super) fn rate_or(configured: Option<NonZeroU32>, default: NonZeroU32) -> NonZeroU32 {
-    configured.unwrap_or(default)
+///
+/// `floor` lifts a scanner's own default, which is the case it exists for: a
+/// plan large enough that the scan's budget runs out before its targets do. It
+/// does not lift a `ceiling` the caller set. Those two are a throughput wish and
+/// a safety limit, and a floor that overrode the limit would push a target the
+/// operator had already said must not be pushed.
+///
+/// What the answer *means* is the strategy's own, and the four that ask differ:
+/// a sweep and a UDP scan are paced by this number, while a TCP scan reads it as
+/// a ceiling and paces itself on
+/// [`CongestionWindow`](crate::scanner::pacing::congestion::CongestionWindow).
+/// A floor therefore raises a pace in one place and a ceiling in another, and
+/// overrides the window in neither.
+pub(super) fn rate_within(
+    ceiling: Option<NonZeroU32>,
+    floor: Option<NonZeroU32>,
+    default: NonZeroU32,
+) -> NonZeroU32 {
+    let rate = ceiling.unwrap_or(default);
+    let lifted = match floor {
+        Some(floor) => rate.max(floor),
+        None => rate,
+    };
+    match ceiling {
+        Some(ceiling) => lifted.min(ceiling),
+        None => lifted,
+    }
 }
 
 /// How often to wake and how many probes to release each time, for a sweep
@@ -756,15 +781,51 @@ mod tests {
     /// this holds is now only the one a caller means: no ceiling at all.
     ///
     /// Zero used to arrive here as `Some(0)` and resolve to the engine's own
-    /// rate, at three call sites of which only this one went through `rate_or`,
-    /// while the report recorded the ceiling the caller believed they had set.
+    /// rate, at three call sites of which only this one went through the
+    /// resolver, while the report recorded the ceiling the caller believed they
+    /// had set.
     #[test]
     fn an_unset_rate_falls_back_to_the_default_and_a_set_one_is_obeyed() {
-        assert_eq!(rate_or(None, PROBE_RATE_PER_SEC), PROBE_RATE_PER_SEC);
         assert_eq!(
-            rate_or(NonZeroU32::new(500), PROBE_RATE_PER_SEC).get(),
+            rate_within(None, None, PROBE_RATE_PER_SEC),
+            PROBE_RATE_PER_SEC
+        );
+        assert_eq!(
+            rate_within(NonZeroU32::new(500), None, PROBE_RATE_PER_SEC).get(),
             500,
             "a rate the caller meant is the rate they get"
+        );
+    }
+
+    /// The floor lifts a default and stops at a ceiling.
+    ///
+    /// The second case is the one worth pinning. A floor above an explicit
+    /// ceiling is a contradiction the caller can express in a settings file, and
+    /// resolving it the other way would push a target the operator had said must
+    /// not be pushed, on the strength of a throughput preference.
+    #[test]
+    fn a_floor_raises_the_default_but_never_a_ceiling() {
+        let default = PROBE_RATE_PER_SEC;
+
+        assert_eq!(
+            rate_within(None, NonZeroU32::new(default.get() * 2), default).get(),
+            default.get() * 2,
+            "with no ceiling set, a floor above the engine's own rate is the rate"
+        );
+        assert_eq!(
+            rate_within(None, NonZeroU32::new(1), default),
+            default,
+            "a floor below the engine's own rate changes nothing"
+        );
+        assert_eq!(
+            rate_within(NonZeroU32::new(50), NonZeroU32::new(5_000), default).get(),
+            50,
+            "the ceiling wins: a safety limit is not traded away for a throughput wish"
+        );
+        assert_eq!(
+            rate_within(NonZeroU32::new(5_000), NonZeroU32::new(50), default).get(),
+            5_000,
+            "a ceiling already above the floor is left where it is"
         );
     }
 }

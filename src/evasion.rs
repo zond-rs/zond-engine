@@ -156,10 +156,12 @@ pub struct EvasionProfile {
     /// `None` to send probes whole.
     ///
     /// Splits the IP packet so a stateless filter or cheap IDS keyed on a whole
-    /// TCP header never sees one. IPv4 only, and only over a self-built Ethernet
+    /// TCP header never sees one. Both families: IPv4 splits the header itself,
+    /// IPv6 through a fragment extension header. Only over a self-built Ethernet
     /// frame, so setting it opens the link-layer send path (see
-    /// [`effective_send_mode`](Self::effective_send_mode)). An IPv6 destination,
-    /// or a value too small to carry a header and a fragment, is refused.
+    /// [`effective_send_mode`](Self::effective_send_mode)). A value too small to
+    /// carry a header and a fragment is refused, and the floor is higher for an
+    /// IPv6 target, which carries the wider header and the extension on top.
     pub fragment: Option<u16>,
 
     /// Source addresses to send a copy of every probe from, alongside the real
@@ -282,8 +284,9 @@ impl EvasionProfile {
     ///
     /// It is not a check that a scan will work. Whether the
     /// link-layer path can reach these targets, whether decoys survive egress
-    /// filtering, whether a fragment size suits an IPv6 destination: those are
-    /// questions about a scan and are answered against the destination in hand.
+    /// filtering, whether a fragment size a v4 datagram could be split to also
+    /// clears the higher v6 floor: those are questions about a scan and are
+    /// answered against the destination in hand.
     ///
     /// ```
     /// use zond_engine::EvasionProfile;

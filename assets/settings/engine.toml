@@ -66,6 +66,41 @@
 #
 # max_probe_rate = 20000
 
+# The slowest the scan may settle at, in probes per second.
+#
+# The knob for a plan large enough that finishing it is in doubt. A scan given
+# scan_timeout can spend the whole budget on a fraction of its targets and report
+# the rest as never asked; a floor is what makes a wall-clock bound and a large
+# range compatible.
+#
+# It reaches the same scanners max_probe_rate does and means what the rate means
+# to each: a floor under the pace of the discovery sweep and the UDP port scan,
+# and a floor under the ceiling of a TCP port scan, which still paces itself on
+# what its targets are answering. Nothing here overrides that. A floor above a
+# max_probe_rate set alongside it does not lift the ceiling.
+#
+# min_probe_rate = 500
+
+# The shortest gap between two probes aimed at one host, in whole milliseconds.
+#
+# The knob for what you actually know about a target: this appliance falls over
+# above twenty probes a second, or this sensor fires at more than one every
+# hundred milliseconds. Both of those are per source and destination, which is
+# the one shape max_probe_rate cannot express, since the setting that spaces
+# probes at one host also throttles the scan across the whole range.
+#
+# A probe held by this is deferred, not dropped, so a scan spaced slower than
+# its plan is large takes longer rather than asking less. Set scan_timeout
+# alongside it and the report names the hosts the budget left part-scanned.
+#
+# The plan's keyed order does not make this redundant. A scan of many hosts
+# already interleaves them, so each host's share of the rate falls out low; that
+# is arithmetic rather than a bound, and it does nothing for a scan of a single
+# address, which is usually what you are running when you are worried about the
+# target.
+#
+# host_probe_interval = 100
+
 # How long the scan may spend on one host, in whole seconds.
 #
 # The clock starts on the first probe aimed at an address and covers the port
@@ -204,12 +239,14 @@
 # [profiles.stealth]
 # tcp_technique = "fin"
 # max_probe_rate = 200
+# host_probe_interval = 250
 # effort = "thorough"
 # no_dns = true
 
 # [profiles.sweep]
 # effort = "single"
 # max_probe_rate = 50000
+# min_probe_rate = 2000
 # default_ports = "80, 443"
 
 # [profiles.ci]

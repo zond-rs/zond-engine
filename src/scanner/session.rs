@@ -558,6 +558,67 @@ pub(crate) struct HostClocks {
     started: DashMap<IpAddr, Instant>,
 }
 
+/// The shortest gap the scan keeps between two probes aimed at one host.
+///
+/// The companion to [`HostClocks`], built the same way and for the same reason:
+/// a bound on one host is a property of the scan rather than of whichever pass
+/// happens to be probing, so it lives on the context every pass already holds.
+/// A copy per strategy would be no bound at all, since
+/// [`max_probe_rate`](crate::config::ZondConfig::max_probe_rate) is handed to
+/// each strategy undivided and two passes probing one address would each allow
+/// the whole gap.
+///
+/// `minimum` is `None` for a scan that set none, which is the ordinary case: the
+/// map is then never touched and every question is a read of an `Option`.
+///
+/// ## Deciding, not enforcing
+///
+/// This answers *when* and records *that*, in two calls a caller makes in that
+/// order. It cannot enforce anything on its own, because what to do with a probe
+/// it turns away is not its business: the raw port scanner has a queue to hold
+/// one in, and the sweep would rather ask the next host and come back. Folding a
+/// wait in here would make the decision for both of them, and inside a lock.
+///
+/// ## What it costs
+///
+/// One instant per address the scan probes, on the same reasoning
+/// [`HostClocks`] gives for its own map. The two are deliberately not one type:
+/// a budget is read once per target and starts a clock, a gap is read once per
+/// *probe* and moves one, and merging them would put both writes behind
+/// whichever question was asked first.
+#[derive(Debug, Default)]
+pub(crate) struct HostSpacing {
+    minimum: Option<Duration>,
+    last_sent: DashMap<IpAddr, Instant>,
+}
+
+impl HostSpacing {
+    /// When `address` may next be probed, or `None` if it may be probed now.
+    ///
+    /// Reads only. A caller that goes on to send says so with
+    /// [`sent`](Self::sent), and one that defers the probe leaves nothing
+    /// behind, so a target turned away does not push its own next slot back.
+    fn ready_at(&self, address: IpAddr, now: Instant) -> Option<Instant> {
+        let minimum = self.minimum?;
+        let last = *self.last_sent.get(&address)?;
+        let ready = last + minimum;
+        (ready > now).then_some(ready)
+    }
+
+    /// Records a probe leaving for `address`.
+    ///
+    /// Called after the send rather than before it, so a probe the kernel
+    /// refused does not spend the host's slot. Nothing is stored for a scan that
+    /// set no minimum: without one there is no question for the instant to
+    /// answer.
+    fn sent(&self, address: IpAddr, now: Instant) {
+        if self.minimum.is_none() {
+            return;
+        }
+        self.last_sent.insert(address, now);
+    }
+}
+
 impl HostClocks {
     /// Whether `address` has used up its budget, starting its clock if this is
     /// the first time it has been asked about.
@@ -803,6 +864,7 @@ pub struct ScanContext {
     pub(crate) timed_out: Arc<TimedOutLog>,
     /// When each host's budget started, for a scan that set one.
     pub(crate) clocks: Arc<HostClocks>,
+    pub(crate) spacing: Arc<HostSpacing>,
     pub(crate) swept_links: Arc<SweptLinks>,
     /// Where this machine turned out to be plugged in, as the equipment said.
     pub(crate) attachments: Arc<Attachments>,
@@ -1156,6 +1218,40 @@ impl ScanContext {
         true
     }
 
+    /// When `address` may next be probed, or `None` if it may be probed now.
+    ///
+    /// The question every send site asks beside
+    /// [`host_expired`](Self::host_expired), and the two are different in kind:
+    /// an expired host is finished with and gets written into the phase's
+    /// [`timed_out`](crate::report::ScanPhase::timed_out) list, while one asked
+    /// too soon is fine and will be ready at the instant this returns.
+    ///
+    /// **A refusal here is not a verdict.** The probe has not been sent and the
+    /// port has not been settled, so a caller that drops one on this answer
+    /// reports a port nobody asked about as though the target had been silent.
+    /// Hold it and send it at the instant returned, or file it
+    /// [`Unasked`](crate::model::port::PortState::Unasked); a scanner with
+    /// nowhere to hold one should be reading
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
+    /// as a reason not to have taken the target off its queue yet.
+    ///
+    /// Always `None` for a scan that set no minimum, which is what keeps this
+    /// cheap enough to ask once per probe rather than once per target. See
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval).
+    pub fn host_ready_at(&self, address: IpAddr, now: Instant) -> Option<Instant> {
+        self.spacing.ready_at(address, now)
+    }
+
+    /// Records a probe leaving for `address`, moving its next slot.
+    ///
+    /// Called after the send and only for one that reached the wire: a probe the
+    /// kernel refused occupied nothing and must not spend the host's slot, on
+    /// the same reasoning `RawProbeScan::record_send` gives for keeping it out
+    /// of the congestion window.
+    pub fn host_probed(&self, address: IpAddr, now: Instant) {
+        self.spacing.sent(address, now);
+    }
+
     /// The addresses left early so far, taken.
     pub(crate) fn take_timed_out(&self) -> Vec<IpAddr> {
         self.timed_out.drain()
@@ -1388,6 +1484,7 @@ pub struct SessionBuilder {
     detections: crate::detect::Detections,
     host_timeout: Option<Duration>,
     scan_timeout: Option<Duration>,
+    host_probe_interval: Option<Duration>,
     order_seed: Option<u64>,
 }
 
@@ -1479,6 +1576,19 @@ impl SessionBuilder {
         self
     }
 
+    /// The shortest gap the scan keeps between two probes aimed at one host.
+    ///
+    /// A caller orchestrating their own scan sets this to have the same spacing
+    /// [`scan`](crate::scanner::scan) applies from
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval).
+    /// Every pass that sends reads it through
+    /// [`ScanContext::host_ready_at`], which is also where what the two words
+    /// mean for a probe that arrives early is written down.
+    pub fn host_probe_interval(mut self, minimum: Option<Duration>) -> Self {
+        self.host_probe_interval = minimum;
+        self
+    }
+
     /// Opens the session and the context.
     ///
     /// This is where a scan's own clock starts, so a caller holding a builder
@@ -1507,6 +1617,10 @@ impl SessionBuilder {
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,
                 started: DashMap::new(),
+            }),
+            spacing: Arc::new(HostSpacing {
+                minimum: self.host_probe_interval,
+                last_sent: DashMap::new(),
             }),
             swept_links: Arc::new(SweptLinks::default()),
             attachments: Arc::new(Attachments::default()),
@@ -1915,6 +2029,71 @@ mod tests {
         assert!(ctx.host_expired(ip));
         assert!(ctx.host_expired(ip));
         assert_eq!(ctx.take_timed_out(), vec![ip]);
+    }
+
+    /// A scan with no gap set answers every question with "now" and never
+    /// touches the map, which is what makes it cheap enough to ask per probe.
+    #[test]
+    fn a_scan_with_no_gap_never_holds_a_probe() {
+        let (_session, ctx) = ScanSession::new();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+        let now = Instant::now();
+
+        assert!(ctx.host_ready_at(ip, now).is_none());
+        ctx.host_probed(ip, now);
+        assert!(
+            ctx.host_ready_at(ip, now).is_none(),
+            "a recorded send moves nothing while there is no gap to move it against"
+        );
+    }
+
+    /// A host is ready until it is probed, and then not until the gap has run.
+    ///
+    /// The first half is what lets a sweep send a first attempt without
+    /// consulting anything: an address this scan has never asked about has no
+    /// earlier probe to be too close to.
+    #[test]
+    fn a_gap_starts_at_the_first_probe_and_runs_from_the_last() {
+        let gap = Duration::from_secs(3600);
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .build();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+        let now = Instant::now();
+
+        assert!(
+            ctx.host_ready_at(ip, now).is_none(),
+            "an address nothing has probed is ready"
+        );
+
+        ctx.host_probed(ip, now);
+        let ready = ctx.host_ready_at(ip, now).expect("asked too recently");
+        assert_eq!(ready, now + gap);
+
+        assert!(
+            ctx.host_ready_at(ip, now + gap).is_none(),
+            "the gap having run, the host is ready again"
+        );
+    }
+
+    /// One host's gap says nothing about another's.
+    ///
+    /// The bound is per source and destination, which is the whole reason it is
+    /// not `max_probe_rate`: a scan spaced at one address must not be spaced
+    /// across the range.
+    #[test]
+    fn a_gap_at_one_host_leaves_every_other_host_ready() {
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(Duration::from_secs(3600)))
+            .build();
+        let probed: IpAddr = "192.0.2.1".parse().expect("an address");
+        let other: IpAddr = "192.0.2.2".parse().expect("an address");
+        let now = Instant::now();
+
+        ctx.host_probed(probed, now);
+
+        assert!(ctx.host_ready_at(probed, now).is_some());
+        assert!(ctx.host_ready_at(other, now).is_none());
     }
 
     /// The clock starts on the first probe aimed at a host rather than when the

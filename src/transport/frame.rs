@@ -479,15 +479,16 @@ pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> Result<Vec<u8>,
 /// [`ip::fragment_ipv4`], and wraps each fragment in an Ethernet header. A packet
 /// that already fits the MTU comes back as a single frame.
 ///
-/// IPv4 only. IPv6 fragments through an extension header this engine does not
-/// build, so an IPv6 destination is refused rather than sent whole. A scan that
-/// reported it fragmented must have.
+/// Both families. IPv4 splits the header itself; IPv6 keeps its base header and
+/// carries the fragmentation in an extension header, which
+/// [`ip::fragment_ipv6`] builds. A datagram that already fits `mtu` comes back
+/// as a single frame either way.
 ///
 /// # Errors
 ///
-/// Refuses an IPv6 destination, a mismatched address pair, and, through
-/// [`ip::fragment_ipv4`], an MTU too small to carry a fragment or a datagram
-/// larger than the IP length field can describe.
+/// Refuses a mismatched address pair, and, through the two fragmenters, an MTU
+/// too small to carry a fragment or a datagram larger than the family's offset
+/// field can address.
 pub fn build_fragmented_ethernet_frames(
     spec: &FrameSpec,
     segment: &[u8],
@@ -501,24 +502,30 @@ pub fn build_fragmented_ethernet_frames(
         protocol,
         hop_limit,
     } = *spec;
-    let (src4, dst4) = match (src, dst) {
-        (IpAddr::V4(s), IpAddr::V4(d)) => (s, d),
-        (IpAddr::V6(_), IpAddr::V6(_)) => {
-            return Err(PacketError::UnsupportedFragmentation { dst });
+
+    let (packets, ethertype) = match (src, dst) {
+        (IpAddr::V4(s), IpAddr::V4(d)) => {
+            let header = craft::Ipv4 {
+                protocol: craft::Field::Exact(protocol),
+                ..craft::Ipv4::new(s, d).with_ttl(hop_limit)
+            };
+            (ip::fragment_ipv4(&header, segment, mtu)?, EtherTypes::Ipv4)
+        }
+        (IpAddr::V6(s), IpAddr::V6(d)) => {
+            let header = craft::Ipv6 {
+                next_header: craft::Field::Exact(protocol),
+                ..craft::Ipv6::new(s, d).with_hop_limit(hop_limit)
+            };
+            (ip::fragment_ipv6(&header, segment, mtu)?, EtherTypes::Ipv6)
         }
         _ => return Err(PacketError::FamilyMismatch { src, dst }),
     };
 
-    let header = craft::Ipv4 {
-        protocol: craft::Field::Exact(protocol),
-        ..craft::Ipv4::new(src4, dst4).with_ttl(hop_limit)
-    };
-
-    let frames = ip::fragment_ipv4(&header, segment, mtu)?
+    let frames = packets
         .into_iter()
         .map(|packet| {
             let mut frame = Vec::with_capacity(ETH_HDR_LEN + packet.len());
-            frame.extend_from_slice(&ethernet::build_header(src_mac, dst_mac, EtherTypes::Ipv4));
+            frame.extend_from_slice(&ethernet::build_header(src_mac, dst_mac, ethertype));
             frame.extend_from_slice(&packet);
             frame
         })
@@ -896,11 +903,19 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_fragmentation_is_refused() {
+    fn fragmenting_wraps_each_ipv6_fragment_in_its_own_ethernet_frame() {
+        use pnet_packet::Packet;
+        use pnet_packet::ipv6::{FragmentPacket, Ipv6Packet};
+
         let mac = MacAddr::new(0, 0, 0, 0, 0, 1);
-        let src = IpAddr::V6(Ipv6Addr::LOCALHOST);
-        let dst = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
-        let result = build_fragmented_ethernet_frames(
+        let src = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+        let dst = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2));
+        let segment: Vec<u8> = (0..40u8).collect();
+        // Sixteen payload bytes per fragment on top of the base and fragment
+        // headers, so forty do not fit one.
+        let mtu = (IP_V6_HDR_LEN + 8 + 16) as u16;
+
+        let frames = build_fragmented_ethernet_frames(
             &FrameSpec {
                 src_mac: mac,
                 dst_mac: mac,
@@ -909,12 +924,47 @@ mod tests {
                 protocol: TCP,
                 hop_limit: ip::HOP_LIMIT_ROUTED,
             },
-            &[0u8; 40],
-            40,
-        );
+            &segment,
+            mtu,
+        )
+        .expect("an IPv6 segment fragments");
         assert!(
-            result.is_err(),
-            "IPv6 fragments through an extension header this engine does not build, so it is refused"
+            frames.len() > 1,
+            "40 bytes should not fit one 16-byte fragment"
+        );
+
+        let mut reassembled = Vec::new();
+        for frame in &frames {
+            assert_eq!(
+                &frame[12..14],
+                &[0x86, 0xDD],
+                "each frame is an IPv6 Ethernet frame"
+            );
+            let ip_bytes = &frame[ETH_HDR_LEN..];
+            assert!(
+                ip_bytes.len() <= usize::from(mtu),
+                "each fragment fits the MTU"
+            );
+
+            let packet = Ipv6Packet::new(ip_bytes).expect("a v6 packet");
+            assert_eq!(
+                packet.get_next_header(),
+                IpNextHeaderProtocols::Ipv6Frag,
+                "the base header points at the fragment extension header"
+            );
+            let fragment = FragmentPacket::new(packet.payload()).expect("a fragment header");
+            assert_eq!(
+                fragment.get_next_header(),
+                TCP,
+                "the fragment header carries the upper-layer protocol"
+            );
+            // pnet models the fragment header's own payload as zero-length, so
+            // the piece is the base-header payload past the eight-byte extension.
+            reassembled.extend_from_slice(&packet.payload()[8..]);
+        }
+        assert_eq!(
+            reassembled, segment,
+            "the fragments reassemble to the original segment"
         );
     }
 

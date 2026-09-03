@@ -238,6 +238,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::IdleScan
 #[non_exhaustive] pub struct zond_engine::config::ProbeTuning
 pub zond_engine::config::ProbeTuning::evasion: zond_engine::evasion::EvasionProfile
 pub zond_engine::config::ProbeTuning::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::config::ProbeTuning::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ProbeTuning::os_detection: zond_engine::config::OsDetection
 pub zond_engine::config::ProbeTuning::retry: zond_engine::config::RetryConfig
 pub zond_engine::config::ProbeTuning::sctp_technique: zond_engine::model::technique::SctpScanTechnique
@@ -368,10 +369,12 @@ pub zond_engine::config::ZondConfig::characterise: bool
 pub zond_engine::config::ZondConfig::detection: zond_engine::config::envelope::DetectionEnvelope
 pub zond_engine::config::ZondConfig::evasion: zond_engine::evasion::EvasionProfile
 pub zond_engine::config::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
+pub zond_engine::config::ZondConfig::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::config::ZondConfig::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::config::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::config::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
 pub zond_engine::config::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::config::ZondConfig::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ZondConfig::no_dns: bool
 pub zond_engine::config::ZondConfig::os_detection: zond_engine::config::OsDetection
 pub zond_engine::config::ZondConfig::redact: bool
@@ -3698,10 +3701,12 @@ pub zond_engine::export::schema::SettingsDto::characterise: bool
 pub zond_engine::export::schema::SettingsDto::detection: &'static str
 pub zond_engine::export::schema::SettingsDto::dns_enabled: bool
 pub zond_engine::export::schema::SettingsDto::evasion: core::option::Option<zond_engine::export::schema::EvasionDto>
+pub zond_engine::export::schema::SettingsDto::host_probe_interval_us: core::option::Option<u64>
 pub zond_engine::export::schema::SettingsDto::host_timeout_us: core::option::Option<u64>
 pub zond_engine::export::schema::SettingsDto::idle_scan: core::option::Option<zond_engine::export::schema::IdleScanDto>
 pub zond_engine::export::schema::SettingsDto::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::export::schema::SettingsDto::max_probe_rate: core::option::Option<u32>
+pub zond_engine::export::schema::SettingsDto::min_probe_rate: core::option::Option<u32>
 pub zond_engine::export::schema::SettingsDto::os_detection: &'static str
 pub zond_engine::export::schema::SettingsDto::redact: bool
 pub zond_engine::export::schema::SettingsDto::retry: zond_engine::export::schema::RetryDto
@@ -5632,9 +5637,11 @@ pub zond_engine::import::settings::Settings::dampen_silent_hosts: core::option::
 pub zond_engine::import::settings::Settings::default_ports: core::option::Option<alloc::string::String>
 pub zond_engine::import::settings::Settings::effort: core::option::Option<zond_engine::config::ScanEffort>
 pub zond_engine::import::settings::Settings::exclude: zond_engine::model::exclusion::Exclusions
+pub zond_engine::import::settings::Settings::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::import::settings::Settings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::import::settings::Settings::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
 pub zond_engine::import::settings::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::import::settings::Settings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::settings::Settings::no_dns: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::scan_timeout: core::option::Option<core::time::Duration>
@@ -6069,9 +6076,11 @@ pub zond_engine::import::Settings::dampen_silent_hosts: core::option::Option<boo
 pub zond_engine::import::Settings::default_ports: core::option::Option<alloc::string::String>
 pub zond_engine::import::Settings::effort: core::option::Option<zond_engine::config::ScanEffort>
 pub zond_engine::import::Settings::exclude: zond_engine::model::exclusion::Exclusions
+pub zond_engine::import::Settings::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::import::Settings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::import::Settings::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
 pub zond_engine::import::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::import::Settings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::Settings::no_dns: core::option::Option<bool>
 pub zond_engine::import::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::Settings::scan_timeout: core::option::Option<core::time::Duration>
@@ -11092,8 +11101,6 @@ pub zond_engine::protocols::error::PacketError::Unreadable
 pub zond_engine::protocols::error::PacketError::Unreadable::detail: alloc::string::String
 pub zond_engine::protocols::error::PacketError::Unreadable::what: &'static str
 pub zond_engine::protocols::error::PacketError::UnsupportedEtherType(u16)
-pub zond_engine::protocols::error::PacketError::UnsupportedFragmentation
-pub zond_engine::protocols::error::PacketError::UnsupportedFragmentation::dst: core::net::ip_addr::IpAddr
 pub zond_engine::protocols::error::PacketError::UnwritableName
 pub zond_engine::protocols::error::PacketError::UnwritableName::detail: alloc::string::String
 pub zond_engine::protocols::error::PacketError::UnwritableName::name: alloc::string::String
@@ -11261,9 +11268,11 @@ pub const zond_engine::protocols::ip::HOP_LIMIT_NDP: u8
 pub const zond_engine::protocols::ip::HOP_LIMIT_ON_LINK: u8
 pub const zond_engine::protocols::ip::HOP_LIMIT_ROUTED: u8
 pub const zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU: u16
+pub const zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU_V6: u16
 pub fn zond_engine::protocols::ip::build_ipv4_header(core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, pnet_packet::ip::IpNextHeaderProtocol, u8) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::ip::build_ipv6_header(core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u16, pnet_packet::ip::IpNextHeaderProtocol, u8) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::ip::fragment_ipv4(&zond_engine::protocols::craft::Ipv4, &[u8], u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+pub fn zond_engine::protocols::ip::fragment_ipv6(&zond_engine::protocols::craft::Ipv6, &[u8], u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>>
 pub fn zond_engine::protocols::ip::icmpv6_echo_token(&zond_engine::protocols::ethernet::Frame<'_>) -> core::option::Option<(u16, u16)>
 pub fn zond_engine::protocols::ip::icmpv6_type(&zond_engine::protocols::ethernet::Frame<'_>) -> core::option::Option<pnet_packet::icmpv6::Icmpv6Type>
 pub fn zond_engine::protocols::ip::ipv4_source(&zond_engine::protocols::ethernet::Frame<'_>) -> zond_engine::protocols::error::Result<core::net::ip_addr::Ipv4Addr>
@@ -12485,10 +12494,12 @@ pub zond_engine::record::SettingsRecord::characterise: bool
 pub zond_engine::record::SettingsRecord::detection: alloc::string::String
 pub zond_engine::record::SettingsRecord::dns_enabled: bool
 pub zond_engine::record::SettingsRecord::evasion: core::option::Option<zond_engine::record::EvasionSettingsRecord>
+pub zond_engine::record::SettingsRecord::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::record::SettingsRecord::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::record::SettingsRecord::idle_scan: core::option::Option<zond_engine::record::IdleScanRecord>
 pub zond_engine::record::SettingsRecord::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::record::SettingsRecord::max_probe_rate: core::option::Option<u32>
+pub zond_engine::record::SettingsRecord::min_probe_rate: core::option::Option<u32>
 pub zond_engine::record::SettingsRecord::os_detection: alloc::string::String
 pub zond_engine::record::SettingsRecord::redact: bool
 pub zond_engine::record::SettingsRecord::retry_dampen_silent_hosts: bool
@@ -13118,10 +13129,12 @@ pub zond_engine::report::ScanSettings::characterise: bool
 pub zond_engine::report::ScanSettings::detection: zond_engine::config::envelope::DetectionEnvelope
 pub zond_engine::report::ScanSettings::dns_enabled: bool
 pub zond_engine::report::ScanSettings::evasion: core::option::Option<zond_engine::report::EvasionRecord>
+pub zond_engine::report::ScanSettings::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::report::ScanSettings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::report::ScanSettings::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::report::ScanSettings::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::report::ScanSettings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::report::ScanSettings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::report::ScanSettings::os_detection: zond_engine::config::OsDetection
 pub zond_engine::report::ScanSettings::redact: bool
 pub zond_engine::report::ScanSettings::retry: zond_engine::config::RetryConfig
@@ -14025,6 +14038,8 @@ pub fn zond_engine::scanner::session::ScanContext::failures_snapshot(&self) -> a
 pub fn zond_engine::scanner::session::ScanContext::host_addresses(&self) -> alloc::vec::Vec<zond_engine::model::ip::scoped::ScopedIp>
 pub fn zond_engine::scanner::session::ScanContext::host_count(&self) -> usize
 pub fn zond_engine::scanner::session::ScanContext::host_expired(&self, core::net::ip_addr::IpAddr) -> bool
+pub fn zond_engine::scanner::session::ScanContext::host_probed(&self, core::net::ip_addr::IpAddr, std::time::Instant)
+pub fn zond_engine::scanner::session::ScanContext::host_ready_at(&self, core::net::ip_addr::IpAddr, std::time::Instant) -> core::option::Option<std::time::Instant>
 pub fn zond_engine::scanner::session::ScanContext::hosts_snapshot(&self) -> alloc::vec::Vec<zond_engine::model::host::Host>
 pub fn zond_engine::scanner::session::ScanContext::probe_stats_snapshot(&self) -> alloc::vec::Vec<zond_engine::report::ProbeStats>
 pub fn zond_engine::scanner::session::ScanContext::progress(&self) -> zond_engine::scanner::session::ScanProgress
@@ -14108,6 +14123,7 @@ pub fn zond_engine::scanner::session::SessionBuilder::build(self) -> (zond_engin
 pub fn zond_engine::scanner::session::SessionBuilder::counting(self, zond_engine::model::ip::set::Positions) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::detections(self, zond_engine::detect::corpus::Detections) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::excluding(self, zond_engine::model::exclusion::Exclusions) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::host_probe_interval(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::host_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::ordering(self, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
@@ -14520,15 +14536,18 @@ pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::audit_label
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::sctp::SctpToken>
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::sctp::SctpToken>
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14573,15 +14592,18 @@ pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::audit_labels(
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::tcp::TcpToken>
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::tcp::TcpToken>
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14626,15 +14648,18 @@ pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::audit_labels(
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<()>
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<()>
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14665,6 +14690,27 @@ impl core::marker::Unpin for zond_engine::scanner::strategy::ports::AuditLabels
 impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::ports::AuditLabels
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::ports::AuditLabels
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::ports::AuditLabels
+pub struct zond_engine::scanner::strategy::ports::HeldProbe
+impl core::clone::Clone for zond_engine::scanner::strategy::ports::HeldProbe
+pub fn zond_engine::scanner::strategy::ports::HeldProbe::clone(&self) -> zond_engine::scanner::strategy::ports::HeldProbe
+impl core::cmp::Eq for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::cmp::Ord for zond_engine::scanner::strategy::ports::HeldProbe
+pub fn zond_engine::scanner::strategy::ports::HeldProbe::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::scanner::strategy::ports::HeldProbe
+pub fn zond_engine::scanner::strategy::ports::HeldProbe::eq(&self, &zond_engine::scanner::strategy::ports::HeldProbe) -> bool
+impl core::cmp::PartialOrd for zond_engine::scanner::strategy::ports::HeldProbe
+pub fn zond_engine::scanner::strategy::ports::HeldProbe::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::scanner::strategy::ports::HeldProbe
+pub fn zond_engine::scanner::strategy::ports::HeldProbe::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::marker::StructuralPartialEq for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::marker::Freeze for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::marker::Send for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::marker::Sync for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::marker::Unpin for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::ports::HeldProbe
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::ports::HeldProbe
 pub struct zond_engine::scanner::strategy::ports::IdlePortScanner
 impl zond_engine::scanner::strategy::ports::idle::IdlePortScanner
 pub fn zond_engine::scanner::strategy::ports::idle::IdlePortScanner::new(zond_engine::scanner::session::ScanContext, core::net::ip_addr::IpAddr, core::option::Option<u16>, zond_engine::config::ProbeTuning) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
@@ -14688,6 +14734,7 @@ pub zond_engine::scanner::strategy::ports::RawProbeScan::deadline: zond_engine::
 pub zond_engine::scanner::strategy::ports::RawProbeScan::decoys: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::scanner::strategy::ports::RawProbeScan::due: alloc::vec::Vec<zond_engine::scanner::pacing::retry::Due<zond_engine::scanner::strategy::ports::ProbeTarget, u64>>
 pub zond_engine::scanner::strategy::ports::RawProbeScan::emission: zond_engine::transport::probe::Emission
+pub zond_engine::scanner::strategy::ports::RawProbeScan::held: alloc::collections::binary_heap::BinaryHeap<zond_engine::scanner::strategy::ports::HeldProbe>
 pub zond_engine::scanner::strategy::ports::RawProbeScan::ledger: zond_engine::scanner::pacing::retry::ProbeLedger<zond_engine::scanner::strategy::ports::ProbeTarget, T, u64>
 pub zond_engine::scanner::strategy::ports::RawProbeScan::max_unresolved: usize
 pub zond_engine::scanner::strategy::ports::RawProbeScan::resolver: zond_engine::system::interface::SourceResolver
@@ -14700,10 +14747,11 @@ pub zond_engine::scanner::strategy::ports::RawProbeScan::window: zond_engine::sc
 impl<T: core::marker::Copy + core::cmp::PartialEq> zond_engine::scanner::strategy::ports::RawProbeScan<T>
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::admitting(&self, bool) -> bool
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::finish(&mut self, zond_engine::report::ScannerKind, &str, &str, u128, zond_engine::report::StopReason)
+pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::held_is_full(&self) -> bool
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::judge_timeout(&mut self, core::net::ip_addr::IpAddr)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_answer<P: core::marker::Copy>(&mut self, &zond_engine::scanner::pacing::retry::Resolution<P>)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_host_down(&mut self, &zond_engine::scanner::strategy::ports::ProbeTarget, core::option::Option<T>, core::net::ip_addr::IpAddr) -> bool
-pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_send(&mut self, bool, bool)
+pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_send(&mut self, core::net::ip_addr::IpAddr, bool, bool)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::seed_timing(&mut self)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::stop_reason(&self, bool) -> core::option::Option<zond_engine::report::StopReason>
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::tick_delay(&self, std::time::Instant) -> core::time::Duration
@@ -14730,15 +14778,18 @@ pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::audit_label
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::sctp::SctpToken>
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::sctp::SctpToken>
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14782,15 +14833,18 @@ pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::audit_labels(
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::tcp::TcpToken>
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::tcp::TcpToken>
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14834,15 +14888,18 @@ pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::audit_labels(
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<()>
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<()>
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14860,15 +14917,18 @@ pub fn zond_engine::scanner::strategy::ports::RawPortScan::audit_labels(&self) -
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<Self::Token>
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<Self::Token>
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::RawPortScan::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::RawPortScan::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::RawPortScan::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::RawPortScan::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14879,15 +14939,18 @@ pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::audit_label
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::sctp::SctpToken>
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::sctp::SctpToken>
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::sctp::SctpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14898,15 +14961,18 @@ pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::audit_labels(
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::tcp::TcpToken>
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<zond_engine::scanner::strategy::ports::tcp::TcpToken>
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::tcp::TcpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -14917,15 +14983,18 @@ pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::audit_labels(
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::core(&self) -> &zond_engine::scanner::strategy::ports::RawProbeScan<()>
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::ports::RawProbeScan<()>
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::hold_probe(&mut self, zond_engine::model::target::PlannedTarget, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::record_unasked_endpoint(&mut self, core::net::ip_addr::IpAddr, u16)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_held(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_remaining(&mut self)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send_held(&mut self, zond_engine::scanner::strategy::ports::HeldProbe, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
@@ -17155,10 +17224,12 @@ pub zond_engine::ZondConfig::characterise: bool
 pub zond_engine::ZondConfig::detection: zond_engine::config::envelope::DetectionEnvelope
 pub zond_engine::ZondConfig::evasion: zond_engine::evasion::EvasionProfile
 pub zond_engine::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
+pub zond_engine::ZondConfig::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::ZondConfig::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
 pub zond_engine::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::ZondConfig::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::ZondConfig::no_dns: bool
 pub zond_engine::ZondConfig::os_detection: zond_engine::config::OsDetection
 pub zond_engine::ZondConfig::redact: bool

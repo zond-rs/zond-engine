@@ -1628,6 +1628,15 @@ pub struct SettingsRecord {
     /// The probe-rate ceiling, where one applied.
     #[serde(default)]
     pub max_probe_rate: Option<u32>,
+    /// The probe-rate floor, where one applied.
+    ///
+    /// Defaulted on the way in, so a record written before the floor existed
+    /// reads back as a sitting that set none. That is what it was.
+    #[serde(default)]
+    pub min_probe_rate: Option<u32>,
+    /// The shortest gap kept between two probes at one host, where one applied.
+    #[serde(default)]
+    pub host_probe_interval: Option<Duration>,
     /// The wall-clock budget each host was given, where one applied.
     ///
     /// Defaulted on the way in, so a record written before the budget existed
@@ -1737,6 +1746,8 @@ impl From<&ScanSettings> for SettingsRecord {
             retry_timeout_scale: settings.retry.timeout_scale.map(TimeoutScale::get),
             retry_dampen_silent_hosts: settings.retry.dampen_silent_hosts,
             max_probe_rate: settings.max_probe_rate.map(NonZeroU32::get),
+            min_probe_rate: settings.min_probe_rate.map(NonZeroU32::get),
+            host_probe_interval: settings.host_probe_interval,
             host_timeout: settings.host_timeout,
             scan_timeout: settings.scan_timeout,
             dns_enabled: settings.dns_enabled,
@@ -1783,6 +1794,8 @@ impl From<&SettingsRecord> for ScanSettings {
                 dampen_silent_hosts: record.retry_dampen_silent_hosts,
             },
             max_probe_rate: record.max_probe_rate.and_then(NonZeroU32::new),
+            min_probe_rate: record.min_probe_rate.and_then(NonZeroU32::new),
+            host_probe_interval: record.host_probe_interval,
             host_timeout: record.host_timeout,
             scan_timeout: record.scan_timeout,
             dns_enabled: record.dns_enabled,

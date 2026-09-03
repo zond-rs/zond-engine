@@ -238,7 +238,11 @@ impl UdpPortScanner {
         src_port: u16,
         target_count: usize,
     ) -> RawProbeScan<()> {
-        let rate = super::super::raw::rate_or(tuning.max_probe_rate, super::UDP_PORT_RATE_PER_SEC);
+        let rate = super::super::raw::rate_within(
+            tuning.max_probe_rate,
+            tuning.min_probe_rate,
+            super::UDP_PORT_RATE_PER_SEC,
+        );
 
         RawProbeScan::new(CoreParts {
             resolver,
@@ -518,7 +522,7 @@ impl RawPortScan for UdpPortScanner {
             },
             &mut self.core.send_failure,
         );
-        self.core.record_send(sent.is_some(), first_attempt);
+        self.core.record_send(ip, sent.is_some(), first_attempt);
 
         if sent.is_some() {
             match position {

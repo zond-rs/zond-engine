@@ -1616,6 +1616,8 @@
         "sctp_technique",
         "retry",
         "max_probe_rate",
+        "min_probe_rate",
+        "host_probe_interval_us",
         "host_timeout_us",
         "scan_timeout_us",
         "dns_enabled",
@@ -1666,6 +1668,25 @@
             "null"
           ],
           "minimum": 0
+        },
+        "min_probe_rate": {
+          "description": "The probe-rate floor in probes per second, or null if the scan was free to settle wherever it liked. It bounds a reading of the traffic as much as the ceiling does: a scan that emitted more packets than its targets were answering did so because it was told to finish in time.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "host_probe_interval_us": {
+          "description": "The shortest gap the scan kept between two probes aimed at one host, or null if none was asked for. It bounds how long the phase's own numbers took to reach: a sweep of a thousand addresses spaced a tenth of a second apart cannot have finished in under a hundred seconds.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/duration_us"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "host_timeout_us": {
           "description": "The wall-clock budget each host was given before the scan left it, or null if none was set. It bounds what a host's entry can claim: three open ports out of a thousand is a different finding depending on whether the other nine hundred and ninety-seven were asked. The phase's `timed_out` list says which hosts actually ran out.",

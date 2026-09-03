@@ -793,6 +793,17 @@ pub struct ProbeTuning {
     /// three separate call sites.
     pub max_probe_rate: Option<NonZeroU32>,
 
+    /// The fewest probes per second a strategy should emit, or `None` for
+    /// whatever pace it arrives at.
+    ///
+    /// Read at the same four places as [`max_probe_rate`](Self::max_probe_rate)
+    /// and means as many different things: a floor under a pace where the rate
+    /// is the pace, and a floor under a ceiling where it is only a ceiling.
+    ///
+    /// Non-zero for the same reason: a floor of zero is what the absence of a
+    /// floor already says.
+    pub min_probe_rate: Option<NonZeroU32>,
+
     /// Which segment a TCP port probe carries. Read only by the raw TCP port
     /// scanner: host discovery asks whether anything is there, which every one
     /// of these techniques answers equally badly, so it stays on SYN.
@@ -1148,6 +1159,98 @@ pub struct ZondConfig {
     /// applied.
     pub max_probe_rate: Option<NonZeroU32>,
 
+    /// The slowest a scan may put probes on the wire, in probes per second.
+    /// `None` leaves each scanner's own pace in force.
+    ///
+    /// The knob for a plan large enough that finishing it is in doubt. A scan
+    /// given [`scan_timeout`](Self::scan_timeout) can spend the whole budget on
+    /// a fraction of its targets and report the rest as
+    /// [`timed_out`](crate::report::ScanPhase::timed_out); this is what makes a
+    /// wall-clock bound and a large range compatible, by refusing to settle
+    /// below a pace that would finish in time.
+    ///
+    /// It reaches the same four strategies as
+    /// [`max_probe_rate`](Self::max_probe_rate) and means what the rate means to
+    /// each. The discovery sweep and the UDP port scan are paced by the rate, so
+    /// a floor raises their pace. A TCP port scan is paced by its congestion
+    /// window and reads the rate only as a ceiling, so a floor raises the
+    /// ceiling and leaves the window to decide as before. Nothing here overrides
+    /// that window: pushing a target harder than it is answering is the failure
+    /// the window exists to prevent, and a floor that could force it would trade
+    /// coverage for a number.
+    ///
+    /// A floor above an explicit [`max_probe_rate`](Self::max_probe_rate) does
+    /// not lift it. The two are a throughput wish and a safety limit, and the
+    /// safety limit wins.
+    ///
+    /// Non-zero: a floor of zero is what `None` already says, and the value
+    /// reaches the report, which must not record a floor that was never applied.
+    pub min_probe_rate: Option<NonZeroU32>,
+
+    /// The shortest gap between two probes aimed at one host, or `None` to let
+    /// every pass send as fast as its own pacing allows.
+    ///
+    /// The knob for what an operator actually knows about a target: this
+    /// appliance falls over above twenty probes a second, or this sensor fires
+    /// at more than one every hundred milliseconds. Both of those are per source
+    /// and destination, which is the one shape
+    /// [`max_probe_rate`](Self::max_probe_rate) cannot express: the same setting
+    /// that spaces probes at one host also throttles the scan across a whole
+    /// range.
+    ///
+    /// A duration rather than a rate because that is what the gate holds, and
+    /// converting a rate would round. See `pacing_for` for what a rounded rate
+    /// costs: a bound the report records and the scan never applied.
+    ///
+    /// ## What this is not
+    ///
+    /// It is not a substitute for the plan's keyed order, and not made
+    /// redundant by it. A permutation runs over the plan's host-and-port index
+    /// space, so a scan of many hosts already interleaves them and each one's
+    /// share of the rate falls out low; that is a consequence of the arithmetic
+    /// rather than a bound, and it offers nothing at all to a scan of one
+    /// address, which is the case somebody worried about a fragile target is
+    /// usually running.
+    ///
+    /// It is also not a ceiling the engine can beat by waiting. A probe held
+    /// here is deferred rather than dropped, so a scan spaced slower than its
+    /// plan is large takes longer instead of asking less: with
+    /// [`scan_timeout`](Self::scan_timeout) set, the two meet and the report
+    /// says which hosts the budget left part-scanned.
+    ///
+    /// Read by the raw port scanners, the routed sweep and the active
+    /// identification pass. The passive listener sends nothing, and the
+    /// timestamp series is timed rather than paced: its probe spacing is the
+    /// measurement, so slowing it would change what it reads rather than how
+    /// politely it reads it.
+    ///
+    /// ## The unprivileged paths do not honour this yet
+    ///
+    /// A connect scan ignores it, which matters because that is the path a
+    /// non-root caller gets. This is a gap rather than a decision, and it is not
+    /// the argument [`max_probe_rate`](Self::max_probe_rate) makes about those
+    /// paths pacing themselves by their connection concurrency: concurrency
+    /// bounds how many probes are in flight at once and says nothing about how
+    /// close together two of them reach one address.
+    ///
+    /// What it needs is a gate that claims a host's slot in the same operation
+    /// that checks it. The privileged paths check and then record, in that
+    /// order, because a send the kernel refuses must not spend the slot; a
+    /// connect scan runs its probes as concurrent tasks, so two aimed at one
+    /// address would both find it ready and both proceed. Until that primitive
+    /// exists, a caller who needs the gap enforced needs the privileged path.
+    ///
+    /// ## What a gap counts
+    ///
+    /// One probe, which is one packet everywhere but the identification pass.
+    /// That pass asks an IPv4 target for an echo and a timestamp back to back
+    /// and treats the pair as the probe, since deferring one half of a question
+    /// would leave the other half unanswerable. So a gap of 100 ms admits at
+    /// most two packets a tenth of a second at one IPv4 address while that pass
+    /// runs, and one everywhere else. The number is stated here rather than left
+    /// for somebody to find in a capture.
+    pub host_probe_interval: Option<Duration>,
+
     /// The longest a scan will keep working on one host before leaving it with
     /// what it has, or `None` for no bound.
     ///
@@ -1293,6 +1396,7 @@ impl ZondConfig {
             send_mode,
             retry,
             max_probe_rate,
+            min_probe_rate,
             tcp_technique,
             sctp_technique,
             os_detection,
@@ -1319,12 +1423,19 @@ impl ZondConfig {
             // share.
             host_timeout: _,
             scan_timeout: _,
+
+            // The per-host gap, which goes the same way as the host budget and
+            // for the same reason: a bound on one host has to be one map every
+            // pass consults, not a copy per strategy. Two passes each holding
+            // their own would each allow the whole gap.
+            host_probe_interval: _,
         } = self;
 
         ProbeTuning {
             send_mode: *send_mode,
             retry: *retry,
             max_probe_rate: *max_probe_rate,
+            min_probe_rate: *min_probe_rate,
             tcp_technique: *tcp_technique,
             sctp_technique: *sctp_technique,
             os_detection: *os_detection,
@@ -1491,8 +1602,13 @@ mod tests {
                 timeout_scale: TimeoutScale::new(3.5),
                 dampen_silent_hosts: false,
             },
+            // Two rates, and deliberately different numbers: the failure this
+            // half exists to catch is a bound carried from the other one, which
+            // a shared value would let through.
             max_probe_rate: NonZeroU32::new(1234),
+            min_probe_rate: NonZeroU32::new(567),
             tcp_technique: TcpScanTechnique::Xmas,
+            sctp_technique: SctpScanTechnique::CookieEcho,
             os_detection: OsDetection::Aggressive,
             service_detection: ServiceDetection::Banner,
             evasion: EvasionProfile::default(),
@@ -1503,7 +1619,9 @@ mod tests {
         assert_eq!(tuning.send_mode, cfg.send_mode);
         assert_eq!(tuning.retry, cfg.retry);
         assert_eq!(tuning.max_probe_rate, cfg.max_probe_rate);
+        assert_eq!(tuning.min_probe_rate, cfg.min_probe_rate);
         assert_eq!(tuning.tcp_technique, cfg.tcp_technique);
+        assert_eq!(tuning.sctp_technique, cfg.sctp_technique);
         assert_eq!(tuning.os_detection, cfg.os_detection);
         assert_eq!(tuning.service_detection, cfg.service_detection);
         assert_eq!(tuning.evasion, cfg.evasion);

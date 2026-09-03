@@ -420,6 +420,7 @@ pub async fn discover(
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
+        .host_probe_interval(cfg.host_probe_interval)
         // Drawn here and kept nowhere, since nothing is recording this sweep.
         // A caller who wants the order back is journalling, and that is what
         // writes the seed down.
@@ -501,6 +502,7 @@ pub async fn discover_with_journal(
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
+        .host_probe_interval(cfg.host_probe_interval)
         .resuming(&resume_point)
         .counting(positions)
         .ordering(order_seed)
@@ -750,6 +752,7 @@ pub async fn listen(
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
+        .host_probe_interval(cfg.host_probe_interval)
         .build();
     let handle = spawn_listen(scope, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
@@ -794,6 +797,7 @@ pub async fn listen_with_journal(
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
+        .host_probe_interval(cfg.host_probe_interval)
         .build();
 
     // Before the watch starts, so a caller reading the session sees every
@@ -906,6 +910,7 @@ pub async fn scan(
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
+        .host_probe_interval(cfg.host_probe_interval)
         .detections(detections)
         // See `discover`: drawn here and kept nowhere, because nothing is
         // recording this scan.
@@ -953,6 +958,7 @@ pub async fn scan_with_journal(
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
+        .host_probe_interval(cfg.host_probe_interval)
         .resuming(journal.resume_point())
         .detections(detections)
         // See `discover_with_journal`: the order is the job's rather than this

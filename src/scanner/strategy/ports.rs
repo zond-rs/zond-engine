@@ -329,6 +329,23 @@ pub struct RawProbeScan<T> {
     /// backlog between those two points is what grows, and this is what bounds
     /// it.
     pub max_unresolved: usize,
+    /// Probes waiting for the gap the scan keeps between two probes at one
+    /// host, earliest first. Empty unless
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
+    /// was set.
+    ///
+    /// Bounded by [`max_unresolved`](Self::max_unresolved) rather than by a
+    /// number of its own. The two bound different things and both are memory a
+    /// scan of a wide range would otherwise grow without limit; inventing a
+    /// second figure would mean two knobs to reason about where the honest
+    /// answer to "how much may this scan hold" is one.
+    ///
+    /// A full queue stops the target stream being read, which is where the
+    /// backpressure belongs: every target pulled while it is full could only be
+    /// held, so leaving them in the channel lets the dispatcher feel it exactly
+    /// as it feels the [`window`](Self::window). It deliberately does **not**
+    /// stop the send path, which is the only thing that empties this.
+    pub held: std::collections::BinaryHeap<HeldProbe>,
 }
 
 /// What a [`RawProbeScan`] is built from.
@@ -413,6 +430,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             send_tick,
             batch,
             max_unresolved,
+            held: std::collections::BinaryHeap::new(),
         };
         core.seed_timing();
         core
@@ -432,8 +450,12 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     ///   which of the two it was.
     /// - **Hard deadline.** The ceiling on the whole run, which nothing extends.
     /// - **Attempts spent.** Every probe asked as many times as its budget
-    ///   allows and none is still outstanding. Waiting longer cannot change what
-    ///   this found.
+    ///   allows, none is still outstanding, and none is waiting for the gap the
+    ///   scan keeps between two probes at one host. Waiting longer cannot change
+    ///   what this found. A held probe is counted here because it has not been
+    ///   sent: stopping on an empty ledger while one waited would report a port
+    ///   this scan chose to delay as one it had asked about and heard nothing
+    ///   from.
     ///
     /// Silence is not one of them. It reads as a fourth
     /// condition and it cannot be one: with targets still queued, an empty
@@ -454,7 +476,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         if self.deadline.hard_deadline_passed() {
             return Some(StopReason::DeadlineExpired);
         }
-        if sending_finished && self.ledger.is_empty() {
+        if sending_finished && self.ledger.is_empty() && self.held.is_empty() {
             return Some(StopReason::AttemptsSpent);
         }
         None
@@ -462,32 +484,108 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
 
     /// Whether another target may be admitted from the stream.
     ///
-    /// Three conditions, and they answer different questions. The stream may be
-    /// done. The [`window`](Self::window) may be full, which is the pacing: too
-    /// many questions are already awaiting an answer, and asking another would
-    /// cost verdicts against a target that is being outrun. Or the ledger may be
-    /// at [`max_unresolved`](Self::max_unresolved), which is not pacing at all
-    /// but a bound on memory: a probe stays on the ledger long after it has
-    /// stopped occupying the window, waiting out a retry schedule, and against a
-    /// wide scan of a silent range that backlog is what grows without limit.
+    /// Three conditions, and they answer different questions. There may be
+    /// nothing left to send: the stream is done and no probe is waiting for its
+    /// host's next slot. The [`window`](Self::window) may be full, which is the
+    /// pacing: too many questions are already awaiting an answer, and asking
+    /// another would cost verdicts against a target that is being outrun. Or the
+    /// ledger may be at [`max_unresolved`](Self::max_unresolved), which is not
+    /// pacing at all but a bound on memory: a probe stays on the ledger long
+    /// after it has stopped occupying the window, waiting out a retry schedule,
+    /// and against a wide scan of a silent range that backlog is what grows
+    /// without limit.
+    ///
+    /// The [`held`](Self::held) queue counts as something to send, so a stream
+    /// that ran dry does not close the send path while probes are still waiting
+    /// for the gap the scan keeps. How many may wait is
+    /// [`held_is_full`](Self::held_is_full), which bounds the *stream* and
+    /// deliberately not this.
     pub fn admitting(&self, sending_finished: bool) -> bool {
-        !sending_finished && self.window.has_room() && self.ledger.len() < self.max_unresolved
+        let anything_to_send = !sending_finished || !self.held.is_empty();
+        anything_to_send && self.window.has_room() && self.ledger.len() < self.max_unresolved
+    }
+
+    /// Whether the queue of held probes is full.
+    ///
+    /// What stops the target stream being read once the gap in
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
+    /// is what limits the scan. Every target pulled while this is true could
+    /// only be held, so leaving them in the channel is what lets the dispatcher
+    /// feel it.
+    ///
+    /// Not part of [`admitting`](Self::admitting), and that is not an oversight.
+    /// The send path is the only thing that empties this queue, so a full queue
+    /// closing the send path would be a scan that stopped and never restarted.
+    pub fn held_is_full(&self) -> bool {
+        self.held.len() >= self.max_unresolved
+    }
+
+    /// Holds `probe` back until its host may be asked again.
+    ///
+    /// The caller has already established that the host is not ready. Callers
+    /// that cannot hold a probe must not ask, since a probe dropped on that
+    /// answer is a port reported as silent that nobody sent anything to; see
+    /// [`ScanContext::host_ready_at`](crate::scanner::session::ScanContext::host_ready_at).
+    fn hold(&mut self, ip: IpAddr, port: u16, position: Option<u64>, ready: Instant) {
+        self.held.push(HeldProbe {
+            ip,
+            port,
+            position,
+            ready,
+        });
+    }
+
+    /// The next held probe whose host may be asked now.
+    ///
+    /// The recorded instant is a hint and is re-checked here rather than
+    /// trusted: a retry aimed at the same host moves its slot after an entry is
+    /// queued, so an entry can reach the front before its host is actually
+    /// ready. One that is still early is pushed back under the fresh instant.
+    ///
+    /// That cannot loop. A re-checked entry is pushed back with an instant
+    /// strictly later than `now`, because that is the only kind
+    /// [`host_ready_at`](crate::scanner::session::ScanContext::host_ready_at)
+    /// returns, so it cannot be drawn again on this call: every iteration either
+    /// yields a probe or takes one entry out of the queue's due prefix.
+    fn take_ready(&mut self, now: Instant) -> Option<HeldProbe> {
+        while let Some(next) = self.held.peek() {
+            if next.ready > now {
+                return None;
+            }
+            let mut entry = self.held.pop().expect("peeked");
+            match self.ctx.host_ready_at(entry.ip, now) {
+                None => return Some(entry),
+                Some(ready) => {
+                    entry.ready = ready;
+                    self.held.push(entry);
+                }
+            }
+        }
+        None
     }
 
     /// Records one probe leaving the wire, or failing to.
     ///
-    /// Both halves of the bookkeeping in one call because they are one event and
-    /// were drifting apart: the audit counts every attempt so a scan that could
-    /// not send can say so, and the window counts only the ones that reached the
-    /// wire, since a probe nobody sent occupied nothing and must not be part of
-    /// the evidence that the path is busy.
+    /// All three parts of the bookkeeping in one call because they are one event
+    /// and were drifting apart: the audit counts every attempt so a scan that
+    /// could not send can say so, the window counts only the ones that reached
+    /// the wire, since a probe nobody sent occupied nothing and must not be part
+    /// of the evidence that the path is busy, and `host`'s slot under
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
+    /// moves on the same terms as the window, for the same reason.
     ///
     /// `first_attempt` decides whether the send takes a window slot. A retry
     /// does not: the slot went back when the question it repeats ran out of
     /// round-trip budget, and handing it back a second time would let the window
-    /// admit more than it believes it has.
-    pub fn record_send(&mut self, sent: bool, first_attempt: bool) {
+    /// admit more than it believes it has. The host's slot draws no such
+    /// distinction: a retry is a packet at the target like any other, and the
+    /// gap is about what the target receives rather than about what this scan is
+    /// still waiting for.
+    pub fn record_send(&mut self, host: IpAddr, sent: bool, first_attempt: bool) {
         self.audit.record_send(sent);
+        if sent {
+            self.ctx.host_probed(host, Instant::now());
+        }
         match (sent, first_attempt) {
             // A send the kernel refused is the one signal this controller gets
             // from *its own machine* rather than from the network, and it is the
@@ -693,6 +791,62 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     }
 }
 
+/// A probe held back because its host was asked too recently.
+///
+/// What [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
+/// costs the port scanners and costs nothing else: this is the one pass that
+/// aims thousands of probes at a single address, so it is the one that needs
+/// somewhere to put a probe it may not send yet. A sweep asks each host once per
+/// attempt and can move on to the next.
+///
+/// The two kinds a scan sends are told apart the way
+/// [`RawPortScan::send`] already tells them apart, by whether
+/// there is a plan position: a first attempt carries one and a retry keeps the
+/// one the ledger holds. That is also what decides who accounts for the probe if
+/// the scan ends while it is still held. See
+/// [`resolve_held`](RawPortScan::resolve_held).
+///
+/// Public because it names an argument of a public trait method, with private
+/// fields because nothing outside needs to read one: every scanner reaches the
+/// wire through [`RawPortScan::send`], and the defaulted methods above it are
+/// what turn a held probe back into that call. A position a caller could write
+/// is a resume told a target was covered by a probe that never went out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldProbe {
+    /// The address to probe.
+    ip: IpAddr,
+    /// The port to probe.
+    port: u16,
+    /// The plan position for a first attempt, and [`None`] for a retry.
+    position: Option<u64>,
+    /// When the host was thought to become ready, as it stood when this was
+    /// held.
+    ///
+    /// A hint rather than a promise. A retry aimed at the same host is sent
+    /// through the gap's own accounting and moves the slot, so an entry can
+    /// reach the front of the queue before its host is actually ready. That is
+    /// what [`RawProbeScan::take_ready`] re-checks rather than trusts.
+    ready: Instant,
+}
+
+/// Ordered so that [`BinaryHeap`](std::collections::BinaryHeap), which is a
+/// max-heap, yields the *earliest* ready instant first. The same inversion
+/// [`ProbeLedger`]'s own timer queue uses, and for the same reason.
+impl Ord for HeldProbe {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .ready
+            .cmp(&self.ready)
+            .then_with(|| self.port.cmp(&other.port))
+    }
+}
+
+impl PartialOrd for HeldProbe {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// What a raw port scan has to supply that [`drive`] cannot work out for itself.
 ///
 /// Everything below is protocol knowledge: which transport this scan speaks,
@@ -810,6 +964,54 @@ pub trait RawPortScan: PortScanner {
         }
     }
 
+    /// Holds `planned` back until its host may be asked again.
+    ///
+    /// A target of another protocol is passed over on the same terms
+    /// [`send_probe`](Self::send_probe) passes it over: it belongs to the other
+    /// scanner, and queuing it here would hold a UDP port against a TCP scan's
+    /// gap and then file it under that scan's account of itself.
+    fn hold_probe(&mut self, planned: PlannedTarget, ready: Instant) {
+        if planned.protocol() == self.protocol() {
+            self.core_mut()
+                .hold(planned.ip(), planned.port(), Some(planned.position), ready);
+        }
+    }
+
+    /// Sends a probe that was held for its host's next slot.
+    ///
+    /// The two kinds part company here, on the same distinction the ledger draws
+    /// between them: a first attempt carries a plan position and goes through
+    /// [`probe`](Self::probe), which accounts for a target the send path
+    /// refuses, and a retry has none and goes through
+    /// [`reprobe`](Self::reprobe), which leaves the position the ledger is
+    /// already holding alone.
+    fn send_held(&mut self, held: HeldProbe, now: Instant) {
+        match held.position {
+            Some(position) => self.probe(held.ip, held.port, position, now),
+            None => self.reprobe(held.ip, held.port, now),
+        }
+    }
+
+    /// Accounts for every probe still held when the loop ended.
+    ///
+    /// A held first attempt was never armed, so nothing else will account for
+    /// it: without this it is the port that vanishes from the host entirely,
+    /// which is the one shortfall a reader cannot see. A held retry is still
+    /// outstanding on the ledger and takes the scan's silence verdict with
+    /// everything else there, so it is dropped rather than recorded twice.
+    ///
+    /// Nothing is counted. These targets were counted into the audit's
+    /// denominator when they came off the stream, and counting them again would
+    /// make a scan claim to have been handed more work than the plan holds.
+    fn resolve_held(&mut self) {
+        let held = std::mem::take(&mut self.core_mut().held);
+        for entry in held {
+            if entry.position.is_some() {
+                self.record_unasked_endpoint(entry.ip, entry.port);
+            }
+        }
+    }
+
     /// Resends everything due and writes off everything that has run out of
     /// attempts.
     ///
@@ -852,7 +1054,17 @@ pub trait RawPortScan: PortScanner {
                     if attempt == 2 {
                         self.core_mut().judge_timeout(ip);
                     }
-                    self.reprobe(ip, port, now);
+                    // A retry is a probe at a host like any other and is spaced
+                    // like one. Held rather than skipped, because the ledger has
+                    // already charged this attempt and scheduled the next: a
+                    // skipped retry spends an attempt on a packet nobody sent,
+                    // and a host spaced slower than its own retry schedule would
+                    // spend all three that way and settle the port as silent
+                    // having asked once.
+                    match self.core().ctx.host_ready_at(ip, now) {
+                        Some(ready) => self.core_mut().hold(ip, port, None, ready),
+                        None => self.reprobe(ip, port, now),
+                    }
                 }
                 Due::Exhausted {
                     key: (ip, port),
@@ -1025,7 +1237,28 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
             // the ledger has room: the ceiling still bounds how many answers are
             // outstanding, and the rate now bounds how fast they are asked for.
             _ = send_tick.tick(), if admitting => {
+                let now = Instant::now();
                 for _ in 0..scanner.core().batch {
+                    // A probe already held for its host's next slot goes first.
+                    // It was taken off the stream before anything still in the
+                    // channel was looked at, and leaving it behind fresh targets
+                    // would have a scan with a gap set starve the hosts it had
+                    // already reached in favour of ones it had not.
+                    if let Some(held) = scanner.core_mut().take_ready(now) {
+                        scanner.send_held(held, now);
+                        if !scanner.core().admitting(sending_finished) {
+                            break;
+                        }
+                        continue;
+                    }
+
+                    // Nowhere to put another one. Every target pulled now could
+                    // only be held, so the stream is left alone and the
+                    // dispatcher feels it exactly as it feels a full window.
+                    if scanner.core().held_is_full() {
+                        break;
+                    }
+
                     match targets.try_recv() {
                         Ok(target) => {
                             probes += 1;
@@ -1035,6 +1268,15 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
                             // the shortfall reads the same as any other.
                             if scanner.core().ctx.host_expired(target.ip()) {
                                 scanner.record_unasked(target);
+                            } else if let Some(ready) =
+                                scanner.core().ctx.host_ready_at(target.ip(), now)
+                            {
+                                // Asked too recently. Held rather than dropped:
+                                // this target has been counted and owes a
+                                // verdict, and the one thing that must not
+                                // happen is a probe the scan chose to delay
+                                // reading afterwards as a silent port.
+                                scanner.hold_probe(target, ready);
                             } else {
                                 scanner.send_probe(target);
                             }
@@ -1071,6 +1313,10 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
     };
 
     scanner.resolve_remaining();
+    // Probes still waiting for a host's next slot. Before the channel drain
+    // below and after the ledger above, because a held retry is accounted for by
+    // `resolve_remaining` and a held first attempt by nothing at all.
+    scanner.resolve_held();
     // Targets still in the channel when the loop ended. Counted into `probes`
     // so the audit's denominator is what the scan was handed rather than what it
     // got round to.
@@ -1143,8 +1389,148 @@ mod tests {
             send_tick: Duration::from_millis(1),
             batch: 1,
             max_unresolved: 64,
+            held: std::collections::BinaryHeap::new(),
         };
         (core, session)
+    }
+
+    /// [`core`] with a gap between probes at one host, for the tests that are
+    /// about the queue rather than the ledger.
+    fn spaced_core(gap: Duration) -> (RawProbeScan<()>, ScanSession) {
+        let (session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .build();
+        let (_tx, rx) = tokio::sync::mpsc::channel(1024);
+        let core = RawProbeScan {
+            resolver: SourceResolver::from_links(&[]),
+            ctx,
+            transport: ProbeTransport::from_parts(Box::new(NullSender), rx),
+            deadline: AdaptiveDeadline::new(super::super::raw::DEADLINE_CONFIG, 8),
+            ledger: ProbeLedger::new(super::super::raw::RETRY_POLICY, 8),
+            due: Vec::new(),
+            src_port: 54_321,
+            emission: Emission::routed(),
+            shaping: SegmentShaping::default(),
+            decoys: Vec::new(),
+            send_failure: None,
+            audit: ProbeAudit::new(),
+            window: CongestionWindow::new(WindowLimits::fixed(4)),
+            send_tick: Duration::from_millis(1),
+            batch: 1,
+            max_unresolved: 64,
+            held: std::collections::BinaryHeap::new(),
+        };
+        (core, session)
+    }
+
+    /// The queue yields the probe whose host is ready soonest, whatever order
+    /// the entries were held in.
+    #[test]
+    fn the_earliest_slot_comes_off_the_queue_first() {
+        let (mut core, _session) = spaced_core(Duration::from_secs(3600));
+        let now = Instant::now();
+
+        // Held out of order on purpose: the heap's job is that this does not
+        // matter.
+        core.hold(TARGET, 80, Some(0), now + Duration::from_secs(30));
+        core.hold(TARGET, 22, Some(1), now + Duration::from_secs(10));
+        core.hold(TARGET, 443, Some(2), now + Duration::from_secs(20));
+
+        assert!(
+            core.take_ready(now).is_none(),
+            "nothing is ready yet, and nothing is handed back early"
+        );
+
+        let first = core
+            .take_ready(now + Duration::from_secs(15))
+            .expect("the ten-second slot has come round");
+        assert_eq!(first.port, 22);
+    }
+
+    /// A recorded instant is a hint, and the queue re-checks it rather than
+    /// trusting it.
+    ///
+    /// A retry aimed at the same host moves its slot after an entry is queued,
+    /// so an entry reaches the front before its host is really ready. Trusting
+    /// the stored instant would send a probe inside the gap the caller asked
+    /// for, which is the one thing this feature must not do.
+    #[test]
+    fn a_slot_that_moved_after_the_probe_was_held_is_re_checked() {
+        let gap = Duration::from_secs(3600);
+        let (mut core, _session) = spaced_core(gap);
+        let now = Instant::now();
+
+        // Held as though its host were ready immediately.
+        core.hold(TARGET, 80, Some(0), now);
+        // And then the host is probed, which moves the real slot an hour out.
+        core.ctx.host_probed(TARGET, now);
+
+        assert!(
+            core.take_ready(now).is_none(),
+            "the stored instant said now; the host says otherwise and the host wins"
+        );
+        assert_eq!(
+            core.held.len(),
+            1,
+            "and the probe is still held, not dropped"
+        );
+
+        assert!(
+            core.take_ready(now + gap).is_some(),
+            "once the gap has really run, it is handed back"
+        );
+    }
+
+    /// A held probe is something still to send, so a stream that ran dry does
+    /// not conclude the scan while one is waiting.
+    ///
+    /// Getting this wrong reports a port the scan chose to delay as one it asked
+    /// about and heard nothing from, which is a verdict from a probe that was
+    /// never sent.
+    #[test]
+    fn a_held_probe_keeps_the_scan_open_after_the_stream_ends() {
+        let (mut core, _session) = spaced_core(Duration::from_secs(3600));
+        let now = Instant::now();
+
+        core.hold(TARGET, 80, Some(0), now + Duration::from_secs(1));
+
+        assert_eq!(
+            core.stop_reason(true),
+            None,
+            "the stream is done and the ledger empty, but a probe is still owed"
+        );
+        assert!(
+            core.admitting(true),
+            "and the send path stays open, since it is the only thing that empties the queue"
+        );
+
+        let _ = core.take_ready(now + Duration::from_secs(1));
+        core.held.clear();
+        assert_eq!(
+            core.stop_reason(true),
+            Some(StopReason::AttemptsSpent),
+            "with the queue empty too, waiting cannot change what this found"
+        );
+    }
+
+    /// The queue bounds the stream and deliberately not the send path.
+    ///
+    /// A full queue closing the send path would be a scan that stopped and never
+    /// restarted, since sending is what empties it.
+    #[test]
+    fn a_full_queue_stops_the_stream_and_not_the_sending() {
+        let (mut core, _session) = spaced_core(Duration::from_secs(3600));
+        let now = Instant::now();
+
+        for port in 0..core.max_unresolved {
+            core.hold(TARGET, port as u16, Some(port as u64), now);
+        }
+
+        assert!(core.held_is_full());
+        assert!(
+            core.admitting(false),
+            "a full queue must not close the one path that drains it"
+        );
     }
 
     /// The condition the whole loop exists to get right: an empty ledger means
@@ -1260,7 +1646,7 @@ mod tests {
         let (mut core, _session) = core();
         core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
 
-        core.record_send(false, true);
+        core.record_send("192.0.2.1".parse().expect("a literal address"), false, true);
 
         assert!(
             core.window.capacity() < 64,

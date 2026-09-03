@@ -112,6 +112,29 @@ fn local_millis_since_midnight() -> u32 {
         .unwrap_or(0)
 }
 
+/// The first address in `queue` whose host may be probed now, rotating past the
+/// ones that may not.
+///
+/// [`None`] means every address in the queue was asked too recently for the gap
+/// the scan keeps. The queue keeps every address it had, in a different order:
+/// one turned away goes to the back rather than out, because a probe dropped on
+/// this answer is a host the pass silently stops asking about.
+///
+/// The walk is bounded by the queue's length at entry, so a queue in which
+/// nothing is ready costs one pass over it rather than being walked until
+/// something becomes ready. Free-standing rather than a method because it is
+/// called on each of two queues while the context is borrowed.
+fn take_ready(queue: &mut VecDeque<IpAddr>, ctx: &ScanContext, now: Instant) -> Option<IpAddr> {
+    for _ in 0..queue.len() {
+        let candidate = queue.pop_front()?;
+        if ctx.host_ready_at(candidate, now).is_none() {
+            return Some(candidate);
+        }
+        queue.push_back(candidate);
+    }
+    None
+}
+
 /// Sends one ICMP echo per host where passive evidence named nothing, and files
 /// what the replies say.
 ///
@@ -216,11 +239,19 @@ impl OsEchoScanner {
     /// every first attempt would send it long after the moment it was scheduled
     /// for.
     fn send_one(&mut self, now: Instant) {
-        let target = match self
-            .sweep
-            .retries
-            .pop_front()
-            .or_else(|| self.pending.pop_front())
+        // A queued retry first, then a fresh target, and either may be turned
+        // away by the gap the scan keeps between probes at one host. Both queues
+        // are asked, because unlike a sweep this pass revisits addresses it has
+        // already probed.
+        //
+        // What the gap spaces here is the *pair* below: an IPv4 target gets an
+        // echo and a timestamp back to back, and splitting them would mean
+        // deferring half a probe. See `send_timestamp` for why they travel
+        // together, and `ZondConfig::host_probe_interval` for the two-packet
+        // consequence, which is written down there rather than left to be
+        // measured.
+        let target = match take_ready(&mut self.sweep.retries, &self.ctx, now)
+            .or_else(|| take_ready(&mut self.pending, &self.ctx, now))
         {
             Some(target) => target,
             None => return,
@@ -274,6 +305,17 @@ impl OsEchoScanner {
         }
 
         self.send_timestamp(source, target);
+
+        // After the pair and only for a pair that got somewhere. A probe the
+        // kernel refused reached no target and must not spend its slot, on the
+        // same reasoning `record_send` gives for keeping it out of the
+        // congestion window. The timestamp is not consulted: it is the smaller
+        // half of the probe and IPv4-only, so a target that answered neither
+        // question would otherwise have its slot decided by which family it is
+        // in.
+        if sent {
+            self.ctx.host_probed(target, now);
+        }
     }
 
     /// Asks the same target what time it thinks it is, where the family has a

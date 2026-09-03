@@ -882,6 +882,20 @@ pub struct SettingsDto {
     /// The probe-rate ceiling in probes per second, or `null` if the scanner's
     /// own default applied.
     pub max_probe_rate: Option<u32>,
+    /// The probe-rate floor in probes per second, or `null` if the scan was free
+    /// to settle wherever it liked.
+    ///
+    /// It bounds a reading of the traffic as much as the ceiling does: a scan
+    /// that emitted more packets than its targets were answering did so because
+    /// it was told to finish in time.
+    pub min_probe_rate: Option<u32>,
+    /// The shortest gap kept between two probes at one host, or `null` if none
+    /// was asked for.
+    ///
+    /// It bounds how long the phase's own numbers took to reach: a sweep of a
+    /// thousand addresses spaced a tenth of a second apart cannot have finished
+    /// in under a hundred seconds.
+    pub host_probe_interval_us: Option<u64>,
     /// The wall-clock budget each host was given, or `null` if none was set.
     ///
     /// It bounds what a host's entry can claim. Three open ports out of a
@@ -1031,6 +1045,8 @@ impl SettingsDto {
             sctp_technique: settings.sctp_technique.name(),
             retry: RetryDto::new(&settings.retry),
             max_probe_rate: settings.max_probe_rate.map(std::num::NonZeroU32::get),
+            min_probe_rate: settings.min_probe_rate.map(std::num::NonZeroU32::get),
+            host_probe_interval_us: micros_opt(settings.host_probe_interval),
             host_timeout_us: micros_opt(settings.host_timeout),
             scan_timeout_us: micros_opt(settings.scan_timeout),
             dns_enabled: settings.dns_enabled,
