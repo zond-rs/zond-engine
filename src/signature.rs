@@ -894,7 +894,7 @@ mod tests {
         let document = b"a signed report";
         let (key, signature) = signed(document);
         let trusted = key.public_key();
-        assert!(signature.verify(document, &trusted).is_ok());
+        assert!(signature.verify(document, &trusted, Domain::REPORT).is_ok());
 
         let respelled = signature.public_key().replacen("0", "+", 1);
         if respelled == signature.public_key() {
@@ -908,7 +908,7 @@ mod tests {
             signature: encode_hex(&decode_hex(&signature.signature).expect("hex")),
         };
         assert!(matches!(
-            forged.verify(document, &trusted),
+            forged.verify(document, &trusted, Domain::REPORT),
             Err(SignatureError::Malformed(_))
         ));
     }
