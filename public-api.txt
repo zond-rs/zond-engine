@@ -238,6 +238,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::IdleScan
 #[non_exhaustive] pub struct zond_engine::config::ProbeTuning
 pub zond_engine::config::ProbeTuning::evasion: zond_engine::evasion::EvasionProfile
 pub zond_engine::config::ProbeTuning::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::config::ProbeTuning::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ProbeTuning::os_detection: zond_engine::config::OsDetection
 pub zond_engine::config::ProbeTuning::retry: zond_engine::config::RetryConfig
 pub zond_engine::config::ProbeTuning::sctp_technique: zond_engine::model::technique::SctpScanTechnique
@@ -372,6 +373,7 @@ pub zond_engine::config::ZondConfig::host_timeout: core::option::Option<core::ti
 pub zond_engine::config::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::config::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
 pub zond_engine::config::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::config::ZondConfig::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ZondConfig::no_dns: bool
 pub zond_engine::config::ZondConfig::os_detection: zond_engine::config::OsDetection
 pub zond_engine::config::ZondConfig::redact: bool
@@ -3702,6 +3704,7 @@ pub zond_engine::export::schema::SettingsDto::host_timeout_us: core::option::Opt
 pub zond_engine::export::schema::SettingsDto::idle_scan: core::option::Option<zond_engine::export::schema::IdleScanDto>
 pub zond_engine::export::schema::SettingsDto::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::export::schema::SettingsDto::max_probe_rate: core::option::Option<u32>
+pub zond_engine::export::schema::SettingsDto::min_probe_rate: core::option::Option<u32>
 pub zond_engine::export::schema::SettingsDto::os_detection: &'static str
 pub zond_engine::export::schema::SettingsDto::redact: bool
 pub zond_engine::export::schema::SettingsDto::retry: zond_engine::export::schema::RetryDto
@@ -5635,6 +5638,7 @@ pub zond_engine::import::settings::Settings::exclude: zond_engine::model::exclus
 pub zond_engine::import::settings::Settings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::import::settings::Settings::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
 pub zond_engine::import::settings::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::import::settings::Settings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::settings::Settings::no_dns: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::scan_timeout: core::option::Option<core::time::Duration>
@@ -6072,6 +6076,7 @@ pub zond_engine::import::Settings::exclude: zond_engine::model::exclusion::Exclu
 pub zond_engine::import::Settings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::import::Settings::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
 pub zond_engine::import::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::import::Settings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::Settings::no_dns: core::option::Option<bool>
 pub zond_engine::import::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::Settings::scan_timeout: core::option::Option<core::time::Duration>
@@ -12488,6 +12493,7 @@ pub zond_engine::record::SettingsRecord::host_timeout: core::option::Option<core
 pub zond_engine::record::SettingsRecord::idle_scan: core::option::Option<zond_engine::record::IdleScanRecord>
 pub zond_engine::record::SettingsRecord::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::record::SettingsRecord::max_probe_rate: core::option::Option<u32>
+pub zond_engine::record::SettingsRecord::min_probe_rate: core::option::Option<u32>
 pub zond_engine::record::SettingsRecord::os_detection: alloc::string::String
 pub zond_engine::record::SettingsRecord::redact: bool
 pub zond_engine::record::SettingsRecord::retry_dampen_silent_hosts: bool
@@ -13121,6 +13127,7 @@ pub zond_engine::report::ScanSettings::host_timeout: core::option::Option<core::
 pub zond_engine::report::ScanSettings::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::report::ScanSettings::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::report::ScanSettings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::report::ScanSettings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::report::ScanSettings::os_detection: zond_engine::config::OsDetection
 pub zond_engine::report::ScanSettings::redact: bool
 pub zond_engine::report::ScanSettings::retry: zond_engine::config::RetryConfig
@@ -17157,6 +17164,7 @@ pub zond_engine::ZondConfig::host_timeout: core::option::Option<core::time::Dura
 pub zond_engine::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
 pub zond_engine::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
+pub zond_engine::ZondConfig::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::ZondConfig::no_dns: bool
 pub zond_engine::ZondConfig::os_detection: zond_engine::config::OsDetection
 pub zond_engine::ZondConfig::redact: bool

@@ -1616,6 +1616,7 @@
         "sctp_technique",
         "retry",
         "max_probe_rate",
+        "min_probe_rate",
         "host_timeout_us",
         "scan_timeout_us",
         "dns_enabled",
@@ -1661,6 +1662,14 @@
         },
         "max_probe_rate": {
           "description": "The probe-rate ceiling in probes per second, or null if the scanner's own default applied.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "min_probe_rate": {
+          "description": "The probe-rate floor in probes per second, or null if the scan was free to settle wherever it liked. It bounds a reading of the traffic as much as the ceiling does: a scan that emitted more packets than its targets were answering did so because it was told to finish in time.",
           "type": [
             "integer",
             "null"

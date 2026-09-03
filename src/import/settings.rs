@@ -353,6 +353,10 @@ pub struct Settings {
     /// zero, which is not a slower scan but no scan.
     #[serde(deserialize_with = "de_probe_rate")]
     pub max_probe_rate: Option<NonZeroU32>,
+    /// The slowest a scan may settle at, in probes per second. Refused if zero,
+    /// which is the absence of a floor rather than a floor.
+    #[serde(deserialize_with = "de_min_probe_rate")]
+    pub min_probe_rate: Option<NonZeroU32>,
     /// How long a scan may spend on one host, in whole seconds. Refused if
     /// zero, which is a scan that asks nothing rather than a quick one.
     #[serde(deserialize_with = "de_timeout")]
@@ -440,6 +444,7 @@ impl Settings {
             redact,
             send_mode,
             max_probe_rate,
+            min_probe_rate,
             host_timeout,
             scan_timeout,
             tcp_technique,
@@ -491,6 +496,9 @@ impl Settings {
         if self.max_probe_rate.is_some() {
             config.max_probe_rate = self.max_probe_rate;
         }
+        if self.min_probe_rate.is_some() {
+            config.min_probe_rate = self.min_probe_rate;
+        }
         if self.host_timeout.is_some() {
             config.host_timeout = self.host_timeout;
         }
@@ -539,12 +547,13 @@ impl Settings {
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the
 /// struct, so that step is by hand.
-const KNOWN_KEYS: [&str; 15] = [
+const KNOWN_KEYS: [&str; 16] = [
     "exclude",
     "no_dns",
     "redact",
     "send_mode",
     "max_probe_rate",
+    "min_probe_rate",
     "host_timeout",
     "scan_timeout",
     "tcp_technique",
@@ -905,6 +914,26 @@ fn de_probe_rate<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<NonZer
     })
 }
 
+/// Reads `min_probe_rate`, refusing a floor of zero.
+///
+/// The mirror of [`de_probe_rate`]'s reason rather than the same one: a floor of
+/// zero does not ask for a stalled scan, it asks for no floor, which leaving the
+/// key out already says. Accepting it would write a bound into the report that
+/// never bound anything.
+fn de_min_probe_rate<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<NonZeroU32>, D::Error> {
+    let Some(rate) = Option::<u32>::deserialize(d)? else {
+        return Ok(None);
+    };
+    NonZeroU32::new(rate).map(Some).ok_or_else(|| {
+        serde::de::Error::custom(
+            "min_probe_rate = 0: a floor of zero probes per second is the absence of a floor. \
+             Remove the key to let each scanner settle where it will.",
+        )
+    })
+}
+
 /// Reads a wall-clock budget written in whole seconds, refusing zero.
 ///
 /// Seconds because that is the unit somebody writing a schedule thinks in, and
@@ -1018,6 +1047,7 @@ mod tests {
     fn a_setting_the_engine_could_not_honour_is_refused_by_name() {
         for (document, expected) in [
             ("[defaults]\nmax_probe_rate = 0\n", "max_probe_rate"),
+            ("[defaults]\nmin_probe_rate = 0\n", "min_probe_rate"),
             ("[defaults]\nmax_attempts = 0\n", "max_attempts"),
             ("[defaults]\ntimeout_scale = 0.0\n", "timeout_scale"),
             ("[defaults]\ntimeout_scale = -1.5\n", "timeout_scale"),
@@ -1036,12 +1066,12 @@ mod tests {
     /// than a wall.
     #[test]
     fn the_smallest_usable_values_are_accepted() {
-        let mut document =
-            &b"[defaults]\nmax_probe_rate = 1\nmax_attempts = 1\ntimeout_scale = 0.001\n"[..];
+        let mut document = &b"[defaults]\nmax_probe_rate = 1\nmin_probe_rate = 1\nmax_attempts = 1\ntimeout_scale = 0.001\n"[..];
         let loaded = read(&mut document).expect("the smallest usable values are settings");
 
         let settings = loaded.document.resolve(None).expect("resolves");
         assert_eq!(settings.max_probe_rate, NonZeroU32::new(1));
+        assert_eq!(settings.min_probe_rate, NonZeroU32::new(1));
         assert_eq!(settings.max_attempts, NonZeroU8::new(1));
         assert_eq!(settings.timeout_scale.map(TimeoutScale::get), Some(0.001));
     }

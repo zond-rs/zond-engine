@@ -613,6 +613,15 @@ pub struct ScanSettings {
     pub retry: RetryConfig,
     /// The probe-rate ceiling, or `None` if the scanner's own default applied.
     pub max_probe_rate: Option<std::num::NonZeroU32>,
+    /// The probe-rate floor, or `None` if the scan was free to settle wherever
+    /// it liked.
+    ///
+    /// Recorded because it bounds a reading of the traffic as much as the
+    /// ceiling does. A scan that emitted more packets than its targets were
+    /// answering did so because it was told to finish, and a reader comparing
+    /// two runs needs the floor in front of them before concluding the network
+    /// got noisier.
+    pub min_probe_rate: Option<std::num::NonZeroU32>,
     /// The wall-clock budget each host was given, or `None` if none was set.
     ///
     /// Recorded because it bounds what a host's entry can say. A machine with
@@ -727,6 +736,7 @@ impl From<&ZondConfig> for ScanSettings {
             sctp_technique,
             retry,
             max_probe_rate,
+            min_probe_rate,
             host_timeout,
             scan_timeout,
             no_dns,
@@ -758,6 +768,7 @@ impl From<&ZondConfig> for ScanSettings {
             sctp_technique: *sctp_technique,
             retry: *retry,
             max_probe_rate: *max_probe_rate,
+            min_probe_rate: *min_probe_rate,
             host_timeout: *host_timeout,
             scan_timeout: *scan_timeout,
             dns_enabled: !no_dns,

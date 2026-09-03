@@ -47,7 +47,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::strategy::raw::{
-    DEADLINE_CONFIG, EvasionParts, RETRY_POLICY, SendFaults, SynToken, pacing_for, rate_or,
+    DEADLINE_CONFIG, EvasionParts, RETRY_POLICY, SendFaults, SynToken, pacing_for, rate_within,
     send_init, send_syn,
 };
 use crate::scanner::strategy::sweep::HostSweep;
@@ -534,7 +534,11 @@ impl RoutedScanner {
             tuning.evasion.segment_shaping(),
             tuning.evasion.decoys.clone(),
             RETRY_POLICY.configured(tuning.retry),
-            rate_or(tuning.max_probe_rate, PROBE_RATE_PER_SEC),
+            rate_within(
+                tuning.max_probe_rate,
+                tuning.min_probe_rate,
+                PROBE_RATE_PER_SEC,
+            ),
         ))
     }
 

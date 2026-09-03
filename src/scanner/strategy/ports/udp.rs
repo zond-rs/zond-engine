@@ -238,7 +238,11 @@ impl UdpPortScanner {
         src_port: u16,
         target_count: usize,
     ) -> RawProbeScan<()> {
-        let rate = super::super::raw::rate_or(tuning.max_probe_rate, super::UDP_PORT_RATE_PER_SEC);
+        let rate = super::super::raw::rate_within(
+            tuning.max_probe_rate,
+            tuning.min_probe_rate,
+            super::UDP_PORT_RATE_PER_SEC,
+        );
 
         RawProbeScan::new(CoreParts {
             resolver,

@@ -66,6 +66,21 @@
 #
 # max_probe_rate = 20000
 
+# The slowest the scan may settle at, in probes per second.
+#
+# The knob for a plan large enough that finishing it is in doubt. A scan given
+# scan_timeout can spend the whole budget on a fraction of its targets and report
+# the rest as never asked; a floor is what makes a wall-clock bound and a large
+# range compatible.
+#
+# It reaches the same scanners max_probe_rate does and means what the rate means
+# to each: a floor under the pace of the discovery sweep and the UDP port scan,
+# and a floor under the ceiling of a TCP port scan, which still paces itself on
+# what its targets are answering. Nothing here overrides that. A floor above a
+# max_probe_rate set alongside it does not lift the ceiling.
+#
+# min_probe_rate = 500
+
 # How long the scan may spend on one host, in whole seconds.
 #
 # The clock starts on the first probe aimed at an address and covers the port
@@ -210,6 +225,7 @@
 # [profiles.sweep]
 # effort = "single"
 # max_probe_rate = 50000
+# min_probe_rate = 2000
 # default_ports = "80, 443"
 
 # [profiles.ci]

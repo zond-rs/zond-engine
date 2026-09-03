@@ -46,7 +46,7 @@
 //! batch of zero is a caller error rather than an instruction to send nothing:
 //! it reaches `mpsc::channel`, which asserts on an empty buffer, so honouring
 //! the number would end the scan in a panic rather than in an empty result. The
-//! same reading `rate_or` gives a configured rate of zero.
+//! same reading `rate_within` gives a configured rate of zero.
 
 use std::net::IpAddr;
 

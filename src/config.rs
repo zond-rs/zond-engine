@@ -793,6 +793,17 @@ pub struct ProbeTuning {
     /// three separate call sites.
     pub max_probe_rate: Option<NonZeroU32>,
 
+    /// The fewest probes per second a strategy should emit, or `None` for
+    /// whatever pace it arrives at.
+    ///
+    /// Read at the same four places as [`max_probe_rate`](Self::max_probe_rate)
+    /// and means as many different things: a floor under a pace where the rate
+    /// is the pace, and a floor under a ceiling where it is only a ceiling.
+    ///
+    /// Non-zero for the same reason: a floor of zero is what the absence of a
+    /// floor already says.
+    pub min_probe_rate: Option<NonZeroU32>,
+
     /// Which segment a TCP port probe carries. Read only by the raw TCP port
     /// scanner: host discovery asks whether anything is there, which every one
     /// of these techniques answers equally badly, so it stays on SYN.
@@ -1148,6 +1159,34 @@ pub struct ZondConfig {
     /// applied.
     pub max_probe_rate: Option<NonZeroU32>,
 
+    /// The slowest a scan may put probes on the wire, in probes per second.
+    /// `None` leaves each scanner's own pace in force.
+    ///
+    /// The knob for a plan large enough that finishing it is in doubt. A scan
+    /// given [`scan_timeout`](Self::scan_timeout) can spend the whole budget on
+    /// a fraction of its targets and report the rest as
+    /// [`timed_out`](crate::report::ScanPhase::timed_out); this is what makes a
+    /// wall-clock bound and a large range compatible, by refusing to settle
+    /// below a pace that would finish in time.
+    ///
+    /// It reaches the same four strategies as
+    /// [`max_probe_rate`](Self::max_probe_rate) and means what the rate means to
+    /// each. The discovery sweep and the UDP port scan are paced by the rate, so
+    /// a floor raises their pace. A TCP port scan is paced by its congestion
+    /// window and reads the rate only as a ceiling, so a floor raises the
+    /// ceiling and leaves the window to decide as before. Nothing here overrides
+    /// that window: pushing a target harder than it is answering is the failure
+    /// the window exists to prevent, and a floor that could force it would trade
+    /// coverage for a number.
+    ///
+    /// A floor above an explicit [`max_probe_rate`](Self::max_probe_rate) does
+    /// not lift it. The two are a throughput wish and a safety limit, and the
+    /// safety limit wins.
+    ///
+    /// Non-zero: a floor of zero is what `None` already says, and the value
+    /// reaches the report, which must not record a floor that was never applied.
+    pub min_probe_rate: Option<NonZeroU32>,
+
     /// The longest a scan will keep working on one host before leaving it with
     /// what it has, or `None` for no bound.
     ///
@@ -1293,6 +1332,7 @@ impl ZondConfig {
             send_mode,
             retry,
             max_probe_rate,
+            min_probe_rate,
             tcp_technique,
             sctp_technique,
             os_detection,
@@ -1325,6 +1365,7 @@ impl ZondConfig {
             send_mode: *send_mode,
             retry: *retry,
             max_probe_rate: *max_probe_rate,
+            min_probe_rate: *min_probe_rate,
             tcp_technique: *tcp_technique,
             sctp_technique: *sctp_technique,
             os_detection: *os_detection,
@@ -1491,8 +1532,13 @@ mod tests {
                 timeout_scale: TimeoutScale::new(3.5),
                 dampen_silent_hosts: false,
             },
+            // Two rates, and deliberately different numbers: the failure this
+            // half exists to catch is a bound carried from the other one, which
+            // a shared value would let through.
             max_probe_rate: NonZeroU32::new(1234),
+            min_probe_rate: NonZeroU32::new(567),
             tcp_technique: TcpScanTechnique::Xmas,
+            sctp_technique: SctpScanTechnique::CookieEcho,
             os_detection: OsDetection::Aggressive,
             service_detection: ServiceDetection::Banner,
             evasion: EvasionProfile::default(),
@@ -1503,7 +1549,9 @@ mod tests {
         assert_eq!(tuning.send_mode, cfg.send_mode);
         assert_eq!(tuning.retry, cfg.retry);
         assert_eq!(tuning.max_probe_rate, cfg.max_probe_rate);
+        assert_eq!(tuning.min_probe_rate, cfg.min_probe_rate);
         assert_eq!(tuning.tcp_technique, cfg.tcp_technique);
+        assert_eq!(tuning.sctp_technique, cfg.sctp_technique);
         assert_eq!(tuning.os_detection, cfg.os_detection);
         assert_eq!(tuning.service_detection, cfg.service_detection);
         assert_eq!(tuning.evasion, cfg.evasion);

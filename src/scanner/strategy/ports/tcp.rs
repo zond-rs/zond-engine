@@ -243,7 +243,11 @@ impl TcpPortScanner {
         target_count: usize,
     ) -> RawProbeScan<TcpToken> {
         let retry = PORT_RETRY_POLICY.configured(tuning.retry);
-        let rate = super::super::raw::rate_or(tuning.max_probe_rate, super::TCP_PORT_RATE_CEILING);
+        let rate = super::super::raw::rate_within(
+            tuning.max_probe_rate,
+            tuning.min_probe_rate,
+            super::TCP_PORT_RATE_CEILING,
+        );
 
         RawProbeScan::new(CoreParts {
             resolver,

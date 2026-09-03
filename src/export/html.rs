@@ -1117,9 +1117,14 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     fact(out, "retry", &budget.join(" · "))?;
 
     let settings = &phase.settings;
-    let rate = match settings.max_probe_rate {
-        Some(rate) => format!("max {rate} probes/s"),
-        None => "scanner default rate".to_string(),
+    // Both bounds or neither, named as bounds rather than as one rate. A page
+    // saying "500 probes/s" where a floor was set reads as the pace the scan
+    // ran at, which is the one thing a bound never promises.
+    let rate = match (settings.min_probe_rate, settings.max_probe_rate) {
+        (Some(min), Some(max)) => format!("min {min} · max {max} probes/s"),
+        (Some(min), None) => format!("min {min} probes/s"),
+        (None, Some(max)) => format!("max {max} probes/s"),
+        (None, None) => "scanner default rate".to_string(),
     };
     let dns = if settings.dns_enabled {
         "dns enabled"
