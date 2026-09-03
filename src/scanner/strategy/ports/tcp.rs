@@ -418,6 +418,28 @@ impl TcpPortScanner {
             // probe, but no TCP stack emits one - so something in the path
             // rejected the probe on the host's behalf, which is a filter and
             // not a closed port.
+            // A refusal names a port, so unlike a host unreachable it has to
+            // name the *attempt* as well. Four of the six techniques put their
+            // nonce in the sequence number, which is inside the eight bytes RFC
+            // 792 guarantees, so an error about one of those carries it however
+            // stingy the sender. The two that use the acknowledgement field -
+            // and Maimon, which carries ACK - need twelve quoted bytes, and a
+            // sender offering only the minimum leaves `token` as `None`.
+            //
+            // That used to resolve the port anyway, on the ports alone, which
+            // anybody who knows this scan's source port can supply. For an ACK
+            // or window scan it reached the verdict silence reaches, so it cost
+            // only a suppressed retry and an invented `IcmpProhibited`. For a
+            // Maimon scan it cost the verdict: `OpenFiltered` became `Filtered`,
+            // and an open port was dismissed.
+            //
+            // So an unattributable refusal now retires nothing, and the port
+            // takes whatever its own retry schedule concludes. See the SCTP
+            // scanner, which reaches the same rule from the other direction: an
+            // INIT's nonce is *never* inside the guaranteed eight.
+            Unreachable::Port | Unreachable::Prohibited if token.is_none() => {
+                self.core.audit.record_reply_without_rtt();
+            }
             Unreachable::Port | Unreachable::Prohibited => {
                 self.resolve_probe(
                     key,
@@ -2058,5 +2080,72 @@ mod tests {
             scanner.core.ledger.contains(&(TARGET, 80)),
             "and the port keeps its remaining attempts"
         );
+    }
+
+    /// **A refusal that cannot name the attempt retires nothing.**
+    ///
+    /// The acknowledgement field sits at offset eight, past what RFC 792
+    /// guarantees an ICMP error will quote, so a sender offering only the
+    /// minimum names an ack-field technique's probe by its ports and nothing
+    /// else. The ports are in every packet this scan sends.
+    #[test]
+    fn a_refusal_quoting_too_little_to_name_the_attempt_resolves_no_port() {
+        for technique in [
+            TcpScanTechnique::Ack,
+            TcpScanTechnique::Window,
+            TcpScanTechnique::Maimon,
+        ] {
+            let (mut scanner, session, sent) = scanner_for(technique);
+            probe(&mut scanner, &sent, 80);
+
+            // The probe as it left, cut to the eight bytes and no further.
+            let whole = last_probe_bytes(&sent);
+            let error = icmp_error_quoting(
+                IcmpCodes::CommunicationAdministrativelyProhibited,
+                &whole[..8],
+                ROUTER,
+            );
+            scanner.handle_reply(&error, Instant::now());
+
+            assert_eq!(
+                port_state(&session, 80),
+                None,
+                "{technique:?}: an eight-byte quotation named no attempt"
+            );
+            assert!(
+                scanner.core.ledger.contains(&(TARGET, 80)),
+                "{technique:?}: and the probe keeps its remaining attempts"
+            );
+        }
+    }
+
+    /// The four techniques whose nonce is the sequence number are unaffected:
+    /// it is inside the guaranteed eight, so a minimal quotation still names
+    /// the attempt and still resolves the port.
+    #[test]
+    fn a_sequence_nonce_technique_still_resolves_on_the_guaranteed_eight() {
+        for technique in [
+            TcpScanTechnique::Syn,
+            TcpScanTechnique::Fin,
+            TcpScanTechnique::Null,
+            TcpScanTechnique::Xmas,
+        ] {
+            let (mut scanner, session, sent) = scanner_for(technique);
+            probe(&mut scanner, &sent, 80);
+
+            let whole = last_probe_bytes(&sent);
+            let error = icmp_error_quoting(
+                IcmpCodes::CommunicationAdministrativelyProhibited,
+                &whole[..8],
+                ROUTER,
+            );
+            scanner.handle_reply(&error, Instant::now());
+
+            assert_eq!(
+                port_state(&session, 80),
+                Some(PortState::Filtered),
+                "{technique:?}: the sequence number is inside the guaranteed eight"
+            );
+        }
     }
 }
