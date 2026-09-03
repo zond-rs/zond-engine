@@ -2104,4 +2104,134 @@ mod tests {
         assert_eq!(diff.baseline().hosts(), 1);
         assert!(diff.baseline().kinds().is_empty());
     }
+
+    /// **The whole port-state grading table, as a table.**
+    ///
+    /// The module documentation for
+    /// [`significance`](crate::diff::significance) says the policy "can be read
+    /// as a table"; this is that table, executed. It is here rather than beside
+    /// the grader because what it pins is the *composition* — the grade, and the
+    /// presence that decides whether the grade is even reported.
+    ///
+    /// The rows carrying [`PortState::Unasked`] are the ones worth the space. A
+    /// scan that ran out of budget writes the port down rather than dropping it,
+    /// so every transition into or out of `Unasked` has to read as ground one
+    /// side never reached — `Routine`, and `Unreached` — and never as a port
+    /// that opened or closed. `merge` had the same lesson to learn and had not
+    /// learned it; see `fold_port`.
+    #[test]
+    fn every_port_state_transition_grades_the_way_the_table_says() {
+        use crate::model::port::{Port, PortState, Protocol};
+
+        // before, after, expected significance, whether a delta is reported
+        let table = [
+            (PortState::Open, PortState::Open, None),
+            (
+                PortState::Open,
+                PortState::Closed,
+                Some(Significance::Notable),
+            ),
+            (
+                PortState::Open,
+                PortState::Filtered,
+                Some(Significance::Notable),
+            ),
+            (
+                PortState::Open,
+                PortState::OpenFiltered,
+                Some(Significance::Notable),
+            ),
+            (
+                PortState::Closed,
+                PortState::Open,
+                Some(Significance::Urgent),
+            ),
+            (PortState::Closed, PortState::Closed, None),
+            (
+                PortState::Closed,
+                PortState::Filtered,
+                Some(Significance::Routine),
+            ),
+            (
+                PortState::Filtered,
+                PortState::Open,
+                Some(Significance::Urgent),
+            ),
+            (
+                PortState::Filtered,
+                PortState::Closed,
+                Some(Significance::Routine),
+            ),
+            (PortState::Filtered, PortState::Filtered, None),
+            (
+                PortState::OpenFiltered,
+                PortState::Open,
+                Some(Significance::Urgent),
+            ),
+            (PortState::OpenFiltered, PortState::OpenFiltered, None),
+            (PortState::Unasked, PortState::Unasked, None),
+        ];
+
+        for (before, after, expected) in table {
+            let mut baseline = host(1);
+            baseline.add_port(Port::new(80, Protocol::Tcp, before));
+            let mut current = host(1);
+            current.add_port(Port::new(80, Protocol::Tcp, after));
+
+            let diff = ScanDiff::between(&unscoped(vec![baseline]), &unscoped(vec![current]));
+            let graded: Vec<Significance> = diff
+                .hosts()
+                .iter()
+                .flat_map(|host| host.ports())
+                .filter(|delta| delta.number() == 80)
+                .map(|delta| delta.significance())
+                .collect();
+
+            match expected {
+                Some(grade) => assert_eq!(graded, vec![grade], "{before:?} -> {after:?}"),
+                None => assert!(
+                    graded.is_empty(),
+                    "{before:?} -> {after:?} is not a change and must report none, got {graded:?}"
+                ),
+            }
+        }
+    }
+
+    /// **A port nobody asked about is ground one side never reached, and grades
+    /// as that in both directions.**
+    ///
+    /// Never as a port that opened or closed. The presence says which side fell
+    /// short, so a reader can tell "we did not look" from "it went away" — the
+    /// distinction the whole `Unasked` variant exists for.
+    #[test]
+    fn a_transition_through_unasked_reads_as_ground_nobody_walked() {
+        use crate::model::port::{Port, PortState, Protocol};
+
+        for state in [
+            PortState::Open,
+            PortState::Closed,
+            PortState::Filtered,
+            PortState::OpenFiltered,
+        ] {
+            for (before, after) in [(state, PortState::Unasked), (PortState::Unasked, state)] {
+                let mut baseline = host(1);
+                baseline.add_port(Port::new(80, Protocol::Tcp, before));
+                let mut current = host(1);
+                current.add_port(Port::new(80, Protocol::Tcp, after));
+
+                let diff = ScanDiff::between(&unscoped(vec![baseline]), &unscoped(vec![current]));
+                for delta in diff.hosts().iter().flat_map(|host| host.ports()) {
+                    assert_eq!(
+                        delta.significance(),
+                        Significance::Routine,
+                        "{before:?} -> {after:?} must not be graded above routine"
+                    );
+                    assert!(
+                        !delta.presence().is_confirmed(),
+                        "{before:?} -> {after:?} must not read as a confirmed change"
+                    );
+                }
+            }
+        }
+    }
 }
