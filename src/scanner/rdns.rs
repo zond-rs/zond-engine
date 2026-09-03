@@ -50,7 +50,7 @@ use hickory_resolver::config::ProtocolConfig;
 use hickory_resolver::system_conf::read_system_conf;
 use std::net::SocketAddr;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     net::IpAddr,
     sync::atomic::{AtomicU16, Ordering},
     time::Duration,
@@ -418,6 +418,23 @@ impl HostnameResolver {
     /// on the address its question names. A name for a host the scan never found
     /// costs nothing: [`resolve_hosts`](Self::resolve_hosts) only applies what
     /// matches a host in the store.
+    ///
+    /// **It fills a gap and never displaces.** Nothing authenticates a packet
+    /// read off the wire: anyone who can put a datagram with source port 53 in
+    /// front of the capture chooses both the address and the name. That is
+    /// acceptable for an address nothing else has named - an overheard name is
+    /// better than none, and the log line says which it was - and it is not
+    /// acceptable against [`absorb_reply`](Self::absorb_reply), which took a
+    /// reply from a resolver it had asked, carrying a transaction ID it had
+    /// issued, over a question naming the address it had asked about.
+    ///
+    /// This used to `insert`, so the unauthenticated source won, in either
+    /// order, and silently: `insert` returns the previous value, so the log line
+    /// fired only when there was nothing to displace. The engine ranks its
+    /// evidence everywhere else -
+    /// [`HostStatus`](crate::model::host::HostStatus) is ordered by how strong
+    /// the evidence is and `record_evidence` refuses to lower it - and this was
+    /// the one place ranking it the wrong way round.
     fn absorb_sniffed_dns(&mut self, payload: &[u8]) {
         let Ok(response) = dns::parse_ptr_response(payload) else {
             return;
@@ -430,8 +447,9 @@ impl HostnameResolver {
             return;
         }
 
-        if self.hostname_map.insert(ip, hostname.clone()).is_none() {
+        if let Entry::Vacant(slot) = self.hostname_map.entry(ip) {
             info!(verbosity = 1, "overheard {ip} named {hostname}");
+            slot.insert(hostname);
         }
     }
 
@@ -1166,5 +1184,70 @@ mod tests {
                 .is_none()
         );
         assert!(session.events().try_recv().is_none(), "nothing changed");
+    }
+
+    /// A PTR response for `subject` carrying `name`, which the fixtures above
+    /// have no way to build: `dns_response` deliberately answers nothing.
+    fn named_response(subject: IpAddr, name: &str) -> Vec<u8> {
+        let mut message = dns::build_ptr_packet(subject, 0x1234);
+        message[2] |= 0b1000_0000; // QR: a response
+        message[6..8].copy_from_slice(&1u16.to_be_bytes()); // one answer
+
+        message.extend_from_slice(&[0xC0, 0x0C]); // name: a pointer to the question
+        message.extend_from_slice(&12u16.to_be_bytes()); // PTR
+        message.extend_from_slice(&1u16.to_be_bytes()); // IN
+        message.extend_from_slice(&300u32.to_be_bytes()); // TTL
+
+        let mut rdata = Vec::new();
+        for label in name.split('.') {
+            rdata.push(label.len() as u8);
+            rdata.extend_from_slice(label.as_bytes());
+        }
+        rdata.push(0);
+        message.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        message.extend_from_slice(&rdata);
+        message
+    }
+
+    /// **An overheard name does not displace one a resolver answered for.**
+    ///
+    /// The sniffed path is unauthenticated by design and says so. What it may
+    /// not do is outrank the path that checked the source, the transaction ID
+    /// and the question - which it did, in either order, and without a word,
+    /// because `insert` reports only the absence it replaced.
+    #[tokio::test]
+    async fn an_overheard_name_does_not_displace_a_resolved_one() {
+        let ip = v4(192, 168, 0, 40);
+        let mut resolver = resolver_holding(ip, "resolver-confirmed.example.com");
+
+        resolver.absorb_sniffed(
+            &from_port(DNS_PORT, named_response(ip, "attacker-chosen.example.com")),
+            v4(10, 0, 0, 99),
+        );
+
+        assert_eq!(
+            resolver.hostname_map.get(&ip).map(String::as_str),
+            Some("resolver-confirmed.example.com"),
+            "a datagram off the wire outranked a resolver this scan asked"
+        );
+    }
+
+    /// And it still fills a gap, which is the whole reason the path exists.
+    #[tokio::test]
+    async fn an_overheard_name_still_names_an_address_nothing_else_has() {
+        let ip = v4(192, 168, 0, 41);
+        let mut resolver = resolver_asking(vec![
+            "127.0.0.1:53".parse().expect("a valid socket address"),
+        ]);
+
+        resolver.absorb_sniffed(
+            &from_port(DNS_PORT, named_response(ip, "overheard.example.com")),
+            v4(10, 0, 0, 99),
+        );
+
+        assert_eq!(
+            resolver.hostname_map.get(&ip).map(String::as_str),
+            Some("overheard.example.com")
+        );
     }
 }
