@@ -750,12 +750,26 @@ impl RoutedScanner {
     /// asked.
     fn send_allowance(&mut self, now: Instant) {
         for _ in 0..self.batch {
-            let target = match self.sweep.retries.pop_front() {
-                Some(target) => target,
-                None => match self.pending.next() {
-                    Some(target) => target,
-                    None => return,
-                },
+            // A queued retry first, unless its host was asked too recently for
+            // the gap the scan keeps. A retry turned away goes to the back of
+            // the queue rather than out of it, and the allowance moves on to a
+            // fresh target instead of spending the slot waiting.
+            //
+            // Only a retry can be turned away. The gap is measured from a
+            // previous probe and a sweep sends one per host per attempt, so a
+            // first attempt reaches an address this sweep has never asked
+            // about and there is no earlier probe for it to be too close to.
+            let queued = match self.sweep.retries.pop_front() {
+                Some(target) if self.ctx.host_ready_at(target, now).is_none() => Some(target),
+                Some(target) => {
+                    self.sweep.retries.push_back(target);
+                    None
+                }
+                None => None,
+            };
+
+            let Some(target) = queued.or_else(|| self.pending.next()) else {
+                return;
             };
             self.probe(target, now);
         }
@@ -802,6 +816,11 @@ impl RoutedScanner {
         self.sweep.audit.record_send(token.is_some());
 
         if let Some(token) = token {
+            // Only for a probe that reached the wire, on the same reasoning
+            // `record_send` gives for keeping a refused one out of the
+            // congestion window: a packet the kernel would not take occupied
+            // nothing at the target and must not spend its slot.
+            self.ctx.host_probed(target, now);
             self.sweep.ledger.arm(target, target, token, (), now);
         }
     }

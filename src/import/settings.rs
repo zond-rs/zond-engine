@@ -357,6 +357,10 @@ pub struct Settings {
     /// which is the absence of a floor rather than a floor.
     #[serde(deserialize_with = "de_min_probe_rate")]
     pub min_probe_rate: Option<NonZeroU32>,
+    /// The shortest gap between two probes at one host, in whole milliseconds.
+    /// Refused if zero, which is the absence of a gap rather than a gap.
+    #[serde(deserialize_with = "de_millis")]
+    pub host_probe_interval: Option<Duration>,
     /// How long a scan may spend on one host, in whole seconds. Refused if
     /// zero, which is a scan that asks nothing rather than a quick one.
     #[serde(deserialize_with = "de_timeout")]
@@ -445,6 +449,7 @@ impl Settings {
             send_mode,
             max_probe_rate,
             min_probe_rate,
+            host_probe_interval,
             host_timeout,
             scan_timeout,
             tcp_technique,
@@ -499,6 +504,9 @@ impl Settings {
         if self.min_probe_rate.is_some() {
             config.min_probe_rate = self.min_probe_rate;
         }
+        if self.host_probe_interval.is_some() {
+            config.host_probe_interval = self.host_probe_interval;
+        }
         if self.host_timeout.is_some() {
             config.host_timeout = self.host_timeout;
         }
@@ -547,13 +555,14 @@ impl Settings {
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the
 /// struct, so that step is by hand.
-const KNOWN_KEYS: [&str; 16] = [
+const KNOWN_KEYS: [&str; 17] = [
     "exclude",
     "no_dns",
     "redact",
     "send_mode",
     "max_probe_rate",
     "min_probe_rate",
+    "host_probe_interval",
     "host_timeout",
     "scan_timeout",
     "tcp_technique",
@@ -954,6 +963,29 @@ fn de_timeout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>
     Ok(Some(Duration::from_secs(seconds)))
 }
 
+/// Reads a gap written in whole milliseconds, refusing zero.
+///
+/// Milliseconds rather than the whole seconds [`de_timeout`] takes, because the
+/// gaps worth writing down are shorter than a second: an IDS threshold of ten
+/// probes a second is a hundred milliseconds, and rounding that to a whole one
+/// would be a tenth of the pace the file asked for.
+///
+/// Zero is refused for the reason [`de_min_probe_rate`] refuses a floor of zero:
+/// a gap of no time is what leaving the key out already says, and accepting it
+/// would put a bound in the report that never bound anything.
+fn de_millis<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    let Some(millis) = Option::<u64>::deserialize(d)? else {
+        return Ok(None);
+    };
+    if millis == 0 {
+        return Err(serde::de::Error::custom(
+            "host_probe_interval = 0: a gap of no time is the absence of a gap. \
+             Remove the key to let each pass send as fast as its own pacing allows.",
+        ));
+    }
+    Ok(Some(Duration::from_millis(millis)))
+}
+
 /// Reads `max_attempts`, refusing a budget of zero.
 fn de_max_attempts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<NonZeroU8>, D::Error> {
     let Some(attempts) = Option::<u8>::deserialize(d)? else {
@@ -1048,6 +1080,10 @@ mod tests {
         for (document, expected) in [
             ("[defaults]\nmax_probe_rate = 0\n", "max_probe_rate"),
             ("[defaults]\nmin_probe_rate = 0\n", "min_probe_rate"),
+            (
+                "[defaults]\nhost_probe_interval = 0\n",
+                "host_probe_interval",
+            ),
             ("[defaults]\nmax_attempts = 0\n", "max_attempts"),
             ("[defaults]\ntimeout_scale = 0.0\n", "timeout_scale"),
             ("[defaults]\ntimeout_scale = -1.5\n", "timeout_scale"),

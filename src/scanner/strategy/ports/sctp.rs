@@ -530,7 +530,7 @@ impl RawPortScan for SctpPortScanner {
             &self.core.decoys,
             &mut self.core.send_failure,
         );
-        self.core.record_send(sent.is_some(), first_attempt);
+        self.core.record_send(ip, sent.is_some(), first_attempt);
 
         if let Some(token) = sent {
             match position {

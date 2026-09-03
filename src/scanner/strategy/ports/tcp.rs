@@ -624,7 +624,7 @@ impl RawPortScan for TcpPortScanner {
             &self.core.decoys,
             &mut self.core.send_failure,
         );
-        self.core.record_send(token.is_some(), first_attempt);
+        self.core.record_send(ip, token.is_some(), first_attempt);
 
         if let Some(token) = token {
             match position {
