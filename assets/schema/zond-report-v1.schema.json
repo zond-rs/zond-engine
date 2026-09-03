@@ -1199,6 +1199,7 @@
                 "arp",
                 "ndp",
                 "icmp_echo",
+            "icmp_timestamp",
                 "icmp_unreachable",
                 "tcp_syn",
                 "tcp",

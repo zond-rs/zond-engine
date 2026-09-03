@@ -93,6 +93,25 @@ const SEND_TICK: Duration = Duration::from_millis(1);
 /// path still lands before the phase closes.
 const QUIET_FLOOR: Duration = Duration::from_secs(1);
 
+/// This host's own milliseconds since midnight UT, which is the scale RFC 792
+/// puts a timestamp on.
+///
+/// The reference an offset is measured against. Read at the moment a reply is
+/// folded rather than when the probe went out, so it includes the return path;
+/// see [`TimestampReply::offset_from`](crate::protocols::icmp::TimestampReply::offset_from)
+/// for why a millisecond or two does not matter to what this is for.
+///
+/// Zero where the clock is before the Unix epoch, which is a machine with no
+/// clock rather than a case worth a signature of its own: the offset it produces
+/// is then plainly wrong rather than quietly plausible.
+fn local_millis_since_midnight() -> u32 {
+    const MILLIS_PER_DAY: u128 = 86_400_000;
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| (since.as_millis() % MILLIS_PER_DAY) as u32)
+        .unwrap_or(0)
+}
+
 /// Sends one ICMP echo per host where passive evidence named nothing, and files
 /// what the replies say.
 ///
@@ -253,6 +272,55 @@ impl OsEchoScanner {
             self.by_sequence.insert(sequence, target);
             self.sweep.ledger.arm(target, target, sequence, (), now);
         }
+
+        self.send_timestamp(source, target);
+    }
+
+    /// Asks the same target what time it thinks it is, where the family has a
+    /// message for the question.
+    ///
+    /// A second packet per IPv4 target, which is the cost, and it buys the two
+    /// things an echo cannot. A filter written against ping frequently passes
+    /// type 13, so a host that answers nothing here still answers this; and the
+    /// reply carries the target's own clock, which no other probe in this engine
+    /// obtains. The pass this runs in covers only hosts nothing else could name,
+    /// so the doubling is of a small number.
+    ///
+    /// IPv4 only. RFC 4443 defines no timestamp message, so an IPv6 target has
+    /// nothing to be asked and is left with the echo alone.
+    ///
+    /// The ledger is not armed a second time. It is keyed by target and already
+    /// holds the echo's attempt; a timestamp reply resolves that entry without
+    /// claiming its round trip, since the two probes are not the same question
+    /// and timing one against the other would report a measurement nobody made.
+    fn send_timestamp(&mut self, source: IpAddr, target: IpAddr) {
+        if !target.is_ipv4() {
+            return;
+        }
+
+        let sequence = self.next_sequence;
+        let message = icmp::build_timestamp_request(self.identifier, sequence);
+
+        match self
+            .transport
+            .tx
+            .send(&message, source, target, self.emission)
+        {
+            Ok(()) => {
+                success!(verbosity = 2, "sent OS timestamp probe to {target}");
+                self.next_sequence = self.next_sequence.wrapping_add(1);
+                self.by_sequence.insert(sequence, target);
+            }
+            Err(e) => {
+                // Not recorded as a send failure of its own: the echo beside it
+                // is what this pass is counted in, and a host whose timestamp
+                // could not be sent is still being asked.
+                error!(
+                    verbosity = 2,
+                    "failed to send OS timestamp probe to {target}: {e:#}"
+                );
+            }
+        }
     }
 
     /// Reads one captured message: ours or not, and if ours, what it proved.
@@ -266,13 +334,21 @@ impl OsEchoScanner {
         // An ICMP message does not say which family's numbering it belongs to;
         // the address it arrived from does.
         let over_ipv6 = reply.source.is_ipv6();
-        let icmp::EchoReply::Ours { sequence } =
-            icmp::classify_echo_reply(&reply.bytes, self.identifier, over_ipv6)
-        else {
+        let sequence = match icmp::classify_echo_reply(&reply.bytes, self.identifier, over_ipv6) {
+            icmp::EchoReply::Ours { sequence } => sequence,
+            // Not an echo reply. It may still be the answer to the timestamp
+            // sent beside it, which is the whole reason that probe goes out: a
+            // host behind a filter that drops ping answers here and nowhere
+            // else.
+            icmp::EchoReply::Other { .. } if !over_ipv6 => {
+                return self.handle_timestamp_reply(reply, now);
+            }
             // Every other ping on the host arrives here: the identifier cannot
             // be expressed in a kernel filter, so this is where it is enforced.
-            self.sweep.audit.record_off_target();
-            return;
+            _ => {
+                self.sweep.audit.record_off_target();
+                return;
+            }
         };
         let Some(&target) = self.by_sequence.get(&sequence) else {
             self.sweep.audit.record_off_target();
@@ -304,6 +380,56 @@ impl OsEchoScanner {
         });
 
         self.identify(target, &reply);
+    }
+
+    /// Reads one ICMP message as an answer to the timestamp probe.
+    ///
+    /// The host is recorded as up and its clock offset noted. No round trip is
+    /// credited: the ledger timed the echo, and a reply to a different probe is
+    /// not a measurement of that one.
+    fn handle_timestamp_reply(&mut self, reply: CapturedSegment, now: Instant) {
+        let icmp::TimestampAnswer::Ours {
+            sequence,
+            reply: readings,
+        } = icmp::classify_timestamp_reply(&reply.bytes, self.identifier)
+        else {
+            self.sweep.audit.record_off_target();
+            return;
+        };
+        let Some(&target) = self.by_sequence.get(&sequence) else {
+            self.sweep.audit.record_off_target();
+            return;
+        };
+
+        // Resolved without a token, so the entry retires and no attempt is
+        // credited with a round trip it did not measure.
+        let resolution = self.sweep.ledger.resolve(&target, None, now);
+        if resolution.is_none() {
+            // The echo beside it already answered, or the probe was written
+            // off. The host is alive either way and the clock is still worth
+            // recording.
+            self.sweep.audit.record_reply_without_rtt();
+        } else {
+            self.sweep.audit.record_host_found(None);
+        }
+
+        let detail = match readings.offset_from(local_millis_since_midnight()) {
+            Some(offset) => format!("timestamp reply to an OS probe, clock {offset} ms from ours"),
+            // A target whose readings are not times of day still answered, which
+            // is the half of this that finds hosts a ping cannot.
+            None => {
+                "timestamp reply to an OS probe, on a clock that is not a time of day".to_string()
+            }
+        };
+
+        self.ctx.write_host(target, |host| {
+            let was_up = host.status().is_up();
+            host.record_evidence(
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::IcmpTimestamp, detail),
+            );
+            !was_up
+        });
     }
 
     /// Reads the operating system off the reply that just resolved, and folds
@@ -624,6 +750,177 @@ mod tests {
         assert!(
             session.hosts().get(TARGET).is_none(),
             "a foreign identifier resolves nothing, records nothing"
+        );
+    }
+
+    // ── Timestamp ────────────────────────────────────────────────────────────
+
+    /// A link that records what it was asked to send and answers nothing.
+    #[derive(Clone, Default)]
+    struct Recording(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+
+    impl ProbeSender for Recording {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            _dst: IpAddr,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
+            self.0.lock().expect("the log").push(segment.to_vec());
+            Ok(())
+        }
+    }
+
+    /// A scanner over `target` whose link records rather than answers.
+    fn recording(ctx: &ScanContext, target: IpAddr) -> (OsEchoScanner, Recording) {
+        let link = Recording::default();
+        let (_tx, rx) = mpsc::channel(16);
+        let transport = ProbeTransport::from_parts(Box::new(link.clone()), rx as CaptureStream);
+        (
+            OsEchoScanner::with_transport(ctx.clone(), vec![target], transport),
+            link,
+        )
+    }
+
+    /// A timestamp reply to `request`, built from the RFC 792 layout rather than
+    /// from this crate's own reader.
+    fn timestamp_reply(request: &[u8], readings: [u32; 3]) -> CapturedSegment {
+        let mut bytes = vec![14u8, 0, 0, 0];
+        // The identifier and sequence sit where an echo puts them, and a reply
+        // carries both back unchanged.
+        bytes.extend_from_slice(&request[4..8]);
+        for value in readings {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+
+        CapturedSegment {
+            source: TARGET,
+            protocol: IpNextHeaderProtocols::Icmp,
+            observation: None,
+            source_mac: None,
+            bytes,
+        }
+    }
+
+    /// An IPv4 target is asked twice, and the second question is the one a ping
+    /// filter is least likely to have been written against.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_ipv4_target_is_asked_for_a_timestamp_as_well() {
+        let (_session, ctx) = ScanSession::new();
+        let (mut scanner, link) = recording(&ctx, TARGET);
+
+        scanner.send_one(Instant::now());
+
+        let sent = link.0.lock().expect("the log").clone();
+        assert_eq!(sent.len(), 2, "an echo and a timestamp");
+        assert_eq!(sent[0][0], 8, "an echo request");
+        assert_eq!(sent[1][0], 13, "a timestamp request");
+        assert_eq!(
+            &sent[0][4..6],
+            &sent[1][4..6],
+            "both carry this scan's identifier"
+        );
+        assert_ne!(
+            &sent[0][6..8],
+            &sent[1][6..8],
+            "and each names its own attempt"
+        );
+    }
+
+    /// The whole point of the probe: a host that answers no ping is still found
+    /// when it answers a timestamp, which is the filter case type 13 gets past.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_host_that_answers_only_a_timestamp_is_still_found() {
+        let (session, ctx) = ScanSession::new();
+        let (mut scanner, link) = recording(&ctx, TARGET);
+
+        scanner.send_one(Instant::now());
+        let timestamp_request = link.0.lock().expect("the log")[1].clone();
+
+        // The echo goes unanswered; only the timestamp comes back.
+        scanner.handle_reply(
+            timestamp_reply(&timestamp_request, [0, 1_000, 1_000]),
+            Instant::now(),
+        );
+
+        let host = session.hosts().get(TARGET).expect("the host was found");
+        assert!(host.status().is_up());
+        assert!(
+            host.reasons()
+                .iter()
+                .any(|reason| reason.protocol == StatusProtocol::IcmpTimestamp),
+            "the evidence names the probe that found it"
+        );
+    }
+
+    /// The offset is what the probe adds beyond liveness, and it reaches the
+    /// report in words rather than being computed and dropped.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_targets_clock_offset_reaches_the_host_record() {
+        let (session, ctx) = ScanSession::new();
+        let (mut scanner, link) = recording(&ctx, TARGET);
+
+        scanner.send_one(Instant::now());
+        let request = link.0.lock().expect("the log")[1].clone();
+
+        // A clock that is not a time of day at all, which is reported as such
+        // rather than folded into a plausible-looking offset.
+        scanner.handle_reply(
+            timestamp_reply(&request, [0, 0x8000_0000, 0x8000_0000]),
+            Instant::now(),
+        );
+
+        let host = session.hosts().get(TARGET).expect("the host was found");
+        let reason = host
+            .reasons()
+            .iter()
+            .find(|reason| reason.protocol == StatusProtocol::IcmpTimestamp)
+            .expect("the timestamp evidence");
+        assert!(
+            reason
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not a time of day"),
+            "an unusable clock is said to be unusable: {reason:?}"
+        );
+    }
+
+    /// An IPv6 target is asked nothing of the kind, because RFC 4443 defines no
+    /// timestamp message and a probe of that shape would be bytes no stack has
+    /// ever been asked to parse.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_ipv6_target_is_sent_no_timestamp() {
+        let (_session, ctx) = ScanSession::new();
+        let target = IpAddr::V6("2001:db8::10".parse().expect("an address"));
+        let (mut scanner, link) = recording(&ctx, target);
+
+        scanner.send_one(Instant::now());
+
+        let sent = link.0.lock().expect("the log").clone();
+        assert_eq!(sent.len(), 1, "the echo alone");
+        assert_eq!(sent[0][0], 128, "an ICMPv6 echo request");
+    }
+
+    /// Somebody else's timestamp exchange is not this scan's answer. The capture
+    /// admits every ICMP message on the host, so this is where the identifier is
+    /// enforced.
+    #[tokio::test(flavor = "current_thread")]
+    async fn another_scans_timestamp_reply_finds_nothing() {
+        let (session, ctx) = ScanSession::new();
+        let (mut scanner, link) = recording(&ctx, TARGET);
+
+        scanner.send_one(Instant::now());
+        let request = link.0.lock().expect("the log")[1].clone();
+
+        let mut stranger = timestamp_reply(&request, [0, 1_000, 1_000]);
+        stranger.bytes[4] ^= 0xFF;
+        scanner.handle_reply(stranger, Instant::now());
+
+        assert!(
+            session.hosts().get(TARGET).is_none(),
+            "a stranger's reply found a host"
         );
     }
 }

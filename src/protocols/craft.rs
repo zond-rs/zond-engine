@@ -741,6 +741,19 @@ impl Icmpv4 {
         }
     }
 
+    /// A timestamp request carrying `identifier` and `sequence`.
+    ///
+    /// RFC 792's type 13, whose header is an echo's exactly: the identifier and
+    /// sequence sit in the same four bytes and a reply echoes both back. What
+    /// differs is the twelve bytes behind them, which the caller supplies as a
+    /// payload and which a conformant target fills in before replying.
+    ///
+    /// There is no IPv6 counterpart. RFC 4443 defines no timestamp message, so a
+    /// probe of this shape is an IPv4 question and the caller has to know it.
+    pub fn timestamp_request(identifier: u16, sequence: u16) -> Self {
+        Self::echo(TIMESTAMP_REQUEST_V4, identifier, sequence)
+    }
+
     /// Attaches a payload, which an echo reply is required to send back.
     #[must_use]
     pub fn with_payload(mut self, payload: impl Into<Vec<u8>>) -> Self {
@@ -921,6 +934,8 @@ fn icmp_body(icmp_type: u8, code: u8, rest_of_header: [u8; 4], payload: &[u8]) -
 const ECHO_REQUEST_V4: u8 = 8;
 /// ICMPv4 echo reply, RFC 792.
 const ECHO_REPLY_V4: u8 = 0;
+/// ICMPv4 timestamp request, RFC 792. No IPv6 counterpart exists.
+const TIMESTAMP_REQUEST_V4: u8 = 13;
 /// ICMPv6 echo request, RFC 4443.
 const ECHO_REQUEST_V6: u8 = 128;
 /// ICMPv6 echo reply, RFC 4443.

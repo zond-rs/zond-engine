@@ -7405,6 +7405,7 @@ pub zond_engine::model::host::status::StatusProtocol::Arp
 pub zond_engine::model::host::status::StatusProtocol::Custom(alloc::sync::Arc<str>)
 pub zond_engine::model::host::status::StatusProtocol::Dhcp
 pub zond_engine::model::host::status::StatusProtocol::IcmpEcho
+pub zond_engine::model::host::status::StatusProtocol::IcmpTimestamp
 pub zond_engine::model::host::status::StatusProtocol::IcmpUnreachable
 pub zond_engine::model::host::status::StatusProtocol::Ndp
 pub zond_engine::model::host::status::StatusProtocol::Sctp
@@ -7669,6 +7670,7 @@ pub zond_engine::model::host::StatusProtocol::Arp
 pub zond_engine::model::host::StatusProtocol::Custom(alloc::sync::Arc<str>)
 pub zond_engine::model::host::StatusProtocol::Dhcp
 pub zond_engine::model::host::StatusProtocol::IcmpEcho
+pub zond_engine::model::host::StatusProtocol::IcmpTimestamp
 pub zond_engine::model::host::StatusProtocol::IcmpUnreachable
 pub zond_engine::model::host::StatusProtocol::Ndp
 pub zond_engine::model::host::StatusProtocol::Sctp
@@ -10507,6 +10509,7 @@ pub zond_engine::protocols::craft::Icmpv4::rest_of_header: [u8; 4]
 impl zond_engine::protocols::craft::Icmpv4
 pub fn zond_engine::protocols::craft::Icmpv4::echo_reply(u16, u16) -> Self
 pub fn zond_engine::protocols::craft::Icmpv4::echo_request(u16, u16) -> Self
+pub fn zond_engine::protocols::craft::Icmpv4::timestamp_request(u16, u16) -> Self
 pub fn zond_engine::protocols::craft::Icmpv4::to_bytes(&self) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::craft::Icmpv4::with_checksum(self, u16) -> Self
 pub fn zond_engine::protocols::craft::Icmpv4::with_code(self, u8) -> Self
@@ -10964,13 +10967,63 @@ impl core::marker::Unpin for zond_engine::protocols::icmp::EchoReply
 impl core::marker::UnsafeUnpin for zond_engine::protocols::icmp::EchoReply
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::icmp::EchoReply
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::icmp::EchoReply
+#[non_exhaustive] pub enum zond_engine::protocols::icmp::TimestampAnswer
+pub zond_engine::protocols::icmp::TimestampAnswer::Other
+pub zond_engine::protocols::icmp::TimestampAnswer::Other::icmp_type: u8
+pub zond_engine::protocols::icmp::TimestampAnswer::Ours
+pub zond_engine::protocols::icmp::TimestampAnswer::Ours::reply: zond_engine::protocols::icmp::TimestampReply
+pub zond_engine::protocols::icmp::TimestampAnswer::Ours::sequence: u16
+pub zond_engine::protocols::icmp::TimestampAnswer::SomebodyElses
+pub zond_engine::protocols::icmp::TimestampAnswer::Truncated
+impl core::clone::Clone for zond_engine::protocols::icmp::TimestampAnswer
+pub fn zond_engine::protocols::icmp::TimestampAnswer::clone(&self) -> zond_engine::protocols::icmp::TimestampAnswer
+impl core::cmp::Eq for zond_engine::protocols::icmp::TimestampAnswer
+impl core::cmp::PartialEq for zond_engine::protocols::icmp::TimestampAnswer
+pub fn zond_engine::protocols::icmp::TimestampAnswer::eq(&self, &zond_engine::protocols::icmp::TimestampAnswer) -> bool
+impl core::fmt::Debug for zond_engine::protocols::icmp::TimestampAnswer
+pub fn zond_engine::protocols::icmp::TimestampAnswer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::protocols::icmp::TimestampAnswer
+impl core::marker::StructuralPartialEq for zond_engine::protocols::icmp::TimestampAnswer
+impl core::marker::Freeze for zond_engine::protocols::icmp::TimestampAnswer
+impl core::marker::Send for zond_engine::protocols::icmp::TimestampAnswer
+impl core::marker::Sync for zond_engine::protocols::icmp::TimestampAnswer
+impl core::marker::Unpin for zond_engine::protocols::icmp::TimestampAnswer
+impl core::marker::UnsafeUnpin for zond_engine::protocols::icmp::TimestampAnswer
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::icmp::TimestampAnswer
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::icmp::TimestampAnswer
+pub struct zond_engine::protocols::icmp::TimestampReply
+pub zond_engine::protocols::icmp::TimestampReply::originate: u32
+pub zond_engine::protocols::icmp::TimestampReply::receive: u32
+pub zond_engine::protocols::icmp::TimestampReply::transmit: u32
+impl zond_engine::protocols::icmp::TimestampReply
+pub const fn zond_engine::protocols::icmp::TimestampReply::is_a_time_of_day(self) -> bool
+pub const fn zond_engine::protocols::icmp::TimestampReply::is_standard(self) -> bool
+pub fn zond_engine::protocols::icmp::TimestampReply::offset_from(self, u32) -> core::option::Option<i64>
+impl core::clone::Clone for zond_engine::protocols::icmp::TimestampReply
+pub fn zond_engine::protocols::icmp::TimestampReply::clone(&self) -> zond_engine::protocols::icmp::TimestampReply
+impl core::cmp::Eq for zond_engine::protocols::icmp::TimestampReply
+impl core::cmp::PartialEq for zond_engine::protocols::icmp::TimestampReply
+pub fn zond_engine::protocols::icmp::TimestampReply::eq(&self, &zond_engine::protocols::icmp::TimestampReply) -> bool
+impl core::fmt::Debug for zond_engine::protocols::icmp::TimestampReply
+pub fn zond_engine::protocols::icmp::TimestampReply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::protocols::icmp::TimestampReply
+impl core::marker::StructuralPartialEq for zond_engine::protocols::icmp::TimestampReply
+impl core::marker::Freeze for zond_engine::protocols::icmp::TimestampReply
+impl core::marker::Send for zond_engine::protocols::icmp::TimestampReply
+impl core::marker::Sync for zond_engine::protocols::icmp::TimestampReply
+impl core::marker::Unpin for zond_engine::protocols::icmp::TimestampReply
+impl core::marker::UnsafeUnpin for zond_engine::protocols::icmp::TimestampReply
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::icmp::TimestampReply
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::icmp::TimestampReply
 pub const zond_engine::protocols::icmp::ECHO_PROBE_CODE: u8
 pub fn zond_engine::protocols::icmp::build_all_nodes_echo_request_v6(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr, u16, u16) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::icmp::build_echo_request(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u8, u16, u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::icmp::build_echo_request_message(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u8, u16, u16, &[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::icmp::build_echo_request_v4(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, u16) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::icmp::build_echo_request_v6(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u8, u16, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::icmp::build_timestamp_request(u16, u16) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::icmp::classify_echo_reply(&[u8], u16, bool) -> zond_engine::protocols::icmp::EchoReply
+pub fn zond_engine::protocols::icmp::classify_timestamp_reply(&[u8], u16) -> zond_engine::protocols::icmp::TimestampAnswer
 pub fn zond_engine::protocols::icmp::echo_token(&[u8]) -> zond_engine::protocols::error::Result<(u16, u16)>
 pub mod zond_engine::protocols::ip
 pub const zond_engine::protocols::ip::HOP_LIMIT_NDP: u8

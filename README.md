@@ -54,6 +54,12 @@
   data, so those findings say so: they match on the software and report at a
   lower confidence than a version match, with an excerpt stating that the
   version was never checked.
+* **ICMP timestamp probing:** every host the OS pass pings over IPv4 is also
+  asked for a timestamp (RFC 792 type 13). Filters written against ping
+  routinely pass it, so a host that answers no echo is still found, and the
+  reply carries the target's own clock, which no other probe here obtains. An
+  offset of hours says a machine is in another timezone or has never had its
+  clock set. IPv4 only: RFC 4443 defines no timestamp message.
 * **Signing a report:** a detached Ed25519 signature over the exact bytes an
   export wrote, to keep beside it. It establishes that the holder of a key
   produced that document and that not a byte has changed since, which is what a
@@ -78,7 +84,7 @@ Add it as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-zond-engine = "0.13.0"
+zond-engine = "0.14.0"
 ```
 
 A scan runs in two phases. `discover` establishes which hosts exist; `scan`

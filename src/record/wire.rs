@@ -341,6 +341,7 @@ pub fn status_protocol_name(protocol: &StatusProtocol) -> Cow<'_, str> {
         StatusProtocol::Arp => Cow::Borrowed("arp"),
         StatusProtocol::Ndp => Cow::Borrowed("ndp"),
         StatusProtocol::IcmpEcho => Cow::Borrowed("icmp_echo"),
+        StatusProtocol::IcmpTimestamp => Cow::Borrowed("icmp_timestamp"),
         StatusProtocol::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
         StatusProtocol::TcpSyn => Cow::Borrowed("tcp_syn"),
         StatusProtocol::Tcp => Cow::Borrowed("tcp"),
@@ -361,6 +362,7 @@ pub fn status_protocol(name: &str) -> Option<StatusProtocol> {
     }
 
     Some(match name {
+        "icmp_timestamp" => StatusProtocol::IcmpTimestamp,
         "arp" => StatusProtocol::Arp,
         "ndp" => StatusProtocol::Ndp,
         "icmp_echo" => StatusProtocol::IcmpEcho,
@@ -746,6 +748,7 @@ mod tests {
                 StatusProtocol::Arp
                 | StatusProtocol::Ndp
                 | StatusProtocol::IcmpEcho
+                | StatusProtocol::IcmpTimestamp
                 | StatusProtocol::IcmpUnreachable
                 | StatusProtocol::TcpSyn
                 | StatusProtocol::Tcp

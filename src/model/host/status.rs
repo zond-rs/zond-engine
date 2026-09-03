@@ -91,6 +91,13 @@ pub enum StatusProtocol {
     Ndp,
     /// Discovered via ICMP Echo Request/Reply.
     IcmpEcho,
+    /// Answered an ICMP timestamp request (RFC 792), which is a different
+    /// question from an echo and is answered by hosts that drop one.
+    ///
+    /// IPv4 only: RFC 4443 defines no timestamp message, so there is nothing to
+    /// ask an IPv6 address. What the reply adds beyond liveness is the target's
+    /// own clock, which no other probe here obtains.
+    IcmpTimestamp,
     /// Discovered via an ICMP Destination Unreachable quoting one of this scan's
     /// probes. What it proves depends on who sent it and which code it carried,
     /// which is why [`StatusReason::source`] exists.
@@ -169,6 +176,7 @@ impl StatusProtocol {
         Self::Arp,
         Self::Ndp,
         Self::IcmpEcho,
+        Self::IcmpTimestamp,
         Self::IcmpUnreachable,
         Self::TcpSyn,
         Self::Tcp,
