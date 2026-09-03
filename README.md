@@ -54,6 +54,13 @@
   data, so those findings say so: they match on the software and report at a
   lower confidence than a version match, with an excerpt stating that the
   version was never checked.
+* **Signing a report:** a detached Ed25519 signature over the exact bytes an
+  export wrote, to keep beside it. It establishes that the holder of a key
+  produced that document and that not a byte has changed since, which is what a
+  compliance artifact needs and is all it claims: whoever holds the key can sign
+  anything, so it attests to the document and never to the honesty of the run.
+  Keys are the caller's, and verification takes the trusted public key as an
+  argument rather than reading one out of the file being checked.
 * **Reports in and out:** export a finished scan as JSON, JSONL, CSV, a
   self-contained HTML page, or nmap-compatible XML; read targets back from a list,
   CSV, this engine's own JSON, or an nmap XML file somebody else produced.
