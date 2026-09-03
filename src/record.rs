@@ -70,6 +70,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::DetectionEnvelope;
 use crate::config::{IdleScan, RetryConfig, TimeoutScale};
+use crate::info;
 use crate::model::capture::CaptureCounts;
 use crate::model::confidence::Confidence;
 use crate::model::finding::{
@@ -269,7 +270,30 @@ impl From<&HostRecord> for Host {
             let state = wire::ip_protocol_state(&entry.state).unwrap_or(IpProtocolState::Unasked);
             host.record_ip_protocol(entry.protocol, state);
         }
-        for port in &record.ports {
+        // A port whose protocol this build cannot name is dropped, not filed
+        // under one it can. `Protocol` is `#[non_exhaustive]`, so a later build
+        // may record an endpoint under a number this one has never heard of, and
+        // ports are keyed by `(number, protocol)` — so reading the unknown one
+        // as TCP collides it with the real TCP port of the same number and
+        // `add_port` merges the two. Measured before this line existed: a record
+        // holding `443/tcp` and `443/<future>` came back as one port, and the
+        // service named on the second was reported as running on the first.
+        //
+        // That is the opposite of the rule the port rebuild states a few
+        // hundred lines down — least, never more. Misfiling is more, and about
+        // something else.
+        for port in record.ports.iter().filter(|port| {
+            wire::protocol(&port.protocol).is_some() || {
+                info!(
+                    verbosity = 2,
+                    "port {}/{} was recorded under a protocol this build cannot read; \
+                     leaving it out rather than filing it under another",
+                    port.port,
+                    port.protocol
+                );
+                false
+            }
+        }) {
             host.add_port(port.into());
         }
         for finding in record.findings.iter().filter_map(FindingRecord::rebuild) {
@@ -2439,6 +2463,8 @@ mod tests {
     #[test]
     fn unknown_names_read_downwards() {
         let mut record = HostRecord::from(&maximal_host());
+        let recorded = record.ports.len();
+        let unreadable = (record.ports[0].port, record.ports[0].protocol.clone());
         record.status = "ascended".to_string();
         record.ports[0].state = "ajar".to_string();
         record.ports[0].protocol = "dccp".to_string();
@@ -2446,14 +2472,91 @@ mod tests {
         let rebuilt = Host::from(&record);
 
         assert_eq!(rebuilt.status(), HostStatus::Unknown);
-        let port = rebuilt.ports().next().expect("the port is still recorded");
+
+        // A status and a state have an ordering with a bottom, so an unreadable
+        // one can read as the bottom and claim nothing.
+        //
+        // **A protocol has no ordering**, and that is why it is the exception.
+        // TCP is not *less* than a transport this build cannot name; it is a
+        // different one, and ports are keyed by `(number, protocol)`. Reading
+        // the unknown record as TCP therefore collides it with the real TCP port
+        // of that number and `add_port` merges the two — so the service named on
+        // an endpoint this build could not read was reported as running on one it
+        // could. This used to assert `Protocol::Tcp` and a port still recorded;
+        // the record is dropped now, which is the only reading that claims
+        // nothing.
+        assert_eq!(
+            rebuilt.ports().count(),
+            recorded - 1,
+            "the one port under an unreadable protocol is dropped and the rest stay"
+        );
+        assert!(
+            !rebuilt.ports().any(|port| port.number() == unreadable.0
+                && wire::protocol_name(port.protocol()) == unreadable.1),
+            "and it is not filed under the protocol it was originally written as"
+        );
+
+        // And a state this build cannot read, under a protocol it can, still
+        // reads as the bottom rather than being dropped.
+        let mut record = HostRecord::from(&maximal_host());
+        record.ports[0].state = "ajar".to_string();
+        let number = record.ports[0].port;
+        let protocol = wire::protocol(&record.ports[0].protocol).expect("a readable protocol");
+
+        let rebuilt = Host::from(&record);
+        let port = rebuilt
+            .ports()
+            .find(|port| port.number() == number && port.protocol() == protocol)
+            .expect("the port is still recorded");
         assert_eq!(
             port.state(),
             PortState::Unasked,
             "a verdict this build cannot read is no verdict, which is what the \
              bottom of the ordering says"
         );
-        assert_eq!(port.protocol(), Protocol::Tcp);
+    }
+
+    /// **A record this build cannot read does not become a claim about one it
+    /// can.**
+    ///
+    /// `Protocol` is `#[non_exhaustive]`, so a later build may record an
+    /// endpoint under a transport this one has never heard of. Ports are keyed
+    /// by number and protocol, so misreading that as TCP collides it with the
+    /// real TCP port of the same number, and `add_port` merges rather than
+    /// replaces: the two endpoints become one, and whichever fields the unknown
+    /// one carried are reported on the known one.
+    #[test]
+    fn an_unreadable_protocol_does_not_contaminate_the_port_it_would_collide_with() {
+        let mut host = Host::new("192.0.2.1".parse().expect("literal"));
+        host.set_status(HostStatus::Up);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+
+        let record = HostRecord::from(&host);
+        let mut value: serde_json::Value = serde_json::to_value(&record).expect("serialises");
+
+        // What a later build writes: the same number, a transport this build
+        // does not know, and a service of its own.
+        let mut future = value["ports"][0].clone();
+        future["protocol"] = serde_json::json!("quic");
+        future["state"] = serde_json::json!("closed");
+        future["service"] = serde_json::json!({"name": "quic-only", "confidence": 95});
+        value["ports"]
+            .as_array_mut()
+            .expect("an array")
+            .push(future);
+
+        let read: HostRecord = serde_json::from_value(value).expect("reads back");
+        let rebuilt = Host::from(&read);
+
+        let ports: Vec<_> = rebuilt.ports().collect();
+        assert_eq!(ports.len(), 1, "the readable port, and only it");
+        assert_eq!(ports[0].protocol(), Protocol::Tcp);
+        assert_eq!(ports[0].state(), PortState::Open);
+        assert!(
+            ports[0].service().is_none(),
+            "the TCP port must not acquire a service named on an endpoint this \
+             build could not read"
+        );
     }
 
     /// A phase survives the round trip, statistics included.
