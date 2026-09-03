@@ -1338,12 +1338,11 @@ impl ScanContext {
     /// they came from the journal, and writing them straight back would be work
     /// with nothing new in it.
     ///
-    /// **The exclusions this sitting was given apply to what comes back.**
-    /// [`Exclusions`](crate::model::exclusion::Exclusions) promises that no
-    /// excluded address appears in the report, and names two places it is
-    /// enforced: before anything is opened, and at
+    /// The exclusions this sitting was given apply to what comes back.
+    /// [`Exclusions`] promises that no excluded address appears in the report,
+    /// and names two places it is enforced: before anything is opened, and at
     /// [`write_host`](Self::write_host) on every finding. This is a third way
-    /// into the store, added for resume, and it went through neither — so a scan
+    /// into the store, added for resume, and it went through neither, so a scan
     /// interrupted before an exclusion was added restored the addresses that
     /// exclusion now forbids, and reported them.
     ///

@@ -460,11 +460,11 @@ impl DiscoveryPlan {
     /// [`Scope::Targeted`] does neither: probing addresses nobody asked about is
     /// defensible for `lan` and surprising for `zond <address>`.
     /// `exclusions` is what a sweep's own discoveries are held to. The target
-    /// list has already been withheld against them by the time it arrives here
-    /// — that is `withhold_targets`, before anything is opened — but a sweep
-    /// adds addresses the list never had, from the host's neighbour table, and
-    /// those were never subtracted from anything. See
-    /// [`seed_from_neighbor_table`].
+    /// list has already been withheld against them by the time it arrives here,
+    /// in `withhold_targets`, before anything is opened. A sweep then adds
+    /// addresses the list never had, from the host's neighbour table, and those
+    /// were never subtracted from anything. `seed_from_neighbor_table` is where
+    /// they arrive.
     pub fn build(targets: IpSet, scope: Scope, exclusions: &Exclusions) -> Self {
         let mut steps = Vec::new();
         let mut refusals = Vec::new();
