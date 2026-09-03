@@ -596,18 +596,52 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         }
     }
 
-    /// Records that `sender` said the target cannot be reached.
+    /// Records that `sender` said the target named by `key` cannot be reached.
     ///
     /// A host verdict rather than a port one: an unreachable names the
     /// destination it refers to, and nothing about any particular port on it.
-    pub fn record_host_down(&mut self, ip: IpAddr, sender: IpAddr) {
-        self.ctx.update_host(ip, |host| {
+    /// The probe keeps its remaining attempts, which is why this does not go
+    /// through the ledger's `resolve`.
+    ///
+    /// **`key` must name a probe this scan has outstanding, and this is what
+    /// checks it.** [`HostStatus::Down`] is documented as an unreachable
+    /// "quoting a probe this scan sent", and until this check existed nothing
+    /// established the second half of that sentence: the quoted source port was
+    /// the only gate, so an error quoting a destination and port of the sender's
+    /// choosing was believed. Three things followed from that. An address the
+    /// scan never probed was *created* in the store and filed as down. A host
+    /// that had been probed and stayed silent was promoted from `Unknown`, which
+    /// says nothing was heard, to `Down`, which says an intermediary answered
+    /// for it — the difference between a hardened host that drops traffic and an
+    /// address that is not there. And a host already proved up kept its status,
+    /// the promotion rule seeing to that, but still collected the unreachable as
+    /// one of the reasons on its record, which is the evidence trail this module
+    /// exists to keep honest.
+    ///
+    /// `token` is checked where the quotation carried one. Where it did not, the
+    /// key alone is the evidence, and the key is now worth something: it has to
+    /// name a live probe.
+    ///
+    /// Returns whether anything was recorded, so a caller can count a message it
+    /// could not attribute.
+    pub fn record_host_down(
+        &mut self,
+        key: &ProbeTarget,
+        token: Option<T>,
+        sender: IpAddr,
+    ) -> bool {
+        if !self.ledger.names_attempt(key, token.as_ref()) {
+            self.audit.record_off_target();
+            return false;
+        }
+
+        self.ctx.update_host(key.0, |host| {
             host.record_evidence(
                 HostStatus::Down,
                 StatusReason::new(StatusProtocol::IcmpUnreachable, "destination unreachable")
                     .from_source(sender),
             );
-        });
+        })
     }
 
     /// Closes out a run: reports probes that never reached the wire, then files

@@ -106,12 +106,28 @@ impl ActiveRun {
     /// caller ([`run`](RhaiRuntime::run)) guarantees.
     ///
     /// `None` when a run is already active on this thread, which can only happen
-    /// if a [`Capabilities`] implementation re-entered the runtime. [The
-    /// trait](Capabilities) forbids that because the two runs would hold live
-    /// `&mut` to one value, and refusing here is what makes the rule hold in a
-    /// release build rather than only under an assertion. `Capabilities` is
-    /// implementable outside this crate, so the rule is one somebody else's code
-    /// has to keep and this is the only place that can check it.
+    /// if a [`Capabilities`] implementation re-entered the runtime.
+    ///
+    /// Two things carry the safety here, and it is worth naming both rather than
+    /// the refusal alone, because the refusal is the weaker of them.
+    ///
+    /// **`ACTIVE_CAPS` is per-thread.** It is a `thread_local!` and not a
+    /// static, so a thread the guest spawns cannot reach the pointer this
+    /// installed — which is what makes the erased lifetime sound across a thread
+    /// boundary at all. That matters because [`Capabilities`] is `Send`, so a
+    /// reader who checks will find that the borrow *could* travel; what stops it
+    /// being observed elsewhere is this and nothing else.
+    ///
+    /// **A second `&mut` to one capability set cannot exist in safe code.**
+    /// [`run`](RhaiRuntime::run) takes a borrow, so aliasing needs the same value
+    /// borrowed twice, which the borrow checker refuses. A re-entrant call
+    /// carrying a *different* set would not alias anything — it would shadow the
+    /// thread-local, and [`Drop`] would put it back.
+    ///
+    /// So the refusal below is defence in depth against an implementation that
+    /// reaches for `unsafe` to do what safe code cannot, rather than the thing
+    /// that makes the ordinary case sound. `Capabilities` is implementable
+    /// outside this crate, which is why it is worth having.
     fn new(caps: *mut dyn Capabilities, deadline: Instant) -> Option<Self> {
         if ACTIVE_CAPS.with(|cell| cell.get().is_some()) {
             return None;
@@ -983,5 +999,67 @@ mod tests {
             "the deadline did not stop the run promptly: {:?}",
             started.elapsed()
         );
+    }
+
+    /// A run installed on one thread is not reachable from another.
+    ///
+    /// The property the erased lifetime rests on across a thread boundary, and
+    /// the one the SAFETY note used to leave implicit: `Capabilities` is `Send`,
+    /// so the borrow *could* travel, and what stops the pointer being observed
+    /// elsewhere is that `ACTIVE_CAPS` is a `thread_local!` rather than a
+    /// static. A spawned thread sees no run, and installs its own without being
+    /// refused — correctly, since it had to produce its own borrow to get here.
+    #[test]
+    fn a_run_is_not_reachable_from_another_thread() {
+        let mut caps = RecordedCaps::new(Vec::new());
+        let pointer: *mut dyn Capabilities = &mut caps;
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        let guard = ActiveRun::new(pointer, deadline).expect("the first run installs");
+
+        assert!(
+            !std::thread::spawn(|| ACTIVE_CAPS.with(|cell| cell.get().is_some()))
+                .join()
+                .expect("the thread ran"),
+            "another thread could see this run's capabilities"
+        );
+
+        assert!(
+            std::thread::spawn(|| {
+                let mut other = RecordedCaps::new(Vec::new());
+                let other_pointer: *mut dyn Capabilities = &mut other;
+                ActiveRun::new(other_pointer, Instant::now() + Duration::from_secs(1)).is_some()
+            })
+            .join()
+            .expect("the thread ran"),
+            "a thread with its own borrow must not be refused"
+        );
+
+        drop(guard);
+    }
+
+    /// A guest that panics leaves nothing installed.
+    ///
+    /// `ActiveRun::drop` runs during unwind, and all three thread-locals have to
+    /// come back with it: a stale pointer would be read by the next run on this
+    /// thread, and a stale abort or deadline would be attributed to it.
+    #[test]
+    fn a_panicking_run_restores_every_thread_local() {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut caps = RecordedCaps::new(Vec::new());
+            let pointer: *mut dyn Capabilities = &mut caps;
+            let _guard =
+                ActiveRun::new(pointer, Instant::now() + Duration::from_secs(1)).expect("installs");
+            ABORT.with(|cell| *cell.borrow_mut() = Some(RunOutcome::HostReentered));
+            panic!("the guest exploded");
+        }));
+
+        assert!(
+            outcome.is_err(),
+            "the panic has to reach here to prove anything"
+        );
+        assert!(ACTIVE_CAPS.with(|cell| cell.get().is_none()));
+        assert!(ABORT.with(|cell| cell.borrow().is_none()));
+        assert!(RUN_DEADLINE.with(|cell| cell.get().is_none()));
     }
 }

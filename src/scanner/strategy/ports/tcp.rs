@@ -409,7 +409,9 @@ impl TcpPortScanner {
             // verdict on the port it happened to quote. The probe is left
             // outstanding to retire on its own schedule like any other
             // unanswered one.
-            Unreachable::Host => self.core.record_host_down(key.0, reply.source),
+            Unreachable::Host => {
+                self.core.record_host_down(&key, token, reply.source);
+            }
             // Everything else is a refusal, and for a TCP probe all three read
             // the same way. An administrative prohibition says so outright. A
             // *port* unreachable would mean a closed port had it answered a UDP
@@ -418,6 +420,31 @@ impl TcpPortScanner {
             // not a closed port. A *protocol* unreachable would mean a host with
             // no TCP stack at all, which is not a closed port either; it is read
             // for what it is by the pass that asks about protocols on purpose.
+            //
+            // A refusal names a port, so unlike a host unreachable it has to
+            // name the *attempt* as well. Four of the six techniques put their
+            // nonce in the sequence number, which is inside the eight bytes RFC
+            // 792 guarantees, so an error about one of those carries it however
+            // stingy the sender. The two that use the acknowledgement field -
+            // and Maimon, which carries ACK - need twelve quoted bytes, and a
+            // sender offering only the minimum leaves `token` as `None`.
+            //
+            // That used to resolve the port anyway, on the ports alone, which
+            // anybody who knows this scan's source port can supply. For an ACK
+            // or window scan it reached the verdict silence reaches, so it cost
+            // only a suppressed retry and an invented `IcmpProhibited`. For a
+            // Maimon scan it cost the verdict: `OpenFiltered` became `Filtered`,
+            // and an open port was dismissed.
+            //
+            // So an unattributable refusal now retires nothing, and the port
+            // takes whatever its own retry schedule concludes. See the SCTP
+            // scanner, which reaches the same rule from the other direction: an
+            // INIT's nonce is *never* inside the guaranteed eight.
+            Unreachable::Port | Unreachable::Prohibited | Unreachable::Protocol
+                if token.is_none() =>
+            {
+                self.core.audit.record_reply_without_rtt();
+            }
             Unreachable::Port | Unreachable::Prohibited | Unreachable::Protocol => {
                 self.resolve_probe(
                     key,
@@ -1915,5 +1942,215 @@ mod tests {
             budget > lifetime,
             "a {budget:?} scan cannot finish a {lifetime:?} probe"
         );
+    }
+
+    /// An ICMP error built by hand rather than from a probe this scan sent:
+    /// the sender chooses the quoted destination, the quoted port and how much
+    /// of the header to include.
+    fn forged_host_unreachable(
+        dst: Ipv4Addr,
+        src_port: u16,
+        dst_port: u16,
+        header_bytes: usize,
+    ) -> CapturedSegment {
+        let mut tcp_header = vec![0u8; 20];
+        tcp_header[0..2].copy_from_slice(&src_port.to_be_bytes());
+        tcp_header[2..4].copy_from_slice(&dst_port.to_be_bytes());
+        tcp_header[4..8].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
+        tcp_header.truncate(header_bytes);
+
+        let ip_header = ip::build_ipv4_header(
+            LOCAL,
+            dst,
+            tcp_header.len() as u16,
+            IpNextHeaderProtocols::Tcp,
+            ip::HOP_LIMIT_ROUTED,
+        )
+        .expect("an IPv4 header");
+        let quotation: Vec<u8> = ip_header.into_iter().chain(tcp_header).collect();
+
+        let mut bytes =
+            vec![0u8; DestinationUnreachablePacket::minimum_packet_size() + quotation.len()];
+        let mut packet =
+            MutableDestinationUnreachablePacket::new(&mut bytes).expect("an ICMP buffer");
+        packet.set_icmp_type(IcmpTypes::DestinationUnreachable);
+        packet.set_icmp_code(IcmpCodes::DestinationHostUnreachable);
+        packet.set_payload(&quotation);
+
+        CapturedSegment::synthetic(ROUTER, IpNextHeaderProtocols::Icmp, bytes)
+    }
+
+    const TARGET_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 200);
+
+    /// **An address this scan never probed is not a host this scan may report.**
+    ///
+    /// `write_host` creates the record it is handed, so an unreachable naming a
+    /// destination of the sender's choosing invented a host and filed it down.
+    /// Nothing about the message established that the scan had ever addressed
+    /// that address at all.
+    #[test]
+    fn an_unreachable_naming_an_unprobed_address_records_no_host() {
+        let (mut scanner, session, _sent) = scanner_for(TcpScanTechnique::Fin);
+        let never = Ipv4Addr::new(203, 0, 113, 77);
+        let src = scanner.core.src_port;
+
+        scanner.handle_reply(&forged_host_unreachable(never, src, 443, 8), Instant::now());
+
+        assert_eq!(session.hosts().len(), 0, "no host may be invented");
+        assert!(session.hosts().get(IpAddr::V4(never)).is_none());
+    }
+
+    /// A host that *was* probed still may not be filed down on the word of an
+    /// error quoting a port nobody asked about.
+    ///
+    /// The distinction this protects is the one `HostStatus` is ordered by:
+    /// `Unknown` says nothing was heard, and `Down` says an intermediary
+    /// answered for the address. A hardened host that silently drops traffic is
+    /// the first and must not be reported as the second.
+    #[test]
+    fn an_unreachable_quoting_an_unprobed_port_does_not_file_the_host_down() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        probe(&mut scanner, &sent, 80);
+        let src = scanner.core.src_port;
+
+        scanner.handle_reply(
+            &forged_host_unreachable(TARGET_V4, src, 9999, 8),
+            Instant::now(),
+        );
+
+        assert_ne!(
+            session.hosts().get(TARGET).map(|host| host.status()),
+            Some(HostStatus::Down),
+            "port 9999 was never probed, so this error is about nothing this scan sent"
+        );
+    }
+
+    /// A host proved up keeps its status — the promotion rule already saw to
+    /// that — but it must not collect the unreachable as a reason either.
+    ///
+    /// The reasons are the evidence trail, kept because "reachability is a claim
+    /// someone will want to check". An unreachable filed against a host that
+    /// answered for itself is a claim that cannot be checked, because it is not
+    /// true.
+    #[test]
+    fn a_live_host_does_not_collect_a_forged_unreachable_as_a_reason() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        let token = probe(&mut scanner, &sent, 80);
+        let rst = tcp_segment(&scanner, 80, token, RST | ACK);
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, rst),
+            Instant::now(),
+        );
+
+        let before = session
+            .hosts()
+            .get(TARGET)
+            .map(|host| host.reasons().len())
+            .expect("the host answered");
+        let src = scanner.core.src_port;
+
+        scanner.handle_reply(
+            &forged_host_unreachable(TARGET_V4, src, 80, 8),
+            Instant::now(),
+        );
+
+        let host = session.hosts().get(TARGET).expect("still recorded");
+        assert!(host.status().is_up(), "the promotion rule holds");
+        assert_eq!(
+            host.reasons().len(),
+            before,
+            "an unreachable this scan cannot attribute adds no evidence"
+        );
+    }
+
+    /// And the honest case still works: a router quoting a probe that really
+    /// went out files the host down, which is what the check must not cost.
+    #[test]
+    fn an_unreachable_quoting_a_real_probe_still_files_the_host_down() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        probe(&mut scanner, &sent, 80);
+
+        let error = icmp_error_quoting(
+            IcmpCodes::DestinationHostUnreachable,
+            &last_probe_bytes(&sent),
+            ROUTER,
+        );
+        scanner.handle_reply(&error, Instant::now());
+
+        assert_eq!(
+            session.hosts().get(TARGET).map(|host| host.status()),
+            Some(HostStatus::Down)
+        );
+        assert!(
+            scanner.core.ledger.contains(&(TARGET, 80)),
+            "and the port keeps its remaining attempts"
+        );
+    }
+
+    /// **A refusal that cannot name the attempt retires nothing.**
+    ///
+    /// The acknowledgement field sits at offset eight, past what RFC 792
+    /// guarantees an ICMP error will quote, so a sender offering only the
+    /// minimum names an ack-field technique's probe by its ports and nothing
+    /// else. The ports are in every packet this scan sends.
+    #[test]
+    fn a_refusal_quoting_too_little_to_name_the_attempt_resolves_no_port() {
+        for technique in [
+            TcpScanTechnique::Ack,
+            TcpScanTechnique::Window,
+            TcpScanTechnique::Maimon,
+        ] {
+            let (mut scanner, session, sent) = scanner_for(technique);
+            probe(&mut scanner, &sent, 80);
+
+            // The probe as it left, cut to the eight bytes and no further.
+            let whole = last_probe_bytes(&sent);
+            let error = icmp_error_quoting(
+                IcmpCodes::CommunicationAdministrativelyProhibited,
+                &whole[..8],
+                ROUTER,
+            );
+            scanner.handle_reply(&error, Instant::now());
+
+            assert_eq!(
+                port_state(&session, 80),
+                None,
+                "{technique:?}: an eight-byte quotation named no attempt"
+            );
+            assert!(
+                scanner.core.ledger.contains(&(TARGET, 80)),
+                "{technique:?}: and the probe keeps its remaining attempts"
+            );
+        }
+    }
+
+    /// The four techniques whose nonce is the sequence number are unaffected:
+    /// it is inside the guaranteed eight, so a minimal quotation still names
+    /// the attempt and still resolves the port.
+    #[test]
+    fn a_sequence_nonce_technique_still_resolves_on_the_guaranteed_eight() {
+        for technique in [
+            TcpScanTechnique::Syn,
+            TcpScanTechnique::Fin,
+            TcpScanTechnique::Null,
+            TcpScanTechnique::Xmas,
+        ] {
+            let (mut scanner, session, sent) = scanner_for(technique);
+            probe(&mut scanner, &sent, 80);
+
+            let whole = last_probe_bytes(&sent);
+            let error = icmp_error_quoting(
+                IcmpCodes::CommunicationAdministrativelyProhibited,
+                &whole[..8],
+                ROUTER,
+            );
+            scanner.handle_reply(&error, Instant::now());
+
+            assert_eq!(
+                port_state(&session, 80),
+                Some(PortState::Filtered),
+                "{technique:?}: the sequence number is inside the guaranteed eight"
+            );
+        }
     }
 }

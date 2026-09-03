@@ -445,7 +445,12 @@ impl RawPortScan for UdpPortScanner {
             // that the address could not be reached at all, so it carries no
             // verdict on the port it happened to quote, and the probe should
             // retire on its own schedule like any other unanswered one.
-            Some((target, Verdict::Host)) => self.core.record_host_down(target.0, reply.source),
+            Some((target, Verdict::Host)) => {
+                // No token: a UDP quotation carries the eight bytes RFC 792
+                // guarantees and a UDP header has no nonce field in them, so the
+                // probe's identity is the key. It now has to name a live one.
+                self.core.record_host_down(&target, None, reply.source);
+            }
             None => {}
         }
     }
@@ -1622,5 +1627,53 @@ mod tests {
             let udp = UdpPacket::new(segment).expect("probe is a UDP datagram");
             assert_eq!(udp.get_source(), SCAN_SRC_PORT);
         }
+    }
+
+    /// A UDP quotation carries no nonce — the eight bytes RFC 792 guarantees are
+    /// the UDP header, which has no field for one — so the probe's identity is
+    /// the whole of the evidence and it has to name a probe that exists.
+    ///
+    /// Two addresses the sender chose freely: one never probed, one probed on a
+    /// different port. Neither is a host this scan may file down.
+    #[test]
+    fn a_host_unreachable_about_no_live_probe_records_nothing() {
+        let never = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 77));
+
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+
+        // An address this scan never addressed at all.
+        scanner.handle_reply(
+            &icmpv4_error(
+                ROUTER,
+                IcmpCodes::DestinationHostUnreachable,
+                never,
+                SCAN_SRC_PORT,
+                53,
+            ),
+            Instant::now(),
+        );
+        assert_eq!(
+            host_status(&session, never),
+            None,
+            "an address nothing was sent to is not a host this scan found"
+        );
+
+        // The right address, a port nobody asked about.
+        scanner.handle_reply(
+            &icmpv4_error(
+                ROUTER,
+                IcmpCodes::DestinationHostUnreachable,
+                TARGET,
+                SCAN_SRC_PORT,
+                9999,
+            ),
+            Instant::now(),
+        );
+        assert_ne!(
+            host_status(&session, TARGET),
+            Some(HostStatus::Down),
+            "port 9999 was never probed, so this quotes nothing this scan sent"
+        );
     }
 }

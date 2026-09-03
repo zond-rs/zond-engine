@@ -223,8 +223,17 @@ mod platform {
             let header: rt_msghdr =
                 unsafe { std::ptr::read_unaligned(buffer[offset..].as_ptr() as *const rt_msghdr) };
 
+            // A message has to be at least a header, and no longer than what
+            // remains. The lower bound was `!= 0`, which is the same thing only
+            // if a message can never be shorter than the struct being read out
+            // of it — and `rtm_msglen` is the kernel's number while
+            // `size_of::<rt_msghdr>()` is whatever `libc` was compiled to
+            // believe. A routing socket carries several message types with
+            // headers of different sizes, so the two can disagree, and the slice
+            // below then ran from the header's end back to a smaller offset and
+            // panicked. Bounding by the header size subsumes the zero case.
             let message_len = header.rtm_msglen as usize;
-            if message_len == 0 || offset + message_len > buffer.len() {
+            if message_len < mem::size_of::<rt_msghdr>() || offset + message_len > buffer.len() {
                 break;
             }
 
@@ -335,6 +344,133 @@ mod platform {
         Some(MacAddr::new(
             octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
         ))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// One routing message, with the fields the walk reads set and the rest
+        /// zeroed, as the kernel would hand it over.
+        fn message(msglen: u16, addrs: c_int, index: u16) -> Vec<u8> {
+            // SAFETY: `rt_msghdr` is a plain `repr(C)` struct of integers, so a
+            // zeroed one is a valid value, and the copy below reads exactly the
+            // bytes it occupies.
+            let mut header: rt_msghdr = unsafe { mem::zeroed() };
+            header.rtm_msglen = msglen;
+            header.rtm_addrs = addrs;
+            header.rtm_index = index;
+
+            let size = mem::size_of::<rt_msghdr>();
+            let mut bytes = vec![0u8; size];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    (&raw const header) as *const u8,
+                    bytes.as_mut_ptr(),
+                    size,
+                );
+            }
+            bytes
+        }
+
+        /// **A message shorter than the header it is read through ends the
+        /// walk.**
+        ///
+        /// It used to panic: the guard refused a length of zero and a length
+        /// past the end of the buffer, and the slice handed to `entry` ran from
+        /// `offset + size_of::<rt_msghdr>()` to `offset + message_len`, which is
+        /// backwards for every length between the two. `rtm_msglen` is the
+        /// kernel's and the struct size is the binding's, so they can disagree
+        /// on a platform whose layout has moved or a dump carrying a message
+        /// type this does not expect.
+        #[test]
+        fn a_message_shorter_than_its_header_ends_the_walk() {
+            let header = mem::size_of::<rt_msghdr>();
+
+            for msglen in [0usize, 1, 4, 64, header - 1] {
+                let mut buffer = message(msglen as u16, RTA_DST | RTA_GATEWAY, 1);
+                buffer.resize(header + 64, 0xAA);
+
+                assert!(
+                    parse(&buffer).is_empty(),
+                    "a message declaring {msglen} bytes must yield nothing"
+                );
+            }
+
+            // And the first length that is not short is read rather than
+            // refused, so the bound is the header's size and not something
+            // larger.
+            let mut buffer = message(header as u16, RTA_DST | RTA_GATEWAY, 1);
+            buffer.resize(header + 64, 0);
+            let _ = parse(&buffer);
+        }
+
+        /// The walk terminates and reads nothing out of bounds whatever the
+        /// buffer, which is the property the trust model leans on: the bytes
+        /// come from the kernel, and are bounds-checked anyway.
+        #[test]
+        fn the_walk_survives_any_buffer() {
+            let mut state = 0x2545_F491_4F6C_DD1Du64;
+            let mut next = || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            };
+
+            for _ in 0..20_000 {
+                let len = (next() % 512) as usize;
+                let buffer: Vec<u8> = (0..len).map(|_| (next() & 0xFF) as u8).collect();
+                let _ = parse(&buffer);
+            }
+
+            // And the same over buffers shaped like real messages, where the
+            // length field is plausible enough to be acted on.
+            for _ in 0..20_000 {
+                let mut buffer = message((next() % 70_000) as u16, (next() % 256) as c_int, 1);
+                let extra = (next() % 128) as usize;
+                buffer.extend((0..extra).map(|_| (next() & 0xFF) as u8));
+                let _ = parse(&buffer);
+            }
+        }
+
+        /// A sockaddr block that lies about its own length is stepped over or
+        /// ends the block, and never reads a neighbour's bytes as an address.
+        #[test]
+        fn a_sockaddr_that_lies_about_its_length_yields_nothing() {
+            let header = mem::size_of::<rt_msghdr>();
+
+            for sa_len in [0u8, 1, 3, 255] {
+                let total = header + 32;
+                let mut buffer = message(total as u16, RTA_DST | RTA_GATEWAY, 1);
+                buffer.resize(total, 0);
+                buffer[header] = sa_len;
+                buffer[header + 1] = AF_INET6 as u8;
+
+                assert!(
+                    parse(&buffer).is_empty(),
+                    "sa_len {sa_len} named no address"
+                );
+            }
+        }
+
+        /// The interface-name length inside a link-layer sockaddr is where the
+        /// MAC is read from, and it is a stranger's number in the same sense as
+        /// the rest.
+        #[test]
+        fn a_link_address_naming_a_long_interface_yields_no_mac() {
+            let header = mem::size_of::<rt_msghdr>();
+            let total = header + mem::size_of::<sockaddr_dl>() + 8;
+
+            let mut buffer = message(total as u16, RTA_GATEWAY, 1);
+            buffer.resize(total, 0);
+            buffer[header] = mem::size_of::<sockaddr_dl>() as u8;
+            buffer[header + 1] = AF_LINK as u8;
+            buffer[header + 5] = 255; // sdl_nlen, past the end of sdl_data
+            buffer[header + 6] = 6; // sdl_alen, a plausible MAC length
+
+            assert!(parse(&buffer).is_empty());
+        }
     }
 }
 
