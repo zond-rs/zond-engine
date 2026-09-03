@@ -48,6 +48,12 @@
 * **Resume and replay:** a scan is journalled as it runs, so one that was
   interrupted continues from where it stopped and one that finished can be read
   back without the network.
+* **Known-exploited correlation:** the CVE correlator takes its dataset as a
+  parameter rather than compiling one in, and `import::kev` converts CISA's
+  Known Exploited Vulnerabilities catalogue into it. KEV carries no version
+  data, so those findings say so: they match on the software and report at a
+  lower confidence than a version match, with an excerpt stating that the
+  version was never checked.
 * **Reports in and out:** export a finished scan as JSON, JSONL, CSV, a
   self-contained HTML page, or nmap-compatible XML; read targets back from a list,
   CSV, this engine's own JSON, or an nmap XML file somebody else produced.

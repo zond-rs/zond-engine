@@ -30,6 +30,15 @@
 //! which is what lets [`diff`](crate::diff) compare a scan another tool performed
 //! against one this engine ran.
 //!
+//! There is a third thing here that is neither, and it is worth naming rather
+//! than leaving a reader to place it. [`kev`] reads a *dataset*: CISA's Known
+//! Exploited Vulnerabilities feed, which says nothing about what to scan and
+//! nothing about what a scan found, and instead supplies the corpus
+//! [`cve`](crate::cve) correlates a finished report against. It sits here for
+//! the reason everything else does, that it parses a document somebody else
+//! wrote, and it converts into the catalogue grammar rather than into a target
+//! list or a report.
+//!
 //! ## A source is not a format
 //!
 //! Reading from a pipe is not a format; it is a place bytes come from. So this
@@ -88,6 +97,9 @@ pub mod csv;
 
 #[cfg(feature = "import-json")]
 pub mod json;
+
+#[cfg(feature = "import-kev")]
+pub mod kev;
 
 #[cfg(feature = "import-nmap")]
 pub mod nmap;

@@ -412,6 +412,8 @@ pub zond_engine::cve::CatalogueError::UnreadableVersion
 pub zond_engine::cve::CatalogueError::UnreadableVersion::version: alloc::string::String
 impl core::convert::From<core::io::error::Error> for zond_engine::cve::CatalogueError
 pub fn zond_engine::cve::CatalogueError::from(core::io::error::Error) -> Self
+impl core::convert::From<zond_engine::cve::CatalogueError> for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::from(zond_engine::cve::CatalogueError) -> Self
 impl core::error::Error for zond_engine::cve::CatalogueError
 pub fn zond_engine::cve::CatalogueError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::cve::CatalogueError
@@ -5145,6 +5147,34 @@ impl core::marker::Unpin for zond_engine::import::json::JsonLinesImporter
 impl core::marker::UnsafeUnpin for zond_engine::import::json::JsonLinesImporter
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::json::JsonLinesImporter
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::json::JsonLinesImporter
+pub mod zond_engine::import::kev
+#[non_exhaustive] pub enum zond_engine::import::kev::KevError
+pub zond_engine::import::kev::KevError::Io(core::io::error::Error)
+pub zond_engine::import::kev::KevError::Malformed(alloc::string::String)
+pub zond_engine::import::kev::KevError::Rejected(zond_engine::cve::CatalogueError)
+pub zond_engine::import::kev::KevError::TooLarge
+pub zond_engine::import::kev::KevError::TooLarge::limit: u64
+impl core::convert::From<core::io::error::Error> for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::from(core::io::error::Error) -> Self
+impl core::convert::From<zond_engine::cve::CatalogueError> for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::from(zond_engine::cve::CatalogueError) -> Self
+impl core::error::Error for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::import::kev::KevError
+impl core::marker::Send for zond_engine::import::kev::KevError
+impl core::marker::Sync for zond_engine::import::kev::KevError
+impl core::marker::Unpin for zond_engine::import::kev::KevError
+impl core::marker::UnsafeUnpin for zond_engine::import::kev::KevError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::kev::KevError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::import::kev::KevError
+pub const zond_engine::import::kev::KEV_ID: &str
+pub fn zond_engine::import::kev::cpe_identity(&str) -> alloc::string::String
+pub fn zond_engine::import::kev::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::cve::Catalogue, zond_engine::import::kev::KevError>
+pub fn zond_engine::import::kev::to_document(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<alloc::string::String, zond_engine::import::kev::KevError>
 pub mod zond_engine::import::list
 pub struct zond_engine::import::list::ListImporter
 impl zond_engine::import::list::ListImporter

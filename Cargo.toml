@@ -67,6 +67,13 @@ journal-format = ["dep:serde_json"]
 # and its `Exporter` trait, which cost only the `serde` already depended on.
 export-json = ["dep:serde_json"]
 
+# CISA's Known Exploited Vulnerabilities catalogue, converted into the dataset
+# `cve::correlate_with` takes. The answer to the first question anybody asks after
+# seeing that the correlator's dataset is a parameter: how do I point it at the
+# real one. It pulls in `serde_json`, which the journal and the JSON exporter
+# already share, and nothing else.
+import-kev = ["dep:serde_json"]
+
 # The same data one record per line: streamable, and a file cut off part way
 # through is still readable. Shares `serde_json` and the DTOs with `export-json`,
 # so it costs nothing on top of it.

@@ -16,14 +16,27 @@
 //!
 //! ## The one number two ways
 //!
-//! Every finding this pass records is [`Confidence::Probable`], never certain,
-//! and the reason is the case the [two-axis finding](crate::model::finding) was
-//! built for: a distribution can backport a security fix without moving the
-//! version string, so a version-matched vulnerability is genuinely
+//! No finding this pass records is certain, and the reason is the case the
+//! [two-axis finding](crate::model::finding) was built for: a distribution can
+//! backport a security fix without moving the version string, so a
+//! version-matched vulnerability is genuinely
 //! [`Critical`](crate::model::finding::Severity::Critical) *and* genuinely
 //! unsure. The severity says how bad it is if true; the confidence says the match
 //! is a version string, not a confirmed exploit. A report that fused the two
 //! could not say both.
+//!
+//! How unsure depends on what the entry actually constrained, and the difference
+//! matters more than it looks. An entry naming a version range was checked
+//! against the version found, which is [`Confidence::Probable`]. An entry whose
+//! `affected` is `*` names a product and no version at all, so it matches a
+//! patched installation exactly as readily as a vulnerable one; that is
+//! [`Confidence::Weak`], and the excerpt says the version was never in question.
+//!
+//! The distinction is not academic. A feed like CISA's KEV catalogue carries no
+//! version data whatsoever, so every entry converted from it is an unconstrained
+//! one. Reporting those at the same confidence as a version match would mean a
+//! fully patched server carrying the same finding as a vulnerable one, with
+//! nothing in the report to separate them.
 //!
 //! ## The dataset is a parameter
 //!
@@ -435,6 +448,17 @@ impl Vulnerability {
             && version_matches(&cpe.version, &self.affected)
     }
 
+    /// Whether this entry constrains the version at all, or names a product and
+    /// leaves the version open.
+    ///
+    /// Read off `affected` rather than stored beside it, so an entry cannot
+    /// claim to have checked something it did not. `*` is the grammar's own way
+    /// of saying "any version", which is what a feed carrying no version data
+    /// converts to.
+    fn constrains_the_version(&self) -> bool {
+        self.affected.trim() != "*"
+    }
+
     /// The finding this vulnerability produces for a matched `cpe`, or [`None`]
     /// if the entry is malformed: an unknown severity, a bad CVE identifier.
     fn to_finding(&self, cpe: &str, catalogue: &Catalogue) -> Option<Finding> {
@@ -446,19 +470,38 @@ impl Vulnerability {
         )
         .ok()?;
 
+        // An entry that named no version matched on the software alone, and a
+        // patched installation answers that description as well as a vulnerable
+        // one does. The confidence carries the difference, and the excerpt says
+        // it in words for a reader who is not reading confidences.
+        let (confidence, excerpt) = match self.constrains_the_version() {
+            true => (
+                Confidence::Probable,
+                format!(
+                    "{cpe} matches {} {} {}",
+                    self.vendor, self.product, self.affected
+                ),
+            ),
+            false => (
+                Confidence::Weak,
+                format!(
+                    "{cpe} is {} {}, which this entry names at any version: \
+                     the version found was not checked against anything",
+                    self.vendor, self.product
+                ),
+            ),
+        };
+
         let mut finding = Finding::new(
             detection,
             self.title.clone(),
             severity,
-            Confidence::Probable,
+            confidence,
             DetectionClass::Passive,
         )
         .ok()?
         .with_reference(Reference::cve(&self.cve)?)
-        .with_excerpt(Excerpt::new(format!(
-            "{cpe} matches {} {} {}",
-            self.vendor, self.product, self.affected
-        )));
+        .with_excerpt(Excerpt::new(excerpt));
 
         if let Some(cwe) = self.cwe {
             finding = finding.with_reference(Reference::cwe(cwe));
@@ -613,6 +656,69 @@ mod tests {
         // A version nobody read cannot confirm a bounded clause.
         assert!(!version_matches("", ">= 1.0"));
         assert!(!version_matches("-", ">= 1.0"));
+    }
+
+    /// The rule that makes an unversioned feed safe to load, tested where it
+    /// lives rather than only where KEV exercises it.
+    ///
+    /// An entry whose `affected` is `*` matched on the software and checked no
+    /// version, so it describes a patched installation exactly as well as a
+    /// vulnerable one. Reporting it beside a version match, at the same
+    /// confidence, would put the two in the same row of a report with nothing to
+    /// separate them.
+    #[test]
+    fn an_entry_that_names_no_version_is_weaker_than_one_that_does() {
+        use crate::model::confidence::Confidence;
+
+        let document = r#"
+id = "acme:advisories"
+version = "1.0.0"
+
+[[vulnerability]]
+cve      = "CVE-2021-41773"
+title    = "Bounded to the affected releases"
+severity = "critical"
+vendor   = "apache"
+product  = "http_server"
+affected = "== 2.4.49"
+
+[[vulnerability]]
+cve      = "CVE-2021-44228"
+title    = "Named at any version"
+severity = "critical"
+vendor   = "apache"
+product  = "http_server"
+affected = "*"
+"#;
+        let catalogue = Catalogue::read(&mut document.as_bytes()).expect("a valid document");
+
+        // The vulnerable build answers both entries, which is what makes the two
+        // comparable: same software, same version, different claims about it.
+        let hits = catalogue.findings_for("cpe:/a:apache:http_server:2.4.49");
+        assert_eq!(hits.len(), 2);
+
+        let bounded = hits
+            .iter()
+            .find(|finding| finding.title().contains("Bounded"))
+            .expect("the version-bounded entry matched");
+        assert_eq!(bounded.confidence(), Confidence::Probable);
+        assert!(bounded.excerpt().as_str().contains("2.4.49"));
+
+        let unbounded = hits
+            .iter()
+            .find(|finding| finding.title().contains("any version"))
+            .expect("the unbounded entry matched");
+        assert_eq!(unbounded.confidence(), Confidence::Weak);
+        assert!(
+            unbounded.excerpt().as_str().contains("not checked"),
+            "the excerpt has to say the version was never in question"
+        );
+
+        // And the patched build answers only the unbounded one, which is the
+        // whole reason it cannot be reported as confidently.
+        let patched = catalogue.findings_for("cpe:/a:apache:http_server:2.4.62");
+        assert_eq!(patched.len(), 1);
+        assert_eq!(patched[0].confidence(), Confidence::Weak);
     }
 
     #[test]
