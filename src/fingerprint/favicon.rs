@@ -105,13 +105,32 @@ impl Analyzer for FaviconAnalyzer {
         let digest = md5_hex(icon);
         super::db::SignatureDb::global()
             .identify_field(&digest)
-            .map(|mut evidence| {
-                // The corpus rule belongs to whatever service owns the product,
-                // and the reading is this analyzer's.
-                evidence.source = SourceId::Favicon;
-                vec![evidence]
-            })
+            .map(|evidence| vec![as_application(evidence)])
             .unwrap_or_default()
+    }
+}
+
+/// Marks a corpus match as this analyzer's, and states the name it found in both
+/// the product slot and beside it.
+///
+/// Twice on purpose. An icon names the *application*; a `Server` value names the
+/// listener in front of it. Metabase behind nginx is both, and they are two
+/// facts about one port rather than a disagreement.
+///
+/// Only one of them can hold the product, and it will not be this one: a
+/// `Server: nginx/1.24.0` captures a version, which makes it `Strong`, and it is
+/// port-confirmed, so it takes the slot on both tiebreaks. Without the second
+/// statement the application name is discarded on every reverse-proxied host,
+/// which is a large share of the deployments these rules exist for.
+///
+/// [`ServiceVerdict::resolve`](super::model::ServiceVerdict::resolve) drops the
+/// duplicate where the icon does take the product slot, so an anonymous server
+/// reports the application once rather than twice.
+fn as_application(mut evidence: Evidence) -> Evidence {
+    evidence.source = SourceId::Favicon;
+    match evidence.product.clone() {
+        Some(product) => evidence.with_extrainfo(product),
+        None => evidence,
     }
 }
 
@@ -288,6 +307,34 @@ mod tests {
             .identify_field("4297c114f263c206ed12aaff4b0c7a50")
             .expect("the corpus names it");
         assert_eq!(evidence.product.as_deref(), Some("Metabase"));
+    }
+
+    /// The name is stated in both slots so it survives losing the product
+    /// tiebreak to a `Server` header, and is stamped as this analyzer's.
+    #[test]
+    fn a_match_states_the_application_in_both_slots() {
+        let found = Evidence::new(
+            SourceId::BannerRegex,
+            crate::model::confidence::Confidence::Probable,
+        )
+        .with_service("favicons.xml")
+        .with_product("Metabase");
+
+        let marked = as_application(found);
+        assert_eq!(marked.source, SourceId::Favicon);
+        assert_eq!(marked.product.as_deref(), Some("Metabase"));
+        assert_eq!(marked.extrainfo.as_deref(), Some("Metabase"));
+    }
+
+    /// A rule that names no product has nothing to carry into the second slot.
+    #[test]
+    fn a_match_naming_no_product_states_nothing_beside_it() {
+        let found = Evidence::new(
+            SourceId::BannerRegex,
+            crate::model::confidence::Confidence::Probable,
+        )
+        .with_service("favicons.xml");
+        assert_eq!(as_application(found).extrainfo, None);
     }
 
     /// A server that answers the second request with an endless stream cannot

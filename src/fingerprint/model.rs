@@ -330,6 +330,15 @@ impl ServiceVerdict {
             None => evidence.iter().find_map(|ev| ev.cpe.clone()),
         };
 
+        // An observation may state one name in both slots, so that it survives
+        // losing the product tiebreak: an icon names the application, a `Server`
+        // value names the listener in front of it, and on a reverse-proxied host
+        // only one of them can have the product. Where the same observation won
+        // the slot anyway, the second copy is noise.
+        if verdict.extrainfo == verdict.product {
+            verdict.extrainfo = None;
+        }
+
         verdict.evidence = evidence;
         verdict
     }
@@ -662,5 +671,60 @@ mod tests {
         ]);
         let service = verdict.to_service().expect("names a service");
         assert_eq!(service.confidence(), Confidence::Strong.as_score());
+    }
+
+    /// The reverse-proxy case, which is what the second slot exists for: a
+    /// `Server` value names the listener and an icon names the application
+    /// behind it, and only one of them can hold the product.
+    #[test]
+    fn an_application_behind_a_server_survives_losing_the_product_slot() {
+        let server = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("nginx");
+        let application = ev(Confidence::Probable)
+            .with_service("http")
+            .with_product("Metabase")
+            .with_extrainfo("Metabase");
+
+        let verdict = ServiceVerdict::resolve(vec![server, application]);
+        assert_eq!(verdict.product.as_deref(), Some("nginx"));
+        assert_eq!(verdict.extrainfo.as_deref(), Some("Metabase"));
+    }
+
+    /// And where nothing outranks it, the application takes the product slot and
+    /// is not also repeated beside itself.
+    #[test]
+    fn an_application_on_an_anonymous_server_is_named_once() {
+        let baseline = ev(Confidence::Probable).with_service("http");
+        let application = ev(Confidence::Probable)
+            .with_service("http")
+            .with_product("Metabase")
+            .with_extrainfo("Metabase");
+
+        let verdict = ServiceVerdict::resolve(vec![baseline, application]);
+        assert_eq!(verdict.product.as_deref(), Some("Metabase"));
+        assert_eq!(verdict.extrainfo, None);
+    }
+
+    /// The platform identifier still follows the product rather than the icon.
+    /// A CPE naming the application beside a product naming the proxy is what
+    /// sends `cve` at the wrong software, which is the most expensive mistake
+    /// this crate can make.
+    #[test]
+    fn the_platform_identifier_follows_the_product_not_the_application() {
+        let mut server = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("nginx");
+        server.cpe = Some("cpe:/a:nginx:nginx:1.24.0".to_string());
+
+        let mut application = ev(Confidence::Probable)
+            .with_service("http")
+            .with_product("Metabase")
+            .with_extrainfo("Metabase");
+        application.cpe = Some("cpe:/a:metabase:metabase:-".to_string());
+
+        let verdict = ServiceVerdict::resolve(vec![server, application]);
+        assert_eq!(verdict.product.as_deref(), Some("nginx"));
+        assert_eq!(verdict.cpe.as_deref(), Some("cpe:/a:nginx:nginx:1.24.0"));
     }
 }
