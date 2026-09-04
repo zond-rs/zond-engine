@@ -50,5 +50,6 @@ pub(crate) mod host;
 
 mod convert;
 mod gate;
+mod source;
 
-pub use corpus::{DetectionError, Detections, DetectionsBuilder};
+pub use corpus::{DetectionError, DetectionSummary, Detections, DetectionsBuilder, Gate};

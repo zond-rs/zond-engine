@@ -155,6 +155,10 @@ it is worth.
   for which of their ports are open — the strategies behind them, the live
   session and the finished report.
 * `fingerprint`: service and operating-system identification over an open port.
+* `detect`: what to conclude beyond a service name. Declarative flows, a
+  capability-sandboxed compute tier, and the signed bundles that let a
+  stranger's detections run under both. `cve` correlates a finished report
+  against a vulnerability dataset.
 * `diff`: what changed between two scans, whoever ran them, judged by what each
   says it walked, and graded by how much it is worth acting on.
 * `merge`: any number of scans folded into one report — a `/16` scanned in
@@ -347,6 +351,83 @@ and the target's connection log sees all of them. And it sends no SNI, because
 the name a target was resolved from is not recorded by the time this runs, so an
 endpoint that refuses a nameless hello reads as one that accepted nothing. Both
 are why the pass is opt-in and why `host_timeout` is worth setting beside it.
+
+## Writing a detection
+
+Fingerprinting names a service. A detection says what is wrong with it, and
+anybody can write one. There are two tiers and the choice between them is
+usually obvious.
+
+A **flow** is a detection authored as data: a bounded sequence of probe-and-match
+steps ending in a typed finding. It carries no code, cannot loop and cannot
+exceed the budget it declares, so most detections should be one.
+
+```toml
+[detection]
+id      = "acme-metrics-pprof"
+version = "1.0.0"
+title   = "Internal metrics daemon exposes pprof"
+
+# The gate. `speaks` asks the fingerprint corpus which services are carried over
+# HTTP, so a gate written this way covers a product the corpus can name as well
+# as a plain web server.
+[detection.when]
+speaks = "http"
+ports  = [9110, 9111]
+
+# What it asks to be handed, and the bounds it runs under.
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 2000
+
+[[step]]
+send   = "GET /debug/pprof/ HTTP/1.0\r\n\r\n"
+expect = "Types of profiles available"
+bind   = { build = "X-Acme-Build: (?<build>[0-9a-f]{7,40})" }
+
+  [[step.finding]]
+  when       = "matched"
+  severity   = "high"
+  summary    = "pprof is reachable on the metrics port"
+  detail     = "Build {build} serves /debug/pprof to anyone who can reach the port."
+  references = [{ cwe = 200 }]
+```
+
+A **compute module** is for what a flow cannot express: real parsing, a stateful
+exchange, a verdict computed from behaviour. It is code, written in Rhai with
+`fn analyze(ctx, responses)` as its entry point, and it reaches the world only
+through the verbs its class is granted. Write the body inline under `[compute]`,
+or keep it in a sibling file and name it with `body = "check.rhai"`.
+
+The `class` a detection declares is a request, never a grant. `passive` sends
+nothing, `active-benign` exchanges bytes with the one scanned socket, and
+`active-mutating`, `exploit` and `dos` each do more to the target than the one
+before. The operator's `ZondConfig::detection` envelope decides which are served,
+and it stops at `active-benign` unless somebody raises it, so a detection above
+that ships inert.
+
+Load them by handing the builder what the files hold. The engine opens nothing:
+
+```rust
+use zond_engine::detect::Detections;
+
+let detections = Detections::builder()
+    .sources(&sources)?   // name to contents, from wherever they came
+    .build();
+
+let (session, task) = scan(targets, &cfg, detections).await?;
+```
+
+Detections from somebody else arrive as a signed bundle instead. `Bundle::verified`
+takes the key the caller trusts, checks the signature before the manifest is
+parsed and each source against the hash the manifest records before anything is
+compiled. Because the signature covers the membership rather than only the bytes,
+an attacker serving the files cannot drop the one that would have found them.
+
+`examples/detections.rs` walks the whole of it, publisher and recipient. The
+official CLI puts it behind `zond detections`.
 
 ## Excluding addresses from a scan
 

@@ -651,23 +651,20 @@ fn step_iterations(step: &schema::Step) -> u64 {
         .map_or(1, |for_each| for_each.items.len() as u64)
 }
 
-/// Soft issues that do not fail the build but an author should see: a class that
-/// is off by default, so the flow ships inert until an operator opts in, and a
-/// malformed CVE identifier that a finding would silently drop.
+/// Soft issues that do not fail the build but an author should see: a malformed
+/// CVE identifier that a finding would silently drop.
+///
+/// A class that ships inert used to warn here too. It said nothing the author
+/// had not just written, since `class = "exploit"` is the declaration and this
+/// repeated it back, and a build script only ever reads this crate's own
+/// reviewed corpus, so the line survived review and then printed on every build
+/// of the engine and of anything depending on it. What it was guarding is worth
+/// guarding, though, so it is now `flow::db`'s `the_corpus_ships_the_classes_it_
+/// is_known_to_ship`, which fails when a shipped detection changes what it may
+/// do rather than mentioning it forever.
 fn warn_flow_soft(flow: &schema::FlowDetection, path: &Path) {
     let file = path.display();
     let id = &flow.detection.id;
-
-    if matches!(
-        flow.detection.capabilities.class,
-        manifest::Class::ActiveMutating | manifest::Class::Exploit | manifest::Class::Dos
-    ) {
-        println!(
-            "cargo:warning={file}: '{id}' is class {:?}, which is off by default — it ships \
-             inert unless an operator opts the envelope in",
-            flow.detection.capabilities.class
-        );
-    }
 
     for step in &flow.step {
         for finding in &step.finding {

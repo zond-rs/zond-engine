@@ -563,6 +563,7 @@ impl zond_engine::detect::bundle::Bundle
 pub fn zond_engine::detect::bundle::Bundle::entries(&self) -> &[zond_engine::detect::bundle::Entry]
 pub fn zond_engine::detect::bundle::Bundle::manifest(&str, &str, &alloc::collections::btree::map::BTreeMap<alloc::string::String, (zond_engine::detect::bundle::Tier, alloc::string::String)>) -> alloc::string::String
 pub fn zond_engine::detect::bundle::Bundle::name(&self) -> &str
+pub fn zond_engine::detect::bundle::Bundle::publishable(&alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>) -> core::result::Result<alloc::collections::btree::map::BTreeMap<alloc::string::String, (zond_engine::detect::bundle::Tier, alloc::string::String)>, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::bundle::Bundle::verified(&str, &zond_engine::signature::Signature, &[u8], alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>) -> core::result::Result<Self, zond_engine::detect::bundle::BundleError>
 pub fn zond_engine::detect::bundle::Bundle::version(&self) -> &str
 impl core::clone::Clone for zond_engine::detect::bundle::Bundle
@@ -594,6 +595,7 @@ impl core::marker::UnsafeUnpin for zond_engine::detect::bundle::Entry
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::bundle::Entry
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::bundle::Entry
 pub const zond_engine::detect::bundle::MAX_DETECTIONS: usize
+pub fn zond_engine::detect::bundle::content_hash(&str) -> alloc::string::String
 pub mod zond_engine::detect::compute
 #[non_exhaustive] pub enum zond_engine::detect::compute::BudgetTrap
 pub zond_engine::detect::compute::BudgetTrap::Bytes
@@ -1173,12 +1175,20 @@ pub fn zond_engine::detect::compute::RhaiRuntime::run(&self, &mut Self::Instance
 pub fn zond_engine::detect::compute::replay_run(&zond_engine::detect::compute::DetectionRunRecord) -> core::result::Result<alloc::vec::Vec<zond_engine::model::finding::Finding>, zond_engine::detect::compute::ReplayError>
 pub mod zond_engine::detect::corpus
 #[non_exhaustive] pub enum zond_engine::detect::corpus::DetectionError
+pub zond_engine::detect::corpus::DetectionError::Body(alloc::string::String)
 pub zond_engine::detect::corpus::DetectionError::Compute(alloc::string::String)
 pub zond_engine::detect::corpus::DetectionError::Flow(alloc::vec::Vec<zond_engine::detect::flow::ValidationError>)
 pub zond_engine::detect::corpus::DetectionError::Host(alloc::string::String)
+pub zond_engine::detect::corpus::DetectionError::InSource
+pub zond_engine::detect::corpus::DetectionError::InSource::cause: alloc::boxed::Box<zond_engine::detect::corpus::DetectionError>
+pub zond_engine::detect::corpus::DetectionError::InSource::name: alloc::string::String
 pub zond_engine::detect::corpus::DetectionError::Parse(alloc::string::String)
 pub zond_engine::detect::corpus::DetectionError::Pattern(alloc::string::String)
+pub zond_engine::detect::corpus::DetectionError::Tier(alloc::string::String)
+pub zond_engine::detect::corpus::DetectionError::UnusedBody
+pub zond_engine::detect::corpus::DetectionError::UnusedBody::name: alloc::string::String
 impl core::error::Error for zond_engine::detect::corpus::DetectionError
+pub fn zond_engine::detect::corpus::DetectionError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::detect::corpus::DetectionError
 pub fn zond_engine::detect::corpus::DetectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::detect::corpus::DetectionError
@@ -1190,10 +1200,46 @@ impl core::marker::Unpin for zond_engine::detect::corpus::DetectionError
 impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::DetectionError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::DetectionError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::DetectionError
+#[non_exhaustive] pub enum zond_engine::detect::corpus::Gate
+pub zond_engine::detect::corpus::Gate::Host
+pub zond_engine::detect::corpus::Gate::Host::ports_open: alloc::vec::Vec<u16>
+pub zond_engine::detect::corpus::Gate::Host::services: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::detect::corpus::Gate::Port(zond_engine::detect::manifest::Rule)
+impl core::clone::Clone for zond_engine::detect::corpus::Gate
+pub fn zond_engine::detect::corpus::Gate::clone(&self) -> zond_engine::detect::corpus::Gate
+impl core::fmt::Debug for zond_engine::detect::corpus::Gate
+pub fn zond_engine::detect::corpus::Gate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::corpus::Gate
+impl core::marker::Send for zond_engine::detect::corpus::Gate
+impl core::marker::Sync for zond_engine::detect::corpus::Gate
+impl core::marker::Unpin for zond_engine::detect::corpus::Gate
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::Gate
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::Gate
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::Gate
+#[non_exhaustive] pub struct zond_engine::detect::corpus::DetectionSummary
+pub zond_engine::detect::corpus::DetectionSummary::class: core::option::Option<zond_engine::detect::manifest::Class>
+pub zond_engine::detect::corpus::DetectionSummary::content_hash: alloc::string::String
+pub zond_engine::detect::corpus::DetectionSummary::gate: zond_engine::detect::corpus::Gate
+pub zond_engine::detect::corpus::DetectionSummary::id: alloc::string::String
+pub zond_engine::detect::corpus::DetectionSummary::tier: zond_engine::detect::bundle::Tier
+pub zond_engine::detect::corpus::DetectionSummary::title: alloc::string::String
+pub zond_engine::detect::corpus::DetectionSummary::version: alloc::string::String
+impl core::clone::Clone for zond_engine::detect::corpus::DetectionSummary
+pub fn zond_engine::detect::corpus::DetectionSummary::clone(&self) -> zond_engine::detect::corpus::DetectionSummary
+impl core::fmt::Debug for zond_engine::detect::corpus::DetectionSummary
+pub fn zond_engine::detect::corpus::DetectionSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::corpus::DetectionSummary
+impl core::marker::Send for zond_engine::detect::corpus::DetectionSummary
+impl core::marker::Sync for zond_engine::detect::corpus::DetectionSummary
+impl core::marker::Unpin for zond_engine::detect::corpus::DetectionSummary
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::DetectionSummary
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::DetectionSummary
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::DetectionSummary
 pub struct zond_engine::detect::corpus::Detections
 impl zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::builder() -> zond_engine::detect::corpus::DetectionsBuilder
 pub fn zond_engine::detect::corpus::Detections::embedded() -> Self
+pub fn zond_engine::detect::corpus::Detections::listing(&self) -> alloc::vec::Vec<zond_engine::detect::corpus::DetectionSummary>
 impl core::clone::Clone for zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::clone(&self) -> zond_engine::detect::corpus::Detections
 impl core::default::Default for zond_engine::detect::corpus::Detections
@@ -1214,6 +1260,7 @@ pub fn zond_engine::detect::corpus::DetectionsBuilder::bundle(self, zond_engine:
 pub fn zond_engine::detect::corpus::DetectionsBuilder::compute(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::flow(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::host(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
+pub fn zond_engine::detect::corpus::DetectionsBuilder::sources(self, &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::without_embedded(self) -> Self
 impl !core::marker::Freeze for zond_engine::detect::corpus::DetectionsBuilder
 impl core::marker::Send for zond_engine::detect::corpus::DetectionsBuilder
@@ -1457,6 +1504,8 @@ pub zond_engine::detect::manifest::Class::Exploit
 pub zond_engine::detect::manifest::Class::Passive
 impl zond_engine::detect::manifest::Class
 pub fn zond_engine::detect::manifest::Class::into_model(self) -> zond_engine::model::finding::DetectionClass
+impl zond_engine::detect::manifest::Class
+pub const fn zond_engine::detect::manifest::Class::label(self) -> &'static str
 impl core::clone::Clone for zond_engine::detect::manifest::Class
 pub fn zond_engine::detect::manifest::Class::clone(&self) -> zond_engine::detect::manifest::Class
 impl core::cmp::Eq for zond_engine::detect::manifest::Class
@@ -1559,12 +1608,20 @@ impl core::marker::UnsafeUnpin for zond_engine::detect::manifest::Rule
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::manifest::Rule
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::manifest::Rule
 #[non_exhaustive] pub enum zond_engine::detect::DetectionError
+pub zond_engine::detect::DetectionError::Body(alloc::string::String)
 pub zond_engine::detect::DetectionError::Compute(alloc::string::String)
 pub zond_engine::detect::DetectionError::Flow(alloc::vec::Vec<zond_engine::detect::flow::ValidationError>)
 pub zond_engine::detect::DetectionError::Host(alloc::string::String)
+pub zond_engine::detect::DetectionError::InSource
+pub zond_engine::detect::DetectionError::InSource::cause: alloc::boxed::Box<zond_engine::detect::corpus::DetectionError>
+pub zond_engine::detect::DetectionError::InSource::name: alloc::string::String
 pub zond_engine::detect::DetectionError::Parse(alloc::string::String)
 pub zond_engine::detect::DetectionError::Pattern(alloc::string::String)
+pub zond_engine::detect::DetectionError::Tier(alloc::string::String)
+pub zond_engine::detect::DetectionError::UnusedBody
+pub zond_engine::detect::DetectionError::UnusedBody::name: alloc::string::String
 impl core::error::Error for zond_engine::detect::corpus::DetectionError
+pub fn zond_engine::detect::corpus::DetectionError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::detect::corpus::DetectionError
 pub fn zond_engine::detect::corpus::DetectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::detect::corpus::DetectionError
@@ -1576,10 +1633,46 @@ impl core::marker::Unpin for zond_engine::detect::corpus::DetectionError
 impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::DetectionError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::DetectionError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::DetectionError
+#[non_exhaustive] pub enum zond_engine::detect::Gate
+pub zond_engine::detect::Gate::Host
+pub zond_engine::detect::Gate::Host::ports_open: alloc::vec::Vec<u16>
+pub zond_engine::detect::Gate::Host::services: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::detect::Gate::Port(zond_engine::detect::manifest::Rule)
+impl core::clone::Clone for zond_engine::detect::corpus::Gate
+pub fn zond_engine::detect::corpus::Gate::clone(&self) -> zond_engine::detect::corpus::Gate
+impl core::fmt::Debug for zond_engine::detect::corpus::Gate
+pub fn zond_engine::detect::corpus::Gate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::corpus::Gate
+impl core::marker::Send for zond_engine::detect::corpus::Gate
+impl core::marker::Sync for zond_engine::detect::corpus::Gate
+impl core::marker::Unpin for zond_engine::detect::corpus::Gate
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::Gate
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::Gate
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::Gate
+#[non_exhaustive] pub struct zond_engine::detect::DetectionSummary
+pub zond_engine::detect::DetectionSummary::class: core::option::Option<zond_engine::detect::manifest::Class>
+pub zond_engine::detect::DetectionSummary::content_hash: alloc::string::String
+pub zond_engine::detect::DetectionSummary::gate: zond_engine::detect::corpus::Gate
+pub zond_engine::detect::DetectionSummary::id: alloc::string::String
+pub zond_engine::detect::DetectionSummary::tier: zond_engine::detect::bundle::Tier
+pub zond_engine::detect::DetectionSummary::title: alloc::string::String
+pub zond_engine::detect::DetectionSummary::version: alloc::string::String
+impl core::clone::Clone for zond_engine::detect::corpus::DetectionSummary
+pub fn zond_engine::detect::corpus::DetectionSummary::clone(&self) -> zond_engine::detect::corpus::DetectionSummary
+impl core::fmt::Debug for zond_engine::detect::corpus::DetectionSummary
+pub fn zond_engine::detect::corpus::DetectionSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::detect::corpus::DetectionSummary
+impl core::marker::Send for zond_engine::detect::corpus::DetectionSummary
+impl core::marker::Sync for zond_engine::detect::corpus::DetectionSummary
+impl core::marker::Unpin for zond_engine::detect::corpus::DetectionSummary
+impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::DetectionSummary
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::DetectionSummary
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::DetectionSummary
 pub struct zond_engine::detect::Detections
 impl zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::builder() -> zond_engine::detect::corpus::DetectionsBuilder
 pub fn zond_engine::detect::corpus::Detections::embedded() -> Self
+pub fn zond_engine::detect::corpus::Detections::listing(&self) -> alloc::vec::Vec<zond_engine::detect::corpus::DetectionSummary>
 impl core::clone::Clone for zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::clone(&self) -> zond_engine::detect::corpus::Detections
 impl core::default::Default for zond_engine::detect::corpus::Detections
@@ -1600,6 +1693,7 @@ pub fn zond_engine::detect::corpus::DetectionsBuilder::bundle(self, zond_engine:
 pub fn zond_engine::detect::corpus::DetectionsBuilder::compute(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::flow(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::host(self, &str, &str) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
+pub fn zond_engine::detect::corpus::DetectionsBuilder::sources(self, &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>) -> core::result::Result<Self, zond_engine::detect::corpus::DetectionError>
 pub fn zond_engine::detect::corpus::DetectionsBuilder::without_embedded(self) -> Self
 impl !core::marker::Freeze for zond_engine::detect::corpus::DetectionsBuilder
 impl core::marker::Send for zond_engine::detect::corpus::DetectionsBuilder

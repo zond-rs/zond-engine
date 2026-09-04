@@ -137,6 +137,50 @@ mod tests {
         }
     }
 
+    /// What each shipped flow may do, pinned.
+    ///
+    /// A detection's class decides whether a default scan runs it at all: the
+    /// envelope's ceiling is `ActiveBenign`, so anything above that ships inert
+    /// until an operator raises it. Moving a detection across that line either
+    /// way is a security decision, not a detail. Raising one below the ceiling
+    /// starts sending traffic every default scan will now send; lowering one
+    /// above it silently stops a detection running that an operator believes is.
+    ///
+    /// Pinned as a list rather than checked as a property, because the point is
+    /// that adding or changing a detection has to come here and say so.
+    #[test]
+    fn the_corpus_ships_the_classes_it_is_known_to_ship() {
+        use crate::detect::manifest::Class;
+
+        let expected = [
+            ("grafana-path-traversal", Class::Exploit),
+            ("redis-unauth-access", Class::ActiveBenign),
+            ("snmp-default-community", Class::ActiveBenign),
+        ];
+
+        let mut shipped: Vec<(String, Class)> = FlowDb::global()
+            .flows()
+            .map(|flow| {
+                (
+                    flow.flow().detection.id.clone(),
+                    flow.flow().detection.capabilities.class,
+                )
+            })
+            .collect();
+        shipped.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let shipped: Vec<(&str, Class)> = shipped
+            .iter()
+            .map(|(id, class)| (id.as_str(), *class))
+            .collect();
+
+        assert_eq!(
+            shipped, expected,
+            "a shipped detection changed what it may do, or one arrived without \
+             saying: add it here once the class is what it should be"
+        );
+    }
+
     #[test]
     fn a_flow_stamps_its_content_hash_on_the_findings_it_produces() {
         let redis = FlowDb::global()

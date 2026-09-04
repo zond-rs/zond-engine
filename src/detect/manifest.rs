@@ -186,6 +186,23 @@ pub enum Class {
     Dos,
 }
 
+impl Class {
+    /// The name a document spells this class with, which is also the name an
+    /// [envelope](crate::config::envelope::DetectionEnvelope) is set to.
+    ///
+    /// Here rather than derived from the variant, so a listing and a command line
+    /// agree on the spelling without either keeping a table.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Class::Passive => "passive",
+            Class::ActiveBenign => "active-benign",
+            Class::ActiveMutating => "active-mutating",
+            Class::Exploit => "exploit",
+            Class::Dos => "dos",
+        }
+    }
+}
+
 /// What a detection may `speak` to. One value for now; the enum is the room to
 /// grow.
 #[non_exhaustive]

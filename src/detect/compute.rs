@@ -54,7 +54,7 @@ mod record;
 mod replay;
 mod rhai;
 mod runtime;
-mod schema;
+pub(crate) mod schema;
 pub(crate) mod stage;
 
 // Re-exported so the build-shared `schema` can name the shared manifest as

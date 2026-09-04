@@ -41,11 +41,36 @@ impl LoadedHostDetection {
         }
     }
 
-    /// The detection's author-chosen id. Used by tests to find a shipped detection;
-    /// the scan path reads the id through the finding's provenance instead.
-    #[cfg(test)]
+    /// The detection's author-chosen id. The scan path reads the id through the
+    /// finding's provenance instead; this is for a corpus listing and for tests
+    /// looking a shipped detection up by name.
     pub(crate) fn id(&self) -> &str {
         &self.detection.detection.id
+    }
+
+    /// The one-line human name a report prints for it.
+    pub(crate) fn title(&self) -> &str {
+        &self.detection.detection.title
+    }
+
+    /// Its own version, as the detection declares it.
+    pub(crate) fn version(&self) -> &str {
+        &self.detection.detection.version
+    }
+
+    /// The ports its gate needs open.
+    pub(crate) fn ports_open(&self) -> &[u16] {
+        &self.detection.detection.host.ports_open
+    }
+
+    /// The services its gate needs identified.
+    pub(crate) fn services(&self) -> &[String] {
+        &self.detection.detection.host.services
+    }
+
+    /// The SHA-256 of its source, its provenance.
+    pub(crate) fn content_hash(&self) -> &str {
+        &self.content_hash
     }
 }
 

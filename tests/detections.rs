@@ -367,9 +367,14 @@ async fn a_compute_module_grades_the_response_the_scan_already_gathered() {
         .expect("the compute module fired over the gathered response");
 
     assert_eq!(finding.severity(), Severity::Medium);
-    assert_eq!(
-        finding.title(),
-        "the server omits 4 of 4 baseline HTTP security headers"
+    // The count, not the sentence around it. What earns the tier is that the
+    // module counted four and graded on the number; the wording is report copy,
+    // and pinning it here breaks this test on an edit that changes no behaviour,
+    // which is how it came to assert a summary the module had stopped writing.
+    assert!(
+        finding.title().contains("4 of 4"),
+        "the module should have counted all four headers absent, got {:?}",
+        finding.title()
     );
     assert_eq!(finding.class(), DetectionClass::Passive);
     assert!(

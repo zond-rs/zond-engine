@@ -84,6 +84,8 @@ use serde::Deserialize;
 
 use crate::signature::{Domain, Signature, SignatureError};
 
+use super::corpus::DetectionError;
+
 /// How many detections one bundle may carry.
 ///
 /// A bound on what a manifest can ask this process to compile, since the
@@ -345,6 +347,38 @@ impl Bundle {
         &self.entries
     }
 
+    /// The documents a set of loose detection files should be published as.
+    ///
+    /// A bundle carries detections, not the files an author kept them in: a
+    /// module whose code sits in a sibling `.rhai` is one detection, and the
+    /// signature has to cover the code as part of the document that runs it. This
+    /// resolves each such reference, so what comes back is a set of
+    /// self-contained documents keyed by name, ready for
+    /// [`manifest`](Self::manifest) and to be written out as the bundle.
+    ///
+    /// Write these documents rather than the originals. A recipient hashes the
+    /// files they were given, before anything is parsed, so the bundle directory
+    /// has to hold what was signed.
+    ///
+    /// The tier comes from each document, which is safe here and nowhere else:
+    /// this reads a publisher's own files on their own machine, where
+    /// [`verified`](Self::verified) reads a stranger's and takes every tier from
+    /// the manifest instead.
+    ///
+    /// # Errors
+    ///
+    /// [`DetectionError::InSource`] naming the document that would not resolve,
+    /// or [`DetectionError::UnusedBody`] for a body no document references.
+    pub fn publishable(
+        sources: &BTreeMap<String, String>,
+    ) -> Result<BTreeMap<String, (Tier, String)>, DetectionError> {
+        let prepared = super::source::prepare(sources).map_err(DetectionError::from)?;
+        Ok(prepared
+            .into_iter()
+            .map(|detection| (detection.name, (detection.tier, detection.document)))
+            .collect())
+    }
+
     /// The manifest document for a set of sources, for a publisher building a
     /// bundle.
     ///
@@ -445,6 +479,20 @@ struct NamedDetection {
 /// near-match nobody notices. A publisher writes what this crate wrote.
 fn hash_matches(source: &str, expected: &str) -> bool {
     sha256_hex(source) == expected
+}
+
+/// The SHA-256 of a detection source, lowercase hex, as a manifest records it.
+///
+/// The provenance a finding carries: the corpus stamps this on every finding a
+/// detection produces, so a reader who doubts one can hash the source themselves
+/// and see whether it is the source that ran. A publisher gets it through
+/// [`Bundle::manifest`], which hashes a whole set at once; this is the same value
+/// for one source, for a caller adding a detection through
+/// [`flow`](super::corpus::DetectionsBuilder::flow) and its siblings, which take
+/// the hash rather than computing one.
+#[must_use]
+pub fn content_hash(source: &str) -> String {
+    sha256_hex(source)
 }
 
 /// The SHA-256 of `source`, lowercase hex.

@@ -32,6 +32,7 @@
 //! stranger's detections cannot enter this corpus without somebody having named
 //! whose they are. There is no setting that changes that in either direction.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
@@ -43,6 +44,8 @@ use super::flow::schema::FlowDetection;
 use super::flow::{ValidationError, check, check_patterns};
 use super::host::db::{HostDb, compile_host_source, embedded_hosts};
 use super::host::stage::LoadedHostDetection;
+use super::manifest::{Class, Rule};
+use super::source;
 
 /// The compiled corpus a scan's detection phase runs.
 ///
@@ -91,6 +94,108 @@ impl Detections {
     pub(crate) fn hosts(&self) -> &HostDb {
         &self.hosts
     }
+
+    /// Every detection in the corpus, in the order the tiers run: flows, then
+    /// compute modules, then the host correlations.
+    ///
+    /// What a front end lists for an operator asking what a scan would run, and
+    /// what an author checks a file against before pointing it at a network. A
+    /// summary is a copy rather than a borrow, since a listing is asked for once
+    /// and a corpus is shared behind an [`Arc`].
+    ///
+    /// A detection appearing here is one the corpus compiled, which is not the
+    /// same as one a scan will run: whether it runs is decided by its
+    /// [`class`](DetectionSummary::class) against the operator's
+    /// [envelope](crate::config::envelope::DetectionEnvelope), and then by its
+    /// gate against each port.
+    #[must_use]
+    pub fn listing(&self) -> Vec<DetectionSummary> {
+        let flows = self.flows.flows().map(|compiled| {
+            let manifest = &compiled.flow().detection;
+            DetectionSummary {
+                id: manifest.id.clone(),
+                title: manifest.title.clone(),
+                version: manifest.version.clone(),
+                tier: Tier::Flow,
+                class: Some(manifest.capabilities.class),
+                gate: Gate::Port(manifest.when.clone()),
+                content_hash: compiled.content_hash().to_string(),
+            }
+        });
+
+        let modules = self.modules.detections().iter().map(|loaded| {
+            let manifest = loaded.manifest();
+            DetectionSummary {
+                id: manifest.id.clone(),
+                title: manifest.title.clone(),
+                version: manifest.version.clone(),
+                tier: Tier::Compute,
+                class: Some(manifest.capabilities.class),
+                gate: Gate::Port(manifest.when.clone()),
+                content_hash: loaded.content_hash().to_string(),
+            }
+        });
+
+        let hosts = self
+            .hosts
+            .detections()
+            .iter()
+            .map(|loaded| DetectionSummary {
+                id: loaded.id().to_string(),
+                title: loaded.title().to_string(),
+                version: loaded.version().to_string(),
+                tier: Tier::Host,
+                class: None,
+                gate: Gate::Host {
+                    ports_open: loaded.ports_open().to_vec(),
+                    services: loaded.services().to_vec(),
+                },
+                content_hash: loaded.content_hash().to_string(),
+            });
+
+        flows.chain(modules).chain(hosts).collect()
+    }
+}
+
+/// One detection in a corpus, as a listing describes it.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct DetectionSummary {
+    /// The author-chosen id, stamped on every finding it produces.
+    pub id: String,
+    /// The one-line human name a report prints for it.
+    pub title: String,
+    /// Its own version, as the detection declares it.
+    pub version: String,
+    /// Which tier runs it.
+    pub tier: Tier,
+    /// The intrusiveness it asks for, and the value an envelope permits or
+    /// refuses it on.
+    ///
+    /// [`None`] for a host detection, which declares none: it correlates ports
+    /// the scan already settled and sends nothing of its own.
+    pub class: Option<Class>,
+    /// What decides whether it fires.
+    pub gate: Gate,
+    /// The SHA-256 of the bytes that decide its behaviour, its provenance.
+    pub content_hash: String,
+}
+
+/// What decides whether a detection fires.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub enum Gate {
+    /// The port rule a flow or a compute module fires on. An empty rule fits any
+    /// open port the envelope offers it.
+    Port(Rule),
+    /// The aggregate a host detection looks for. Every port must be open and
+    /// every service present.
+    Host {
+        /// Ports that must all be open.
+        ports_open: Vec<u16>,
+        /// Services that must all have been identified.
+        services: Vec<String>,
+    },
 }
 
 impl Default for Detections {
@@ -130,6 +235,27 @@ pub enum DetectionError {
     Compute(String),
     /// A host detection was ill-formed.
     Host(String),
+    /// A document in a source set did not say which tier runs it, or said two
+    /// things at once.
+    Tier(String),
+    /// A compute document names a body file the source set did not carry.
+    Body(String),
+    /// A source set carried a body no detection references.
+    ///
+    /// Refused rather than skipped, on the reasoning
+    /// [`BundleError::Unnamed`](super::bundle::BundleError::Unnamed) is refused
+    /// on: a file nothing loaded is a file whose author believes it is running.
+    UnusedBody {
+        /// The name it arrived under.
+        name: String,
+    },
+    /// Which document in a source set drew one of the objections above.
+    InSource {
+        /// The name the document arrived under.
+        name: String,
+        /// What was wrong with it.
+        cause: Box<DetectionError>,
+    },
 }
 
 impl fmt::Display for DetectionError {
@@ -155,11 +281,43 @@ impl fmt::Display for DetectionError {
                 write!(f, "the compute module could not be compiled: {reason}")
             }
             DetectionError::Host(reason) => write!(f, "the host detection is ill-formed: {reason}"),
+            DetectionError::Tier(reason) => write!(f, "the tier is not decidable: {reason}"),
+            DetectionError::Body(reason) => {
+                write!(f, "the compute body is not available: {reason}")
+            }
+            DetectionError::UnusedBody { name } => {
+                write!(f, "'{name}' is a body no detection references")
+            }
+            DetectionError::InSource { name, cause } => write!(f, "in '{name}': {cause}"),
         }
     }
 }
 
-impl std::error::Error for DetectionError {}
+impl From<source::PreparationError> for DetectionError {
+    /// A file-level objection, named against the file that drew it.
+    fn from(error: source::PreparationError) -> Self {
+        match error.cause {
+            source::PreparationCause::Unused => DetectionError::UnusedBody { name: error.name },
+            source::PreparationCause::Tier(reason) => DetectionError::InSource {
+                name: error.name,
+                cause: Box::new(DetectionError::Tier(reason)),
+            },
+            source::PreparationCause::Body(reason) => DetectionError::InSource {
+                name: error.name,
+                cause: Box::new(DetectionError::Body(reason)),
+            },
+        }
+    }
+}
+
+impl std::error::Error for DetectionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            DetectionError::InSource { cause, .. } => Some(cause.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 /// Builds a [`Detections`] corpus from the shipped detections plus a caller's own.
 ///
@@ -224,6 +382,51 @@ impl DetectionsBuilder {
     pub fn host(mut self, source: &str, content_hash: &str) -> Result<Self, DetectionError> {
         let loaded = compile_host_source(source, content_hash).map_err(DetectionError::Host)?;
         self.hosts.push(loaded);
+        Ok(self)
+    }
+
+    /// Adds a whole set of detection sources, working out for each one which tier
+    /// runs it and where its code lives.
+    ///
+    /// `sources` is name to contents, the shape a directory read hands over and
+    /// the shape [`Bundle::verified`](Bundle::verified) takes its sources in.
+    /// Where they came from is the caller's business: a directory, an archive, a
+    /// database, a text box in a browser. A name ending `.toml` is a detection
+    /// document and the rest is a body a `[compute]` section may reference.
+    ///
+    /// This is the door for detections the caller wrote or chose, so the tier
+    /// comes from the document: `[[step]]` for a flow, `[compute]` for a module,
+    /// `[detection.host]` for a host correlation. A bundle from somebody else
+    /// takes its tiers from the signed manifest instead, and
+    /// [`bundle`](Self::bundle) is the only way one gets in.
+    ///
+    /// Each detection is stamped with the [content
+    /// hash](super::bundle::content_hash) of what decides its behaviour: the
+    /// document for a flow or a host detection, the code for a compute module.
+    /// Those are the hashes the build records for the same files under
+    /// `assets/detect/`, so a detection keeps its provenance when it moves
+    /// between a working directory and a shipped corpus.
+    ///
+    /// # Errors
+    ///
+    /// [`DetectionError::InSource`] naming the document, wrapping the objection
+    /// the tier's own call raised, or [`DetectionError::UnusedBody`] for a body
+    /// no document referenced. A source set is added whole or not at all.
+    pub fn sources(mut self, sources: &BTreeMap<String, String>) -> Result<Self, DetectionError> {
+        for detection in source::prepare(sources).map_err(DetectionError::from)? {
+            let in_source = |cause: DetectionError| DetectionError::InSource {
+                name: detection.name.clone(),
+                cause: Box::new(cause),
+            };
+            let hash = &detection.content_hash;
+
+            self = match detection.tier {
+                Tier::Flow => self.flow(&detection.document, hash).map_err(in_source)?,
+                Tier::Host => self.host(&detection.document, hash).map_err(in_source)?,
+                Tier::Compute => self.compute(&detection.document, hash).map_err(in_source)?,
+            };
+        }
+
         Ok(self)
     }
 
@@ -558,5 +761,223 @@ mod tests {
             .map(|flow| flow.flow().detection.id.as_str())
             .collect();
         assert_eq!(ids, vec!["corpus-test"], "the corpus is not caller-only");
+    }
+
+    /// A directory of files, as a front end hands one over: the tier comes out of
+    /// each document and every detection reaches the corpus.
+    #[test]
+    fn a_source_set_is_read_by_the_tier_each_document_declares() {
+        let host = r#"
+            [detection]
+            id      = "source-set-host"
+            version = "1.0.0"
+            title   = "Source set host"
+            [detection.host]
+            ports_open = [88, 389]
+            [[finding]]
+            severity = "info"
+            summary  = "a host detection from a source set"
+        "#;
+
+        let mut sources = BTreeMap::new();
+        sources.insert("flow.toml".to_string(), SOUND_FLOW.to_string());
+        sources.insert("host.toml".to_string(), host.to_string());
+
+        let corpus = Detections::builder()
+            .without_embedded()
+            .sources(&sources)
+            .expect("both documents are sound")
+            .build();
+
+        assert_eq!(corpus.flows().flows().count(), 1);
+        assert_eq!(corpus.hosts().detections().len(), 1);
+    }
+
+    /// A module whose code sits in a sibling file arrives compiled, and is stamped
+    /// with the hash of that code rather than of the document naming it.
+    #[test]
+    fn a_compute_body_in_a_sibling_file_is_resolved_and_hashed() {
+        let document = r#"
+            [detection]
+            id      = "source-set-compute"
+            version = "1.0.0"
+            title   = "Source set compute"
+            [detection.when]
+            service = "http"
+            [detection.capabilities]
+            class = "passive"
+            [compute]
+            language = "rhai"
+            body     = "module.rhai"
+        "#;
+        let body = "fn analyze(ctx, responses) { [] }";
+
+        let mut sources = BTreeMap::new();
+        sources.insert("module.toml".to_string(), document.to_string());
+        sources.insert("module.rhai".to_string(), body.to_string());
+
+        let corpus = Detections::builder()
+            .without_embedded()
+            .sources(&sources)
+            .expect("the body resolves and compiles")
+            .build();
+
+        let hashes: Vec<&str> = corpus
+            .modules()
+            .detections()
+            .iter()
+            .map(|loaded| loaded.content_hash())
+            .collect();
+        assert_eq!(
+            hashes,
+            vec![crate::detect::bundle::content_hash(body).as_str()]
+        );
+    }
+
+    /// A body no document referenced is refused. Skipping it would leave whoever
+    /// put it there believing a detection is running that was never compiled.
+    #[test]
+    fn a_body_nothing_references_is_refused() {
+        let mut sources = BTreeMap::new();
+        sources.insert("flow.toml".to_string(), SOUND_FLOW.to_string());
+        sources.insert("orphan.rhai".to_string(), "fn analyze() { [] }".to_string());
+
+        let Err(error) = Detections::builder().without_embedded().sources(&sources) else {
+            panic!("an unreferenced body was accepted");
+        };
+        assert!(
+            matches!(&error, DetectionError::UnusedBody { name } if name == "orphan.rhai"),
+            "{error}"
+        );
+    }
+
+    /// An objection to one document in a set names that document. A set is read
+    /// whole, so an error that said only "the flow is ill-formed" would leave a
+    /// caller with thirty files and no idea which.
+    #[test]
+    fn an_objection_names_the_document_that_drew_it() {
+        let dead = r#"
+            [detection]
+            id = "dead"
+            version = "1.0.0"
+            title = "Dead"
+            [detection.when]
+            [detection.capabilities]
+            class = "passive"
+            [[step]]
+            send = "x"
+            expect = "y"
+            on_no_match = "continue"
+        "#;
+
+        let mut sources = BTreeMap::new();
+        sources.insert("dead.toml".to_string(), dead.to_string());
+
+        let Err(error) = Detections::builder().without_embedded().sources(&sources) else {
+            panic!("a flow that concludes nothing was accepted");
+        };
+        assert!(error.to_string().starts_with("in 'dead.toml':"), "{error}");
+    }
+
+    /// A shipped detection read as a loose file gets the hash the build recorded
+    /// for it. Provenance follows the bytes, so a detection lifted out of
+    /// `assets/detect/` to be edited is recognisably the same one until it changes.
+    #[test]
+    fn a_shipped_flow_loaded_loose_keeps_the_hash_the_build_gave_it() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/detect/redis-unauth.toml"
+        );
+        let shipped = std::fs::read_to_string(path).expect("the shipped flow is readable");
+
+        let mut sources = BTreeMap::new();
+        sources.insert("redis-unauth.toml".to_string(), shipped.clone());
+
+        let loose = Detections::builder()
+            .without_embedded()
+            .sources(&sources)
+            .expect("a shipped flow is a sound flow")
+            .build();
+        let loose_hash = loose
+            .flows()
+            .flows()
+            .next()
+            .expect("the flow is in the corpus")
+            .content_hash()
+            .to_string();
+
+        let embedded_hash = Detections::embedded()
+            .flows()
+            .flows()
+            .find(|flow| flow.flow().detection.id == "redis-unauth-access")
+            .expect("the shipped corpus carries it")
+            .content_hash()
+            .to_string();
+
+        assert_eq!(loose_hash, embedded_hash);
+    }
+
+    /// The whole publisher-to-recipient round trip, for a module whose code sat in
+    /// a sibling file.
+    ///
+    /// This is the case a bundle gets wrong if it carries an author's files
+    /// rather than the detections they describe: a `.rhai` is not a document, and
+    /// signing one as though it were produces a bundle that verifies and then
+    /// will not compile. `publishable` is what resolves that, and what it returns
+    /// is both what the manifest covers and what the publisher writes out.
+    #[test]
+    fn a_module_with_a_sibling_body_survives_being_published_and_loaded() {
+        use crate::signature::{Domain, Signing, SigningKey};
+        use std::io::Write;
+
+        let document = r#"
+            [detection]
+            id      = "bundled-compute"
+            version = "1.0.0"
+            title   = "Bundled compute"
+            [detection.when]
+            service = "http"
+            [detection.capabilities]
+            class = "passive"
+            [compute]
+            language = "rhai"
+            body     = "module.rhai"
+        "#;
+        let body = "fn analyze(ctx, responses) { [] }";
+
+        let mut authored = BTreeMap::new();
+        authored.insert("module.toml".to_string(), document.to_string());
+        authored.insert("module.rhai".to_string(), body.to_string());
+
+        // The publisher's side. The body is gone from what is published, having
+        // been resolved into the one document that carries it.
+        let published = Bundle::publishable(&authored).expect("the body resolves");
+        assert_eq!(published.len(), 1);
+        assert!(published.contains_key("module.toml"));
+
+        let manifest = Bundle::manifest("acme", "1", &published);
+        let (_, key) = SigningKey::generate().expect("a key");
+        let mut sink = Vec::new();
+        let mut writer = Signing::new(&mut sink);
+        writer
+            .write_all(manifest.as_bytes())
+            .expect("the manifest is written");
+        let signature = writer.finish(&key, Domain::DETECTIONS);
+
+        // The recipient's side, reading the files the publisher wrote out.
+        let delivered: BTreeMap<String, String> = published
+            .iter()
+            .map(|(name, (_, document))| (name.clone(), document.clone()))
+            .collect();
+
+        let bundle = Bundle::verified(&manifest, &signature, &key.public_key(), delivered)
+            .expect("what was published is what was signed");
+        let corpus = Detections::builder()
+            .without_embedded()
+            .bundle(bundle)
+            .expect("the module compiles")
+            .build();
+
+        assert_eq!(corpus.modules().detections().len(), 1);
     }
 }

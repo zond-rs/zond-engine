@@ -93,9 +93,9 @@ impl<M> LoadedDetection<M> {
         &self.content_hash
     }
 
-    /// What the detection declares. Used by tests to find a shipped detection by
-    /// name; the live path matches a run to its detection by content hash instead.
-    #[cfg(test)]
+    /// What the detection declares. The live path matches a run to its detection
+    /// by content hash instead; this is for a corpus listing and for tests looking
+    /// a shipped detection up by name.
     pub(crate) fn manifest(&self) -> &DetectionManifest {
         &self.manifest
     }
