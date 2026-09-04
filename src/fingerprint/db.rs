@@ -522,7 +522,10 @@ fn identify_within(
     banner: &str,
     attested_by: crate::model::host::OsSource,
 ) -> Option<Evidence> {
-    let texts = super::extract::texts(banner);
+    // Owned separately from the borrowed view `best_match` walks, because a
+    // field the corpus reads is not always a slice of the banner.
+    let extracted = super::extract::texts(banner);
+    let texts: Vec<&str> = extracted.iter().map(AsRef::as_ref).collect();
 
     // Matched against the signatures registered for this port: port-confirmed.
     let mut found = best_match(db, port_signatures, &texts, attested_by);

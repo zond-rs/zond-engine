@@ -811,7 +811,9 @@ fn census_contexts(defs: &[ServiceDefinition], paths: &[PathBuf]) {
             *tally.entry(reach).or_default() += 1;
             if let Some(field) = declared {
                 used.insert(field);
-                if !reach.reaches_the_matcher() {
+                // Out-of-scope fields are not waiting on anything, so listing
+                // them beside the ones a decoder would fix reads as work.
+                if reach == Reach::Unproduced {
                     *per_field.entry(field).or_default() += 1;
                 }
             }
@@ -850,6 +852,9 @@ fn census_contexts(defs: &[ServiceDefinition], paths: &[PathBuf]) {
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     for (field, n) in ranked.iter().take(5) {
         println!("cargo:warning=  {n} rules wait on '{field}'");
+    }
+    if let Some(entry) = ranked.first().and_then(|(field, _)| context::lookup(field)) {
+        println!("cargo:warning=  the largest wants {}", entry.note);
     }
 }
 

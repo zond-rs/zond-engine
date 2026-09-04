@@ -133,13 +133,13 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "html_title",
-        reach: Reach::Unproduced,
-        note: "the `<title>` `http::application_hint` already extracts and does not offer to the matcher",
+        reach: Reach::Produced,
+        note: "the `<title>`, whitespace-normalised, through `http::corpus_fields`",
     },
     Context {
         name: "http_header.cookie",
-        reach: Reach::Unproduced,
-        note: "the `Set-Cookie` value; `http::os_from` offers only `Server`",
+        reach: Reach::Produced,
+        note: "the `Set-Cookie` value, through `http::corpus_fields`",
     },
     Context {
         name: "http_header.server",
@@ -148,13 +148,13 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "http_header.wwwauth",
-        reach: Reach::Unproduced,
-        note: "the `WWW-Authenticate` value; as the cookie above",
+        reach: Reach::Produced,
+        note: "the `WWW-Authenticate` value, through `http::corpus_fields`",
     },
     Context {
         name: "http_header.x-powered-by",
-        reach: Reach::Unproduced,
-        note: "the `X-Powered-By` value, which `http` reads for extrainfo and does not put through the corpus",
+        reach: Reach::Produced,
+        note: "the `X-Powered-By` value, through `http::corpus_fields`",
     },
     Context {
         name: "imap4.banner",

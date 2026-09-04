@@ -45,6 +45,8 @@ use async_trait::async_trait;
 use super::analyzer::{Analyzer, PortContext};
 use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
+use std::borrow::Cow;
+
 use crate::model::confidence::Confidence;
 
 /// Identifies HTTP servers from the structured headers of a captured response.
@@ -349,7 +351,7 @@ const NOT_AN_APPLICATION: &[&str] = &[
 
 /// The document's `<title>`, where it is short enough and specific enough to be
 /// naming an application.
-fn document_title(body: &str) -> Option<String> {
+fn title_text(body: &str) -> Option<String> {
     let lower = body.to_ascii_lowercase();
     let open = lower.find("<title")?;
     let start = open + lower[open..].find('>')? + 1;
@@ -361,9 +363,51 @@ fn document_title(body: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
 
+    (!title.is_empty()).then_some(title)
+}
+
+/// The header values and document title the signature corpus writes rules
+/// against, as texts to match a response by.
+///
+/// A corpus rule names one field and anchors on it at both ends, so
+/// `^Microsoft-IIS/6.0$` matches the `Server` value and never the response
+/// carrying it. Handing the matcher the whole banner therefore reaches none of
+/// them, and this is what turns a response into the fields they were written
+/// for.
+///
+/// `Server` is absent on purpose. It is already read for an operating system by
+/// [`os_from`], and offering it here as well would let one header contribute the
+/// same reading twice to a resolver that settles by vote.
+///
+/// Borrowed where the field is a slice of the response, owned only for the
+/// title, whose whitespace is normalised. Empty for anything that is not an HTTP
+/// response, which is the common case and costs one prefix comparison.
+pub(super) fn corpus_fields(raw: &str) -> Vec<Cow<'_, str>> {
+    let Some(http) = HttpResponse::parse(raw) else {
+        return Vec::new();
+    };
+
+    let mut fields: Vec<Cow<'_, str>> = ["set-cookie", "www-authenticate", "x-powered-by"]
+        .iter()
+        .filter_map(|name| http.header(name))
+        .map(Cow::Borrowed)
+        .collect();
+
+    fields.extend(title_text(http.body).map(Cow::Owned));
+    fields
+}
+
+/// The title, held to what may stand in for a product name.
+///
+/// Stricter than [`title_text`] because a title reaching the product slot is a
+/// claim about what is running, where the corpus matches titles as text and has
+/// rules for `301 Moved Permanently` that these filters would reject.
+fn document_title(body: &str) -> Option<String> {
+    let title = title_text(body)?;
+
     // A sentence is a page description, not a product. Anything this long is
     // being read for the wrong reason.
-    if title.is_empty() || title.len() > 40 {
+    if title.len() > 40 {
         return None;
     }
     if NOT_AN_APPLICATION.contains(&title.to_ascii_lowercase().as_str()) {
@@ -513,8 +557,9 @@ fn is_placeholder(product: &str) -> bool {
 /// discarded, leaving the status line as the marker that this is HTTP, and the
 /// header block.
 struct HttpResponse<'a> {
-    /// `(lowercased name, trimmed value)` in wire order.
-    headers: Vec<(String, String)>,
+    /// `(lowercased name, trimmed value)` in wire order. The value borrows from
+    /// the response, so a field handed to the matcher costs no copy.
+    headers: Vec<(String, &'a str)>,
     /// Whatever followed the blank line, as far as the response was read.
     ///
     /// Kept because on the ports that need identifying most, the body is the
@@ -549,7 +594,7 @@ impl<'a> HttpResponse<'a> {
         for line in head.split('\n').skip(1) {
             let line = line.strip_suffix('\r').unwrap_or(line);
             if let Some((name, value)) = line.split_once(':') {
-                headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+                headers.push((name.trim().to_ascii_lowercase(), value.trim()));
             }
         }
 
@@ -575,11 +620,11 @@ impl<'a> HttpResponse<'a> {
 
     /// The value of the first header named `name` (which must be lowercase),
     /// case-insensitively. `None` if absent or empty.
-    fn header(&self, name: &str) -> Option<&str> {
+    fn header(&self, name: &str) -> Option<&'a str> {
         self.headers
             .iter()
             .find(|(header, _)| header == name)
-            .map(|(_, value)| value.as_str())
+            .map(|(_, value)| *value)
             .filter(|value| !value.is_empty())
     }
 }

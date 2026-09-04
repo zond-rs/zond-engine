@@ -42,17 +42,23 @@
 //! difficulty of UDP scanning, and pairing the two on the same key keeps the
 //! probe and the reading of its answer from drifting apart.
 
+use std::borrow::Cow;
+
 use crate::model::port::Protocol;
 
 /// The texts one banner should be matched against, most complete first.
 ///
-/// Usually just the banner. A structured one also yields the field the corpus
-/// anchors on, and **both are offered** rather than the field replacing the
-/// line: a rule may legitimately be written against either, and which is more
-/// specific is a question for the matcher's own ranking rather than for this.
-pub(crate) fn texts(banner: &str) -> Vec<&str> {
-    let mut texts = vec![banner];
-    texts.extend(super::ssh::software_version(banner));
+/// Usually just the banner. A structured one also yields the fields the corpus
+/// anchors on, and both are offered rather than the field replacing the line: a
+/// rule may legitimately be written against either, and which is more specific
+/// is a question for the matcher's own ranking rather than for this.
+///
+/// Borrowed wherever a field is a slice of the banner. The one exception is an
+/// HTML title, whose whitespace is normalised before it can be matched.
+pub(crate) fn texts(banner: &str) -> Vec<Cow<'_, str>> {
+    let mut texts = vec![Cow::Borrowed(banner)];
+    texts.extend(super::ssh::software_version(banner).map(Cow::Borrowed));
+    texts.extend(super::http::corpus_fields(banner));
     texts
 }
 
@@ -218,5 +224,69 @@ mod tests {
             "every TCP port can be read for a banner"
         );
         assert!(!reads(53, Protocol::Udp), "no decoder for a DNS reply yet");
+    }
+}
+
+#[cfg(test)]
+mod http_fields {
+    use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
+
+    /// The whole point of offering a field separately: a corpus rule anchors on
+    /// one header value at both ends, so it can never match the response that
+    /// carried it.
+    fn identify(response: &str) -> Option<String> {
+        SignatureDb::global()
+            .identify(80, Protocol::Tcp, response)
+            .and_then(|evidence| evidence.product)
+    }
+
+    #[test]
+    fn a_www_authenticate_realm_names_the_product_behind_it() {
+        let response = "HTTP/1.1 401 Unauthorized\r\n\
+                        WWW-Authenticate: Basic realm=\"Transmission\"\r\n\
+                        \r\n";
+        assert_eq!(identify(response).as_deref(), Some("Transmission"));
+    }
+
+    #[test]
+    fn a_set_cookie_name_names_the_product_that_set_it() {
+        let response = "HTTP/1.1 200 OK\r\n\
+                        Set-Cookie: __cfuid=1337; path=/\r\n\
+                        \r\n";
+        assert_eq!(
+            identify(response).as_deref(),
+            Some("CloudFlare Load Balancer")
+        );
+    }
+
+    #[test]
+    fn a_document_title_names_the_product_serving_it() {
+        let response = "HTTP/1.1 403 Forbidden\r\n\
+                        Content-Type: text/html\r\n\
+                        \r\n\
+                        <html><head><title>ERROR: The request could not be satisfied</title></head></html>";
+        assert_eq!(
+            identify(response).as_deref(),
+            Some("CloudFront Load Balancer")
+        );
+    }
+
+    /// A title runs across lines in real markup, and the corpus rules are
+    /// written against one normalised line.
+    #[test]
+    fn a_title_broken_across_lines_still_matches_a_rule_written_on_one() {
+        let response = "HTTP/1.1 403 Forbidden\r\n\r\n\
+                        <html><head><title>ERROR: The request\n   could not be satisfied</title></head>";
+        assert_eq!(
+            identify(response).as_deref(),
+            Some("CloudFront Load Balancer")
+        );
+    }
+
+    /// Every other banner pays one prefix comparison and nothing else.
+    #[test]
+    fn a_banner_that_is_not_http_yields_no_fields() {
+        assert!(super::texts("220 ProFTPD 1.3.5 Server ready").len() == 1);
     }
 }
