@@ -240,7 +240,7 @@ impl Grant {
         // The class is the boundary, not the declaration: a passive detection is
         // served no network verb whatever it wrote, so even a manifest that slips
         // one past the corpus validator cannot reach the network here.
-        let active = caps.class != Class::Passive;
+        let active = !matches!(caps.class, Class::Passive | Class::Derived);
         Some(Self {
             detection,
             class: caps.class.into_model(),

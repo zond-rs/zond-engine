@@ -170,6 +170,23 @@ pub struct CapabilitySpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Class {
+    /// `derived`: sends nothing and reads nothing new. Everything it concludes
+    /// is a recombination of what other detections and the port table already
+    /// settled.
+    ///
+    /// One rung below [`Passive`](Self::Passive), which at least reads the bytes
+    /// a scan gathered off the wire. What a host correlation declares, and the
+    /// reason it is a class of its own rather than an absence: a listing that
+    /// left the column empty made a blank carry the fact, and one that borrowed
+    /// `passive` made a detection that declares nothing indistinguishable from
+    /// one that asked for it.
+    ///
+    /// It reaches the model as
+    /// [`Passive`](crate::model::finding::DetectionClass::Passive), because what
+    /// a finding records is the intrusiveness its detection *ran* at and the two
+    /// run alike. The distinction here is where the conclusion came from, which
+    /// is a fact about the detection rather than about the traffic.
+    Derived,
     /// `passive`: sends nothing. Everything it concludes comes from bytes the
     /// scan already gathered.
     Passive,
@@ -194,6 +211,7 @@ impl Class {
     /// agree on the spelling without either keeping a table.
     pub const fn label(self) -> &'static str {
         match self {
+            Class::Derived => "derived",
             Class::Passive => "passive",
             Class::ActiveBenign => "active-benign",
             Class::ActiveMutating => "active-mutating",

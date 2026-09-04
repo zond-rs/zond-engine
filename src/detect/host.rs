@@ -20,12 +20,19 @@
 //! computes a verdict, is a later addition; presence correlation is what the first
 //! detections need.
 //!
-//! Because it sends nothing, it is [`Passive`](crate::model::finding::DetectionClass::Passive)
-//! by construction: the [envelope](crate::config::DetectionEnvelope) that bounds how
-//! intrusive a port detection may run never excludes it, since passive is within
-//! every ceiling. That is why this tier, alone of the three, takes no envelope and
-//! declares no class. A detection that wanted to probe rather than correlate would be
-//! a [flow](super::flow) or a [compute module](super::compute), gated as those are.
+//! Because it sends nothing, it is [`Derived`](super::manifest::Class::Derived)
+//! by construction, and reaches a finding as
+//! [`Passive`](crate::model::finding::DetectionClass::Passive): the
+//! [envelope](crate::config::DetectionEnvelope) that bounds how intrusive a port
+//! detection may run never excludes it, since passive is within every ceiling. That
+//! is why this tier, alone of the three, takes no envelope. A detection that wanted
+//! to probe rather than correlate would be a [flow](super::flow) or a
+//! [compute module](super::compute), gated as those are.
+//!
+//! It is a class of its own rather than an absence because a listing has to draw
+//! something in that column, and both of the alternatives lie: a blank makes an
+//! absence carry the fact, and borrowing `passive` makes a detection that
+//! declares nothing indistinguishable from one that asked for it.
 //!
 //! It is not [network roles](crate::model::host::NetworkRole). A role
 //! is a conclusion proven in its own protocol, never from a port number, so a host

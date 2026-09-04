@@ -415,7 +415,7 @@ fn listed(out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     for detection in corpus.listing() {
-        let class = detection.class.map_or("-", |class| class.label());
+        let class = detection.class.label();
 
         let gate = match &detection.gate {
             Gate::Port(rule) => {

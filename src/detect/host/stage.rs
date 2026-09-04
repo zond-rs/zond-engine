@@ -106,8 +106,10 @@ pub(crate) fn detect_host(
 }
 
 /// Builds one model [`Finding`] from a spec. Provenance and class are the
-/// detection's: a host correlation reads only what the scan already gathered, so it
-/// runs at [`DetectionClass::Passive`].
+/// detection's: a host correlation reads only what the scan already gathered, so
+/// it declares [`Derived`](super::super::manifest::Class::Derived) and runs at
+/// [`DetectionClass::Passive`], which is what a finding records — the
+/// intrusiveness it ran at, rather than where its conclusion came from.
 fn build_finding(spec: &FindingSpec, id: &DetectionId, fallback_title: &str) -> Option<Finding> {
     let title = spec
         .title

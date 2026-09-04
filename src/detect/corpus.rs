@@ -117,7 +117,7 @@ impl Detections {
                 title: manifest.title.clone(),
                 version: manifest.version.clone(),
                 tier: Tier::Flow,
-                class: Some(manifest.capabilities.class),
+                class: manifest.capabilities.class,
                 gate: Gate::Port(manifest.when.clone()),
                 content_hash: compiled.content_hash().to_string(),
             }
@@ -130,7 +130,7 @@ impl Detections {
                 title: manifest.title.clone(),
                 version: manifest.version.clone(),
                 tier: Tier::Compute,
-                class: Some(manifest.capabilities.class),
+                class: manifest.capabilities.class,
                 gate: Gate::Port(manifest.when.clone()),
                 content_hash: loaded.content_hash().to_string(),
             }
@@ -145,7 +145,7 @@ impl Detections {
                 title: loaded.title().to_string(),
                 version: loaded.version().to_string(),
                 tier: Tier::Host,
-                class: None,
+                class: Class::Derived,
                 gate: Gate::Host {
                     ports_open: loaded.ports_open().to_vec(),
                     services: loaded.services().to_vec(),
@@ -172,9 +172,12 @@ pub struct DetectionSummary {
     /// The intrusiveness it asks for, and the value an envelope permits or
     /// refuses it on.
     ///
-    /// [`None`] for a host detection, which declares none: it correlates ports
-    /// the scan already settled and sends nothing of its own.
-    pub class: Option<Class>,
+    /// [`Derived`](Class::Derived) for a host detection, which correlates ports
+    /// the scan already settled and sends nothing of its own. Not an [`Option`]:
+    /// every detection sits somewhere on the scale, and a front end drawing a
+    /// column of intrusiveness should not have to decide what an absence there
+    /// means.
+    pub class: Class,
     /// What decides whether it fires.
     pub gate: Gate,
     /// The SHA-256 of the bytes that decide its behaviour, its provenance.

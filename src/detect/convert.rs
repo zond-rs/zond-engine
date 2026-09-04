@@ -28,7 +28,11 @@ impl Class {
     /// The model class this authoring class names.
     pub fn into_model(self) -> DetectionClass {
         match self {
-            Class::Passive => DetectionClass::Passive,
+            // What a finding records is the intrusiveness its detection ran at,
+            // and a derived detection runs at exactly a passive one: it touches
+            // nothing. Where its conclusion came from is a fact about the
+            // detection, which is what `Class` is for and what a catalogue draws.
+            Class::Derived | Class::Passive => DetectionClass::Passive,
             Class::ActiveBenign => DetectionClass::ActiveBenign,
             Class::ActiveMutating => DetectionClass::ActiveMutating,
             Class::Exploit => DetectionClass::Exploit,
@@ -71,6 +75,7 @@ mod tests {
 
     #[test]
     fn each_authoring_class_maps_onto_its_model_class() {
+        assert_eq!(Class::Derived.into_model(), DetectionClass::Passive);
         assert_eq!(Class::Passive.into_model(), DetectionClass::Passive);
         assert_eq!(
             Class::ActiveBenign.into_model(),
