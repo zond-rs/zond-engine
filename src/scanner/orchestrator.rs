@@ -63,7 +63,7 @@ use crate::scanner::strategy::local::Scope;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::scanner::{plan, rdns, strategy};
 use crate::system::interface;
-use crate::{error, info, success, warn};
+use crate::{counted, error, info, success, warn};
 
 /// The targets an unprivileged sweep can actually walk, refusing the rest.
 ///
@@ -241,9 +241,8 @@ pub(super) async fn spawn_explorers(
         let kind = step.kind();
         info!(
             verbosity = 1,
-            "spawning {:?} scanner for {} target(s)",
-            kind,
-            step.target_count()
+            "spawning {kind:?} scanner for {}",
+            counted(step.target_count(), "target", "targets")
         );
         match step.into_scanner(ctx.clone(), dns_tx.clone(), tuning.clone()) {
             Ok(scanner) => explorers.push(scanner),
@@ -520,7 +519,8 @@ pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsD
     if named > 0 {
         info!(
             verbosity = 1,
-            "named {named} host(s) from what the sweep already knew"
+            "named {} from what the sweep already knew",
+            counted(named as u128, "host", "hosts")
         );
     }
 }
@@ -592,7 +592,11 @@ pub(super) async fn run_active_os_series(
     } else {
         strategy::identify::series::ACTIVE_SAMPLES
     };
-    info!("following {} host(s) over {samples} samples", targets.len());
+    info!(
+        "following {} over {}",
+        counted(targets.len() as u128, "host", "hosts"),
+        counted(samples as u128, "sample", "samples")
+    );
 
     match strategy::identify::series::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning) {
         Ok(mut scanner) => {
@@ -687,7 +691,10 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         return;
     }
 
-    info!("asking {} host(s) for their kernel", targets.len());
+    info!(
+        "asking {} for their kernel",
+        counted(targets.len() as u128, "host", "hosts")
+    );
 
     let mut named = 0usize;
     let mut pool = ProbePool::new(
@@ -715,7 +722,11 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
     pool.drain().await;
 
     if named > 0 {
-        info!(verbosity = 1, "named {named} host(s) by SNMP");
+        info!(
+            verbosity = 1,
+            "named {} by SNMP",
+            counted(named as u128, "host", "hosts")
+        );
     }
 }
 
@@ -782,7 +793,10 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
         return;
     }
 
-    info!("measuring the route to {} host(s)", alive.len());
+    info!(
+        "measuring the route to {}",
+        counted(alive.len() as u128, "host", "hosts")
+    );
     strategy::topology::traceroute::trace(ctx, alive).await;
 }
 
@@ -936,7 +950,10 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
         return;
     }
 
-    info!("enumerating what {} TLS port(s) accept", targets.len());
+    info!(
+        "enumerating what {} accept",
+        counted(targets.len() as u128, "TLS port", "TLS ports")
+    );
 
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
@@ -1083,8 +1100,8 @@ pub(super) async fn run_active_os_probe(
     }
 
     info!(
-        "probing {} host(s) the passive sources could not name, by echo",
-        unnamed.len()
+        "probing {} the passive sources could not name, by echo",
+        counted(unnamed.len() as u128, "host", "hosts")
     );
 
     match strategy::identify::echo::OsEchoScanner::new(ctx.clone(), unnamed, tuning) {

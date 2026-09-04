@@ -64,7 +64,6 @@ use std::time::{Duration, Instant};
 
 use pnet_packet::ip::IpNextHeaderProtocols;
 
-use crate::info;
 use crate::model::host::IpProtocolState;
 use crate::protocols::{icmp, sctp, tcp, udp};
 use crate::report::ScannerKind;
@@ -73,6 +72,7 @@ use crate::scanner::strategy::icmp_error::{self, Unreachable};
 use crate::system::interface::SourceResolver;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::transport::raw::{self, TransportSenderHandle};
+use crate::{counted, info};
 
 /// How long to listen once the last probe has left.
 ///
@@ -136,9 +136,9 @@ pub async fn probe(ctx: &ScanContext, targets: &[IpAddr], protocols: &BTreeSet<u
     let mut resolver = SourceResolver::from_system();
 
     info!(
-        "asking {} host(s) about {} IP protocol(s)",
-        targets.len(),
-        senders.len()
+        "asking {} about {}",
+        counted(targets.len() as u128, "host", "hosts"),
+        counted(senders.len() as u128, "IP protocol", "IP protocols")
     );
 
     send_probes(ctx, targets, &senders, &mut resolver);

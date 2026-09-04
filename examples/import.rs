@@ -311,7 +311,15 @@ fn rescanning_a_report() {
         .read(&mut Cursor::new(report), &options)
         .expect("a report this engine wrote reads back");
 
-    println!("{} host(s) to recheck:", imported.addresses);
+    println!(
+        "{} {} to recheck:",
+        imported.addresses,
+        if imported.addresses == 1 {
+            "host"
+        } else {
+            "hosts"
+        }
+    );
     for unit in &imported.map.units {
         println!("  {} on {}", unit.ips().len(), describe(unit.ports()));
     }
@@ -355,7 +363,15 @@ fn reading_an_nmap_file() {
         .read(&mut Cursor::new(document), &options)
         .expect("a real nmap document reads");
 
-    println!("{} host(s) from nmap's output", imported.addresses);
+    println!(
+        "{} {} from nmap's output",
+        imported.addresses,
+        if imported.addresses == 1 {
+            "host"
+        } else {
+            "hosts"
+        }
+    );
     println!("(the hardware address is not a target and was skipped)");
 
     // And what a hostile document gets.

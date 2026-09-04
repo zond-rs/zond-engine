@@ -319,4 +319,4 @@ pub use crate::transport::probe::SendMode;
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
 // from anywhere in the crate. They are not part of the public API;
 // see `logging` for what exporting them would cost a consumer.
-pub(crate) use crate::logging::{error, info, success, warn};
+pub(crate) use crate::logging::{counted, error, info, success, warn};

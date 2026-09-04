@@ -47,7 +47,7 @@ use crate::scanner::session::ScanContext;
 use crate::system::interface::SourceResolver;
 use crate::transport::link::EthernetSender;
 use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
-use crate::{error, info};
+use crate::{counted, error, info};
 
 /// How long to listen for replies once the last diagnostic probe has left. A
 /// filter answers as promptly as any host; this is the tail for a slow path, not
@@ -114,8 +114,8 @@ pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
     let ethernet = EthernetSender::from_system(ProbeKind::TcpSyn.ip_protocols());
 
     info!(
-        "characterising the filter in front of {} host(s)",
-        subjects.len()
+        "characterising the filter in front of {}",
+        counted(subjects.len() as u128, "host", "hosts")
     );
 
     let awaiting = send_diagnostics(

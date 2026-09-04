@@ -70,6 +70,24 @@ pub(crate) use info;
 pub(crate) use success;
 pub(crate) use warn_macro as warn;
 
+/// A count and the noun it counts, in the form that count takes: `1 host`,
+/// `2 hosts`.
+///
+/// Both forms are named rather than an `s` appended, because English does not
+/// append one to every noun and the next message to want this may be counting
+/// entries or replies. Taking `u128` rather than `usize` is what lets one
+/// function serve a target count, a dropped-frame counter and a slice length
+/// without any of them being narrowed on the way in.
+///
+/// The alternative this replaced was `host(s)`, which is the scanner declining
+/// to answer a question it already knows the answer to.
+pub(crate) fn counted(count: u128, one: &str, many: &str) -> String {
+    match count {
+        1 => format!("1 {one}"),
+        _ => format!("{count} {many}"),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -85,6 +103,11 @@ mod tests {
     /// sentence beginning with a capital, it is a sentence beginning with a
     /// name, so the rule is that the first *word* must not be capitalised unless
     /// it is capitalised throughout.
+    ///
+    /// Nor does a message hedge a plural as `host(s)`. The count is in hand at
+    /// the point the message is written, so the noun takes the form that count
+    /// gives it; [`counted`] is what writes both. Ten of them had accumulated
+    /// before anybody looked at these either.
     ///
     /// This reads the source because there is nowhere else to read it: the
     /// messages are string literals scattered across the crate, and a convention
@@ -131,6 +154,11 @@ mod tests {
                 assert!(
                     !message.trim_end().ends_with('.'),
                     "{}: '{message}' ends with a full stop",
+                    file.display()
+                );
+                assert!(
+                    !message.contains("(s)"),
+                    "{}: '{message}' hedges a plural; count it and use `counted`",
                     file.display()
                 );
             }

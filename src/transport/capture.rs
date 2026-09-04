@@ -48,7 +48,7 @@ use crate::model::ip::scoped::Zone;
 use crate::protocols::ethernet::VLAN_TAG_LEN;
 use crate::protocols::sizes::{ETH_HDR_LEN, IP_V6_HDR_LEN};
 use crate::transport::frame::{self, LinkType};
-use crate::{error, info, warn};
+use crate::{counted, error, info, warn};
 use pnet_base::MacAddr;
 
 /// Largest capture a scan's receive path ever needs: a reply is a bare TCP/UDP
@@ -510,7 +510,10 @@ pub enum CaptureError {
     /// limit, or a cgroup that caps them. Separate from
     /// [`NoInterface`](Self::NoInterface) because the remedy is different and
     /// naming privileges here would send a reader looking in the wrong place.
-    #[error("captured {opened} link(s) but could not start a reader for any of them: {source}")]
+    #[error(
+        "captured {} but could not start a reader for any of them: {source}",
+        crate::logging::counted(*opened as u128, "link", "links")
+    )]
     NoReader {
         /// How many links opened before the threads were asked for.
         opened: usize,
@@ -774,7 +777,9 @@ where
 
     info!(
         verbosity = 1,
-        "capturing on {opened} interface(s) with filter: {}", options.filter,
+        "capturing on {} with filter: {}",
+        counted(opened as u128, "interface", "interfaces"),
+        options.filter,
     );
 
     Ok(CaptureGuard {

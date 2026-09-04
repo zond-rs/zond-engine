@@ -25,13 +25,13 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::info;
 use crate::journal::settle::Outcome;
 use crate::model::port::Protocol;
 use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{PortScanner, StrategyError};
+use crate::{counted, info};
 
 /// How many targets one route holds while its scanner is busy.
 ///
@@ -163,7 +163,8 @@ impl PortScanner for CompositePortScanner {
         } else if undeliverable > 0 {
             info!(
                 verbosity = 1,
-                "{undeliverable} target(s) were still queued when the scan was stopped"
+                "{} were still queued when the scan was stopped",
+                counted(undeliverable as u128, "target", "targets")
             );
         }
 
@@ -231,8 +232,12 @@ fn missed(unroutable: usize, undeliverable: usize) -> String {
     }
 
     format!(
-        "{} target(s) were never probed and are missing from the results: {}",
-        unroutable + undeliverable,
+        "{} never probed and missing from the results: {}",
+        counted(
+            (unroutable + undeliverable) as u128,
+            "target was",
+            "targets were"
+        ),
         reasons.join(", ")
     )
 }

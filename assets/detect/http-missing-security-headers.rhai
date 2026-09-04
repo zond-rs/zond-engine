@@ -49,7 +49,7 @@ fn analyze(ctx, responses) {
 
     [ #{
         severity: severity,
-        summary: "the server omits " + count + " of " + headers.len() + " baseline HTTP security headers",
+        summary: "missing " + count + " of " + headers.len() + " HTTP security headers",
         detail: "missing: " + missing,
         references: [ #{ cwe: 693 } ],
     } ]

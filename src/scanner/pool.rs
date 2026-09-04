@@ -24,10 +24,10 @@
 
 use tokio::task::JoinSet;
 
-use crate::error;
 use crate::report::ScannerKind;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::session::ScanContext;
+use crate::{counted, error};
 
 /// A bounded pool of in-flight probe tasks.
 ///
@@ -129,9 +129,9 @@ where
             self.ctx.record_failure(
                 self.kind,
                 format!(
-                    "{} probe(s) panicked and their targets have no verdict; this is a \
+                    "{} panicked and their targets have no verdict; this is a \
                      defect in the engine rather than a fact about the network",
-                    self.panicked
+                    counted(self.panicked as u128, "probe", "probes")
                 ),
             );
         }

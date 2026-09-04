@@ -449,8 +449,8 @@ impl ProbeAudit {
             && counts.dropped > 0
         {
             crate::warn!(
-                "{scanner}: capture dropped {} frame(s), replies lost on this host",
-                counts.dropped,
+                "{scanner}: capture dropped {}, replies lost on this host",
+                crate::logging::counted(counts.dropped.into(), "frame", "frames"),
             );
         }
     }

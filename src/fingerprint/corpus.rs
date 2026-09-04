@@ -119,8 +119,14 @@ fn prefilter_never_drops_a_matching_signature() {
         .count();
 
     assert_eq!(
-        violations, 0,
-        "prefilter dropped {violations} matching signature(s)"
+        violations,
+        0,
+        "prefilter dropped {}",
+        crate::logging::counted(
+            violations as u128,
+            "matching signature",
+            "matching signatures"
+        )
     );
 }
 

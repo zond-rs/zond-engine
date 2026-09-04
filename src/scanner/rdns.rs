@@ -62,7 +62,7 @@ use crate::protocols::{
     mdns::{self, MdnsHost},
 };
 use crate::scanner::session::ScanContext;
-use crate::{error, info, model::ip, warn};
+use crate::{counted, error, info, model::ip, warn};
 use pnet_packet::{Packet, udp::UdpPacket};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -278,7 +278,8 @@ impl HostnameResolver {
             Ok(count) => info!(
                 outgoing,
                 verbosity = 1,
-                "reverse query for {ip} sent to {count} resolver(s)"
+                "reverse query for {ip} sent to {}",
+                counted(count as u128, "resolver", "resolvers")
             ),
             Err(e) => error!("reverse query for {ip} failed: {e}"),
         }

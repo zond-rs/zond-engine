@@ -127,7 +127,7 @@ use crate::scanner::strategy::StrategyError;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
-use crate::{error, info, success};
+use crate::{counted, error, info, success};
 
 /// How many times each host is asked, at [`OsDetection::Active`].
 ///
@@ -678,7 +678,8 @@ impl OsSeriesScanner {
         if self.named > 0 {
             info!(
                 verbosity = 1,
-                "named {} host(s) from repeated probes", self.named
+                "named {} from repeated probes",
+                counted(self.named as u128, "host", "hosts")
             );
         }
 

@@ -77,6 +77,7 @@ use dashmap::DashMap;
 use pnet_packet::ip::IpNextHeaderProtocols;
 use pnet_packet::tcp::TcpPacket;
 
+use crate::counted;
 use crate::model::host::path::Hop;
 use crate::model::port::{PortState, Protocol};
 use crate::protocols::{icmp, tcp};
@@ -707,8 +708,9 @@ impl Tracer {
                     let distance = distance_from(arrived);
                     info!(
                         verbosity = 1,
-                        "{target} is about {distance} hop(s) away, from the hop counter of {arrived} \
-                         its reply arrived with"
+                        "{target} is about {} away, from the hop counter of {arrived} \
+                         its reply arrived with",
+                        counted(u128::from(distance), "hop", "hops")
                     );
                     found.push((*target, distance));
                 }
@@ -808,13 +810,13 @@ impl Tracer {
         // went wrong in does not.
         info!(
             verbosity = 2,
-            "trace {target} at hop {at}: {} ({} probe(s) sent)",
+            "trace {target} at hop {at}: {} ({} sent)",
             match landing {
                 Landing::Router(address, _) => format!("router {address}"),
                 Landing::Target => "the target itself".to_string(),
                 Landing::Silent => "nothing answered".to_string(),
             },
-            self.sent - attempted
+            counted((self.sent - attempted) as u128, "probe", "probes")
         );
 
         landing

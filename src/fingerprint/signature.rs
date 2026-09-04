@@ -326,7 +326,12 @@ impl std::fmt::Display for DefinitionError {
             } => write!(
                 f,
                 "match #{rule} references version_group {group}, but the pattern has \
-                 {available} capture group(s)"
+                 {available} {}",
+                if *available == 1 {
+                    "capture group"
+                } else {
+                    "capture groups"
+                }
             ),
             DefinitionError::ProbeProtocol { probe, protocol } => write!(
                 f,

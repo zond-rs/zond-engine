@@ -13,5 +13,9 @@ ports_open = [88, 389, 445]
 
 [[finding]]
 severity = "info"
+# The summary is the conclusion in a sentence; the title is what a report names
+# it. Without the split the sentence becomes the title, and a line that has to
+# sit in a column beside a severity and a port has no room for one.
+title    = "Windows domain controller"
 summary  = "Kerberos, LDAP and SMB are open together, the signature of a domain controller"
 detail   = "Ports 88 (Kerberos), 389 (LDAP) and 445 (SMB) all answer, the set a domain controller presents together."
