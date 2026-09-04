@@ -175,6 +175,7 @@ fn golden_cases_resolve_end_to_end() {
                 protocol: crate::model::port::Protocol::Tcp,
                 addr: None,
                 tunnel: None,
+                speaks_http: false,
             },
             &responses,
             &Collected::default(),
@@ -223,6 +224,7 @@ fn non_standard_port_is_identified_via_global_fallback() {
             port,
             addr: None,
             tunnel: None,
+            speaks_http: false,
         },
         &responses,
         &Collected::default(),
@@ -254,6 +256,7 @@ proptest! {
             protocol: crate::model::port::Protocol::Tcp,
             addr: None,
             tunnel: None,
+            speaks_http: false,
         };
         let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses, &Collected::default());
         let _ = ServiceVerdict::resolve(evidence);
@@ -271,6 +274,7 @@ fn port_linked_match_is_tagged_port_confirmed() {
             protocol: crate::model::port::Protocol::Tcp,
             addr: None,
             tunnel: None,
+            speaks_http: false,
         },
         &responses,
         &Collected::default(),
@@ -302,6 +306,7 @@ fn tls_cert_identifies_self_signed_appliance() {
             protocol: crate::model::port::Protocol::Tcp,
             addr: None,
             tunnel: Some(Tunnel::Tls),
+            speaks_http: false,
         },
         &responses,
         &Collected::default(),
@@ -333,6 +338,7 @@ fn tls_analyzer_is_silent_without_a_certificate() {
                     protocol: crate::model::port::Protocol::Tcp,
                     addr: None,
                     tunnel: None,
+                    speaks_http: false,
                 },
                 &responses,
                 &Collected::default(),
@@ -351,6 +357,7 @@ fn banner_matched_in_a_tunnel_is_labelled_with_scheme() {
         protocol: crate::model::port::Protocol::Tcp,
         addr: None,
         tunnel: Some(Tunnel::Tls),
+        speaks_http: false,
     };
     let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses, &Collected::default());
     let verdict = ServiceVerdict::resolve(evidence);

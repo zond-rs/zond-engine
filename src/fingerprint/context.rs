@@ -123,8 +123,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "favicon.md5",
-        reach: Reach::Unproduced,
-        note: "the MD5 of `/favicon.ico`; wants one extra request on a port already identified as HTTP",
+        reach: Reach::Produced,
+        note: "the MD5 of `/favicon.ico`, fetched and hashed by `favicon::FaviconAnalyzer` on a port that already answered in HTTP",
     },
     Context {
         name: "ftp.banner",

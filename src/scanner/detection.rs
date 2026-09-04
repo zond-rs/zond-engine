@@ -254,6 +254,7 @@ async fn detect_one(
             protocol,
             addr: Some(addr),
             tunnel: None,
+            speaks_http: false,
         };
         let computed = compute_stage::detect_port(
             modules.runtime(),

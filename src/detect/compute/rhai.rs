@@ -734,6 +734,7 @@ mod tests {
             protocol: Protocol::Tcp,
             addr: None,
             tunnel: None,
+            speaks_http: false,
         }
     }
 

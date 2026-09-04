@@ -259,6 +259,7 @@ mod tests {
             protocol: Protocol::Tcp,
             addr: Some(addr),
             tunnel: None,
+            speaks_http: false,
         };
 
         let findings = runtime

@@ -72,6 +72,18 @@ pub struct PortContext {
     /// transport handed the analyzers data decrypted from a tunnel, so evidence
     /// drawn from it can be marked accordingly.
     pub tunnel: Option<Tunnel>,
+    /// Whether first contact drew an HTTP response.
+    ///
+    /// For an *active* analyzer deciding whether a second request is worth
+    /// making. [`collect`](Analyzer::collect) runs before any evidence is
+    /// resolved and is handed no responses, so an analyzer that only makes sense
+    /// against a web server has no other way to tell one from a port that
+    /// answered something else. Gating on the port number instead would miss the
+    /// long tail, which is where a favicon earns its keep.
+    ///
+    /// `false` wherever nothing was read, which is every passive-only path and
+    /// every unit test that builds a context by hand.
+    pub speaks_http: bool,
 }
 
 impl PortContext {
@@ -87,6 +99,7 @@ impl PortContext {
             protocol,
             addr: None,
             tunnel: None,
+            speaks_http: false,
         }
     }
 
@@ -94,6 +107,13 @@ impl PortContext {
     #[must_use]
     pub fn with_addr(mut self, addr: Option<std::net::SocketAddr>) -> Self {
         self.addr = addr;
+        self
+    }
+
+    /// Records that first contact drew an HTTP response.
+    #[must_use]
+    pub fn with_speaks_http(mut self, speaks_http: bool) -> Self {
+        self.speaks_http = speaks_http;
         self
     }
 
@@ -259,6 +279,7 @@ mod tests {
             protocol: crate::model::port::Protocol::Tcp,
             addr: None,
             tunnel: None,
+            speaks_http: false,
         };
         // Drive the two phases exactly as the orchestrator does.
         let collected = EchoAnalyzer.collect(&ctx).await;
@@ -277,6 +298,7 @@ mod tests {
             protocol: crate::model::port::Protocol::Tcp,
             addr: None,
             tunnel: None,
+            speaks_http: false,
         };
         assert!(BannerRegexAnalyzer.collect(&ctx).await.frames.is_empty());
     }

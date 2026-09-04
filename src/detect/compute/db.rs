@@ -170,6 +170,7 @@ pub fn replay_run(run: &DetectionRunRecord) -> Result<Vec<Finding>, ReplayError>
         protocol,
         addr,
         tunnel: None,
+        speaks_http: false,
     };
 
     let responses: Vec<Vec<u8>> = run
@@ -294,6 +295,7 @@ mod tests {
             protocol: Protocol::Tcp,
             addr: None,
             tunnel: None,
+            speaks_http: false,
         }
     }
 

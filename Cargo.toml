@@ -215,6 +215,13 @@ x509-parser = "0.18.1"
 # primitive in this repository for one call site.
 ring = "0.17"
 
+# MD5, for one thing only: the favicon digest the imported signature corpus is
+# keyed on. Recog identifies several hundred products by the MD5 of the icon a
+# web application serves, so the algorithm is fixed by the data rather than
+# chosen here, and nothing in this crate uses it for a security decision. From
+# RustCrypto, which the build already depends on for `sha2`.
+md-5 = "0.10.6"
+
 # Declared per-target rather than unconditionally, as the CLI already declares
 # its own `rustix`. It compiles to nothing off Windows either way, so this buys
 # no build time; what it buys is that the manifest says which platform the

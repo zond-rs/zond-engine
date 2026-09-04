@@ -40,7 +40,10 @@ pub enum SourceId {
     HttpHeaders,
     /// An SSH protocol exchange (version banner + `KEXINIT` algorithm lists).
     Ssh,
-    // Future analyzers: Jarm, Snmp, Favicon, ...
+    /// The MD5 of the icon a web application serves, which the corpus keys
+    /// several hundred products on.
+    Favicon,
+    // Future analyzers: Jarm, Snmp, ...
 }
 
 /// A transport the observed traffic was carried *inside*.

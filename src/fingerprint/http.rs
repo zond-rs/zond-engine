@@ -651,6 +651,7 @@ mod tests {
                 port,
                 addr: None,
                 tunnel: None,
+                speaks_http: false,
             },
             &ResponseSet::from_banners(vec![banner.to_string()]),
             &Collected::default(),
@@ -665,6 +666,7 @@ mod tests {
                 port,
                 addr: None,
                 tunnel: None,
+                speaks_http: false,
             },
             &ResponseSet::from_banners(banners.iter().map(|b| (*b).to_string()).collect()),
             &Collected::default(),
@@ -1054,6 +1056,7 @@ mod tests {
                 protocol: crate::model::port::Protocol::Tcp,
                 addr: None,
                 tunnel: Some(Tunnel::Tls),
+                speaks_http: false,
             },
             &ResponseSet::from_banners(vec![
                 "HTTP/1.1 200 OK\r\nServer: nginx/1.25.3\r\n\r\n".to_string(),
@@ -1085,6 +1088,7 @@ mod os_from_headers {
                 protocol: crate::model::port::Protocol::Tcp,
                 addr: None,
                 tunnel: None,
+                speaks_http: false,
             },
             &ResponseSet::from_banners(vec![
                 "HTTP/1.1 200 OK\r\nServer: Microsoft-IIS/6.0\r\nContent-Length: 0\r\n\r\n"

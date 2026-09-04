@@ -44,6 +44,7 @@ mod analyzer;
 mod context;
 mod db;
 mod extract;
+mod favicon;
 mod http;
 mod matcher;
 // Crate-visible so the Tier-1 flow interpreter compiles its `expect`/`bind`
@@ -69,6 +70,7 @@ mod pattern_properties;
 use crate::model::host::OsEvidence;
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::{InvalidDefinition, SignatureDb};
+pub use favicon::FaviconAnalyzer;
 pub use http::HttpHeadersAnalyzer;
 pub use model::{Evidence, ServiceVerdict, SourceId, Tunnel};
 pub use response::{Collected, ResponseSet, TlsInfo};
@@ -789,6 +791,7 @@ where
 /// same set.
 static ANALYZERS: &[&dyn Analyzer] = &[
     &BannerRegexAnalyzer,
+    &FaviconAnalyzer,
     &HttpHeadersAnalyzer,
     &SshAnalyzer,
     &TlsCertAnalyzer,
@@ -828,9 +831,18 @@ async fn analyze(
     responses: ResponseSet,
     tunnel: Option<Tunnel>,
 ) -> Option<ServiceVerdict> {
+    // Read before the context is built, so an active analyzer's `collect` can
+    // gate on it: `collect` is handed no responses and runs before any evidence
+    // is resolved.
+    let speaks_http = responses
+        .banners
+        .iter()
+        .any(|banner| banner.starts_with("HTTP/"));
+
     let ctx = PortContext::new(port, protocol)
         .with_addr(addr)
-        .with_tunnel(tunnel);
+        .with_tunnel(tunnel)
+        .with_speaks_http(speaks_http);
     analyze_with(ctx, responses, analyzers()).await
 }
 
