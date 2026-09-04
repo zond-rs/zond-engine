@@ -41,6 +41,7 @@ pub mod model;
 pub mod os;
 
 mod analyzer;
+mod context;
 mod db;
 mod extract;
 mod http;
@@ -75,6 +76,11 @@ pub use response::{Collected, ResponseSet, TlsInfo};
 // `build.rs` compiles the shipped signatures out of it and validates them; these
 // are exported so a consumer authoring signatures of their own is held to the
 // same bounds rather than discovering them when a pattern is silently dropped.
+// The register of every field a signature may be written against, and whether
+// anything in this engine produces it. Exported because a consumer authoring
+// signatures needs to know which fields actually arrive, and because a rule
+// reading one that does not is inert in a way nothing else reveals.
+pub use context::{CONTEXTS, Context, Reach, context_note, reach_of};
 pub use signature::{
     CORPUS_ROOT, DefinitionError, MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, MatchRule, Probe,
     RULE_ID_SEPARATOR, RuleIdDefect, ServiceDefinition, ServiceSignature, claim_rule_id,

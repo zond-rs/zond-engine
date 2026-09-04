@@ -49,7 +49,8 @@ use serde::Serialize;
 use zond_engine::detect::{Detections, Gate};
 use zond_engine::fingerprint::os::{OsDefinition, Provenance};
 use zond_engine::fingerprint::{
-    CORPUS_ROOT, MatchRule, Probe, ServiceDefinition, claim_rule_id, corpus_slug,
+    CORPUS_ROOT, MatchRule, Probe, ServiceDefinition, claim_rule_id, context_note, corpus_slug,
+    reach_of,
 };
 
 /// The whole document, as a reader receives it.
@@ -114,6 +115,10 @@ struct Entry {
     /// [`reachability_of`]; match rules only.
     #[serde(skip_serializing_if = "Option::is_none")]
     reachability: Option<&'static str>,
+    /// What produces the field this rule reads, or what producing it would
+    /// take. Carried so a catalogue can say why a rule does not fire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<&'static str>,
     /// Computed filters. See the module documentation on why none of these is
     /// authored.
     facets: BTreeSet<String>,
@@ -139,6 +144,7 @@ impl Entry {
             os: BTreeMap::new(),
             attribution: None,
             reachability: None,
+            note: None,
             facets: BTreeSet::new(),
         }
     }
@@ -150,61 +156,18 @@ fn category_of(slug: &str) -> String {
     slug.split('/').next().unwrap_or(slug).to_string()
 }
 
-/// Whether anything in the collection path currently produces the text a rule
-/// reading this `context` is written against.
+/// What the collection path does with the field a rule reads.
 ///
-/// A rule matches every text a response yields, and the runtime does not select
-/// on the declared context, so a rule is reachable exactly when some part of the
-/// engine hands the matcher the field its pattern is anchored on. Nothing else
-/// in the corpus records this, and the difference is invisible from outside: a
-/// dark rule is well-formed, its example matches it, and no scan will ever give
-/// it the string it wants.
-///
-/// Each verdict below names the code that decides it, so the claim can be
-/// checked rather than trusted:
-///
-/// - `reachable` reaches the matcher today. Banners arrive whole through
-///   `fingerprint::extract::texts`, `ssh.banner` through `ssh::software_version`,
-///   `snmp.sys_description` through `extract::from_datagram`, and
-///   `http_header.server` through `http::os_from`.
-/// - `partial` is reached through a wider field that happens to contain it.
-///   Apache states its modules and its platform inside the `Server` value, so
-///   those rules fire when the value carries them and not otherwise.
-/// - `dark` has no producer at all.
-/// - `out-of-scope` needs a vantage a scanner does not have. A DHCP vendor class
-///   is what a client tells a server, and this engine is neither.
-///
-/// **This table is hand-maintained and will drift the moment a decoder lands.**
-/// It is a stopgap for the build-time census that should own this: a check that
-/// fails when a rule declares a context nothing in the tree produces. Until that
-/// exists, adding a producer means adding its context here, and the number this
-/// prints is the number to hold the corpus to.
+/// Delegates to the register in `fingerprint::context`, which is the same
+/// declaration `build.rs` refuses an unclassified field against, so the index
+/// and the build can never disagree about which rules can fire. This used to be
+/// a table of its own here and was wrong the moment a decoder landed.
 fn reachability_of(context: Option<&str>) -> &'static str {
-    // A rule stating no context is matched against the raw banner, which every
-    // TCP port yields, so it is reached by construction.
-    let Some(context) = context else {
-        return "reachable";
-    };
-    match context {
-        "snmp.sys_description"
-        | "http_header.server"
-        | "ssh.banner"
-        | "ftp.banner"
-        | "smtp.banner"
-        | "mysql.banners"
-        | "mysql.error"
-        | "pop3.banner"
-        | "imap4.banner"
-        | "nntp.banner"
-        | "x11.vendor"
-        | "unknown" => "reachable",
-
-        "apache_modules" | "apache_os" => "partial",
-
-        "dhcp_vendor_class" => "out-of-scope",
-
-        _ => "dark",
-    }
+    reach_of(context)
+        .unwrap_or_else(|| {
+            panic!("the corpus reads a field the context register does not classify; build.rs refuses this, so the index should never see it")
+        })
+        .label()
 }
 
 /// Every `.toml` under `root`, sorted, so two runs emit the same document.
@@ -339,6 +302,7 @@ fn rule_entry(
     let reachability = reachability_of(rule.context.as_deref());
     entry.facets.insert(format!("reachability:{reachability}"));
     entry.reachability = Some(reachability);
+    entry.note = context_note(rule.context.as_deref());
     if rule.version_group.is_some() {
         entry.facets.insert("captures-version".into());
     }

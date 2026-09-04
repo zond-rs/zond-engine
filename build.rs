@@ -22,7 +22,7 @@
 //! canonical definitions in `src/fingerprint/signature.rs`, so the build-time
 //! and runtime views can never drift apart.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -42,6 +42,16 @@ mod signature;
 /// accepts is exactly a rule the runtime can match, because both read this file.
 #[path = "src/fingerprint/os/signature.rs"]
 mod os_schema;
+
+/// The register of fields a signature may be written against, and whether
+/// anything produces each one. Shared the same way, so the build cannot classify
+/// a context differently from the engine that reads it.
+///
+/// The build reads a `Reach` and the library also reads the `note` beside it, so
+/// the unread half is dead only here.
+#[allow(dead_code)]
+#[path = "src/fingerprint/context.rs"]
+mod context;
 
 /// The pattern-compilation logic, shared verbatim with the runtime so the build
 /// accepts *exactly* the patterns the engine can match — including the
@@ -118,6 +128,8 @@ fn main() {
         claim_rule_ids(&def, path, &mut rule_ids);
         services.push(def);
     }
+
+    census_contexts(&services, &toml_files);
 
     let encoded = bincode::serialize(&services).expect("failed to serialize fingerprint database");
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
@@ -764,6 +776,83 @@ fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
 
 /// Validates one service definition, aborting the build on any defect that would
 /// silently degrade detection, and warning on softer issues.
+/// Holds every rule's declared `context` against the register in
+/// `src/fingerprint/context.rs`, and reports how much of the corpus can fire.
+///
+/// A context no entry classifies fails the build. A rule reading a field nothing
+/// yields never fires, and it fails silently: the rule is well-formed and its own
+/// example matches it, so no other check here would say so. Classifying a field
+/// is one entry in the register, and refusing to build without it keeps that a
+/// decision rather than an oversight.
+///
+/// A field that is classified and not yet produced fails nothing, since most of
+/// the corpus is in that state. The tally is printed instead, so the figure is
+/// derived on every compile.
+fn census_contexts(defs: &[ServiceDefinition], paths: &[PathBuf]) {
+    use context::Reach;
+
+    let mut tally: BTreeMap<Reach, usize> = BTreeMap::new();
+    let mut per_field: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut used: BTreeSet<&str> = BTreeSet::new();
+
+    for (def, path) in defs.iter().zip(paths) {
+        for rule in &def.r#match {
+            let declared = rule.context.as_deref();
+            let Some(reach) = context::reach_of(declared) else {
+                let field = declared.unwrap_or_default();
+                panic!(
+                    "{}: a rule reads the field '{field}', which nothing classifies. Add it to \
+                     CONTEXTS in src/fingerprint/context.rs, saying what produces it or what \
+                     producing it would take. A rule whose field nothing yields never fires, and \
+                     nothing else in the build would say so.",
+                    path.display()
+                );
+            };
+            *tally.entry(reach).or_default() += 1;
+            if let Some(field) = declared {
+                used.insert(field);
+                if !reach.reaches_the_matcher() {
+                    *per_field.entry(field).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    // An entry for a field the corpus stopped reading is a claim nothing tests.
+    // A warning rather than a failure: removing the last rule that read a field
+    // is a legitimate thing to do, and the register should outlive it long
+    // enough for somebody to decide whether the decoder is still wanted.
+    for entry in context::CONTEXTS {
+        if !used.contains(entry.name) {
+            println!(
+                "cargo:warning=no rule reads '{}', which the context register still classifies",
+                entry.name
+            );
+        }
+    }
+
+    let total: usize = tally.values().sum();
+    let live: usize = tally
+        .iter()
+        .filter(|(reach, _)| reach.reaches_the_matcher())
+        .map(|(_, n)| n)
+        .sum();
+    let summary = tally
+        .iter()
+        .map(|(reach, n)| format!("{} {}", n, reach.label()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("cargo:warning=corpus reachability: {live}/{total} rules can fire ({summary})");
+
+    // The fields costing the most, so the build names where the next decoder
+    // buys the most rather than leaving that to be worked out by hand.
+    let mut ranked: Vec<_> = per_field.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    for (field, n) in ranked.iter().take(5) {
+        println!("cargo:warning=  {n} rules wait on '{field}'");
+    }
+}
+
 /// Derives an identifier for every probe and match rule in one file, and fails
 /// the build if any of them cannot have one.
 ///
