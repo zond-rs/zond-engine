@@ -108,12 +108,14 @@ fn main() {
     toml_files.sort();
 
     let mut services = Vec::with_capacity(toml_files.len());
+    let mut rule_ids = BTreeSet::new();
     for path in &toml_files {
         let content = fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
         let def: ServiceDefinition = toml::from_str(&content)
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
         validate(&def, path);
+        claim_rule_ids(&def, path, &mut rule_ids);
         services.push(def);
     }
 
@@ -762,6 +764,42 @@ fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
 
 /// Validates one service definition, aborting the build on any defect that would
 /// silently degrade detection, and warning on softer issues.
+/// Derives an identifier for every probe and match rule in one file, and fails
+/// the build if any of them cannot have one.
+///
+/// The identifier is what makes a rule citable: a website can link to it, an
+/// issue can name it, and a diff across two releases can say which rule changed
+/// rather than that a file did. None of that works if two rules can wear one
+/// name, so this is the check that makes the scheme trustworthy rather than
+/// merely conventional.
+///
+/// It lives here rather than in `ServiceDefinition::validate` because an
+/// identifier needs a path, and a definition a caller builds in memory has none.
+/// The runtime stays willing to match a nameless rule from somebody's own
+/// corpus; the shipped corpus is held to the stricter rule, which is the same
+/// division the UDP payload checks already sit on.
+///
+/// `corpus` accumulates across files so a collision between two of them is
+/// caught even though the slug should already have separated them. It has never
+/// fired, and it is what makes that a fact rather than an assumption.
+fn claim_rule_ids(def: &ServiceDefinition, path: &Path, corpus: &mut BTreeSet<String>) {
+    let file = path.display();
+    let slug = signature::corpus_slug(path)
+        .unwrap_or_else(|| panic!("{file}: is not under {}", signature::CORPUS_ROOT));
+
+    let mut seen = BTreeSet::new();
+    let probes = def.probe.iter().map(|p| ("probe", p.name.as_deref()));
+    let rules = def.r#match.iter().map(|r| ("rule", r.name.as_deref()));
+
+    for (kind, name) in probes.chain(rules) {
+        let id = signature::claim_rule_id(&slug, name, &mut seen)
+            .unwrap_or_else(|defect| panic!("{file}: a {kind} {defect}"));
+        if !corpus.insert(id.clone()) {
+            panic!("{file}: the identifier '{id}' is already used by another file");
+        }
+    }
+}
+
 fn validate(def: &ServiceDefinition, path: &Path) {
     let file = path.display();
     let service = &def.service.name;

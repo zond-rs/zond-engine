@@ -76,8 +76,9 @@ pub use response::{Collected, ResponseSet, TlsInfo};
 // are exported so a consumer authoring signatures of their own is held to the
 // same bounds rather than discovering them when a pattern is silently dropped.
 pub use signature::{
-    DefinitionError, MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, MatchRule, Probe,
-    ServiceDefinition, ServiceSignature,
+    CORPUS_ROOT, DefinitionError, MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, MatchRule, Probe,
+    RULE_ID_SEPARATOR, RuleIdDefect, ServiceDefinition, ServiceSignature, claim_rule_id,
+    corpus_slug, rule_id,
 };
 // The payload decoder Tier-0 probes use, reused by the Tier-1 interpreter to turn
 // a flow's `\x`/`\r\n` escapes into the bytes it sends. Crate-visible, not public.

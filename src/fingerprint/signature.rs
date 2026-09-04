@@ -18,6 +18,112 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
+
+/// What separates a corpus file from the rule inside it in a [`rule_id`].
+///
+/// `#` rather than `:`, because ninety-three imported rules carry a colon in
+/// their own name (`ISC BIND: Ubuntu`) and an identifier nobody can split at a
+/// glance is not much of an identifier. No name in the corpus contains this
+/// character, and [`claim_rule_id`] keeps it that way.
+pub const RULE_ID_SEPARATOR: char = '#';
+
+/// The root every corpus slug is written relative to.
+pub const CORPUS_ROOT: &str = "assets/fingerprinting";
+
+/// The stable name of one corpus file, as an identifier writes it: the path
+/// under [`CORPUS_ROOT`] with the `.toml` dropped, separators normalised to `/`.
+///
+/// `assets/fingerprinting/remote/ssh.toml` becomes `remote/ssh`. `None` for a
+/// path that does not sit under the corpus root, which is the caller handing
+/// this something that is not a corpus file.
+pub fn corpus_slug(path: &Path) -> Option<String> {
+    let root = Path::new(CORPUS_ROOT);
+    let relative = path.strip_prefix(root).ok()?;
+    let stem = relative.to_str()?.strip_suffix(".toml")?;
+    Some(stem.replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
+/// The identifier for one rule or probe: its file's [`corpus_slug`], then
+/// [`RULE_ID_SEPARATOR`], then the name it was authored under.
+///
+/// Derived rather than authored, because nobody is going to hand-number four
+/// thousand rules and an identifier somebody has to remember to write is one
+/// that goes missing. Names are already unique inside a file, so scoping by the
+/// file is enough to make this unique across the corpus, which is what
+/// [`claim_rule_id`] proves at build time.
+///
+/// It survives an edit to the pattern, which is the property that matters: a
+/// rule can be cited in an issue, linked to, and followed across releases, and a
+/// content hash could do none of those. What it does not survive is the file
+/// moving, and that is deliberate. A move is somebody's decision and shows up as
+/// a diff, where a silently broken permalink would not.
+pub fn rule_id(slug: &str, name: &str) -> String {
+    format!("{slug}{RULE_ID_SEPARATOR}{name}")
+}
+
+/// Why a rule could not be given an identifier.
+///
+/// Open rather than `#[non_exhaustive]`: these are the three ways a corpus file
+/// can fail to name a rule uniquely, the set is closed by the shape of the
+/// problem, and a build script matching on it should not have to carry a
+/// wildcard arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleIdDefect {
+    /// The rule states no `name`, so there is nothing to identify it by.
+    Unnamed,
+    /// The name contains [`RULE_ID_SEPARATOR`], which would make the identifier
+    /// ambiguous to split.
+    SeparatorInName(String),
+    /// Another rule or probe in the same file already claimed this name.
+    Duplicate(String),
+}
+
+impl std::fmt::Display for RuleIdDefect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unnamed => write!(f, "states no name, so it cannot be identified or cited"),
+            Self::SeparatorInName(name) => write!(
+                f,
+                "is named '{name}', which contains the '{RULE_ID_SEPARATOR}' that separates a \
+                 file from the rule inside it"
+            ),
+            Self::Duplicate(name) => {
+                write!(
+                    f,
+                    "is named '{name}', which another rule in this file claimed"
+                )
+            }
+        }
+    }
+}
+
+/// Claims `name` for a rule in the file `slug`, returning the identifier.
+///
+/// `seen` is the set of names already taken in that one file, so a caller walks
+/// a file with a fresh set. Uniqueness is enforced per file rather than across
+/// the corpus because that is where an author can actually see the collision,
+/// and scoping by the slug makes it global anyway.
+///
+/// Probes and match rules share the set. They are separate blocks in the
+/// document and could in principle both be called `banner`, but they would then
+/// be two things wearing one identifier, and the corpus has never done it.
+pub fn claim_rule_id(
+    slug: &str,
+    name: Option<&str>,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> Result<String, RuleIdDefect> {
+    let name = name
+        .filter(|n| !n.is_empty())
+        .ok_or(RuleIdDefect::Unnamed)?;
+    if name.contains(RULE_ID_SEPARATOR) {
+        return Err(RuleIdDefect::SeparatorInName(name.to_string()));
+    }
+    if !seen.insert(name.to_string()) {
+        return Err(RuleIdDefect::Duplicate(name.to_string()));
+    }
+    Ok(rule_id(slug, name))
+}
 
 /// Upper bound on a single compiled signature's memory footprint.
 ///
@@ -420,5 +526,96 @@ impl ServiceDefinition {
         }
 
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule identity
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod identity {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn a_corpus_path_becomes_the_slug_an_identifier_is_written_from() {
+        assert_eq!(
+            corpus_slug(Path::new("assets/fingerprinting/remote/ssh.toml")).as_deref(),
+            Some("remote/ssh")
+        );
+        assert_eq!(
+            corpus_slug(Path::new(
+                "assets/fingerprinting/imported/rapid7/dns/dns_versionbind.toml"
+            ))
+            .as_deref(),
+            Some("imported/rapid7/dns/dns_versionbind")
+        );
+    }
+
+    /// Anything outside the corpus has no slug, rather than one built from
+    /// whatever the path happened to end with.
+    #[test]
+    fn a_path_outside_the_corpus_has_no_slug() {
+        assert_eq!(corpus_slug(Path::new("src/fingerprint/signature.rs")), None);
+        assert_eq!(
+            corpus_slug(Path::new("assets/detect/redis-unauth.toml")),
+            None
+        );
+        assert_eq!(corpus_slug(Path::new("remote/ssh.toml")), None);
+    }
+
+    /// The case the separator was chosen for. Ninety-three imported rules carry
+    /// a colon in their own name, so an identifier joined with one could not be
+    /// split back into its two halves.
+    #[test]
+    fn a_name_carrying_a_colon_still_yields_a_splittable_identifier() {
+        let id = rule_id("imported/rapid7/dns/dns_versionbind", "ISC BIND: Ubuntu");
+        let (slug, name) = id.split_once(RULE_ID_SEPARATOR).expect("one separator");
+        assert_eq!(slug, "imported/rapid7/dns/dns_versionbind");
+        assert_eq!(name, "ISC BIND: Ubuntu");
+    }
+
+    #[test]
+    fn a_name_claimed_twice_in_one_file_is_refused() {
+        let mut seen = BTreeSet::new();
+        assert!(claim_rule_id("remote/ssh", Some("openssh_match"), &mut seen).is_ok());
+        assert_eq!(
+            claim_rule_id("remote/ssh", Some("openssh_match"), &mut seen),
+            Err(RuleIdDefect::Duplicate("openssh_match".to_string()))
+        );
+    }
+
+    /// The same name in a different file is a different rule and keeps its own
+    /// identifier, which is what scoping by the file buys.
+    #[test]
+    fn the_same_name_in_two_files_is_two_identifiers() {
+        let mut ssh = BTreeSet::new();
+        let mut ftp = BTreeSet::new();
+        let a = claim_rule_id("remote/ssh", Some("banner"), &mut ssh).expect("first file");
+        let b = claim_rule_id("file_transfer/ftp", Some("banner"), &mut ftp).expect("second file");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn an_unnamed_or_empty_rule_cannot_be_identified() {
+        let mut seen = BTreeSet::new();
+        assert_eq!(
+            claim_rule_id("remote/ssh", None, &mut seen),
+            Err(RuleIdDefect::Unnamed)
+        );
+        assert_eq!(
+            claim_rule_id("remote/ssh", Some(""), &mut seen),
+            Err(RuleIdDefect::Unnamed)
+        );
+    }
+
+    #[test]
+    fn a_name_carrying_the_separator_is_refused() {
+        let mut seen = BTreeSet::new();
+        assert_eq!(
+            claim_rule_id("remote/ssh", Some("a#b"), &mut seen),
+            Err(RuleIdDefect::SeparatorInName("a#b".to_string()))
+        );
     }
 }

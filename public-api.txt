@@ -1217,7 +1217,7 @@ impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::Gate
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::Gate
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::Gate
 #[non_exhaustive] pub struct zond_engine::detect::corpus::DetectionSummary
-pub zond_engine::detect::corpus::DetectionSummary::class: core::option::Option<zond_engine::detect::manifest::Class>
+pub zond_engine::detect::corpus::DetectionSummary::class: zond_engine::detect::manifest::Class
 pub zond_engine::detect::corpus::DetectionSummary::content_hash: alloc::string::String
 pub zond_engine::detect::corpus::DetectionSummary::gate: zond_engine::detect::corpus::Gate
 pub zond_engine::detect::corpus::DetectionSummary::id: alloc::string::String
@@ -1499,6 +1499,7 @@ pub mod zond_engine::detect::manifest
 #[non_exhaustive] pub enum zond_engine::detect::manifest::Class
 pub zond_engine::detect::manifest::Class::ActiveBenign
 pub zond_engine::detect::manifest::Class::ActiveMutating
+pub zond_engine::detect::manifest::Class::Derived
 pub zond_engine::detect::manifest::Class::Dos
 pub zond_engine::detect::manifest::Class::Exploit
 pub zond_engine::detect::manifest::Class::Passive
@@ -1650,7 +1651,7 @@ impl core::marker::UnsafeUnpin for zond_engine::detect::corpus::Gate
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::corpus::Gate
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::corpus::Gate
 #[non_exhaustive] pub struct zond_engine::detect::DetectionSummary
-pub zond_engine::detect::DetectionSummary::class: core::option::Option<zond_engine::detect::manifest::Class>
+pub zond_engine::detect::DetectionSummary::class: zond_engine::detect::manifest::Class
 pub zond_engine::detect::DetectionSummary::content_hash: alloc::string::String
 pub zond_engine::detect::DetectionSummary::gate: zond_engine::detect::corpus::Gate
 pub zond_engine::detect::DetectionSummary::id: alloc::string::String
