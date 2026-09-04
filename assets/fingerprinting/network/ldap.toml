@@ -11,5 +11,15 @@ protocol = "tcp"
 
 [[match]]
 name = "ldap_response"
-pattern = '^\x30[\x0c-\x84]' # ASN.1 Sequence
+# RFC 4511 §4.1.1: an LDAPMessage is a SEQUENCE whose first element is the
+# message ID, an INTEGER. Requiring that header as well as the sequence tag is
+# what keeps this off ordinary text.
+#
+# The sequence tag alone was the whole pattern until 2026-09-05. `\x30` is the
+# character `0` and `[\x0c-\x84]` spans nearly all printable ASCII, so the rule
+# matched any text beginning with a zero, and it began firing once the engine
+# started offering extracted fields to the matcher: Prometheus was reported as an
+# LDAP server on a web port. `\x02\x01` is STX then SOH, which text does not
+# carry.
+pattern = '^\x30[\x0c-\x84]\x02\x01' # SEQUENCE, then the message-ID INTEGER
 product = "ldap"

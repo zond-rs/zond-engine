@@ -608,7 +608,7 @@ async fn ask_generically(stream: &mut TcpStream, socket: Option<SocketAddr>) -> 
     // A redirect is not an answer but a forwarding address, and for a great
     // many self-hosted applications it is the only thing the root serves. See
     // `redirect_path`.
-    let followed = match (socket, redirect_path(&first)) {
+    let followed = match (socket, redirect_path(&first, socket)) {
         (Some(socket), Some(path)) => follow_redirect(socket, &path).await,
         _ => None,
     };
@@ -632,7 +632,7 @@ async fn ask_generically(stream: &mut TcpStream, socket: Option<SocketAddr>) -> 
 /// back to a host that never served it. A scheme change is refused on the same
 /// reasoning: `https://` would need a handshake this path has no socket for, and
 /// guessing is worse than declining.
-fn redirect_path(response: &str) -> Option<String> {
+fn redirect_path(response: &str, peer: Option<SocketAddr>) -> Option<String> {
     let (status, headers) = response.split_once("\r\n").or(response.split_once('\n'))?;
     // `HTTP/1.1 302 Found`: the code is the second field.
     let code: u16 = status.split_whitespace().nth(1)?.parse().ok()?;
@@ -650,22 +650,76 @@ fn redirect_path(response: &str) -> Option<String> {
                 .then(|| value.trim())
         })?;
 
-    match location {
-        // Same host by construction: a path is relative to where it was served.
-        //
-        // A control character is refused rather than carried. `lines()` has
-        // already made a CRLF impossible, but a lone carriage return survives in
-        // the middle of a value and some servers still treat one as a line
-        // terminator, so this would be a remote value spliced into a request
-        // line. The blast radius is the peer's own socket, which is why this is
-        // hygiene rather than a hole, though the class is worth removing.
-        path if path.starts_with('/') && !path.chars().any(char::is_control) => {
-            Some(path.to_string())
-        }
-        // An absolute URL is somebody's name for a place, and this path has no
-        // way to establish that the place is here. Declined rather than guessed.
-        _ => None,
+    // A control character is refused rather than carried. `lines()` has already
+    // made a CRLF impossible, but a lone carriage return survives in the middle
+    // of a value and some servers still treat one as a line terminator, so this
+    // would be a remote value spliced into a request line. The blast radius is
+    // the peer's own socket, which is why this is hygiene rather than a hole,
+    // though the class is worth removing.
+    if location.is_empty() || location.chars().any(char::is_control) {
+        return None;
     }
+
+    match location {
+        // An absolute URL, which is what a great many servers send: Grafana,
+        // Portainer and Prometheus all answer `GET /` with a `Location` naming
+        // themselves in full. Declining every one of them left three of five
+        // self-hosted applications unidentified on a test segment, because the
+        // page that names them is the one behind the redirect.
+        //
+        // So the host is compared rather than the shape. `peer` is the address
+        // being scanned, and only a URL naming it is followed; anything else is
+        // somebody else's, and a scan of one address has no business putting
+        // traffic on an uninvolved host.
+        url if url.contains("://") || url.starts_with("//") => same_host_path(url, peer?),
+        // Same host by construction: a path is relative to where it was served.
+        path if path.starts_with('/') => Some(path.to_string()),
+        // A relative reference, which RFC 7231 §7.1.2 permits and RFC 2616 did
+        // not. Jellyfin answers `GET /` with `Location: web/`, and reading that
+        // as "somewhere else" left the page it points at unread. Every caller
+        // here issues its request at the root, so a reference resolves against
+        // `/`; a caller requesting a deeper path would have to resolve it
+        // against that instead.
+        relative => Some(format!("/{relative}")),
+    }
+}
+
+/// The path of an absolute `url`, when its authority is `peer` and not somebody
+/// else's.
+///
+/// Compared on host and port, so a redirect from `:8080` to `:443` on the same
+/// address is declined too: a different port is a different service, reached
+/// over a connection this path has not made and may not be able to.
+///
+/// The scheme is checked only for being one this path can speak. `https://`
+/// needs a handshake there is no socket for here, and guessing is worse than
+/// declining.
+fn same_host_path(url: &str, peer: SocketAddr) -> Option<String> {
+    let after_scheme = match url.split_once("://") {
+        Some(("http", rest)) => rest,
+        // A protocol-relative reference inherits the scheme it was served over,
+        // which for this path is always plain HTTP.
+        None => url.strip_prefix("//")?,
+        Some(_) => return None,
+    };
+
+    let (authority, path) = match after_scheme.find('/') {
+        Some(at) => after_scheme.split_at(at),
+        None => (after_scheme, "/"),
+    };
+
+    let expected = [
+        format!("{}:{}", peer.ip(), peer.port()),
+        // The port is omitted where it is the scheme's default.
+        match peer.port() {
+            80 => peer.ip().to_string(),
+            _ => String::new(),
+        },
+    ];
+    expected
+        .iter()
+        .any(|name| !name.is_empty() && name.eq_ignore_ascii_case(authority))
+        .then(|| path.to_string())
 }
 
 /// Fetches `path` from `socket` over a fresh connection and returns whatever
@@ -896,7 +950,7 @@ pub async fn analyze_with(
         collected.push((
             interested,
             match interested {
-                true => analyzer.collect(&ctx).await,
+                true => analyzer.collect(&ctx, &responses).await,
                 false => Collected::default(),
             },
         ));
@@ -1093,7 +1147,80 @@ mod tests {
         let jellyfin = "HTTP/1.1 302 Found\r\n\
              Location: /web/index.html\r\n\
              Server: Kestrel\r\n\r\n";
-        assert_eq!(redirect_path(jellyfin).as_deref(), Some("/web/index.html"));
+        assert_eq!(
+            redirect_path(jellyfin, Some(peer())).as_deref(),
+            Some("/web/index.html")
+        );
+    }
+
+    /// The address a redirect test pretends to be scanning.
+    fn peer() -> std::net::SocketAddr {
+        "127.0.0.1:8096".parse().expect("a literal address")
+    }
+
+    /// RFC 7231 §7.1.2 permits a relative reference, which RFC 2616 did not, and
+    /// real servers send one: Jellyfin answers `GET /` with `Location: web/`.
+    /// Reading that as somewhere else left the page it points at unread, and the
+    /// application unidentified on a host that was serving its own name one hop
+    /// away.
+    #[test]
+    fn a_relative_location_resolves_against_the_root_it_was_served_from() {
+        let jellyfin = "HTTP/1.1 302 Found\r\nLocation: web/\r\nServer: Kestrel\r\n\r\n";
+        assert_eq!(
+            redirect_path(jellyfin, Some(peer())).as_deref(),
+            Some("/web/")
+        );
+    }
+
+    /// Grafana, Portainer and Prometheus all answer `GET /` with a `Location`
+    /// naming themselves in full. Declining every absolute URL left the page
+    /// that identifies them unread on all three.
+    #[test]
+    fn an_absolute_location_naming_the_scanned_host_is_followed() {
+        let grafana = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8096/login\r\n\r\n";
+        assert_eq!(
+            redirect_path(grafana, Some(peer())).as_deref(),
+            Some("/login")
+        );
+
+        // No path is the root, not an empty request line.
+        let bare = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8096\r\n\r\n";
+        assert_eq!(redirect_path(bare, Some(peer())).as_deref(), Some("/"));
+    }
+
+    /// A different port is a different service, over a connection this path has
+    /// not made. Same address, and still declined.
+    #[test]
+    fn an_absolute_location_on_another_port_is_declined() {
+        let elsewhere = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9999/x\r\n\r\n";
+        assert_eq!(redirect_path(elsewhere, Some(peer())), None);
+    }
+
+    /// A scheme this path cannot speak needs a handshake there is no socket for.
+    #[test]
+    fn an_upgrade_to_https_is_declined_rather_than_guessed() {
+        let upgrade = "HTTP/1.1 301 Moved\r\nLocation: https://127.0.0.1:8096/\r\n\r\n";
+        assert_eq!(redirect_path(upgrade, Some(peer())), None);
+    }
+
+    /// With no address to compare against, an absolute URL cannot be shown to be
+    /// the host in hand, so it is not followed.
+    #[test]
+    fn an_absolute_location_is_declined_when_there_is_no_peer_to_check() {
+        let named = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8096/login\r\n\r\n";
+        assert_eq!(redirect_path(named, None), None);
+    }
+
+    /// A scheme-relative reference names a host, so it is somewhere else however
+    /// much it looks like a path.
+    #[test]
+    fn a_scheme_relative_location_is_declined_like_any_other_host() {
+        let elsewhere = "HTTP/1.1 302 Found\r\nLocation: //cdn.example/web/\r\n\r\n";
+        assert_eq!(redirect_path(elsewhere, Some(peer())), None);
+
+        // The same spelling, naming the host in hand, is followed.
+        let here = "HTTP/1.1 302 Found\r\nLocation: //127.0.0.1:8096/web/\r\n\r\n";
+        assert_eq!(redirect_path(here, Some(peer())).as_deref(), Some("/web/"));
     }
 
     /// A redirect somewhere else is an instruction to go and talk to a third
@@ -1115,7 +1242,7 @@ mod tests {
         ] {
             let response = format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\n\r\n");
             assert_eq!(
-                redirect_path(&response),
+                redirect_path(&response, Some(peer())),
                 None,
                 "`{location}` is not somewhere this scan may follow"
             );
@@ -1126,17 +1253,23 @@ mod tests {
     #[test]
     fn a_response_that_is_not_a_redirect_names_nowhere_to_go() {
         assert_eq!(
-            redirect_path("HTTP/1.1 200 OK\r\nLocation: /ignored\r\n\r\n"),
+            redirect_path(
+                "HTTP/1.1 200 OK\r\nLocation: /ignored\r\n\r\n",
+                Some(peer())
+            ),
             None,
             "a 200 is an answer, whatever else it carries"
         );
         assert_eq!(
-            redirect_path("HTTP/1.1 302 Found\r\nServer: nginx\r\n\r\n"),
+            redirect_path("HTTP/1.1 302 Found\r\nServer: nginx\r\n\r\n", Some(peer())),
             None,
             "and a redirect naming nowhere leads nowhere"
         );
-        assert_eq!(redirect_path("SSH-2.0-OpenSSH_9.2p1\r\n"), None);
-        assert_eq!(redirect_path(""), None);
+        assert_eq!(
+            redirect_path("SSH-2.0-OpenSSH_9.2p1\r\n", Some(peer())),
+            None
+        );
+        assert_eq!(redirect_path("", Some(peer())), None);
     }
 
     /// A TLS record is not a banner, and reading one as text loses exactly the

@@ -74,12 +74,12 @@ pub struct PortContext {
     pub tunnel: Option<Tunnel>,
     /// Whether first contact drew an HTTP response.
     ///
-    /// For an *active* analyzer deciding whether a second request is worth
-    /// making. [`collect`](Analyzer::collect) runs before any evidence is
-    /// resolved and is handed no responses, so an analyzer that only makes sense
-    /// against a web server has no other way to tell one from a port that
-    /// answered something else. Gating on the port number instead would miss the
-    /// long tail, which is where a favicon earns its keep.
+    /// The cheap gate for an *active* analyzer that only makes sense against a
+    /// web server. [`interested`](Analyzer::interested) is asked before either
+    /// phase and is handed no responses, so this is what it reads;
+    /// [`collect`](Analyzer::collect) gets the responses themselves and can look
+    /// closer. Gating on the port number instead would miss the long tail, which
+    /// is where a favicon earns its keep.
     ///
     /// `false` wherever nothing was read, which is every passive-only path and
     /// every unit test that builds a context by hand.
@@ -146,7 +146,12 @@ pub trait Analyzer: Send + Sync {
     /// regex, TLS certificate) draw entirely on the shared [`ResponseSet`] and
     /// leave this alone. An *active* analyzer (JARM, SSH, a binary/ICS handler)
     /// overrides it to speak its protocol.
-    async fn collect(&self, _ctx: &PortContext) -> Collected {
+    ///
+    /// `responses` is what first contact already read, so an analyzer can build
+    /// on it rather than asking again. The favicon analyzer needs the page the
+    /// scan already fetched in order to find where the icon is declared, and
+    /// without this it would spend a request re-reading it.
+    async fn collect(&self, _ctx: &PortContext, _responses: &ResponseSet) -> Collected {
         Collected::default()
     }
 
@@ -247,7 +252,7 @@ mod tests {
             true
         }
 
-        async fn collect(&self, ctx: &PortContext) -> Collected {
+        async fn collect(&self, ctx: &PortContext, _responses: &ResponseSet) -> Collected {
             // Stand in for a real probe exchange: emit a frame derived from the
             // context, including a non-UTF-8 byte to prove the channel is binary.
             Collected {
@@ -282,7 +287,7 @@ mod tests {
             speaks_http: false,
         };
         // Drive the two phases exactly as the orchestrator does.
-        let collected = EchoAnalyzer.collect(&ctx).await;
+        let collected = EchoAnalyzer.collect(&ctx, &ResponseSet::default()).await;
         assert_eq!(collected.frames, vec![vec![0xff, 7]]);
 
         let evidence = EchoAnalyzer.analyze(&ctx, &ResponseSet::default(), &collected);
@@ -300,6 +305,12 @@ mod tests {
             tunnel: None,
             speaks_http: false,
         };
-        assert!(BannerRegexAnalyzer.collect(&ctx).await.frames.is_empty());
+        assert!(
+            BannerRegexAnalyzer
+                .collect(&ctx, &ResponseSet::default())
+                .await
+                .frames
+                .is_empty()
+        );
     }
 }

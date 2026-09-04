@@ -147,7 +147,7 @@ impl Analyzer for SshAnalyzer {
 
     /// I/O phase. Runs the exchange and returns the raw `KEXINIT` packet as a
     /// single frame, or nothing if the peer is not reachable / not SSH.
-    async fn collect(&self, ctx: &PortContext) -> Collected {
+    async fn collect(&self, ctx: &PortContext, _responses: &ResponseSet) -> Collected {
         let Some(addr) = ctx.addr else {
             return Collected::default();
         };
@@ -440,7 +440,7 @@ mod tests {
         let ctx = PortContext::new(22, crate::model::port::Protocol::Tcp).with_addr(Some(addr));
         assert!(SshAnalyzer.interested(&ctx));
 
-        let collected = SshAnalyzer.collect(&ctx).await;
+        let collected = SshAnalyzer.collect(&ctx, &ResponseSet::default()).await;
         let evidence = SshAnalyzer.analyze(&ctx, &ResponseSet::default(), &collected);
 
         assert_eq!(evidence.len(), 1);
@@ -507,7 +507,7 @@ mod tests {
         });
 
         let ctx = PortContext::new(22, crate::model::port::Protocol::Tcp).with_addr(Some(addr));
-        let collected = SshAnalyzer.collect(&ctx).await;
+        let collected = SshAnalyzer.collect(&ctx, &ResponseSet::default()).await;
         let evidence = SshAnalyzer.analyze(&ctx, &ResponseSet::default(), &collected);
 
         assert_eq!(evidence.len(), 1, "the preamble is skipped, not fatal");

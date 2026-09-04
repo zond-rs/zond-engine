@@ -59,10 +59,16 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 /// stream from being able to.
 const MAX_ICON_BYTES: usize = 256 * 1024;
 
-/// The request. `Host` is a fixed `localhost`, as the signature corpus sends it;
+/// Where an icon lives when a page declares none. Still worth asking for: it is
+/// the convention every browser falls back on, and plenty of servers honour it.
+const CONVENTIONAL_PATH: &str = "/favicon.ico";
+
+/// One request. `Host` is a fixed `localhost`, as the signature corpus sends it;
 /// the scanned host is not seeded as a variable anywhere in this engine yet.
-const REQUEST: &[u8] =
-    b"GET /favicon.ico HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+fn request(path: &str) -> Vec<u8> {
+    format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+        .into_bytes()
+}
 
 /// Identifies a web application by the MD5 of the icon it serves.
 pub struct FaviconAnalyzer;
@@ -79,11 +85,13 @@ impl Analyzer for FaviconAnalyzer {
         ctx.speaks_http && ctx.addr.is_some()
     }
 
-    async fn collect(&self, ctx: &PortContext) -> Collected {
+    async fn collect(&self, ctx: &PortContext, responses: &ResponseSet) -> Collected {
         let Some(addr) = ctx.addr else {
             return Collected::default();
         };
-        match timeout(FETCH_TIMEOUT, fetch(addr)).await {
+        // One budget for the whole search, however many requests it takes, so a
+        // slow server cannot cost more by declaring its icon than by not.
+        match timeout(FETCH_TIMEOUT, icon_of(addr, responses)).await {
             Ok(Some(icon)) => Collected::from_frames(vec![icon]),
             _ => Collected::default(),
         }
@@ -142,16 +150,186 @@ fn md5_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Fetches `/favicon.ico` and returns its body, or [`None`] where there is not
-/// one to have.
+/// The icon this endpoint serves, found the way a browser finds one.
+///
+/// Asking for `/favicon.ico` and stopping there is what the first version of
+/// this did, and it reaches almost none of the applications the corpus is for.
+/// Anything built with a bundler serves its icon under a content-hashed name
+/// (`favicon.bc8d51405ec040305a87.ico`) and declares it in a `<link>`; Jellyfin
+/// answers the conventional path with a 404 while serving an icon whose digest
+/// the corpus holds. So the page is read first and its declaration followed,
+/// with the conventional path as the fallback it always was.
+///
+/// The page usually costs nothing: first contact already fetched `/`, and only a
+/// root that redirects (which a self-hosted application very often does) needs a
+/// request to reach the markup.
+async fn icon_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> Option<Vec<u8>> {
+    let (page, base) = page_of(addr, responses).await;
+
+    let declared = page
+        .as_deref()
+        .and_then(declared_icon)
+        .and_then(|href| resolve(&base, href));
+
+    // The declared path first, then the convention. A page that names its icon
+    // is describing itself, and the fallback exists for the servers that say
+    // nothing rather than to second-guess the ones that do.
+    for path in declared
+        .iter()
+        .map(String::as_str)
+        .chain([CONVENTIONAL_PATH])
+    {
+        if let Some(icon) = fetch(addr, path).await {
+            return Some(icon);
+        }
+    }
+    None
+}
+
+/// The markup this endpoint serves at its root, and the path it was served from.
+///
+/// The path matters because a declared icon is usually relative to it: Jellyfin
+/// redirects `/` to `/web/index.html` and declares `favicon.<hash>.ico`, which
+/// resolves under `/web/` and nowhere else.
+///
+/// Reuses what first contact read and follows one same-host redirect from it. A
+/// second hop is not followed: one is what a self-hosted root costs, and a chain
+/// is a server that does not want to be read.
+async fn page_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> (Option<String>, String) {
+    let root = "/".to_string();
+    let Some(first) = responses
+        .banners
+        .iter()
+        .find(|banner| banner.starts_with("HTTP/"))
+    else {
+        return (None, root);
+    };
+
+    // A reply that already declares an icon is the page, whatever drew it.
+    if declared_icon(first).is_some() {
+        return (Some(first.clone()), root);
+    }
+
+    // Otherwise ask for the root. A port some service registered a probe for is
+    // answered with that probe rather than with `GET /`, so on a claimed port the
+    // banners hold whatever the probe drew and never the markup: Grafana on 3000
+    // answers its registered probe with a `400` and its root with the page that
+    // names it. The banner is still consulted for a redirect first, so an
+    // unclaimed port that already fetched `/` spends no request re-fetching it.
+    let path = super::redirect_path(first, Some(addr)).unwrap_or_else(|| root.clone());
+    let Some(page) = fetch_text(addr, &path).await else {
+        return (Some(first.clone()), root);
+    };
+
+    // The root may redirect on this request rather than on the scan's. One hop,
+    // because a chain is a server that does not want to be read.
+    match super::redirect_path(&page, Some(addr)) {
+        Some(next) => match fetch_text(addr, &next).await {
+            Some(followed) => (Some(followed), next),
+            None => (Some(page), path),
+        },
+        None => (Some(page), path),
+    }
+}
+
+/// The icon a page declares, as the `href` of a `<link>` whose `rel` names one.
+///
+/// Reads `rel` and `href` in either order and matches `rel` on a word rather
+/// than a whole value, because the attribute is a list and the ones in use are
+/// `icon`, `shortcut icon` and `apple-touch-icon`. Case-insensitive throughout:
+/// markup is not consistent about it and nothing here depends on the casing.
+fn declared_icon(page: &str) -> Option<&str> {
+    let lower = page.to_ascii_lowercase();
+    let mut at = 0;
+
+    while let Some(start) = lower[at..].find("<link").map(|i| at + i) {
+        let end = lower[start..].find('>').map(|i| start + i)?;
+        let tag = &lower[start..end];
+        at = end;
+
+        let names_an_icon = attribute(tag, "rel")
+            .is_some_and(|rel| rel.split_whitespace().any(|word| word == "icon"));
+        if !names_an_icon {
+            continue;
+        }
+        // Taken from the original rather than the lowered copy: a path is
+        // case-sensitive and the lowered one would 404.
+        if let Some(href) = attribute(tag, "href") {
+            let offset = tag.find(href)?;
+            return page.get(start + offset..start + offset + href.len());
+        }
+    }
+    None
+}
+
+/// The value of `name` in a tag, for a quoted attribute.
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let at = tag.find(&format!("{name}="))? + name.len() + 1;
+    let rest = tag.get(at..)?;
+    let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let value = rest.get(1..)?;
+    value.get(..value.find(quote)?)
+}
+
+/// Resolves a declared `href` against the path the page was served from.
+///
+/// An absolute path is taken as written. A relative one is joined to the page's
+/// own directory, which is what puts Jellyfin's icon under `/web/`. Anything
+/// naming a scheme or another host is declined: the corpus is keyed on what
+/// *this* endpoint serves, and hashing a content delivery network's bytes would
+/// key another host's icon to this port.
+fn resolve(base: &str, href: &str) -> Option<String> {
+    let href = href.trim();
+    if href.is_empty() || href.contains("://") || href.starts_with("//") {
+        return None;
+    }
+    if href.starts_with('/') {
+        return Some(href.to_string());
+    }
+
+    let directory = match base.rfind('/') {
+        Some(at) => &base[..=at],
+        None => "/",
+    };
+
+    // `./` is legal and common (Prometheus declares `./favicon.svg`). Servers
+    // tolerate it, but a path this engine may later compare or record should not
+    // carry a segment that means nothing.
+    let href = href.strip_prefix("./").unwrap_or(href);
+    Some(format!("{directory}{href}"))
+}
+
+/// Fetches `path` and returns its body, or [`None`] where there is not one.
 ///
 /// A body is returned only for a `200`. A `404` is the ordinary answer from a
-/// server that serves no icon, and every redirect is declined rather than
-/// followed: the corpus is keyed on what *this* endpoint serves, and a redirect
-/// to a content delivery network would key the wrong host's bytes to this port.
-async fn fetch(addr: std::net::SocketAddr) -> Option<Vec<u8>> {
+/// server that serves no icon at the path asked for.
+///
+/// One same-host redirect is followed, because an icon is very often served from
+/// somewhere other than where it is asked for: Grafana answers `/favicon.ico`
+/// with a `302` to the file it actually holds.
+async fn fetch(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
+    let response = exchange(addr, path).await?;
+
+    if let Some(body) = body_of(&response) {
+        return Some(body.to_vec());
+    }
+
+    let head = String::from_utf8_lossy(&response);
+    let next = super::redirect_path(&head, Some(addr))?;
+    let followed = exchange(addr, &next).await?;
+    body_of(&followed).map(<[u8]>::to_vec)
+}
+
+/// The same exchange, as text, for a page rather than an icon.
+async fn fetch_text(addr: std::net::SocketAddr, path: &str) -> Option<String> {
+    let response = exchange(addr, path).await?;
+    Some(String::from_utf8_lossy(&response).into_owned())
+}
+
+/// One request and the response it draws, whole and bounded.
+async fn exchange(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
     let mut stream = TcpStream::connect(addr).await.ok()?;
-    stream.write_all(REQUEST).await.ok()?;
+    stream.write_all(&request(path)).await.ok()?;
 
     let mut response = Vec::new();
     let mut buffer = [0u8; 8192];
@@ -165,8 +343,7 @@ async fn fetch(addr: std::net::SocketAddr) -> Option<Vec<u8>> {
             break;
         }
     }
-
-    body_of(&response).map(<[u8]>::to_vec)
+    Some(response)
 }
 
 /// The body of a `200` response, or [`None`] for anything else.
@@ -261,10 +438,10 @@ mod tests {
         assert!(!FaviconAnalyzer.interested(&no_socket));
     }
 
-    /// The collect phase against a real socket: the analyzer connects, asks for
-    /// the icon, and hands back exactly the bytes served.
+    /// The fallback, end to end: a page that declares no icon still gets the
+    /// conventional path asked for, which is what the convention is for.
     #[tokio::test]
-    async fn collect_fetches_the_icon_over_a_real_socket() {
+    async fn a_page_declaring_no_icon_falls_back_to_the_conventional_path() {
         use crate::model::port::Protocol;
         use tokio::net::TcpListener;
 
@@ -274,29 +451,54 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut asked = Vec::new();
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buffer = [0u8; 512];
+                let read = stream.read(&mut buffer).await.unwrap();
+                let path = String::from_utf8_lossy(&buffer[..read])
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                asked.push(path.clone());
 
-            let mut request = [0u8; 512];
-            let read = stream.read(&mut request).await.unwrap();
-            assert!(
-                request[..read].starts_with(b"GET /favicon.ico "),
-                "the analyzer asked for something else"
-            );
-
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/x-icon\r\n\r\n")
-                .await
-                .unwrap();
-            stream.write_all(ICON).await.unwrap();
+                if path == CONVENTIONAL_PATH {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/x-icon\r\n\r\n")
+                        .await
+                        .unwrap();
+                    stream.write_all(ICON).await.unwrap();
+                } else {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><head></head></html>",
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+            asked
         });
+
+        // A banner that is a page, and declares nothing.
+        let responses = ResponseSet::from_banners(vec![
+            "HTTP/1.1 200 OK\r\n\r\n<html><head></head></html>".to_string(),
+        ]);
 
         let ctx = PortContext::new(addr.port(), Protocol::Tcp)
             .with_addr(Some(addr))
             .with_speaks_http(true);
-        let collected = FaviconAnalyzer.collect(&ctx).await;
-        server.await.unwrap();
+        let collected = FaviconAnalyzer.collect(&ctx, &responses).await;
+        let asked = server.await.unwrap();
 
         assert_eq!(collected.frames.first().map(Vec::as_slice), Some(ICON));
+        assert!(
+            asked.contains(&CONVENTIONAL_PATH.to_string()),
+            "the convention should be tried when nothing is declared, got {asked:?}"
+        );
     }
 
     /// The other half, without a socket: a digest the corpus knows names its
@@ -346,5 +548,297 @@ mod tests {
             MAX_ICON_BYTES <= 1024 * 1024,
             "and a bound on a hostile one"
         );
+    }
+
+    /// Jellyfin's real markup, which is why this analyzer was rewritten: the
+    /// icon is under a bundler's content hash and named only in a `<link>`.
+    const JELLYFIN: &str = r#"<html><head>
+        <link rel="apple-touch-icon" sizes="180x180" href="touchicon.f5bbb798cb2c65908633.png">
+        <link rel="shortcut icon" href="favicon.bc8d51405ec040305a87.ico">
+        </head></html>"#;
+
+    #[test]
+    fn a_declared_icon_is_read_out_of_the_markup() {
+        assert_eq!(
+            declared_icon(JELLYFIN),
+            Some("favicon.bc8d51405ec040305a87.ico")
+        );
+    }
+
+    /// `rel` is a list, so the match is on a word. `apple-touch-icon` is one
+    /// token and must not be read as naming the icon.
+    #[test]
+    fn a_rel_that_merely_contains_icon_does_not_count() {
+        let only_touch = r#"<link rel="apple-touch-icon" href="touch.png">"#;
+        assert_eq!(declared_icon(only_touch), None);
+
+        let shortcut = r#"<link rel="shortcut icon" href="a.ico">"#;
+        assert_eq!(declared_icon(shortcut), Some("a.ico"));
+    }
+
+    /// Attributes come in either order, and single quotes are legal markup.
+    #[test]
+    fn the_href_is_found_whatever_order_and_quoting_the_tag_uses() {
+        assert_eq!(
+            declared_icon(r#"<link href="/static/f.ico" rel="icon">"#),
+            Some("/static/f.ico")
+        );
+        assert_eq!(
+            declared_icon("<link rel='icon' href='/q.ico'>"),
+            Some("/q.ico")
+        );
+    }
+
+    /// The path is taken from the original markup rather than the lowered copy
+    /// used for scanning, because a path is case-sensitive and a lowered one
+    /// would 404.
+    #[test]
+    fn a_mixed_case_path_survives_the_search() {
+        assert_eq!(
+            declared_icon(r#"<link rel="ICON" href="/Static/FavIcon.ICO">"#),
+            Some("/Static/FavIcon.ICO")
+        );
+    }
+
+    /// The resolution that puts Jellyfin's icon under `/web/`.
+    #[test]
+    fn a_relative_icon_resolves_against_the_page_that_declared_it() {
+        assert_eq!(
+            resolve("/web/index.html", "favicon.bc8d51405ec040305a87.ico").as_deref(),
+            Some("/web/favicon.bc8d51405ec040305a87.ico")
+        );
+        assert_eq!(resolve("/", "favicon.ico").as_deref(), Some("/favicon.ico"));
+        assert_eq!(
+            resolve("/web/index.html", "/f.ico").as_deref(),
+            Some("/f.ico")
+        );
+    }
+
+    /// An icon somewhere else is another host's bytes, and hashing them would
+    /// key that host's identity to this port.
+    #[test]
+    fn an_icon_on_another_host_is_declined() {
+        assert_eq!(resolve("/", "https://cdn.example/f.ico"), None);
+        assert_eq!(resolve("/", "//cdn.example/f.ico"), None);
+        assert_eq!(resolve("/", ""), None);
+    }
+
+    #[test]
+    fn markup_declaring_no_icon_yields_nothing() {
+        assert_eq!(
+            declared_icon("<html><head><title>x</title></head></html>"),
+            None
+        );
+        assert_eq!(declared_icon(""), None);
+    }
+
+    /// The whole path against a server shaped like Jellyfin: the root redirects,
+    /// the page declares a hashed icon under `/web/`, and only that path serves
+    /// the bytes. The conventional path 404s, exactly as the real one does.
+    #[tokio::test]
+    async fn the_declared_icon_is_fetched_from_a_root_that_redirects() {
+        use crate::model::port::Protocol;
+        use tokio::net::TcpListener;
+
+        const ICON: &[u8] = b"\x00\x00\x01\x00 the bytes only /web/ serves";
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let mut asked = Vec::new();
+            for _ in 0..3 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buffer = [0u8; 512];
+                let read = stream.read(&mut buffer).await.unwrap();
+                let path = String::from_utf8_lossy(&buffer[..read])
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+
+                match path.as_str() {
+                    "/web/index.html" => {
+                        let body =
+                            format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n{JELLYFIN}");
+                        stream.write_all(body.as_bytes()).await.unwrap();
+                    }
+                    "/web/favicon.bc8d51405ec040305a87.ico" => {
+                        stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/x-icon\r\n\r\n")
+                            .await
+                            .unwrap();
+                        stream.write_all(ICON).await.unwrap();
+                        // The search stops here, so accepting again would block
+                        // on a connection that is never made.
+                        asked.push(path);
+                        break;
+                    }
+                    _ => {
+                        stream
+                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                            .await
+                            .unwrap();
+                    }
+                }
+                asked.push(path);
+            }
+            asked
+        });
+
+        // What first contact drew: the 302 the real server answers `GET /` with.
+        let responses = ResponseSet::from_banners(vec![
+            "HTTP/1.1 302 Found\r\nLocation: /web/index.html\r\nServer: Kestrel\r\n\r\n"
+                .to_string(),
+        ]);
+
+        let ctx = PortContext::new(addr.port(), Protocol::Tcp)
+            .with_addr(Some(addr))
+            .with_speaks_http(true);
+        let collected = FaviconAnalyzer.collect(&ctx, &responses).await;
+        let asked = server.await.unwrap();
+
+        assert_eq!(collected.frames.first().map(Vec::as_slice), Some(ICON));
+        assert_eq!(
+            asked,
+            vec![
+                "/web/index.html".to_string(),
+                "/web/favicon.bc8d51405ec040305a87.ico".to_string(),
+            ],
+            "the conventional path should not be asked for once a page declares one"
+        );
+    }
+
+    /// Prometheus declares `./favicon.svg`, and a segment meaning "here" should
+    /// not survive into a path this engine records.
+    #[test]
+    fn a_here_segment_is_dropped_from_a_declared_path() {
+        assert_eq!(
+            resolve("/query", "./favicon.svg").as_deref(),
+            Some("/favicon.svg")
+        );
+        assert_eq!(
+            resolve("/web/index.html", "./f.ico").as_deref(),
+            Some("/web/f.ico")
+        );
+    }
+
+    /// A port some service registered a probe for is answered with that probe
+    /// rather than with `GET /`, so the banners hold whatever the probe drew.
+    /// Grafana on 3000 answers its registered probe with a `400` and its root
+    /// with the page that names it, and reading only the banner found neither.
+    #[tokio::test]
+    async fn a_banner_that_is_not_the_page_still_leads_to_the_root() {
+        use crate::model::port::Protocol;
+        use tokio::net::TcpListener;
+
+        const ICON: &[u8] = b"\x89PNG the icon only the root leads to";
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let mut asked = Vec::new();
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buffer = [0u8; 512];
+                let read = stream.read(&mut buffer).await.unwrap();
+                let path = String::from_utf8_lossy(&buffer[..read])
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                asked.push(path.clone());
+
+                match path.as_str() {
+                    // The root redirects, as Grafana's does.
+                    "/" => {
+                        stream
+                            .write_all(b"HTTP/1.1 302 Found\r\nLocation: /login\r\nContent-Length: 0\r\n\r\n")
+                            .await
+                            .unwrap();
+                    }
+                    "/login" => {
+                        let body = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+                             <html><head><link rel=\"icon\" href=\"static/fav32.png\"></head></html>";
+                        stream.write_all(body.as_bytes()).await.unwrap();
+                    }
+                    "/static/fav32.png" => {
+                        stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n")
+                            .await
+                            .unwrap();
+                        stream.write_all(ICON).await.unwrap();
+                        break;
+                    }
+                    _ => {
+                        stream
+                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
+            asked
+        });
+
+        // What a claimed port's registered probe drew: not the page.
+        let responses = ResponseSet::from_banners(vec![
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n".to_string(),
+        ]);
+
+        let ctx = PortContext::new(addr.port(), Protocol::Tcp)
+            .with_addr(Some(addr))
+            .with_speaks_http(true);
+        let collected = FaviconAnalyzer.collect(&ctx, &responses).await;
+        let asked = server.await.unwrap();
+
+        assert_eq!(collected.frames.first().map(Vec::as_slice), Some(ICON));
+        assert_eq!(asked, vec!["/", "/login", "/static/fav32.png"]);
+    }
+
+    /// Grafana answers `/favicon.ico` with a redirect to the file it actually
+    /// holds, so the fallback has to follow one hop too.
+    #[tokio::test]
+    async fn a_redirect_on_the_icon_itself_is_followed() {
+        use tokio::net::TcpListener;
+
+        const ICON: &[u8] = b"\x00\x00\x01\x00 behind a redirect";
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buffer = [0u8; 512];
+                let read = stream.read(&mut buffer).await.unwrap();
+                let path = String::from_utf8_lossy(&buffer[..read])
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+
+                if path == "/real.ico" {
+                    stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+                    stream.write_all(ICON).await.unwrap();
+                } else {
+                    stream
+                        .write_all(b"HTTP/1.1 302 Found\r\nLocation: /real.ico\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+
+        let icon = fetch(addr, "/favicon.ico").await;
+        server.await.unwrap();
+        assert_eq!(icon.as_deref(), Some(ICON));
     }
 }

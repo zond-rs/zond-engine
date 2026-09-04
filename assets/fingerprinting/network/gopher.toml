@@ -8,7 +8,17 @@ name = "query"
 payload = '\r\n'
 protocol = "tcp"
 
+# A menu line, as RFC 1436 §3 lays one out: a type character, then the display
+# string, selector, host and port, tab-separated.
+#
+# The type character alone was the whole pattern until 2026-09-05, and it matched
+# any text beginning with a digit, `+`, `i`, `g` or `T`. That is a large share of
+# arbitrary strings, and it started firing once the engine began offering
+# extracted fields to the matcher: a Gitea cookie named `i_like_gitea` and the
+# bare word `gitea` both reported a Gopher server on a web port. The structure is
+# what identifies the protocol, so the structure is what this now requires.
 [[match]]
-name = "gopher_response"
-pattern = '^[0-9+igT]'
+name = "gopher_menu_line"
+pattern = '^[0-9+igT][^\t\r\n]*\t[^\t\r\n]*\t[^\t\r\n]*\t\d{1,5}'
 product = "gopher"
+example = "1Some Directory\t/dir\tgopher.example.org\t70"
