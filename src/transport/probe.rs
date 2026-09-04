@@ -830,8 +830,17 @@ impl ProbeTransport {
     }
 }
 
-/// The interfaces a capture should listen on: every interface that's up.
-/// Loopback is intentionally included so localhost probes are still heard.
+/// The interfaces a capture should listen on: every interface that's up, and
+/// loopback whether or not it admits to being.
+///
+/// Loopback needs naming separately because
+/// [`is_up`](crate::system::interface::Link::is_up) wants a carrier as well as
+/// an administrative flag, and loopback has no carrier to report - Linux leaves
+/// its operational state `unknown` for the life of the machine. That conjunction
+/// is the right question for deciding what to *probe out of*, which is what it
+/// was written for; here the question is only what to listen on, and answering
+/// the first one drops `lo`, so every localhost probe goes out and none is ever
+/// heard back.
 ///
 /// Each is named as a [`Zone`], carrying the index alongside the name. The
 /// index costs nothing to keep here, the interface table having been read to find
@@ -840,7 +849,7 @@ impl ProbeTransport {
 fn capturable_interfaces() -> Vec<Zone> {
     crate::system::interface::interfaces()
         .into_iter()
-        .filter(crate::system::interface::Link::is_up)
+        .filter(|link| link.is_up() || link.is_loopback())
         .map(|link| link.zone())
         .collect()
 }

@@ -56,6 +56,12 @@
 /// system description would attribute one field's text to another field's name.
 const SYS_DESCR_OID: &[u8] = &[0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00];
 
+/// `sysObjectID.0`, `1.3.6.1.2.1.1.2.0`, encoded the same way.
+///
+/// RFC 1213 defines it as the vendor's own identifier for the box, which makes
+/// it the one field that names a model outright rather than describing it.
+const SYS_OBJECT_ID_OID: &[u8] = &[0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x02, 0x00];
+
 /// BER tags, by the names the encoding gives them.
 mod tag {
     /// A constructed sequence: the message, the variable-binding list, and each
@@ -151,6 +157,71 @@ impl<'a> Reader<'a> {
 /// The string must also be valid UTF-8. `sysDescr` is defined as
 /// `DisplayString`, which is ASCII, so bytes that are not are a peer sending
 /// something other than what it claims.
+/// The value of `sysObjectID.0` in a GetResponse, as dotted decimal.
+///
+/// The agent's own name for what it is, which the corpus matches both alone and
+/// joined to the description. Walks every binding rather than reading the first,
+/// because an agent orders its answers as it likes and the probe asks two
+/// questions.
+///
+/// [`None`] when the message is not a GetResponse, carries no such binding, or
+/// carries one whose value is not an object identifier.
+pub(crate) fn sys_object_id(datagram: &[u8]) -> Option<String> {
+    let mut bindings = bindings_of(datagram)?;
+
+    while let Some((tag::SEQUENCE, binding)) = bindings.read() {
+        let mut binding = Reader::new(binding);
+        let Some(name) = binding.expect(tag::OID) else {
+            continue;
+        };
+        if name != SYS_OBJECT_ID_OID {
+            continue;
+        }
+        return binding.expect(tag::OID).and_then(object_identifier);
+    }
+    None
+}
+
+/// Renders a BER object identifier as the dotted decimal a rule is written
+/// against.
+///
+/// The first byte packs the first two arcs as `40 * x + y`, and every arc after
+/// it is base-128 with the top bit set on all but the last byte. An arc whose
+/// continuation never ends is a truncated identifier and yields nothing.
+fn object_identifier(encoded: &[u8]) -> Option<String> {
+    let (first, rest) = encoded.split_first()?;
+    let mut arcs = vec![(first / 40).to_string(), (first % 40).to_string()];
+
+    let mut arc: u64 = 0;
+    let mut open = false;
+    for byte in rest {
+        // A value this long is not an arc anybody assigned; refusing it keeps
+        // the shift below from wrapping.
+        arc = arc.checked_mul(128)?.checked_add(u64::from(byte & 0x7f))?;
+        open = byte & 0x80 != 0;
+        if !open {
+            arcs.push(arc.to_string());
+            arc = 0;
+        }
+    }
+
+    (!open).then(|| arcs.join("."))
+}
+
+/// The variable-binding list of a GetResponse, as a cursor over its bindings.
+fn bindings_of(datagram: &[u8]) -> Option<Reader<'_>> {
+    let mut message = Reader::new(Reader::new(datagram).expect(tag::SEQUENCE)?);
+    message.skip()?; // version
+    message.skip()?; // community
+
+    let mut response = Reader::new(message.expect(tag::GET_RESPONSE)?);
+    response.skip()?; // request identifier
+    response.skip()?; // error status
+    response.skip()?; // error index
+
+    Some(Reader::new(response.expect(tag::SEQUENCE)?))
+}
+
 pub(crate) fn sys_descr(datagram: &[u8]) -> Option<&str> {
     let mut message = Reader::new(Reader::new(datagram).expect(tag::SEQUENCE)?);
     message.skip()?; // version

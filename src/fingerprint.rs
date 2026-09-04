@@ -236,8 +236,10 @@ pub fn lookup_service_name(port: u16) -> Option<String> {
 /// took from it.
 ///
 /// Returns owned text because decoding is not always a borrow: a value lifted
-/// out of a binary encoding has no text in the datagram to point at.
-pub fn decode_udp_reply(port: u16, datagram: &[u8]) -> Option<String> {
+/// out of a binary encoding has no text in the datagram to point at, and more
+/// than one where a reply answers more than one question: an SNMP agent is asked
+/// for its description and its object identifier in a single datagram.
+pub fn decode_udp_reply(port: u16, datagram: &[u8]) -> Vec<String> {
     extract::from_datagram(port, datagram)
 }
 
@@ -417,8 +419,8 @@ pub async fn fingerprint_udp_detailed(
     addr: std::net::SocketAddr,
     mut port: Port,
 ) -> Option<(Port, Vec<OsEvidence>, Vec<String>)> {
-    let text = probe_udp(addr).await?;
-    let responses = ResponseSet::from_banners(vec![text]);
+    let texts = probe_udp(addr).await?;
+    let responses = ResponseSet::from_banners(texts);
     let banners = responses.banners.clone();
 
     // No tunnel: nothing here carries UDP over TLS, and no peer address is
@@ -447,7 +449,7 @@ pub async fn fingerprint_udp_detailed(
 /// connected, so the kernel drops anything from another address before it
 /// reaches here: a scanner reading unsolicited datagrams off an unconnected
 /// socket would attribute one host's answer to another's port.
-async fn probe_udp(addr: std::net::SocketAddr) -> Option<String> {
+async fn probe_udp(addr: std::net::SocketAddr) -> Option<Vec<String>> {
     let payload = SignatureDb::global()
         .udp_probe_payloads(addr.port())
         .first()?;
@@ -467,7 +469,8 @@ async fn probe_udp(addr: std::net::SocketAddr) -> Option<String> {
         .ok()?
         .ok()?;
 
-    extract::from_datagram(addr.port(), &buffer[..read])
+    let texts = extract::from_datagram(addr.port(), &buffer[..read]);
+    (!texts.is_empty()).then_some(texts)
 }
 
 /// Collects everything the transport can learn from the port over the network,

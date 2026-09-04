@@ -970,12 +970,28 @@ async fn a_cookie_echo_scan_finds_closed_ports_and_leaves_the_rest_ambiguous() {
 /// dropping INIT chunks sees something else go past.
 #[tokio::test]
 async fn a_cookie_echo_scan_sends_the_other_chunk() {
+    // The two chunk types of RFC 4960 §3.2 these techniques are named for, which
+    // a fake net records in a probe's `flags` the way it records TCP's.
+    const INIT: u8 = 1;
+    const COOKIE_ECHO: u8 = 10;
+
     let (_session, net) =
         sctp_scan_with(SctpScanTechnique::CookieEcho, &[(3868, Policy::closed())]).await;
 
     let probes = net.probes();
     assert_eq!(probes.len(), 1);
     assert_eq!(probes[0].source_port, SCTP_SRC_PORT);
+    assert_eq!(
+        probes[0].flags, COOKIE_ECHO,
+        "the chunk a filter written against the init has never been shown"
+    );
+
+    let (_session, net) = sctp_scan(&[(3868, Policy::closed())]).await;
+    assert_eq!(
+        net.probes()[0].flags,
+        INIT,
+        "and the default probe is still the one it was written against"
+    );
 }
 
 /// An ICMP refusal is a filter here rather than a closed port. A closed SCTP

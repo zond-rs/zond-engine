@@ -62,23 +62,46 @@ pub(crate) fn texts(banner: &str) -> Vec<Cow<'_, str>> {
     texts
 }
 
-/// The text a UDP reply carries, where this engine knows how to read one.
+/// The texts a UDP reply carries, where this engine knows how to read one.
 ///
-/// `None` for a port whose replies it cannot decode, which is most of them: a
+/// Empty for a port whose replies it cannot decode, which is most of them: a
 /// datagram nothing can read is still proof the port is open, and that is what
 /// the scan already took from it.
 ///
-/// Returns an owned string because decoding is not always a borrow, a value
-/// lifted out of a binary encoding has no text in the datagram to point at.
-pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Option<String> {
+/// More than one where a reply answers more than one question. An SNMP agent is
+/// asked for its description and its object identifier in a single datagram, and
+/// the corpus has rules against each alone and against the two joined, so all
+/// three are offered and the matcher ranks them. They are separate texts rather
+/// than one, because 570 of the 579 description rules anchor at the start and a
+/// joined string would reach none of them.
+///
+/// Owned because decoding is not always a borrow: a value lifted out of a binary
+/// encoding has no text in the datagram to point at.
+pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
     match port {
-        // The one field worth a decoder: on a Unix host `sysDescr` is the output
-        // of `uname -a`, which names the exact kernel. See [`snmp`](super::snmp).
-        161 => super::snmp::sys_descr(datagram).map(ToOwned::to_owned),
+        // On a Unix host `sysDescr` is the output of `uname -a`, which names the
+        // exact kernel, and `sysObjectID` is the vendor's own name for the box.
+        // See [`snmp`](super::snmp).
+        161 => {
+            let description = super::snmp::sys_descr(datagram);
+            let object_id = super::snmp::sys_object_id(datagram);
+
+            let mut texts = Vec::new();
+            texts.extend(description.map(ToOwned::to_owned));
+            if let Some(object_id) = object_id {
+                if let Some(description) = description {
+                    texts.push(format!("{object_id} {description}"));
+                }
+                texts.push(object_id);
+            }
+            texts
+        }
         // The `version.bind` probe the corpus registers for this port draws a
         // TXT answer holding the nameserver's own account of its build.
-        53 => crate::protocols::dns::first_text_answer(datagram),
-        _ => None,
+        53 => crate::protocols::dns::first_text_answer(datagram)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -162,7 +185,7 @@ mod tests {
     /// the scan already took from it.
     #[test]
     fn a_datagram_from_an_unreadable_port_yields_nothing() {
-        assert_eq!(from_datagram(9_999, b"anything at all"), None);
+        assert!(from_datagram(9_999, b"anything at all").is_empty());
         assert!(!reads(9_999, Protocol::Udp));
     }
 
@@ -330,32 +353,120 @@ mod version_bind {
     #[test]
     fn the_txt_answer_is_read_out_of_the_datagram() {
         let decoded = super::from_datagram(53, &response("9.9.5-11ubuntu1.1-Ubuntu"));
-        assert_eq!(decoded.as_deref(), Some("9.9.5-11ubuntu1.1-Ubuntu"));
+        assert_eq!(decoded, vec!["9.9.5-11ubuntu1.1-Ubuntu".to_string()]);
     }
 
     /// The probe already went out over both transports and the answer was
     /// discarded. This is the rule it now reaches.
     #[test]
     fn a_bind_build_string_names_the_product_and_its_version() {
-        let banner = super::from_datagram(53, &response("9.9.5-11ubuntu1.1-Ubuntu"))
-            .expect("the TXT answer decodes");
+        let texts = super::from_datagram(53, &response("9.9.5-11ubuntu1.1-Ubuntu"));
+        let banner = texts.first().expect("the TXT answer decodes");
         let evidence = SignatureDb::global()
-            .identify(53, Protocol::Udp, &banner)
+            .identify(53, Protocol::Udp, banner)
             .expect("the corpus names it");
         assert_eq!(evidence.product.as_deref(), Some("BIND"));
     }
 
     #[test]
     fn a_datagram_that_is_not_a_dns_response_decodes_to_nothing() {
-        assert_eq!(super::from_datagram(53, b"not a dns message at all"), None);
+        assert!(super::from_datagram(53, b"not a dns message at all").is_empty());
         // A query rather than a response, which is what a sniffed packet is.
         let mut query = response("9.1.1");
         query[2] = 0x00;
-        assert_eq!(super::from_datagram(53, &query), None);
+        assert!(super::from_datagram(53, &query).is_empty());
     }
 
     #[test]
     fn port_53_is_now_worth_a_second_datagram() {
         assert!(super::reads(53, Protocol::Udp));
+    }
+}
+
+#[cfg(test)]
+mod sys_object_id {
+    use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
+
+    /// A GetResponse carrying both bindings the probe now asks for, in the order
+    /// an agent would answer them.
+    fn response(object_id: &[u8], description: &str) -> Vec<u8> {
+        fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+            let mut out = vec![tag, value.len() as u8];
+            out.extend_from_slice(value);
+            out
+        }
+
+        let descr_oid = [0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00];
+        let objid_oid = [0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x02, 0x00];
+
+        let mut first = tlv(0x06, &descr_oid);
+        first.extend(tlv(0x04, description.as_bytes()));
+        let mut second = tlv(0x06, &objid_oid);
+        second.extend(tlv(0x06, object_id));
+
+        let mut bindings = tlv(0x30, &first);
+        bindings.extend(tlv(0x30, &second));
+
+        let mut pdu = tlv(0x02, b"zond");
+        pdu.extend(tlv(0x02, &[0x00]));
+        pdu.extend(tlv(0x02, &[0x00]));
+        pdu.extend(tlv(0x30, &bindings));
+
+        let mut message = tlv(0x02, &[0x00]);
+        message.extend(tlv(0x04, b"public"));
+        message.extend(tlv(0xa2, &pdu));
+        tlv(0x30, &message)
+    }
+
+    /// `1.3.6.1.4.1.8072.3.2.1`. The 8072 arc is two base-128 bytes, which is
+    /// the case a naive renderer gets wrong.
+    const NET_SNMP: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0xbf, 0x08, 0x03, 0x02, 0x01];
+
+    #[test]
+    fn the_object_identifier_renders_as_dotted_decimal() {
+        let texts = super::from_datagram(161, &response(NET_SNMP, "Linux zond 6.1.0"));
+        assert!(
+            texts.contains(&"1.3.6.1.4.1.8072.3.2.1".to_string()),
+            "got {texts:?}"
+        );
+    }
+
+    /// Three texts, because the corpus has rules against each shape. The
+    /// description stays a text of its own: 570 of the 579 rules written against
+    /// it anchor at the start, so a joined string reaches none of them.
+    #[test]
+    fn the_description_is_offered_whole_beside_the_joined_form() {
+        let texts = super::from_datagram(161, &response(NET_SNMP, "Linux zond 6.1.0"));
+        assert_eq!(
+            texts,
+            vec![
+                "Linux zond 6.1.0".to_string(),
+                "1.3.6.1.4.1.8072.3.2.1 Linux zond 6.1.0".to_string(),
+                "1.3.6.1.4.1.8072.3.2.1".to_string(),
+            ]
+        );
+    }
+
+    /// The reason the identifier is offered as a text of its own: sixteen of the
+    /// forty-two rules written against it match the bare OID and nothing else.
+    #[test]
+    fn a_bare_object_identifier_names_the_agent_behind_it() {
+        let texts = super::from_datagram(161, &response(NET_SNMP, "an agent that says little"));
+        let bare = texts.last().expect("the identifier is offered last");
+
+        let evidence = SignatureDb::global()
+            .identify(161, Protocol::Udp, bare)
+            .expect("the corpus names it");
+        assert_eq!(evidence.product.as_deref(), Some("SNMP Agent"));
+    }
+
+    /// An agent answering only the first question is the ordinary case for one
+    /// that does not implement the second.
+    #[test]
+    fn a_reply_without_the_second_binding_still_yields_the_description() {
+        let mut only_descr = super::from_datagram(161, &response(NET_SNMP, "Linux zond"));
+        only_descr.truncate(1);
+        assert_eq!(only_descr, vec!["Linux zond".to_string()]);
     }
 }

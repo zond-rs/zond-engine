@@ -14,21 +14,27 @@ description = "Simple Network Management Protocol"
 # PDU - so guessing `public` costs nothing for a port scan: the reply is the
 # result.
 #
-#   30 29                   SEQUENCE, 41 bytes: the message
+# Two questions in one datagram, which costs no extra packet: the description
+# and the vendor's own identifier for the box.
+#
+#   30 37                   SEQUENCE, 55 bytes: the message
 #     02 01 00              INTEGER version = 0 (SNMPv1)
 #     04 06 "public"        OCTET STRING community
-#     a0 1c                 GetRequest PDU, 28 bytes
+#     a0 2a                 GetRequest PDU, 42 bytes
 #       02 04 "zond"        INTEGER request ID
 #       02 01 00            INTEGER error-status = noError
 #       02 01 00            INTEGER error-index = 0
-#       30 0e               SEQUENCE OF, 14 bytes: variable bindings
-#         30 0c             SEQUENCE, 12 bytes: one binding
+#       30 1c               SEQUENCE OF, 28 bytes: variable bindings
+#         30 0c             SEQUENCE, 12 bytes: the first binding
 #           06 08 2b ...    OID 1.3.6.1.2.1.1.1.0 (sysDescr.0); the first two
 #                           arcs pack into one byte, 1*40 + 3 = 0x2b
 #           05 00           NULL: the value being asked for
+#         30 0c             SEQUENCE, 12 bytes: the second binding
+#           06 08 2b ...    OID 1.3.6.1.2.1.1.2.0 (sysObjectID.0)
+#           05 00           NULL
 [[probe]]
 name = "snmp_v1_get_sysdescr"
-payload = '\x30\x29\x02\x01\x00\x04\x06public\xa0\x1c\x02\x04zond\x02\x01\x00\x02\x01\x00\x30\x0e\x30\x0c\x06\x08\x2b\x06\x01\x02\x01\x01\x01\x00\x05\x00'
+payload = '\x30\x37\x02\x01\x00\x04\x06public\xa0\x2a\x02\x04zond\x02\x01\x00\x02\x01\x00\x30\x1c\x30\x0c\x06\x08\x2b\x06\x01\x02\x01\x01\x01\x00\x05\x00\x30\x0c\x06\x08\x2b\x06\x01\x02\x01\x01\x02\x00\x05\x00'
 protocol = "udp"
 
 # ── What a Unix agent says when asked what it is ─────────────────────────────

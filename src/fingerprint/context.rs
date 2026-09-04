@@ -109,7 +109,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "architecture",
         reach: Reach::Unproduced,
-        note: "a second matching stage: the architecture another rule's output mentions, fed back through the corpus",
+        note: "nothing, and the blocker is not the text: these patterns are unanchored and match a `uname` banner already. They state only `os.arch`, which `OsMetadata` has no field for and which makes `from_map` drop the rule for naming neither a family nor a product",
     },
     Context {
         name: "dhcp_vendor_class",
@@ -199,7 +199,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "operating_system.name",
         reach: Reach::Unproduced,
-        note: "a second matching stage: the OS string another rule's output names, fed back through the corpus to be normalised",
+        note: "a second matching stage: the `os.product` an earlier match produced, fed back through the corpus. The text reaches the matcher only when a reply happens to be a bare operating-system name",
     },
     Context {
         name: "pop3.banner",
@@ -243,8 +243,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "snmp.sys_object_id",
-        reach: Reach::Unproduced,
-        note: "`sysObjectID.0`; a second varbind in the GetRequest already sent, so it costs no extra datagram",
+        reach: Reach::Produced,
+        note: "`sysObjectID.0`, decoded by `snmp::sys_object_id` from the second varbind of the GetRequest already sent, and offered both alone and joined to the description",
     },
     Context {
         name: "ssh.banner",
