@@ -90,6 +90,36 @@ pub fn parse_ptr_response(payload: &[u8]) -> Result<PtrResponse> {
     })
 }
 
+/// The text of the first TXT answer in a DNS response.
+///
+/// What a `version.bind` query draws: a nameserver's own account of its build,
+/// which the signature corpus has several hundred rules written against. Runs of
+/// text inside one record are joined without a separator, which is how a value
+/// too long for a single 255-byte chunk arrives.
+///
+/// The question is not inspected, for the reason [`is_response`] gives: this is
+/// handed a reply to a datagram this engine addressed to port 53, and encoding
+/// the corpus's choice of probe here would put that choice inside the scanner
+/// that merely sends it. [`None`] for anything that is not a response, carries
+/// no TXT answer, or whose text is not UTF-8.
+pub fn first_text_answer(payload: &[u8]) -> Option<String> {
+    let packet = Packet::parse(payload).ok()?;
+    if packet.header.query {
+        return None;
+    }
+
+    let text = packet
+        .answers
+        .iter()
+        .find_map(|record| match &record.data {
+            RData::TXT(txt) => Some(txt.iter().collect::<Vec<_>>().concat()),
+            _ => None,
+        })?;
+
+    let text = String::from_utf8(text).ok()?;
+    (!text.is_empty()).then_some(text)
+}
+
 /// Whether `payload` is a DNS server answering a question.
 ///
 /// The evidence behind [`NetworkRole::DnsServer`], and the reason it is a claim

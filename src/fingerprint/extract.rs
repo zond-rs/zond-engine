@@ -75,6 +75,9 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Option<String> {
         // The one field worth a decoder: on a Unix host `sysDescr` is the output
         // of `uname -a`, which names the exact kernel. See [`snmp`](super::snmp).
         161 => super::snmp::sys_descr(datagram).map(ToOwned::to_owned),
+        // The `version.bind` probe the corpus registers for this port draws a
+        // TXT answer holding the nameserver's own account of its build.
+        53 => crate::protocols::dns::first_text_answer(datagram),
         _ => None,
     }
 }
@@ -115,7 +118,7 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// Stated rather than derived, because a decoder cannot be asked whether it
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
-const DECODED_UDP_PORTS: &[u16] = &[161];
+const DECODED_UDP_PORTS: &[u16] = &[53, 161];
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -219,11 +222,15 @@ mod tests {
     #[test]
     fn a_port_with_a_decoder_is_worth_dialling() {
         assert!(reads(161, Protocol::Udp));
+        assert!(reads(53, Protocol::Udp));
         assert!(
             reads(22, Protocol::Tcp),
             "every TCP port can be read for a banner"
         );
-        assert!(!reads(53, Protocol::Udp), "no decoder for a DNS reply yet");
+        assert!(
+            !reads(123, Protocol::Udp),
+            "an NTP reply has no decoder yet"
+        );
     }
 }
 
@@ -288,5 +295,67 @@ mod http_fields {
     #[test]
     fn a_banner_that_is_not_http_yields_no_fields() {
         assert!(super::texts("220 ProFTPD 1.3.5 Server ready").len() == 1);
+    }
+}
+
+#[cfg(test)]
+mod version_bind {
+    use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
+
+    /// A CHAOS TXT response to `version.bind`, built the way a nameserver
+    /// answers one: the question echoed back, then one TXT answer whose single
+    /// character-string is the build.
+    fn response(version: &str) -> Vec<u8> {
+        let mut packet = vec![
+            0x00, 0x00, // id
+            0x84, 0x00, // response, authoritative
+            0x00, 0x01, // one question
+            0x00, 0x01, // one answer
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        // QNAME version.bind, CHAOS TXT
+        packet.extend_from_slice(b"\x07version\x04bind\x00");
+        packet.extend_from_slice(&[0x00, 0x10, 0x00, 0x03]);
+        // The answer, its owner name a pointer back to the question.
+        packet.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x10, 0x00, 0x03]);
+        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        let rdata_len = (version.len() + 1) as u16;
+        packet.extend_from_slice(&rdata_len.to_be_bytes());
+        packet.push(version.len() as u8);
+        packet.extend_from_slice(version.as_bytes());
+        packet
+    }
+
+    #[test]
+    fn the_txt_answer_is_read_out_of_the_datagram() {
+        let decoded = super::from_datagram(53, &response("9.9.5-11ubuntu1.1-Ubuntu"));
+        assert_eq!(decoded.as_deref(), Some("9.9.5-11ubuntu1.1-Ubuntu"));
+    }
+
+    /// The probe already went out over both transports and the answer was
+    /// discarded. This is the rule it now reaches.
+    #[test]
+    fn a_bind_build_string_names_the_product_and_its_version() {
+        let banner = super::from_datagram(53, &response("9.9.5-11ubuntu1.1-Ubuntu"))
+            .expect("the TXT answer decodes");
+        let evidence = SignatureDb::global()
+            .identify(53, Protocol::Udp, &banner)
+            .expect("the corpus names it");
+        assert_eq!(evidence.product.as_deref(), Some("BIND"));
+    }
+
+    #[test]
+    fn a_datagram_that_is_not_a_dns_response_decodes_to_nothing() {
+        assert_eq!(super::from_datagram(53, b"not a dns message at all"), None);
+        // A query rather than a response, which is what a sniffed packet is.
+        let mut query = response("9.1.1");
+        query[2] = 0x00;
+        assert_eq!(super::from_datagram(53, &query), None);
+    }
+
+    #[test]
+    fn port_53_is_now_worth_a_second_datagram() {
+        assert!(super::reads(53, Protocol::Udp));
     }
 }

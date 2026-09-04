@@ -118,8 +118,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "dns.versionbind",
-        reach: Reach::Unproduced,
-        note: "the TXT answer the `version.bind` probe already draws over both transports; wants a decoder in `extract::from_datagram` and its TCP counterpart",
+        reach: Reach::Produced,
+        note: "the TXT answer the `version.bind` probe draws, decoded by `dns::first_text_answer` through `extract::from_datagram`",
     },
     Context {
         name: "favicon.md5",
@@ -268,13 +268,13 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "x509.issuer",
-        reach: Reach::Unproduced,
-        note: "the issuer of the presented chain, which `tls_cert` already parses and does not offer to the matcher",
+        reach: Reach::Produced,
+        note: "the issuer of the presented chain, rendered and matched as the subject is",
     },
     Context {
         name: "x509.subject",
-        reach: Reach::Unproduced,
-        note: "the subject of the presented chain; as the issuer, and the larger half of the pair",
+        reach: Reach::Produced,
+        note: "the subject of the presented chain, rendered RFC 4514 by `tls_cert::distinguished_name` and matched by `SignatureDb::identify_field`",
     },
 ];
 

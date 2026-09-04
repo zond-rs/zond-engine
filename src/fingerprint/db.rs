@@ -318,6 +318,27 @@ impl SignatureDb {
         identify_within(self, port_signatures, response, attested_by)
     }
 
+    /// What the corpus makes of one extracted field, matched against the whole
+    /// set rather than a port's.
+    ///
+    /// For a text that is not a banner and belongs to no port: a certificate
+    /// name, a hash, a record a rule is written against directly. A rule reading
+    /// one of those is registered under whatever service owns it, so narrowing
+    /// by port would skip exactly the rules wanted, and the literal prefilter is
+    /// what keeps matching the whole set affordable.
+    pub(crate) fn identify_field(&self, text: &str) -> Option<Evidence> {
+        let mut candidates = self.prefilter().candidates(text);
+        candidates.sort_unstable();
+        candidates.dedup();
+        self.warm(&candidates);
+        best_match(
+            self,
+            &candidates,
+            &[text],
+            crate::model::host::OsSource::ServiceBanner,
+        )
+    }
+
     /// The primary service name registered for `port`, if any. No compilation.
     pub fn service_name(&self, port: u16) -> Option<Arc<str>> {
         self.name_index.get(&port).cloned()
