@@ -8,6 +8,7 @@ description = "PostgreSQL Database"
 name = "postgres_startup"
 payload = '\x00\x00\x00\x08\x04\xd2\x16\x2f'
 protocol = "tcp"
+rarity = 1
 
 [[match]]
 name = "postgres_error"

@@ -7,6 +7,7 @@ description = "Redis Key-Value Store"
 name = "redis_ping"
 payload = 'PING\r\n'
 protocol = "tcp"
+rarity = 1
 
 [[match]]
 name = "redis_pong"

@@ -253,16 +253,26 @@ pub struct Probe {
     /// warns at build time, and the loader drops the probe rather than guess
     /// which transport was meant.
     pub protocol: String,
-    /// How aggressive/uncommon this probe is, `0..=9`, on the rarity scale the
-    /// imported signature corpora use. A probe is sent only when its rarity is
-    /// within the scan's
-    /// intensity level (`rarity <= intensity`), so low-rarity probes go out on
-    /// every scan and high-rarity ones only when explicitly asked for.
+    /// How common the service behind this probe is, `1..=9`, on the rarity scale
+    /// the imported signature corpora are authored on. A probe reaches a port
+    /// that did not register it when its rarity is within the scan's intensity
+    /// (`rarity <= intensity`), so a rarity of 1 is asked of any port that has
+    /// otherwise said nothing and a rarity of 9 only when a scan asks for
+    /// everything. See
+    /// [`ServiceDetection::probe_intensity`](crate::config::ServiceDetection::probe_intensity).
     ///
-    /// Reserved ahead of the intensity and softmatch work: the runtime does not
-    /// yet gate on it. `#[serde(default)]` makes it backward-compatible, every
-    /// existing probe deserializes at rarity `0` (common, always sent), so
-    /// current behaviour is unchanged until an intensity cap is wired in.
+    /// **Zero is not a band on that scale.** It is the absence of one, and it
+    /// means the probe goes only to the ports its own service registered, which
+    /// is where every probe went before the scale was wired in. Most of the
+    /// corpus is still unauthored and so still zero, and an unauthored probe
+    /// keeping its old addressing is the point: rarity is a claim that a
+    /// question is worth putting to a stranger, and that claim is made per
+    /// probe, by hand.
+    ///
+    /// What earns a 1 is a service that will not identify itself any other way.
+    /// Redis, PostgreSQL and memcached all wait to be spoken to and all answer
+    /// an HTTP request with silence or a closed socket, so moving one off its
+    /// registered port hid it completely until this existed.
     #[serde(default)]
     pub rarity: u8,
 

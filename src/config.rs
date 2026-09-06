@@ -551,15 +551,29 @@ pub enum ServiceDetection {
     /// round trip.
     #[default]
     Probe,
+    /// Level 3. Everything above, and then every question the corpus has.
+    ///
+    /// A port that walked the whole collection and still said nothing gets the
+    /// probes authored for *other* services, in rarity order. Redis moved to
+    /// 8443 is the case: it speaks only when spoken to, and it will not answer
+    /// the HTTP request 8443 earns from the ports it is registered under, so
+    /// nothing below this level ever asks it the one question it answers.
+    ///
+    /// Paid only where everything else drew a blank, which on an ordinary host
+    /// is a port or two. What it costs there is a connection and a round trip
+    /// per probe, and what it buys is the difference between a name and the
+    /// number's own guess.
+    Thorough,
 }
 
 impl ServiceDetection {
     /// Every level, ordered from least effort to most. The index of a level in
     /// this array is its [`level`](Self::level) number.
-    pub const ALL: [ServiceDetection; 3] = [
+    pub const ALL: [ServiceDetection; 4] = [
         ServiceDetection::Off,
         ServiceDetection::Banner,
         ServiceDetection::Probe,
+        ServiceDetection::Thorough,
     ];
 
     /// The name this level is written under, wherever it arrives as text.
@@ -568,6 +582,7 @@ impl ServiceDetection {
             ServiceDetection::Off => "off",
             ServiceDetection::Banner => "banner",
             ServiceDetection::Probe => "probe",
+            ServiceDetection::Thorough => "thorough",
         }
     }
 
@@ -578,6 +593,7 @@ impl ServiceDetection {
             ServiceDetection::Off => 0,
             ServiceDetection::Banner => 1,
             ServiceDetection::Probe => 2,
+            ServiceDetection::Thorough => 3,
         }
     }
 
@@ -587,6 +603,7 @@ impl ServiceDetection {
             0 => Some(ServiceDetection::Off),
             1 => Some(ServiceDetection::Banner),
             2 => Some(ServiceDetection::Probe),
+            3 => Some(ServiceDetection::Thorough),
             _ => None,
         }
     }
@@ -616,7 +633,35 @@ impl ServiceDetection {
     /// assert!(ServiceDetection::Probe.sends());
     /// ```
     pub const fn sends(self) -> bool {
-        matches!(self, ServiceDetection::Probe)
+        matches!(self, ServiceDetection::Probe | ServiceDetection::Thorough)
+    }
+
+    /// How far up the corpus's rarity scale this level reaches, for a probe
+    /// nothing registered against the port being asked.
+    ///
+    /// The scale runs 1 to 9 and is the one the imported corpora are authored
+    /// on; see [`Probe::rarity`](crate::fingerprint::Probe::rarity).
+    /// Zero reaches nothing, which is what every level below [`Probe`] wants and
+    /// what the engine did everywhere before this dial existed.
+    ///
+    /// The default stops at 1 because only the bottom of the scale is authored
+    /// so far. It is a floor to raise as the corpus fills in, not a judgement
+    /// that rarity 2 is too expensive.
+    ///
+    /// ```
+    /// use zond_engine::config::ServiceDetection;
+    ///
+    /// assert_eq!(ServiceDetection::Banner.probe_intensity(), 0);
+    /// assert_eq!(ServiceDetection::Thorough.probe_intensity(), 9);
+    /// ```
+    ///
+    /// [`Probe`]: Self::Probe
+    pub const fn probe_intensity(self) -> u8 {
+        match self {
+            ServiceDetection::Off | ServiceDetection::Banner => 0,
+            ServiceDetection::Probe => 1,
+            ServiceDetection::Thorough => 9,
+        }
     }
 }
 
@@ -657,7 +702,8 @@ impl FromStr for ServiceDetection {
     ///
     /// assert_eq!("banner".parse(), Ok(ServiceDetection::Banner));
     /// assert_eq!("0".parse(), Ok(ServiceDetection::Off));
-    /// assert!("thorough".parse::<ServiceDetection>().is_err());
+    /// assert_eq!("3".parse(), Ok(ServiceDetection::Thorough));
+    /// assert!("exhaustive".parse::<ServiceDetection>().is_err());
     /// ```
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         parse_level(input, &Self::ALL, Self::name, Self::from_level).ok_or_else(|| {
@@ -1579,14 +1625,14 @@ mod tests {
             assert!(os.contains(level.name()), "{os} omits {level}");
         }
 
-        let service = "thorough"
+        let service = "exhaustive"
             .parse::<ServiceDetection>()
             .unwrap_err()
             .to_string();
         for level in ServiceDetection::ALL {
             assert!(service.contains(level.name()), "{service} omits {level}");
         }
-        assert!(service.contains("0 to 2"), "{service}");
+        assert!(service.contains("0 to 3"), "{service}");
     }
 
     /// A scale no schedule can be built from is refused where it is set.

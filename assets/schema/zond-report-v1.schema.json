@@ -1741,11 +1741,12 @@
           ]
         },
         "service_detection": {
-          "description": "How far the phase went to identify what was listening behind each open port. A port reported with no service means different things at each level: at `off` nothing connected to it, and at any other level something did and could not tell. The level also says what the target would have logged - `off` completes no connection for identification at all, `banner` connects and listens without sending, and `probe` connects and asks.",
+          "description": "How far the phase went to identify what was listening behind each open port. A port reported with no service means different things at each level: at `off` nothing connected to it, and at any other level something did and could not tell. The level also says what the target would have logged - `off` completes no connection for identification at all, `banner` connects and listens without sending, `probe` connects and asks what the port's own services ask, and `thorough` goes on to ask a port that answered none of that the questions other services registered.",
           "enum": [
             "off",
             "banner",
-            "probe"
+            "probe",
+            "thorough"
           ]
         },
         "detection": {

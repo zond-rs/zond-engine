@@ -143,12 +143,14 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ScanEffort
 pub zond_engine::config::ServiceDetection::Banner
 pub zond_engine::config::ServiceDetection::Off
 pub zond_engine::config::ServiceDetection::Probe
+pub zond_engine::config::ServiceDetection::Thorough
 impl zond_engine::config::ServiceDetection
-pub const zond_engine::config::ServiceDetection::ALL: [zond_engine::config::ServiceDetection; 3]
+pub const zond_engine::config::ServiceDetection::ALL: [zond_engine::config::ServiceDetection; 4]
 pub const fn zond_engine::config::ServiceDetection::connects(self) -> bool
 pub const fn zond_engine::config::ServiceDetection::from_level(u8) -> core::option::Option<Self>
 pub const fn zond_engine::config::ServiceDetection::level(self) -> u8
 pub const fn zond_engine::config::ServiceDetection::name(self) -> &'static str
+pub const fn zond_engine::config::ServiceDetection::probe_intensity(self) -> u8
 pub const fn zond_engine::config::ServiceDetection::sends(self) -> bool
 impl core::clone::Clone for zond_engine::config::ServiceDetection
 pub fn zond_engine::config::ServiceDetection::clone(&self) -> zond_engine::config::ServiceDetection
@@ -5275,6 +5277,7 @@ pub fn zond_engine::fingerprint::SignatureDb::speaks(&self, &str) -> core::optio
 pub fn zond_engine::fingerprint::SignatureDb::tcp_probe_payloads(&self, u16) -> &[alloc::vec::Vec<u8>]
 pub fn zond_engine::fingerprint::SignatureDb::try_from_definitions(alloc::vec::Vec<zond_engine::fingerprint::ServiceDefinition>) -> core::result::Result<Self, zond_engine::fingerprint::InvalidDefinition>
 pub fn zond_engine::fingerprint::SignatureDb::udp_probe_payloads(&self, u16) -> &[alloc::vec::Vec<u8>]
+pub fn zond_engine::fingerprint::SignatureDb::universal_tcp_probe_payloads(&self, u16, u8) -> alloc::vec::Vec<&[u8]>
 impl core::fmt::Debug for zond_engine::fingerprint::SignatureDb
 pub fn zond_engine::fingerprint::SignatureDb::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl !core::marker::Freeze for zond_engine::fingerprint::SignatureDb

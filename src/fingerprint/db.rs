@@ -109,6 +109,14 @@ pub struct SignatureDb {
     /// [`Probe::generic`](crate::fingerprint::signature::Probe::generic) for
     /// what earns a probe that mark and why the set is tiny.
     generic_tcp_probes: Vec<Vec<u8>>,
+    /// The TCP probes that may be put to a port their own service never
+    /// registered, each with the intensity that unlocks it.
+    ///
+    /// Ordered by rarity, so a walk over them asks the likeliest question
+    /// first and a scan that stops early stops on the best of them. Holds only
+    /// probes authored with a rarity of 1 or more; see
+    /// [`Probe::rarity`](crate::fingerprint::signature::Probe::rarity).
+    universal_tcp_probes: Vec<(u8, Vec<u8>)>,
     /// `port -> UDP probe payloads`, indexed exactly like [`Self::tcp_probes`]
     /// but kept apart, because the two are sent by different machinery for
     /// different reasons.
@@ -183,6 +191,10 @@ impl SignatureDb {
         // every definition rather than per service, since what makes one generic
         // is precisely that it belongs to no port in particular.
         let mut generic_tcp_probes: Vec<Vec<u8>> = Vec::new();
+        // The probes a scan may put to a stranger, gathered across every
+        // definition for the same reason the generic ones are: what qualifies
+        // a probe here is a property of the question, not of the port.
+        let mut universal_tcp_probes: Vec<(u8, Vec<u8>)> = Vec::new();
         for def in &defs {
             for rule in &def.r#match {
                 let idx = signatures.len();
@@ -203,6 +215,9 @@ impl SignatureDb {
                 let payload = unescape(&probe.payload);
                 if probe.generic && probe.protocol == "tcp" {
                     generic_tcp_probes.push(payload.clone());
+                }
+                if probe.rarity > 0 && probe.protocol == "tcp" {
+                    universal_tcp_probes.push((probe.rarity, payload.clone()));
                 }
                 by_protocol
                     .entry(def.service.name.clone())
@@ -270,12 +285,15 @@ impl SignatureDb {
             }
         }
 
+        universal_tcp_probes.sort_by_key(|(rarity, _)| *rarity);
+
         Self {
             signatures,
             name_index,
             by_port,
             tcp_probes,
             generic_tcp_probes,
+            universal_tcp_probes,
             udp_probes,
             speaks,
             prefilter: OnceLock::new(),
@@ -373,6 +391,32 @@ impl SignatureDb {
     /// [`Probe::generic`](crate::fingerprint::signature::Probe::generic).
     pub fn generic_tcp_probe_payloads(&self) -> &[Vec<u8>] {
         &self.generic_tcp_probes
+    }
+
+    /// The TCP probes worth putting to `port` that no service registered for
+    /// it, within `intensity`, likeliest first.
+    ///
+    /// What a scan asks a port that has answered everything else with silence.
+    /// The port's own probes are excluded, since this is reached only after
+    /// they were sent and drew nothing, and asking twice would cost a
+    /// connection to learn what the last one already established.
+    ///
+    /// Empty at intensity 0, which is every level below
+    /// [`ServiceDetection::Probe`](crate::config::ServiceDetection::Probe), and
+    /// empty for as long as nothing in the corpus is authored within the
+    /// intensity given.
+    pub fn universal_tcp_probe_payloads(&self, port: u16, intensity: u8) -> Vec<&[u8]> {
+        if intensity == 0 {
+            return Vec::new();
+        }
+
+        let registered = self.tcp_probe_payloads(port);
+        self.universal_tcp_probes
+            .iter()
+            .filter(|(rarity, _)| *rarity <= intensity)
+            .map(|(_, payload)| payload.as_slice())
+            .filter(|payload| !registered.iter().any(|sent| sent.as_slice() == *payload))
+            .collect()
     }
 
     /// The signature indices matchable on `port` (service-linked). Empty if no
@@ -629,6 +673,20 @@ mod tests {
         speaking(name, ports, patterns, None)
     }
 
+    /// A definition carrying one TCP probe at a given rarity, which is what the
+    /// gate on [`SignatureDb::universal_tcp_probe_payloads`] reads.
+    fn probed(name: &str, ports: Vec<u16>, payload: &str, rarity: u8) -> ServiceDefinition {
+        let mut definition = def(name, ports, &["^X"]);
+        definition.probe = vec![Probe {
+            name: None,
+            payload: payload.to_string(),
+            protocol: "tcp".into(),
+            rarity,
+            generic: false,
+        }];
+        definition
+    }
+
     /// A definition that declares what it is carried over.
     fn speaking(
         name: &str,
@@ -691,6 +749,48 @@ mod tests {
         assert_eq!(db.service_name(80).as_deref(), Some("http"));
         assert_eq!(db.service_name(443).as_deref(), Some("https"));
         assert!(db.service_name(22).is_none());
+    }
+
+    /// Rarity decides which questions may be put to a stranger, and zero is
+    /// not a band on that scale.
+    ///
+    /// The default for the field, so most of the corpus is still zero and most
+    /// of the corpus must stay addressed to its own ports. A gate that read
+    /// zero as "common" would turn every unauthored probe in the set into one
+    /// sent everywhere, which is the opposite of what leaving it unauthored
+    /// says.
+    #[test]
+    fn only_an_authored_rarity_reaches_a_port_that_did_not_register_it() {
+        let db = SignatureDb::from_defs(vec![
+            probed("redis", vec![6379], "PING\r\n", 1),
+            probed("oracle", vec![1521], "\x00\x1a", 7),
+            probed("mysql", vec![3306], "\x0a", 0),
+        ]);
+
+        let at_default: Vec<&[u8]> = db.universal_tcp_probe_payloads(8443, 1);
+        assert_eq!(at_default, vec![b"PING\r\n".as_slice()]);
+
+        // Reaching further up the scale reaches the rarer question too, and
+        // still never the unauthored one.
+        let thorough = db.universal_tcp_probe_payloads(8443, 9);
+        assert_eq!(thorough.len(), 2, "{thorough:?}");
+        assert!(!thorough.contains(&b"\x0a".as_slice()));
+
+        // A level that asks nothing of a stranger asks nothing of a stranger.
+        assert!(db.universal_tcp_probe_payloads(8443, 0).is_empty());
+    }
+
+    /// A port's own probe is not asked twice.
+    ///
+    /// The rung is reached only after that probe was sent and drew nothing, so
+    /// repeating it costs a connection to establish what the last one already
+    /// did.
+    #[test]
+    fn a_ports_own_probe_is_not_offered_back_to_it() {
+        let db = SignatureDb::from_defs(vec![probed("redis", vec![6379], "PING\r\n", 1)]);
+
+        assert!(db.universal_tcp_probe_payloads(6379, 9).is_empty());
+        assert_eq!(db.universal_tcp_probe_payloads(6380, 9).len(), 1);
     }
 
     #[test]

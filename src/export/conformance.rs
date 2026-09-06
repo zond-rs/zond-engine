@@ -500,6 +500,11 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         ("attachment", "port"),
         ("finding", "excerpt"),
         ("finding", "remediation"),
+        // A rule names whichever parts of a box it knows, and most name one or
+        // two: a vendor and a model, or a family and nothing else.
+        ("hardware", "cpe23"),
+        ("hardware", "family"),
+        ("hardware", "product"),
         ("origin", "label"),
         ("phase", "attachments"),
         ("phase", "origin"),

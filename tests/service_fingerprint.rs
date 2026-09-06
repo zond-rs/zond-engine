@@ -25,7 +25,8 @@ mod common;
 
 use std::net::Ipv4Addr;
 
-use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 use zond_engine::config::ServiceDetection;
 use zond_engine::fingerprint::{baseline_port, fingerprint_tcp};
@@ -189,4 +190,120 @@ async fn a_service_is_named_from_the_wire_and_not_from_the_port_number() {
             );
         }
     }
+}
+
+/// A server that answers one question and hangs up on every other, which is how
+/// the services this exists for actually behave: Redis closes on the second line
+/// of an HTTP request rather than answering it, and PostgreSQL reads the first
+/// four bytes as a length and gives up.
+///
+/// Returns the port it is listening on. It accepts in a loop, because a ladder
+/// that falls through dials again for each rung.
+async fn spawn_challenge_server(question: &'static [u8], answer: &'static [u8]) -> u16 {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind a loopback challenge server");
+    let port = listener.local_addr().expect("its address").port();
+
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 512];
+                let Ok(read) = sock.read(&mut buffer).await else {
+                    return;
+                };
+                if buffer[..read].starts_with(question) {
+                    let _ = sock.write_all(answer).await;
+                    let _ = sock.flush().await;
+                }
+            });
+        }
+    });
+
+    port
+}
+
+/// A service that speaks only when spoken to is identified on a port that
+/// registers a different question entirely.
+///
+/// The half of the problem the ladder does not reach. Ordering the questions
+/// gets a service that greets on connect, or one that answers the generic HTTP
+/// request; it does nothing for a service that answers neither and whose own
+/// probe is addressed to a port number it is no longer on. Redis moved to 8443
+/// was reported as `kubernetes`, which is the number's registration and not
+/// anything the host said.
+///
+/// 8443 and 8080 are chosen because they are registered, and registered to
+/// something else: the last rung has to be reached past a port's own probes
+/// drawing nothing, not merely on a port nobody claims.
+#[tokio::test]
+async fn a_service_that_answers_only_its_own_probe_is_still_identified() {
+    // The version is what proves the reply was read rather than merely matched.
+    // Redis has none to give: `+PONG` carries no version, which is why its own
+    // signature captures none.
+    for (question, answer, number, expected, version) in [
+        (&b"PING"[..], &b"+PONG\r\n"[..], 8443u16, "redis", None),
+        (
+            &b"version"[..],
+            &b"VERSION 1.6.21\r\n"[..],
+            8080,
+            "memcached",
+            Some("1.6.21"),
+        ),
+    ] {
+        let port = spawn_challenge_server(question, answer).await;
+
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .expect("the challenge server accepts");
+
+        let identified = fingerprint_tcp(
+            stream,
+            baseline_port(number, Protocol::Tcp, PortState::Open),
+            ServiceDetection::default(),
+        )
+        .await;
+
+        let service = identified
+            .service()
+            .unwrap_or_else(|| panic!("nothing identified on port {number}"));
+
+        assert_eq!(
+            service.name(),
+            expected,
+            "port {number} kept its registration over what the host answered"
+        );
+        assert_eq!(service.version(), version, "on port {number}");
+    }
+}
+
+/// The level below the default asks none of it.
+///
+/// The last rung is the one that puts other services' questions to a stranger,
+/// and a caller who set the dial lower asked for that not to happen. The
+/// assertion is that the probe never goes out, which shows as the service
+/// staying unidentified against a server that would have answered it.
+#[tokio::test]
+async fn a_lower_level_does_not_reach_for_another_service_s_probe() {
+    let port = spawn_challenge_server(b"PING", b"+PONG\r\n").await;
+
+    let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .await
+        .expect("the challenge server accepts");
+
+    let identified = fingerprint_tcp(
+        stream,
+        baseline_port(8443, Protocol::Tcp, PortState::Open),
+        ServiceDetection::Banner,
+    )
+    .await;
+
+    let named = identified
+        .service()
+        .map(|service| service.name().to_string());
+    assert_ne!(
+        named.as_deref(),
+        Some("redis"),
+        "a level that asks nothing cannot have asked redis its own question"
+    );
 }

@@ -190,18 +190,23 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// The ceiling on everything one port's collection may spend on the network.
 ///
 /// A backstop rather than a working budget. Every stage below already has its
-/// own bound, and the longest honest walk down the ladder in [`gather`] is a
-/// failed handshake, a failed legacy handshake and then a port that speaks in
-/// the clear, which comes to twelve seconds. This sits above that, so it never
-/// fires on a port behaving normally;
+/// own bound, and the longest honest walk down the ladder in [`gather`] runs a
+/// failed handshake, a failed legacy handshake, a silent port in the clear and
+/// then the last-resort probes, which comes to eighteen and a half seconds.
+/// This sits above that, so it never fires on a port behaving normally;
 /// `the_collection_budget_covers_every_path_through_gather` is what holds the
 /// two together.
+///
+/// It rose from fifteen seconds when the ladder grew its last rung. A rung is
+/// bounded work on a port that has already said nothing, so the ceiling above
+/// them has to move when one is added or it stops being a backstop and starts
+/// being the thing that cuts the walk short.
 ///
 /// It is here because the stages are added to over time and their sum is nobody's
 /// property. `read_bytes` grew a bound it did not have; the next stage to be
 /// added will be bounded by whoever writes it, and this is what makes the total
 /// somebody's responsibility rather than an emergent number.
-const COLLECTION_BUDGET: Duration = Duration::from_secs(15);
+const COLLECTION_BUDGET: Duration = Duration::from_secs(25);
 
 /// Whether a reply from this port over this protocol is one the engine can read.
 ///
@@ -627,19 +632,30 @@ async fn gather(
     for rung in Rung::ladder(port) {
         let stream = match opened.take() {
             Some(stream) => stream,
-            None => match timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await {
-                Ok(Ok(fresh)) => fresh,
-                _ => return (ResponseSet::default(), None),
+            None => match redial(socket).await {
+                Some(fresh) => fresh,
+                None => return (ResponseSet::default(), None),
             },
         };
 
-        let (responses, tunnel) = rung.ask(stream, port, socket).await;
+        let (responses, tunnel) = rung.ask(stream, port, socket, detection).await;
         if !responses.is_empty() {
             return (responses, tunnel);
         }
     }
 
     (ResponseSet::default(), None)
+}
+
+/// A second connection to a port already reached once.
+///
+/// The first one succeeded, so this either succeeds immediately or the port has
+/// stopped accepting; see [`CONNECT_RETRY_TIMEOUT`].
+async fn redial(socket: SocketAddr) -> Option<TcpStream> {
+    match timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await {
+        Ok(Ok(fresh)) => Some(fresh),
+        _ => None,
+    }
 }
 
 /// One question a port can be asked, and the unit [`gather`] falls through.
@@ -661,6 +677,15 @@ enum Rung {
     /// Listen and probe in the clear: the port's own probes where something
     /// claims it, and the generic question where nothing does.
     Plaintext,
+    /// The questions other services registered, put to a port that has answered
+    /// none of its own.
+    ///
+    /// The rung that exists because a port number gates evidence as well as
+    /// ordering it. Redis speaks only when spoken to and closes on an HTTP
+    /// request, so a Redis moved to 8443 answers nothing on any rung above
+    /// this, and the `PING` that would name it in one round trip is registered
+    /// against 6379 and asked nowhere else.
+    LastResort,
 }
 
 impl Rung {
@@ -678,18 +703,28 @@ impl Rung {
     /// ending the ladder one rung above the question that names the version.
     fn ladder(port: u16) -> &'static [Rung] {
         if tls::is_tls_port(port) {
-            &[Rung::Tls, Rung::LegacyTls, Rung::Plaintext]
+            &[
+                Rung::Tls,
+                Rung::LegacyTls,
+                Rung::Plaintext,
+                Rung::LastResort,
+            ]
         } else {
-            &[Rung::Plaintext, Rung::SpeculativeTls]
+            &[Rung::Plaintext, Rung::SpeculativeTls, Rung::LastResort]
         }
     }
 
     /// Asks this rung's question over `stream`, which it consumes.
+    ///
+    /// [`LastResort`](Self::LastResort) is the one rung that may dial again on
+    /// its own account, because it asks several unrelated protocols and each
+    /// leaves the socket unusable for the next.
     async fn ask(
         self,
         mut stream: TcpStream,
         port: u16,
         socket: SocketAddr,
+        detection: ServiceDetection,
     ) -> (ResponseSet, Option<Tunnel>) {
         match self {
             Rung::Tls => tunneled(tls::handshake(stream, socket.ip()).await, port).await,
@@ -698,8 +733,56 @@ impl Rung {
             }
             Rung::LegacyTls => (legacy_tls(stream).await, None),
             Rung::Plaintext => (plaintext(&mut stream, port, Some(socket)).await, None),
+            Rung::LastResort => (last_resort(stream, socket, port, detection).await, None),
         }
     }
+}
+
+/// Puts other services' questions to a port that has answered none of its own.
+///
+/// One connection per probe and one probe per connection, because the protocols
+/// are unrelated and most of them end the conversation on a question they do not
+/// recognise: PostgreSQL reads `PING` as a four-byte length and gives up, and
+/// Redis closes on the second line of an HTTP request rather than answering it.
+/// Reusing a socket across two of them would ask the second question of a peer
+/// that had already hung up.
+///
+/// Stops on the first probe that draws anything. Whether what came back
+/// identifies the service is the analyzers' question, not this one: a port that
+/// spoke has stopped being a port that said nothing, and asking it the rest of
+/// the corpus would be traffic spent on a case already closed.
+///
+/// Which probes those are, and how many, is
+/// [`ServiceDetection::probe_intensity`]. At the default only the bottom of the
+/// rarity scale is asked, which today is three questions and in practice far
+/// fewer, since the rung is reached at all on perhaps a port or two per host.
+async fn last_resort(
+    first: TcpStream,
+    socket: SocketAddr,
+    port: u16,
+    detection: ServiceDetection,
+) -> ResponseSet {
+    let probes =
+        SignatureDb::global().universal_tcp_probe_payloads(port, detection.probe_intensity());
+
+    let mut opened = Some(first);
+    for payload in probes {
+        let Some(mut stream) = (match opened.take() {
+            Some(stream) => Some(stream),
+            None => redial(socket).await,
+        }) else {
+            break;
+        };
+
+        if stream.write_all(payload).await.is_err() {
+            continue;
+        }
+        if let Some(reply) = read_document(&mut stream, PROBE_READ_TIMEOUT).await {
+            return ResponseSet::from_banners(vec![reply]);
+        }
+    }
+
+    ResponseSet::default()
 }
 
 /// Everything a port will say in the clear.
@@ -1751,16 +1834,25 @@ mod tests {
         let alert_then_tls = read_once + rung + tls::SPECULATIVE_TLS_TIMEOUT + spoke(1);
         let unclaimed_then_redirect = read_once + rung + read_once;
 
+        // And the last rung, which is a connection and a read per probe: every
+        // probe but the last drew nothing, or the rung would have stopped there.
+        let universal = SignatureDb::global()
+            .universal_tcp_probe_payloads(0, ServiceDetection::Thorough.probe_intensity())
+            .len()
+            .max(1) as u32;
+        let last_resort = (rung + PROBE_READ_TIMEOUT) * (universal - 1) + rung + read_once;
+
         let worst = [
-            tls_all_three,
-            tls_then_silence,
+            tls_all_three + last_resort,
+            tls_then_silence + last_resort,
             claimed_then_tls,
             alert_then_tls,
             unclaimed_then_redirect,
+            silent(probes) + rung + tls::SPECULATIVE_TLS_TIMEOUT + last_resort,
         ]
         .into_iter()
         .max()
-        .expect("five paths");
+        .expect("six paths");
 
         assert!(
             worst < COLLECTION_BUDGET,

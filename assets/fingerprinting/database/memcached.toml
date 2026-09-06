@@ -8,6 +8,7 @@ description = "Memcached"
 name = "memcached_version"
 payload = 'version\r\n'
 protocol = "tcp"
+rarity = 1
 
 [[match]]
 name = "memcached_version_response"
