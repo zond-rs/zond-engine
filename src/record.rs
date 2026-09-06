@@ -339,6 +339,9 @@ pub struct OsRecord {
     /// The kernel, where one was named separately.
     #[serde(default)]
     pub kernel: Option<String>,
+    /// The instruction set, such as `x86_64`.
+    #[serde(default)]
+    pub arch: Option<String>,
     /// How sure the detail beyond the family is.
     #[serde(default)]
     pub detail_accuracy: Option<u8>,
@@ -360,6 +363,7 @@ impl From<&OsFingerprint> for OsRecord {
             generation: os.generation().map(str::to_owned),
             vendor: os.vendor().map(str::to_owned),
             kernel: os.kernel().map(str::to_owned),
+            arch: os.arch().map(str::to_owned),
             detail_accuracy: os.detail_accuracy(),
             evidence: os.evidence().map(str::to_owned),
             cpes: os.cpes().iter().map(|cpe| cpe.to_string()).collect(),
@@ -384,6 +388,9 @@ impl From<&OsRecord> for OsFingerprint {
         }
         if let Some(kernel) = &record.kernel {
             os = os.with_kernel(kernel.clone());
+        }
+        if let Some(arch) = &record.arch {
+            os = os.with_arch(arch.clone());
         }
         if let Some(accuracy) = record.detail_accuracy {
             os = os.with_detail_accuracy(accuracy);
@@ -421,6 +428,9 @@ pub struct OsEvidenceRecord {
     /// The kernel, where it named one.
     #[serde(default)]
     pub kernel: Option<String>,
+    /// The instruction set, where it named one.
+    #[serde(default)]
+    pub arch: Option<String>,
     /// A platform identifier, where it carried one.
     #[serde(default)]
     pub cpe: Option<String>,
@@ -440,6 +450,7 @@ impl From<&OsEvidence> for OsEvidenceRecord {
             product: evidence.product.clone(),
             version: evidence.version.clone(),
             kernel: evidence.kernel.clone(),
+            arch: evidence.arch.clone(),
             cpe: evidence.cpe.clone(),
             confidence: evidence.confidence,
             evidence: evidence.evidence.clone(),
@@ -459,6 +470,7 @@ impl From<&OsEvidenceRecord> for OsEvidence {
             product: record.product.clone(),
             version: record.version.clone(),
             kernel: record.kernel.clone(),
+            arch: record.arch.clone(),
             cpe: record.cpe.clone(),
             confidence: record.confidence,
             evidence: record.evidence.clone(),
@@ -484,6 +496,15 @@ pub struct HardwareRecord {
     /// The hardware's platform identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpe23: Option<String>,
+    /// A finer designation than the product.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The hardware revision, which is not the operating system's version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The unit's own serial number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
 }
 
 impl From<&HardwareInfo> for HardwareRecord {
@@ -536,6 +557,9 @@ impl From<&HardwareInfo> for HardwareRecord {
             product: hardware.product().map(str::to_string),
             family: hardware.family().map(str::to_string),
             cpe23: hardware.cpe23().map(str::to_string),
+            model: hardware.model().map(str::to_string),
+            version: hardware.hardware_version().map(str::to_string),
+            serial_number: hardware.serial_number().map(str::to_string),
         }
     }
 }
@@ -556,12 +580,15 @@ impl HardwareRecord {
         // A record may hold no address at all: a host reached through a gateway
         // has no MAC to read, and a banner naming `Merit LILIN PDR M800`
         // describes the box without one.
-        let described = HardwareInfo::described(
-            self.vendor.as_deref(),
-            self.product.as_deref(),
-            self.family.as_deref(),
-            self.cpe23.as_deref(),
-        );
+        let described = HardwareInfo::described(crate::model::host::HardwareDescription {
+            vendor: self.vendor.as_deref(),
+            product: self.product.as_deref(),
+            family: self.family.as_deref(),
+            cpe23: self.cpe23.as_deref(),
+            model: self.model.as_deref(),
+            version: self.version.as_deref(),
+            serial_number: self.serial_number.as_deref(),
+        });
 
         let Some((first, first_at)) = macs.next() else {
             return described;
@@ -2274,6 +2301,7 @@ mod tests {
             product: Some("Ubuntu".to_string()),
             version: Some("22.04".to_string()),
             kernel: Some("5.15.0".to_string()),
+            arch: None,
             cpe: Some("cpe:/o:canonical:ubuntu_linux:22.04".to_string()),
             confidence: 0.65,
             evidence: "stack reading".to_string(),
@@ -2286,6 +2314,7 @@ mod tests {
             product: None,
             version: None,
             kernel: None,
+            arch: None,
             cpe: None,
             confidence: 0.4,
             evidence: "ssh banner".to_string(),

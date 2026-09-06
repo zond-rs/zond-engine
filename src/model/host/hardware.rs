@@ -99,6 +99,45 @@ pub struct HardwareInfo {
     /// writes it. Separate from the operating system's: a report naming both is
     /// naming two different things about one machine.
     cpe23: Option<Arc<str>>,
+
+    /// A finer designation than the product, where a rule draws both: the label
+    /// printers say `Thermal Label Printer` for one and `PC42t` for the other.
+    model: Option<Arc<str>>,
+
+    /// The hardware revision, which is not the operating system's version. An
+    /// appliance running one firmware across three board revisions has one of
+    /// each, and reporting either as the other is wrong in both directions.
+    version: Option<Arc<str>>,
+
+    /// The unit's own serial number, where it published one.
+    ///
+    /// The most identifying thing in this record and the only one that names a
+    /// single box rather than a model line, which is why a redacted export drops
+    /// it and keeps the rest.
+    serial_number: Option<Arc<str>>,
+}
+
+/// What a service said about a box, for [`HardwareInfo::described`].
+///
+/// A struct rather than seven positional arguments, because seven `Option<&str>`
+/// in a row is a call nobody can read and any two of which can be swapped
+/// without the compiler noticing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HardwareDescription<'a> {
+    /// Who made the box.
+    pub vendor: Option<&'a str>,
+    /// What it is called.
+    pub product: Option<&'a str>,
+    /// The line it belongs to.
+    pub family: Option<&'a str>,
+    /// Its platform identifier.
+    pub cpe23: Option<&'a str>,
+    /// A finer designation than the product.
+    pub model: Option<&'a str>,
+    /// The hardware revision.
+    pub version: Option<&'a str>,
+    /// The unit's own serial number.
+    pub serial_number: Option<&'a str>,
 }
 
 impl HardwareInfo {
@@ -115,6 +154,9 @@ impl HardwareInfo {
             product: None,
             family: None,
             cpe23: None,
+            model: None,
+            version: None,
+            serial_number: None,
         }
     }
 
@@ -123,20 +165,18 @@ impl HardwareInfo {
     /// The other way one of these is made. A host reached through a gateway has
     /// no MAC to read, and a banner naming `Merit LILIN PDR M800` describes the
     /// box just as well as an address block would have.
-    pub fn described(
-        vendor: Option<&str>,
-        product: Option<&str>,
-        family: Option<&str>,
-        cpe23: Option<&str>,
-    ) -> Option<Self> {
-        let described = Self {
+    pub fn described(described: HardwareDescription<'_>) -> Option<Self> {
+        let built = Self {
             macs: BTreeMap::new(),
-            vendor: vendor.map(Arc::from),
-            product: product.map(Arc::from),
-            family: family.map(Arc::from),
-            cpe23: cpe23.map(Arc::from),
+            vendor: described.vendor.map(Arc::from),
+            product: described.product.map(Arc::from),
+            family: described.family.map(Arc::from),
+            cpe23: described.cpe23.map(Arc::from),
+            model: described.model.map(Arc::from),
+            version: described.version.map(Arc::from),
+            serial_number: described.serial_number.map(Arc::from),
         };
-        described.names_something().then_some(described)
+        built.names_something().then_some(built)
     }
 
     /// Whether this record says anything at all beyond the addresses it holds.
@@ -145,6 +185,9 @@ impl HardwareInfo {
             || self.product.is_some()
             || self.family.is_some()
             || self.cpe23.is_some()
+            || self.model.is_some()
+            || self.version.is_some()
+            || self.serial_number.is_some()
     }
 
     /// The model, where something named it.
@@ -160,6 +203,21 @@ impl HardwareInfo {
     /// The hardware's platform identifier.
     pub fn cpe23(&self) -> Option<&str> {
         self.cpe23.as_deref()
+    }
+
+    /// A finer designation than the product, where a rule drew both.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    /// The hardware revision, which is not the operating system's version.
+    pub fn hardware_version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
+    /// The unit's own serial number, where it published one.
+    pub fn serial_number(&self) -> Option<&str> {
+        self.serial_number.as_deref()
     }
 
     /// Records a discovery event for a specific MAC address, updating its
@@ -294,12 +352,18 @@ impl HardwareInfo {
         self.product = self.product.take().or(other.product);
         self.family = self.family.take().or(other.family);
         self.cpe23 = self.cpe23.take().or(other.cpe23);
+        self.model = self.model.take().or(other.model);
+        self.version = self.version.take().or(other.version);
+        self.serial_number = self.serial_number.take().or(other.serial_number);
     }
 
     /// Whether a record carries hardware detail beyond a vendor, which is what
     /// separates one a service described from one an address block produced.
     fn names_more_than_a_vendor(&self) -> bool {
-        self.product.is_some() || self.family.is_some() || self.cpe23.is_some()
+        self.product.is_some()
+            || self.family.is_some()
+            || self.cpe23.is_some()
+            || self.model.is_some()
     }
 }
 
@@ -428,6 +492,9 @@ mod tests {
             product: None,
             family: None,
             cpe23: None,
+            model: None,
+            version: None,
+            serial_number: None,
         };
         assert_eq!(hw.most_recent_mac(), None);
     }
@@ -455,12 +522,12 @@ mod tests {
     /// no address for, and the record has to exist without one.
     #[test]
     fn hardware_a_service_described_needs_no_address() {
-        let described = HardwareInfo::described(
-            Some("Merit LILIN"),
-            Some("PDR M800"),
-            None,
-            Some("cpe:/h:merit_lilin:pdr_m800"),
-        )
+        let described = HardwareInfo::described(HardwareDescription {
+            vendor: Some("Merit LILIN"),
+            product: Some("PDR M800"),
+            cpe23: Some("cpe:/h:merit_lilin:pdr_m800"),
+            ..HardwareDescription::default()
+        })
         .expect("it names something");
 
         assert_eq!(described.vendor(), Some("Merit LILIN"));
@@ -472,7 +539,7 @@ mod tests {
     /// empty metadata map would attach an empty hardware entry to its host.
     #[test]
     fn a_description_naming_nothing_is_not_recorded() {
-        assert!(HardwareInfo::described(None, None, None, None).is_none());
+        assert!(HardwareInfo::described(HardwareDescription::default()).is_none());
     }
 
     /// A vendor read from an address block names whoever made the network chip;
@@ -481,9 +548,12 @@ mod tests {
     #[test]
     fn a_stated_vendor_outranks_one_read_from_an_address() {
         let mut known = HardwareInfo::new(MacAddr::new(0x00, 0x1b, 0x21, 0x11, 0x22, 0x33));
-        let described =
-            HardwareInfo::described(Some("Check Point"), Some("Firewall-1"), None, None)
-                .expect("it names something");
+        let described = HardwareInfo::described(HardwareDescription {
+            vendor: Some("Check Point"),
+            product: Some("Firewall-1"),
+            ..HardwareDescription::default()
+        })
+        .expect("it names something");
 
         known.merge(described);
 
@@ -503,8 +573,11 @@ mod tests {
     fn a_bare_stated_vendor_does_not_displace_the_registered_one() {
         let mut known = HardwareInfo::new(MacAddr::new(0x00, 0x1b, 0x21, 0x11, 0x22, 0x33));
         let before = known.vendor().map(str::to_string);
-        let thin = HardwareInfo::described(Some("Unhelpful"), None, None, None)
-            .expect("it names something");
+        let thin = HardwareInfo::described(HardwareDescription {
+            vendor: Some("Unhelpful"),
+            ..HardwareDescription::default()
+        })
+        .expect("it names something");
 
         known.merge(thin);
 

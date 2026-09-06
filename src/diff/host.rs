@@ -478,6 +478,7 @@ fn same_system(before: Option<&OsFingerprint>, after: Option<&OsFingerprint>) ->
                 && before.generation() == after.generation()
                 && before.vendor() == after.vendor()
                 && before.kernel() == after.kernel()
+                && before.arch() == after.arch()
                 && before.cpes() == after.cpes()
         }
         _ => false,

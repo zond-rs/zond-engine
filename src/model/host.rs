@@ -46,7 +46,7 @@ pub mod protocol;
 pub mod status;
 pub mod telemetry;
 
-pub use hardware::HardwareInfo;
+pub use hardware::{HardwareDescription, HardwareInfo};
 pub use os::{OsEvidence, OsFingerprint, OsSource};
 pub use path::{Hop, NetworkPath};
 pub use protocol::{IpProtocolState, ip_protocol_name};
@@ -1590,6 +1590,7 @@ mod tests {
             product: None,
             version: None,
             kernel: Some("6.1.0".to_string()),
+            arch: None,
             cpe: None,
             confidence: 0.9,
             evidence: "ssh banner".to_string(),

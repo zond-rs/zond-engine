@@ -188,11 +188,12 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     lines.sort_unstable();
     lines.dedup();
 
-    let (vendor, product, version, kernel, cpe, device) = (
+    let (vendor, product, version, kernel, arch, cpe, device) = (
         agreed(|item| &item.vendor),
         agreed(|item| &item.product),
         agreed(|item| &item.version),
         agreed(|item| &item.kernel),
+        agreed(|item| &item.arch),
         agreed(|item| &item.cpe),
         agreed(|item| &item.device),
     );
@@ -227,6 +228,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         || product.is_some()
         || version.is_some()
         || kernel.is_some()
+        || arch.is_some()
         || cpe.is_some()
         || device.is_some();
     let detail_accuracy = refined.then(|| {
@@ -237,6 +239,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
                     || item.product.is_some()
                     || item.version.is_some()
                     || item.kernel.is_some()
+                    || item.arch.is_some()
                     || item.cpe.is_some()
                     || item.device.is_some()
             })
@@ -252,6 +255,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         product,
         version,
         kernel,
+        arch,
         cpe,
         accuracy,
         detail_accuracy,
@@ -307,6 +311,7 @@ mod tests {
             product: Some("NC-8700w".to_string()),
             version: Some("ZL".to_string()),
             kernel: None,
+            arch: None,
             cpe: None,
             confidence: 0.56,
             evidence: "snmp agent names NC-8700w".to_string(),
@@ -322,6 +327,7 @@ mod tests {
             product: None,
             version: None,
             kernel: None,
+            arch: None,
             cpe: None,
             confidence,
             evidence: format!("{source:?} says {family}"),

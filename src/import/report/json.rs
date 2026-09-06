@@ -1301,6 +1301,7 @@ struct OsDto {
     generation: Option<String>,
     vendor: Option<String>,
     kernel: Option<String>,
+    arch: Option<String>,
     accuracy: u8,
     detail_accuracy: Option<u8>,
     cpes: Vec<String>,
@@ -1317,6 +1318,7 @@ impl OsDto {
             generation: self.generation,
             vendor: self.vendor,
             kernel: self.kernel,
+            arch: self.arch,
             detail_accuracy: self.detail_accuracy,
             evidence: self.evidence,
             cpes: self.cpes,
@@ -1337,6 +1339,10 @@ struct HardwareDto {
     product: Option<String>,
     family: Option<String>,
     cpe23: Option<String>,
+    model: Option<String>,
+    version: Option<String>,
+    /// Absent from a redacted document, which drops it rather than masking it.
+    serial_number: Option<String>,
 }
 
 impl HardwareDto {
@@ -1357,6 +1363,9 @@ impl HardwareDto {
             product: self.product,
             family: self.family,
             cpe23: self.cpe23,
+            model: self.model,
+            version: self.version,
+            serial_number: self.serial_number,
         })
     }
 }

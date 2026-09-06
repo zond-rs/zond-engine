@@ -215,17 +215,6 @@ impl Enrichment {
     }
 }
 
-/// Turns a [`DiscoveryPlan`] into running tasks.
-///
-/// Every refusal the plan carries is recorded before anything is spawned, so the
-/// distinction between "nothing is there" and "nobody looked" survives into the
-/// report. Then each step is asked for its strategy: a step that cannot open
-/// what it needs is recorded and skipped, and the rest of the scan proceeds
-/// rather than being abandoned over one bad interface.
-///
-/// Each surviving strategy gets its own task, tagged with its own
-/// [`ScannerKind`], so the caller can wait on all of them and react to failures
-/// individually.
 /// Records the targets that are this host's own addresses as up, without
 /// probing them.
 ///
@@ -262,6 +251,17 @@ fn record_our_own_addresses(ours: &crate::model::ip::set::IpSet, ctx: &ScanConte
     }
 }
 
+/// Turns a [`DiscoveryPlan`] into running tasks.
+///
+/// Every refusal the plan carries is recorded before anything is spawned, so the
+/// distinction between "nothing is there" and "nobody looked" survives into the
+/// report. Then each step is asked for its strategy: a step that cannot open
+/// what it needs is recorded and skipped, and the rest of the scan proceeds
+/// rather than being abandoned over one bad interface.
+///
+/// Each surviving strategy gets its own task, tagged with its own
+/// [`ScannerKind`], so the caller can wait on all of them and react to failures
+/// individually.
 pub(super) async fn spawn_explorers(
     plan: plan::DiscoveryPlan,
     ctx: &ScanContext,

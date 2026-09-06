@@ -504,7 +504,13 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // two: a vendor and a model, or a family and nothing else.
         ("hardware", "cpe23"),
         ("hardware", "family"),
+        // The three a service states about a box and an address block never
+        // reaches. Absent from most records because most rules name none of
+        // them, and `serial_number` is absent from every redacted document.
+        ("hardware", "model"),
         ("hardware", "product"),
+        ("hardware", "serial_number"),
+        ("hardware", "version"),
         ("origin", "label"),
         ("phase", "attachments"),
         ("phase", "origin"),

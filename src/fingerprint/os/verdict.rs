@@ -117,6 +117,12 @@ pub struct OsVerdict {
     /// distribution release and the kernel it ships are two facts about one
     /// machine, and a source that knows one may know nothing of the other.
     pub kernel: Option<String>,
+    /// The instruction set, where a source read one.
+    ///
+    /// A third axis beside what the machine runs and what it is. Nothing in a
+    /// handshake carries it; it arrives from text, and an SNMP `sysDescr` on a
+    /// Unix host is `uname -a`, which ends with the machine type.
+    pub arch: Option<String>,
     /// How sure this is, on the `0..=100` scale
     /// [`OsFingerprint`] uses. Bounded by [`MAX_STACK_ACCURACY`].
     ///
@@ -160,6 +166,7 @@ impl OsVerdict {
             product: self.product.clone(),
             version: self.version.clone(),
             kernel: self.kernel.clone(),
+            arch: self.arch.clone(),
             cpe: self.cpe.clone(),
             confidence: f32::from(self.accuracy) / 100.0,
             evidence: self.evidence.clone(),
@@ -230,6 +237,9 @@ impl OsVerdict {
         }
         if let Some(kernel) = &self.kernel {
             fingerprint = fingerprint.with_kernel(&**kernel);
+        }
+        if let Some(arch) = &self.arch {
+            fingerprint = fingerprint.with_arch(&**arch);
         }
         if let Some(accuracy) = self.detail_accuracy {
             fingerprint = fingerprint.with_detail_accuracy(accuracy);
@@ -423,9 +433,12 @@ fn score(matched: Vec<&OsDefinition>, evidence: String) -> Option<OsVerdict> {
         vendor,
         product,
         version,
-        // A stack rule reads a reply's shape, which carries no kernel release.
-        // Only a service that states one can supply it.
+        // A stack rule reads a reply's shape, which carries neither a kernel
+        // release nor an instruction set: one kernel build emits the same
+        // handshake on every architecture it targets. Only a service that states
+        // one can supply either.
         kernel: None,
+        arch: None,
         cpe,
         accuracy,
         source: OsSource::TcpStack,
@@ -637,6 +650,7 @@ mod tests {
             product: Some("Linux".to_owned()),
             version: Some("12".to_owned()),
             kernel: None,
+            arch: None,
             cpe: None,
             accuracy: 84,
             detail_accuracy: Some(55),
@@ -667,6 +681,7 @@ mod tests {
             product: Some("NC-8700w".to_owned()),
             version: Some("ZL".to_owned()),
             kernel: None,
+            arch: None,
             cpe: None,
             accuracy: 40,
             detail_accuracy: Some(56),
@@ -698,6 +713,7 @@ mod tests {
             product: Some("NC-8700w".to_owned()),
             version: Some("ZL".to_owned()),
             kernel: None,
+            arch: None,
             cpe: None,
             accuracy: 56,
             detail_accuracy: Some(56),
@@ -723,6 +739,7 @@ mod tests {
             product: None,
             version: Some("10".to_owned()),
             kernel: None,
+            arch: None,
             cpe: None,
             accuracy: 60,
             detail_accuracy: Some(60),

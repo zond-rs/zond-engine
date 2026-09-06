@@ -1161,11 +1161,12 @@ mod os_from_headers {
 
         assert!(
             from_response.is_none(),
-            "if this ever starts matching, the rules changed shape and `os_from` \
-             should be reconsidered rather than left as a workaround"
+            "if this ever starts matching, the rules changed shape and \
+             `corpus_reading` should be reconsidered rather than left as a \
+             workaround"
         );
         assert!(
-            os_from("Microsoft-IIS/6.0").is_some(),
+            corpus_reading("Microsoft-IIS/6.0").0.is_some(),
             "while the value those rules are written against does match"
         );
     }
@@ -1174,6 +1175,6 @@ mod os_from_headers {
     /// rather than falling through to whichever rule is loosest.
     #[test]
     fn a_server_the_corpus_does_not_know_names_nothing() {
-        assert!(os_from("SomeServer/1.0").is_none());
+        assert!(corpus_reading("SomeServer/1.0").0.is_none());
     }
 }

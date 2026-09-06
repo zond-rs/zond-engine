@@ -142,21 +142,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The `sysDescr.0` string out of an SNMPv1 `GetResponse`, or `None` if this
-/// datagram is not one.
-///
-/// # What has to hold
-///
-/// The message must be a sequence carrying a version, a community and a
-/// `GetResponse`; the response must carry exactly the three integers a PDU
-/// begins with and then its bindings; the first binding must name
-/// [`SYS_DESCR_OID`] and carry an octet string. Anything else, an error PDU
-/// from a wrong community, a trap, a binding for another object, a value of
-/// another type, is not a system description and is refused as one.
-///
-/// The string must also be valid UTF-8. `sysDescr` is defined as
-/// `DisplayString`, which is ASCII, so bytes that are not are a peer sending
-/// something other than what it claims.
 /// The value of `sysObjectID.0` in a GetResponse, as dotted decimal.
 ///
 /// The agent's own name for what it is, which the corpus matches both alone and
@@ -222,31 +207,46 @@ fn bindings_of(datagram: &[u8]) -> Option<Reader<'_>> {
     Some(Reader::new(response.expect(tag::SEQUENCE)?))
 }
 
+/// The `sysDescr.0` string out of an SNMPv1 `GetResponse`, or `None` if this
+/// datagram is not one.
+///
+/// # What has to hold
+///
+/// The message must be a sequence carrying a version, a community and a
+/// `GetResponse`; the response must carry exactly the three integers a PDU
+/// begins with and then its bindings; and one of those bindings must name
+/// [`SYS_DESCR_OID`] and carry an octet string. Anything else, an error PDU
+/// from a wrong community, a trap, a reply that answers only the other
+/// question, a value of another type, is not a system description and is
+/// refused as one.
+///
+/// Every binding is examined rather than the first, because the request carries
+/// two questions and an agent answers them in whatever order it likes.
+///
+/// The string must also be valid UTF-8. `sysDescr` is defined as
+/// `DisplayString`, which is ASCII, so bytes that are not are a peer sending
+/// something other than what it claims.
 pub(crate) fn sys_descr(datagram: &[u8]) -> Option<&str> {
-    let mut message = Reader::new(Reader::new(datagram).expect(tag::SEQUENCE)?);
-    message.skip()?; // version
-    message.skip()?; // community
+    let mut bindings = bindings_of(datagram)?;
 
-    let mut response = Reader::new(message.expect(tag::GET_RESPONSE)?);
-    response.skip()?; // request identifier
-    response.skip()?; // error status
-    response.skip()?; // error index
-
-    let mut bindings = Reader::new(response.expect(tag::SEQUENCE)?);
-    let mut binding = Reader::new(bindings.expect(tag::SEQUENCE)?);
-
-    // The identifier is checked, not skipped. An agent may answer with a
-    // binding for something this probe never asked about, and reading that
-    // value as a system description would file one field's text under another
-    // field's name.
-    if binding.expect(tag::OID)? != SYS_DESCR_OID {
-        return None;
+    while let Some((tag::SEQUENCE, binding)) = bindings.read() {
+        let mut binding = Reader::new(binding);
+        // The identifier is checked, not skipped. An agent may answer with a
+        // binding for something this probe never asked about, and reading that
+        // value as a system description would file one field's text under
+        // another field's name.
+        let Some(name) = binding.expect(tag::OID) else {
+            continue;
+        };
+        if name != SYS_DESCR_OID {
+            continue;
+        }
+        let value = binding.expect(tag::OCTET_STRING)?;
+        return (value.len() <= MAX_SYS_DESCR)
+            .then(|| std::str::from_utf8(value).ok())
+            .flatten();
     }
-
-    let value = binding.expect(tag::OCTET_STRING)?;
-    (value.len() <= MAX_SYS_DESCR)
-        .then(|| std::str::from_utf8(value).ok())
-        .flatten()
+    None
 }
 
 // ╔════════════════════════════════════════════╗

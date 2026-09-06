@@ -650,14 +650,14 @@ fn same_service(newest: &Service, older: &Service) -> bool {
 /// The same shape as [`fold_service`], one field list along. The verdict, meaning
 /// name and family and generation and vendor and the accuracy behind them, comes
 /// from the newest account that named a system. An older account naming the same
-/// system
-/// contributes the kernel, the device class, the detail accuracy and the
-/// evidence line where the newer one carried none, and every account contributes
-/// CPEs.
+/// system contributes the kernel, the architecture, the device class, the detail
+/// accuracy and the evidence line where the newer one carried none, and every
+/// account contributes CPEs.
 ///
 /// Identity here is name, family, generation and vendor.
 /// [`diff::host`](crate::diff::host) has a `same_system` of its own that also
-/// compares the kernel and the CPEs, and it answers a different question:
+/// compares the kernel, the architecture and the CPEs, and it answers a
+/// different question:
 /// whether anything about the reading changed, which is what a comparison
 /// reports. Reusing it would refuse to enrich exactly the readings worth
 /// enriching.
@@ -676,6 +676,9 @@ fn fold_os(accounts: &[&Host]) -> Option<OsFingerprint> {
     }
     if let Some(kernel) = newest.kernel() {
         folded = folded.with_kernel(kernel);
+    }
+    if let Some(arch) = newest.arch() {
+        folded = folded.with_arch(arch);
     }
     if let Some(device) = newest.device() {
         folded = folded.with_device(device);
@@ -698,6 +701,11 @@ fn fold_os(accounts: &[&Host]) -> Option<OsFingerprint> {
             && let Some(kernel) = older.kernel()
         {
             folded = folded.with_kernel(kernel);
+        }
+        if folded.arch().is_none()
+            && let Some(arch) = older.arch()
+        {
+            folded = folded.with_arch(arch);
         }
         if folded.device().is_none()
             && let Some(device) = older.device()
@@ -1087,6 +1095,7 @@ mod tests {
                 product: None,
                 version: Some(release.to_owned()),
                 kernel: None,
+                arch: None,
                 cpe: None,
                 confidence: 0.8,
                 evidence: format!("a stack reading of {release}"),

@@ -400,6 +400,18 @@
         "cpe23": {
           "description": "A Common Platform Enumeration identifier for the hardware. Separate from the operating system's: a report carrying both is naming two different things about one machine.",
           "type": ["string", "null"]
+        },
+        "model": {
+          "description": "The model number on its own, where the product string carried more than one thing: `4200` beside a product of `Xerox WorkCentre 4200`. Absent where nothing drew the two apart.",
+          "type": ["string", "null"]
+        },
+        "version": {
+          "description": "The hardware revision, which is the board rather than the firmware. A unit shipping in two silicon revisions under one model number is two different machines to an exploit.",
+          "type": ["string", "null"]
+        },
+        "serial_number": {
+          "description": "The serial number, where a service published one. Absent from a redacted document, which drops it rather than masking it: everything else here describes a product line and stays true of every unit built, while this names one machine, and a masked prefix would still do so within a fleet bought in a batch.",
+          "type": ["string", "null"]
         }
       }
     },
@@ -680,6 +692,7 @@
         "generation",
         "vendor",
         "kernel",
+        "arch",
         "accuracy",
         "detail_accuracy",
         "cpes",
@@ -720,6 +733,10 @@
             "string",
             "null"
           ]
+        },
+        "arch": {
+          "description": "The instruction set, such as `x86_64` or `mips`, or null where nothing read one. A third axis beside what the machine runs and what it is: two hosts of one family on different silicon are not interchangeable to an exploit that needs a payload built for the target.",
+          "type": ["string", "null"]
         },
         "accuracy": {
           "description": "Confidence in the *family*, as a percentage. The family is the part every source can speak to, so this is what their agreement describes.",

@@ -76,10 +76,10 @@ use crate::model::host::OsSource;
 /// What a matched service rule said about the operating system underneath it.
 ///
 /// A struct of the fields worth keeping rather than the rule's whole metadata
-/// map. The corpus carries a dozen `os.*` keys and this holds the six that name
-/// the machine. The rest, meaning architecture and device class and build
-/// number, describe the hardware or the packaging and answer a different
-/// question.
+/// map. The corpus carries a dozen `os.*` keys and this holds the ones that name
+/// the machine or qualify that naming. What is left out is the packaging: an
+/// edition and a build number, which distinguish two ways of selling one system
+/// rather than two systems.
 ///
 /// Stored behind a pointer on the signatures that have one, because 2290 of the
 /// 4732 rules have none and a scan holds all of them at once.
@@ -112,6 +112,14 @@ pub struct OsMetadata {
     pub kernel: Option<String>,
     /// A Common Platform Enumeration identifier.
     pub cpe23: Option<String>,
+    /// The instruction set the system runs on: `x86_64`, `mips`, `armv7l`.
+    ///
+    /// A fact about the machine rather than a finer
+    /// [`version`](Self::version), and one an SNMP agent hands over for nothing:
+    /// `sysDescr` on a Unix host is `uname -a`, which ends with the machine
+    /// type. A hundred and seventy shipped rules that fire today carried one and
+    /// nothing read it until this field existed.
+    pub arch: Option<String>,
     /// What kind of box the rule says this is: `Printer`, `Switch`, `Router`.
     ///
     /// Read from `os.device`, falling back to `hw.device`, which is the same
@@ -145,6 +153,7 @@ impl OsMetadata {
             version: get("os.version"),
             kernel: get("os.kernel"),
             cpe23: get("os.cpe23"),
+            arch: get("os.arch"),
             device: get("os.device").or_else(|| get("hw.device")),
             certainty: get("os.certainty").and_then(|v| v.parse().ok()),
         };
@@ -169,6 +178,7 @@ impl OsMetadata {
         let version = fill(self.version.as_deref(), captures);
         let kernel = fill(self.kernel.as_deref(), captures);
         let device = fill(self.device.as_deref(), captures);
+        let arch = fill(self.arch.as_deref(), captures);
 
         let siblings = [
             ("os.vendor", vendor.as_deref()),
@@ -187,6 +197,7 @@ impl OsMetadata {
             version,
             kernel,
             cpe23,
+            arch,
             device,
             certainty: self.certainty,
         }
@@ -232,6 +243,78 @@ fn fill_siblings(template: &str, siblings: &[(&str, Option<&str>)]) -> Option<St
     (!out.trim().is_empty()).then(|| out.trim().to_string())
 }
 
+/// The hardware a rule describes, where it describes any.
+///
+/// Read from the same metadata map [`OsMetadata::from_map`] reads, and kept
+/// apart from it because the two answer different questions about one machine: a
+/// NETGEAR ReadyNAS runs Linux, and neither half is the other. Five hundred and
+/// thirty-six shipped rules that match today name hardware and no operating
+/// system, and every one of them produced nothing at all until this existed,
+/// because a metadata map naming neither an OS family nor an OS product is
+/// dropped whole.
+///
+/// Templates resolve against what the pattern captured, exactly as the operating
+/// system's do, so a rule reading a model out of its own match works here too.
+pub fn hardware_from(
+    metadata: &HashMap<String, String>,
+    captures: &[String],
+) -> Option<crate::model::host::HardwareInfo> {
+    // The corpus hedging its own claim, honoured the way the operating system's
+    // is. Forty-six rules state zero, which is the corpus saying in as many
+    // words that this attribution is worth nothing, and emitting one anyway
+    // would put a vendor on a host on the strength of a rule that disclaimed it.
+    let certainty: f32 = metadata
+        .get("hw.certainty")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1.0);
+    if certainty <= 0.0 {
+        return None;
+    }
+
+    let get = |key: &str| {
+        metadata
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| fill(Some(value.as_str()), captures))
+    };
+
+    // Captures first, because the sibling form below reads their results:
+    // `hw.product` is written `Thermal Label Printer {hw.model}` on the label
+    // printers, and resolving it before the model would leave the brace in a
+    // value a report prints.
+    let vendor = get("hw.vendor");
+    let model = get("hw.model");
+    let family = get("hw.family");
+    let version = get("hw.version");
+    let serial = get("hw.serial_number");
+
+    let siblings = [
+        ("hw.vendor", vendor.as_deref()),
+        ("hw.model", model.as_deref()),
+        ("hw.family", family.as_deref()),
+        ("hw.version", version.as_deref()),
+    ];
+    let resolve = |value: Option<String>| {
+        value.and_then(|template| match template.contains('{') {
+            true => fill_siblings(&template, &siblings),
+            false => Some(template),
+        })
+    };
+
+    let product = resolve(get("hw.product"));
+    let cpe23 = resolve(get("hw.cpe23"));
+
+    crate::model::host::HardwareInfo::described(crate::model::host::HardwareDescription {
+        vendor: vendor.as_deref(),
+        product: product.as_deref(),
+        family: family.as_deref(),
+        cpe23: cpe23.as_deref(),
+        model: model.as_deref(),
+        version: version.as_deref(),
+        serial_number: serial.as_deref(),
+    })
+}
+
 /// What a matched service rule contributes to identifying the host, read as
 /// `source` attests it.
 ///
@@ -252,54 +335,6 @@ fn fill_siblings(template: &str, siblings: &[(&str, Option<&str>)]) -> Option<St
 /// left 25%, under the floor, and a host that had answered three separate
 /// probes was reported as unidentified. Those 389 rules state no family, keep
 /// their model in `product` and their class in `device`, and abstain.
-/// The hardware a rule describes, where it describes any.
-///
-/// Read from the same metadata map [`OsMetadata::from_map`] reads, and kept
-/// apart from it because the two answer different questions about one machine: a
-/// NETGEAR ReadyNAS runs Linux, and neither half is the other. Five hundred and
-/// thirty-six shipped rules that match today name hardware and no operating
-/// system, and every one of them produced nothing at all until this existed,
-/// because a metadata map naming neither an OS family nor an OS product is
-/// dropped whole.
-///
-/// Templates resolve against what the pattern captured, exactly as the operating
-/// system's do, so a rule reading a model out of its own match works here too.
-pub fn hardware_from(
-    metadata: &HashMap<String, String>,
-    captures: &[String],
-) -> Option<crate::model::host::HardwareInfo> {
-    let get = |key: &str| {
-        metadata
-            .get(key)
-            .filter(|value| !value.is_empty())
-            .and_then(|value| fill(Some(value.as_str()), captures))
-    };
-
-    crate::model::host::HardwareInfo::described(
-        get("hw.vendor").as_deref(),
-        get("hw.product").as_deref(),
-        get("hw.family").as_deref(),
-        get("hw.cpe23").as_deref(),
-    )
-}
-
-/// What a matched rule says about the operating system, as one piece of
-/// evidence for the resolver to weigh.
-///
-/// The banner counterpart to [`hardware_from`] next door, and the same split
-/// between them: one rule routinely names a system and a box, and neither half
-/// is the other. `captures` is what the pattern matched, so a rule reading a
-/// version out of its own match resolves here, and `source` names the kind of
-/// text it matched, which sets the most the reading can be worth. See
-/// [`ceiling`].
-///
-/// A rule's own certainty scales that ceiling where it states one. Most state
-/// none, and an absent field is full strength, so a stated certainty only ever
-/// lowers a reading.
-///
-/// `None` where the rule stated a certainty of zero, which is the corpus
-/// declining the attribution itself, and `None` again where nothing in the rule
-/// names a system to attribute.
 pub fn evidence_from(
     metadata: &OsMetadata,
     captures: &[String],
@@ -352,6 +387,7 @@ pub fn evidence_from(
         product: resolved.product,
         version: resolved.version,
         kernel: resolved.kernel,
+        arch: resolved.arch,
         cpe: resolved.cpe23,
         confidence,
         evidence: format!("{read} {described}"),
@@ -426,6 +462,69 @@ mod tests {
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
         OsMetadata::from_map(&map).expect("names an operating system")
+    }
+
+    fn hardware(
+        pairs: &[(&str, &str)],
+        captures: &[String],
+    ) -> Option<crate::model::host::HardwareInfo> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        hardware_from(&map, captures)
+    }
+
+    /// A product written as a phrase around a sibling field, which is how the
+    /// label printers and half the Cisco access points state theirs. Resolving
+    /// the captures without then resolving the siblings put a literal brace in a
+    /// value a report prints.
+    #[test]
+    fn a_product_written_around_a_sibling_field_is_completed_from_it() {
+        let found = hardware(
+            &[
+                ("hw.vendor", "Cisco"),
+                ("hw.model", "{capture:1}"),
+                ("hw.product", "Aironet {hw.model}"),
+            ],
+            &["Aironet 1140".to_string(), "1140".to_string()],
+        )
+        .expect("it names something");
+
+        assert_eq!(found.product(), Some("Aironet 1140"));
+        assert_eq!(found.model(), Some("1140"));
+    }
+
+    /// Forty-six rules state `hw.certainty = 0.0`, which is the corpus saying in
+    /// as many words that its own attribution is worth nothing. Emitting one
+    /// anyway would put a vendor on a host on the strength of a rule that
+    /// disclaimed it.
+    #[test]
+    fn a_rule_that_disclaims_its_own_attribution_produces_no_hardware() {
+        assert!(hardware(&[("hw.certainty", "0.0"), ("hw.vendor", "Generic")], &[],).is_none());
+    }
+
+    /// The three fields a service states and an address block cannot reach.
+    #[test]
+    fn a_rule_that_names_a_unit_keeps_the_model_revision_and_serial() {
+        let found = hardware(
+            &[
+                ("hw.vendor", "Xerox"),
+                ("hw.product", "WorkCentre 4200"),
+                ("hw.model", "4200"),
+                ("hw.version", "2"),
+                ("hw.serial_number", "{capture:1}"),
+            ],
+            &[
+                "WorkCentre 4200 XRX9000123".to_string(),
+                "XRX9000123".to_string(),
+            ],
+        )
+        .expect("it names something");
+
+        assert_eq!(found.model(), Some("4200"));
+        assert_eq!(found.hardware_version(), Some("2"));
+        assert_eq!(found.serial_number(), Some("XRX9000123"));
     }
 
     /// A rule taken verbatim from the imported corpus, with the capture groups
@@ -660,6 +759,7 @@ mod tests {
             product: None,
             version: None,
             kernel: None,
+            arch: None,
             cpe: None,
             accuracy: 65,
             detail_accuracy: None,
@@ -796,6 +896,32 @@ mod against_the_shipped_corpus {
             by_ssh.is_none_or(|os| os.vendor.is_none()),
             "an unmarked upstream banner must not be attributed to any distribution"
         );
+    }
+
+    /// The instruction set a `uname`-derived `sysDescr` ends with.
+    ///
+    /// 255 shipped rules carry `os.arch` and every one of them dropped it before
+    /// the field existed. It is a third axis beside what a machine runs and what
+    /// it is: a FreeBSD release and `amd64` are two facts, and an exploit that
+    /// needs a payload built for the target cares about the second.
+    #[test]
+    fn an_agent_that_states_its_machine_type_keeps_it() {
+        let db = SignatureDb::global();
+
+        let found = db
+            .identify(
+                161,
+                Protocol::Udp,
+                "FreeBSD freebsd-10-x64-ports-p 10.0-RELEASE-p4 FreeBSD 10.0-RELEASE-p4 #0: \
+                 Tue Jun 3 13:14:57 UTC 2014 \
+                 root@amd64-builder.daemonology.net:/usr/obj/usr/src/sys/GENERIC amd64",
+            )
+            .and_then(|found| found.os)
+            .expect("a FreeBSD agent names FreeBSD");
+
+        assert_eq!(found.family.as_deref(), Some("FreeBSD"));
+        assert_eq!(found.version.as_deref(), Some("10.0-RELEASE-p4"));
+        assert_eq!(found.arch.as_deref(), Some("amd64"));
     }
 
     /// A `sysDescr` that names hardware and no operating system.

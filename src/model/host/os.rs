@@ -96,6 +96,15 @@ pub struct OsFingerprint {
     /// host, because it is what a known-vulnerability lookup keys on.
     kernel: Option<Arc<str>>,
 
+    /// The instruction set the system runs on, where something read one.
+    ///
+    /// A third axis beside what a machine runs and what it is: `mips` on a
+    /// consumer router and `x86_64` on the server beside it are the same family
+    /// on different silicon, and a vulnerability that needs one does not reach
+    /// the other. An SNMP agent hands it over for nothing, since `sysDescr` on a
+    /// Unix host is `uname -a` and ends with the machine type.
+    arch: Option<Arc<str>>,
+
     /// How well supported everything past the family is, where the finding says
     /// more than a family at all.
     ///
@@ -152,6 +161,7 @@ impl OsFingerprint {
             vendor: None,
             accuracy: accuracy.min(100),
             kernel: None,
+            arch: None,
             detail_accuracy: None,
             cpe: BTreeSet::new(),
             evidence: None,
@@ -202,6 +212,17 @@ impl OsFingerprint {
     /// Records the kernel release.
     pub fn with_kernel(mut self, kernel: impl Into<Arc<str>>) -> Self {
         self.kernel = Some(kernel.into());
+        self
+    }
+
+    /// The instruction set, where something read one.
+    pub fn arch(&self) -> Option<&str> {
+        self.arch.as_deref()
+    }
+
+    /// Records the instruction set.
+    pub fn with_arch(mut self, arch: impl Into<Arc<str>>) -> Self {
+        self.arch = Some(arch.into());
         self
     }
 
@@ -272,10 +293,10 @@ impl OsFingerprint {
     ///
     /// The identity comes from whichever record is more accurate, and a tie
     /// keeps what is already recorded. All of it: the name, and the family,
-    /// device, generation, vendor, kernel, detail accuracy and evidence line
-    /// beside it, each filling a gap in the other where the winner has none.
-    /// The body destructures `other`, so the list here is the one that can fall
-    /// behind, and it named four of the eight.
+    /// device, generation, vendor, kernel, architecture, detail accuracy and
+    /// evidence line beside it, each filling a gap in the other where the winner
+    /// has none. The body destructures `other`, so the list here is the one that
+    /// can fall behind, and it named four of the eight.
     ///
     /// CPEs are unioned whatever the accuracies are, which is the one part
     /// that does not follow the ranking, and it matches
@@ -294,6 +315,7 @@ impl OsFingerprint {
             vendor,
             accuracy,
             kernel,
+            arch,
             detail_accuracy,
             cpe,
             evidence,
@@ -310,6 +332,7 @@ impl OsFingerprint {
             self.generation = generation.or(self.generation.take());
             self.vendor = vendor.or(self.vendor.take());
             self.kernel = kernel.or(self.kernel.take());
+            self.arch = arch.or(self.arch.take());
             // Travels with the parts it qualifies, never on its own: a figure
             // describing a release this finding no longer names would attach a
             // confidence to nothing.
@@ -341,6 +364,7 @@ impl OsFingerprint {
             self.generation = self.generation.take().or(generation);
             self.vendor = self.vendor.take().or(vendor);
             self.kernel = self.kernel.take().or(kernel);
+            self.arch = self.arch.take().or(arch);
             self.detail_accuracy = self.detail_accuracy.take().or(detail_accuracy);
         }
 
@@ -747,6 +771,8 @@ pub struct OsEvidence {
     /// Beside the version rather than instead of it: a distribution release and
     /// the kernel it ships are two facts, not two answers.
     pub kernel: Option<String>,
+    /// The instruction set, where the source read one: `x86_64`, `mips`.
+    pub arch: Option<String>,
     /// A Common Platform Enumeration identifier, where one applies exactly.
     pub cpe: Option<String>,
     /// How much this source is worth on its own, from 0 to 1.

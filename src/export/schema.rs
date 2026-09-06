@@ -1604,6 +1604,13 @@ pub struct OsDto<'a> {
     /// release and the kernel it ships are two facts about one machine. It is
     /// also what a known-vulnerability lookup keys on for a Unix host.
     pub kernel: Option<&'a str>,
+    /// The instruction set, such as `"x86_64"` or `"mips"`, or `null` where
+    /// nothing read one.
+    ///
+    /// A third axis beside what the machine runs and what it is: two hosts of
+    /// one family on different silicon are not interchangeable to an exploit
+    /// that needs a payload built for the target.
+    pub arch: Option<&'a str>,
     /// How well supported everything *past* the family is, or `null` where the
     /// finding stops at a family.
     ///
@@ -1633,6 +1640,7 @@ impl<'a> OsDto<'a> {
             cpes: os.cpes().iter().map(|cpe| &**cpe).collect(),
             evidence: os.evidence(),
             kernel: os.kernel(),
+            arch: os.arch(),
             detail_accuracy: os.detail_accuracy(),
             device: os.device(),
         }
@@ -1692,6 +1700,23 @@ pub struct HardwareDto<'a> {
     /// system's: a report naming both names two things about one machine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpe23: Option<&'a str>,
+    /// The model number on its own, where the product string carried more than
+    /// one thing: `4200` beside a product of `Xerox WorkCentre 4200`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<&'a str>,
+    /// The hardware revision, which is the board rather than the firmware: a
+    /// unit that ships in two silicon revisions under one model number is two
+    /// different machines to an exploit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<&'a str>,
+    /// The serial number, where a service handed one over.
+    ///
+    /// Dropped under redaction, unlike everything else in this record. The rest
+    /// describes a product line and stays true of every unit built; this names
+    /// one machine, and a masked prefix of it would still do so within a fleet
+    /// that bought them in a batch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<&'a str>,
 }
 
 impl<'a> HardwareDto<'a> {
@@ -1717,6 +1742,12 @@ impl<'a> HardwareDto<'a> {
             product: hardware.product(),
             family: hardware.family(),
             cpe23: hardware.cpe23(),
+            model: hardware.model(),
+            version: hardware.hardware_version(),
+            serial_number: match redaction.is_active() {
+                true => None,
+                false => hardware.serial_number(),
+            },
         }
     }
 }
