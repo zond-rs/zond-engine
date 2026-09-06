@@ -107,6 +107,14 @@ pub struct RoutedTargets {
     /// Targets that are neither on-link nor have a resolvable route (e.g.
     /// loopback), left to the unprivileged connect fallback.
     pub unmapped: IpSet,
+    /// Targets that are this host's own addresses.
+    ///
+    /// Separated because no strategy can establish one. An address the host
+    /// holds is reached through loopback whatever its subnet says, so an ARP
+    /// request for it goes onto a link where nothing will answer, and the
+    /// address is reported down while `ping` to it succeeds. It is up by
+    /// construction, and saying so is both the correct answer and the cheap one.
+    pub ours: IpSet,
     /// Link-local IPv6 targets with no interface named on them.
     ///
     /// Every interface holds an `fe80::/64`, so such a target matches all of
@@ -167,6 +175,7 @@ pub(crate) fn map_ips_to_interfaces_with(ip_set: IpSet, interfaces: Vec<Link>) -
     let mut local: HashMap<usize, IpSet> = HashMap::new();
     let mut routed: Vec<RoutedTarget> = Vec::new();
     let mut unmapped = IpSet::new();
+    let mut ours = IpSet::new();
     let mut unenumerable: Vec<Ipv6Range> = Vec::new();
     let mut ambiguous: Vec<Ipv6Range> = Vec::new();
     let mut singles_to_route: Vec<IpAddr> = Vec::new();
@@ -250,6 +259,34 @@ pub(crate) fn map_ips_to_interfaces_with(ip_set: IpSet, interfaces: Vec<Link>) -
         }
     }
 
+    // Withheld from every strategy, after classification rather than before it.
+    // A range wholly inside an interface's subnet is kept intact and assigned to
+    // that link without ever reaching the per-address pass, so an address this
+    // host holds arrives here inside a set rather than on its own: both `zond
+    // <own address>` and a sweep of the subnet containing it end up in `local`.
+    //
+    // Nothing can establish one. The kernel routes traffic for an address this
+    // host holds through loopback, so an ARP request goes onto a link where
+    // nothing will answer and the address is reported down while `ping` to it
+    // succeeds.
+    for address in &owned_ips {
+        let mut one = IpSet::new();
+        one.insert(*address);
+
+        for targets in local.values_mut() {
+            if targets.contains(address) {
+                targets.subtract(&one);
+                ours.insert(*address);
+            }
+        }
+        if unmapped.contains(address) {
+            unmapped.subtract(&one);
+            ours.insert(*address);
+        }
+    }
+    // A link whose only target was ours has nothing left to sweep.
+    local.retain(|_, targets| !targets.is_empty());
+
     let local = local
         .into_iter()
         .map(|(idx, ips)| (interfaces[idx].clone(), ips))
@@ -259,6 +296,7 @@ pub(crate) fn map_ips_to_interfaces_with(ip_set: IpSet, interfaces: Vec<Link>) -
         local,
         routed,
         unmapped,
+        ours,
         ambiguous,
         unenumerable,
     }
@@ -497,5 +535,47 @@ mod tests {
         assert_eq!(result.local.len(), 1);
         let (_, ips) = result.local.into_iter().next().unwrap();
         assert_eq!(ips.len(), 5);
+    }
+
+    /// The case that sent a scan of `zond <own lan address>` looking for an ARP
+    /// reply nothing would send: the address sits inside its own interface's
+    /// subnet, so the on-link test claims it, and no probe can establish it
+    /// because the kernel routes it through loopback.
+    #[test]
+    fn an_address_this_host_holds_is_ours_rather_than_on_link() {
+        let own: IpAddr = "192.168.0.160".parse().unwrap();
+        let interfaces = vec![mock_interface(own, 24)];
+
+        let mut targets = IpSet::new();
+        targets.insert(own);
+
+        let routed = map_ips_to_interfaces_with(targets, interfaces);
+
+        assert!(routed.ours.contains(&own), "the address is this host's own");
+        assert!(
+            routed.local.is_empty(),
+            "and must not be handed to a link-layer strategy"
+        );
+    }
+
+    /// A neighbour on the same segment still gets the on-link strategy, which is
+    /// the half of the distinction that has to keep working.
+    #[test]
+    fn a_neighbour_on_the_same_segment_is_still_on_link() {
+        let own: IpAddr = "192.168.0.160".parse().unwrap();
+        let neighbour: IpAddr = "192.168.0.101".parse().unwrap();
+        let interfaces = vec![mock_interface(own, 24)];
+
+        let mut targets = IpSet::new();
+        targets.insert(neighbour);
+
+        let routed = map_ips_to_interfaces_with(targets, interfaces);
+
+        assert!(routed.ours.is_empty());
+        assert_eq!(
+            routed.local.values().next().map(IpSet::len),
+            Some(1u128),
+            "the neighbour is on-link"
+        );
     }
 }

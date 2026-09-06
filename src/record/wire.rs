@@ -445,6 +445,7 @@ pub fn os_source_name(source: OsSource) -> &'static str {
         OsSource::HardwareVendor => "hardware_vendor",
         OsSource::ServiceBanner => "service_banner",
         OsSource::SnmpAgent => "snmp_agent",
+        OsSource::MdnsResponder => "mdns_responder",
         OsSource::Hostname => "hostname",
     }
 }
@@ -456,6 +457,7 @@ pub fn os_source(name: &str) -> Option<OsSource> {
         "hardware_vendor" => OsSource::HardwareVendor,
         "service_banner" => OsSource::ServiceBanner,
         "snmp_agent" => OsSource::SnmpAgent,
+        "mdns_responder" => OsSource::MdnsResponder,
         "hostname" => OsSource::Hostname,
         _ => return None,
     })
@@ -706,10 +708,14 @@ mod tests {
             assert_eq!(reference(kind, &carried), Some(value));
         }
 
+        // Every variant, so one added without a spelling on the wire fails here
+        // rather than reaching a report under a name nothing reads back.
         for value in [
             OsSource::TcpStack,
             OsSource::HardwareVendor,
             OsSource::ServiceBanner,
+            OsSource::SnmpAgent,
+            OsSource::MdnsResponder,
             OsSource::Hostname,
         ] {
             assert_eq!(os_source(os_source_name(value)), Some(value));

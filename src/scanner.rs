@@ -1051,6 +1051,11 @@ fn spawn_scan(
         // machines that answered nothing at all.
         orchestrator::run_active_os_series(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
         orchestrator::run_active_os_snmp(&ctx, cfg.os_detection).await;
+        // After the two that read a stack, because it asks only hosts that have
+        // a name and answers a question neither of those can: macOS and iOS
+        // share a kernel and are indistinguishable to a probe, while a
+        // device-info record names the model outright.
+        orchestrator::run_active_os_mdns(&ctx, cfg.os_detection).await;
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
         // Last: the ports are what decide a trace's shape.
         orchestrator::run_traceroute(&ctx, &cfg).await;

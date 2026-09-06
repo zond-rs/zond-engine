@@ -689,6 +689,16 @@ pub enum OsSource {
     /// appliance it is the firmware build the box is actually executing. See
     /// [`ceiling`](crate::fingerprint::os::ceiling).
     SnmpAgent,
+    /// A Bonjour responder answering for the machine itself, out of an mDNS
+    /// device-info record.
+    ///
+    /// The same kind of statement as [`SnmpAgent`](Self::SnmpAgent) and worth
+    /// the same, for the same reason: `model=Mac16,10` and `osxvers=25` are what
+    /// the machine says it is when asked, not a string a daemon was compiled
+    /// with. It also reaches something no other source here can, since macOS and
+    /// iOS share a kernel and answer a stack probe identically while their
+    /// device-info records name the hardware outright.
+    MdnsResponder,
     /// The host's own name, where it is one an operating system generates by
     /// default.
     ///

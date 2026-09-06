@@ -267,6 +267,9 @@ pub mod record_type {
     pub const PTR: u16 = 12;
     /// A host's IPv6 address.
     pub const AAAA: u16 = 28;
+    /// Free-form text, which is what a device-info record and a `version.bind`
+    /// answer are both carried as.
+    pub const TXT: u16 = 16;
 }
 
 /// The internet class, which is the only one anything here asks in.

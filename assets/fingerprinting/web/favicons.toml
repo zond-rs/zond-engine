@@ -1,0 +1,41 @@
+# Favicon digests measured here, beside the ones imported from Recog.
+#
+# Kept separate because a re-import overwrites that file. Entries are additive:
+# an application that changed its icon has both digests in circulation, and the
+# old one still names every deployment nobody has updated.
+#
+# `source.image` is the image a digest was measured from, so it can be
+# re-measured. Measure with `cargo test --test containers -- --ignored
+# --nocapture report`, which reads the icon through the same code a scan uses.
+
+[service]
+name = "favicon"
+default_ports = []
+description = "Applications identified by the icon they serve"
+
+[[match]]
+name = "Gitea"
+pattern = '^8c971bc353008d67ba53965e12ae5a43$'
+vendor = "Gitea"
+product = "Gitea"
+context = "favicon.md5"
+example = "8c971bc353008d67ba53965e12ae5a43"
+metadata = { "service.certainty" = "0.5", "service.cpe23" = "cpe:/a:gitea:gitea:-", "source.image" = "gitea/gitea:1.23.5" }
+
+[[match]]
+name = "Prometheus"
+pattern = '^074db273ef932a67d91b58e7ba1f49d3$'
+vendor = "Prometheus"
+product = "Prometheus"
+context = "favicon.md5"
+example = "074db273ef932a67d91b58e7ba1f49d3"
+metadata = { "service.certainty" = "0.5", "service.cpe23" = "cpe:/a:prometheus:prometheus:-", "source.image" = "prom/prometheus:v3.2.1" }
+
+[[match]]
+name = "Portainer"
+pattern = '^7999afe47cc2ba87b1d2d68340275314$'
+vendor = "Portainer"
+product = "Portainer"
+context = "favicon.md5"
+example = "7999afe47cc2ba87b1d2d68340275314"
+metadata = { "service.certainty" = "0.5", "service.cpe23" = "cpe:/a:portainer:portainer:-", "source.image" = "portainer/portainer-ce:2.27.1" }

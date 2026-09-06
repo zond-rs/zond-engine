@@ -168,13 +168,13 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "mdns.device-info.txt",
-        reach: Reach::Unproduced,
-        note: "the TXT record of `_device-info._tcp`; wants an mDNS query of its own",
+        reach: Reach::Produced,
+        note: "the TXT strings a Bonjour responder publishes under the host's own name, asked for by `orchestrator::run_active_os_mdns` and decoded through `extract::from_datagram`",
     },
     Context {
         name: "mdns.workstation.txt",
-        reach: Reach::Unproduced,
-        note: "the TXT record of `_workstation._tcp`; as above",
+        reach: Reach::Produced,
+        note: "as the device-info record, where a responder publishes one",
     },
     Context {
         name: "mysql.banners",

@@ -71,6 +71,9 @@ use crate::model::host::OsEvidence;
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::{InvalidDefinition, SignatureDb};
 pub use favicon::FaviconAnalyzer;
+// The icon digest a scan would compute, for the container tier's harvest pass.
+#[cfg(any(test, feature = "test-support"))]
+pub use favicon::digest_of as favicon_digest;
 pub use http::HttpHeadersAnalyzer;
 pub use model::{Evidence, ServiceVerdict, SourceId, Tunnel};
 pub use response::{Collected, ResponseSet, TlsInfo};
@@ -455,7 +458,40 @@ async fn probe_udp(addr: std::net::SocketAddr) -> Option<Vec<String>> {
     let payload = SignatureDb::global()
         .udp_probe_payloads(addr.port())
         .first()?;
+    let texts = probe_udp_with(addr, payload).await;
+    (!texts.is_empty()).then_some(texts)
+}
 
+/// Sends `payload` to `addr` and reads back whatever text the reply carries.
+///
+/// The same exchange [`probe_udp`] performs, with the question supplied rather
+/// than taken from the corpus. A corpus probe is one payload per port, which is
+/// all a port number can decide; a question about a *particular host* cannot come
+/// from there. An mDNS device-info record is the case this exists for: it is
+/// published under the host's own name, so the query naming it is different for
+/// every target.
+///
+/// The reply is decoded by the same port-keyed decoder either way, so a caller's
+/// question and this engine's reading of the answer cannot drift apart.
+///
+/// Empty when nothing answered or nothing could be read from what did.
+pub async fn probe_udp_with(addr: std::net::SocketAddr, payload: &[u8]) -> Vec<String> {
+    match probe_udp_raw(addr, payload).await {
+        Some(reply) => extract::from_datagram(addr.port(), &reply),
+        None => Vec::new(),
+    }
+}
+
+/// The same exchange, handing back the datagram rather than what this engine
+/// reads out of it.
+///
+/// For a caller whose question is answered in a form the port's decoder is not
+/// for. An mDNS responder is asked two different things on one port: what it
+/// calls itself, which is a name in a PTR record, and what hardware it is, which
+/// is the text this engine decodes there. Only the second is a banner.
+///
+/// [`None`] when nothing answered.
+pub async fn probe_udp_raw(addr: std::net::SocketAddr, payload: &[u8]) -> Option<Vec<u8>> {
     let bind = if addr.is_ipv4() {
         "0.0.0.0:0"
     } else {
@@ -470,9 +506,8 @@ async fn probe_udp(addr: std::net::SocketAddr) -> Option<Vec<String>> {
         .await
         .ok()?
         .ok()?;
-
-    let texts = extract::from_datagram(addr.port(), &buffer[..read]);
-    (!texts.is_empty()).then_some(texts)
+    buffer.truncate(read);
+    Some(buffer)
 }
 
 /// Collects everything the transport can learn from the port over the network,

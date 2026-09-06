@@ -446,6 +446,7 @@ impl DiscoveryStep {
 pub struct DiscoveryPlan {
     steps: Vec<DiscoveryStep>,
     refusals: Vec<RefusedStep>,
+    ours: IpSet,
 }
 
 impl DiscoveryPlan {
@@ -466,6 +467,7 @@ impl DiscoveryPlan {
             mut local,
             routed,
             unmapped,
+            ours,
             ambiguous,
             unenumerable,
         } = interface::map_ips_to_interfaces(targets);
@@ -543,7 +545,11 @@ impl DiscoveryPlan {
             steps.push(DiscoveryStep::Connect { targets: unmapped });
         }
 
-        Self { steps, refusals }
+        Self {
+            steps,
+            refusals,
+            ours,
+        }
     }
 
     /// Adds an SCTP sweep beside every routed step, asking `port`.
@@ -581,6 +587,22 @@ impl DiscoveryPlan {
     /// The strategies this plan would run, to drop or reorder before running it.
     pub fn steps_mut(&mut self) -> &mut Vec<DiscoveryStep> {
         &mut self.steps
+    }
+
+    /// Ground this plan will not cover, and why.
+    /// The targets that are this host's own addresses.
+    ///
+    /// Up by construction and covered by no step, because no strategy can
+    /// establish one: the kernel routes traffic for an address this host holds
+    /// through loopback, so a probe never reaches the link and nothing on the
+    /// link answers for it. Before these were separated, scanning a machine by
+    /// its own LAN address reported it down while `ping` to the same address
+    /// succeeded.
+    ///
+    /// A caller running the plan itself records these up rather than probing
+    /// them; [`orchestrator`](crate::scanner) does.
+    pub fn ours(&self) -> &IpSet {
+        &self.ours
     }
 
     /// Ground this plan will not cover, and why.
@@ -1027,6 +1049,7 @@ mod tests {
     #[test]
     fn an_sctp_sweep_is_added_to_the_routed_steps_alone() {
         let mut plan = DiscoveryPlan {
+            ours: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Routed {
                     targets: vec![RoutedTarget {

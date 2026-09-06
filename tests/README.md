@@ -282,14 +282,42 @@ survive a real degraded link is the point, and duplicating the Tier 2 matrix her
 would only produce flaky tests, since `netem` is statistical and will not honour
 a precise assertion.
 
+## Tier 4: real software, in containers
+
+Files: `containers.rs`, with its manifest in `containers.toml`.
+
+Every tier above proves the engine is consistent with itself. A signature matches
+the example recorded beside it; a parser returns on any bytes; a simulated
+network answers the way a stack would. None of it ever asks a real application
+what it serves, so all of it can be green while the engine identifies nothing.
+
+This tier starts the real thing from a pinned image, scans it through
+`scanner::scan`, and holds the verdict to the manifest. Going through the public
+API is deliberate: reaching into the analyzers would test the parts and leave the
+wiring between them unexamined, and the wiring is where these defects live.
+
+The `report` pass asserts nothing. It prints what each target yields together
+with the digest of the icon it serves and whether the corpus holds that digest,
+which is how an expectation is written for a new target and how a stale corpus
+entry is found.
+
+`the_manifest_is_well_formed` runs with the ordinary suite and needs nothing, so
+a mistake in the data does not read as a defect in the engine.
+
 ## Running them
 
 ```sh
 cargo test              # unit tests, Tier 1 and Tier 2
 cargo test --lib        # unit tests only
 cargo test --test port_states
+
+# Tier 4, one target at a time so a memory-hungry image is not run beside four others
+cargo test --test containers -- --ignored --test-threads=1
+cargo test --test containers -- --ignored --test-threads=1 --nocapture report
 ```
 
 Tiers 1 and 2 are what CI runs today, on Linux and macOS. Neither needs any
 special setup, so `cargo test` is the whole story. Tier 3 will need its own job,
-running as root on a Linux runner, once it exists.
+running as root on a Linux runner, once it exists. Tier 4 is deliberately not a
+CI job: it pulls gigabytes and its failures are usually somebody else's release,
+which is a bad reason to redden a pull request.

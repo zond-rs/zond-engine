@@ -292,6 +292,7 @@ pub fn evidence_from(
 
     let read = match source {
         OsSource::SnmpAgent => "snmp agent names",
+        OsSource::MdnsResponder => "mdns responder names",
         _ => "service banner names",
     };
 
@@ -316,7 +317,8 @@ pub fn evidence_from(
 /// machine. See [`BANNER_CEILING`] and [`AGENT_CEILING`].
 pub fn ceiling(source: OsSource) -> f32 {
     match source {
-        OsSource::SnmpAgent => AGENT_CEILING,
+        // The machine answering for itself, as SNMP is, and worth the same.
+        OsSource::SnmpAgent | OsSource::MdnsResponder => AGENT_CEILING,
         _ => BANNER_CEILING,
     }
 }
@@ -624,6 +626,14 @@ mod tests {
             "two independent sources agreeing must beat the better one alone"
         );
         assert_eq!(together.family.as_deref(), Some("Linux"));
+    }
+
+    /// A device-info record is the machine answering for itself, as `sysDescr`
+    /// is, so it is worth the same and not what a daemon was compiled with.
+    #[test]
+    fn a_responder_answering_for_the_machine_is_worth_what_an_agent_is() {
+        assert_eq!(ceiling(OsSource::MdnsResponder), AGENT_CEILING);
+        assert!(ceiling(OsSource::MdnsResponder) > ceiling(OsSource::ServiceBanner));
     }
 }
 

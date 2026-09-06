@@ -101,6 +101,10 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
         53 => crate::protocols::dns::first_text_answer(datagram)
             .into_iter()
             .collect(),
+        // A device-info answer carries one `key=value` per character-string, and
+        // a rule reads one of them: `model=Mac16,10` and `osxvers=25` are two
+        // separate claims about the same machine.
+        5353 => crate::protocols::mdns::text_records(datagram).unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -132,6 +136,7 @@ pub(crate) fn reads(port: u16, protocol: Protocol) -> bool {
 pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::OsSource {
     match (protocol, port) {
         (Protocol::Udp, 161) => crate::model::host::OsSource::SnmpAgent,
+        (Protocol::Udp, 5353) => crate::model::host::OsSource::MdnsResponder,
         _ => crate::model::host::OsSource::ServiceBanner,
     }
 }
@@ -141,7 +146,7 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// Stated rather than derived, because a decoder cannot be asked whether it
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
-const DECODED_UDP_PORTS: &[u16] = &[53, 161];
+const DECODED_UDP_PORTS: &[u16] = &[53, 161, 5353];
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -468,5 +473,71 @@ mod sys_object_id {
         let mut only_descr = super::from_datagram(161, &response(NET_SNMP, "Linux zond"));
         only_descr.truncate(1);
         assert_eq!(only_descr, vec!["Linux zond".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod device_info {
+    use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
+
+    /// The answer a Mac's own responder gave on 2026-09-05, asked over unicast.
+    const REPLY: &[u8] = &[
+        0x00, 0x00, 0x84, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x03, 0x6d, 0x61,
+        0x63, 0x0c, 0x5f, 0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x69, 0x6e, 0x66, 0x6f, 0x04,
+        0x5f, 0x74, 0x63, 0x70, 0x05, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x10, 0x80, 0x01,
+        0xc0, 0x0c, 0x00, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x23, 0x0e, 0x6d, 0x6f,
+        0x64, 0x65, 0x6c, 0x3d, 0x4d, 0x61, 0x63, 0x31, 0x36, 0x2c, 0x31, 0x30, 0x0a, 0x6f, 0x73,
+        0x78, 0x76, 0x65, 0x72, 0x73, 0x3d, 0x32, 0x35, 0x08, 0x69, 0x63, 0x6f, 0x6c, 0x6f, 0x72,
+        0x3d, 0x30,
+    ];
+
+    #[test]
+    fn the_reply_yields_one_text_per_field() {
+        assert_eq!(
+            super::from_datagram(5353, REPLY),
+            vec!["model=Mac16,10", "osxvers=25", "icolor=0"]
+        );
+    }
+
+    /// The model this Mac reports postdates every one the imported corpus
+    /// enumerates, which is what the generative rules are for.
+    #[test]
+    fn a_model_newer_than_the_enumerated_ones_still_names_apple() {
+        let evidence = SignatureDb::global()
+            .identify(5353, Protocol::Udp, "model=Mac16,10")
+            .expect("the shape is recognised");
+        let os = evidence.os.expect("it says something about the machine");
+
+        assert_eq!(os.vendor.as_deref(), Some("Apple"));
+        assert_eq!(os.family.as_deref(), Some("macOS"));
+    }
+
+    /// And the Darwin release, captured rather than looked up, so it does not
+    /// stop at the 22 the imported rules stop at.
+    #[test]
+    fn a_darwin_release_past_the_enumerated_ones_is_still_read() {
+        let evidence = SignatureDb::global()
+            .identify(5353, Protocol::Udp, "osxvers=25")
+            .expect("the shape is recognised");
+        let os = evidence.os.expect("it says something about the machine");
+
+        assert_eq!(os.vendor.as_deref(), Some("Apple"));
+        assert_eq!(os.kernel.as_deref(), Some("25"));
+    }
+
+    /// A model the imported corpus does name is still named by it, in full.
+    #[test]
+    fn an_enumerated_model_keeps_the_more_specific_reading() {
+        let evidence = SignatureDb::global()
+            .identify(5353, Protocol::Udp, "model=MacBookPro18,3")
+            .expect("the corpus names it");
+        let os = evidence.os.expect("it says something about the machine");
+        assert_eq!(os.vendor.as_deref(), Some("Apple"));
+    }
+
+    #[test]
+    fn port_5353_is_now_worth_a_second_datagram() {
+        assert!(super::reads(5353, Protocol::Udp));
     }
 }

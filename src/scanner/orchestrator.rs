@@ -226,6 +226,42 @@ impl Enrichment {
 /// Each surviving strategy gets its own task, tagged with its own
 /// [`ScannerKind`], so the caller can wait on all of them and react to failures
 /// individually.
+/// Records the targets that are this host's own addresses as up, without
+/// probing them.
+///
+/// No strategy can establish one. The kernel routes traffic for an address this
+/// host holds through loopback, so an ARP request for it goes onto a link where
+/// nothing will answer, and the address is reported down while `ping` to it
+/// succeeds. That is what happened before this existed.
+///
+/// The evidence is named rather than borrowed from a probe protocol, because
+/// nothing was sent: the interface table is the whole of it, and it is
+/// conclusive in a way no reply is.
+fn record_our_own_addresses(ours: &crate::model::ip::set::IpSet, ctx: &ScanContext) {
+    let addresses: Vec<IpAddr> = ours.iter().collect();
+    if addresses.is_empty() {
+        return;
+    }
+
+    info!(
+        verbosity = 1,
+        "{} named is this host's own and is up without asking",
+        counted(addresses.len() as u128, "address", "addresses")
+    );
+
+    for address in addresses {
+        ctx.update_host(crate::model::ip::scoped::ScopedIp::from(address), |host| {
+            host.record_evidence(
+                crate::model::host::HostStatus::Up,
+                crate::model::host::StatusReason::new(
+                    crate::model::host::StatusProtocol::Custom("local-interface".into()),
+                    "an address this host holds",
+                ),
+            );
+        });
+    }
+}
+
 pub(super) async fn spawn_explorers(
     plan: plan::DiscoveryPlan,
     ctx: &ScanContext,
@@ -235,6 +271,8 @@ pub(super) async fn spawn_explorers(
     for refusal in plan.refusals() {
         ctx.record_refusal(refusal.clone().into());
     }
+
+    record_our_own_addresses(plan.ours(), ctx);
 
     let mut explorers: Vec<Box<dyn HostScanner>> = Vec::new();
     for step in plan.into_steps() {
@@ -728,6 +766,133 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
             counted(named as u128, "host", "hosts")
         );
     }
+}
+
+/// Asks every host that has an mDNS name what hardware it is.
+///
+/// A Bonjour responder publishes a device-info record under the host's own name,
+/// carrying the hardware model and the Darwin release. It is the only thing this
+/// engine can reach that names an Apple model outright, and a stack reading
+/// cannot: macOS and iOS share a kernel and answer a probe identically.
+///
+/// # Who is asked
+///
+/// Every host that is up. The record is published under the host's own name, and
+/// a host that has not been named otherwise is asked what it calls itself first,
+/// so the pass is not confined to the hosts something else happened to resolve.
+/// A host running no responder answers neither question and costs two datagrams.
+pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetection) {
+    if !os_detection.is_active() {
+        return;
+    }
+
+    let targets: Vec<(crate::model::ip::scoped::ScopedIp, Option<String>)> = ctx
+        .host_addresses()
+        .into_iter()
+        .filter(|ip| !ctx.host_expired(ip.addr()))
+        .filter_map(|ip| {
+            ctx.read_host(&ip, |host| {
+                let name = host.hostname().map(str::to_string);
+                host.status().is_up().then(|| (host.scoped_ip(), name))
+            })
+            .flatten()
+        })
+        .collect();
+
+    if targets.is_empty() {
+        return;
+    }
+
+    info!(
+        "asking {} what hardware they are",
+        counted(targets.len() as u128, "host", "hosts")
+    );
+
+    let mut named = 0usize;
+    let mut pool = ProbePool::new(
+        CONNECT_CONCURRENCY,
+        ctx.clone(),
+        ScannerKind::OsSnmp,
+        |found: Option<(crate::model::ip::scoped::ScopedIp, Vec<OsEvidence>)>, _audit| {
+            if let Some((key, evidence)) = found {
+                ctx.update_host(key, |host| {
+                    if os::identify(host, evidence) {
+                        named += 1;
+                    }
+                });
+            }
+        },
+    );
+
+    for (target, hostname) in targets {
+        if ctx.handle.should_stop() {
+            break;
+        }
+        pool.admit(ask_what_hardware(target, hostname)).await;
+    }
+    pool.drain().await;
+
+    if named > 0 {
+        info!(
+            verbosity = 1,
+            "named {} by mDNS",
+            counted(named as u128, "host", "hosts")
+        );
+    }
+}
+
+/// The port a Bonjour responder listens on.
+const MDNS_PORT: u16 = 5353;
+
+/// Asks a host what it calls itself, by the reverse name of its own address.
+///
+/// One datagram, and it is what makes the device-info query possible at all on a
+/// host the scan reached by address and never resolved a name for.
+async fn own_name(addr: std::net::SocketAddr, ip: IpAddr) -> Option<String> {
+    let query = crate::protocols::mdns::build_reverse_query(ip).ok()?;
+    let reply = crate::fingerprint::probe_udp_raw(addr, &query).await?;
+
+    crate::protocols::mdns::extract_hosts(&reply)
+        .ok()?
+        .into_iter()
+        .map(|host| host.hostname)
+        .find(|name| !name.is_empty())
+}
+
+/// Asks one host for its device-info record and reads what it says about the
+/// machine.
+///
+/// Sent to the host rather than to the multicast group: a scan is asking one host
+/// about itself, and the answer is attributable only if the question was.
+async fn ask_what_hardware(
+    target: crate::model::ip::scoped::ScopedIp,
+    hostname: Option<String>,
+) -> Option<(crate::model::ip::scoped::ScopedIp, Vec<OsEvidence>)> {
+    let addr = target.to_socket_addr(MDNS_PORT)?;
+
+    // The name the record hangs off. Asked of the host itself where nothing else
+    // resolved one, which is the ordinary case for a machine the scan reached by
+    // address: a responder answers a reverse lookup about its own address.
+    let hostname = match hostname {
+        Some(name) => name,
+        None => own_name(addr, target.addr()).await?,
+    };
+
+    let query = crate::protocols::mdns::build_device_info_query(&hostname).ok()?;
+
+    // Each `key=value` is its own claim: the model and the Darwin release are
+    // two facts about one machine, and a rule reads one of them.
+    let evidence: Vec<OsEvidence> = crate::fingerprint::probe_udp_with(addr, &query)
+        .await
+        .iter()
+        .filter_map(|text| {
+            crate::fingerprint::SignatureDb::global()
+                .identify(MDNS_PORT, Protocol::Udp, text)?
+                .os
+        })
+        .collect();
+
+    (!evidence.is_empty()).then_some((target, evidence))
 }
 
 /// The port an SNMP agent listens on. Fixed: an agent elsewhere is one nothing

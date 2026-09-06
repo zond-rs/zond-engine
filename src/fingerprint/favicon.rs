@@ -142,6 +142,21 @@ fn as_application(mut evidence: Evidence) -> Evidence {
     }
 }
 
+/// The digest of the icon `addr` serves, found exactly as a scan finds it.
+///
+/// An instrument for the container tier, which measures real software so a rule
+/// can be written against what an application serves today. It goes through
+/// [`icon_of`] rather than reimplementing the search, because a harvester that
+/// measured differently from the scanner would produce hashes no scan can match:
+/// that is how the certificate work nearly shipped two hundred dead rules.
+///
+/// Behind `test-support`, since nothing in a scan needs it.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn digest_of(addr: std::net::SocketAddr) -> Option<String> {
+    let icon = icon_of(addr, &ResponseSet::default()).await?;
+    Some(md5_hex(&icon))
+}
+
 /// The lowercase hex MD5 of `bytes`, which is the form the corpus is keyed on.
 fn md5_hex(bytes: &[u8]) -> String {
     Md5::digest(bytes)
@@ -197,17 +212,17 @@ async fn icon_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> Option<
 /// is a server that does not want to be read.
 async fn page_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> (Option<String>, String) {
     let root = "/".to_string();
-    let Some(first) = responses
+
+    // `None` where nothing was read, which is how the container tier drives this
+    // with no scan behind it. The root is asked for either way below.
+    let first = responses
         .banners
         .iter()
-        .find(|banner| banner.starts_with("HTTP/"))
-    else {
-        return (None, root);
-    };
+        .find(|banner| banner.starts_with("HTTP/"));
 
     // A reply that already declares an icon is the page, whatever drew it.
-    if declared_icon(first).is_some() {
-        return (Some(first.clone()), root);
+    if let Some(page) = first.filter(|page| declared_icon(page).is_some()) {
+        return (Some(page.clone()), root);
     }
 
     // Otherwise ask for the root. A port some service registered a probe for is
@@ -216,9 +231,11 @@ async fn page_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> (Option
     // answers its registered probe with a `400` and its root with the page that
     // names it. The banner is still consulted for a redirect first, so an
     // unclaimed port that already fetched `/` spends no request re-fetching it.
-    let path = super::redirect_path(first, Some(addr)).unwrap_or_else(|| root.clone());
+    let path = first
+        .and_then(|page| super::redirect_path(page, Some(addr)))
+        .unwrap_or_else(|| root.clone());
     let Some(page) = fetch_text(addr, &path).await else {
-        return (Some(first.clone()), root);
+        return (first.cloned(), root);
     };
 
     // The root may redirect on this request rather than on the scan's. One hop,
@@ -280,7 +297,19 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
 /// key another host's icon to this port.
 fn resolve(base: &str, href: &str) -> Option<String> {
     let href = href.trim();
-    if href.is_empty() || href.contains("://") || href.starts_with("//") {
+    if href.is_empty() || href.starts_with("//") {
+        return None;
+    }
+
+    // Anything naming a scheme. An absolute URL is another host's bytes, and a
+    // `data:` icon is inline rather than fetchable: Portainer declares one, and
+    // reading it as a path would put four kilobytes of base64 into a request
+    // line. A scheme is what precedes the first `:`, and only before the first
+    // `/`, so a path may still contain a colon of its own.
+    let scheme_end = href
+        .find(':')
+        .filter(|at| *at < href.find('/').unwrap_or(usize::MAX));
+    if scheme_end.is_some() {
         return None;
     }
     if href.starts_with('/') {
@@ -539,15 +568,42 @@ mod tests {
         assert_eq!(as_application(found).extrainfo, None);
     }
 
-    /// A server that answers the second request with an endless stream cannot
-    /// hold the scan: the read stops at the cap.
-    #[test]
-    fn the_body_read_is_bounded() {
-        assert!(MAX_ICON_BYTES >= 64 * 1024, "room for a real icon");
+    /// A server answering with a stream that does not end cannot hold the scan.
+    /// The read stops at the cap and what was collected is still hashed, so a
+    /// hostile peer costs a bounded amount rather than the process.
+    #[tokio::test]
+    async fn an_endless_response_is_cut_off_at_the_cap() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 512];
+            let _ = stream.read(&mut buffer).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/x-icon\r\n\r\n")
+                .await
+                .unwrap();
+            // More than the cap, in chunks, until the reader gives up on us.
+            let chunk = vec![0xab; 32 * 1024];
+            for _ in 0..64 {
+                if stream.write_all(&chunk).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let icon = fetch(addr, "/favicon.ico").await.expect("a bounded body");
+        server.abort();
+
         assert!(
-            MAX_ICON_BYTES <= 1024 * 1024,
-            "and a bound on a hostile one"
+            icon.len() <= MAX_ICON_BYTES,
+            "read {} bytes, past the {MAX_ICON_BYTES} cap",
+            icon.len()
         );
+        assert!(!icon.is_empty(), "what was read is still worth hashing");
     }
 
     /// Jellyfin's real markup, which is why this analyzer was rewritten: the
@@ -621,6 +677,25 @@ mod tests {
         assert_eq!(resolve("/", "https://cdn.example/f.ico"), None);
         assert_eq!(resolve("/", "//cdn.example/f.ico"), None);
         assert_eq!(resolve("/", ""), None);
+    }
+
+    /// Portainer declares its icon inline. Read as a path it would put four
+    /// kilobytes of base64 into a request line, so a scheme of any kind is
+    /// declined.
+    #[test]
+    fn an_inline_data_icon_is_not_mistaken_for_a_path() {
+        let inline = "data:image/vnd.microsoft.icon;base64,AAABAAEAEBAAAAEAIABoBAAA";
+        assert_eq!(resolve("/", inline), None);
+        assert_eq!(resolve("/", "mailto:someone@example.com"), None);
+    }
+
+    /// A colon after the first slash is part of a path, not a scheme.
+    #[test]
+    fn a_colon_inside_a_path_is_still_a_path() {
+        assert_eq!(
+            resolve("/", "/assets/img:v2/f.ico").as_deref(),
+            Some("/assets/img:v2/f.ico")
+        );
     }
 
     #[test]

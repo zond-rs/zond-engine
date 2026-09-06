@@ -11,3 +11,50 @@ description = "Multicast DNS"
 name = "mdns_version_bind"
 payload = '\x00\x00\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03'
 protocol = "udp"
+
+# ── Apple hardware, by the shape of its model identifier ─────────────────────
+#
+# The imported corpus enumerates 138 models and stops at the ones current in
+# 2022, so a Mac bought since is unidentified. Apple's identifier has a fixed
+# shape, `<Family><major>,<minor>`, which no other vendor's `model=` uses, so
+# capturing it covers every model there has been and every one there will be.
+# A rule naming an exact model still outranks these, having more to say.
+
+[[match]]
+name = "Apple Mac, by its model identifier"
+pattern = '^model=(Mac[A-Za-z]*\d+,\d+)$'
+vendor = "Apple"
+context = "mdns.device-info.txt"
+example = "model=Mac16,10"
+metadata = { "os.vendor" = "Apple", "os.family" = "macOS", "hw.vendor" = "Apple", "hw.device" = "Computer" }
+
+[[match]]
+name = "Apple iPhone, by its model identifier"
+pattern = '^model=(iPhone\d+,\d+)$'
+vendor = "Apple"
+context = "mdns.device-info.txt"
+example = "model=iPhone14,2"
+metadata = { "os.vendor" = "Apple", "os.family" = "iOS", "hw.vendor" = "Apple", "hw.device" = "Phone" }
+
+[[match]]
+name = "Apple iPad, by its model identifier"
+pattern = '^model=(iPad\d+,\d+)$'
+vendor = "Apple"
+context = "mdns.device-info.txt"
+example = "model=iPad13,1"
+metadata = { "os.vendor" = "Apple", "os.family" = "iPadOS", "hw.vendor" = "Apple", "hw.device" = "Tablet" }
+
+# ── The Darwin release, captured rather than enumerated ──────────────────────
+#
+# `osxvers` is the Darwin major version. The imported rules map each to a
+# marketing release and stop at 22, so anything since macOS 13 goes unnamed.
+# The number itself is a kernel version, which is what this records: a fact the
+# host stated, rather than an arithmetic guess at the name Apple gave it.
+
+[[match]]
+name = "Darwin release, by the version the host states"
+pattern = '^osxvers=(\d+)$'
+vendor = "Apple"
+context = "mdns.device-info.txt"
+example = "osxvers=25"
+metadata = { "os.vendor" = "Apple", "os.family" = "macOS", "os.kernel" = "{capture:1}" }

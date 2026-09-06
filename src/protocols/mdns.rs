@@ -98,6 +98,80 @@ pub struct MdnsHost {
     pub ips: BTreeSet<IpAddr>,
 }
 
+/// The name a host's device-info record is published under.
+///
+/// Bonjour hangs it off the hostname rather than advertising it as a service, so
+/// it does not appear in a `_services._dns-sd._udp` enumeration and cannot be
+/// asked for without knowing what the host calls itself. Measured against
+/// mDNSResponder: `_device-info._tcp.local` alone draws nothing, and
+/// `<host>._device-info._tcp.local` draws the record.
+pub fn device_info_name(hostname: &str) -> String {
+    let host = hostname
+        .trim_end_matches('.')
+        .strip_suffix(".local")
+        .unwrap_or(hostname);
+    format!("{host}._device-info._tcp.local")
+}
+
+/// A query asking a host what it calls itself, by the reverse name of its
+/// address.
+///
+/// The device-info record is published under the host's own name, so a scan that
+/// does not already know that name cannot ask for the record. A responder
+/// answers a reverse lookup about its own address, which is where the name comes
+/// from when nothing else resolved one: measured against mDNSResponder, and it is
+/// what makes the device-info query reachable on a host the scan learned nothing
+/// else about.
+pub fn build_reverse_query(ip: IpAddr) -> Result<Vec<u8>> {
+    dns::build_query(
+        MULTICAST_QUERY_ID,
+        false,
+        &[(&dns::reverse_pointer_name(ip), dns::record_type::PTR)],
+    )
+}
+
+/// A query for a host's device-info record, asked of that host directly.
+///
+/// Sent to the host directly rather than to the multicast group. A scan is asking
+/// one host about itself, so telling the whole segment would make the answer
+/// harder to attribute rather than easier.
+///
+/// The question carries an ordinary `IN` class. RFC 6762 §5.4 defines a top bit
+/// asking for a unicast reply, and it is not set here because it is not needed:
+/// measured against mDNSResponder, a query sent to a responder's own port is
+/// answered either way, and the bit exists for queries put on the group.
+pub fn build_device_info_query(hostname: &str) -> Result<Vec<u8>> {
+    dns::build_query(
+        MULTICAST_QUERY_ID,
+        false,
+        &[(&device_info_name(hostname), dns::record_type::TXT)],
+    )
+}
+
+/// The strings a TXT record carries, one per character-string.
+///
+/// Kept apart rather than joined, because that is the unit the signature corpus
+/// is written against: a device-info record answers `model=Mac16,10`,
+/// `osxvers=25`, `icolor=0`, and a rule reads one of them. Joining them would
+/// reach none.
+pub fn text_records(data: &[u8]) -> Result<Vec<String>> {
+    let packet =
+        Packet::parse(data).map_err(|error| PacketError::unreadable("an mDNS message", error))?;
+
+    Ok(packet
+        .answers
+        .iter()
+        .chain(packet.additional.iter())
+        .filter_map(|record| match &record.data {
+            RData::TXT(txt) => Some(txt.iter()),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|chunk| String::from_utf8(chunk.to_vec()).ok())
+        .filter(|text| !text.is_empty())
+        .collect())
+}
+
 /// Reads every host an mDNS message names, in name order.
 ///
 /// A message that names none - a query, or a response carrying only service
@@ -372,5 +446,80 @@ mod tests {
             bytes.extend_from_slice(label.as_bytes());
         }
         bytes.push(0);
+    }
+
+    /// A real answer from mDNSResponder, captured 2026-09-05 by asking a Mac's
+    /// own responder over unicast. The three strings are what the corpus reads.
+    const DEVICE_INFO: &[u8] = &[
+        0x00, 0x00, 0x84, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x03, 0x6d, 0x61,
+        0x63, 0x0c, 0x5f, 0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x69, 0x6e, 0x66, 0x6f, 0x04,
+        0x5f, 0x74, 0x63, 0x70, 0x05, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x10, 0x80, 0x01,
+        0xc0, 0x0c, 0x00, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x23, 0x0e, 0x6d, 0x6f,
+        0x64, 0x65, 0x6c, 0x3d, 0x4d, 0x61, 0x63, 0x31, 0x36, 0x2c, 0x31, 0x30, 0x0a, 0x6f, 0x73,
+        0x78, 0x76, 0x65, 0x72, 0x73, 0x3d, 0x32, 0x35, 0x08, 0x69, 0x63, 0x6f, 0x6c, 0x6f, 0x72,
+        0x3d, 0x30,
+    ];
+
+    /// Each character-string separately, because that is the unit a rule reads.
+    #[test]
+    fn a_device_info_record_yields_one_string_per_field() {
+        assert_eq!(
+            text_records(DEVICE_INFO).expect("a well-formed answer"),
+            vec!["model=Mac16,10", "osxvers=25", "icolor=0"]
+        );
+    }
+
+    /// The name the record hangs off, which is a hostname and not a service.
+    #[test]
+    fn the_query_name_is_built_from_the_host_rather_than_browsed_for() {
+        assert_eq!(device_info_name("mac"), "mac._device-info._tcp.local");
+        assert_eq!(device_info_name("mac.local"), "mac._device-info._tcp.local");
+        assert_eq!(
+            device_info_name("mac.local."),
+            "mac._device-info._tcp.local"
+        );
+    }
+
+    /// The query a responder answered with the bytes above.
+    #[test]
+    fn the_query_asks_for_text_under_that_name() {
+        let query = build_device_info_query("mac").expect("a name that fits a label");
+        let packet = Packet::parse(&query).expect("a responder can parse it");
+
+        let question = packet.questions.first().expect("one question");
+        assert_eq!(question.qname.to_string(), "mac._device-info._tcp.local");
+        assert_eq!(question.qtype, QueryType::TXT);
+    }
+
+    #[test]
+    fn a_message_carrying_no_text_yields_nothing() {
+        let query = build_device_info_query("mac").expect("a query");
+        assert!(
+            text_records(&query)
+                .expect("a parseable message")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_message_are_refused_rather_than_read() {
+        assert!(text_records(b"not an mdns message at all").is_err());
+    }
+
+    /// The question asked of a host that has not been named any other way. Its
+    /// answer is what makes the device-info query possible at all.
+    #[test]
+    fn the_reverse_query_asks_for_the_name_of_an_address() {
+        let ip: IpAddr = "192.168.0.160".parse().expect("a literal address");
+        let query = build_reverse_query(ip).expect("a reverse name fits");
+        let packet = Packet::parse(&query).expect("a responder can parse it");
+
+        let question = packet.questions.first().expect("one question");
+        assert_eq!(
+            question.qname.to_string(),
+            "160.0.168.192.in-addr.arpa",
+            "the reverse name names the address"
+        );
+        assert_eq!(question.qtype, QueryType::PTR);
     }
 }

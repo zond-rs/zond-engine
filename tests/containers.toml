@@ -1,0 +1,57 @@
+# Real software, and what this engine should make of it.
+#
+# `tests/containers.rs` starts each target from its pinned image, scans it
+# through the public API, and holds the verdict to what is written here.
+#
+# To add one: leave `expect` out, run the report pass, read what it printed, and
+# write down the part of it you agree with. An expectation copied from a run
+# nobody looked at asserts only that the engine still does whatever it did.
+#
+# `expect` may state any of `service`, `product`, `vendor`, `version`,
+# `extrainfo`; a field left out is not checked. `unidentified = true` asserts the
+# opposite, so that the day something can be named is a visible change.
+
+[[target]]
+name = "jellyfin"
+image = "jellyfin/jellyfin:10.10.7"
+port = 8096
+[target.expect]
+service = "http"
+product = "Media Server"
+vendor = "Jellyfin"
+
+[[target]]
+name = "grafana"
+image = "grafana/grafana:11.6.0"
+port = 3000
+[target.expect]
+service = "http"
+product = "Grafana"
+vendor = "Grafana"
+
+[[target]]
+name = "gitea"
+image = "gitea/gitea:1.23.5"
+port = 3000
+[target.expect]
+service = "http"
+product = "Gitea"
+vendor = "Gitea"
+
+[[target]]
+name = "prometheus"
+image = "prom/prometheus:v3.2.1"
+port = 9090
+[target.expect]
+service = "http"
+product = "Prometheus"
+vendor = "Prometheus"
+
+[[target]]
+name = "portainer"
+image = "portainer/portainer-ce:2.27.1"
+port = 9000
+[target.expect]
+service = "http"
+product = "Portainer"
+vendor = "Portainer"
