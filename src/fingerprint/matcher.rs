@@ -81,6 +81,15 @@ pub struct Signature {
 
     /// What runs the service, where the rule names it. See [`Component`].
     component: Option<Component>,
+
+    /// Everything else the rule wants said about the service, as a template
+    /// resolved against what the pattern captured.
+    ///
+    /// The general form of what [`Component`] states in two named halves, for a
+    /// rule whose supplementary detail is not a runtime: an OpenSSH banner's
+    /// `Debian-7+deb13u4` is the distribution's build of the service itself.
+    /// Takes precedence over the component phrase where a rule states both.
+    extrainfo: Option<String>,
 }
 
 /// The runtime a service runs on, as its rule names it.
@@ -179,6 +188,7 @@ impl Signature {
             cpe: metadata_value(rule, "service.cpe23"),
             service_version: metadata_value(rule, "service.version"),
             component: Component::from_map(rule),
+            extrainfo: metadata_value(rule, "service.extrainfo"),
         }
     }
 
@@ -223,7 +233,8 @@ impl Signature {
         // Capture groups are collected only for a signature whose operating-system
         // metadata has templates to fill from them. Most have neither, and this
         // runs against every candidate signature for every banner.
-        let wants_captures = self.os.is_some() || self.component.is_some();
+        let wants_captures =
+            self.os.is_some() || self.component.is_some() || self.extrainfo.is_some();
         let matched = self.compiled()?.identify_with_captures(
             response,
             self.version_group,
@@ -270,10 +281,18 @@ impl Signature {
         evidence.vendor = self.vendor.clone();
         evidence.version = version;
         evidence.cpe = cpe;
-        evidence.extrainfo = self
-            .component
-            .as_ref()
-            .and_then(|component| component.resolve(matched.captures.as_deref().unwrap_or(&[])));
+        let captures = matched.captures.as_deref().unwrap_or(&[]);
+        // Bounded like the version above it: both routes here resolve a corpus
+        // template against a capture taken from a remote response, so a pattern
+        // that ran away puts a kilobyte in a report field. See
+        // `MAX_IDENTITY_BYTES`.
+        evidence.extrainfo = super::os::fill(self.extrainfo.as_deref(), captures)
+            .or_else(|| {
+                self.component
+                    .as_ref()
+                    .and_then(|component| component.resolve(captures))
+            })
+            .filter(|extra| super::identity_field(extra).is_some());
 
         Some(Match {
             evidence,
@@ -375,6 +394,48 @@ mod tests {
     /// The runtime under the server is the half worth scanning for: a
     /// `SimpleHTTP` listener is nobody's target and the interpreter behind it
     /// has a CVE history. The corpus captured it and nothing carried it.
+    #[test]
+    /// A rule may state extrainfo outright, as a template over its captures,
+    /// for supplementary detail that is not a runtime.
+    #[test]
+    fn a_rule_can_state_extrainfo_over_its_own_captures() {
+        let mut rule = rule(r"^OpenSSH_(\S+) (\S+)", Some(1), Some("OpenSSH"));
+        rule.metadata = Some(
+            [("service.extrainfo".to_string(), "{capture:2}".to_string())]
+                .into_iter()
+                .collect(),
+        );
+
+        let matched = Signature::new("ssh", &rule)
+            .identify("OpenSSH_10.0p2 Debian-7+deb13u4", OsSource::ServiceBanner)
+            .expect("the pattern matches");
+        assert_eq!(
+            matched.evidence.extrainfo.as_deref(),
+            Some("Debian-7+deb13u4")
+        );
+    }
+
+    /// And what it states is held to the same bound the version is, since both
+    /// resolve against a capture from a response the scan did not write.
+    #[test]
+    fn stated_extrainfo_past_the_bound_is_refused() {
+        let mut rule = rule(r"^OpenSSH_(\S+) (\S+)", Some(1), Some("OpenSSH"));
+        rule.metadata = Some(
+            [("service.extrainfo".to_string(), "{capture:2}".to_string())]
+                .into_iter()
+                .collect(),
+        );
+
+        let hostile = format!(
+            "OpenSSH_10.0p2 {}",
+            "A".repeat(crate::fingerprint::MAX_IDENTITY_BYTES + 1)
+        );
+        let matched = Signature::new("ssh", &rule)
+            .identify(&hostile, OsSource::ServiceBanner)
+            .expect("the pattern still matches");
+        assert_eq!(matched.evidence.extrainfo, None);
+    }
+
     #[test]
     fn the_component_a_rule_names_becomes_the_services_extra_info() {
         let ev = Signature::new(

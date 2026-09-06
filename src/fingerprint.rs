@@ -197,11 +197,6 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// `the_collection_budget_covers_every_path_through_gather` is what holds the
 /// two together.
 ///
-/// It rose from fifteen seconds when the ladder grew its last rung. A rung is
-/// bounded work on a port that has already said nothing, so the ceiling above
-/// them has to move when one is added or it stops being a backstop and starts
-/// being the thing that cuts the walk short.
-///
 /// It is here because the stages are added to over time and their sum is nobody's
 /// property. `read_bytes` grew a bound it did not have; the next stage to be
 /// added will be bounded by whoever writes it, and this is what makes the total
@@ -582,14 +577,11 @@ pub async fn probe_udp_raw(addr: std::net::SocketAddr, payload: &[u8]) -> Option
 /// A ladder of questions rather than a choice between them. The port number sets
 /// the *order* the rungs are tried in and never the set: a port numbered for TLS
 /// is offered a handshake first and anything else is spoken to in the clear
-/// first, but a rung that draws nothing at all falls through to the next one.
+/// first, and a rung that draws nothing falls through to the next.
 ///
-/// Order is what a port number is good for and membership is what it is not.
-/// Every number is a convention, and every convention is something a service can
-/// be moved off or onto. A terminal rung makes the convention the answer: SSH on
-/// 443 was reported as `http` for as long as a failed handshake ended the
-/// collection, because the question that would have identified it was the one the
-/// number had ruled out.
+/// Order is what a port number is good for and membership is what it is not. A
+/// number is a convention, and a service can be moved off or onto any of them,
+/// so a rung that ended the collection would make the convention the answer.
 ///
 /// Whenever a handshake succeeds the collection re-runs *inside* the tunnel, so
 /// the protocol carried by TLS is fingerprinted too, and the returned [`Tunnel`]
@@ -680,11 +672,8 @@ enum Rung {
     /// The questions other services registered, put to a port that has answered
     /// none of its own.
     ///
-    /// The rung that exists because a port number gates evidence as well as
-    /// ordering it. Redis speaks only when spoken to and closes on an HTTP
-    /// request, so a Redis moved to 8443 answers nothing on any rung above
-    /// this, and the `PING` that would name it in one round trip is registered
-    /// against 6379 and asked nowhere else.
+    /// For a service that speaks only when spoken to and is not on the port its
+    /// probe is registered against, this is the only rung that can reach it.
     LastResort,
 }
 
@@ -692,15 +681,14 @@ impl Rung {
     /// The rungs for `port`, in the order they are worth asking in.
     ///
     /// The whole of the port number's influence on collection. A number
-    /// registered for implicit TLS earns the handshake first, which is what
-    /// keeps an ordinary HTTPS port from paying a banner timeout it would only
-    /// ever lose. It does not earn the handshake *alone*, which is the part that
-    /// used to be assumed.
+    /// registered for implicit TLS earns the handshake first, which spares an
+    /// ordinary HTTPS port a banner timeout it could only lose. It does not earn
+    /// the handshake alone.
     ///
-    /// `LegacyTls` sits above `Plaintext` on a TLS-numbered port rather than
-    /// below it, because a 1.0-only server answers a plaintext probe with an
-    /// alert record: bytes, which the clear-text rung would report as a banner,
-    /// ending the ladder one rung above the question that names the version.
+    /// `LegacyTls` sits above `Plaintext` because a 1.0-only server answers a
+    /// plaintext probe with an alert record: bytes, which the clear-text rung
+    /// would report as a banner, ending the ladder one rung above the question
+    /// that names the version.
     fn ladder(port: u16) -> &'static [Rung] {
         if tls::is_tls_port(port) {
             &[
@@ -747,15 +735,14 @@ impl Rung {
 /// Reusing a socket across two of them would ask the second question of a peer
 /// that had already hung up.
 ///
-/// Stops on the first probe that draws anything. Whether what came back
-/// identifies the service is the analyzers' question, not this one: a port that
-/// spoke has stopped being a port that said nothing, and asking it the rest of
-/// the corpus would be traffic spent on a case already closed.
+/// Every probe is asked and the replies accumulate, unlike the rungs above,
+/// where one exchange goes to every analyzer and anything that came back is
+/// worth handing on. Here each probe is a *different protocol's* question, and a
+/// refusal of one says only that the port does not speak that protocol. A
+/// service that answers an unknown command with an error rather than a closed
+/// socket would otherwise end the rung on the probe before its own.
 ///
-/// Which probes those are, and how many, is
-/// [`ServiceDetection::probe_intensity`]. At the default only the bottom of the
-/// rarity scale is asked, which today is three questions and in practice far
-/// fewer, since the rung is reached at all on perhaps a port or two per host.
+/// Which probes are asked is [`ServiceDetection::probe_intensity`].
 async fn last_resort(
     first: TcpStream,
     socket: SocketAddr,
@@ -765,6 +752,7 @@ async fn last_resort(
     let probes =
         SignatureDb::global().universal_tcp_probe_payloads(port, detection.probe_intensity());
 
+    let mut replies = Vec::new();
     let mut opened = Some(first);
     for payload in probes {
         let Some(mut stream) = (match opened.take() {
@@ -778,11 +766,11 @@ async fn last_resort(
             continue;
         }
         if let Some(reply) = read_document(&mut stream, PROBE_READ_TIMEOUT).await {
-            return ResponseSet::from_banners(vec![reply]);
+            replies.push(reply);
         }
     }
 
-    ResponseSet::default()
+    ResponseSet::from_banners(replies)
 }
 
 /// Everything a port will say in the clear.
@@ -795,9 +783,7 @@ async fn last_resort(
 ///
 /// A reply that is a TLS record is reported as nothing rather than as a banner,
 /// on either shape. The port spoke, but not in this rung's language, and the
-/// ladder has a rung that can read it. Reported as a banner it would be four
-/// bytes of an alert standing in for an identification, and it would end the
-/// ladder above the rung that finishes the job.
+/// ladder has a rung that can read it.
 async fn plaintext(stream: &mut TcpStream, port: u16, socket: Option<SocketAddr>) -> ResponseSet {
     let probes = SignatureDb::global().tcp_probe_payloads(port);
     if !probes.is_empty() {
@@ -1021,9 +1007,8 @@ fn looks_like_tls(bytes: &[u8]) -> bool {
 /// would not complete.
 ///
 /// rustls implements TLS 1.2 and 1.3 and implements neither 1.0 nor 1.1, so a
-/// legacy-only server fails the rung above this one and was once reported as a
-/// port that answered nothing, losing the identification and the finding
-/// together.
+/// legacy-only server fails the rung above this one and would otherwise go down
+/// as a port that answered nothing.
 ///
 /// The result carries no certificate and no tunnel. A legacy handshake sends its
 /// certificate in the clear and reading it would be possible, and it is
@@ -1834,13 +1819,13 @@ mod tests {
         let alert_then_tls = read_once + rung + tls::SPECULATIVE_TLS_TIMEOUT + spoke(1);
         let unclaimed_then_redirect = read_once + rung + read_once;
 
-        // And the last rung, which is a connection and a read per probe: every
-        // probe but the last drew nothing, or the rung would have stopped there.
+        // And the last rung, which is a connection and a read per probe, for
+        // every probe, since a reply to one of them does not end it.
         let universal = SignatureDb::global()
             .universal_tcp_probe_payloads(0, ServiceDetection::Thorough.probe_intensity())
             .len()
             .max(1) as u32;
-        let last_resort = (rung + PROBE_READ_TIMEOUT) * (universal - 1) + rung + read_once;
+        let last_resort = (rung + read_once) * universal;
 
         let worst = [
             tls_all_three + last_resort,

@@ -554,15 +554,12 @@ pub enum ServiceDetection {
     /// Level 3. Everything above, and then every question the corpus has.
     ///
     /// A port that walked the whole collection and still said nothing gets the
-    /// probes authored for *other* services, in rarity order. Redis moved to
-    /// 8443 is the case: it speaks only when spoken to, and it will not answer
-    /// the HTTP request 8443 earns from the ports it is registered under, so
-    /// nothing below this level ever asks it the one question it answers.
+    /// probes authored for *other* services, in rarity order. That is what
+    /// reaches a service which speaks only when spoken to and is not on the
+    /// port its own probe is registered against.
     ///
     /// Paid only where everything else drew a blank, which on an ordinary host
-    /// is a port or two. What it costs there is a connection and a round trip
-    /// per probe, and what it buys is the difference between a name and the
-    /// number's own guess.
+    /// is a port or two, and costing a connection and a round trip per probe.
     Thorough,
 }
 
@@ -640,9 +637,8 @@ impl ServiceDetection {
     /// nothing registered against the port being asked.
     ///
     /// The scale runs 1 to 9 and is the one the imported corpora are authored
-    /// on; see [`Probe::rarity`](crate::fingerprint::Probe::rarity).
-    /// Zero reaches nothing, which is what every level below [`Probe`] wants and
-    /// what the engine did everywhere before this dial existed.
+    /// on; see [`Probe::rarity`](crate::fingerprint::Probe::rarity). Zero
+    /// reaches nothing, which is what every level below [`Probe`] wants.
     ///
     /// The default stops at 1 because only the bottom of the scale is authored
     /// so far. It is a floor to raise as the corpus fills in, not a judgement

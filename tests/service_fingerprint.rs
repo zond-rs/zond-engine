@@ -192,12 +192,16 @@ async fn a_service_is_named_from_the_wire_and_not_from_the_port_number() {
     }
 }
 
-/// A server that answers one question and hangs up on every other, which is how
-/// the services this exists for actually behave: Redis closes on the second line
-/// of an HTTP request rather than answering it, and PostgreSQL reads the first
-/// four bytes as a length and gives up.
+/// Redis, in the detail this needs, checked against `redis:7-alpine`.
 ///
-/// Returns the port it is listening on. It accepts in a loop, because a ladder
+/// Two behaviours, and the test turns on having both. A question it does not
+/// know is *refused* rather than hung up on, so a collection that stopped at
+/// the first reply it drew would take the refusal for an answer. An HTTP
+/// request draws nothing, because `Host:` on the second line trips Redis's
+/// guard against being driven by a web page and it closes without flushing;
+/// that silence is what carries the port past the plaintext rung.
+///
+/// Returns the port it is listening on, and accepts in a loop, since a ladder
 /// that falls through dials again for each rung.
 async fn spawn_challenge_server(question: &'static [u8], answer: &'static [u8]) -> u16 {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -212,10 +216,18 @@ async fn spawn_challenge_server(question: &'static [u8], answer: &'static [u8]) 
                 let Ok(read) = sock.read(&mut buffer).await else {
                     return;
                 };
-                if buffer[..read].starts_with(question) {
-                    let _ = sock.write_all(answer).await;
-                    let _ = sock.flush().await;
+                let request = &buffer[..read];
+                if request.windows(7).any(|w| w == b"HTTP/1.") {
+                    return;
                 }
+
+                let reply: &[u8] = if request.starts_with(question) {
+                    answer
+                } else {
+                    b"-ERR unknown command\r\n"
+                };
+                let _ = sock.write_all(reply).await;
+                let _ = sock.flush().await;
             });
         }
     });
@@ -226,16 +238,14 @@ async fn spawn_challenge_server(question: &'static [u8], answer: &'static [u8]) 
 /// A service that speaks only when spoken to is identified on a port that
 /// registers a different question entirely.
 ///
-/// The half of the problem the ladder does not reach. Ordering the questions
-/// gets a service that greets on connect, or one that answers the generic HTTP
-/// request; it does nothing for a service that answers neither and whose own
-/// probe is addressed to a port number it is no longer on. Redis moved to 8443
-/// was reported as `kubernetes`, which is the number's registration and not
-/// anything the host said.
+/// The half of the problem ordering does not reach. Asking in the right order
+/// finds a service that greets on connect or answers the generic HTTP request;
+/// it does nothing for one that answers neither and whose own probe is
+/// addressed to a port it is no longer on.
 ///
-/// 8443 and 8080 are chosen because they are registered, and registered to
-/// something else: the last rung has to be reached past a port's own probes
-/// drawing nothing, not merely on a port nobody claims.
+/// The numbers are registered ones, and registered to something else, because
+/// the last rung has to be reached past a port's own probes drawing nothing and
+/// not merely on a port nobody claims.
 #[tokio::test]
 async fn a_service_that_answers_only_its_own_probe_is_still_identified() {
     // The version is what proves the reply was read rather than merely matched.
@@ -249,6 +259,15 @@ async fn a_service_that_answers_only_its_own_probe_is_still_identified() {
             8080,
             "memcached",
             Some("1.6.21"),
+        ),
+        // The refusal a StartupMessage naming an unspeakable protocol version
+        // draws, as `postgres:16-alpine` writes it.
+        (
+            &b"\x00\x00\x00\x13\x00\x04\x00\x00user"[..],
+            &b"E\x00\x00\x00\x83SFATAL\x00C0A000\x00Munsupported frontend protocol 4.0: server supports 3.0 to 3.0\x00"[..],
+            55_555,
+            "postgresql",
+            None,
         ),
     ] {
         let port = spawn_challenge_server(question, answer).await;
@@ -306,4 +325,47 @@ async fn a_lower_level_does_not_reach_for_another_service_s_probe() {
         Some("redis"),
         "a level that asks nothing cannot have asked redis its own question"
     );
+}
+
+/// An SSH banner's trailing comment reaches the report.
+///
+/// RFC 4253 §4.2 allows free text after the software version, and a
+/// distribution puts its own build of the package there. That build is finer
+/// than the release it implies, and it is what somebody patching a fleet is
+/// matching against, so it belongs on the port beside the version rather than
+/// only in what the host record infers from it.
+#[tokio::test]
+async fn an_ssh_banners_distribution_build_survives_into_the_service() {
+    for (banner, version, build) in [
+        (
+            &b"SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4\r\n"[..],
+            "10.0p2",
+            Some("Debian-7+deb13u4"),
+        ),
+        (
+            &b"SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5\r\n"[..],
+            "9.6p1",
+            Some("Ubuntu-3ubuntu13.5"),
+        ),
+        // `DebianBanner no` strips the comment, and a rule that invented one
+        // would be reporting a build nothing announced.
+        (&b"SSH-2.0-OpenSSH_9.6p1\r\n"[..], "9.6p1", None),
+    ] {
+        let server = spawn_banner_server(banner).await;
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, server.port))
+            .await
+            .expect("the loopback fixture accepts");
+
+        let identified = fingerprint_tcp(
+            stream,
+            baseline_port(22, Protocol::Tcp, PortState::Open),
+            ServiceDetection::default(),
+        )
+        .await;
+
+        let service = identified.service().expect("the banner names a service");
+        let shown = String::from_utf8_lossy(banner);
+        assert_eq!(service.version(), Some(version), "{shown:?}");
+        assert_eq!(service.extrainfo(), build, "{shown:?}");
+    }
 }

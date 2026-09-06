@@ -10,13 +10,21 @@ name = "ssh_client_banner"
 payload = 'SSH-2.0-Zond_1.0\r\n'
 protocol = "tcp"
 
-# Match against the SSH banner sent by the server
+# Match against the SSH banner sent by the server.
+#
+# RFC 4253 §4.2 puts an optional free-text comment after the software version,
+# separated by a space, and a distribution's build is what usually occupies it.
+# Group 3 is that comment, offered as extrainfo so the exact package build
+# survives into the report rather than only the release it implies.
 [[match]]
 name = "openssh_match"
-pattern = '^SSH-([\d.]+)-OpenSSH[_]?([\w.-]+)'
+pattern = '^SSH-([\d.]+)-OpenSSH[_]?([\w.-]+)(?:\s+(\S+))?'
 version_group = 2
 vendor = "OpenBSD"
 product = "OpenSSH"
+context = "ssh.banner"
+example = "SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4"
+metadata = { "service.extrainfo" = "{capture:3}" }
 
 [[match]]
 name = "dropbear_match"

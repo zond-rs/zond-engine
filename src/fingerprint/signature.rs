@@ -261,18 +261,15 @@ pub struct Probe {
     /// everything. See
     /// [`ServiceDetection::probe_intensity`](crate::config::ServiceDetection::probe_intensity).
     ///
-    /// **Zero is not a band on that scale.** It is the absence of one, and it
-    /// means the probe goes only to the ports its own service registered, which
-    /// is where every probe went before the scale was wired in. Most of the
-    /// corpus is still unauthored and so still zero, and an unauthored probe
-    /// keeping its old addressing is the point: rarity is a claim that a
-    /// question is worth putting to a stranger, and that claim is made per
-    /// probe, by hand.
+    /// Zero is not a band on that scale. It is the absence of one, and it means
+    /// the probe goes only to the ports its own service registered. Most of the
+    /// corpus is unauthored and so zero: rarity is a claim that a question is
+    /// worth putting to a stranger, and the claim is made per probe, by hand.
     ///
-    /// What earns a 1 is a service that will not identify itself any other way.
-    /// Redis, PostgreSQL and memcached all wait to be spoken to and all answer
-    /// an HTTP request with silence or a closed socket, so moving one off its
-    /// registered port hid it completely until this existed.
+    /// What earns a 1 is a service that will not identify itself any other way,
+    /// because it waits to be spoken to and answers an HTTP request with
+    /// silence or a closed socket. Redis, PostgreSQL and memcached are the
+    /// three authored so far.
     #[serde(default)]
     pub rarity: u8,
 
@@ -335,9 +332,15 @@ pub struct MatchRule {
     /// a pattern that quietly stopped matching what it was written for.
     pub example: Option<String>,
     /// Everything else the rule states, keyed as the corpus keys it. The engine
-    /// reads `service.cpe23`, `service.version`, and the `os.*` and `hw.device`
-    /// keys that make up
+    /// reads `service.cpe23`, `service.version`, `service.extrainfo`,
+    /// `service.component.product`, `service.component.version`, and the `os.*`
+    /// and `hw.device` keys that make up
     /// [`OsMetadata`](crate::fingerprint::os::OsMetadata).
+    ///
+    /// `service.extrainfo` is what a rule says about the service beyond its
+    /// product and version: the distribution build an OpenSSH banner carries,
+    /// say. Where a rule states both it and a component, the explicit one is
+    /// what the report shows.
     ///
     /// Values may be templates. An `os.*` value written `{capture:1}` is filled
     /// from the pattern's first capture group when the rule fires, and a

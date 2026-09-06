@@ -3,14 +3,17 @@ name = "postgresql"
 default_ports = [5432]
 description = "PostgreSQL Database"
 
-# Postgres needs a StartupMessage but often rejects with an error containing its ID.
+# A StartupMessage naming a protocol version the server cannot speak. Postgres
+# checks the version before it consults `pg_hba.conf`, so the refusal comes back
+# whatever the server's authentication is set to, and it is prose rather than the
+# single byte an SSLRequest draws.
 [[probe]]
 name = "postgres_startup"
-payload = '\x00\x00\x00\x08\x04\xd2\x16\x2f'
+payload = '\x00\x00\x00\x13\x00\x04\x00\x00user\x00zond\x00\x00'
 protocol = "tcp"
 rarity = 1
 
 [[match]]
-name = "postgres_error"
-pattern = '^E\s*C'
+name = "postgres_protocol_refusal"
+pattern = 'unsupported frontend protocol [\d.]+: server supports'
 product = "postgresql"
