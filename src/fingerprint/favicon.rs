@@ -146,7 +146,7 @@ fn as_application(mut evidence: Evidence) -> Evidence {
 ///
 /// An instrument for the container tier, which measures real software so a rule
 /// can be written against what an application serves today. It goes through
-/// [`icon_of`] rather than reimplementing the search, because a harvester that
+/// `icon_of` rather than reimplementing the search, because a harvester that
 /// measured differently from the scanner would produce hashes no scan can match:
 /// that is how the certificate work nearly shipped two hundred dead rules.
 ///

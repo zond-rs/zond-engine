@@ -15,8 +15,21 @@
 //! without root. Fingerprinting that needs a port-specific probe (HTTP, TLS,
 //! Postgres, Redis) needs root to bind its real port, so its classification
 //! logic is covered by in-crate unit tests instead (see `tests/README.md`).
+//!
+//! The last test here runs the same servers against port numbers registered to
+//! something else. `fingerprint_tcp` takes the number as an argument rather than
+//! reading it off the socket, so a misleading one can be handed to the real
+//! engine over an ephemeral listener, with no root and no privileged bind.
 
 mod common;
+
+use std::net::Ipv4Addr;
+
+use tokio::net::TcpStream;
+
+use zond_engine::config::ServiceDetection;
+use zond_engine::fingerprint::{baseline_port, fingerprint_tcp};
+use zond_engine::model::port::{PortState, Protocol};
 
 use common::*;
 
@@ -114,4 +127,66 @@ async fn a_banner_naming_an_operating_system_reaches_the_host_record() {
         Some("linux".to_string()),
         "got {os:?}"
     );
+}
+
+/// A port number orders the questions the engine asks and never answers them.
+///
+/// Services move. SSH is put on 443 to survive a proxy, a web UI is put on 22
+/// because that hole is already open, and a database is put wherever the
+/// compose file said. Every fixture above puts a service somewhere plausible,
+/// which is the one arrangement that cannot catch a scanner reading the number
+/// instead of the wire.
+///
+/// One did get through: OpenSSH on 443 came out as `http` for as long as an
+/// implicit-TLS number sent the collection to a handshake and ended it there
+/// when the handshake failed. This is written against the shape of that rather
+/// than the instance, so the next number that acquires a shortcut has to survive
+/// the same table.
+///
+/// No privilege check: this drives `fingerprint_tcp` directly rather than a
+/// scan, so there is no raw-socket path for root to take and the assertions hold
+/// either way.
+#[tokio::test]
+async fn a_service_is_named_from_the_wire_and_not_from_the_port_number() {
+    // Two speak-first transcripts and what the engine owes each of them.
+    let ssh: &'static [u8] = b"SSH-2.0-OpenSSH_9.6p1 Debian-3\r\n";
+    let web: &'static [u8] =
+        b"HTTP/1.1 200 OK\r\nServer: nginx/1.24.0\r\nContent-Length: 0\r\n\r\n";
+
+    // Numbers that suggest something else: two registered for implicit TLS,
+    // where the shortcut lived; two registered for an unrelated service; and one
+    // nothing in the corpus claims at all.
+    let misleading = [443u16, 8443, 22, 3306, 55_555];
+
+    for (transcript, expected, product) in [(ssh, "ssh", "OpenSSH"), (web, "http", "nginx")] {
+        let server = spawn_banner_server(transcript).await;
+
+        for number in misleading {
+            let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, server.port))
+                .await
+                .expect("the loopback fixture accepts");
+
+            let identified = fingerprint_tcp(
+                stream,
+                baseline_port(number, Protocol::Tcp, PortState::Open),
+                ServiceDetection::default(),
+            )
+            .await;
+
+            let service = identified
+                .service()
+                .unwrap_or_else(|| panic!("nothing identified on port {number}"));
+
+            assert_eq!(
+                service.name(),
+                expected,
+                "port {number} named the service, the wire said {expected}"
+            );
+            assert_eq!(
+                service.product(),
+                Some(product),
+                "port {number} lost the product the transcript names"
+            );
+        }
+    }
 }

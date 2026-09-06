@@ -62,6 +62,10 @@ pub struct Signature {
     /// Boxed and absent on most signatures, as the operating system's are: a
     /// scan holds every signature at once. Kept as the raw map because the
     /// values are templates a match fills from its own captures.
+    // `box_collection` reads the indirection as waste, which is the opposite of
+    // what it buys here: absent on most of the corpus, the box is eight bytes
+    // where the map would be forty-eight, held once per signature.
+    #[allow(clippy::box_collection)]
     hardware: Option<Box<HashMap<String, String>>>,
 
     /// The service's CPE, as the corpus writes it: either a literal, or a

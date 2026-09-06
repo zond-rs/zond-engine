@@ -28,7 +28,6 @@
 //! runs on them needs a real conversation with the service. Splitting the two lets
 //! each use the transport that suits it.
 
-use crate::model::host::OsEvidence;
 use tokio::net::TcpStream;
 
 use crate::model::ip::scoped::ScopedIp;
@@ -37,7 +36,6 @@ use tokio::time::timeout;
 
 use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
-use crate::fingerprint::os;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;

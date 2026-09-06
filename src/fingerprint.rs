@@ -68,7 +68,6 @@ mod corpus;
 #[cfg(test)]
 mod pattern_properties;
 
-use crate::model::host::OsEvidence;
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::{InvalidDefinition, SignatureDb};
 pub use favicon::FaviconAnalyzer;
@@ -191,10 +190,10 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// The ceiling on everything one port's collection may spend on the network.
 ///
 /// A backstop rather than a working budget. Every stage below already has its
-/// own bound, and the longest honest path through [`gather`] is an implicit-TLS
-/// handshake followed by a banner and the port's own probes inside the tunnel,
-/// which comes to nine and a half seconds. This sits well above that, so it
-/// never fires on a port behaving normally;
+/// own bound, and the longest honest walk down the ladder in [`gather`] is a
+/// failed handshake, a failed legacy handshake and then a port that speaks in
+/// the clear, which comes to twelve seconds. This sits above that, so it never
+/// fires on a port behaving normally;
 /// `the_collection_budget_covers_every_path_through_gather` is what holds the
 /// two together.
 ///
@@ -526,7 +525,7 @@ async fn probe_udp(addr: std::net::SocketAddr) -> Option<Vec<String>> {
 
 /// Sends `payload` to `addr` and reads back whatever text the reply carries.
 ///
-/// The same exchange [`probe_udp`] performs, with the question supplied rather
+/// The same exchange `probe_udp` performs, with the question supplied rather
 /// than taken from the corpus. A corpus probe is one payload per port, which is
 /// all a port number can decide; a question about a *particular host* cannot come
 /// from there. An mDNS device-info record is the case this exists for: it is
@@ -575,14 +574,17 @@ pub async fn probe_udp_raw(addr: std::net::SocketAddr, payload: &[u8]) -> Option
 /// Collects everything the transport can learn from the port over the network,
 /// and how it was carried.
 ///
-/// Three shapes, and which one a port gets is decided by whether anything in the
-/// signature database claims it.
+/// A ladder of questions rather than a choice between them. The port number sets
+/// the *order* the rungs are tried in and never the set: a port numbered for TLS
+/// is offered a handshake first and anything else is spoken to in the clear
+/// first, but a rung that draws nothing at all falls through to the next one.
 ///
-/// An implicit-TLS port handshakes straight away and collects through the
-/// tunnel. A claimed port, meaning one some service registered a probe for, is
-/// listened to and then asked, in that order, since a service that greets on
-/// connect should be heard before it is interrupted. An unclaimed port is
-/// asked generically; see [`ask_generically`].
+/// Order is what a port number is good for and membership is what it is not.
+/// Every number is a convention, and every convention is something a service can
+/// be moved off or onto. A terminal rung makes the convention the answer: SSH on
+/// 443 was reported as `http` for as long as a failed handshake ended the
+/// collection, because the question that would have identified it was the one the
+/// number had ruled out.
 ///
 /// Whenever a handshake succeeds the collection re-runs *inside* the tunnel, so
 /// the protocol carried by TLS is fingerprinted too, and the returned [`Tunnel`]
@@ -592,9 +594,6 @@ async fn gather(
     port: u16,
     detection: ServiceDetection,
 ) -> (ResponseSet, Option<Tunnel>) {
-    let peer = stream.peer_addr().ok().map(|addr| addr.ip());
-    let socket = stream.peer_addr().ok();
-
     // Identify nothing. Reached only from the unprivileged path, where the
     // connection is how the port's state was established and so exists whether
     // or not anything is to be learned from it; the privileged path stops a
@@ -614,48 +613,127 @@ async fn gather(
         );
     }
 
-    if tls::is_tls_port(port) {
-        // Implicit-TLS port: the peer waits for our ClientHello, so skip the
-        // banner grab that would only time out and handshake immediately.
-        let (Some(ip), Some(socket)) = (peer, socket) else {
-            return (ResponseSet::default(), None);
+    // Without the peer's address there is nowhere to reconnect to and no server
+    // name for a handshake, so the socket in hand is asked in the clear and that
+    // is the whole of it.
+    let Ok(socket) = stream.peer_addr() else {
+        return (plaintext(&mut stream, port, None).await, None);
+    };
+
+    // The first rung inherits the connection the caller opened. Every rung after
+    // it dials its own, because a handshake consumes the stream it was given and
+    // a probe leaves its request on the one it wrote to.
+    let mut opened = Some(stream);
+    for rung in Rung::ladder(port) {
+        let stream = match opened.take() {
+            Some(stream) => stream,
+            None => match timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await {
+                Ok(Ok(fresh)) => fresh,
+                _ => return (ResponseSet::default(), None),
+            },
         };
-        return match tls::handshake(stream, ip).await {
-            Some(completed) => tunneled(Some(completed), port).await,
-            // The handshake failed, and on a port numbered for TLS that is worth
-            // one more question. rustls implements 1.2 and 1.3 and implements
-            // neither 1.0 nor 1.1, so a legacy-only server lands here and was
-            // once reported as a port that answered nothing, losing both the
-            // identification and the finding.
-            None => (legacy_tls(socket).await, None),
-        };
+
+        let (responses, tunnel) = rung.ask(stream, port, socket).await;
+        if !responses.is_empty() {
+            return (responses, tunnel);
+        }
     }
 
+    (ResponseSet::default(), None)
+}
+
+/// One question a port can be asked, and the unit [`gather`] falls through.
+///
+/// Each rung is asked on a connection of its own and reports what it drew.
+/// Nothing at all is the signal to try the next, so a rung that cannot answer
+/// costs the collection a fall-through rather than the identification.
+#[derive(Clone, Copy)]
+enum Rung {
+    /// Handshake and collect through the tunnel, patiently, on a port where TLS
+    /// is what the number says to expect.
+    Tls,
+    /// The same on a port where it is a guess, under the tighter budget a guess
+    /// is worth. See [`tls::SPECULATIVE_TLS_TIMEOUT`].
+    SpeculativeTls,
+    /// A ClientHello offering the versions rustls will not, for a server too old
+    /// for the one above.
+    LegacyTls,
+    /// Listen and probe in the clear: the port's own probes where something
+    /// claims it, and the generic question where nothing does.
+    Plaintext,
+}
+
+impl Rung {
+    /// The rungs for `port`, in the order they are worth asking in.
+    ///
+    /// The whole of the port number's influence on collection. A number
+    /// registered for implicit TLS earns the handshake first, which is what
+    /// keeps an ordinary HTTPS port from paying a banner timeout it would only
+    /// ever lose. It does not earn the handshake *alone*, which is the part that
+    /// used to be assumed.
+    ///
+    /// `LegacyTls` sits above `Plaintext` on a TLS-numbered port rather than
+    /// below it, because a 1.0-only server answers a plaintext probe with an
+    /// alert record: bytes, which the clear-text rung would report as a banner,
+    /// ending the ladder one rung above the question that names the version.
+    fn ladder(port: u16) -> &'static [Rung] {
+        if tls::is_tls_port(port) {
+            &[Rung::Tls, Rung::LegacyTls, Rung::Plaintext]
+        } else {
+            &[Rung::Plaintext, Rung::SpeculativeTls]
+        }
+    }
+
+    /// Asks this rung's question over `stream`, which it consumes.
+    async fn ask(
+        self,
+        mut stream: TcpStream,
+        port: u16,
+        socket: SocketAddr,
+    ) -> (ResponseSet, Option<Tunnel>) {
+        match self {
+            Rung::Tls => tunneled(tls::handshake(stream, socket.ip()).await, port).await,
+            Rung::SpeculativeTls => {
+                tunneled(tls::speculative_handshake(stream, socket.ip()).await, port).await
+            }
+            Rung::LegacyTls => (legacy_tls(stream).await, None),
+            Rung::Plaintext => (plaintext(&mut stream, port, Some(socket)).await, None),
+        }
+    }
+}
+
+/// Everything a port will say in the clear.
+///
+/// Two shapes, chosen by whether anything in the signature database claims the
+/// number. A claimed port is listened to and then asked what that service asks,
+/// in that order, since a service that greets on connect should be heard before
+/// it is interrupted. An unclaimed port is asked generically; see
+/// [`ask_generically`].
+///
+/// A reply that is a TLS record is reported as nothing rather than as a banner,
+/// on either shape. The port spoke, but not in this rung's language, and the
+/// ladder has a rung that can read it. Reported as a banner it would be four
+/// bytes of an alert standing in for an identification, and it would end the
+/// ladder above the rung that finishes the job.
+async fn plaintext(stream: &mut TcpStream, port: u16, socket: Option<SocketAddr>) -> ResponseSet {
     let probes = SignatureDb::global().tcp_probe_payloads(port);
     if !probes.is_empty() {
-        // A port something claims: listen, then ask what that service asks.
-        let banners = collect_responses(&mut stream, probes).await;
-        return (ResponseSet::from_banners(banners), None);
+        let banners = collect_responses(stream, probes).await;
+        // Read back off the decoded text, which is sound only because every
+        // byte `looks_like_tls` constrains is under 0x80 and survives
+        // `from_utf8_lossy` unchanged.
+        if banners
+            .first()
+            .is_some_and(|first| looks_like_tls(first.as_bytes()))
+        {
+            return ResponseSet::default();
+        }
+        return ResponseSet::from_banners(banners);
     }
 
-    // A port nothing claims. Ask it the one question worth asking of anything.
-    match ask_generically(&mut stream, socket).await {
-        GenericReply::Spoke(banners) => (ResponseSet::from_banners(banners), None),
-        // Either it answered in TLS or it answered nothing, and both are
-        // reasons to try a handshake. The socket cannot be reused for one, it
-        // has our plaintext request on it, so this costs a second connection,
-        // paid only on the ports that have already declined to speak.
-        GenericReply::Tls | GenericReply::Silent => match (peer, socket) {
-            (Some(ip), Some(socket)) => {
-                let Ok(Ok(fresh)) =
-                    timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await
-                else {
-                    return (ResponseSet::default(), None);
-                };
-                tunneled(tls::speculative_handshake(fresh, ip).await, port).await
-            }
-            _ => (ResponseSet::default(), None),
-        },
+    match ask_generically(stream, socket).await {
+        GenericReply::Spoke(banners) => ResponseSet::from_banners(banners),
+        GenericReply::Tls | GenericReply::Silent => ResponseSet::default(),
     }
 }
 
@@ -859,21 +937,20 @@ fn looks_like_tls(bytes: &[u8]) -> bool {
 /// What a port numbered for TLS turns out to speak, where a modern handshake
 /// would not complete.
 ///
-/// A fresh connection, because the failed handshake consumed the last one. Paid
-/// only on a port that has already declined to speak, so it costs a scan nothing
-/// on any port that worked.
+/// rustls implements TLS 1.2 and 1.3 and implements neither 1.0 nor 1.1, so a
+/// legacy-only server fails the rung above this one and was once reported as a
+/// port that answered nothing, losing the identification and the finding
+/// together.
 ///
 /// The result carries no certificate and no tunnel. A legacy handshake sends its
 /// certificate in the clear and reading it would be possible, and it is
 /// not done here: the finding is the version, and a second binary
 /// parser over remote bytes wants an argument of its own before it exists.
-async fn legacy_tls(socket: SocketAddr) -> ResponseSet {
-    let Ok(Ok(fresh)) = timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await else {
-        return ResponseSet::default();
-    };
-    match tls::legacy_version(fresh).await {
-        Some(version) => ResponseSet::from_banners(Vec::new())
-            .with_tls(TlsInfo::new(Vec::new()).with_version(version)),
+async fn legacy_tls(stream: TcpStream) -> ResponseSet {
+    match tls::legacy_version(stream).await {
+        Some(version) => {
+            ResponseSet::default().with_tls(TlsInfo::new(Vec::new()).with_version(version))
+        }
         None => ResponseSet::default(),
     }
 }
@@ -1630,10 +1707,20 @@ mod tests {
     /// And the whole collection has a ceiling of its own, above every path
     /// through [`gather`], so a stage added later cannot reintroduce the class.
     ///
-    /// The three paths are written out rather than summed, because their sum is
-    /// not a path anything takes and a budget sized against it would be loose by
-    /// half. Whoever adds a fourth path adds it here, and finds out immediately
-    /// whether the budget still covers it.
+    /// The paths are written out rather than summed, because their sum is not a
+    /// walk anything takes and a budget sized against it would be loose by half.
+    /// Whoever adds a rung adds it here, and finds out immediately whether the
+    /// budget still covers it.
+    ///
+    /// A rung has two costs and which one it pays decides whether the ladder
+    /// goes on. `spoke` is a rung that drew bytes, so it pays a continuation on
+    /// every read and it is the last rung walked. `silent` is a rung that drew
+    /// nothing, so it pays only the wait and hands on to the next. Charging both
+    /// to every rung would be arithmetic no port can produce.
+    ///
+    /// The exception is a plaintext rung answered with a TLS record: bytes, so a
+    /// continuation, and still nothing this rung can report. That is what
+    /// `alert_then_tls` is.
     #[test]
     fn the_collection_budget_covers_every_path_through_gather() {
         // The longest read a port's own probes can draw: at most two are
@@ -1645,23 +1732,30 @@ mod tests {
             .max()
             .unwrap_or(0)
             .max(1) as u32;
-        let ask =
+        let spoke =
             |count: u32| BANNER_READ_TIMEOUT + (PROBE_READ_TIMEOUT + MAX_CONTINUATION) * count;
+        let silent = |count: u32| BANNER_READ_TIMEOUT + PROBE_READ_TIMEOUT * count;
         let read_once = PROBE_READ_TIMEOUT + MAX_CONTINUATION;
+        let rung = CONNECT_RETRY_TIMEOUT;
 
-        let implicit_tls = tls::TLS_HANDSHAKE_TIMEOUT + ask(probes);
-        let implicit_tls_then_legacy =
-            tls::TLS_HANDSHAKE_TIMEOUT + CONNECT_RETRY_TIMEOUT + tls::LEGACY_PROBE_TIMEOUT;
-        let claimed = ask(probes);
-        let unclaimed_then_tls =
-            read_once + CONNECT_RETRY_TIMEOUT + tls::SPECULATIVE_TLS_TIMEOUT + ask(1);
-        let unclaimed_then_redirect = read_once + CONNECT_RETRY_TIMEOUT + read_once;
+        // Numbered for TLS: [Tls, LegacyTls, Plaintext].
+        let tls_all_three =
+            tls::TLS_HANDSHAKE_TIMEOUT + rung + tls::LEGACY_PROBE_TIMEOUT + rung + spoke(probes);
+        let tls_then_silence =
+            tls::TLS_HANDSHAKE_TIMEOUT + rung + tls::LEGACY_PROBE_TIMEOUT + rung + silent(probes);
+
+        // Numbered for anything else: [Plaintext, SpeculativeTls]. Inside the
+        // tunnel a claimed port asks its own probes again and an unclaimed one
+        // asks the single generic question.
+        let claimed_then_tls = silent(probes) + rung + tls::SPECULATIVE_TLS_TIMEOUT + spoke(probes);
+        let alert_then_tls = read_once + rung + tls::SPECULATIVE_TLS_TIMEOUT + spoke(1);
+        let unclaimed_then_redirect = read_once + rung + read_once;
 
         let worst = [
-            implicit_tls,
-            implicit_tls_then_legacy,
-            claimed,
-            unclaimed_then_tls,
+            tls_all_three,
+            tls_then_silence,
+            claimed_then_tls,
+            alert_then_tls,
             unclaimed_then_redirect,
         ]
         .into_iter()

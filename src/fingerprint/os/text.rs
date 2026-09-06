@@ -283,6 +283,23 @@ pub fn hardware_from(
     )
 }
 
+/// What a matched rule says about the operating system, as one piece of
+/// evidence for the resolver to weigh.
+///
+/// The banner counterpart to [`hardware_from`] next door, and the same split
+/// between them: one rule routinely names a system and a box, and neither half
+/// is the other. `captures` is what the pattern matched, so a rule reading a
+/// version out of its own match resolves here, and `source` names the kind of
+/// text it matched, which sets the most the reading can be worth. See
+/// [`ceiling`].
+///
+/// A rule's own certainty scales that ceiling where it states one. Most state
+/// none, and an absent field is full strength, so a stated certainty only ever
+/// lowers a reading.
+///
+/// `None` where the rule stated a certainty of zero, which is the corpus
+/// declining the attribution itself, and `None` again where nothing in the rule
+/// names a system to attribute.
 pub fn evidence_from(
     metadata: &OsMetadata,
     captures: &[String],
