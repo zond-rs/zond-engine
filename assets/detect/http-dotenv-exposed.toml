@@ -1,0 +1,34 @@
+# A served .env file. Framework .env files hold credentials, keys and connection
+# strings, and are never meant to be web-reachable. A 200 whose body carries
+# uppercase `NAME=` assignment lines at the start of a line is the file itself
+# rather than a page mentioning one, though a page could still fake it, so the
+# finding is reported as probable rather than certain.
+
+[detection]
+id      = "http-dotenv-exposed"
+version = "1.0.0"
+title   = "Exposed .env file"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 4000
+
+[[step]]
+send   = "GET /.env HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "(?im)^[A-Z][A-Z0-9_]{2,}="]
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  confidence   = "probable"
+  summary      = "A .env file is served over HTTP"
+  detail       = "GET /.env returned environment assignments; such files hold credentials, keys and connection strings."
+  references   = [{ cwe = 538 }]
+  remediation  = "Deny access to dotfiles under the web root, and rotate anything the file exposed."
+  excerpt_from = "$response"

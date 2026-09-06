@@ -1,0 +1,32 @@
+# Apache mod_status left public. /server-status renders a live table of every
+# request in flight with client addresses and URLs, plus the server's own
+# internals. It is meant for localhost; reachable, it is a running disclosure of
+# who is talking to the host and about what.
+
+[detection]
+id      = "http-server-status"
+version = "1.0.0"
+title   = "Apache mod_status exposed"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 4000
+
+[[step]]
+send   = "GET /server-status HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "Apache Server Status"]
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "Apache mod_status is reachable"
+  detail       = "/server-status returned the status page, disclosing in-flight requests, client addresses and server internals."
+  references   = [{ cwe = 200 }]                       # Exposure of Sensitive Information
+  remediation  = "Restrict /server-status to localhost, or disable mod_status."
+  excerpt_from = "$response"

@@ -1,0 +1,32 @@
+# Elasticsearch answering unauthenticated. A cluster with security off returns its
+# name and version to an unauthenticated GET /, where a secured one answers 401.
+# A 200 here is a cluster whose indices anyone can read and query. One read-only
+# GET.
+
+[detection]
+id      = "elasticsearch-open"
+version = "1.0.0"
+title   = "Elasticsearch reachable without authentication"
+
+[detection.when]
+service  = "elasticsearch"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET / HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "cluster_name"]             # answered its cluster identity, not 401
+bind   = { version = "\"number\"\\s*:\\s*\"(?<version>[0-9.]+)\"" }
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Elasticsearch answered without authentication"
+  detail       = "The cluster returned its identity to an unauthenticated request; version {version}. Its indices are readable and queryable without credentials."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

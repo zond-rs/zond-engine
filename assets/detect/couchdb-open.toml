@@ -1,0 +1,31 @@
+# CouchDB serving its database list without authentication ("admin party"). A
+# CouchDB with no admin configured answers /_all_dbs to anyone, so a 200 here is
+# every database on the node readable, and usually writable, unauthenticated. A
+# single read-only GET.
+
+[detection]
+id      = "couchdb-open"
+version = "1.0.0"
+title   = "CouchDB reachable without authentication"
+
+[detection.when]
+service  = "couchdb"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /_all_dbs HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "\\["]                      # 200 and a JSON array, not a 401
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "CouchDB served its database list without authentication"
+  detail       = "GET /_all_dbs returned the databases on this node with no credentials; the admin party is on."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

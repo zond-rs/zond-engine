@@ -1,0 +1,32 @@
+# Memcached reachable without authentication. Memcached ships with no auth, so a
+# reachable instance answers `stats` to anyone, which both discloses the server's
+# internals and marks it usable as a UDP reflection amplifier. One command, one
+# read, nothing written.
+
+[detection]
+id      = "memcached-unauth"
+version = "1.0.0"
+title   = "Memcached reachable without authentication"
+
+[detection.when]
+service  = "memcached"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 2000
+
+[[step]]
+send   = "stats\r\n"
+expect = "STAT "                                      # a stat line: the server answered
+bind   = { version = "STAT version (?<version>[0-9.]+)" }
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Memcached answered stats without authentication"
+  detail       = "Memcached {version} is reachable with no password; its cache and stats are exposed and it can be abused for reflection."
+  references   = [{ cwe = 306 }]                       # Missing Authentication
+  excerpt_from = "$response"
