@@ -1658,8 +1658,12 @@ impl LocalScanner {
                     changed |= host.add_network_role(role);
                 }
                 match rtt {
-                    Some((rtt, RttSource::Direct)) => host.add_rtt(rtt),
-                    Some((rtt, RttSource::SegmentWide)) => host.add_segment_wide_rtt(rtt),
+                    Some((rtt, RttSource::Direct)) => {
+                        host.add_rtt_from(rtt, protocol.clone());
+                    }
+                    Some((rtt, RttSource::SegmentWide)) => {
+                        host.add_segment_wide_rtt_from(rtt, protocol.clone());
+                    }
                     None => {}
                 }
 

@@ -571,6 +571,17 @@ pub struct TelemetryRecord {
     /// The hop counter the most recent reply arrived with.
     #[serde(default)]
     pub hop_counter: Option<u8>,
+    /// Which probe the round trips were measured from, where they agree on one.
+    ///
+    /// One name for the list rather than one per sample. The figures are only
+    /// worth a name when they share it, and a record that carried a protocol per
+    /// duration would be paying per sample for a word the reader sees once.
+    ///
+    /// Absent in a record written before the field existed, which reads back as
+    /// a set of figures that do not say what measured them. That is what they
+    /// were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_protocol: Option<String>,
 }
 
 impl From<&HostTelemetry> for TelemetryRecord {
@@ -582,6 +593,9 @@ impl From<&HostTelemetry> for TelemetryRecord {
                 .map(|sample| sample.rtt)
                 .collect(),
             hop_counter: telemetry.hop_counter(),
+            rtt_protocol: telemetry
+                .rtt_protocol()
+                .map(|protocol| wire::status_protocol_name(&protocol).into_owned()),
         }
     }
 }
@@ -589,7 +603,14 @@ impl From<&HostTelemetry> for TelemetryRecord {
 impl TelemetryRecord {
     /// Replays the measurements onto `host`.
     fn restore(&self, host: &mut Host) {
-        host.add_rtts(self.rtts.iter().copied());
+        match self.rtt_protocol.as_deref().and_then(wire::status_protocol) {
+            Some(protocol) => {
+                for rtt in &self.rtts {
+                    host.add_rtt_from(*rtt, protocol.clone());
+                }
+            }
+            None => host.add_rtts(self.rtts.iter().copied()),
+        }
         if let Some(arrived) = self.hop_counter {
             host.record_hop_counter(arrived);
         }
@@ -2623,6 +2644,26 @@ mod tests {
     /// way the live scan did.
     /// What a silence means depends on this, so a record that lost it would
     /// leave every filtered port's `no reply` unreadable.
+    /// A record that lost which probe measured its round trips would read them
+    /// back as figures nobody can place.
+    #[test]
+    fn the_probe_behind_a_round_trip_survives_the_record() {
+        use crate::model::host::StatusProtocol;
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
+        host.add_rtt_from(Duration::from_micros(90), StatusProtocol::Arp);
+        host.add_rtt_from(Duration::from_micros(110), StatusProtocol::Arp);
+
+        let record = HostRecord::from(&host);
+        assert_eq!(record.telemetry.rtt_protocol.as_deref(), Some("arp"));
+
+        let mut restored = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
+        record.telemetry.restore(&mut restored);
+
+        assert_eq!(restored.rtt_protocol(), Some(StatusProtocol::Arp));
+        assert_eq!(restored.min_rtt(), host.min_rtt());
+    }
+
     #[test]
     fn asking_for_icmp_evidence_survives_the_settings_round_trip() {
         use crate::config::ZondConfig;

@@ -1094,6 +1094,25 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
+    /// The same, from a caller that knows which probe drew the reply.
+    ///
+    /// Worth saying, because the probe decides what the figure measures. An ARP
+    /// reply comes off the link layer; a SYN/ACK crosses the target's IP and TCP
+    /// stacks. Both are round trips to the same host and neither is the other.
+    pub fn add_rtt_from(&mut self, rtt: std::time::Duration, protocol: StatusProtocol) {
+        self.telemetry.add_rtt_from(rtt, protocol);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Which probe this host's round trips were measured from, where they agree
+    /// on one.
+    ///
+    /// See [`HostTelemetry::rtt_protocol`](crate::model::host::telemetry::HostTelemetry::rtt_protocol).
+    #[must_use]
+    pub fn rtt_protocol(&self) -> Option<StatusProtocol> {
+        self.telemetry.rtt_protocol()
+    }
+
     /// Adds a round trip measured against a probe the whole segment was asked,
     /// which this host will report only if it produced no better sample.
     ///
@@ -1101,6 +1120,16 @@ impl Host {
     /// why the two are kept apart.
     pub fn add_segment_wide_rtt(&mut self, rtt: std::time::Duration) {
         self.telemetry.add_segment_wide_rtt(rtt);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// The same, from a caller that knows which probe drew the reply.
+    pub fn add_segment_wide_rtt_from(
+        &mut self,
+        rtt: std::time::Duration,
+        protocol: StatusProtocol,
+    ) {
+        self.telemetry.add_segment_wide_rtt_from(rtt, protocol);
         self.last_seen = SystemTime::now();
     }
 

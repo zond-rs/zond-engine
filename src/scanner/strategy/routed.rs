@@ -700,7 +700,7 @@ impl RoutedScanner {
             host.record_evidence(HostStatus::Up, evidence.clone());
 
             if let Some(rtt) = rtt {
-                host.add_rtt(rtt);
+                host.add_rtt_from(rtt, evidence.protocol.clone());
                 return true;
             }
             !was_up

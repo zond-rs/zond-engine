@@ -1097,7 +1097,8 @@ async fn prober(
 
 /// The record an address earns by answering.
 fn answered(ip: IpAddr, start: Instant) -> ProbedHost {
-    let mut host = Host::new(ip).with_rtt(start.elapsed());
+    let mut host = Host::new(ip);
+    host.add_rtt_from(start.elapsed(), StatusProtocol::TcpSyn);
     // Every outcome that reaches here required a segment from the target: a
     // completed handshake, or a reset the kernel surfaced as a connection error.
     // `Host::merge` keeps the stronger status, so this survives being folded

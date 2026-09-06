@@ -416,7 +416,7 @@ impl OsEchoScanner {
                 StatusReason::new(StatusProtocol::IcmpEcho, "echo reply to an OS probe"),
             );
             if let Some(rtt) = rtt {
-                host.add_rtt(rtt);
+                host.add_rtt_from(rtt, StatusProtocol::IcmpEcho);
             }
             !was_up
         });

@@ -22,6 +22,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::model::host::status::StatusProtocol;
+
 /// How many round trips a host keeps by default.
 ///
 /// Every latency figure in every report is computed over this many samples, and
@@ -72,7 +74,9 @@ pub enum RttSource {
 
 /// One round-trip measurement: when it was taken, what it measured, and what
 /// kind of question produced it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Not [`Copy`]: [`protocol`](Self::protocol) may name a probe the engine has no
+/// variant for, and that name is an [`Arc<str>`](std::sync::Arc).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RttSample {
     /// When the reply arrived, on the monotonic clock.
     ///
@@ -86,6 +90,14 @@ pub struct RttSample {
     /// Whether that elapsed time is a round trip or an upper bound on one. See
     /// [`RttSource`].
     pub source: RttSource,
+    /// Which probe drew the reply this was measured from.
+    ///
+    /// An ARP reply comes off the link layer and a SYN/ACK crosses the target's
+    /// IP and TCP stacks, so the two measure different distances to the same
+    /// host and a figure that does not say which is a figure a reader cannot
+    /// place. `None` where the caller did not say, which is a rebuilt host and
+    /// a test.
+    pub protocol: Option<StatusProtocol>,
 }
 
 /// A host's recent round trips, and the summaries drawn from them.
@@ -227,7 +239,13 @@ impl HostTelemetry {
     /// Recorded as [`RttSource::Direct`], since a probe aimed at one address is
     /// what almost every caller sends. A segment-wide reply has to say so.
     pub fn add_rtt(&mut self, rtt: Duration) {
-        self.add_rtt_at(Instant::now(), rtt);
+        self.add_rtt_at(Instant::now(), rtt, None);
+    }
+
+    /// [`add_rtt`](Self::add_rtt) for a caller that knows which probe drew the
+    /// reply.
+    pub fn add_rtt_from(&mut self, rtt: Duration, protocol: StatusProtocol) {
+        self.add_rtt_at(Instant::now(), rtt, Some(protocol));
     }
 
     /// [`add_rtt`](Self::add_rtt) for a reply that answers a probe the whole
@@ -237,6 +255,18 @@ impl HostTelemetry {
             at: Instant::now(),
             rtt,
             source: RttSource::SegmentWide,
+            protocol: None,
+        });
+    }
+
+    /// [`add_segment_wide_rtt`](Self::add_segment_wide_rtt) for a caller that
+    /// knows which probe drew the reply.
+    pub fn add_segment_wide_rtt_from(&mut self, rtt: Duration, protocol: StatusProtocol) {
+        self.push(RttSample {
+            at: Instant::now(),
+            rtt,
+            source: RttSource::SegmentWide,
+            protocol: Some(protocol),
         });
     }
 
@@ -245,12 +275,27 @@ impl HostTelemetry {
     /// Private: the only reason to record a sample under a time other than now
     /// is to reconstruct a history, and a window whose ordering callers can
     /// choose is one [`merge`](Self::merge) cannot keep in time order.
-    fn add_rtt_at(&mut self, time: Instant, rtt: Duration) {
+    fn add_rtt_at(&mut self, time: Instant, rtt: Duration, protocol: Option<StatusProtocol>) {
         self.push(RttSample {
             at: time,
             rtt,
             source: RttSource::Direct,
+            protocol,
         });
+    }
+
+    /// The probe every sample here was drawn from, where they agree on one.
+    ///
+    /// `None` where no sample says, and where two disagree. A host answered by
+    /// both ARP and an echo has no single distance to report, and naming one of
+    /// the two beside a figure drawn from both would be worse than naming
+    /// neither.
+    #[must_use]
+    pub fn rtt_protocol(&self) -> Option<StatusProtocol> {
+        let mut named = self.rtt_history.iter().filter_map(|s| s.protocol.clone());
+        let first = named.next()?;
+
+        named.all(|other| other == first).then_some(first)
     }
 
     fn push(&mut self, sample: RttSample) {
@@ -474,6 +519,37 @@ impl Default for HostTelemetry {
 
 #[cfg(test)]
 mod tests {
+
+    /// The figures are named by the probe that measured them, so a reader can
+    /// place an ARP round trip against a handshake to the same host.
+    #[test]
+    fn round_trips_are_named_by_the_probe_that_measured_them() {
+        let mut telemetry = HostTelemetry::default();
+        telemetry.add_rtt_from(Duration::from_micros(90), StatusProtocol::Arp);
+        telemetry.add_rtt_from(Duration::from_micros(110), StatusProtocol::Arp);
+
+        assert_eq!(telemetry.rtt_protocol(), Some(StatusProtocol::Arp));
+    }
+
+    /// Two probes measure two distances, so the pair has no one name and the
+    /// figures go unnamed rather than borrowing whichever came first.
+    #[test]
+    fn round_trips_from_two_probes_are_named_by_neither() {
+        let mut telemetry = HostTelemetry::default();
+        telemetry.add_rtt_from(Duration::from_micros(90), StatusProtocol::Arp);
+        telemetry.add_rtt_from(Duration::from_micros(220), StatusProtocol::TcpSyn);
+
+        assert_eq!(telemetry.rtt_protocol(), None);
+    }
+
+    /// A caller that did not say leaves them unnamed, which is a rebuilt host.
+    #[test]
+    fn round_trips_nobody_named_stay_unnamed() {
+        let mut telemetry = HostTelemetry::default();
+        telemetry.add_rtt(Duration::from_micros(90));
+
+        assert_eq!(telemetry.rtt_protocol(), None);
+    }
     use super::*;
 
     /// A window of zero is a telemetry that accepts every sample and keeps

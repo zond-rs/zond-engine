@@ -1368,6 +1368,7 @@ impl TelemetryDto {
         TelemetryRecord {
             rtts: Vec::new(),
             hop_counter: None,
+            rtt_protocol: None,
         }
     }
 }

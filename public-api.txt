@@ -7765,7 +7765,9 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::telemetr
 pub struct zond_engine::model::host::telemetry::HostTelemetry
 impl zond_engine::model::host::telemetry::HostTelemetry
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt(&mut self, core::time::Duration)
+pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_segment_wide_rtt(&mut self, core::time::Duration)
+pub fn zond_engine::model::host::telemetry::HostTelemetry::add_segment_wide_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::average_rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::telemetry::HostTelemetry::history(&self) -> &alloc::collections::vec_deque::VecDeque<zond_engine::model::host::telemetry::RttSample>
 pub fn zond_engine::model::host::telemetry::HostTelemetry::hop_counter(&self) -> core::option::Option<u8>
@@ -7777,6 +7779,7 @@ pub fn zond_engine::model::host::telemetry::HostTelemetry::merge(&mut self, zond
 pub fn zond_engine::model::host::telemetry::HostTelemetry::min_rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::telemetry::HostTelemetry::new(usize) -> Self
 pub fn zond_engine::model::host::telemetry::HostTelemetry::record_hop_counter(&mut self, u8)
+pub fn zond_engine::model::host::telemetry::HostTelemetry::rtt_protocol(&self) -> core::option::Option<zond_engine::model::host::status::StatusProtocol>
 pub fn zond_engine::model::host::telemetry::HostTelemetry::set_max_samples(&mut self, usize)
 impl core::clone::Clone for zond_engine::model::host::telemetry::HostTelemetry
 pub fn zond_engine::model::host::telemetry::HostTelemetry::clone(&self) -> zond_engine::model::host::telemetry::HostTelemetry
@@ -7801,6 +7804,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::telem
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::telemetry::HostTelemetry
 pub struct zond_engine::model::host::telemetry::RttSample
 pub zond_engine::model::host::telemetry::RttSample::at: std::time::Instant
+pub zond_engine::model::host::telemetry::RttSample::protocol: core::option::Option<zond_engine::model::host::status::StatusProtocol>
 pub zond_engine::model::host::telemetry::RttSample::rtt: core::time::Duration
 pub zond_engine::model::host::telemetry::RttSample::source: zond_engine::model::host::telemetry::RttSource
 impl core::clone::Clone for zond_engine::model::host::telemetry::RttSample
@@ -7810,7 +7814,6 @@ impl core::cmp::PartialEq for zond_engine::model::host::telemetry::RttSample
 pub fn zond_engine::model::host::telemetry::RttSample::eq(&self, &zond_engine::model::host::telemetry::RttSample) -> bool
 impl core::fmt::Debug for zond_engine::model::host::telemetry::RttSample
 pub fn zond_engine::model::host::telemetry::RttSample::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for zond_engine::model::host::telemetry::RttSample
 impl core::marker::StructuralPartialEq for zond_engine::model::host::telemetry::RttSample
 impl core::marker::Freeze for zond_engine::model::host::telemetry::RttSample
 impl core::marker::Send for zond_engine::model::host::telemetry::RttSample
@@ -8076,8 +8079,10 @@ pub fn zond_engine::model::host::Host::add_port(&mut self, zond_engine::model::p
 pub fn zond_engine::model::host::Host::add_port_finding(&mut self, u16, zond_engine::model::port::Protocol, zond_engine::model::finding::Finding) -> core::option::Option<bool>
 pub fn zond_engine::model::host::Host::add_reason(&mut self, zond_engine::model::host::status::StatusReason)
 pub fn zond_engine::model::host::Host::add_rtt(&mut self, core::time::Duration)
+pub fn zond_engine::model::host::Host::add_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::Host::add_rtts(&mut self, impl core::iter::traits::collect::IntoIterator<Item = core::time::Duration>)
 pub fn zond_engine::model::host::Host::add_segment_wide_rtt(&mut self, core::time::Duration)
+pub fn zond_engine::model::host::Host::add_segment_wide_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::Host::average_rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::Host::clear_os(&mut self)
 pub fn zond_engine::model::host::Host::consider_primary_ip(&mut self, core::net::ip_addr::IpAddr) -> bool
@@ -8113,6 +8118,7 @@ pub fn zond_engine::model::host::Host::record_ip_protocol(&mut self, u8, zond_en
 pub fn zond_engine::model::host::Host::record_mac(&mut self, zond_engine::model::mac::MacAddr)
 pub fn zond_engine::model::host::Host::record_os_evidence(&mut self, zond_engine::model::host::os::OsEvidence) -> bool
 pub fn zond_engine::model::host::Host::restore_seen(&mut self, std::time::SystemTime, std::time::SystemTime)
+pub fn zond_engine::model::host::Host::rtt_protocol(&self) -> core::option::Option<zond_engine::model::host::status::StatusProtocol>
 pub fn zond_engine::model::host::Host::scoped_ip(&self) -> zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::host::Host::set_hardware(&mut self, zond_engine::model::host::hardware::HardwareInfo)
 pub fn zond_engine::model::host::Host::set_hostname(&mut self, core::option::Option<alloc::string::String>)
@@ -8145,7 +8151,9 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::Host
 pub struct zond_engine::model::host::HostTelemetry
 impl zond_engine::model::host::telemetry::HostTelemetry
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt(&mut self, core::time::Duration)
+pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_segment_wide_rtt(&mut self, core::time::Duration)
+pub fn zond_engine::model::host::telemetry::HostTelemetry::add_segment_wide_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::average_rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::telemetry::HostTelemetry::history(&self) -> &alloc::collections::vec_deque::VecDeque<zond_engine::model::host::telemetry::RttSample>
 pub fn zond_engine::model::host::telemetry::HostTelemetry::hop_counter(&self) -> core::option::Option<u8>
@@ -8157,6 +8165,7 @@ pub fn zond_engine::model::host::telemetry::HostTelemetry::merge(&mut self, zond
 pub fn zond_engine::model::host::telemetry::HostTelemetry::min_rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::telemetry::HostTelemetry::new(usize) -> Self
 pub fn zond_engine::model::host::telemetry::HostTelemetry::record_hop_counter(&mut self, u8)
+pub fn zond_engine::model::host::telemetry::HostTelemetry::rtt_protocol(&self) -> core::option::Option<zond_engine::model::host::status::StatusProtocol>
 pub fn zond_engine::model::host::telemetry::HostTelemetry::set_max_samples(&mut self, usize)
 impl core::clone::Clone for zond_engine::model::host::telemetry::HostTelemetry
 pub fn zond_engine::model::host::telemetry::HostTelemetry::clone(&self) -> zond_engine::model::host::telemetry::HostTelemetry
@@ -12666,6 +12675,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::StatusReas
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::StatusReasonRecord
 pub struct zond_engine::record::TelemetryRecord
 pub zond_engine::record::TelemetryRecord::hop_counter: core::option::Option<u8>
+pub zond_engine::record::TelemetryRecord::rtt_protocol: core::option::Option<alloc::string::String>
 pub zond_engine::record::TelemetryRecord::rtts: alloc::vec::Vec<core::time::Duration>
 impl core::clone::Clone for zond_engine::record::TelemetryRecord
 pub fn zond_engine::record::TelemetryRecord::clone(&self) -> zond_engine::record::TelemetryRecord
@@ -15857,6 +15867,7 @@ pub struct zond_engine::transport::capture::CapturedSegment
 pub zond_engine::transport::capture::CapturedSegment::bytes: alloc::vec::Vec<u8>
 pub zond_engine::transport::capture::CapturedSegment::observation: core::option::Option<zond_engine::model::capture::IpObservation>
 pub zond_engine::transport::capture::CapturedSegment::protocol: pnet_packet::ip::IpNextHeaderProtocol
+pub zond_engine::transport::capture::CapturedSegment::received_at: std::time::Instant
 pub zond_engine::transport::capture::CapturedSegment::source: core::net::ip_addr::IpAddr
 pub zond_engine::transport::capture::CapturedSegment::source_mac: core::option::Option<pnet_base::macaddr::MacAddr>
 impl zond_engine::transport::capture::CapturedSegment
@@ -16719,8 +16730,10 @@ pub fn zond_engine::model::host::Host::add_port(&mut self, zond_engine::model::p
 pub fn zond_engine::model::host::Host::add_port_finding(&mut self, u16, zond_engine::model::port::Protocol, zond_engine::model::finding::Finding) -> core::option::Option<bool>
 pub fn zond_engine::model::host::Host::add_reason(&mut self, zond_engine::model::host::status::StatusReason)
 pub fn zond_engine::model::host::Host::add_rtt(&mut self, core::time::Duration)
+pub fn zond_engine::model::host::Host::add_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::Host::add_rtts(&mut self, impl core::iter::traits::collect::IntoIterator<Item = core::time::Duration>)
 pub fn zond_engine::model::host::Host::add_segment_wide_rtt(&mut self, core::time::Duration)
+pub fn zond_engine::model::host::Host::add_segment_wide_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::Host::average_rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::Host::clear_os(&mut self)
 pub fn zond_engine::model::host::Host::consider_primary_ip(&mut self, core::net::ip_addr::IpAddr) -> bool
@@ -16756,6 +16769,7 @@ pub fn zond_engine::model::host::Host::record_ip_protocol(&mut self, u8, zond_en
 pub fn zond_engine::model::host::Host::record_mac(&mut self, zond_engine::model::mac::MacAddr)
 pub fn zond_engine::model::host::Host::record_os_evidence(&mut self, zond_engine::model::host::os::OsEvidence) -> bool
 pub fn zond_engine::model::host::Host::restore_seen(&mut self, std::time::SystemTime, std::time::SystemTime)
+pub fn zond_engine::model::host::Host::rtt_protocol(&self) -> core::option::Option<zond_engine::model::host::status::StatusProtocol>
 pub fn zond_engine::model::host::Host::scoped_ip(&self) -> zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::host::Host::set_hardware(&mut self, zond_engine::model::host::hardware::HardwareInfo)
 pub fn zond_engine::model::host::Host::set_hostname(&mut self, core::option::Option<alloc::string::String>)
