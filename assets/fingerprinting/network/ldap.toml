@@ -9,6 +9,32 @@ name = "ldap_bind_request"
 payload = '\x30\x0c\x02\x01\x01\x60\x07\x02\x01\x03\x04\x00\x80\x00'
 protocol = "tcp"
 
+# The root DSE, which is what names the directory. An anonymous bind establishes
+# that something speaks LDAP and nothing more; the entry at the empty DN carries
+# `vendorName`, `namingContexts` and the functionality levels that separate
+# Active Directory from OpenLDAP from a Samba domain controller.
+#
+# RFC 4512 §5.1 makes it readable without credentials, and asking for `*` and `+`
+# is what returns the operational attributes the corpus reads. The rules match
+# the response bytes as text rather than a parse of them, so nothing here decodes
+# BER.
+#
+#   30 2b                   SEQUENCE, 43 bytes: the message
+#     02 01 02              INTEGER message ID = 2
+#     63 26                 SearchRequest, 38 bytes
+#       04 00               baseObject = "", the root DSE
+#       0a 01 00            scope = baseObject
+#       0a 01 00            derefAliases = neverDerefAliases
+#       02 01 00            sizeLimit = 0
+#       02 01 00            timeLimit = 0
+#       01 01 00            typesOnly = FALSE
+#       87 0b "objectClass" filter = present, context tag 7
+#       30 06               attributes: `*` then `+`
+[[probe]]
+name = "ldap_root_dse_search"
+payload = '\x30\x2b\x02\x01\x02\x63\x26\x04\x00\x0a\x01\x00\x0a\x01\x00\x02\x01\x00\x02\x01\x00\x01\x01\x00\x87\x0bobjectClass\x30\x06\x04\x01\x2a\x04\x01\x2b'
+protocol = "tcp"
+
 [[match]]
 name = "ldap_response"
 # RFC 4511 §4.1.1: an LDAPMessage is a SEQUENCE whose first element is the

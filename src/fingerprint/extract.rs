@@ -611,3 +611,45 @@ mod sip_headers {
         assert!(super::from_datagram(5060, b"HTTP/1.1 200 OK\r\n\r\n").is_empty());
     }
 }
+
+#[cfg(test)]
+mod ldap_root_dse {
+    use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
+
+    /// The opening of a real root DSE search result, captured from OpenLDAP
+    /// 2.6 on 2026-09-06. The corpus matches these bytes as text rather than a
+    /// parse of them, which is why nothing here decodes BER.
+    const ROOT_DSE: &[u8] = &[
+        0x30, 0x82, 0x03, 0x5a, 0x02, 0x01, 0x02, 0x64, 0x82, 0x03, 0x53, 0x04, 0x00, 0x30, 0x82,
+        0x03, 0x4d, 0x30, 0x25, 0x04, 0x0b, 0x6f, 0x62, 0x6a, 0x65, 0x63, 0x74, 0x43, 0x6c, 0x61,
+        0x73, 0x73, 0x31, 0x16, 0x04, 0x03, 0x74, 0x6f, 0x70, 0x04, 0x0f, 0x4f, 0x70, 0x65, 0x6e,
+        0x4c, 0x44, 0x41, 0x50, 0x72, 0x6f, 0x6f, 0x74, 0x44, 0x53, 0x45, 0x30,
+    ];
+
+    /// The whole point of the search: an anonymous bind establishes only that
+    /// something speaks LDAP, while the entry at the empty DN names the
+    /// directory.
+    #[test]
+    fn a_root_dse_result_names_the_directory() {
+        let text = String::from_utf8_lossy(ROOT_DSE);
+        let evidence = SignatureDb::global()
+            .identify(389, Protocol::Tcp, &text)
+            .expect("the corpus names it");
+
+        assert_eq!(evidence.product.as_deref(), Some("OpenLDAP"));
+        assert_eq!(evidence.vendor.as_deref(), Some("OpenLDAP"));
+    }
+
+    /// The response carries bytes no UTF-8 decoder can render, and the rules are
+    /// written to match across them. A decode that refused would reach none.
+    #[test]
+    fn a_lossy_decode_still_carries_what_the_rules_read() {
+        let text = String::from_utf8_lossy(ROOT_DSE);
+        assert!(text.contains("OpenLDAProotDSE"));
+        assert!(
+            text.contains(char::REPLACEMENT_CHARACTER),
+            "the fixture should exercise the lossy path"
+        );
+    }
+}

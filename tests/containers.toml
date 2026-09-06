@@ -55,3 +55,15 @@ port = 9000
 service = "http"
 product = "Portainer"
 vendor = "Portainer"
+
+[[target]]
+name = "openldap"
+image = "osixia/openldap:1.5.0"
+port = 389
+# Published on its registered port, because the corpus keys the root DSE search
+# on 389 and a directory asked for a web page says nothing.
+host_port = 389
+[target.expect]
+service = "ldap"
+product = "OpenLDAP"
+vendor = "OpenLDAP"

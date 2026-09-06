@@ -163,8 +163,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "ldap.search_result",
-        reach: Reach::Unproduced,
-        note: "a root DSE search result; the corpus probe is an anonymous bind and draws no entry",
+        reach: Reach::Produced,
+        note: "the bytes a root DSE search draws, matched as text through `extract::texts`; the corpus probe now asks for the entry at the empty DN as well as binding",
     },
     Context {
         name: "mdns.device-info.txt",

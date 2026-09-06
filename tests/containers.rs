@@ -68,6 +68,16 @@ struct Target {
     image: String,
     /// The port the application listens on inside the container.
     port: u16,
+    /// The port to publish it on, where the scan has to reach it on its
+    /// registered number.
+    ///
+    /// A target is otherwise published on whatever port is free, which is right
+    /// for anything the generic probe identifies and wrong for everything else:
+    /// the corpus keys its probes on the port, so an LDAP server on a random
+    /// high port is asked for a web page and says nothing. Pinning one risks a
+    /// collision with whatever the developer is already running, which is why it
+    /// is stated only where it is needed.
+    host_port: Option<u16>,
     /// What the engine should make of it. Absent means report-only, which is how
     /// a target is added before anybody has agreed what it should say.
     expect: Option<Expect>,
@@ -143,7 +153,7 @@ fn free_port() -> u16 {
 /// real, unconfigured, often unauthenticated software, and it has no business
 /// being reachable from the network while a test runs.
 fn start(target: &Target) -> Result<Container, String> {
-    let host_port = free_port();
+    let host_port = target.host_port.unwrap_or_else(free_port);
     let out = Command::new("docker")
         .args([
             "run",
@@ -180,33 +190,60 @@ fn start(target: &Target) -> Result<Container, String> {
     }
 }
 
-/// Polls until the application answers a request, or the budget runs out.
+/// Waits until the application is serving, or the budget runs out.
 ///
-/// Accepting a connection is not the same as serving one, and the difference is
-/// not a detail: Jellyfin and Grafana both bind their port seconds before they
-/// answer anything, and a scan run in that window reports a port that is open and
-/// says nothing. Read as an identification failure, which is exactly how it first
-/// read here, that is a harness defect wearing a corpus defect's clothes.
+/// Two signals, because neither alone covers what is in the manifest. Accepting a
+/// connection is not serving: Jellyfin and Grafana bind their port seconds before
+/// they answer anything, and a scan run in that window reports a port that is
+/// open and says nothing, which reads exactly like an identification failure. But
+/// answering an HTTP request is not general either: a directory server accepts
+/// and serves immediately and will never reply to `GET /`, so holding it to that
+/// reported it as never having started at all.
 ///
-/// So readiness is a real request drawing a real reply.
+/// So an HTTP reply means ready at once, and a port that merely keeps accepting
+/// is given [`SETTLE`] to start serving whatever it does speak before being
+/// taken at its word.
 fn wait_until_ready(addr: SocketAddr) -> bool {
-    use std::io::{Read, Write};
-
     let deadline = Instant::now() + READY_TIMEOUT;
+    let mut accepting_since = None;
+
     while Instant::now() < deadline {
-        if let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, POLL_INTERVAL) {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let request = b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-            let mut reply = [0u8; 16];
-            if stream.write_all(request).is_ok()
-                && stream.read(&mut reply).is_ok_and(|read| read > 0)
-            {
-                return true;
+        match std::net::TcpStream::connect_timeout(&addr, POLL_INTERVAL) {
+            Ok(stream) => {
+                if answers_http(stream) {
+                    return true;
+                }
+                let since = *accepting_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= SETTLE {
+                    return true;
+                }
             }
+            // Not up yet, and any earlier run of accepts did not mean what it
+            // looked like.
+            Err(_) => accepting_since = None,
         }
         std::thread::sleep(POLL_INTERVAL);
     }
     false
+}
+
+/// How long a port that accepts but speaks no HTTP is given to start serving.
+const SETTLE: Duration = Duration::from_secs(2);
+
+/// Whether the peer answers an HTTP request, which is the fast path for the web
+/// applications that make up most of the manifest.
+fn answers_http(mut stream: std::net::TcpStream) -> bool {
+    use std::io::{Read, Write};
+
+    if stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .is_err()
+    {
+        return false;
+    }
+    let request = b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let mut reply = [0u8; 16];
+    stream.write_all(request).is_ok() && stream.read(&mut reply).is_ok_and(|read| read > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +488,7 @@ fn the_manifest_is_well_formed() {
     assert!(!manifest.target.is_empty(), "the manifest names no target");
 
     let mut names = std::collections::BTreeSet::new();
+    let mut names_a_second_time = std::collections::BTreeSet::new();
     for target in &manifest.target {
         assert!(
             names.insert(target.name.clone()),
@@ -462,6 +500,13 @@ fn the_manifest_is_well_formed() {
             "{}: the image is not pinned to a tag, so a run is not repeatable",
             target.name
         );
+        if let Some(port) = target.host_port {
+            assert!(
+                names_a_second_time.insert(port),
+                "{}: two targets are published on port {port}",
+                target.name
+            );
+        }
         if let Some(expect) = &target.expect {
             let states_a_field = [
                 &expect.service,
