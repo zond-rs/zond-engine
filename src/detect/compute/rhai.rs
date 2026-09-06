@@ -263,13 +263,10 @@ impl ComputeRuntime for RhaiRuntime {
             }
         });
 
-        // A pure utility, always available and not a capability: decode bytes as
-        // text so a detection can do string work on a response. Latin-1, so every
-        // byte is its own code point and a binary reply is not mangled by a lossy
-        // conversion, the same decoding a flow's matcher reads a reply through.
-        engine.register_fn("text", |bytes: Blob| -> String {
-            bytes.iter().map(|&byte| byte as char).collect()
-        });
+        // The pure helpers, always available and never a capability: they touch
+        // nothing outside the values handed to them, so registering them for every
+        // grant leaves safety, metering and replay exactly where they were.
+        register_helpers(&mut engine);
 
         // The class becomes the served set here: only the granted verbs are
         // registered, so an ungranted one is not refused but absent. `now` is
@@ -330,6 +327,55 @@ impl ComputeRuntime for RhaiRuntime {
             },
         }
     }
+}
+
+/// Registers the pure helper library every module holds, whatever its grant.
+///
+/// None of these is a capability: each is a total function of its arguments that
+/// reaches nothing outside them, so a `passive` module holds them exactly as an
+/// `active` one does and none of the four properties the seam guarantees is
+/// touched. They are the standard library a detection would otherwise hand-roll,
+/// the byte and encoding work that reading a real protocol out of a reply takes.
+///
+/// - `text(blob) -> string` decodes bytes as Latin-1, so every byte is its own
+///   code point and a binary reply is not mangled; `bytes(string) -> blob` is its
+///   inverse, for turning a built string back into a probe payload.
+/// - `hex_encode`/`hex_decode` and `b64_encode`/`b64_decode` convert between a
+///   blob and its Base16 or Base64 text: an SNMP OID to read, a `Basic` header or
+///   a JWT segment to decode. Decoding is lenient, a malformed string yields an
+///   empty blob rather than a fault, so a module branches on what it got back
+///   rather than being killed by a reply it did not choose.
+fn register_helpers(engine: &mut Engine) {
+    engine.register_fn("text", |bytes: Blob| -> String {
+        bytes.iter().map(|&byte| byte as char).collect()
+    });
+    // The inverse of `text`: the low byte of each code point, so a string `text`
+    // produced round-trips exactly. A code point past 0xff is truncated to its
+    // low byte, which never arises for a string that came from `text` and is the
+    // one sensible reading for one a module built to send.
+    engine.register_fn("bytes", |string: ImmutableString| -> Blob {
+        string.chars().map(|c| c as u8).collect()
+    });
+
+    engine.register_fn("hex_encode", |bytes: Blob| -> String {
+        data_encoding::HEXLOWER.encode(&bytes)
+    });
+    engine.register_fn("hex_decode", |string: ImmutableString| -> Blob {
+        // Permissive so an upper- or mixed-case digest string decodes; a
+        // malformed or odd-length string is not ours to fault over.
+        data_encoding::HEXLOWER_PERMISSIVE
+            .decode(string.as_bytes())
+            .unwrap_or_default()
+    });
+
+    engine.register_fn("b64_encode", |bytes: Blob| -> String {
+        data_encoding::BASE64.encode(&bytes)
+    });
+    engine.register_fn("b64_decode", |string: ImmutableString| -> Blob {
+        data_encoding::BASE64
+            .decode(string.as_bytes())
+            .unwrap_or_default()
+    });
 }
 
 /// Removes the stock-engine symbols and the stock resolver the sandbox's
@@ -790,6 +836,52 @@ mod tests {
         );
         // The module sent exactly the one empty probe it asked to.
         assert_eq!(caps.sent, vec![Vec::<u8>::new()]);
+    }
+
+    #[test]
+    fn the_pure_helpers_encode_and_decode_without_a_grant() {
+        // A passive module (no speak, no resolve) still holds the whole helper
+        // library. It decodes a Base64 header, re-encodes it as hex, and turns a
+        // built string back into bytes, then reports what each step produced. The
+        // point is that a module never handed a capability can still do the byte
+        // work reading a protocol takes.
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let raw = b64_decode("aGk=");           // "hi"
+                let as_hex = hex_encode(raw);            // "6869"
+                let round = text(hex_decode(as_hex));    // "hi"
+                let built = bytes("AB");                 // blob [0x41, 0x42]
+                [ #{
+                    severity: "info",
+                    summary: as_hex + " " + round + " " + b64_encode(built),
+                } ]
+            }
+        "#;
+        let mut caps = RecordedCaps::new(Vec::new());
+
+        let findings =
+            run(source, grant(DetectionClass::Passive, false), &mut caps).expect("a clean run");
+        assert_eq!(findings.len(), 1);
+        // "6869" (hex of "hi"), "hi" (hex→text round trip), "QUI=" (base64 of "AB").
+        assert_eq!(findings[0].title(), "6869 hi QUI=");
+    }
+
+    #[test]
+    fn a_malformed_decode_is_an_empty_blob_not_a_fault() {
+        // A reply a module did not choose must not be able to kill it: a string
+        // that is not valid Base64 decodes to nothing, and the module reads the
+        // empty length rather than trapping.
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let decoded = b64_decode("not valid base64!!");
+                [ #{ severity: "info", summary: "len " + decoded.len() } ]
+            }
+        "#;
+        let mut caps = RecordedCaps::new(Vec::new());
+
+        let findings =
+            run(source, grant(DetectionClass::Passive, false), &mut caps).expect("a clean run");
+        assert_eq!(findings[0].title(), "len 0");
     }
 
     #[test]

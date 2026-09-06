@@ -2729,6 +2729,7 @@ dependencies = [
  "bincode",
  "boon",
  "dashmap",
+ "data-encoding",
  "dns-parser",
  "fancy-regex",
  "hickory-resolver",

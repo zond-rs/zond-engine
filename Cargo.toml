@@ -205,6 +205,13 @@ regex-syntax = "0.8"
 fancy-regex = "0.19.0"
 aho-corasick = "1.1"
 rhai = { version = "1.26.0", features = ["sync"] }
+# Hex and Base64 for the detection sandbox: the pure helpers a Tier-2 module
+# calls to decode an SNMP OID, a Basic-auth header, or a JWT segment out of a
+# reply. Declared rather than hand-rolled on the same reasoning as `ring` below:
+# `hickory-resolver` and `x509-parser` already pin it, so it names a crate the
+# build compiles either way, and it is one zero-dependency codec for both
+# alphabets rather than two crates or an encoder open in this repository.
+data-encoding = "2.10.0"
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 x509-parser = "0.18.1"
