@@ -355,6 +355,19 @@ mod tests {
                 .any(|f| f.detection().id() == "http-missing-security-headers"),
             "a hardened server was flagged"
         );
+
+        // A bare redirect to HTTPS, what a port-80 Caddy or nginx answers with. It
+        // has none of the four, but its headers are not the site's, so grading it
+        // reports the redirector rather than the page. No finding.
+        let redirect = b"HTTP/1.1 308 Permanent Redirect\r\n\
+            Location: https://example.com/\r\n\
+            Content-Length: 0\r\n\r\n";
+        assert!(
+            !run(redirect)
+                .iter()
+                .any(|f| f.detection().id() == "http-missing-security-headers"),
+            "a bare http-to-https redirect was graded as a missing-headers finding"
+        );
     }
 
     #[test]

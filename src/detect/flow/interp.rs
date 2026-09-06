@@ -38,7 +38,7 @@ use crate::model::finding::{DetectionId, Excerpt, Finding, Version};
 use crate::record::wire;
 
 use super::schema::{FindingSpec, FlowDetection, MatchSpec, OnNoMatch, Step};
-use super::schema::{MAX_FLOW_STEPS, MAX_LOOP_ITEMS};
+use super::schema::{MAX_FLOW_STEPS, MAX_LOOP_ITEMS, SEED_VAR_HOST, SEED_VAR_PORT};
 use super::{Env, eval};
 
 /// Why an exchange a flow asked for was refused before it happened, rather than
@@ -81,14 +81,68 @@ enum Flow {
     Halt,
 }
 
+/// The facts about the port under probe that a flow may name in a `send` or a
+/// `{var}` but has no other way to know: the address it reached and the number it
+/// reached it on, seeded into the environment as `host` and `port` before the
+/// first step.
+///
+/// A flow that sends HTTP needs to name the host it is talking to, a `Host:`
+/// header, a redirect it follows, and without this it can only hard-code
+/// `localhost`, which a virtual-host-routed server, most of the web, answers with
+/// the wrong site or a redirect away. These two variables are the host it
+/// reached, not one it chose: the address the scan resolved and connected to, so
+/// a flow still cannot address a machine the scan never looked at.
+///
+/// The environment otherwise holds only what a `bind` captured off the wire,
+/// which is what lets a flow's matching stay a pure function of the bytes it was
+/// answered with. `host` and `port` do not weaken that: they are the fixed
+/// identity of the endpoint, recorded on the run like every reply, not ambient
+/// state that could differ on a re-run, which is the line that still keeps a
+/// clock out. A `bind` may shadow either name, and doing so only rebinds a
+/// template variable.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct FlowSeed {
+    /// The address the flow reached, seeded as `{host}`. The scanned IP as text;
+    /// no hostname is available by the time a detection runs.
+    pub host: String,
+    /// The port the flow reached it on, seeded as `{port}`.
+    pub port: u16,
+}
+
+impl FlowSeed {
+    /// A seed for the endpoint at `host` on `port`.
+    pub fn new(host: impl Into<String>, port: u16) -> Self {
+        Self {
+            host: host.into(),
+            port,
+        }
+    }
+
+    /// Writes the seeded identity into a fresh environment, under the same names
+    /// the validator reserves in [`SEED_VARS`](super::schema::SEED_VARS), so what
+    /// a flow may reference and what it is handed cannot disagree.
+    fn seed(&self, env: &mut Env) {
+        env.insert(SEED_VAR_HOST.to_string(), self.host.clone());
+        env.insert(SEED_VAR_PORT.to_string(), self.port.to_string());
+    }
+}
+
 /// Runs `flow` against `probe`, returning the findings it produced.
 ///
 /// `content_hash` is the flow body's content address, stamped on every finding's
 /// [`DetectionId`] as provenance, the loader that sourced the flow computes it
 /// from the flow's bytes. Everything else, the id, version, severity and
-/// references, is the flow's own.
-pub fn run(flow: &FlowDetection, content_hash: &str, probe: &mut dyn Probe) -> Vec<Finding> {
+/// references, is the flow's own. `seed` supplies the `{host}` and `{port}` a
+/// probe template may name; see [`FlowSeed`].
+pub fn run(
+    flow: &FlowDetection,
+    content_hash: &str,
+    seed: &FlowSeed,
+    probe: &mut dyn Probe,
+) -> Vec<Finding> {
     let mut env = Env::new();
+    seed.seed(&mut env);
     let mut findings = Vec::new();
 
     // The step ceiling is enforced here, not only in the build-time validator, so
@@ -344,6 +398,11 @@ mod tests {
         toml::from_str(&toml).expect("a valid flow")
     }
 
+    /// A seed for a stand-in endpoint, for the flows that never read `{host}`.
+    fn seed() -> FlowSeed {
+        FlowSeed::new("192.0.2.10", 80)
+    }
+
     /// A probe that answers every send with the same canned reply.
     struct Canned(Vec<u8>);
     impl Probe for Canned {
@@ -352,12 +411,59 @@ mod tests {
         }
     }
 
+    /// A probe that records the exact bytes it was asked to send, so a test can
+    /// assert what a `{host}`/`{port}` template resolved to on the wire.
+    struct Echo {
+        sent: Vec<Vec<u8>>,
+        reply: Vec<u8>,
+    }
+    impl Probe for Echo {
+        fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+            self.sent.push(bytes.to_vec());
+            Some(self.reply.clone())
+        }
+    }
+
+    #[test]
+    fn a_send_template_resolves_the_seeded_host_and_port() {
+        // A one-step flow whose probe interpolates both seeded variables. The
+        // reply confirms the version bind, so the flow reaches its finding; the
+        // point of the test is the bytes the probe was handed, not the finding.
+        let toml = r#"
+            [detection]
+            id = "seed-echo"
+            version = "1.0.0"
+            title = "seed echo"
+            [detection.when]
+            service = "http"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            [[step]]
+            send = "GET / HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"
+            expect = "200 OK"
+        "#;
+        let flow: FlowDetection = toml::from_str(toml).expect("a valid flow");
+        let mut probe = Echo {
+            sent: Vec::new(),
+            reply: b"HTTP/1.1 200 OK\r\n\r\n".to_vec(),
+        };
+
+        run(&flow, "", &FlowSeed::new("198.51.100.7", 8443), &mut probe);
+
+        assert_eq!(
+            probe.sent.first().map(|bytes| latin1(bytes)),
+            Some("GET / HTTP/1.1\r\nHost: 198.51.100.7:8443\r\n\r\n".to_string()),
+            "the seeded host and port replaced the template, not a fixed localhost"
+        );
+    }
+
     #[test]
     fn the_redis_flow_runs_and_produces_a_finding() {
         let redis = flow("redis-unauth");
         let mut probe = Canned(b"# Server\r\nredis_version:7.2.4\r\nrun_id:abc".to_vec());
 
-        let findings = run(&redis, "", &mut probe);
+        let findings = run(&redis, "", &seed(), &mut probe);
         assert_eq!(findings.len(), 1);
         let finding = &findings[0];
 
@@ -385,7 +491,7 @@ mod tests {
         // No "# Server" line, so the step's `expect` gate fails and the flow halts.
         let mut probe = Canned(b"-ERR NOAUTH Authentication required".to_vec());
 
-        assert!(run(&redis, "", &mut probe).is_empty());
+        assert!(run(&redis, "", &seed(), &mut probe).is_empty());
     }
 
     /// A probe standing in for an SNMP agent that accepts only the `public`
@@ -413,7 +519,7 @@ mod tests {
     #[test]
     fn the_snmp_flow_probes_each_community_and_flags_the_one_that_answers() {
         let snmp = flow("snmp-default-community");
-        let findings = run(&snmp, "", &mut Snmp);
+        let findings = run(&snmp, "", &seed(), &mut Snmp);
 
         // Only `public` was accepted, so one finding, and it names that community.
         assert_eq!(findings.len(), 1);
@@ -464,7 +570,7 @@ mod tests {
             leak: b"HTTP/1.1 200 OK\r\n\r\nroot:x:0:0:root:/root:/bin/bash\n",
         };
 
-        let findings = run(&grafana, "", &mut probe);
+        let findings = run(&grafana, "", &seed(), &mut probe);
         assert_eq!(findings.len(), 1);
         let finding = &findings[0];
         assert_eq!(finding.severity(), Severity::Critical);
@@ -491,7 +597,7 @@ mod tests {
             leak: b"HTTP/1.1 403 Forbidden\r\n\r\n",
         };
 
-        let findings = run(&grafana, "", &mut probe);
+        let findings = run(&grafana, "", &seed(), &mut probe);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity(), Severity::Medium);
     }
@@ -507,7 +613,7 @@ mod tests {
             banner: b"HTTP/1.1 200 OK\r\nX-Grafana: Grafana v8.10.0\r\n\r\n",
             leak: b"root:x:0:0:should-never-be-sent",
         };
-        assert!(run(&grafana, "", &mut patched).is_empty());
+        assert!(run(&grafana, "", &seed(), &mut patched).is_empty());
 
         // Not Grafana at all: `bound(version)` is false, so the guard skips the
         // step before the version comparison is even reached.
@@ -515,7 +621,7 @@ mod tests {
             banner: b"HTTP/1.1 200 OK\r\nServer: nginx\r\n\r\n",
             leak: b"root:x:0:0:should-never-be-sent",
         };
-        assert!(run(&grafana, "", &mut other).is_empty());
+        assert!(run(&grafana, "", &seed(), &mut other).is_empty());
     }
 
     #[test]
@@ -541,7 +647,7 @@ mod tests {
         }
         let flow: FlowDetection = toml::from_str(&source).expect("a parseable flow");
 
-        run(&flow, "", &mut Counting(&mut probes));
+        run(&flow, "", &seed(), &mut Counting(&mut probes));
         assert_eq!(
             probes, MAX_FLOW_STEPS,
             "run probed a flow past the {MAX_FLOW_STEPS}-step ceiling"

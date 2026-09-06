@@ -39,10 +39,10 @@
 //! conditional step sends only after an earlier one matched), so it does not fit
 //! the reactor's collect-then-analyse shape. It runs instead on the blocking pool
 //! ([`spawn_blocking`](tokio::task::spawn_blocking)), where a blocking
-//! `SocketProbe` serves its `speak`. The connection is a plain one to the
-//! scanned address, as [service detection](crate::scanner::service) makes: the
-//! probe is bound to the one port it was built for, so a flow can reach nothing
-//! else.
+//! `SocketProbe` serves its `speak`. The connection is to the scanned address, as
+//! [service detection](crate::scanner::service) makes it, in the clear or wrapped
+//! in TLS when the port answered inside a tunnel: the probe is bound to the one
+//! port it was built for, so a flow can reach nothing else.
 //!
 //! ## The budget is enforced here
 //!
@@ -69,7 +69,7 @@ use crate::detect::host::stage as host_stage;
 use crate::detect::manifest::{
     CapabilitySpec, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS,
 };
-use crate::fingerprint::PortContext;
+use crate::fingerprint::{PortContext, Tunnel};
 use crate::model::finding::Finding;
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
@@ -227,6 +227,12 @@ async fn detect_one(
         responses,
     } = target;
     let addr = address.to_socket_addr(number)?;
+    // The port's service label is the only record that it answered inside a
+    // tunnel; both seams read it here so a detection speaks TLS to an `ssl/*`
+    // service and plaintext to the rest. The address the flow reached seeds
+    // `{host}` for a probe that has to name the endpoint it is talking to.
+    let tunnel = service.as_deref().and_then(Tunnel::from_service_label);
+    let host = addr.ip().to_string();
 
     // Both tiers are synchronous and hold a blocking socket, so they run off the
     // reactor. `spawn_blocking` fails only if the runtime is shutting down.
@@ -236,10 +242,11 @@ async fn detect_one(
         let (mut findings, flow_refusals) = stage::detect_port(
             flows,
             &envelope,
+            &host,
             service.as_deref(),
             number,
             protocol,
-            |caps| Some(Box::new(SocketProbe::new(addr, protocol, caps)) as Box<dyn Probe>),
+            |caps| Some(Box::new(SocketProbe::new(addr, protocol, tunnel, caps)) as Box<dyn Probe>),
         );
 
         // A passive module reads the gathered responses; an active one speaks
@@ -253,7 +260,7 @@ async fn detect_one(
             port: number,
             protocol,
             addr: Some(addr),
-            tunnel: None,
+            tunnel,
             speaks_http: false,
         };
         let computed = compute_stage::detect_port(
@@ -265,7 +272,7 @@ async fn detect_one(
             &response_slices,
             |grant| {
                 Some(
-                    Box::new(LiveCapabilities::new(addr, protocol, &grant.budget))
+                    Box::new(LiveCapabilities::new(addr, protocol, tunnel, &grant.budget))
                         as Box<dyn Capabilities>,
                 )
             },
@@ -409,6 +416,9 @@ fn detect_hosts(ctx: &ScanContext) {
 struct SocketProbe {
     addr: SocketAddr,
     protocol: Protocol,
+    /// The tunnel the port answered inside, if any: a flow speaks TLS to an
+    /// `ssl/*` service and plaintext to the rest, over the same exchange.
+    tunnel: Option<Tunnel>,
     /// Bytes still available across this flow's remaining sends and replies.
     bytes_left: u64,
     /// When the flow's time budget runs out.
@@ -421,11 +431,17 @@ struct SocketProbe {
 }
 
 impl SocketProbe {
-    fn new(addr: SocketAddr, protocol: Protocol, caps: &CapabilitySpec) -> Self {
+    fn new(
+        addr: SocketAddr,
+        protocol: Protocol,
+        tunnel: Option<Tunnel>,
+        caps: &CapabilitySpec,
+    ) -> Self {
         let millis = caps.max_millis.map_or(DEFAULT_MAX_MILLIS, u64::from);
         Self {
             addr,
             protocol,
+            tunnel,
             bytes_left: caps.max_bytes.map_or(DEFAULT_MAX_BYTES, u64::from),
             deadline: Instant::now() + Duration::from_millis(millis),
             connections_left: caps
@@ -460,7 +476,13 @@ impl Probe for SocketProbe {
         // The reply may consume at most what the byte budget has left. A silent or
         // unreachable port is not a refusal, so `last_refusal` stays clear.
         let reply = match self.protocol {
-            Protocol::Tcp => tcp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
+            Protocol::Tcp => tcp_exchange(
+                self.addr,
+                self.tunnel,
+                bytes,
+                self.deadline,
+                self.bytes_left,
+            ),
             Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
             // An SCTP port is scanned without a client stack, so there is
             // nothing here for a detection to hold a conversation over.
@@ -486,10 +508,23 @@ fn remaining(deadline: Instant) -> Option<Duration> {
 /// Connects, sends `bytes`, and reads the reply until the port falls silent, the
 /// byte budget `cap` is spent, or the connection closes. [`None`] on any failure,
 /// an expired deadline, or an empty reply.
-fn tcp_exchange(addr: SocketAddr, bytes: &[u8], deadline: Instant, cap: u64) -> Option<Vec<u8>> {
-    let mut stream =
+///
+/// A `tunnel` wraps the connected socket in the transport the port answered
+/// inside before a byte of the probe is sent, so an `ssl/*` service is spoken to
+/// through a handshake and every other port in the clear. A handshake that does
+/// not complete leaves the exchange unanswered, the same [`None`] a silent port
+/// returns.
+fn tcp_exchange(
+    addr: SocketAddr,
+    tunnel: Option<Tunnel>,
+    bytes: &[u8],
+    deadline: Instant,
+    cap: u64,
+) -> Option<Vec<u8>> {
+    let tcp =
         TcpStream::connect_timeout(&addr, remaining(deadline)?.min(CONNECT_PROBE_TIMEOUT)).ok()?;
-    stream.set_read_timeout(Some(remaining(deadline)?)).ok()?;
+    tcp.set_read_timeout(Some(remaining(deadline)?)).ok()?;
+    let mut stream = crate::detect::tls::wrap(tcp, addr.ip(), tunnel)?;
     stream.write_all(bytes).ok()?;
 
     let mut reply = Vec::new();
@@ -753,7 +788,7 @@ mod tests {
         });
 
         // 20-byte budget, one of which the `x` send spends: the reply gets 19.
-        let mut probe = SocketProbe::new(addr, Protocol::Tcp, &caps(Some(20), None, None));
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &caps(Some(20), None, None));
         let reply = probe.speak(b"x").expect("a reply within budget");
         assert!(
             reply.len() <= 19,
@@ -775,7 +810,7 @@ mod tests {
             }
         });
 
-        let mut probe = SocketProbe::new(addr, Protocol::Tcp, &caps(None, None, Some(1)));
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &caps(None, None, Some(1)));
         assert!(
             probe.speak(b"a").is_some(),
             "the one permitted exchange failed"
@@ -791,7 +826,7 @@ mod tests {
         // A zero-millisecond budget is spent the instant it is granted, so no
         // packet leaves; the unreachable address is never dialed.
         let addr: SocketAddr = "192.0.2.1:9".parse().unwrap();
-        let mut probe = SocketProbe::new(addr, Protocol::Tcp, &caps(None, Some(0), None));
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &caps(None, Some(0), None));
         assert!(
             probe.speak(b"x").is_none(),
             "an exchange ran past the time budget"

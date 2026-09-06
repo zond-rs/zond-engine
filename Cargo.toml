@@ -259,6 +259,13 @@ windows-sys = { version = "0.61.2", features = [
 # building.
 boon = "0.6.1"
 proptest = "1.6.0"
+# Mints an ephemeral self-signed certificate for the one test that stands up a
+# loopback TLS server, so a detection's TLS `speak` is proven against a real
+# handshake rather than a mock. Generated per run rather than committed, so no
+# private key lives in the tree of a security tool. Pinned to the `ring` backend
+# the crate already uses; its default `aws_lc_rs` is the cmake/NASM build
+# friction `fingerprint::tls` avoids.
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 # A dev-dependency on this crate itself, which is how the integration tests in
 # `tests/` get a build of the library with `test-support` turned on. Cargo
 # unifies it with the library target, so nothing is compiled twice and the

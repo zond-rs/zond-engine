@@ -51,5 +51,9 @@ pub(crate) mod host;
 mod convert;
 mod gate;
 mod source;
+// The synchronous TLS client both blocking probe seams speak through when a port
+// answered inside a tunnel. `pub(crate)` because the flow probe lives in the
+// scanner, a module away, not under `detect`.
+pub(crate) mod tls;
 
 pub use corpus::{DetectionError, DetectionSummary, Detections, DetectionsBuilder, Gate};

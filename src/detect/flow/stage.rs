@@ -36,7 +36,7 @@ use crate::model::host::Host;
 use crate::model::port::{Port, PortState, Protocol};
 
 use super::db::FlowDb;
-use super::{Probe, ProbeRefusal};
+use super::{FlowSeed, Probe, ProbeRefusal};
 use crate::detect::manifest::{CapabilitySpec, Class};
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
@@ -52,6 +52,7 @@ pub(crate) fn run_flows(
     envelope: &DetectionEnvelope,
     mut probe_for: impl FnMut(&Port) -> Option<Box<dyn Probe>>,
 ) {
+    let host_addr = host.scoped_ip().addr().to_string();
     // Collect first, mutate second: reading the ports borrows the host, and
     // recording a finding needs them back mutably, so the two cannot overlap.
     let mut hits: Vec<(u16, Protocol, Finding)> = Vec::new();
@@ -64,10 +65,15 @@ pub(crate) fn run_flows(
         let service = port.service().map(|service| service.name());
         // run_flows is a synchronous convenience; the scanner drives detect_port
         // directly and surfaces the refusals this `.0` discards.
-        let (produced, _refusals) =
-            detect_port(corpus, envelope, service, number, protocol, |_caps| {
-                probe_for(port)
-            });
+        let (produced, _refusals) = detect_port(
+            corpus,
+            envelope,
+            &host_addr,
+            service,
+            number,
+            protocol,
+            |_caps| probe_for(port),
+        );
         for finding in produced {
             hits.push((number, protocol, finding));
         }
@@ -87,6 +93,7 @@ pub(crate) fn run_flows(
 pub(crate) fn detect_port(
     corpus: &FlowDb,
     envelope: &DetectionEnvelope,
+    host: &str,
     service: Option<&str>,
     number: u16,
     protocol: Protocol,
@@ -94,6 +101,10 @@ pub(crate) fn detect_port(
 ) -> (Vec<Finding>, Vec<(String, ProbeRefusal)>) {
     let mut findings = Vec::new();
     let mut refusals = Vec::new();
+    // One seed for the port serves every flow that runs against it: the address
+    // and number are the port's, not any flow's, so a `{host}`/`{port}` template
+    // resolves to the endpoint under probe whichever detection names it.
+    let seed = FlowSeed::new(host, number);
     for flow in corpus.flows() {
         let manifest = &flow.flow().detection;
         if !enabled(manifest.capabilities.class, envelope)
@@ -104,7 +115,7 @@ pub(crate) fn detect_port(
         let Some(mut probe) = probe_for(&manifest.capabilities) else {
             continue;
         };
-        findings.extend(flow.run(probe.as_mut()));
+        findings.extend(flow.run(&seed, probe.as_mut()));
         // A budget the flow spent halts it without a reply, which a silent port
         // does too; the probe says which, so a detection cut short by its own
         // budget is recorded rather than mistaken for a clean run over a quiet port.
@@ -293,6 +304,7 @@ mod tests {
         let (findings, refusals) = detect_port(
             FlowDb::global(),
             &default_envelope(),
+            "192.0.2.10",
             Some("redis"),
             6379,
             Protocol::Tcp,

@@ -63,6 +63,21 @@ pub const MAX_FLOW_STEPS: usize = 16;
 /// against.
 pub const MAX_LOOP_ITEMS: usize = 64;
 
+/// The variable a `{host}` template resolves to: the address the flow reached,
+/// filled before the first step. Reserved, so the validator counts it in scope
+/// everywhere and the runtime supplies it rather than a `bind`. See the runtime's
+/// `FlowSeed`, which fills these from the port under probe.
+pub const SEED_VAR_HOST: &str = "host";
+
+/// The `{port}` counterpart: the number the flow reached the host on.
+pub const SEED_VAR_PORT: &str = "port";
+
+/// The seed variables in scope from the first step, filled from the port a flow
+/// runs against rather than by any step. The validator starts its scope with
+/// these so a `send` or a finding may name them, and the runtime writes the same
+/// names, so the two cannot disagree about what a flow is allowed to reference.
+pub const SEED_VARS: &[&str] = &[SEED_VAR_HOST, SEED_VAR_PORT];
+
 /// A whole flow file: one detection, then its steps.
 ///
 /// Deserialized, never built by hand: `non_exhaustive` so a

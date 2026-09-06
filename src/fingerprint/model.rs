@@ -65,6 +65,22 @@ impl Tunnel {
             Tunnel::Tls => "ssl",
         }
     }
+
+    /// The tunnel a service label names, the inverse of the `<scheme>/` prefix
+    /// [`to_service`](ServiceVerdict::to_service) writes: `ssl/http` is HTTP
+    /// carried inside TLS, a bare `http` is no tunnel, and an unknown scheme is
+    /// none either.
+    ///
+    /// The label is where a tunnel survives past fingerprinting: the [`Service`]
+    /// model keeps the protocol name and not the transport it was read through,
+    /// so the detection phase reads the label back to decide whether to speak to
+    /// the port in the clear or through a handshake.
+    pub fn from_service_label(label: &str) -> Option<Self> {
+        match label.split_once('/') {
+            Some(("ssl", _)) => Some(Tunnel::Tls),
+            _ => None,
+        }
+    }
 }
 
 /// One independent observation about what a port is running.

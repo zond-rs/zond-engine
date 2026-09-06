@@ -259,10 +259,15 @@ fn check_protocol(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
 /// names only what is in scope, that every loop is bounded, and that a guard is
 /// well-formed.
 fn check_references(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
-    // Only a non-`for_each` step's binds persist to later steps: a `for_each`
-    // step runs each item in a clone, so neither its loop variable nor its binds
-    // outlive it.
-    let mut persisted: BTreeSet<String> = BTreeSet::new();
+    // The scope opens with the seed variables the runtime fills from the port,
+    // `host` and `port`, so a first step may name them where no earlier step
+    // could have bound them. Only a non-`for_each` step's binds persist beyond
+    // this: a `for_each` step runs each item in a clone, so neither its loop
+    // variable nor its binds outlive it.
+    let mut persisted: BTreeSet<String> = super::schema::SEED_VARS
+        .iter()
+        .map(|v| v.to_string())
+        .collect();
 
     for (index, step) in flow.step.iter().enumerate() {
         let loop_var = check_loop(index, step, &persisted, errors);
@@ -520,6 +525,40 @@ mod tests {
             check(&flow)
                 .iter()
                 .any(|e| matches!(e, ValidationError::UndefinedVariable(0, v, _) if v == "nope"))
+        );
+    }
+
+    #[test]
+    fn the_seed_variables_are_in_scope_from_the_first_step() {
+        // A first step names `{host}` and `{port}` in its send and its finding,
+        // which no step binds. The runtime seeds them from the port under probe,
+        // so the validator counts them in scope rather than reporting a forward
+        // reference. This is the check that rejected the first `{host}` flow before
+        // the seed names were reserved.
+        let flow = flow(
+            r#"
+            [detection]
+            id = "seed"
+            version = "1.0.0"
+            title = "seed"
+            [detection.when]
+            speaks = "http"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            [[step]]
+            send   = "HEAD / HTTP/1.1\r\nHost: {host}\r\n\r\n"
+            expect = "HTTP/"
+            [[step.finding]]
+            when     = "matched"
+            severity = "info"
+            summary  = "port {port} answered on {host}"
+            "#,
+        );
+        assert!(
+            check(&flow).is_empty(),
+            "a flow naming the seed variables was rejected: {:?}",
+            check(&flow)
         );
     }
 

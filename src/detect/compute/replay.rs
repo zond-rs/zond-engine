@@ -302,7 +302,7 @@ mod tests {
 
         // Run once, live, recording every call as it goes.
         let mut recording =
-            RecordingCapabilities::new(LiveCapabilities::new(addr, Protocol::Tcp, &budget()));
+            RecordingCapabilities::new(LiveCapabilities::new(addr, Protocol::Tcp, None, &budget()));
         let mut instance = runtime
             .instantiate(&module, &grant())
             .expect("instantiates");

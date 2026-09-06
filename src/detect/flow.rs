@@ -46,7 +46,7 @@ mod eval;
 mod interp;
 pub(crate) mod stage;
 
-pub use interp::{Probe, ProbeRefusal, run};
+pub use interp::{FlowSeed, Probe, ProbeRefusal, run};
 // Not public: the builder runs it over a caller's flow, the way the build runs its
 // own pattern check over the shipped corpus. `check` is the public structural pass.
 pub(crate) use interp::check_patterns;
@@ -62,6 +62,9 @@ pub(crate) use super::{authoring, manifest};
 
 /// The variables a flow has bound so far, names to their string values. One
 /// environment threads through a flow's steps (a `for_each` iteration runs in a
-/// clone of its own), and it holds only what a `bind` put there: no host facts,
-/// no clock, which is what keeps a flow a pure function of the bytes it was told.
+/// clone of its own). It holds what a `bind` captured off the wire, over a
+/// [`FlowSeed`] of the two fixed facts a flow could not otherwise name, the
+/// `host` and `port` it reached. No clock and nothing else ambient, which is what
+/// keeps a flow's matching a pure function of the bytes it was answered with:
+/// the seed is recorded identity, not state that could differ on a re-run.
 type Env = std::collections::BTreeMap<String, String>;

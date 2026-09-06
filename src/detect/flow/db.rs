@@ -32,7 +32,7 @@ use std::sync::OnceLock;
 use crate::model::finding::Finding;
 
 use super::schema::FlowDetection;
-use super::{Probe, run};
+use super::{FlowSeed, Probe, run};
 
 /// The validated flow sources and their content hashes, compiled from
 /// `assets/detect/` by `build.rs`.
@@ -60,8 +60,9 @@ impl CompiledFlow {
     }
 
     /// Runs the flow against `probe`, stamping its content hash on each finding.
-    pub(crate) fn run(&self, probe: &mut dyn Probe) -> Vec<Finding> {
-        run(&self.flow, &self.content_hash, probe)
+    /// `seed` carries the `{host}`/`{port}` the flow's probe templates may name.
+    pub(crate) fn run(&self, seed: &FlowSeed, probe: &mut dyn Probe) -> Vec<Finding> {
+        run(&self.flow, &self.content_hash, seed, probe)
     }
 }
 
@@ -195,7 +196,11 @@ mod tests {
             }
         }
 
-        let findings = redis.run(&mut Canned(b"# Server\r\nredis_version:7.2.4".to_vec()));
+        let seed = FlowSeed::new("192.0.2.10", 6379);
+        let findings = redis.run(
+            &seed,
+            &mut Canned(b"# Server\r\nredis_version:7.2.4".to_vec()),
+        );
         assert_eq!(findings.len(), 1);
         // The finding carries the flow's real content hash, not the empty one the
         // interpreter stamps when no loader supplied it.

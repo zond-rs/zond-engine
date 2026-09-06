@@ -57,12 +57,12 @@ use zond_engine::config::limits::CONNECT_CONCURRENCY;
 use zond_engine::config::{DetectionEnvelope, ServiceDetection, ZondConfig};
 use zond_engine::detect::Detections;
 use zond_engine::detect::compute::{
-    ComputeRuntime, Grant, LiveCapabilities, LoadError, ModuleBody, ModuleFault, RhaiRuntime,
-    RunOutcome,
+    Capabilities, ComputeRuntime, Grant, LiveCapabilities, LoadError, ModuleBody, ModuleFault,
+    RhaiRuntime, RunOutcome,
 };
 use zond_engine::detect::manifest::DetectionManifest;
 use zond_engine::evasion::EvasionProfile;
-use zond_engine::fingerprint::PortContext;
+use zond_engine::fingerprint::{PortContext, Tunnel};
 use zond_engine::model::finding::{DetectionClass, Finding, Reference, Severity};
 use zond_engine::model::host::Host;
 use zond_engine::model::port::{Port, Protocol};
@@ -654,7 +654,7 @@ fn a_passive_detection_that_asks_to_speak_is_handed_no_socket_at_all() {
     let mut instance = runtime
         .instantiate(&module, &grant)
         .expect("the module instantiates");
-    let mut caps = LiveCapabilities::new(addr, Protocol::Tcp, &grant.budget);
+    let mut caps = LiveCapabilities::new(addr, Protocol::Tcp, None, &grant.budget);
     let ctx = PortContext::new(addr.port(), Protocol::Tcp).with_addr(Some(addr));
 
     match runtime.run(&mut instance, &ctx, &[], &mut caps) {
@@ -772,4 +772,86 @@ async fn a_caller_supplied_detection_runs_in_a_scan() {
         .is_some(),
         "setting a caller corpus dropped the shipped detections"
     );
+}
+
+/// A detection speaks to a service that answered inside TLS, and reads the reply
+/// in the clear.
+///
+/// The P0 that makes the web corpus possible: an `ssl/*` port is reached through
+/// a handshake, not written to as plaintext. A loopback rustls server stands in
+/// for the HTTPS service, holding an ephemeral self-signed certificate the
+/// detection's accept-any client takes without a trust decision, the same as a
+/// scan does against a live endpoint. The client is [`LiveCapabilities`] with the
+/// TLS tunnel the scanner derives from the `ssl/` service label, so the path
+/// under test is the one a real compute module runs.
+#[test]
+fn a_detection_speaks_through_tls_to_a_service_that_answered_inside_it() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    // A throwaway certificate, minted for this run so no key material is committed.
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .expect("a self-signed certificate");
+    let cert_der = cert.cert.der().clone();
+    let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+
+    let server_config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("ring supports the default versions")
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert_der],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),
+    )
+    .expect("a server config from the generated key");
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback listener");
+    let addr = listener.local_addr().expect("the listener's address");
+
+    // The service: complete the handshake, read the probe, answer it. `PONG` back
+    // proves the bytes crossed the tunnel decrypted in both directions.
+    let config = std::sync::Arc::new(server_config);
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("an inbound connection");
+        let mut conn = rustls::ServerConnection::new(config).expect("a server connection");
+        let mut tls = rustls::Stream::new(&mut conn, &mut socket);
+        let mut probe = [0u8; 4];
+        tls.read_exact(&mut probe)
+            .expect("the probe arrives through TLS");
+        assert_eq!(&probe, b"PING", "the server read the decrypted probe");
+        tls.write_all(b"PONG")
+            .expect("the reply is written through TLS");
+        tls.flush().expect("the reply is flushed");
+    });
+
+    // The client: the same capability a compute module holds, handed the TLS
+    // tunnel the scanner derives from an `ssl/*` label.
+    let manifest: DetectionManifest = toml::from_str(
+        r#"
+        id = "tls-speak"
+        version = "1.0.0"
+        title = "tls speak"
+        [when]
+        service = "http"
+        [capabilities]
+        class = "active-benign"
+        speak = "target"
+        max_bytes = 8192
+        max_millis = 2000
+        max_connections = 2
+        "#,
+    )
+    .expect("the manifest parses");
+    let grant = Grant::from_manifest(&manifest, &"0".repeat(64)).expect("the manifest resolves");
+
+    let mut caps = LiveCapabilities::new(addr, Protocol::Tcp, Some(Tunnel::Tls), &grant.budget);
+    let reply = caps
+        .speak(b"PING")
+        .expect("the exchange completes through the tunnel");
+
+    assert_eq!(reply, b"PONG", "the reply came back decrypted");
+    server.join().expect("the server thread finished cleanly");
 }

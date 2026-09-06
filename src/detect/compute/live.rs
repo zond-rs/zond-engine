@@ -9,10 +9,11 @@
 //! # Serving the capabilities from a live socket
 //!
 //! The [`Capabilities`] a module is served during a scan: [`speak`](Capabilities::speak)
-//! over a fresh connection to the one scanned port, [`now`](Capabilities::now)
-//! off a run-relative clock. It is the live counterpart to the recorded
-//! capabilities a test or a replay serves, and a module cannot tell which it
-//! holds, which is what the seam is for.
+//! over a fresh connection to the one scanned port, in the clear or wrapped in
+//! TLS when the port answered inside a tunnel, and [`now`](Capabilities::now) off
+//! a run-relative clock. It is the live counterpart to the recorded capabilities
+//! a test or a replay serves, and a module cannot tell which it holds, which is
+//! what the seam is for.
 //!
 //! ## The budget is enforced here
 //!
@@ -34,6 +35,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
+use crate::fingerprint::Tunnel;
 use crate::model::port::Protocol;
 
 use super::budget::Budget;
@@ -45,6 +47,9 @@ use super::capability::{CapError, Capabilities, ScanInstant};
 pub struct LiveCapabilities {
     addr: SocketAddr,
     protocol: Protocol,
+    /// The tunnel the port answered inside, if any: a module speaks TLS to an
+    /// `ssl/*` service and plaintext to the rest, over the same `speak`.
+    tunnel: Option<Tunnel>,
     /// Bytes still available across this run's remaining exchanges.
     bytes_left: u64,
     /// When the run's time budget runs out.
@@ -56,12 +61,20 @@ pub struct LiveCapabilities {
 }
 
 impl LiveCapabilities {
-    /// Capabilities bound to `addr`, held to `budget`. The clock starts now, so
-    /// [`now`](Capabilities::now) reports the time since the run began.
-    pub fn new(addr: SocketAddr, protocol: Protocol, budget: &Budget) -> Self {
+    /// Capabilities bound to `addr`, held to `budget`. `tunnel` is the transport
+    /// the port answered inside, so a module's `speak` reaches an `ssl/*` service
+    /// through a handshake. The clock starts now, so [`now`](Capabilities::now)
+    /// reports the time since the run began.
+    pub fn new(
+        addr: SocketAddr,
+        protocol: Protocol,
+        tunnel: Option<Tunnel>,
+        budget: &Budget,
+    ) -> Self {
         Self {
             addr,
             protocol,
+            tunnel,
             bytes_left: budget.max_bytes,
             deadline: Instant::now() + budget.deadline,
             connections_left: budget.max_connections,
@@ -88,7 +101,13 @@ impl Capabilities for LiveCapabilities {
 
         // The reply may consume at most what the byte budget has left.
         let reply = match self.protocol {
-            Protocol::Tcp => tcp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
+            Protocol::Tcp => tcp_exchange(
+                self.addr,
+                self.tunnel,
+                bytes,
+                self.deadline,
+                self.bytes_left,
+            ),
             Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
             Protocol::Sctp => Err(CapError::Denied(
                 "a detection cannot speak to an SCTP port: the engine scans SCTP without a client \
@@ -133,18 +152,25 @@ fn io_error(error: &std::io::Error) -> CapError {
 /// Connects, sends `bytes`, and reads the reply until the port falls silent, the
 /// byte budget `cap` is spent, or the connection closes. A silent port is an
 /// empty reply, not an error. The module decides what that means.
+///
+/// A `tunnel` wraps the connected socket in the transport the port answered
+/// inside before the probe is sent, so a module's `speak` reaches an `ssl/*`
+/// service through a handshake. A handshake that cannot even be set up is a
+/// reset the module may catch; one that fails to complete surfaces as the
+/// exchange erroring on its first read or write, like any other broken port.
 fn tcp_exchange(
     addr: SocketAddr,
+    tunnel: Option<Tunnel>,
     bytes: &[u8],
     deadline: Instant,
     cap: u64,
 ) -> Result<Vec<u8>, CapError> {
     let timeout = remaining(deadline).ok_or(CapError::TimedOut)?;
-    let mut stream = TcpStream::connect_timeout(&addr, timeout.min(CONNECT_PROBE_TIMEOUT))
+    let tcp = TcpStream::connect_timeout(&addr, timeout.min(CONNECT_PROBE_TIMEOUT))
         .map_err(|error| io_error(&error))?;
-    stream
-        .set_read_timeout(Some(remaining(deadline).ok_or(CapError::TimedOut)?))
+    tcp.set_read_timeout(Some(remaining(deadline).ok_or(CapError::TimedOut)?))
         .map_err(|error| io_error(&error))?;
+    let mut stream = crate::detect::tls::wrap(tcp, addr.ip(), tunnel).ok_or(CapError::Reset)?;
     stream.write_all(bytes).map_err(|error| io_error(&error))?;
 
     let mut reply = Vec::new();
@@ -253,7 +279,7 @@ mod tests {
             resolve: false,
         };
         let mut instance = runtime.instantiate(&module, &grant).expect("instantiates");
-        let mut caps = LiveCapabilities::new(addr, Protocol::Tcp, &budget());
+        let mut caps = LiveCapabilities::new(addr, Protocol::Tcp, None, &budget());
         let ctx = PortContext {
             port: addr.port(),
             protocol: Protocol::Tcp,
@@ -285,6 +311,7 @@ mod tests {
         let mut caps = LiveCapabilities::new(
             addr,
             Protocol::Tcp,
+            None,
             &Budget {
                 max_bytes: 20,
                 ..budget()
@@ -306,6 +333,7 @@ mod tests {
         let mut caps = LiveCapabilities::new(
             addr,
             Protocol::Tcp,
+            None,
             &Budget {
                 max_connections: 1,
                 deadline: Duration::from_millis(50),
