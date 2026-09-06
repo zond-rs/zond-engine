@@ -154,7 +154,13 @@ mod tests {
         use crate::detect::manifest::Class;
 
         let expected = [
+            ("couchdb-open", Class::ActiveBenign),
+            ("elasticsearch-open", Class::ActiveBenign),
             ("grafana-path-traversal", Class::Exploit),
+            ("http-dotenv-exposed", Class::ActiveBenign),
+            ("http-git-exposed", Class::ActiveBenign),
+            ("http-server-status", Class::ActiveBenign),
+            ("memcached-unauth", Class::ActiveBenign),
             ("redis-unauth-access", Class::ActiveBenign),
             ("snmp-default-community", Class::ActiveBenign),
         ];

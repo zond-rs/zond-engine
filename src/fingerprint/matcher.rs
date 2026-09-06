@@ -40,6 +40,14 @@ use crate::model::confidence::Confidence;
 #[derive(Debug)]
 pub struct Signature {
     service: String,
+    /// Whether a match names the service, or asserts nothing about it.
+    ///
+    /// Recog marks the second with `service.certainty = 0`: a rule that matches a
+    /// token but identifies no software, a `version.bind` answer of `null`, a
+    /// bare string that only rules out other readings. Such a match must not put
+    /// its parent `[service]` name on the port, or a `Server: null` header reads
+    /// as DNS. False for those rules, true for the rest.
+    identifies_service: bool,
     product: Option<String>,
     vendor: Option<String>,
     /// 1-based capture group holding the version string, if any.
@@ -139,6 +147,18 @@ impl Component {
     }
 }
 
+/// Whether a rule identifies the service it belongs to.
+///
+/// True unless the rule sets `service.certainty = 0`, Recog's mark for a match
+/// that names no software: it fired, but what it establishes about the service is
+/// nothing. Honouring it is what stops an "assert nothing" token like a bare
+/// `null` from tagging whatever carried it with the rule's parent service.
+fn identifies_service(rule: &MatchRule) -> bool {
+    metadata_value(rule, "service.certainty")
+        .map(|certainty| !matches!(certainty.trim(), "0" | "0.0"))
+        .unwrap_or(true)
+}
+
 /// A non-empty metadata value for `key`, or [`None`].
 fn metadata_value(rule: &MatchRule, key: &str) -> Option<String> {
     rule.metadata
@@ -169,6 +189,7 @@ impl Signature {
     pub fn new(service: &str, rule: &MatchRule) -> Self {
         Self {
             service: service.to_string(),
+            identifies_service: identifies_service(rule),
             product: rule.product.clone(),
             vendor: rule.vendor.clone(),
             version_group: rule.version_group,
@@ -275,8 +296,10 @@ impl Signature {
             )
         });
 
-        let mut evidence =
-            Evidence::new(SourceId::BannerRegex, confidence).with_service(self.service.clone());
+        let mut evidence = Evidence::new(SourceId::BannerRegex, confidence);
+        if self.identifies_service {
+            evidence = evidence.with_service(self.service.clone());
+        }
         evidence.product = self.product.clone();
         evidence.vendor = self.vendor.clone();
         evidence.version = version;
@@ -314,6 +337,58 @@ impl Signature {
 /// A signature's successful match against a response: the [`Evidence`] it
 /// yields, paired with the [`MatchQuality`] used to choose the most specific
 /// match when several signatures match the same response.
+/// The service name to report for `winner`, given every match `all` made against
+/// one response.
+///
+/// Usually the winner's own. The exception is the winner that names the generic
+/// `http` baseline while capturing an application as its product: the corpus's
+/// `generic_http` rule and the HTTP analyzer both mint `http` for any web
+/// response, so a page a title says is Grafana wins the ranking as `http` with
+/// `Grafana` in the product, and a signature that named the service `grafana`
+/// outright loses on detail. The two are the same identification, one by name and
+/// one by product, so the specific name is preferred and the port is called
+/// `grafana` rather than `http`.
+///
+/// The specific service must name the same application: its name and the winner's
+/// product have to contain one another, so `grafana` is taken for a `Grafana`
+/// product but a rule that coincidentally matched some unrelated text is not,
+/// which is what keeps a stray `dns` off a `Server: null`.
+pub fn resolved_service_name(winner: &Match, all: &[Match]) -> Option<String> {
+    if !is_generic_service(winner.evidence.service.as_deref()) {
+        return winner.evidence.service.clone();
+    }
+    let Some(product) = winner.evidence.product.as_deref() else {
+        return winner.evidence.service.clone();
+    };
+
+    all.iter()
+        .find(|m| {
+            m.quality.confidence == winner.quality.confidence
+                && !is_generic_service(m.evidence.service.as_deref())
+                && m.evidence
+                    .service
+                    .as_deref()
+                    .is_some_and(|service| names_the_same(service, product))
+        })
+        .and_then(|m| m.evidence.service.clone())
+        .or_else(|| winner.evidence.service.clone())
+}
+
+/// Whether a service name is a generic protocol baseline rather than an
+/// identification of the software. `http` is the one that matters: it is what the
+/// HTTP analyzer and the corpus's `generic_http` rule mint for any web response.
+fn is_generic_service(service: Option<&str>) -> bool {
+    matches!(service, Some("http"))
+}
+
+/// Whether a service name and a product name the same software, case-insensitive:
+/// one contains the other, so `grafana` matches `Grafana` and `Grafana v8` alike.
+fn names_the_same(service: &str, product: &str) -> bool {
+    let service = service.to_ascii_lowercase();
+    let product = product.to_ascii_lowercase();
+    product.contains(&service) || service.contains(&product)
+}
+
 pub struct Match {
     pub evidence: Evidence,
     pub quality: MatchQuality,

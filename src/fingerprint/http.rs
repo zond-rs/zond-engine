@@ -529,8 +529,13 @@ fn corpus_reading(header: &str) -> (Option<crate::model::host::OsEvidence>, Opti
             },
         );
 
+    // Only a match that names a service is a service reading. A rule may fire and
+    // identify nothing about the service, an "assert nothing" token like a bare
+    // `null`, and such a match carries an operating-system reading above but no
+    // service to report, so it must not be surfaced as one.
     let service = matched
         .into_iter()
+        .filter(|matched| matched.evidence.service.is_some())
         .reduce(|best, matched| match matched.quality > best.quality {
             true => matched,
             false => best,

@@ -522,6 +522,13 @@ fn best_match(
         .iter()
         .reduce(|best, m| if m.quality > best.quality { m } else { best })?;
 
+    // The name to report for it. Usually its own, but a generic `http` winner
+    // that captured an application as its product yields to a specific service
+    // that names the same application, so a page a title says is Grafana is named
+    // `grafana` and not `http`. A coincidental specific match that names nothing
+    // the product does is not taken. See [`resolved_service_name`].
+    let service_name = super::matcher::resolved_service_name(service, &matched);
+
     // Chosen separately. `quality` ranks how well a signature identified the
     // service, which is a different question from how much it managed to say
     // about the machine, and the two disagree. A rule
@@ -561,6 +568,7 @@ fn best_match(
     Some(Evidence {
         os,
         hardware,
+        service: service_name,
         ..service.evidence.clone()
     })
 }

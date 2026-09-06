@@ -458,6 +458,81 @@ mod tests {
         );
     }
 
+    /// The Phase-1 corpus, each flow against a reply that should confirm it. It
+    /// loads the shipped file rather than a fixture, so the assertion is about the
+    /// detection that ships, and it drives the interpreter directly with a canned
+    /// reply, so a service that is awkward to stand up (memcached, CouchDB,
+    /// Elasticsearch) is covered the same way a web one is.
+    #[test]
+    fn the_phase_one_flows_fire_on_a_confirming_reply() {
+        let cases: &[(&str, &[u8], Severity)] = &[
+            (
+                "memcached-unauth",
+                b"STAT pid 1234\r\nSTAT version 1.6.21\r\nEND\r\n",
+                Severity::High,
+            ),
+            (
+                "couchdb-open",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n[\"_users\",\"_replicator\"]",
+                Severity::High,
+            ),
+            (
+                "elasticsearch-open",
+                b"HTTP/1.1 200 OK\r\n\r\n{\"cluster_name\":\"prod\",\"version\":{\"number\":\"8.11.0\"}}",
+                Severity::High,
+            ),
+            (
+                "http-git-exposed",
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nref: refs/heads/main\n",
+                Severity::High,
+            ),
+            (
+                "http-server-status",
+                b"HTTP/1.1 200 OK\r\n\r\n<html><head><title>Apache Server Status for host</title>",
+                Severity::Medium,
+            ),
+            (
+                "http-dotenv-exposed",
+                b"HTTP/1.1 200 OK\r\n\r\nAPP_KEY=base64:abcd\nDB_PASSWORD=hunter2\n",
+                Severity::High,
+            ),
+        ];
+
+        for (name, reply, severity) in cases {
+            let flow = flow(name);
+            let findings = run(&flow, "", &seed(), &mut Canned(reply.to_vec()));
+            assert_eq!(
+                findings.len(),
+                1,
+                "{name} drew no finding on a confirming reply"
+            );
+            assert_eq!(findings[0].severity(), *severity, "{name} graded wrong");
+        }
+    }
+
+    /// The same flows against a reply that should not confirm them: a 404, or a
+    /// bare page. A single-match flow whose `expect` fails halts with nothing, so
+    /// none of these may fire, which is what keeps the set safe to run by default.
+    #[test]
+    fn the_phase_one_flows_stay_quiet_on_a_non_confirming_reply() {
+        let quiet = b"HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n\r\n<html><body>not found</body></html>";
+        for name in [
+            "memcached-unauth",
+            "couchdb-open",
+            "elasticsearch-open",
+            "http-git-exposed",
+            "http-server-status",
+            "http-dotenv-exposed",
+        ] {
+            let flow = flow(name);
+            let findings = run(&flow, "", &seed(), &mut Canned(quiet.to_vec()));
+            assert!(
+                findings.is_empty(),
+                "{name} fired on a non-confirming reply"
+            );
+        }
+    }
+
     #[test]
     fn the_redis_flow_runs_and_produces_a_finding() {
         let redis = flow("redis-unauth");
