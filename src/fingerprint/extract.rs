@@ -59,6 +59,11 @@ pub(crate) fn texts(banner: &str) -> Vec<Cow<'_, str>> {
     let mut texts = vec![Cow::Borrowed(banner)];
     texts.extend(super::ssh::software_version(banner).map(Cow::Borrowed));
     texts.extend(super::http::corpus_fields(banner));
+    texts.extend(
+        super::sip::corpus_fields(banner)
+            .into_iter()
+            .map(Cow::Borrowed),
+    );
     texts
 }
 
@@ -105,6 +110,15 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
         // a rule reads one of them: `model=Mac16,10` and `osxvers=25` are two
         // separate claims about the same machine.
         5353 => crate::protocols::mdns::text_records(datagram).unwrap_or_default(),
+        // A SIP endpoint answers OPTIONS over UDP far more often than over TCP,
+        // and names itself in the same two headers either way.
+        5060 | 5061 => match std::str::from_utf8(datagram) {
+            Ok(text) => super::sip::corpus_fields(text)
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect(),
+            Err(_) => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }
@@ -146,7 +160,7 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// Stated rather than derived, because a decoder cannot be asked whether it
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
-const DECODED_UDP_PORTS: &[u16] = &[53, 161, 5353];
+const DECODED_UDP_PORTS: &[u16] = &[53, 161, 5060, 5061, 5353];
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -539,5 +553,61 @@ mod device_info {
     #[test]
     fn port_5353_is_now_worth_a_second_datagram() {
         assert!(super::reads(5353, Protocol::Udp));
+    }
+}
+
+#[cfg(test)]
+mod sip_headers {
+    use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
+
+    /// What a Cisco gateway answers OPTIONS with, in the shape RFC 3261 gives a
+    /// response and the corpus has rules for.
+    const GATEWAY: &str = "SIP/2.0 200 OK\r\n\
+         Via: SIP/2.0/UDP nm;branch=zond\r\n\
+         Server: Cisco-SIPGateway/IOS-12.x\r\n\
+         Content-Length: 0\r\n\r\n";
+
+    /// Over UDP, which is where most SIP is, through the port-keyed decoder.
+    #[test]
+    fn a_datagram_yields_the_header_the_corpus_reads() {
+        assert_eq!(
+            super::from_datagram(5060, GATEWAY.as_bytes()),
+            vec!["Cisco-SIPGateway/IOS-12.x"]
+        );
+    }
+
+    /// And over TCP, where the response arrives as a banner. The whole reply is
+    /// still offered beside the field, as it is for every other banner.
+    #[test]
+    fn a_banner_offers_the_header_beside_itself() {
+        let texts = super::texts(GATEWAY);
+        assert!(
+            texts.iter().any(|text| text == "Cisco-SIPGateway/IOS-12.x"),
+            "got {texts:?}"
+        );
+    }
+
+    /// The whole point: a rule is anchored on the header value, so it can never
+    /// match the response that carried it.
+    #[test]
+    fn the_header_names_the_gateway_behind_it() {
+        let evidence = SignatureDb::global()
+            .identify(5060, Protocol::Udp, "Cisco-SIPGateway/IOS-12.x")
+            .expect("the corpus names it");
+        assert_eq!(evidence.product.as_deref(), Some("IOS"));
+    }
+
+    #[test]
+    fn port_5060_is_now_worth_a_second_datagram() {
+        assert!(super::reads(5060, Protocol::Udp));
+        assert!(super::reads(5061, Protocol::Udp));
+    }
+
+    /// A datagram that is not SIP decodes to nothing rather than to noise.
+    #[test]
+    fn a_datagram_that_is_not_sip_yields_nothing() {
+        assert!(super::from_datagram(5060, b"\x00\x01\x02 not sip").is_empty());
+        assert!(super::from_datagram(5060, b"HTTP/1.1 200 OK\r\n\r\n").is_empty());
     }
 }

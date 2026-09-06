@@ -970,6 +970,7 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
         "ntp" => validate_ntp_request(payload),
         "netbios-ns" => validate_netbios_query(payload),
         "ssdp" => validate_ssdp_search(payload),
+        "sip" => validate_sip_request(payload),
         _ => {
             println!(
                 "cargo:warning={file}: service '{service}' udp probe #{index} has no \
@@ -1120,6 +1121,44 @@ fn validate_ssdp_search(payload: &[u8]) -> Result<(), String> {
         if !text.contains(header) {
             return Err(format!("is missing the required `{header}` header"));
         }
+    }
+    Ok(())
+}
+
+/// Validates an authored SIP request.
+///
+/// RFC 3261 §7.1 gives a request a `Method Request-URI SIP/2.0` line, and §8.1.1
+/// makes six headers mandatory in every one. An endpoint discards a request
+/// missing any of them without answering, which over UDP is indistinguishable
+/// from a filtered port: the failure this whole pass exists to catch.
+///
+/// The `Via` transport is checked against the transport the probe declares.
+/// A reply is returned over what `Via` names, so a UDP probe announcing TCP asks
+/// a question whose answer goes somewhere the scan is not listening.
+fn validate_sip_request(payload: &[u8]) -> Result<(), String> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|_| "is not valid UTF-8, but SIP is a text protocol".to_string())?;
+
+    let request_line = text.lines().next().unwrap_or_default();
+    if !request_line.ends_with("SIP/2.0") {
+        return Err("does not open with a request line ending in `SIP/2.0`".into());
+    }
+    if !text.ends_with("\r\n\r\n") {
+        return Err("is not terminated by a blank line".into());
+    }
+    for header in ["Via:", "From:", "To:", "Call-ID:", "CSeq:", "Max-Forwards:"] {
+        if !text.contains(header) {
+            return Err(format!(
+                "is missing `{header}`, which RFC 3261 §8.1.1 requires in every request"
+            ));
+        }
+    }
+    if !text.contains("SIP/2.0/UDP") {
+        return Err(
+            "declares a `Via` transport other than UDP, so a reply to this datagram \
+             would be returned over a transport nothing here is listening on"
+                .into(),
+        );
     }
     Ok(())
 }

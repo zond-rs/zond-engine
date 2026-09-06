@@ -213,13 +213,13 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "sip_header.server",
-        reach: Reach::Unproduced,
-        note: "the `Server` value of a SIP response; wants an OPTIONS probe",
+        reach: Reach::Produced,
+        note: "the `Server` value of a SIP response, through `sip::corpus_fields`, drawn by the OPTIONS probe the corpus registers over both transports",
     },
     Context {
         name: "sip_header.user_agent",
-        reach: Reach::Unproduced,
-        note: "the `User-Agent` value of a SIP response; as above",
+        reach: Reach::Produced,
+        note: "the `User-Agent` value of the same response; RFC 3261 gives neither header precedence, so both are offered",
     },
     Context {
         name: "smb.native_lm",

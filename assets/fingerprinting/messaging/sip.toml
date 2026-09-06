@@ -3,11 +3,25 @@ name = "sip"
 default_ports = [5060, 5061]
 description = "Session Initiation Protocol"
 
-# SIP OPTIONS probe
+# OPTIONS asks an endpoint what it supports, which RFC 3261 §11 requires it to
+# answer without a dialog and without credentials. The answer names the software
+# in `Server` or `User-Agent`, which is what the corpus reads.
+#
+# Two of them, because the `Via` header names the transport the reply must come
+# back over and a strict endpoint honours it. One probe sent over the wrong
+# transport is one an endpoint may answer to nowhere.
+
 [[probe]]
 name = "sip_options"
 payload = 'OPTIONS sip:nm@nm SIP/2.0\r\nVia: SIP/2.0/TCP nm;branch=zond\r\nFrom: <sip:nm@nm>;tag=root\r\nTo: <sip:nm@nm>\r\nCall-ID: zond\r\nCSeq: 1 OPTIONS\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n'
 protocol = "tcp"
+
+# The same question over UDP, which is where most SIP is. A datagram is what a
+# gateway, an ATA or a desk phone listens for; TCP is the exception.
+[[probe]]
+name = "sip_options_udp"
+payload = 'OPTIONS sip:nm@nm SIP/2.0\r\nVia: SIP/2.0/UDP nm;branch=zond\r\nFrom: <sip:nm@nm>;tag=root\r\nTo: <sip:nm@nm>\r\nCall-ID: zond\r\nCSeq: 1 OPTIONS\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n'
+protocol = "udp"
 
 [[match]]
 name = "sip_response"

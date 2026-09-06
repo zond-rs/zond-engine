@@ -53,6 +53,7 @@ pub(crate) mod pattern;
 mod prefilter;
 mod response;
 mod signature;
+mod sip;
 mod snmp;
 mod ssh;
 mod tls;
