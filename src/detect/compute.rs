@@ -49,6 +49,7 @@
 mod budget;
 mod capability;
 pub(crate) mod db;
+mod http;
 mod live;
 mod record;
 mod replay;

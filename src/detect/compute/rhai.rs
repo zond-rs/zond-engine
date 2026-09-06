@@ -47,7 +47,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ::rhai::{
-    AST, Array, Blob, Dynamic, Engine, EvalAltResult, ImmutableString, Map, Position, Scope,
+    AST, Array, Blob, Dynamic, Engine, EvalAltResult, ImmutableString, Map, NativeCallContext,
+    Position, Scope,
 };
 
 use crate::fingerprint::PortContext;
@@ -345,6 +346,17 @@ impl ComputeRuntime for RhaiRuntime {
 ///   a JWT segment to decode. Decoding is lenient, a malformed string yields an
 ///   empty blob rather than a fault, so a module branches on what it got back
 ///   rather than being killed by a reply it did not choose.
+/// - `json(string)` parses a JSON reply into the map, array, and scalar values a
+///   module indexes, or unit `()` when the text is not JSON. It runs through the
+///   engine's own parser, so the same allocation limits that bound the module
+///   bound the parse.
+/// - `re_is_match`/`re_find`/`re_capture` run a regular expression over a string:
+///   whether it matches, the whole match, or the first capturing group (the whole
+///   match when the pattern has no group). The engine is the linear-time
+///   [`regex`] crate, not the backtracking matcher the fingerprint corpus uses, so
+///   a pattern a module builds from a reply cannot run away past the wall-clock
+///   budget the way a catastrophic backtrack would. A pattern that will not
+///   compile matches nothing rather than faulting.
 fn register_helpers(engine: &mut Engine) {
     engine.register_fn("text", |bytes: Blob| -> String {
         bytes.iter().map(|&byte| byte as char).collect()
@@ -376,6 +388,136 @@ fn register_helpers(engine: &mut Engine) {
             .decode(string.as_bytes())
             .unwrap_or_default()
     });
+
+    // Wrapping the value in a one-field object lets any top-level JSON — object,
+    // array, or bare scalar — parse through `parse_json`, whose result is
+    // otherwise an object alone. The parse runs on the same engine, so the
+    // module's allocation limits bound it; malformed text is unit, not a fault.
+    engine.register_fn(
+        "json",
+        |ctx: NativeCallContext, source: ImmutableString| -> Dynamic {
+            let wrapped = format!("{{\"_\":{source}}}");
+            match ctx.engine().parse_json(&wrapped, false) {
+                Ok(mut map) => map.remove("_").unwrap_or(Dynamic::UNIT),
+                Err(_) => Dynamic::UNIT,
+            }
+        },
+    );
+
+    engine.register_fn(
+        "re_is_match",
+        |pattern: ImmutableString, text: ImmutableString| -> bool {
+            compile_regex(&pattern).is_some_and(|re| re.is_match(&text))
+        },
+    );
+    engine.register_fn(
+        "re_find",
+        |pattern: ImmutableString, text: ImmutableString| -> String {
+            compile_regex(&pattern)
+                .and_then(|re| re.find(&text).map(|m| m.as_str().to_string()))
+                .unwrap_or_default()
+        },
+    );
+    engine.register_fn(
+        "re_capture",
+        |pattern: ImmutableString, text: ImmutableString| -> String {
+            let Some(re) = compile_regex(&pattern) else {
+                return String::new();
+            };
+            // The first capturing group if the pattern has one, else the whole
+            // match, so a group-less pattern behaves as `re_find`.
+            re.captures(&text)
+                .and_then(|caps| caps.get(1).or_else(|| caps.get(0)))
+                .map_or(String::new(), |m| m.as_str().to_string())
+        },
+    );
+
+    // `http_response(blob) -> map | ()`. Parses a reply into `status` (int),
+    // `reason`, `version`, a `headers` map (names lowercased, a repeated name
+    // joined), and a decoded `body`; unit when the bytes are not an HTTP response.
+    engine.register_fn("http_response", |raw: Blob| -> Dynamic {
+        let Some(response) = super::http::parse_response(&raw) else {
+            return Dynamic::UNIT;
+        };
+        let mut map = Map::new();
+        map.insert("version".into(), response.version.into());
+        map.insert("status".into(), (i64::from(response.status)).into());
+        map.insert("reason".into(), response.reason.into());
+
+        // Fold a repeated header into one value, as RFC 7230 permits, so a lookup
+        // returns a string and not an array a module would have to special-case.
+        let mut folded: Vec<(String, String)> = Vec::new();
+        for (name, value) in response.headers {
+            match folded.iter_mut().find(|(existing, _)| *existing == name) {
+                Some((_, current)) => {
+                    current.push_str(", ");
+                    current.push_str(&value);
+                }
+                None => folded.push((name, value)),
+            }
+        }
+        let mut headers = Map::new();
+        for (name, value) in folded {
+            headers.insert(name.into(), value.into());
+        }
+        map.insert("headers".into(), Dynamic::from(headers));
+
+        let body: String = response.body.iter().map(|&byte| byte as char).collect();
+        map.insert("body".into(), body.into());
+        Dynamic::from(map)
+    });
+
+    // `http_request(map) -> blob`. Builds request bytes from `method` (default
+    // GET), `path` (default /), `host`, an optional `headers` map, and an optional
+    // `body` string or blob, ready to hand to `speak`.
+    engine.register_fn("http_request", |spec: Map| -> Blob {
+        let string_field = |key: &str, default: &str| -> String {
+            spec.get(key)
+                .and_then(|value| value.clone().into_string().ok())
+                .unwrap_or_else(|| default.to_string())
+        };
+        let method = string_field("method", "GET");
+        let path = string_field("path", "/");
+        let host = string_field("host", "");
+
+        let headers: Vec<(String, String)> = spec
+            .get("headers")
+            .and_then(|value| value.clone().try_cast::<Map>())
+            .map(|map| {
+                map.into_iter()
+                    .map(|(name, value)| {
+                        (name.to_string(), value.into_string().unwrap_or_default())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let body: Vec<u8> = match spec.get("body") {
+            None => Vec::new(),
+            Some(value) => value.clone().try_cast::<Blob>().unwrap_or_else(|| {
+                value
+                    .clone()
+                    .into_string()
+                    .map(String::into_bytes)
+                    .unwrap_or_default()
+            }),
+        };
+
+        super::http::build_request(&method, &path, &host, &headers, &body)
+    });
+}
+
+/// Compiles a guest-supplied pattern under a size ceiling, or [`None`] if it will
+/// not compile within it. The ceiling bounds the one cost the linear matcher does
+/// not: a pathologically large pattern's compiled program, which is memory rather
+/// than the runaway match time a backtracking engine would risk.
+fn compile_regex(pattern: &str) -> Option<::regex::Regex> {
+    const REGEX_SIZE_LIMIT: usize = 1 << 20;
+    ::regex::RegexBuilder::new(pattern)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_SIZE_LIMIT)
+        .build()
+        .ok()
 }
 
 /// Removes the stock-engine symbols and the stock resolver the sandbox's
@@ -864,6 +1006,119 @@ mod tests {
         assert_eq!(findings.len(), 1);
         // "6869" (hex of "hi"), "hi" (hex→text round trip), "QUI=" (base64 of "AB").
         assert_eq!(findings[0].title(), "6869 hi QUI=");
+    }
+
+    #[test]
+    fn json_parses_an_object_an_array_and_reports_bad_input_as_unit() {
+        // A passive module reads a JSON reply the way a real one does: index an
+        // object, index into a nested array, and fall back cleanly when the body
+        // is not JSON at all.
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let obj = json("{\"version\":\"7.2.4\",\"tags\":[\"a\",\"b\"]}");
+                let arr = json("[10, 20, 30]");
+                let bad = json("<html>not json</html>");
+                [ #{
+                    severity: "info",
+                    summary: obj.version + " " + obj.tags[1] + " " + arr[2] + " " + (bad == ()),
+                } ]
+            }
+        "#;
+        let mut caps = RecordedCaps::new(Vec::new());
+
+        let findings =
+            run(source, grant(DetectionClass::Passive, false), &mut caps).expect("a clean run");
+        // version "7.2.4", tags[1] "b", arr[2] 30, and unit for the non-JSON body.
+        assert_eq!(findings[0].title(), "7.2.4 b 30 true");
+    }
+
+    #[test]
+    fn the_regex_helpers_test_find_and_capture() {
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let body = "Server: nginx/1.25.3";
+                let ok = re_is_match("nginx", body);
+                let whole = re_find("nginx/[0-9.]+", body);
+                let ver = re_capture("nginx/([0-9.]+)", body);
+                let none = re_capture("apache/([0-9.]+)", body);
+                [ #{
+                    severity: "info",
+                    summary: "" + ok + " " + whole + " " + ver + " '" + none + "'",
+                } ]
+            }
+        "#;
+        let mut caps = RecordedCaps::new(Vec::new());
+
+        let findings =
+            run(source, grant(DetectionClass::Passive, false), &mut caps).expect("a clean run");
+        // matched, the whole match, the captured version, and empty for no match.
+        assert_eq!(findings[0].title(), "true nginx/1.25.3 1.25.3 ''");
+    }
+
+    #[test]
+    fn a_module_builds_a_request_and_reads_a_response_through_the_http_helpers() {
+        // The web-detection shape end to end in the sandbox: build a request to
+        // the scanned host, speak it, parse the reply, and grade a header. The
+        // canned reply stands in for the socket.
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let request = http_request(#{
+                    method: "GET",
+                    path: "/",
+                    host: "" + ctx.port,
+                    headers: #{ "User-Agent": "zond" },
+                });
+                let reply = http_response(speak(request));
+                if reply == () { return []; }
+                if reply.status == 200 && reply.headers["server"] != () {
+                    [ #{
+                        severity: "info",
+                        summary: "server is " + reply.headers.server + " body " + reply.body,
+                    } ]
+                } else {
+                    []
+                }
+            }
+        "#;
+        let reply = b"HTTP/1.1 200 OK\r\nServer: Caddy\r\nContent-Length: 2\r\n\r\nhi".to_vec();
+        let mut caps = RecordedCaps::new(vec![Ok(reply)]);
+
+        let findings =
+            run(source, grant(DetectionClass::ActiveBenign, true), &mut caps).expect("a clean run");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title(), "server is Caddy body hi");
+
+        // The module sent a well-formed request naming the host and the header.
+        let sent = String::from_utf8_lossy(&caps.sent[0]);
+        assert!(
+            sent.starts_with("GET / HTTP/1.1\r\n"),
+            "request line: {sent:?}"
+        );
+        assert!(
+            sent.contains("Host: 6379"),
+            "the seeded host reached the wire: {sent:?}"
+        );
+        assert!(
+            sent.contains("User-Agent: zond"),
+            "the header reached the wire: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn an_uncompilable_pattern_matches_nothing_rather_than_faulting() {
+        // A pattern a module builds from a reply may be malformed; that must read
+        // as no match, not kill the run.
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let broken = re_is_match("(unclosed", "anything");
+                [ #{ severity: "info", summary: "" + broken } ]
+            }
+        "#;
+        let mut caps = RecordedCaps::new(Vec::new());
+
+        let findings =
+            run(source, grant(DetectionClass::Passive, false), &mut caps).expect("a clean run");
+        assert_eq!(findings[0].title(), "false");
     }
 
     #[test]
