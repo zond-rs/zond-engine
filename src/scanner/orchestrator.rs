@@ -739,11 +739,16 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::OsSnmp,
-        |found: Option<(crate::model::ip::scoped::ScopedIp, Port, Vec<OsEvidence>)>, _audit| {
-            if let Some((key, port, evidence)) = found {
+        |found: Option<(
+            crate::model::ip::scoped::ScopedIp,
+            Port,
+            crate::fingerprint::AboutTheHost,
+        )>,
+         _audit| {
+            if let Some((key, port, about)) = found {
                 ctx.update_host(key, |host| {
                     host.add_port(port);
-                    if os::identify(host, evidence) {
+                    if about.apply(host) {
                         named += 1;
                     }
                 });
@@ -908,7 +913,11 @@ const SNMP_PORT: u16 = 161;
 /// describing this host's routing rather than anything about the target.
 async fn ask_for_kernel(
     target: crate::model::ip::scoped::ScopedIp,
-) -> Option<(crate::model::ip::scoped::ScopedIp, Port, Vec<OsEvidence>)> {
+) -> Option<(
+    crate::model::ip::scoped::ScopedIp,
+    Port,
+    crate::fingerprint::AboutTheHost,
+)> {
     let addr = target.to_socket_addr(SNMP_PORT)?;
 
     let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);

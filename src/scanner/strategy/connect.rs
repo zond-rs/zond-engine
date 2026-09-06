@@ -171,7 +171,7 @@ struct Probed {
     ///
     /// Empty for every probe that drew nothing, and for every verdict that came
     /// from the kernel rather than from a conversation.
-    about_the_host: Vec<OsEvidence>,
+    about_the_host: crate::fingerprint::AboutTheHost,
     /// Whether the host answered. The kernel hands back a completed handshake or
     /// a `ConnectionRefused` only when a segment came back from the target, so
     /// either one proves a live stack - a refusal is a RST the kernel
@@ -473,7 +473,7 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
             // What a banner says about the machine is worth the same whichever
             // scanner happened to draw it, and this scanner is the only one
             // that draws it without a raw socket.
-            os::identify(host, probed.about_the_host.clone());
+            probed.about_the_host.clone().apply(host);
         }
     });
 }
@@ -591,7 +591,7 @@ async fn port_prober(
                         Some(ScanResponse::TcpRst),
                     )),
                     responses: Vec::new(),
-                    about_the_host: Vec::new(),
+                    about_the_host: crate::fingerprint::AboutTheHost::default(),
                     answered: true,
                     outcome: Outcome::Answered { position },
                     role: None,
@@ -609,7 +609,7 @@ async fn port_prober(
                     ip: target.ip,
                     port: Some(settled(target.port, PortState::Unasked, None)),
                     responses: Vec::new(),
-                    about_the_host: Vec::new(),
+                    about_the_host: crate::fingerprint::AboutTheHost::default(),
                     answered: false,
                     outcome: Outcome::Unroutable,
                     role: None,
@@ -627,7 +627,7 @@ async fn port_prober(
                 Some(ScanResponse::NoResponse),
             )),
             responses: Vec::new(),
-            about_the_host: Vec::new(),
+            about_the_host: crate::fingerprint::AboutTheHost::default(),
             answered: false,
             outcome: Outcome::Exhausted { position },
             role: None,
@@ -781,7 +781,7 @@ async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> Pro
             // Nothing on this path turns a datagram into the text a detection
             // reads: the reply is read for the role it declares and no more.
             responses: Vec::new(),
-            about_the_host: Vec::new(),
+            about_the_host: crate::fingerprint::AboutTheHost::default(),
             answered,
             outcome,
             // Filled in by the one arm that has a reply to read it from.

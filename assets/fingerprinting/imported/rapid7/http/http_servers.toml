@@ -1999,7 +1999,7 @@ vendor = "Python Software Foundation"
 product = "SimpleHTTP"
 context = "http_header.server"
 example = "SimpleHTTP/0.6 Python/2.7.6"
-metadata = { "service.family" = "Python", "python.version" = "{capture:2}" }
+metadata = { "service.family" = "Python", "service.component.vendor" = "Python Software Foundation", "service.component.product" = "Python", "service.component.version" = "{capture:2}" }
 
 [[match]]
 name = "BaseHTTPRequestHandler Python class must be subclassed to handle each request method."
@@ -2009,7 +2009,7 @@ vendor = "Python Software Foundation"
 product = "BaseHTTP"
 context = "http_header.server"
 example = "BaseHTTP/0.3 Python/2.7.18"
-metadata = { "service.family" = "Python", "python.version" = "{capture:2}" }
+metadata = { "service.family" = "Python", "service.component.vendor" = "Python Software Foundation", "service.component.product" = "Python", "service.component.version" = "{capture:2}" }
 
 [[match]]
 name = "AIOHTTP Project AIOHTTP"
@@ -2019,7 +2019,7 @@ vendor = "AIOHTTP Project"
 product = "AIOHTTP"
 context = "http_header.server"
 example = "Python/3.8 aiohttp/3.7.4.post0"
-metadata = { "service.cpe23" = "cpe:/a:aiohttp_project:aiohttp:{service.version}", "python.version" = "{capture:1}" }
+metadata = { "service.cpe23" = "cpe:/a:aiohttp_project:aiohttp:{service.version}", "service.component.vendor" = "Python Software Foundation", "service.component.product" = "Python", "service.component.version" = "{capture:1}" }
 
 [[match]]
 name = "Encode uvicorn"
@@ -2038,7 +2038,7 @@ vendor = "Python Software Foundation"
 product = "WSGIServer"
 context = "http_header.server"
 example = "WSGIServer/0.1 Python/2.7.18"
-metadata = { "service.family" = "Python", "python.version" = "{capture:2}" }
+metadata = { "service.family" = "Python", "service.component.vendor" = "Python Software Foundation", "service.component.product" = "Python", "service.component.version" = "{capture:2}" }
 
 [[match]]
 name = "Medusa - extensible Internet server framework for Python"
@@ -3685,7 +3685,7 @@ vendor = "PalletsProjects"
 product = "Werkzeug"
 context = "http_header.server"
 example = "Werkzeug/0.14.1 Python/3.6.9"
-metadata = { "service.cpe23" = "cpe:/a:palletsprojects:werkzeug:{service.version}", "python.version" = "{capture:2}" }
+metadata = { "service.cpe23" = "cpe:/a:palletsprojects:werkzeug:{service.version}", "service.component.vendor" = "Python Software Foundation", "service.component.product" = "Python", "service.component.version" = "{capture:2}" }
 
 [[match]]
 name = "Proxmox api daemon"

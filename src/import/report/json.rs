@@ -1331,6 +1331,12 @@ impl OsDto {
 struct HardwareDto {
     mac: Option<String>,
     macs: Vec<String>,
+    /// A vendor the document carries, which is one a service named: a vendor
+    /// read from an address block is re-derived on rebuild and never written.
+    vendor: Option<String>,
+    product: Option<String>,
+    family: Option<String>,
+    cpe23: Option<String>,
 }
 
 impl HardwareDto {
@@ -1347,6 +1353,10 @@ impl HardwareDto {
 
         Ok(HardwareRecord {
             macs: macs.into_iter().map(|mac| (mac, seen)).collect(),
+            vendor: self.vendor,
+            product: self.product,
+            family: self.family,
+            cpe23: self.cpe23,
         })
     }
 }

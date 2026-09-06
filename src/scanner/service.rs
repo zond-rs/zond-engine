@@ -68,7 +68,13 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::Service,
-        |fingerprinted: Option<(ScopedIp, Port, Vec<OsEvidence>, Vec<String>)>, _audit| {
+        |fingerprinted: Option<(
+            ScopedIp,
+            Port,
+            crate::fingerprint::AboutTheHost,
+            Vec<String>,
+        )>,
+         _audit| {
             if let Some((ip, port, about_the_host, banners)) = fingerprinted {
                 ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
                 write_back(ctx, ip, port, about_the_host);
@@ -141,7 +147,12 @@ async fn fingerprint_one(
     port_number: u16,
     protocol: Protocol,
     detection: ServiceDetection,
-) -> Option<(ScopedIp, Port, Vec<OsEvidence>, Vec<String>)> {
+) -> Option<(
+    ScopedIp,
+    Port,
+    crate::fingerprint::AboutTheHost,
+    Vec<String>,
+)> {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
             verbosity = 1,
@@ -183,7 +194,12 @@ async fn fingerprint_one(
 /// `about_the_host` is what the service said about the *machine*, which is a
 /// different finding filed in a different place: the service belongs to the port,
 /// the operating system to the host.
-fn write_back(ctx: &ScanContext, key: ScopedIp, port: Port, about_the_host: Vec<OsEvidence>) {
+fn write_back(
+    ctx: &ScanContext,
+    key: ScopedIp,
+    port: Port,
+    about_the_host: crate::fingerprint::AboutTheHost,
+) {
     ctx.update_host(key, |host| {
         host.add_port(port);
 
@@ -194,7 +210,7 @@ fn write_back(ctx: &ScanContext, key: ScopedIp, port: Port, about_the_host: Vec<
         // Folded together with what the host's hardware and name say, and with
         // whatever a stack reading already concluded: the point of the evidence
         // bus is that a banner agreeing with the wire is worth more than either.
-        os::identify(host, about_the_host);
+        about_the_host.apply(host);
     });
 }
 

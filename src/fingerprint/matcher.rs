@@ -23,6 +23,7 @@
 //! binary compilation never fails; the `None` branch is defence in depth and is
 //! logged, not silently dropped.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::fingerprint::os::OsMetadata;
@@ -56,6 +57,13 @@ pub struct Signature {
     /// the engine that compiled it.
     os: Option<Box<OsMetadata>>,
 
+    /// The `hw.*` keys, unresolved, for the hardware a rule describes.
+    ///
+    /// Boxed and absent on most signatures, as the operating system's are: a
+    /// scan holds every signature at once. Kept as the raw map because the
+    /// values are templates a match fills from its own captures.
+    hardware: Option<Box<HashMap<String, String>>>,
+
     /// The service's CPE, as the corpus writes it: either a literal, or a
     /// template naming `{service.version}`, the one variable any of the 1226
     /// `service.cpe23` rules uses, resolved against the matched version when
@@ -66,6 +74,56 @@ pub struct Signature {
     /// a rule whose pattern captures none, an IIS 5.0 banner that says `5.0` in
     /// prose the regex does not group.
     service_version: Option<String>,
+
+    /// What runs the service, where the rule names it. See [`Component`].
+    component: Option<Component>,
+}
+
+/// The runtime a service runs on, as its rule names it.
+///
+/// `Python` under a `SimpleHTTP` server, `.NET CLR` under `.NET Remoting`, `PHP`
+/// under an Apache. Recog calls it `service.component.*` and 347 rules in the
+/// imported corpus carry one, which is the field a report prints in parentheses
+/// after the product.
+///
+/// Worth carrying because the runtime is often the exploitable half. A banner
+/// reading `SimpleHTTP/0.6 Python/3.13.5` names a server nobody attacks and a
+/// runtime with a CVE history, and a scanner that read the second and kept only
+/// the first has thrown away the part somebody scanned for.
+#[derive(Debug)]
+struct Component {
+    /// What it is, possibly a `{capture:N}` template.
+    product: Option<String>,
+    /// Which version of it, likewise.
+    version: Option<String>,
+}
+
+impl Component {
+    /// The component a rule names, or [`None`] where it names none.
+    fn from_map(rule: &MatchRule) -> Option<Self> {
+        let product = metadata_value(rule, "service.component.product");
+        let version = metadata_value(rule, "service.component.version");
+
+        (product.is_some() || version.is_some()).then_some(Self { product, version })
+    }
+
+    /// The component as the one phrase a report shows, templates resolved
+    /// against what the pattern captured.
+    ///
+    /// Either half alone is still worth saying: a rule that names the runtime
+    /// and captures no version has established which runtime, and one that
+    /// captures a version under a product the reader can see has established
+    /// which version.
+    fn resolve(&self, captures: &[String]) -> Option<String> {
+        let product = super::os::fill(self.product.as_deref(), captures);
+        let version = super::os::fill(self.version.as_deref(), captures);
+
+        match (product, version) {
+            (Some(product), Some(version)) => Some(format!("{product} {version}")),
+            (Some(only), None) | (None, Some(only)) => Some(only),
+            (None, None) => None,
+        }
+    }
 }
 
 /// A non-empty metadata value for `key`, or [`None`].
@@ -103,6 +161,12 @@ impl Signature {
             version_group: rule.version_group,
             pattern: rule.pattern.clone(),
             compiled: OnceLock::new(),
+            hardware: rule.metadata.as_ref().and_then(|metadata| {
+                metadata
+                    .keys()
+                    .any(|key| key.starts_with("hw."))
+                    .then(|| Box::new(metadata.clone()))
+            }),
             os: rule
                 .metadata
                 .as_ref()
@@ -110,6 +174,7 @@ impl Signature {
                 .map(Box::new),
             cpe: metadata_value(rule, "service.cpe23"),
             service_version: metadata_value(rule, "service.version"),
+            component: Component::from_map(rule),
         }
     }
 
@@ -154,7 +219,7 @@ impl Signature {
         // Capture groups are collected only for a signature whose operating-system
         // metadata has templates to fill from them. Most have neither, and this
         // runs against every candidate signature for every banner.
-        let wants_captures = self.os.is_some();
+        let wants_captures = self.os.is_some() || self.component.is_some();
         let matched = self.compiled()?.identify_with_captures(
             response,
             self.version_group,
@@ -201,10 +266,17 @@ impl Signature {
         evidence.vendor = self.vendor.clone();
         evidence.version = version;
         evidence.cpe = cpe;
+        evidence.extrainfo = self
+            .component
+            .as_ref()
+            .and_then(|component| component.resolve(matched.captures.as_deref().unwrap_or(&[])));
 
         Some(Match {
             evidence,
             quality: MatchQuality { confidence, detail },
+            hardware: self.hardware.as_deref().and_then(|metadata| {
+                super::os::hardware_from(metadata, matched.captures.as_deref().unwrap_or(&[]))
+            }),
             os: self.os.as_deref().and_then(|metadata| {
                 super::os::banner_evidence(
                     metadata,
@@ -222,6 +294,13 @@ impl Signature {
 pub struct Match {
     pub evidence: Evidence,
     pub quality: MatchQuality,
+    /// The hardware this match describes, templates already resolved.
+    ///
+    /// Apart from [`os`](Self::os) for the reason that field gives about
+    /// [`Evidence`], one question further out: a NETGEAR ReadyNAS runs Linux, and
+    /// the box and the system on it are two facts rather than one. Five hundred
+    /// and thirty-six shipped rules name only the box.
+    pub hardware: Option<crate::model::host::HardwareInfo>,
     /// What this match says about the operating system underneath the service,
     /// with its templates already resolved against the capture groups.
     ///
@@ -287,6 +366,30 @@ mod tests {
                 .collect(),
         );
         rule
+    }
+
+    /// The runtime under the server is the half worth scanning for: a
+    /// `SimpleHTTP` listener is nobody's target and the interpreter behind it
+    /// has a CVE history. The corpus captured it and nothing carried it.
+    #[test]
+    fn the_component_a_rule_names_becomes_the_services_extra_info() {
+        let ev = Signature::new(
+            "http",
+            &rule_with_metadata(
+                r"(?i)^SimpleHTTP/((?:\d+\.)*\d+)\s*Python/((?:\d+\.)*\d+)$",
+                Some(1),
+                &[
+                    ("service.component.product", "Python"),
+                    ("service.component.version", "{capture:2}"),
+                ],
+            ),
+        )
+        .identify("SimpleHTTP/0.6 Python/3.13.5", OsSource::ServiceBanner)
+        .expect("matches")
+        .evidence;
+
+        assert_eq!(ev.version.as_deref(), Some("0.6"));
+        assert_eq!(ev.extrainfo.as_deref(), Some("Python 3.13.5"));
     }
 
     #[test]

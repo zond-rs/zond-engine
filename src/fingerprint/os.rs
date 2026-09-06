@@ -150,7 +150,13 @@ pub use signature::{
 };
 pub use text::{
     AGENT_CEILING, BANNER_CEILING, OsMetadata, ceiling, evidence_from as banner_evidence,
+    hardware_from,
 };
+// The capture resolver, for the service reading rather than the host one: a
+// rule's `service.component.*` fields take the same `{capture:N}` templates its
+// `os.*` fields do, and two resolvers would eventually disagree about one
+// syntax.
+pub(crate) use text::fill;
 pub use verdict::{
     MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsVerdict, classify, classify_echo_reply,
     classify_reply, classify_series,

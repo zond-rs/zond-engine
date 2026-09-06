@@ -197,7 +197,7 @@ impl OsMetadata {
 ///
 /// `None` when the template names a group that did not participate, or resolves
 /// to nothing at all, since an empty value is not a value.
-fn fill(template: Option<&str>, captures: &[String]) -> Option<String> {
+pub(crate) fn fill(template: Option<&str>, captures: &[String]) -> Option<String> {
     let template = template?;
     if !template.contains("{capture:") {
         return Some(template.to_string());
@@ -252,6 +252,37 @@ fn fill_siblings(template: &str, siblings: &[(&str, Option<&str>)]) -> Option<St
 /// left 25%, under the floor, and a host that had answered three separate
 /// probes was reported as unidentified. Those 389 rules state no family, keep
 /// their model in `product` and their class in `device`, and abstain.
+/// The hardware a rule describes, where it describes any.
+///
+/// Read from the same metadata map [`OsMetadata::from_map`] reads, and kept
+/// apart from it because the two answer different questions about one machine: a
+/// NETGEAR ReadyNAS runs Linux, and neither half is the other. Five hundred and
+/// thirty-six shipped rules that match today name hardware and no operating
+/// system, and every one of them produced nothing at all until this existed,
+/// because a metadata map naming neither an OS family nor an OS product is
+/// dropped whole.
+///
+/// Templates resolve against what the pattern captured, exactly as the operating
+/// system's do, so a rule reading a model out of its own match works here too.
+pub fn hardware_from(
+    metadata: &HashMap<String, String>,
+    captures: &[String],
+) -> Option<crate::model::host::HardwareInfo> {
+    let get = |key: &str| {
+        metadata
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| fill(Some(value.as_str()), captures))
+    };
+
+    crate::model::host::HardwareInfo::described(
+        get("hw.vendor").as_deref(),
+        get("hw.product").as_deref(),
+        get("hw.family").as_deref(),
+        get("hw.cpe23").as_deref(),
+    )
+}
+
 pub fn evidence_from(
     metadata: &OsMetadata,
     captures: &[String],

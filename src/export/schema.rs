@@ -1678,6 +1678,20 @@ pub struct HardwareDto<'a> {
     /// Survives redaction: masking preserves the OUI, so naming the vendor
     /// reveals nothing the masked address does not already.
     pub vendor: Option<&'a str>,
+    /// The model, where a service named it: `PDR M800`, `Firewall-1`.
+    ///
+    /// Not derivable from an address at any prefix length, so it arrives only
+    /// from something that stated it, and it survives redaction for the same
+    /// reason the vendor does: it describes the product rather than the host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product: Option<&'a str>,
+    /// The line that model belongs to, where a rule distinguishes the two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<&'a str>,
+    /// The hardware's platform identifier, separate from the operating
+    /// system's: a report naming both names two things about one machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpe23: Option<&'a str>,
 }
 
 impl<'a> HardwareDto<'a> {
@@ -1700,6 +1714,9 @@ impl<'a> HardwareDto<'a> {
             mac: hardware.most_recent_mac().map(|mac| redaction.mac(&mac)),
             macs,
             vendor: hardware.vendor(),
+            product: hardware.product(),
+            family: hardware.family(),
+            cpe23: hardware.cpe23(),
         }
     }
 }

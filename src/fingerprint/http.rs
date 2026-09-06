@@ -132,11 +132,24 @@ impl Analyzer for HttpHeadersAnalyzer {
             // corpus, the web servers that map a server version to a precise
             // Windows release, behind an analyzer that had the text they wanted
             // sitting in a local.
-            if let Some(os) = os_from(header) {
+            let (os, from_corpus) = corpus_reading(header);
+
+            if let Some(os) = os {
                 let mut carrier =
                     Evidence::new(SourceId::HttpHeaders, Confidence::Probable).with_service("http");
                 carrier.os = Some(os);
                 evidence.push(stamp(carrier, ctx));
+            }
+
+            // What the same match said about the *service*. It used to be
+            // dropped, and with it the runtime a rule names beside the server:
+            // `SimpleHTTP/0.6 Python/3.13.5` was read as a server nobody attacks
+            // with the interpreter behind it thrown away.
+            //
+            // After the reading `parse_server` drew, so a tie leaves the product
+            // where it was and this fills the fields nothing else supplied.
+            if let Some(from_corpus) = from_corpus {
+                evidence.push(stamp(from_corpus, ctx));
             }
         }
 
@@ -489,27 +502,42 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
 /// once per
 /// open HTTP port, against a path that has already spent a TCP connect and up to
 /// half a second waiting for the banner, so it does not show.
-fn os_from(header: &str) -> Option<crate::model::host::OsEvidence> {
+fn corpus_reading(header: &str) -> (Option<crate::model::host::OsEvidence>, Option<Evidence>) {
     use crate::fingerprint::prefilter::Prefilter;
 
     let db = crate::fingerprint::SignatureDb::global();
-    db.prefilter()
+    let matched: Vec<_> = db
+        .prefilter()
         .candidates(header)
         .into_iter()
         .filter_map(|index| {
             db.signature(index)?
                 .identify(header, crate::model::host::OsSource::ServiceBanner)
         })
-        .filter_map(|matched| matched.os)
-        // `reduce` keeps the earlier reading on a tie, where `max_by` would keep
-        // the last and make the answer depend on which signature was indexed
-        // first.
+        .collect();
+
+    // `reduce` keeps the earlier reading on a tie, where `max_by` would keep
+    // the last and make the answer depend on which signature was indexed
+    // first. Both halves are ranked that way.
+    let os = matched
+        .iter()
+        .filter_map(|matched| matched.os.clone())
         .reduce(
             |best, os| match super::db::os_detail(&os) > super::db::os_detail(&best) {
                 true => os,
                 false => best,
             },
-        )
+        );
+
+    let service = matched
+        .into_iter()
+        .reduce(|best, matched| match matched.quality > best.quality {
+            true => matched,
+            false => best,
+        })
+        .map(|matched| matched.evidence);
+
+    (os, service)
 }
 
 /// Splits a `Server` header value into a product and optional version.

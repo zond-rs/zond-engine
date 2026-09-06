@@ -75,7 +75,30 @@ pub struct HardwareInfo {
     /// vendor's equipment, and the string is then one allocation instead of one
     /// per host. `None` for a locally administered address, which has no
     /// manufacturer to name. See [`vendor`](crate::model::mac::vendor).
+    ///
+    /// A vendor a service named for itself replaces one read from the address,
+    /// because the two answer different questions and only one of them is about
+    /// the box. An OUI names whoever registered the address block, which on a
+    /// Check Point firewall or a NETGEAR appliance is routinely the maker of the
+    /// network chip inside it. A device that says `Check Point` in its own
+    /// banner is describing itself.
     vendor: Option<Arc<str>>,
+
+    /// The model, where something named it: `PDR M800`, `Firewall-1`.
+    ///
+    /// Not derivable from an address at any prefix length, so this arrives only
+    /// from a service that stated it. Over a thousand shipped rules carry one and
+    /// nothing read them until this field existed.
+    product: Option<Arc<str>>,
+
+    /// The line the model belongs to, where a rule distinguishes the two:
+    /// `ILOM` for an Oracle service processor, `ReadyNAS` for a NETGEAR box.
+    family: Option<Arc<str>>,
+
+    /// A Common Platform Enumeration identifier for the hardware, as the corpus
+    /// writes it. Separate from the operating system's: a report naming both is
+    /// naming two different things about one machine.
+    cpe23: Option<Arc<str>>,
 }
 
 impl HardwareInfo {
@@ -89,7 +112,54 @@ impl HardwareInfo {
         Self {
             macs,
             vendor: mac::vendor(&mac).map(Arc::from),
+            product: None,
+            family: None,
+            cpe23: None,
         }
+    }
+
+    /// A record for hardware a service described, with no address behind it.
+    ///
+    /// The other way one of these is made. A host reached through a gateway has
+    /// no MAC to read, and a banner naming `Merit LILIN PDR M800` describes the
+    /// box just as well as an address block would have.
+    pub fn described(
+        vendor: Option<&str>,
+        product: Option<&str>,
+        family: Option<&str>,
+        cpe23: Option<&str>,
+    ) -> Option<Self> {
+        let described = Self {
+            macs: BTreeMap::new(),
+            vendor: vendor.map(Arc::from),
+            product: product.map(Arc::from),
+            family: family.map(Arc::from),
+            cpe23: cpe23.map(Arc::from),
+        };
+        described.names_something().then_some(described)
+    }
+
+    /// Whether this record says anything at all beyond the addresses it holds.
+    fn names_something(&self) -> bool {
+        self.vendor.is_some()
+            || self.product.is_some()
+            || self.family.is_some()
+            || self.cpe23.is_some()
+    }
+
+    /// The model, where something named it.
+    pub fn product(&self) -> Option<&str> {
+        self.product.as_deref()
+    }
+
+    /// The line the model belongs to.
+    pub fn family(&self) -> Option<&str> {
+        self.family.as_deref()
+    }
+
+    /// The hardware's platform identifier.
+    pub fn cpe23(&self) -> Option<&str> {
+        self.cpe23.as_deref()
     }
 
     /// Records a discovery event for a specific MAC address, updating its
@@ -199,6 +269,10 @@ impl HardwareInfo {
     /// [`MAX_MACS_PER_HOST`] afterwards, since two records that each fit the
     /// bound need not fit it together.
     pub fn merge(&mut self, other: HardwareInfo) {
+        // Read before the addresses are consumed, since the decision below is
+        // about what the other record describes rather than what it saw.
+        let describes_a_box = other.names_more_than_a_vendor();
+
         for (mac, time) in other.macs {
             self.macs
                 .entry(mac)
@@ -211,9 +285,21 @@ impl HardwareInfo {
         }
         self.evict_oldest_past_the_bound();
 
-        if self.vendor.is_none() {
-            self.vendor = other.vendor;
+        // A stated vendor is kept over one read from an address block, for the
+        // reason the field documents: an OUI names the chip's maker and a banner
+        // names the box's.
+        if self.vendor.is_none() || (other.vendor.is_some() && describes_a_box) {
+            self.vendor = other.vendor.or_else(|| self.vendor.take());
         }
+        self.product = self.product.take().or(other.product);
+        self.family = self.family.take().or(other.family);
+        self.cpe23 = self.cpe23.take().or(other.cpe23);
+    }
+
+    /// Whether a record carries hardware detail beyond a vendor, which is what
+    /// separates one a service described from one an address block produced.
+    fn names_more_than_a_vendor(&self) -> bool {
+        self.product.is_some() || self.family.is_some() || self.cpe23.is_some()
     }
 }
 
@@ -339,6 +425,9 @@ mod tests {
         let hw = HardwareInfo {
             macs: BTreeMap::new(),
             vendor: None,
+            product: None,
+            family: None,
+            cpe23: None,
         };
         assert_eq!(hw.most_recent_mac(), None);
     }
@@ -360,5 +449,65 @@ mod tests {
 
         assert_eq!(hw.macs().len(), 1);
         assert!(hw.macs().contains_key(&recent));
+    }
+
+    /// The case that motivated the fields: a service names a box this engine has
+    /// no address for, and the record has to exist without one.
+    #[test]
+    fn hardware_a_service_described_needs_no_address() {
+        let described = HardwareInfo::described(
+            Some("Merit LILIN"),
+            Some("PDR M800"),
+            None,
+            Some("cpe:/h:merit_lilin:pdr_m800"),
+        )
+        .expect("it names something");
+
+        assert_eq!(described.vendor(), Some("Merit LILIN"));
+        assert_eq!(described.product(), Some("PDR M800"));
+        assert_eq!(described.most_recent_mac(), None);
+    }
+
+    /// A record naming nothing is not a record. Without this every rule with an
+    /// empty metadata map would attach an empty hardware entry to its host.
+    #[test]
+    fn a_description_naming_nothing_is_not_recorded() {
+        assert!(HardwareInfo::described(None, None, None, None).is_none());
+    }
+
+    /// A vendor read from an address block names whoever made the network chip;
+    /// one a service stated names the box. On a Check Point firewall those are
+    /// different companies, and the second is the answer.
+    #[test]
+    fn a_stated_vendor_outranks_one_read_from_an_address() {
+        let mut known = HardwareInfo::new(MacAddr::new(0x00, 0x1b, 0x21, 0x11, 0x22, 0x33));
+        let described =
+            HardwareInfo::described(Some("Check Point"), Some("Firewall-1"), None, None)
+                .expect("it names something");
+
+        known.merge(described);
+
+        assert_eq!(known.vendor(), Some("Check Point"));
+        assert_eq!(known.product(), Some("Firewall-1"));
+        assert_eq!(
+            known.macs().len(),
+            1,
+            "merging a description must not lose the address"
+        );
+    }
+
+    /// And a bare vendor with nothing behind it does not displace one the
+    /// address block supports: it says no more, and the OUI at least came from a
+    /// registry.
+    #[test]
+    fn a_bare_stated_vendor_does_not_displace_the_registered_one() {
+        let mut known = HardwareInfo::new(MacAddr::new(0x00, 0x1b, 0x21, 0x11, 0x22, 0x33));
+        let before = known.vendor().map(str::to_string);
+        let thin = HardwareInfo::described(Some("Unhelpful"), None, None, None)
+            .expect("it names something");
+
+        known.merge(thin);
+
+        assert_eq!(known.vendor().map(str::to_string), before);
     }
 }

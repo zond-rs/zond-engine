@@ -502,8 +502,21 @@ fn best_match(
         })
         .cloned();
 
+    // Merged rather than chosen. Two rules matching one response may each name a
+    // different part of the box, and a vendor from one beside a model from
+    // another is a fuller answer than either alone.
+    let hardware = matched
+        .iter()
+        .filter_map(|m| m.hardware.as_ref())
+        .cloned()
+        .reduce(|mut best, other| {
+            best.merge(other);
+            best
+        });
+
     Some(Evidence {
         os,
+        hardware,
         ..service.evidence.clone()
     })
 }

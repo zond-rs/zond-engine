@@ -14,6 +14,31 @@ The converted files are edited in place where the imported metadata asserts more
 than its own pattern can establish. **Re-importing overwrites these**, so they are
 recorded here to be re-applied.
 
+### The Python runtime, onto the key that reaches a report (2026-09-06, 5 rules)
+
+Five HTTP rules recorded the interpreter version under `python.version`, a key
+nothing reads:
+
+```
+SimpleHTTP/0.6 Python/3.13.5
+                      └┬───┘
+                       └─ captured, stored under `python.version`, dropped
+```
+
+The corpus's own key for the runtime a service runs on is
+`service.component.*`, which 347 rules already use and which the matcher turns
+into a service's extra info. Corrected to it, with the vendor and product spelled
+out beside the capture:
+
+```
+"service.component.vendor" = "Python Software Foundation"
+"service.component.product" = "Python"
+"service.component.version" = "{capture:2}"
+```
+
+A `SimpleHTTP` server is not the interesting half of that banner. The interpreter
+under it is, and it was the half being thrown away.
+
 ### Linux major releases (2026-08-21, 57 rules)
 
 `os.version` was `"12.0"` on every Debian rule, `"11.0"` on every Raspbian one,

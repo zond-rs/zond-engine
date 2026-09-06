@@ -128,6 +128,14 @@ pub struct Evidence {
     /// whole evidence set, so this reaches a caller without the resolver having
     /// to rank it.
     pub os: Option<crate::model::host::OsEvidence>,
+
+    /// The hardware this observation described, where it described any.
+    ///
+    /// One question further out than [`os`](Self::os), and separate for the same
+    /// reason: a NETGEAR ReadyNAS runs Linux, and the box and the system on it
+    /// are two facts about one machine rather than one fact told twice. Over
+    /// five hundred shipped rules name a box and no system at all.
+    pub hardware: Option<crate::model::host::HardwareInfo>,
 }
 
 impl Evidence {
@@ -144,6 +152,7 @@ impl Evidence {
             tunnel: None,
             port_confirmed: false,
             os: None,
+            hardware: None,
             confidence,
             source,
         }

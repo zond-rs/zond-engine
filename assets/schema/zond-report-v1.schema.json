@@ -388,6 +388,18 @@
             "string",
             "null"
           ]
+        },
+        "product": {
+          "description": "The model a service named, such as `PDR M800` or `Firewall-1`. Not derivable from a hardware address, so it is present only where something stated it. Survives redaction, which masks the host rather than the product.",
+          "type": ["string", "null"]
+        },
+        "family": {
+          "description": "The line the model belongs to, where a rule distinguishes the two: `ILOM` for an Oracle service processor, `ReadyNAS` for a NETGEAR box.",
+          "type": ["string", "null"]
+        },
+        "cpe23": {
+          "description": "A Common Platform Enumeration identifier for the hardware. Separate from the operating system's: a report carrying both is naming two different things about one machine.",
+          "type": ["string", "null"]
         }
       }
     },

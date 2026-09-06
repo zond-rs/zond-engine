@@ -233,6 +233,71 @@ pub fn lookup_service_name(port: u16) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// What a service said about the *machine* it runs on, as distinct from what it
+/// said about itself.
+///
+/// Two findings filed in two places: the service belongs to the port, the
+/// operating system and the hardware to the host. They travel together because
+/// one banner routinely states both, and separating them at the source would
+/// mean two passes over the same evidence.
+#[derive(Debug, Clone, Default)]
+pub struct AboutTheHost {
+    /// What the responses implied about the operating system.
+    pub os: Vec<crate::model::host::OsEvidence>,
+    /// The hardware they described, where they described any. Over five hundred
+    /// shipped rules name a box and no system at all.
+    pub hardware: Option<crate::model::host::HardwareInfo>,
+}
+
+impl AboutTheHost {
+    /// Whether nothing was concluded about the machine.
+    pub fn is_empty(&self) -> bool {
+        self.os.is_empty() && self.hardware.is_none()
+    }
+
+    /// Records everything this says about `host`, and reports whether the
+    /// operating-system reading changed.
+    ///
+    /// One call because the two findings arrive together and land in two places,
+    /// and a caller doing it in two steps is a caller that will one day do only
+    /// the first. Hardware is merged rather than replaced: a record read from an
+    /// address block and one a banner described are both about the same box, and
+    /// [`HardwareInfo::merge`](crate::model::host::HardwareInfo::merge) knows
+    /// which half of each to keep.
+    pub fn apply(self, host: &mut crate::model::host::Host) -> bool {
+        if let Some(described) = self.hardware {
+            match host.hardware().cloned() {
+                Some(mut known) => {
+                    known.merge(described);
+                    host.set_hardware(known);
+                }
+                None => host.set_hardware(described),
+            }
+        }
+        os::identify(host, self.os)
+    }
+
+    /// Reads both from a resolved verdict's whole evidence set.
+    ///
+    /// Taken from every observation rather than the winning one: a host running
+    /// two identifiable services says the same thing about itself twice, and a
+    /// signature that lost the ranking for *service* may be the one that named
+    /// the machine.
+    fn from_evidence(evidence: &[Evidence]) -> Self {
+        Self {
+            os: evidence.iter().filter_map(|e| e.os.clone()).collect(),
+            hardware: evidence
+                .iter()
+                .filter_map(|e| e.hardware.as_ref())
+                .cloned()
+                .reduce(|mut best, other| {
+                    best.merge(other);
+                    best
+                }),
+        }
+    }
+}
+
 /// The text a UDP reply from `port` carries, where this engine can read one.
 ///
 /// The other half of [`reads_replies`], which says whether a port qualifies and
@@ -337,7 +402,7 @@ pub async fn fingerprint_tcp_detailed(
     stream: TcpStream,
     mut port: Port,
     detection: ServiceDetection,
-) -> (Port, Vec<OsEvidence>, Vec<String>) {
+) -> (Port, AboutTheHost, Vec<String>) {
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target.
     let addr = stream.peer_addr().ok();
@@ -347,10 +412,10 @@ pub async fn fingerprint_tcp_detailed(
     let Ok((responses, tunnel)) =
         timeout(COLLECTION_BUDGET, gather(stream, port.number(), detection)).await
     else {
-        return (port, Vec::new(), Vec::new());
+        return (port, AboutTheHost::default(), Vec::new());
     };
     if responses.is_empty() {
-        return (port, Vec::new(), Vec::new());
+        return (port, AboutTheHost::default(), Vec::new());
     }
 
     // Recorded before the response set is handed off, and independently of what
@@ -367,7 +432,7 @@ pub async fn fingerprint_tcp_detailed(
     // handed to the blocking pool.
     let fallback = first_printable(&responses.banners);
     let banners = responses.banners.clone();
-    let mut about_the_host = Vec::new();
+    let mut about_the_host = AboutTheHost::default();
     match analyze(port.number(), Protocol::Tcp, addr, responses, tunnel).await {
         Some(verdict) if !verdict.is_empty() => {
             // Taken from the whole retained evidence set rather than from the
@@ -375,7 +440,7 @@ pub async fn fingerprint_tcp_detailed(
             // says the same thing about itself twice, and a signature that lost
             // the ranking for *service* may still be the one that named the
             // operating system.
-            about_the_host.extend(verdict.evidence.iter().filter_map(|e| e.os.clone()));
+            about_the_host = AboutTheHost::from_evidence(&verdict.evidence);
             if let Some(service) = verdict.to_service() {
                 port.set_service(service);
             }
@@ -424,7 +489,7 @@ pub async fn fingerprint_tcp_detailed(
 pub async fn fingerprint_udp_detailed(
     addr: std::net::SocketAddr,
     mut port: Port,
-) -> Option<(Port, Vec<OsEvidence>, Vec<String>)> {
+) -> Option<(Port, AboutTheHost, Vec<String>)> {
     let texts = probe_udp(addr).await?;
     let responses = ResponseSet::from_banners(texts);
     let banners = responses.banners.clone();
@@ -436,11 +501,7 @@ pub async fn fingerprint_udp_detailed(
         .await
         .filter(|verdict| !verdict.is_empty())?;
 
-    let about_the_host = verdict
-        .evidence
-        .iter()
-        .filter_map(|e| e.os.clone())
-        .collect();
+    let about_the_host = AboutTheHost::from_evidence(&verdict.evidence);
     if let Some(service) = verdict.to_service() {
         port.set_service(service);
     }

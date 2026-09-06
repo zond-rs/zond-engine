@@ -471,6 +471,19 @@ impl From<&OsEvidenceRecord> for OsEvidence {
 pub struct HardwareRecord {
     /// Each address and when it was last seen.
     pub macs: Vec<(String, SystemTime)>,
+    /// The vendor, where something named it rather than it being read from an
+    /// address block. A record rebuilt from addresses alone resolves its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    /// The model a service named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product: Option<String>,
+    /// The line that model belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    /// The hardware's platform identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpe23: Option<String>,
 }
 
 impl From<&HardwareInfo> for HardwareRecord {
@@ -502,7 +515,28 @@ impl From<&HardwareInfo> for HardwareRecord {
             }
         }
 
-        Self { macs }
+        // A vendor an address block produced stays out of the file, for the
+        // reason above. One a service *stated* cannot be re-derived from
+        // anything, so it is recorded: without this a NETGEAR ReadyNAS named by
+        // its FTP banner comes back from a journal as an unnamed box.
+        let derivable = hardware.vendor().is_some_and(|vendor| {
+            macs.iter().any(|(mac, _)| {
+                mac.parse::<MacAddr>()
+                    .ok()
+                    .and_then(|mac| crate::model::mac::vendor(&mac))
+                    .is_some_and(|found| found == vendor)
+            })
+        });
+
+        Self {
+            macs,
+            vendor: (!derivable)
+                .then(|| hardware.vendor().map(str::to_string))
+                .flatten(),
+            product: hardware.product().map(str::to_string),
+            family: hardware.family().map(str::to_string),
+            cpe23: hardware.cpe23().map(str::to_string),
+        }
     }
 }
 
@@ -519,11 +553,27 @@ impl HardwareRecord {
             .iter()
             .filter_map(|(mac, at)| mac.parse::<MacAddr>().ok().map(|mac| (mac, *at)));
 
-        let (first, first_at) = macs.next()?;
+        // A record may hold no address at all: a host reached through a gateway
+        // has no MAC to read, and a banner naming `Merit LILIN PDR M800`
+        // describes the box without one.
+        let described = HardwareInfo::described(
+            self.vendor.as_deref(),
+            self.product.as_deref(),
+            self.family.as_deref(),
+            self.cpe23.as_deref(),
+        );
+
+        let Some((first, first_at)) = macs.next() else {
+            return described;
+        };
+
         let mut hardware = HardwareInfo::new(first);
         hardware.record_mac_seen_at(first, first_at);
         for (mac, at) in macs {
             hardware.record_mac_seen_at(mac, at);
+        }
+        if let Some(described) = described {
+            hardware.merge(described);
         }
         Some(hardware)
     }
