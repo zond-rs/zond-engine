@@ -772,6 +772,7 @@ mod tests {
 
     fn captured(bytes: Vec<u8>, identification: u16) -> CapturedSegment {
         CapturedSegment {
+            received_at: Instant::now(),
             source: TARGET,
             protocol: IpNextHeaderProtocols::Tcp,
             observation: Some(IpObservation::V4(Ipv4Observation {

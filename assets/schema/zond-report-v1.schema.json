@@ -1628,7 +1628,8 @@
         "traceroute",
         "characterise",
         "ip_protocols",
-        "tls_enumeration"
+        "tls_enumeration",
+        "icmp_evidence"
       ],
       "properties": {
         "send_mode": {
@@ -1835,6 +1836,10 @@
               "maximum": 65535
             }
           }
+        },
+        "icmp_evidence": {
+          "description": "Whether the capture kept ICMP errors the technique did not need for its verdict. What decides how a filtered port's `no_response` reads: with this set the scan listened for a refusal and none came, and without it a refusal would not have been heard.",
+          "type": "boolean"
         }
       }
     },

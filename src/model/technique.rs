@@ -535,17 +535,21 @@ impl TcpScanTechnique {
         matches!(self, Self::Syn)
     }
 
-    /// Whether the scan should ask its capture for ICMP errors as well as TCP
-    /// segments.
+    /// Whether this technique needs ICMP errors as well as TCP segments to
+    /// reach its verdict.
     ///
-    /// False for [`Syn`](Self::Syn) alone, and the asymmetry is deliberate.
-    /// Admitting ICMP means every ICMP packet on every captured interface is
-    /// copied into userspace, since an ICMP error carries no ports to narrow a
-    /// kernel filter with. That buys the flag-probe techniques an actual change
-    /// of verdict - [`PortState::Filtered`] where silence would have said
-    /// open-filtered - and buys an ACK scan the identity of the device doing the
-    /// filtering, which is the entire question it was asked. A SYN scan reaches
-    /// the same verdict from silence either way.
+    /// False for [`Syn`](Self::Syn) alone. Admitting ICMP copies every ICMP
+    /// packet on every captured interface into userspace, an error carrying no
+    /// ports to narrow a kernel filter with. The flag-probe techniques buy a
+    /// changed verdict for that, [`PortState::Filtered`] where silence would
+    /// have said open-filtered, and an ACK scan buys the identity of the device
+    /// doing the filtering, which is the question it was asked. A SYN scan
+    /// reaches the same verdict either way.
+    ///
+    /// The evidence still differs, and a caller who wants it can ask through
+    /// [`ZondConfig::icmp_evidence`](crate::config::ZondConfig::icmp_evidence):
+    /// a filtered port then records the refusal that arrived rather than only
+    /// that nothing did.
     pub const fn reads_icmp_errors(self) -> bool {
         !matches!(self, Self::Syn)
     }

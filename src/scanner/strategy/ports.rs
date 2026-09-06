@@ -1266,7 +1266,11 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
                 match res {
                     Some(reply) => {
                         scanner.core_mut().audit.record_segment();
-                        scanner.handle_reply(&reply, Instant::now());
+                        // The moment the capture thread took the segment, not
+                        // the moment this loop reached it. See
+                        // `CapturedSegment::received_at`.
+                        let received_at = reply.received_at;
+                        scanner.handle_reply(&reply, received_at);
                     }
                     None => break StopReason::StreamClosed,
                 }

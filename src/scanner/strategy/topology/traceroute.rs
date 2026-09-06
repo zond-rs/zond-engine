@@ -1020,6 +1020,7 @@ mod tests {
             ttl: u8,
         ) -> CapturedSegment {
             CapturedSegment {
+                received_at: Instant::now(),
                 source,
                 protocol,
                 bytes,

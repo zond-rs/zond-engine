@@ -804,6 +804,10 @@ struct SettingsDto {
     /// The zombie a TCP port scan ran through, absent for an ordinary scan.
     /// Checked the same way, by [`checked_idle_scan`].
     idle_scan: Option<IdleScanRecord>,
+    /// Whether the capture kept ICMP errors a technique did not need, absent in
+    /// a document written before the option existed.
+    #[serde(default)]
+    icmp_evidence: bool,
 }
 
 /// Holds the evasion record to the promise the module documentation makes.
@@ -925,6 +929,7 @@ impl SettingsDto {
             tls_enumeration: self.tls_enumeration,
             evasion: self.evasion,
             idle_scan: self.idle_scan,
+            icmp_evidence: self.icmp_evidence,
         })
     }
 }

@@ -840,6 +840,10 @@ pub struct ProbeTuning {
     /// spoofed address, fragmentation and decoys as those land. See
     /// [`EvasionProfile`].
     pub evasion: EvasionProfile,
+
+    /// Whether the capture admits ICMP errors for a technique that reaches its
+    /// verdict without them. See [`ZondConfig::icmp_evidence`].
+    pub icmp_evidence: bool,
 }
 
 /// A third party whose IP-ID counter an idle scan reads to learn a target's
@@ -1381,6 +1385,22 @@ pub struct ZondConfig {
     /// the provenance surface lands) into the report, so a scan that evaded
     /// something says so. See [`EvasionProfile`].
     pub evasion: EvasionProfile,
+
+    /// Whether to capture ICMP errors for a technique whose verdict does not
+    /// depend on them.
+    ///
+    /// A SYN scan calls a port filtered whether an unreachable arrived or
+    /// nothing did, so by default it does not ask its capture for ICMP. An error
+    /// names no ports, so no kernel filter can narrow it, and admitting one
+    /// copies every ICMP packet on every captured link into userspace.
+    ///
+    /// Setting this pays that cost to record which of the two happened, which is
+    /// the difference between a firewall answering for a port and a probe going
+    /// missing. It changes no verdict, only the evidence stored beside one.
+    ///
+    /// The other TCP techniques read ICMP already, their verdicts depending on
+    /// it, and this leaves them as they are.
+    pub icmp_evidence: bool,
 }
 
 impl ZondConfig {
@@ -1402,6 +1422,7 @@ impl ZondConfig {
             os_detection,
             service_detection,
             evasion,
+            icmp_evidence,
 
             // Read elsewhere. Named so that adding a field forces this decision
             // rather than skipping it.
@@ -1441,6 +1462,7 @@ impl ZondConfig {
             os_detection: *os_detection,
             service_detection: *service_detection,
             evasion: evasion.clone(),
+            icmp_evidence: *icmp_evidence,
         }
     }
 }
@@ -1456,6 +1478,17 @@ impl ZondConfig {
 
 #[cfg(test)]
 mod tests {
+
+    /// The capture knob reaches the strategies, which is the whole of what it
+    /// does: a scan asked for the evidence and the tuning has to carry it.
+    #[test]
+    fn asking_for_icmp_evidence_reaches_the_probe_tuning() {
+        let mut cfg = ZondConfig::default();
+        assert!(!cfg.probe_tuning().icmp_evidence, "off unless asked");
+
+        cfg.icmp_evidence = true;
+        assert!(cfg.probe_tuning().icmp_evidence);
+    }
     use super::*;
     use std::num::NonZeroU8;
 

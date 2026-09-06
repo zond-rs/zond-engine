@@ -446,6 +446,7 @@ fn port_evidence(
             true => ScanResponse::IcmpProhibited,
             false => ScanResponse::IcmpUnreachable,
         }),
+        (PortState::Filtered, None, None) => Some(ScanResponse::NoResponse),
         _ => None,
     }
 }

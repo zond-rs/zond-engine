@@ -158,7 +158,9 @@ impl TcpPortScanner {
                 // An arbitrary flag combination reads its verdict off ICMP the
                 // way a flag-probe technique does, silence upgrades to filtered
                 // when an error names the filter, so it asks for errors too.
-                icmp_errors: technique.reads_icmp_errors() || flags_override.is_some(),
+                icmp_errors: technique.reads_icmp_errors()
+                    || flags_override.is_some()
+                    || tuning.icmp_evidence,
             },
             tuning.evasion.effective_send_mode(tuning.send_mode),
         )?;
@@ -759,9 +761,15 @@ struct Answer {
 /// they answer different questions, that one says why the *host* is believed
 /// alive, this says why the *port* is in the state it is.
 ///
-/// `None` where nothing arrived. A port nothing answered has no packet to name,
-/// and `NoResponse` is recorded by the sweep that gives up on it rather than
-/// here, where every call is on the back of a reply.
+/// A [`PortState::Filtered`] port whose attempts ran out records
+/// [`ScanResponse::NoResponse`], because that word alone does not say whether a
+/// filter answered or nothing did. [`PortState::OpenFiltered`] says silence on
+/// its own face and is left as it is: the flag-probe techniques come back full
+/// of it, and a packet recorded against every one would be the verdict written
+/// twice.
+///
+/// `None` where the verdict and the reply that produced it name no packet
+/// between them.
 fn port_evidence(
     state: PortState,
     drawn_by: Option<TcpReply>,
@@ -784,6 +792,7 @@ fn port_evidence(
             true => ScanResponse::IcmpProhibited,
             false => ScanResponse::IcmpUnreachable,
         }),
+        (PortState::Filtered, None, None) => Some(ScanResponse::NoResponse),
         _ => None,
     }
 }
@@ -1256,25 +1265,42 @@ mod tests {
         );
     }
 
-    /// A port nothing answered has no packet to name.
+    /// A port nothing answered records the silence, which is an answer of its
+    /// own. Leaving the evidence off gave a verdict no account of itself, and a
+    /// reader could not tell that from a report where the account was dropped.
     #[test]
-    fn an_unanswered_port_records_no_evidence() {
+    fn an_unanswered_port_records_the_silence() {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 80);
 
         scanner.record_port(TARGET, 80, PortState::Filtered, None);
 
         assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
-        assert!(
-            port_discovery(&session, 80).is_none(),
-            "a silence was dressed up as a packet"
-        );
+
+        let discovery = port_discovery(&session, 80).expect("the silence is evidence too");
+        assert_eq!(discovery.reason(), &ScanResponse::NoResponse);
+        assert_eq!(discovery.rtt(), None, "nothing arrived to be timed");
+        assert_eq!(discovery.ttl(), None, "and nothing carried a hop count");
+    }
+
+    /// A refusal that did arrive is still told apart from a silence, which is
+    /// the whole reason either is written down.
+    #[test]
+    fn a_refusal_is_not_recorded_as_a_silence() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        probe(&mut scanner, &sent, 81);
+
+        scanner.record_port(TARGET, 81, PortState::Filtered, Some(TARGET));
+
+        let discovery = port_discovery(&session, 81).expect("the refusal is evidence");
+        assert_eq!(discovery.reason(), &ScanResponse::IcmpProhibited);
     }
 
     /// A TCP reply carrying `bytes`, as it would have arrived under a header
     /// whose hop counter reads `ttl`.
     fn captured_with_ttl(bytes: Vec<u8>, ttl: u8) -> CapturedSegment {
         CapturedSegment {
+            received_at: Instant::now(),
             source: TARGET,
             protocol: IpNextHeaderProtocols::Tcp,
             bytes,

@@ -35,7 +35,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pcap::{Active, Capture, Device};
 use pnet_packet::ip::IpNextHeaderProtocol;
@@ -289,6 +289,20 @@ pub struct CapturedSegment {
     /// `None` on a tunnel, loopback or raw-IP link, which prepend no addresses,
     /// and on a synthetic stream. Never "the sender had none".
     pub source_mac: Option<MacAddr>,
+
+    /// When the capture thread took delivery of this segment.
+    ///
+    /// The earliest monotonic point in the pipeline, taken in the `libpcap`
+    /// callback before the segment is queued. A round trip measured against the
+    /// moment a reader dequeued it instead would carry the channel's depth and
+    /// the runtime's scheduling, which on a fast link is most of what it
+    /// reports: 4.5 ms of pipeline over a 0.1 ms path.
+    ///
+    /// Monotonic rather than the kernel's own wall-clock frame timestamp, which
+    /// [`CapturedFrame::observed_at`] carries for the readers that place a
+    /// finding on a timeline. A duration wants a clock that cannot be adjusted
+    /// underneath it.
+    pub received_at: Instant,
 }
 
 impl CapturedSegment {
@@ -304,6 +318,7 @@ impl CapturedSegment {
             protocol,
             bytes,
             observation: None,
+            received_at: Instant::now(),
             source_mac: None,
         }
     }
@@ -604,6 +619,7 @@ pub fn segments(
                 bytes: parsed.payload.to_vec(),
                 observation: Some(parsed.observation),
                 source_mac,
+                received_at: Instant::now(),
             };
 
             // Waits rather than drops, for the reason `frames` gives.
@@ -1142,6 +1158,25 @@ impl FrameSink for FrameChannel {
 
 #[cfg(test)]
 mod tests {
+
+    /// The stamp is taken where the segment is taken, so a round trip measured
+    /// against it carries the path and not the queue behind it.
+    #[test]
+    fn a_segment_is_stamped_before_it_is_queued() {
+        use std::net::Ipv4Addr;
+
+        use pnet_packet::ip::IpNextHeaderProtocols;
+
+        let before = Instant::now();
+        let segment = CapturedSegment::synthetic(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpNextHeaderProtocols::Tcp,
+            vec![0; 20],
+        );
+        let after = Instant::now();
+
+        assert!(segment.received_at >= before && segment.received_at <= after);
+    }
     use super::*;
 
     /// A snapshot length below what the deepest header stack needs is raised to

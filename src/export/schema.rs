@@ -963,6 +963,13 @@ pub struct SettingsDto {
     /// ordinary scan. See [`IdleScanDto`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_scan: Option<IdleScanDto>,
+    /// Whether the capture kept ICMP errors the technique did not need for its
+    /// verdict.
+    ///
+    /// What decides how a filtered port's `no_response` reads. With this set the
+    /// scan listened for a refusal and none came; without it, a refusal would
+    /// not have been heard.
+    pub icmp_evidence: bool,
 }
 
 /// What a scan changed about the packets it sent, as it appears in the report.
@@ -1063,6 +1070,7 @@ impl SettingsDto {
                 zombie: idle.zombie.to_string(),
                 zombie_port: idle.zombie_port,
             }),
+            icmp_evidence: settings.icmp_evidence,
         }
     }
 }

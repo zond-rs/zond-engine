@@ -237,6 +237,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::IdleScan
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::IdleScan
 #[non_exhaustive] pub struct zond_engine::config::ProbeTuning
 pub zond_engine::config::ProbeTuning::evasion: zond_engine::evasion::EvasionProfile
+pub zond_engine::config::ProbeTuning::icmp_evidence: bool
 pub zond_engine::config::ProbeTuning::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ProbeTuning::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ProbeTuning::os_detection: zond_engine::config::OsDetection
@@ -371,6 +372,7 @@ pub zond_engine::config::ZondConfig::evasion: zond_engine::evasion::EvasionProfi
 pub zond_engine::config::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
 pub zond_engine::config::ZondConfig::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::config::ZondConfig::host_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::config::ZondConfig::icmp_evidence: bool
 pub zond_engine::config::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::config::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
 pub zond_engine::config::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
@@ -3798,6 +3800,7 @@ pub zond_engine::export::schema::SettingsDto::dns_enabled: bool
 pub zond_engine::export::schema::SettingsDto::evasion: core::option::Option<zond_engine::export::schema::EvasionDto>
 pub zond_engine::export::schema::SettingsDto::host_probe_interval_us: core::option::Option<u64>
 pub zond_engine::export::schema::SettingsDto::host_timeout_us: core::option::Option<u64>
+pub zond_engine::export::schema::SettingsDto::icmp_evidence: bool
 pub zond_engine::export::schema::SettingsDto::idle_scan: core::option::Option<zond_engine::export::schema::IdleScanDto>
 pub zond_engine::export::schema::SettingsDto::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::export::schema::SettingsDto::max_probe_rate: core::option::Option<u32>
@@ -12590,6 +12593,7 @@ pub zond_engine::record::SettingsRecord::dns_enabled: bool
 pub zond_engine::record::SettingsRecord::evasion: core::option::Option<zond_engine::record::EvasionSettingsRecord>
 pub zond_engine::record::SettingsRecord::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::record::SettingsRecord::host_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::record::SettingsRecord::icmp_evidence: bool
 pub zond_engine::record::SettingsRecord::idle_scan: core::option::Option<zond_engine::record::IdleScanRecord>
 pub zond_engine::record::SettingsRecord::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::record::SettingsRecord::max_probe_rate: core::option::Option<u32>
@@ -13225,6 +13229,7 @@ pub zond_engine::report::ScanSettings::dns_enabled: bool
 pub zond_engine::report::ScanSettings::evasion: core::option::Option<zond_engine::report::EvasionRecord>
 pub zond_engine::report::ScanSettings::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::report::ScanSettings::host_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::report::ScanSettings::icmp_evidence: bool
 pub zond_engine::report::ScanSettings::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::report::ScanSettings::ip_protocols: alloc::vec::Vec<u8>
 pub zond_engine::report::ScanSettings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
@@ -17319,6 +17324,7 @@ pub zond_engine::ZondConfig::evasion: zond_engine::evasion::EvasionProfile
 pub zond_engine::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
 pub zond_engine::ZondConfig::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::ZondConfig::host_timeout: core::option::Option<core::time::Duration>
+pub zond_engine::ZondConfig::icmp_evidence: bool
 pub zond_engine::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
 pub zond_engine::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>

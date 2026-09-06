@@ -724,6 +724,15 @@ pub struct ScanSettings {
     /// which changes what an `open` or a `closed_filtered` means. See
     /// [`IdleScan`].
     pub idle_scan: Option<IdleScan>,
+
+    /// Whether the capture kept ICMP errors for a technique that did not need
+    /// them for its verdict.
+    ///
+    /// Recorded because it decides what a silence means. A filtered port carries
+    /// [`ScanResponse::NoResponse`](crate::model::port::discovery::ScanResponse::NoResponse)
+    /// either way, and only this says whether that is a port nothing answered
+    /// for or a port whose refusal the scan was not listening for.
+    pub icmp_evidence: bool,
 }
 
 impl From<&ZondConfig> for ScanSettings {
@@ -760,6 +769,7 @@ impl From<&ZondConfig> for ScanSettings {
             tls_enumeration,
             evasion,
             idle_scan,
+            icmp_evidence,
 
             // Recorded elsewhere, and named so that dropping one is a decision
             // rather than an omission. The exclusion policy and whether the
@@ -793,6 +803,7 @@ impl From<&ZondConfig> for ScanSettings {
             tls_enumeration: *tls_enumeration,
             evasion: EvasionRecord::from_profile(evasion),
             idle_scan: *idle_scan,
+            icmp_evidence: *icmp_evidence,
         }
     }
 }

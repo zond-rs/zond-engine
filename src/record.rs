@@ -1659,6 +1659,12 @@ pub struct SettingsRecord {
     /// ordinary scan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_scan: Option<IdleScanRecord>,
+    /// Whether the capture kept ICMP errors a technique did not need.
+    ///
+    /// Defaulted on the way in, which reads a record written before the option
+    /// existed as a sitting that did not keep them. That is what it was.
+    #[serde(default)]
+    pub icmp_evidence: bool,
 }
 
 /// The zombie an idle scan ran through, as written to the journal. The
@@ -1749,6 +1755,7 @@ impl From<&ScanSettings> for SettingsRecord {
                 zombie: i.zombie.to_string(),
                 zombie_port: i.zombie_port,
             }),
+            icmp_evidence: settings.icmp_evidence,
         }
     }
 }
@@ -1801,6 +1808,7 @@ impl From<&SettingsRecord> for ScanSettings {
                     zombie_port: i.zombie_port,
                 })
             }),
+            icmp_evidence: record.icmp_evidence,
         }
     }
 }
@@ -2613,6 +2621,21 @@ mod tests {
     /// The detection envelope has to come back as what the scan ran, not as the
     /// default: a report replayed from a journal must gate a re-analysis the same
     /// way the live scan did.
+    /// What a silence means depends on this, so a record that lost it would
+    /// leave every filtered port's `no reply` unreadable.
+    #[test]
+    fn asking_for_icmp_evidence_survives_the_settings_round_trip() {
+        use crate::config::ZondConfig;
+
+        let mut settings = ScanSettings::from(&ZondConfig::default());
+        assert!(!settings.icmp_evidence, "off unless asked");
+
+        settings.icmp_evidence = true;
+        let rebuilt = ScanSettings::from(&SettingsRecord::from(&settings));
+
+        assert!(rebuilt.icmp_evidence);
+    }
+
     #[test]
     fn the_detection_envelope_survives_the_settings_round_trip() {
         use crate::config::DetectionEnvelope;

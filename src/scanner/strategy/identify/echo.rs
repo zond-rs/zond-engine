@@ -637,6 +637,7 @@ mod tests {
         message.extend_from_slice(PAYLOAD);
 
         CapturedSegment {
+            received_at: Instant::now(),
             source: TARGET,
             protocol: IpNextHeaderProtocols::Icmp,
             observation: Some(IpObservation::V4(Ipv4Observation {
@@ -765,6 +766,7 @@ mod tests {
         message.extend_from_slice(&0u16.to_be_bytes());
         message.extend_from_slice(PAYLOAD);
         let theirs = CapturedSegment {
+            received_at: Instant::now(),
             source: TARGET,
             protocol: IpNextHeaderProtocols::Icmp,
             observation: Some(IpObservation::V4(Ipv4Observation {
@@ -837,6 +839,7 @@ mod tests {
         }
 
         CapturedSegment {
+            received_at: Instant::now(),
             source: TARGET,
             protocol: IpNextHeaderProtocols::Icmp,
             observation: None,

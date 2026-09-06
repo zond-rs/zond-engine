@@ -1047,6 +1047,7 @@ impl FakeLink {
         }
 
         Some(CapturedSegment {
+            received_at: Instant::now(),
             source: target,
             protocol: IpNextHeaderProtocols::Tcp,
             bytes: buffer,
