@@ -5,6 +5,10 @@ description = "File Transfer Protocol"
 
 [[match]]
 name = "ftp_banner"
-pattern = '(?i)^220[\s-]([\w\d\s.-]+)'
+# The capture stops at the end of the banner line. `\s` would have matched the
+# trailing CRLF and run the version on into whatever the next probe drew, so a
+# server that answered one with a 500 had "500 Command ..." folded into its
+# version string.
+pattern = '(?i)^220[\s-]([\w\d .-]+)'
 version_group = 1
 product = "ftp"

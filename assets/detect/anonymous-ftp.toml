@@ -1,0 +1,34 @@
+# Anonymous FTP access — a Tier-1 flow. RFC 1635 anonymous access lets a server
+# take USER anonymous with any address for a password and log the session in.
+# A flow opens a fresh connection per send and FTP holds its state on the control
+# connection, so USER, PASS and QUIT are pipelined onto one exchange; the drained
+# reply carries the banner and each reply code in order, and QUIT lets the server
+# close rather than hold the socket to the flow's deadline. A 230 on its own line
+# is "user logged in"; a server that refuses anonymous answers 530 and never
+# sends it.
+
+[detection]
+id      = "anonymous-ftp"
+version = "1.0.0"
+title   = "Anonymous FTP access"
+
+[detection.when]
+service  = "ftp"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # completes a login and quits; reads nothing, writes nothing
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'USER anonymous\r\nPASS zond@example.com\r\nQUIT\r\n'
+expect = '(?m)^230[ -]'        # 230: the login succeeded
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "FTP accepted an anonymous login"
+  detail       = "USER anonymous logged in without a real password, so the server's files are reachable with no credentials."
+  references   = [{ cwe = 287 }]   # Improper Authentication
+  excerpt_from = "$response"

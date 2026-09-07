@@ -1,0 +1,40 @@
+# VNC reachable without authentication — a Tier-1 flow. The RFB handshake opens
+# with the server's protocol version and then its security types, and a server
+# offering type 1 (None) hands out a session with no password. The handshake
+# rides one connection: the client version is sent and the drained reply carries
+# the server's version line followed by the security types. RFB 3.3 and 3.5 state
+# a single chosen type as a four-byte value, where None is 0x00000001; 3.7 and
+# 3.8 send a one-byte count and then the type list, where None is a 0x01 among
+# the types. The count is skipped before the list is searched, so a server
+# offering only VNC auth (a lone type 0x02) does not read as None.
+#
+# The payload is a single-quoted TOML literal string so its escapes reach the
+# interpreter rather than the TOML parser.
+
+[detection]
+id      = "vnc-noauth"
+version = "1.0.0"
+title   = "VNC reachable without authentication"
+
+[detection.when]
+service  = "vnc"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # reads the handshake and stops before selecting a type; opens no session
+speak      = "target"
+max_bytes  = 4096
+max_millis = 3000
+
+[[step]]
+send   = 'RFB 003.008\n'
+# The version line, then either the 3.3 single value None or a 3.7/3.8 list whose
+# count (skipped) is followed by a None type.
+expect = '(?s)RFB 00[0-9]\.00[0-9]\n(\x00\x00\x00\x01|[\x01-\xff][\x00-\xff]*?\x01)'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "critical"
+  summary      = "VNC offered the None security type"
+  detail       = "The server's RFB handshake offers security type 1 (None), so a client reaches the desktop with no password."
+  references   = [{ cwe = 306 }]   # Missing Authentication for a Critical Function
+  excerpt_from = "$response"

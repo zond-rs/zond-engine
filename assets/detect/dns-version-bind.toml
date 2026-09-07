@@ -1,0 +1,46 @@
+# DNS version disclosure via version.bind — a Tier-1 flow. A CHAOS-class TXT
+# query for "version.bind" is the convention BIND and most resolvers answer with
+# their build string, and hardening guides recommend suppressing it. The query
+# goes over TCP, which is how the fingerprint identifies a DNS server and so what
+# a `dns` gate is handed; a DNS-over-TCP message is framed by a two-byte length
+# prefix, on the query and on the reply. The reply echoes the query id and carries
+# the answer count in the message header; a reply with at least one answer is the
+# server returning the record. A server that withholds it answers zero answers or
+# refuses, neither of which this matches.
+#
+# This is the substitute for a zone-transfer check: AXFR needs the name of a zone
+# to request, and a flow is handed only the address and port it reached, so there
+# is no zone to name. version.bind needs no such input.
+#
+# The payload is a single-quoted TOML literal string so its escapes reach the
+# interpreter rather than the TOML parser.
+
+[detection]
+id      = "dns-version-bind"
+version = "1.0.0"
+title   = "DNS server discloses its version"
+
+[detection.when]
+service  = "dns"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one read-only CHAOS TXT query
+speak      = "target"
+max_bytes  = 4096
+max_millis = 3000
+
+[[step]]
+# Two-byte length prefix (0x001e = 30), then the message: id 0x1337, RD set; one
+# question; QNAME version.bind; QTYPE TXT (0x0010); QCLASS CHAOS (0x0003).
+send   = '\x00\x1e\x13\x37\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03'
+# Past the reply's length prefix: id echoed, two flag bytes, QDCOUNT 1, then an
+# ANCOUNT whose low byte is non-zero.
+expect = '(?s)^..\x13\x37..\x00\x01\x00[\x01-\xff]'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "info"
+  summary      = "DNS server answered version.bind"
+  detail       = "The server returned a CHAOS TXT record for version.bind, the query that commonly reveals its software version."
+  references   = [{ cwe = 200 }]   # Exposure of Sensitive Information
+  excerpt_from = "$response"

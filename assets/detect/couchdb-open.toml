@@ -2,6 +2,13 @@
 # CouchDB with no admin configured answers /_all_dbs to anyone, so a 200 here is
 # every database on the node readable, and usually writable, unauthenticated. A
 # single read-only GET.
+#
+# The gate names http as well as couchdb: the fingerprint labels a CouchDB node
+# http with a CouchDB product rather than its own service, so a couchdb-only gate
+# never fires. The `expect` is what keeps the wider gate precise: only a real
+# /_all_dbs answers 200 with a JSON array, so a plain web server reached this way
+# matches nothing. This is the shape grafana-path-traversal uses for the same
+# reason.
 
 [detection]
 id      = "couchdb-open"
@@ -9,7 +16,7 @@ version = "1.0.0"
 title   = "CouchDB reachable without authentication"
 
 [detection.when]
-service  = "couchdb"
+services = ["couchdb", "http"]
 protocol = "tcp"
 
 [detection.capabilities]

@@ -1,0 +1,38 @@
+# Anonymous LDAP bind — a Tier-1 flow. RFC 4513 names an anonymous bind as a
+# simple bind with an empty DN and an empty password. The bind request and an
+# unbind are pipelined onto one connection, since a flow opens a fresh one per
+# send; the unbind lets the server close rather than hold the socket to the
+# flow's deadline. The reply is a BindResponse: tag 0x61, a length, then the
+# resultCode as an ENUMERATED, and 0x0a 0x01 0x00 is resultCode success, the
+# bind being accepted. A server that refuses anonymous answers a non-zero code,
+# which this does not match.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "ldap-anonymous-bind"
+version = "1.0.0"
+title   = "Anonymous LDAP bind accepted"
+
+[detection.when]
+service  = "ldap"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one bind and an unbind; no search, nothing written
+speak      = "target"
+max_bytes  = 4096
+max_millis = 3000
+
+[[step]]
+# messageID 1 BindRequest { version 3, name "", simple "" }, then messageID 2 UnbindRequest.
+send   = '\x30\x0c\x02\x01\x01\x60\x07\x02\x01\x03\x04\x00\x80\x00\x30\x05\x02\x01\x02\x42\x00'
+expect = '(?s)\x61.\x0a\x01\x00'   # BindResponse, length, resultCode success
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "LDAP accepted an anonymous bind"
+  detail       = "A simple bind with an empty DN and password succeeded, so the directory answers to clients that present no credentials."
+  references   = [{ cwe = 287 }]   # Improper Authentication
+  excerpt_from = "$response"

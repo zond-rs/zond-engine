@@ -513,6 +513,30 @@ mod tests {
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<title>Index of /</title><h1>Index of /</h1>",
                 Severity::Low,
             ),
+            (
+                "anonymous-ftp",
+                b"220 Zond FTP\r\n331 Please specify the password.\r\n230 Login successful.\r\n221 Goodbye.\r\n",
+                Severity::Medium,
+            ),
+            (
+                "ldap-anonymous-bind",
+                // BindResponse, messageID 1, resultCode success: 0x61 len 0x0a 0x01 0x00.
+                b"\x30\x0c\x02\x01\x01\x61\x07\x0a\x01\x00\x04\x00\x04\x00",
+                Severity::Medium,
+            ),
+            (
+                "vnc-noauth",
+                // RFB 3.8 banner, then one security type: None (0x01).
+                b"RFB 003.008\n\x01\x01",
+                Severity::Critical,
+            ),
+            (
+                "dns-version-bind",
+                // A two-byte TCP length prefix, then: id 0x1337 echoed, response
+                // flags, one question, one answer.
+                b"\x00\x2c\x13\x37\x84\x00\x00\x01\x00\x01\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03\xc0\x0c\x00\x10\x00\x03\x00\x00\x00\x00\x00\x0d\x0c9.16.1-Debian",
+                Severity::Info,
+            ),
         ];
 
         for (name, reply, severity) in cases {
@@ -549,6 +573,44 @@ mod tests {
             assert!(
                 findings.is_empty(),
                 "{name} fired on a non-confirming reply"
+            );
+        }
+    }
+
+    /// The four request-response enumeration flows against a same-protocol reply
+    /// that denies rather than a bare 404: a server that refuses anonymous FTP, an
+    /// LDAP bind rejected, a VNC server offering only a password, and a DNS server
+    /// that returns no answer. None may fire, because a password-guarded service
+    /// read as open is the false positive that would make the set unsafe by
+    /// default.
+    #[test]
+    fn the_enumeration_flows_stay_quiet_when_the_service_denies_access() {
+        let cases: &[(&str, &[u8])] = &[
+            // 530: the login was refused.
+            (
+                "anonymous-ftp",
+                b"220 Zond FTP\r\n331 Please specify the password.\r\n530 Login incorrect.\r\n",
+            ),
+            // BindResponse resultCode 0x30 (48, inappropriateAuthentication).
+            (
+                "ldap-anonymous-bind",
+                b"\x30\x0c\x02\x01\x01\x61\x07\x0a\x01\x30\x04\x00\x04\x00",
+            ),
+            // RFB 3.8 banner offering one type: VNC auth (0x02), no None.
+            ("vnc-noauth", b"RFB 003.008\n\x01\x02"),
+            // A TCP-framed DNS reply with zero answers (the header's ANCOUNT is 0x0000).
+            (
+                "dns-version-bind",
+                b"\x00\x1e\x13\x37\x84\x05\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03",
+            ),
+        ];
+
+        for (name, reply) in cases {
+            let flow = flow(name);
+            let findings = run(&flow, "", &seed(), &mut Canned(reply.to_vec()));
+            assert!(
+                findings.is_empty(),
+                "{name} fired on a service that denied access"
             );
         }
     }

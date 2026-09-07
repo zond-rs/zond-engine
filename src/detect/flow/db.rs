@@ -154,7 +154,9 @@ mod tests {
         use crate::detect::manifest::Class;
 
         let expected = [
+            ("anonymous-ftp", Class::ActiveBenign),
             ("couchdb-open", Class::ActiveBenign),
+            ("dns-version-bind", Class::ActiveBenign),
             ("elasticsearch-open", Class::ActiveBenign),
             ("grafana-path-traversal", Class::Exploit),
             ("http-dir-listing", Class::ActiveBenign),
@@ -162,10 +164,12 @@ mod tests {
             ("http-git-exposed", Class::ActiveBenign),
             ("http-server-status", Class::ActiveBenign),
             ("http-spring-actuator", Class::ActiveBenign),
+            ("ldap-anonymous-bind", Class::ActiveBenign),
             ("memcached-unauth", Class::ActiveBenign),
             ("mongodb-unauth", Class::ActiveBenign),
             ("redis-unauth-access", Class::ActiveBenign),
             ("snmp-default-community", Class::ActiveBenign),
+            ("vnc-noauth", Class::ActiveBenign),
         ];
 
         let mut shipped: Vec<(String, Class)> = FlowDb::global()
