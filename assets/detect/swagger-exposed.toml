@@ -22,6 +22,7 @@ max_connections = 4
 
 [[step]]
 for_each = { var = "path", in = ["/openapi.json", "/swagger.json", "/v2/api-docs", "/api-docs"] }
+on_no_match = "continue"
 send     = "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json,*/*\r\nConnection: close\r\n\r\n"
 expect   = ["HTTP/[0-9.]+ 200", '(?s)"(swagger|openapi)"\s*:\s*"']
   [[step.finding]]

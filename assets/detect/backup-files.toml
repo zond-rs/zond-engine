@@ -23,6 +23,7 @@ max_connections = 6
 
 [[step]]
 for_each = { var = "path", in = ["/backup.zip", "/backup.sql", "/backup.tar.gz", "/database.sql", "/dump.sql", "/wp-config.php.bak"] }
+on_no_match = "continue"
 send     = "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
 expect   = ["HTTP/[0-9.]+ 200", '(?s)(PK\x03\x04|\x1f\x8b\x08|-- MySQL dump|CREATE TABLE |INSERT INTO |DB_PASSWORD=|APP_KEY=)']
   [[step.finding]]

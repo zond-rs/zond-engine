@@ -64,6 +64,16 @@ pub trait Probe {
     /// nothing.
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>>;
 
+    /// Whether the most recent [`speak`](Self::speak) reply was read to a clean,
+    /// self-terminating end, a TCP peer that closed the connection or a UDP
+    /// datagram, rather than cut short by a byte or time budget. A reply cut
+    /// short cannot stand in for one a larger budget would have read in full, so
+    /// only a complete one is safe to share between flows. The default is `true`:
+    /// a canned probe hands back a whole reply.
+    fn reply_complete(&self) -> bool {
+        true
+    }
+
     /// Why the most recent [`speak`](Self::speak) returned [`None`], if a budget
     /// refused the exchange rather than the port merely going silent. The default
     /// is [`None`]: a probe with no budget of its own never refuses, it only goes

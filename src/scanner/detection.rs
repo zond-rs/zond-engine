@@ -428,6 +428,9 @@ struct SocketProbe {
     /// Why the last `speak` refused, if a budget did rather than the port going
     /// silent. Read after the flow runs so a cut-short detection reaches the report.
     last_refusal: Option<ProbeRefusal>,
+    /// Whether the last `speak` read its reply to a clean close, so a caching
+    /// layer can tell a complete reply from one a budget cut short.
+    last_complete: bool,
 }
 
 impl SocketProbe {
@@ -448,6 +451,7 @@ impl SocketProbe {
                 .max_connections
                 .map_or(DEFAULT_MAX_CONNECTIONS, u32::from),
             last_refusal: None,
+            last_complete: false,
         }
     }
 }
@@ -475,7 +479,7 @@ impl Probe for SocketProbe {
 
         // The reply may consume at most what the byte budget has left. A silent or
         // unreachable port is not a refusal, so `last_refusal` stays clear.
-        let reply = match self.protocol {
+        let (reply, complete) = match self.protocol {
             Protocol::Tcp => tcp_exchange(
                 self.addr,
                 self.tunnel,
@@ -483,17 +487,24 @@ impl Probe for SocketProbe {
                 self.deadline,
                 self.bytes_left,
             ),
-            Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
+            // A datagram is one whole message, so a UDP reply is complete as read.
+            Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left)
+                .map(|reply| (reply, true)),
             // An SCTP port is scanned without a client stack, so there is
             // nothing here for a detection to hold a conversation over.
             Protocol::Sctp => None,
         }?;
         self.bytes_left -= reply.len() as u64;
+        self.last_complete = complete;
         Some(reply)
     }
 
     fn last_refusal(&self) -> Option<ProbeRefusal> {
         self.last_refusal
+    }
+
+    fn reply_complete(&self) -> bool {
+        self.last_complete
     }
 }
 
@@ -507,7 +518,9 @@ fn remaining(deadline: Instant) -> Option<Duration> {
 
 /// Connects, sends `bytes`, and reads the reply until the port falls silent, the
 /// byte budget `cap` is spent, or the connection closes. [`None`] on any failure,
-/// an expired deadline, or an empty reply.
+/// an expired deadline, or an empty reply. The returned flag is true only when
+/// the peer closed the connection, so the reply is complete and safe to reuse
+/// for another flow that sends the same request.
 ///
 /// A `tunnel` wraps the connected socket in the transport the port answered
 /// inside before a byte of the probe is sent, so an `ssl/*` service is spoken to
@@ -520,7 +533,7 @@ fn tcp_exchange(
     bytes: &[u8],
     deadline: Instant,
     cap: u64,
-) -> Option<Vec<u8>> {
+) -> Option<(Vec<u8>, bool)> {
     let tcp =
         TcpStream::connect_timeout(&addr, remaining(deadline)?.min(CONNECT_PROBE_TIMEOUT)).ok()?;
     tcp.set_read_timeout(Some(remaining(deadline)?)).ok()?;
@@ -529,17 +542,24 @@ fn tcp_exchange(
 
     let mut reply = Vec::new();
     let mut buffer = [0u8; 4096];
+    let mut closed = false;
     while (reply.len() as u64) < cap {
         let want = ((cap - reply.len() as u64) as usize).min(buffer.len());
         match stream.read(&mut buffer[..want]) {
-            Ok(0) => break,
+            Ok(0) => {
+                closed = true;
+                break;
+            }
             Ok(read) => reply.extend_from_slice(&buffer[..read]),
             // A read timeout is the ordinary end of a reply that does not close
             // the connection; any other error ends it too.
             Err(_) => break,
         }
     }
-    (!reply.is_empty()).then_some(reply)
+    // `closed` is true only when the peer shut the connection, so the reply is
+    // the whole of what the port had to say; a reply that filled the cap or
+    // ended on a timeout may have more behind it and is reported incomplete.
+    (!reply.is_empty()).then_some((reply, closed))
 }
 
 /// Sends one datagram and reads one reply, capped at `cap` bytes. [`None`] on

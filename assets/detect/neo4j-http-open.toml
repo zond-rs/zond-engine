@@ -10,7 +10,7 @@ version = "1.0.0"
 title   = "Neo4j HTTP API is reachable"
 
 [detection.when]
-speaks   = "http"
+services = ["neo4j", "http"]
 protocol = "tcp"
 
 [detection.capabilities]

@@ -22,6 +22,7 @@ max_connections = 4
 
 [[step]]
 for_each = { var = "path", in = ["/phpinfo.php", "/info.php", "/phpinfo", "/php.php"] }
+on_no_match = "continue"
 send     = "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
 expect   = ["HTTP/[0-9.]+ 200", 'phpinfo\(\)']
   [[step.finding]]
