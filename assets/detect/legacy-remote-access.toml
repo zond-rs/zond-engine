@@ -1,0 +1,19 @@
+# A host still running Telnet beside SSH. Telnet answering on a host that also
+# offers SSH means the cleartext protocol was left enabled rather than retired
+# when SSH arrived, so credentials still cross the network in the clear and the
+# hardening is half done. A correlation over identified services; it sends nothing.
+
+[detection]
+id      = "legacy-remote-access"
+version = "1.0.0"
+title   = "Cleartext Telnet left enabled beside SSH"
+
+[detection.host]
+services = ["ssh", "telnet"]
+
+[[finding]]
+severity = "low"
+title    = "Telnet enabled alongside SSH"
+summary  = "SSH and Telnet both answer, so the cleartext protocol was never retired"
+detail   = "A host offering Telnet while it also runs SSH left the cleartext protocol enabled; credentials sent over Telnet cross the network in the clear."
+references = [{ cwe = 319 }]

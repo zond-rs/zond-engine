@@ -1,0 +1,20 @@
+# A web server and its database on the same host. When HTTP answers on the same
+# address as a PostgreSQL database, the database sits on the web server rather
+# than behind it, so a web-tier compromise reaches the data directly and the
+# database is one bind-to-0.0.0.0 from the network. A correlation over identified
+# services; it sends nothing.
+
+[detection]
+id      = "web-db-colocated"
+version = "1.0.0"
+title   = "Web server co-located with its database"
+
+[detection.host]
+services = ["http", "postgresql"]
+
+[[finding]]
+severity = "low"
+title    = "Web and database on one host"
+summary  = "HTTP and PostgreSQL answer on the same host, so the database sits on the web server"
+detail   = "With the database on the web server's own address, a web-tier compromise reaches it directly and it is one listen-address change from the network."
+references = [{ cwe = 668 }]

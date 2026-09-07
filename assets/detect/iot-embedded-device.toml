@@ -1,0 +1,19 @@
+# The service mix of an embedded device. Telnet answering alongside a small HTTP
+# interface is the pattern of a router, camera or appliance rather than a
+# general-purpose host, and such devices ship with default credentials and go
+# unpatched. A correlation over identified services; it sends nothing.
+
+[detection]
+id      = "iot-embedded-device"
+version = "1.0.0"
+title   = "Embedded device (Telnet + HTTP)"
+
+[detection.host]
+services = ["telnet", "http"]
+
+[[finding]]
+severity = "low"
+title    = "Likely embedded device"
+summary  = "Telnet and an HTTP interface answer on one host, the pattern of an appliance"
+detail   = "A host offering Telnet beside a web interface is usually a router, camera or appliance, a class that ships with default credentials and is rarely patched."
+references = [{ cwe = 1188 }]

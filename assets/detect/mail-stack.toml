@@ -1,0 +1,18 @@
+# A host offering mailbox access two ways. IMAP and POP3 answering together is a
+# mailbox server, the machine users collect mail from, and naming it as one
+# orients whoever reads the scan. A correlation over the services the scan
+# already identified; it sends nothing of its own.
+
+[detection]
+id      = "mail-stack"
+version = "1.0.0"
+title   = "Mailbox server (IMAP + POP3)"
+
+[detection.host]
+services = ["imap", "pop3"]
+
+[[finding]]
+severity = "info"
+title    = "Mailbox server"
+summary  = "IMAP and POP3 answer on one host, the shape of a mailbox server"
+detail   = "A host offering both IMAP and POP3 mailbox access is a mail store; its exposure and patch level carry the weight of every account it holds."

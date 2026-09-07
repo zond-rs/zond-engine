@@ -1,0 +1,32 @@
+# IMAP with no STARTTLS on offer. A mailbox server that does not advertise
+# STARTTLS in its capabilities has no way to encrypt the session, so the login
+# and the mail cross the network in cleartext. The probe asks for CAPABILITY and
+# logs out; a capability list without STARTTLS is the finding. The commands are
+# pipelined onto the one connection a flow opens per send.
+
+[detection]
+id      = "imap-no-starttls"
+version = "1.0.0"
+title   = "IMAP offers no STARTTLS"
+
+[detection.when]
+service  = "imap"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'a1 CAPABILITY\r\na2 LOGOUT\r\n'
+expect = '(?i)CAPABILITY'
+bind   = { starttls = '(?i)(?<starttls>STARTTLS)' }
+  [[step.finding]]
+  when         = "matched and unbound(starttls)"
+  severity     = "medium"
+  summary      = "IMAP advertised no STARTTLS in its capabilities"
+  detail       = "The server's CAPABILITY list offers no STARTTLS, so the login and the mail retrieved cross the network in cleartext."
+  references   = [{ cwe = 319 }]
+  excerpt_from = "$response"

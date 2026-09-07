@@ -1,0 +1,32 @@
+# POP3 with no STLS on offer. A POP3 server that does not advertise STLS in its
+# CAPA response has no way to encrypt the session, so the login and the mail
+# cross the network in cleartext. The probe asks for CAPA and quits; a capability
+# list without STLS is the finding. CAPA and QUIT are pipelined onto the one
+# connection a flow opens per send.
+
+[detection]
+id      = "pop3-no-starttls"
+version = "1.0.0"
+title   = "POP3 offers no STLS"
+
+[detection.when]
+service  = "pop3"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'CAPA\r\nQUIT\r\n'
+expect = '(?m)^\+OK'
+bind   = { stls = '(?im)^(?<stls>STLS)' }
+  [[step.finding]]
+  when         = "matched and unbound(stls)"
+  severity     = "medium"
+  summary      = "POP3 advertised no STLS in its CAPA response"
+  detail       = "The server's CAPA list offers no STLS, so the login and the mail retrieved cross the network in cleartext."
+  references   = [{ cwe = 319 }]
+  excerpt_from = "$response"

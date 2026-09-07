@@ -1,0 +1,31 @@
+# SSH offering a SHA-1 or 1024-bit key exchange. A server's KEXINIT lists the key
+# exchange methods it will accept, sent before authentication; group1-sha1 is a
+# 1024-bit group and the sha1 methods rest on a broken hash, both long deprecated.
+# The probe sends a client identification string and reads the KEXINIT the server
+# answers with. A single read of the handshake; nothing authenticates.
+
+[detection]
+id      = "ssh-weak-kex"
+version = "1.0.0"
+title   = "SSH offers a weak key exchange"
+
+[detection.when]
+service  = "ssh"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'SSH-2.0-zond_1.0\r\n'
+expect = '(diffie-hellman-group1-sha1|diffie-hellman-group14-sha1|diffie-hellman-group-exchange-sha1)'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "SSH offered a SHA-1 or 1024-bit key exchange"
+  detail       = "The server's KEXINIT lists a deprecated key exchange (a group1 1024-bit group or a SHA-1 method), which a modern client should refuse."
+  references   = [{ cwe = 327 }]
+  excerpt_from = "$response"

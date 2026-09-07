@@ -1,0 +1,19 @@
+# A remote-management service and a database on one host. SSH for administration
+# alongside a PostgreSQL database on the same address puts the control plane and
+# the data on one machine, so a foothold on either is a foothold on both. A
+# correlation over identified services; it sends nothing.
+
+[detection]
+id      = "mgmt-and-data-colocated"
+version = "1.0.0"
+title   = "Management and data plane on one host"
+
+[detection.host]
+services = ["ssh", "postgresql"]
+
+[[finding]]
+severity = "medium"
+title    = "SSH and a database on one host"
+summary  = "SSH administration and a PostgreSQL database answer on the same host"
+detail   = "The control plane and the data live on one machine, so a foothold on the administration service reaches the database and a database compromise reaches a shell host."
+references = [{ cwe = 668 }]

@@ -1,0 +1,30 @@
+# Kafka REST Proxy answering without authentication. The Confluent REST proxy
+# fronts a Kafka cluster over HTTP; an open one answers /topics with the topic
+# list, and from there a client can read and write records without credentials.
+# The reply carries the proxy's own vnd.kafka media type. A single read-only GET.
+
+[detection]
+id      = "kafka-rest-open"
+version = "1.0.0"
+title   = "Kafka REST Proxy readable without authentication"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /topics HTTP/1.1\r\nHost: {host}\r\nAccept: application/vnd.kafka.v2+json,*/*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "application/vnd.kafka"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "Kafka REST Proxy listed its topics without authentication"
+  detail       = "GET /topics returned the topic list with the vnd.kafka media type and no credentials, so the cluster's records can be read and written through the proxy."
+  references   = [{ cwe = 284 }]
+  excerpt_from = "$response"
