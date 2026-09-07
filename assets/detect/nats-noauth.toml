@@ -1,0 +1,33 @@
+# NATS reachable without authentication. A NATS server greets every connection
+# with an INFO line describing itself, and it advertises auth_required: true only
+# when it demands credentials; an open server omits the field. The probe sends a
+# PING to draw the greeting out and reads the INFO, binding the auth_required
+# flag when present. The finding fires only when the greeting arrives without it.
+# Nothing is published or subscribed.
+
+[detection]
+id      = "nats-noauth"
+version = "1.0.0"
+title   = "NATS reachable without authentication"
+
+[detection.when]
+service  = "nats"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = "PING\r\n"
+expect = 'INFO \{'
+bind   = { version = '"version":"(?<version>[^"]+)"', authreq = '"(?<authreq>auth_required)":true' }
+  [[step.finding]]
+  when         = "matched and not bound(authreq)"
+  severity     = "high"
+  summary      = "NATS greeted a client without requiring authentication"
+  detail       = "NATS {version} sent its INFO greeting without advertising auth_required, so the message bus accepts clients with no credentials."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

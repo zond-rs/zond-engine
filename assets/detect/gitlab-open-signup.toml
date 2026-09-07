@@ -1,0 +1,31 @@
+# GitLab with open registration. When an instance allows sign-ups, GET
+# /users/sign_up answers 200 with the registration form; an instance that has
+# disabled it redirects to the sign-in page instead. Open registration on an
+# internal GitLab lets anyone create an account and reach whatever the default
+# member sees. A single read-only GET.
+
+[detection]
+id      = "gitlab-open-signup"
+version = "1.0.0"
+title   = "GitLab allows open registration"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 131072
+max_millis = 4000
+
+[[step]]
+send   = "GET /users/sign_up HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", 'new_user\[(username|email)\]']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "GitLab served its registration form to an anonymous client"
+  detail       = "GET /users/sign_up returned the sign-up form rather than redirecting to sign-in, so registration is open and anyone reaching the instance can create an account."
+  references   = [{ cwe = 284 }]
+  excerpt_from = "$response"

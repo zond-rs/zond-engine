@@ -1,0 +1,31 @@
+# CUPS web interface reachable. The CUPS scheduler stamps a Server: CUPS header
+# on its HTTP responses and serves its administration interface; a reachable one
+# discloses the print queues and configuration and has been the entry point for
+# recent remote code execution in the cups-browsed chain. A single read-only GET.
+
+[detection]
+id      = "cups-exposed"
+version = "1.0.0"
+title   = "CUPS printing service web interface is reachable"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "GET / HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ [0-9]+", '(?im)^Server:\s*CUPS']
+bind   = { version = '(?i)Server:\s*CUPS/(?<version>[0-9.]+)' }
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "CUPS served its web interface"
+  detail       = "The response carried a Server: CUPS header (version {version}), so the CUPS scheduler is reachable and its print queues and configuration are exposed."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

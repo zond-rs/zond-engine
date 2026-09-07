@@ -1,0 +1,32 @@
+# Kubernetes Dashboard reachable over the network. The dashboard is a cluster
+# control surface and is not meant to face untrusted networks; a reachable one
+# serves its single-page app, whose title names it. Reaching the login page is
+# not cluster access on its own, but an exposed dashboard is a well-worn path to
+# one when it is deployed with a permissive service account or login skipped. A
+# single read-only GET.
+
+[detection]
+id      = "k8s-dashboard-open"
+version = "1.0.0"
+title   = "Kubernetes Dashboard is reachable over the network"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET / HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "Kubernetes Dashboard"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Kubernetes Dashboard served its interface over the network"
+  detail       = "GET / returned the Kubernetes Dashboard app; the dashboard is a cluster control surface and should not be reachable from untrusted networks."
+  references   = [{ cwe = 284 }]
+  excerpt_from = "$response"

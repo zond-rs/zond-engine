@@ -1,0 +1,34 @@
+# A reachable Telnet service. Telnet carries the login and the whole session in
+# cleartext, so its presence on the network is the finding. A Telnet server opens
+# with IAC option negotiation, a 0xff byte followed by a command byte, which is
+# what confirms the protocol beyond the port being open. Nothing is sent but a
+# blank line to draw out the negotiation the server already queued.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "telnet-enabled"
+version = "1.0.0"
+title   = "Telnet service reachable in cleartext"
+
+[detection.when]
+service  = "telnet"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 2048
+max_millis = 3000
+
+[[step]]
+send   = '\r\n'
+expect = '\xff[\xfa-\xfe]'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "A Telnet service is reachable"
+  detail       = "The service opened with Telnet option negotiation; Telnet carries credentials and session data in cleartext and should be replaced with SSH."
+  references   = [{ cwe = 319 }]
+  excerpt_from = "$response"

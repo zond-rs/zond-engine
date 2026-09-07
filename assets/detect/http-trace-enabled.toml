@@ -1,0 +1,30 @@
+# HTTP TRACE enabled. A server with TRACE on echoes the request it received back
+# in the response body, which reflects request headers to a client and enables
+# cross-site tracing. The probe sends a marker header and looks for it echoed in
+# a 200 body. A single request using a rarely-enabled method; it writes nothing.
+
+[detection]
+id      = "http-trace-enabled"
+version = "1.0.0"
+title   = "HTTP TRACE method is enabled"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = "TRACE / HTTP/1.1\r\nHost: {host}\r\nX-Zond-Trace: 6f7a\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "X-Zond-Trace: 6f7a"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "The server echoed a TRACE request"
+  detail       = "TRACE returned 200 with the request headers echoed in the body, which enables cross-site tracing and reflects headers such as cookies back to a client."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

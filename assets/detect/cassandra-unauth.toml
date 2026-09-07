@@ -1,0 +1,35 @@
+# Cassandra accepting the CQL native protocol without authentication. A STARTUP
+# frame opens a CQL connection; a node with authentication answers AUTHENTICATE
+# (opcode 0x03), and one without answers READY (opcode 0x02). The reply's first
+# five bytes are the response version 0x84, three stream/flags bytes, then the
+# opcode, so a 0x02 there is a session opened with no credentials. One STARTUP
+# frame, no query, nothing written.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "cassandra-unauth"
+version = "1.0.0"
+title   = "Cassandra CQL accepts clients without authentication"
+
+[detection.when]
+service  = "cassandra"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 4096
+max_millis = 3000
+
+[[step]]
+send   = '\x04\x00\x00\x00\x01\x00\x00\x00\x16\x00\x01\x00\x0bCQL_VERSION\x00\x053.0.0'
+expect = '(?s)^\x84\x00\x00\x00\x02'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Cassandra answered STARTUP with READY rather than AUTHENTICATE"
+  detail       = "The CQL native protocol returned a READY frame for a STARTUP with no credentials, so the node opens sessions without authentication."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

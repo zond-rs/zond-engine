@@ -1,0 +1,32 @@
+# HashiCorp Vault unsealed and reachable. Vault's sys/seal-status endpoint is
+# unauthenticated by design, so a reachable Vault answers it to anyone; a reply
+# of sealed=false means the secret store is unsealed and live. Vault expects to
+# sit behind network controls, so an unsealed one answering from the scan
+# vantage point is exposed. A single read-only GET.
+
+[detection]
+id      = "vault-unauth-status"
+version = "1.0.0"
+title   = "HashiCorp Vault is unsealed and network-reachable"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "GET /v1/sys/seal-status HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", '"sealed":false']
+bind   = { version = '"version":"(?<version>[^"]+)"' }
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "Vault answered sys/seal-status with sealed=false"
+  detail       = "Vault {version} reports sealed=false to an unauthenticated client, so the secret store is unsealed and reachable from here; Vault expects to sit behind network controls."
+  references   = [{ cwe = 668 }]
+  excerpt_from = "$response"

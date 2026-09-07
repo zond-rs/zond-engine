@@ -1,0 +1,33 @@
+# An OpenAPI or Swagger specification served without authentication. The machine
+# readable API description names every route, parameter and, often, the auth
+# scheme, so an exposed one hands an attacker the map. The document lives at one
+# of a few conventional paths, tried in turn; a served one answers 200 with a
+# body naming its openapi or swagger version. One read-only GET per path.
+
+[detection]
+id      = "swagger-exposed"
+version = "1.0.0"
+title   = "OpenAPI/Swagger specification exposed without authentication"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class           = "active-benign"
+speak           = "target"
+max_bytes       = 65536
+max_millis      = 3000
+max_connections = 4
+
+[[step]]
+for_each = { var = "path", in = ["/openapi.json", "/swagger.json", "/v2/api-docs", "/api-docs"] }
+send     = "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json,*/*\r\nConnection: close\r\n\r\n"
+expect   = ["HTTP/[0-9.]+ 200", '(?s)"(swagger|openapi)"\s*:\s*"']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "An API specification was served without authentication"
+  detail       = "GET {path} returned an OpenAPI/Swagger document with no credentials, disclosing the API's routes and parameters."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"
