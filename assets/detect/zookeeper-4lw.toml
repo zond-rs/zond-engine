@@ -1,0 +1,30 @@
+# ZooKeeper answering a four-letter-word command. The `srvr` command returns the
+# server's version, mode and connection counts to anyone who can reach the client
+# port, with no authentication; a node that has restricted the 4lw whitelist does
+# not answer it. The version line is ZooKeeper naming itself. A single exchange.
+
+[detection]
+id      = "zookeeper-4lw"
+version = "1.0.0"
+title   = "ZooKeeper answers four-letter-word commands"
+
+[detection.when]
+service  = "zookeeper"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = 'srvr\n'
+expect = 'Zookeeper version'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "ZooKeeper answered a four-letter-word command"
+  detail       = "srvr returned the server's version and statistics with no authentication; the four-letter-word commands disclose configuration and connected clients and should be restricted."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

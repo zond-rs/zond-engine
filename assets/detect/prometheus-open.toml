@@ -1,0 +1,31 @@
+# Prometheus exposed without authentication. Prometheus ships with no
+# authentication of its own, so a reachable one answers /api/v1/targets to anyone,
+# disclosing every scrape target and, through them, the internal layout of what it
+# monitors. A single read-only GET; the finding is the exposure, since Prometheus
+# has no auth to be missing.
+
+[detection]
+id      = "prometheus-open"
+version = "1.0.0"
+title   = "Prometheus exposed without authentication"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 65536
+max_millis = 3000
+
+[[step]]
+send   = "GET /api/v1/targets HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "activeTargets"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "Prometheus exposed its scrape targets without authentication"
+  detail       = "GET /api/v1/targets returned the active scrape targets with no credentials; Prometheus has no authentication, so reaching it discloses the internal layout it monitors."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

@@ -1,0 +1,36 @@
+# rsync daemon listing its modules without authentication. On connect the daemon
+# greets with @RSYNCD: <version>; a client that echoes a version and then an empty
+# module name is answered with the module list, terminated by @RSYNCD: EXIT. A
+# module guarded by a secret answers @RSYNCD: AUTHREQD instead, so reaching EXIT
+# is an anonymous enumeration of what the daemon shares. One connection carries
+# the whole exchange, pipelined, since a flow opens a fresh one per send.
+#
+# The payload is a single-quoted TOML literal string so its escapes reach the
+# interpreter rather than the TOML parser.
+
+[detection]
+id      = "rsync-exposed"
+version = "1.0.0"
+title   = "rsync daemon lists its modules without authentication"
+
+[detection.when]
+service  = "rsync"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+# Echo a protocol version, then an empty module name to request the listing.
+send   = '@RSYNCD: 31.0\n\n'
+expect = '@RSYNCD: EXIT'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "rsync daemon listed its modules without authentication"
+  detail       = "The daemon answered a module-list request with no credentials, enumerating what it shares; an exposed rsync module is a common path to reading or writing a host's files."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

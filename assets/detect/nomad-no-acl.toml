@@ -1,0 +1,31 @@
+# Nomad serving its jobs without an ACL token. A Nomad agent with ACLs off, or in
+# default-allow, answers /v1/jobs to anyone and stamps its X-Nomad-* headers on
+# the reply; one enforcing ACLs answers 403 without a token. A single read-only
+# GET. The gate is `speaks = "http"`, so a non-standard port or TLS is still
+# reached; the header is what names it Nomad.
+
+[detection]
+id      = "nomad-no-acl"
+version = "1.0.0"
+title   = "Nomad API readable without an ACL token"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /v1/jobs HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "(?im)^X-Nomad-"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Nomad served its jobs list without a token"
+  detail       = "GET /v1/jobs returned 200 with Nomad's headers and no token, so the scheduler is readable by anyone who reaches the agent."
+  references   = [{ cwe = 284 }]
+  excerpt_from = "$response"

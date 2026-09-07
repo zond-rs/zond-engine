@@ -1,0 +1,30 @@
+# Riak serving its stats without authentication. The HTTP interface answers /stats
+# to anyone by default, disclosing the ring, version and node names; the
+# riak_kv_version field is Riak naming itself. A single read-only GET. The gate
+# names riak as well as http, since the fingerprint labels the port riak.
+
+[detection]
+id      = "riak-open"
+version = "1.0.0"
+title   = "Riak stats readable without authentication"
+
+[detection.when]
+services = ["riak", "http"]
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 65536
+max_millis = 3000
+
+[[step]]
+send   = "GET /stats HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "riak_kv_version"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Riak served its stats without authentication"
+  detail       = "GET /stats returned the cluster's ring and version with no credentials, so the database is reachable and readable unauthenticated."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

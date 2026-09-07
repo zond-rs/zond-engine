@@ -1,0 +1,30 @@
+# Docker registry serving its catalogue without authentication. A registry with
+# no auth answers /v2/_catalog with the repository list; one that requires a
+# credential answers 401. A single read-only GET. An open registry lets anyone
+# pull, and often push, images.
+
+[detection]
+id      = "docker-registry-catalog"
+version = "1.0.0"
+title   = "Docker registry catalogue readable without authentication"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /v2/_catalog HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "repositories"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Docker registry served its catalogue without authentication"
+  detail       = "GET /v2/_catalog returned the repository list with no credentials, so the registry's images can be pulled, and often pushed, by anyone."
+  references   = [{ cwe = 284 }]
+  excerpt_from = "$response"

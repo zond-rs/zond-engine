@@ -1,0 +1,31 @@
+# Kibana reachable, disclosing its status. Kibana keeps /api/status public for
+# health checks, so a reachable instance answers it and stamps its kbn-* headers
+# on the reply, disclosing the exact version behind the dashboard. A single
+# read-only GET; the finding is the exposure of an interface not meant to face an
+# untrusted network.
+
+[detection]
+id      = "kibana-open"
+version = "1.0.0"
+title   = "Kibana reachable and disclosing its status"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /api/status HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "(?im)^kbn-"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "Kibana is reachable and disclosed its status"
+  detail       = "GET /api/status answered with Kibana's headers, disclosing its version; the dashboard is not meant to face an untrusted network."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

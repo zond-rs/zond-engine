@@ -1,0 +1,30 @@
+# ClickHouse running queries without authentication. With the default user left
+# passwordless, the HTTP interface runs a query for anyone and stamps its
+# X-ClickHouse-* headers on the reply; a secured instance answers 403. A single
+# read-only SELECT.
+
+[detection]
+id      = "clickhouse-noauth"
+version = "1.0.0"
+title   = "ClickHouse answering queries without authentication"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /?query=SELECT%201 HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "(?im)^X-ClickHouse-"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "ClickHouse ran a query without authentication"
+  detail       = "GET /?query=SELECT 1 returned a result with no credentials, so the database is readable, and usually writable, unauthenticated."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

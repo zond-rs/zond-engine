@@ -1,0 +1,36 @@
+# MQTT broker accepting an anonymous connection. A CONNECT with a client id and no
+# credentials is answered with a CONNACK whose return code is 0x00 when the broker
+# takes it; a broker requiring credentials answers a non-zero code (0x04 or 0x05).
+# The reply 0x20 0x02 0x00 0x00 is CONNACK, remaining length two, no session
+# present, accepted.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach the
+# interpreter rather than the TOML parser.
+
+[detection]
+id      = "mqtt-anonymous"
+version = "1.0.0"
+title   = "MQTT broker accepts anonymous connections"
+
+[detection.when]
+service  = "mqtt"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one CONNECT and its CONNACK; publishes and subscribes to nothing
+speak      = "target"
+max_bytes  = 4096
+max_millis = 3000
+
+[[step]]
+# MQTT 3.1.1 CONNECT: protocol "MQTT" level 4, clean session, keepalive 60,
+# client id "zond", no username or password.
+send   = '\x10\x10\x00\x04MQTT\x04\x02\x00\x3c\x00\x04zond'
+expect = '\x20\x02\x00\x00'   # CONNACK: connection accepted
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "MQTT broker accepted an anonymous connection"
+  detail       = "The broker answered a CONNECT carrying no credentials with an accepted CONNACK, so anyone who reaches it can subscribe to and publish on its topics."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"
