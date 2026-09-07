@@ -1,0 +1,30 @@
+# phpMyAdmin reachable. The database administration console is a high-value target
+# and is not meant to face an untrusted network; a 200 for /phpmyadmin/ naming
+# phpMyAdmin is the login page answering. This probes the default path only, which
+# is where the overwhelming majority sit. A single read-only GET.
+
+[detection]
+id      = "phpmyadmin-exposed"
+version = "1.0.0"
+title   = "phpMyAdmin administration console reachable"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one read-only GET of the login page
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /phpmyadmin/ HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "phpMyAdmin"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "phpMyAdmin is reachable at /phpmyadmin/"
+  detail       = "The phpMyAdmin login page answered, exposing the database administration console to this network position."
+  references   = [{ cwe = 284 }]   # Improper Access Control
+  excerpt_from = "$response"

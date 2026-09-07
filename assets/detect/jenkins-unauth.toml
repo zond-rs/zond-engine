@@ -1,0 +1,32 @@
+# Jenkins allowing anonymous access. Jenkins stamps an X-Jenkins header on its
+# responses, and a controller that answers /api/json with 200 rather than
+# redirecting to a login is letting an anonymous client read it: jobs, build
+# logs, and sometimes credentials disclosed in those logs. A single read-only GET.
+
+[detection]
+id      = "jenkins-unauth"
+version = "1.0.0"
+title   = "Jenkins allows anonymous access"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one read-only GET /api/json
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "GET /api/json HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+# The X-Jenkins response header is what says it is Jenkins; the 200 is anonymous
+# read rather than a login redirect.
+expect = ["HTTP/[0-9.]+ 200", "(?im)^X-Jenkins:"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Jenkins served its API to an anonymous client"
+  detail       = "GET /api/json returned 200 with an X-Jenkins header rather than a login redirect, so the controller is readable without credentials."
+  references   = [{ cwe = 306 }]   # Missing Authentication for a Critical Function
+  excerpt_from = "$response"

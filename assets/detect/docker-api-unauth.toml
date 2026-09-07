@@ -1,0 +1,35 @@
+# Docker Engine API reachable without authentication. The remote API on 2375, or
+# on 2376 without client-certificate verification, answers /version to anyone,
+# and an unauthenticated Docker API is root on the host: it can start a container
+# that mounts the host filesystem. A single read-only GET; the ApiVersion field
+# is the daemon answering, which a plain web server on the same port does not.
+#
+# The gate is `speaks = "http"` rather than a port, so a daemon on a non-standard
+# port or behind TLS (2376) is still reached; the `expect` is what keeps it
+# precise.
+
+[detection]
+id      = "docker-api-unauth"
+version = "1.0.0"
+title   = "Docker Engine API reachable without authentication"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one read-only GET /version; starts no container
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "GET /version HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "ApiVersion"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "critical"
+  summary      = "Docker Engine API answered without authentication"
+  detail       = "GET /version returned the daemon's API version with no credentials; an unauthenticated Docker API is equivalent to root on the host."
+  references   = [{ cwe = 306 }]   # Missing Authentication for a Critical Function
+  excerpt_from = "$response"

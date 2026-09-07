@@ -1,0 +1,33 @@
+# Kubernetes API server allowing anonymous access to cluster resources. The API
+# binds TLS on 6443, which `speaks = "http"` reaches through the handshake. A
+# cluster that binds system:anonymous to a reading role answers
+# /api/v1/namespaces with the namespace list, where a locked-down one answers 401
+# or 403. The public /version endpoint is deliberately not used: modern clusters
+# serve it to anyone by design, so it is no finding, while reading a resource
+# collection is.
+
+[detection]
+id      = "k8s-api-anonymous"
+version = "1.0.0"
+title   = "Kubernetes API allows anonymous access"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one read-only GET of a resource collection; nothing created
+speak      = "target"
+max_bytes  = 32768
+max_millis = 4000
+
+[[step]]
+send   = "GET /api/v1/namespaces HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "NamespaceList"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Kubernetes API listed namespaces for an anonymous client"
+  detail       = "GET /api/v1/namespaces returned the cluster's namespaces with no credentials, so system:anonymous can read cluster resources."
+  references   = [{ cwe = 306 }]   # Missing Authentication for a Critical Function
+  excerpt_from = "$response"
