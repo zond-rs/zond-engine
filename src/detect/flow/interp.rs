@@ -572,6 +572,57 @@ mod tests {
                 b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"results\":[{\"statement_id\":0,\"series\":[{\"name\":\"databases\",\"values\":[[\"_internal\"]]}]}]}",
                 Severity::High,
             ),
+            (
+                "nomad-no-acl",
+                b"HTTP/1.1 200 OK\r\nX-Nomad-Index: 42\r\nContent-Type: application/json\r\n\r\n[]",
+                Severity::High,
+            ),
+            (
+                "docker-registry-catalog",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"repositories\":[\"alpine\",\"nginx\"]}",
+                Severity::High,
+            ),
+            (
+                "kubelet-pods-exposed",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"kind\":\"PodList\",\"items\":[]}",
+                Severity::High,
+            ),
+            (
+                "clickhouse-noauth",
+                b"HTTP/1.1 200 OK\r\nX-ClickHouse-Query-Id: q1\r\nContent-Type: text/tab-separated-values\r\n\r\n1\n",
+                Severity::High,
+            ),
+            (
+                "prometheus-open",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"success\",\"data\":{\"activeTargets\":[]}}",
+                Severity::Medium,
+            ),
+            (
+                "kibana-open",
+                b"HTTP/1.1 200 OK\r\nkbn-name: kibana\r\nContent-Type: application/json\r\n\r\n{\"status\":{\"overall\":{}}}",
+                Severity::Medium,
+            ),
+            (
+                "riak-open",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"riak_kv_version\":\"3.0.0\",\"ring_members\":[\"riak@127.0.0.1\"]}",
+                Severity::High,
+            ),
+            (
+                "rsync-exposed",
+                b"@RSYNCD: 31.0\ndata\tproject files\nbackup\tnightly dumps\n@RSYNCD: EXIT\n",
+                Severity::Medium,
+            ),
+            (
+                "zookeeper-4lw",
+                b"Zookeeper version: 3.8.0-abc, built on 2024-01-01\nClients:\n /10.0.0.9:52111[1]\nMode: standalone\n",
+                Severity::Medium,
+            ),
+            (
+                "mqtt-anonymous",
+                // CONNACK: no session present, return code 0x00 (accepted).
+                b"\x20\x02\x00\x00",
+                Severity::High,
+            ),
         ];
 
         for (name, reply, severity) in cases {
@@ -586,35 +637,21 @@ mod tests {
         }
     }
 
-    /// The same flows against a reply that should not confirm them: a 404, or a
-    /// bare page. A single-match flow whose `expect` fails halts with nothing, so
-    /// none of these may fire, which is what keeps the set safe to run by default.
+    /// No shipped flow may fire on a bare 404: a nothing-page confirms nothing,
+    /// and a flow whose `expect` fails halts with nothing. Checked over the whole
+    /// corpus rather than a named list, so the property holds for every flow and a
+    /// new one is covered without editing this test. The tailored per-service
+    /// denials, a 530 or a rejected bind or a 403, are their own tests below,
+    /// because each needs a reply shaped like the service it denies.
     #[test]
-    fn the_phase_one_flows_stay_quiet_on_a_non_confirming_reply() {
+    fn no_flow_fires_on_a_generic_404() {
         let quiet = b"HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n\r\n<html><body>not found</body></html>";
-        for name in [
-            "memcached-unauth",
-            "couchdb-open",
-            "elasticsearch-open",
-            "http-git-exposed",
-            "http-server-status",
-            "http-dotenv-exposed",
-            "mongodb-unauth",
-            "http-spring-actuator",
-            "http-dir-listing",
-            "docker-api-unauth",
-            "k8s-api-anonymous",
-            "jenkins-unauth",
-            "phpmyadmin-exposed",
-            "etcd-unauth",
-            "consul-no-acl",
-            "influxdb-noauth",
-        ] {
-            let flow = flow(name);
-            let findings = run(&flow, "", &seed(), &mut Canned(quiet.to_vec()));
+        for flow in crate::detect::flow::db::FlowDb::global().flows() {
+            let findings = flow.run(&seed(), &mut Canned(quiet.to_vec()));
             assert!(
                 findings.is_empty(),
-                "{name} fired on a non-confirming reply"
+                "{} fired on a bare 404",
+                flow.flow().detection.id
             );
         }
     }

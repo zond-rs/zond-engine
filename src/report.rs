@@ -70,7 +70,6 @@ use crate::config::{IdleScan, OsDetection, ServiceDetection, ZondConfig};
 use crate::evasion::EvasionProfile;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
-use crate::model::finding::DetectionClass;
 use crate::model::host::{Host, HostStatus};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::{ScopedIp, Zone};
@@ -1823,46 +1822,6 @@ pub struct FamilyCounts {
     pub dual_stack: usize,
 }
 
-/// What a higher [envelope](crate::config::DetectionEnvelope) would have run on
-/// a scan, held back by the ceiling that was in force.
-///
-/// A detection declares an intrusiveness class and runs only where the envelope
-/// permits it; the default ceiling withholds the intrusive classes until an
-/// operator raises it. Where a detection gated onto a port a scan reached but
-/// sat above the ceiling, there is traffic the operator could send and a result
-/// they are not seeing, and nothing else in the report says so. This is that
-/// fact, counted per run, for a front end to surface.
-///
-/// The [`raise_to`](Self::raise_to) class is named rather than a flag: which
-/// flag raises the ceiling belongs to the front end. A run with nothing withheld
-/// carries [`None`] rather than a hint whose count is zero.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct CeilingHint {
-    matched: usize,
-    raise_to: DetectionClass,
-}
-
-impl CeilingHint {
-    /// A hint that `matched` detections gated onto a reached port but were held
-    /// back, and that raising the ceiling to `raise_to` would run all of them.
-    pub fn new(matched: usize, raise_to: DetectionClass) -> Self {
-        Self { matched, raise_to }
-    }
-
-    /// How many distinct detections gated onto a port this scan reached but were
-    /// withheld by the ceiling. One or more: a run with none carries no hint.
-    pub fn matched(&self) -> usize {
-        self.matched
-    }
-
-    /// The ceiling that would run every withheld detection, which is the most
-    /// intrusive class among them.
-    pub fn raise_to(&self) -> DetectionClass {
-        self.raise_to
-    }
-}
-
 /// Everything known about a completed scan.
 ///
 /// Obtained from [`ScanTask::join`](crate::scanner::ScanTask::join) once a scan
@@ -1896,14 +1855,6 @@ pub struct ScanReport {
     /// it decides which records are one host, so a fold that correctly separates
     /// two link-locals now has somewhere to put them both.
     hosts: BTreeMap<ScopedIp, Host>,
-    /// Detections a higher envelope would have run on what this scan reached,
-    /// held back by the ceiling in force. See [`CeilingHint`].
-    ///
-    /// A live artefact of the run, not part of the record: it depends on the
-    /// operator's envelope at scan time, so it is neither exported nor journaled,
-    /// and a report read back from disk carries [`None`]. It lets a front end say
-    /// that raising the ceiling would find more, on a box where it would.
-    ceiling_suppressed: Option<CeilingHint>,
 }
 
 impl ScanReport {
@@ -1918,7 +1869,6 @@ impl ScanReport {
             engine_version: Cow::Borrowed(ENGINE_VERSION),
             phases: vec![phase],
             hosts: index(hosts),
-            ceiling_suppressed: None,
         }
     }
 
@@ -1961,7 +1911,6 @@ impl ScanReport {
             engine_version,
             phases,
             hosts: index(hosts),
-            ceiling_suppressed: None,
         }
     }
 
@@ -2020,24 +1969,6 @@ impl ScanReport {
     /// The number of hosts recorded.
     pub fn host_count(&self) -> usize {
         self.hosts.len()
-    }
-
-    /// Detections a higher envelope would have run on what this scan reached,
-    /// held back by the ceiling in force, or [`None`] when the ceiling admitted
-    /// every detection that gated on a reached port. See [`CeilingHint`].
-    ///
-    /// Always [`None`] for a report read back from a journal or an export: the
-    /// answer depends on the operator's envelope at scan time, which the record
-    /// does not keep.
-    pub fn ceiling_suppressed(&self) -> Option<&CeilingHint> {
-        self.ceiling_suppressed.as_ref()
-    }
-
-    /// Records what a higher ceiling would additionally have run. Set once, by
-    /// the detection phase; crate-private because it is measured during the run,
-    /// not something a reader of a finished report supplies.
-    pub(crate) fn set_ceiling_suppressed(&mut self, hint: Option<CeilingHint>) {
-        self.ceiling_suppressed = hint;
     }
 
     /// Looks up a host by the address it is reported under.
@@ -2317,15 +2248,6 @@ impl ScanReport {
                     self.hosts.insert(key, host);
                 }
             }
-        }
-
-        // The ceiling hint is measured in the detection phase, so it rides on the
-        // report being folded in rather than on the receiver. A port scan folds
-        // its port phase into its liveness phase here, and the port phase is where
-        // the hint is. Folding scan files, where neither side has one, is
-        // unaffected.
-        if other.ceiling_suppressed.is_some() {
-            self.ceiling_suppressed = other.ceiling_suppressed;
         }
     }
 }
@@ -2913,27 +2835,6 @@ mod tests {
             vec![ScanKind::Discovery, ScanKind::PortScan]
         );
         assert_eq!(first.elapsed(), Duration::from_secs(1));
-    }
-
-    #[test]
-    fn merge_carries_the_ceiling_hint_from_the_phase_that_measured_it() {
-        // A port scan folds its port phase into its liveness phase, and only the
-        // port phase runs detections, so the hint lives on the report being
-        // folded in. A merge that kept the receiver's `None` would drop it.
-        let first = ScanReport::new(phase(ScanKind::Discovery), [Host::new(ip(1))]);
-        assert!(first.ceiling_suppressed().is_none());
-
-        let mut second = ScanReport::new(phase(ScanKind::PortScan), [Host::new(ip(1))]);
-        second.set_ceiling_suppressed(Some(CeilingHint::new(2, DetectionClass::Exploit)));
-
-        let mut first = first;
-        first.merge(second);
-
-        let hint = first
-            .ceiling_suppressed()
-            .expect("the fold carries the port phase's hint");
-        assert_eq!(hint.matched(), 2);
-        assert_eq!(hint.raise_to(), DetectionClass::Exploit);
     }
 
     #[test]

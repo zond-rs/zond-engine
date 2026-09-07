@@ -306,7 +306,7 @@ pub use crate::model::ip::set::IpSet;
 pub use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 pub use crate::model::target::{Target, TargetMap, TargetSet};
 pub use crate::model::technique::TcpScanTechnique;
-pub use crate::report::{CeilingHint, ScanReport, ScanSummary};
+pub use crate::report::{ScanReport, ScanSummary};
 pub use crate::resolve::{ResolveConfig, Resolver};
 pub use crate::scanner::handle::ScanHandle;
 pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession};

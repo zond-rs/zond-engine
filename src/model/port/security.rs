@@ -430,16 +430,19 @@ impl CertificateInfo {
     /// problem, derived from what the handshake already produced: no probe of its
     /// own.
     ///
-    /// The three it checks are the ones the parsed fields can settle on their own:
-    /// a certificate past its validity window, one whose issuer names its own
-    /// subject (self-signed), and one carrying an RSA key below the 2048-bit floor.
+    /// Three checks the parsed fields settle on their own: a certificate past its
+    /// validity window (CWE-324); one whose issuer names its own subject, a
+    /// heuristic on the common names and so a `Probable` self-signed rather than a
+    /// certain one (CWE-295); and an RSA key below the 2048-bit floor, gated on the
+    /// key type so an elliptic-curve key is not judged against an RSA floor
+    /// (CWE-326).
+    ///
     /// Two neighbouring checks are deliberately absent. Hostname match is not one:
     /// the scan reaches the endpoint by address with no SNI, so there is no name it
     /// asked the certificate to present and nothing to hold its names against. Nor
-    /// is the signature algorithm, which is not among the fields parsed here.
-    ///
-    /// A not-yet-valid certificate is left alone rather than reported: a scanner
-    /// clock running ahead is the likelier cause, and flagging it would cry wolf.
+    /// is the signature algorithm, which is not among the fields parsed here. A
+    /// not-yet-valid certificate is left alone too: a scanner clock running ahead
+    /// is the likelier cause, and flagging it would cry wolf.
     pub fn findings(&self, at: SystemTime) -> Vec<Finding> {
         let mut findings = Vec::new();
         let id = certificate_detection_id();
@@ -459,13 +462,9 @@ impl CertificateInfo {
                         "the certificate for {} is past its validity window",
                         self.common_name
                     )))
-                    .with_reference(Reference::Cwe(324)), // Use of a Key Past its Expiration Date
+                    .with_reference(Reference::Cwe(324)),
             );
         }
-
-        // A heuristic on the common names, which is what is parsed: a certificate
-        // chained to a real authority names a different issuer. Probable, not
-        // Certain, for that reason.
         if !self.common_name.is_empty()
             && self.issuer.eq_ignore_ascii_case(self.common_name.as_ref())
             && let Ok(finding) = Finding::new(
@@ -482,12 +481,9 @@ impl CertificateInfo {
                         "issuer and subject are both {}",
                         self.common_name
                     )))
-                    .with_reference(Reference::Cwe(295)), // Improper Certificate Validation
+                    .with_reference(Reference::Cwe(295)),
             );
         }
-
-        // Gated on the key type, so an elliptic-curve key (256 bits and strong) is
-        // not read as weak against an RSA floor.
         if self.pubkey_type.eq_ignore_ascii_case("RSA")
             && self.pubkey_bits < 2048
             && let Ok(finding) = Finding::new(
@@ -504,7 +500,7 @@ impl CertificateInfo {
                         "the RSA public key is {} bits, below the 2048-bit floor",
                         self.pubkey_bits
                     )))
-                    .with_reference(Reference::Cwe(326)), // Inadequate Encryption Strength
+                    .with_reference(Reference::Cwe(326)),
             );
         }
 
@@ -711,7 +707,6 @@ mod tests {
 
     #[test]
     fn a_clean_certificate_has_no_posture_findings() {
-        // CA-issued, in date, RSA 2048.
         let now = SystemTime::now();
         let cert = CertificateInfo::new(
             "web.example",
@@ -729,8 +724,6 @@ mod tests {
         let now = SystemTime::now();
         let id = "zond:certificate";
 
-        // Expired: validity ended before `now`. Issuer differs from the subject, so
-        // it is the one finding and not also self-signed.
         let expired = CertificateInfo::new(
             "web.example",
             "Example Root CA",
@@ -745,8 +738,6 @@ mod tests {
         assert_eq!(findings[0].severity(), Severity::Medium);
         assert!(findings[0].title().contains("expired"));
 
-        // Self-signed: issuer names the subject. In date, RSA 2048, so it is the
-        // one finding.
         let self_signed = CertificateInfo::new(
             "box.local",
             "box.local",
@@ -760,7 +751,6 @@ mod tests {
         assert_eq!(findings[0].severity(), Severity::Low);
         assert!(findings[0].title().contains("self-signed"));
 
-        // Weak RSA key: 1024 bits, CA-issued and in date.
         let weak = CertificateInfo::new(
             "legacy.example",
             "Example Root CA",
@@ -777,8 +767,6 @@ mod tests {
 
     #[test]
     fn a_256_bit_elliptic_curve_key_is_not_read_as_weak() {
-        // 256-bit EC is strong; the weak-key check is gated on the key type so it
-        // is not flagged against the 2048-bit RSA floor.
         let now = SystemTime::now();
         let cert = CertificateInfo::new(
             "ec.example",

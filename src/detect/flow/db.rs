@@ -138,48 +138,27 @@ mod tests {
         }
     }
 
-    /// What each shipped flow may do, pinned.
+    /// What each shipped flow may do, pinned as the exceptions to the default.
     ///
     /// A detection's class decides whether a default scan runs it at all: the
-    /// envelope's ceiling is `ActiveBenign`, so anything above that ships inert
-    /// until an operator raises it. Moving a detection across that line either
-    /// way is a security decision, not a detail. Raising one below the ceiling
-    /// starts sending traffic every default scan will now send; lowering one
-    /// above it silently stops a detection running that an operator believes is.
+    /// envelope's ceiling is `ActiveBenign`, so `Exploit` and `Dos` ship inert
+    /// until an operator raises the ceiling, and `ActiveMutating` writes to the
+    /// target. Moving a detection across that line either way is a security
+    /// decision, not a detail.
     ///
-    /// Pinned as a list rather than checked as a property, because the point is
-    /// that adding or changing a detection has to come here and say so.
+    /// So the tripwire is the set of detections whose class is *not* the
+    /// active-benign default, checked against a blessed list. Adding an ordinary
+    /// active-benign detection needs no edit here; one that ships anything else
+    /// fails this test until it is listed by name, which is the review that must
+    /// not be skipped. Enumerating the whole corpus bought nothing over this and
+    /// would not survive a thousand detections.
     #[test]
     fn the_corpus_ships_the_classes_it_is_known_to_ship() {
         use crate::detect::manifest::Class;
 
-        let expected = [
-            ("anonymous-ftp", Class::ActiveBenign),
-            ("consul-no-acl", Class::ActiveBenign),
-            ("couchdb-open", Class::ActiveBenign),
-            ("dns-version-bind", Class::ActiveBenign),
-            ("docker-api-unauth", Class::ActiveBenign),
-            ("elasticsearch-open", Class::ActiveBenign),
-            ("etcd-unauth", Class::ActiveBenign),
-            ("grafana-path-traversal", Class::Exploit),
-            ("http-dir-listing", Class::ActiveBenign),
-            ("http-dotenv-exposed", Class::ActiveBenign),
-            ("http-git-exposed", Class::ActiveBenign),
-            ("http-server-status", Class::ActiveBenign),
-            ("http-spring-actuator", Class::ActiveBenign),
-            ("influxdb-noauth", Class::ActiveBenign),
-            ("jenkins-unauth", Class::ActiveBenign),
-            ("k8s-api-anonymous", Class::ActiveBenign),
-            ("ldap-anonymous-bind", Class::ActiveBenign),
-            ("memcached-unauth", Class::ActiveBenign),
-            ("mongodb-unauth", Class::ActiveBenign),
-            ("phpmyadmin-exposed", Class::ActiveBenign),
-            ("redis-unauth-access", Class::ActiveBenign),
-            ("snmp-default-community", Class::ActiveBenign),
-            ("vnc-noauth", Class::ActiveBenign),
-        ];
+        let blessed = [("grafana-path-traversal", Class::Exploit)];
 
-        let mut shipped: Vec<(String, Class)> = FlowDb::global()
+        let mut exceptions: Vec<(String, Class)> = FlowDb::global()
             .flows()
             .map(|flow| {
                 (
@@ -187,18 +166,20 @@ mod tests {
                     flow.flow().detection.capabilities.class,
                 )
             })
+            .filter(|(_, class)| *class != Class::ActiveBenign)
             .collect();
-        shipped.sort_by(|a, b| a.0.cmp(&b.0));
+        exceptions.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let shipped: Vec<(&str, Class)> = shipped
+        let exceptions: Vec<(&str, Class)> = exceptions
             .iter()
             .map(|(id, class)| (id.as_str(), *class))
             .collect();
 
         assert_eq!(
-            shipped, expected,
-            "a shipped detection changed what it may do, or one arrived without \
-             saying: add it here once the class is what it should be"
+            exceptions, blessed,
+            "a detection ships a class other than active-benign that is not blessed \
+             here: a class above the default is silent by default or intrusive, so \
+             adding or changing one is a security decision and must be listed"
         );
     }
 
