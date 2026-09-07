@@ -1,0 +1,19 @@
+# A SQL Server on a Windows file host. Microsoft SQL Server answering on the same
+# host as SMB is a database sharing a machine with file services, so a foothold on
+# either, an SMB relay or a SQL login, reaches the other. A correlation over
+# identified services; it sends nothing.
+
+[detection]
+id      = "windows-sql-server"
+version = "1.0.0"
+title   = "SQL Server co-located with SMB"
+
+[detection.host]
+services = ["mssql", "smb"]
+
+[[finding]]
+severity = "medium"
+title    = "SQL Server and SMB on one host"
+summary  = "Microsoft SQL Server and SMB answer on the same host"
+detail   = "A database sharing a machine with file services means a foothold on either, an SMB relay or a SQL login, reaches the other; the two should not sit on one exposed host."
+references = [{ cwe = 668 }]

@@ -1,0 +1,19 @@
+# SMB reachable over legacy NetBIOS. TCP 139 (NetBIOS session service) open
+# beside 445 means the host still answers SMB over the legacy transport, which
+# only old or unhardened Windows leaves enabled and which broadens the file-
+# sharing attack surface. A correlation over open ports; it sends nothing.
+
+[detection]
+id      = "windows-legacy-netbios"
+version = "1.0.0"
+title   = "SMB over legacy NetBIOS (139 + 445)"
+
+[detection.host]
+ports_open = [139, 445]
+
+[[finding]]
+severity = "low"
+title    = "SMB on legacy NetBIOS"
+summary  = "TCP 139 (NetBIOS session) and 445 both answer SMB"
+detail   = "A host serving SMB over the legacy NetBIOS transport as well as direct 445 has left an old code path enabled; current Windows uses 445 alone, so 139 marks an unhardened or dated host."
+references = [{ cwe = 477 }]

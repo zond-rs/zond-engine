@@ -1,0 +1,19 @@
+# Remote Desktop and file sharing on one host. TCP 3389 (RDP) open beside 445
+# (SMB) is a Windows host offering both interactive logon and file services to
+# the network, the two surfaces ransomware most often arrives and spreads
+# through. A correlation over open ports; it sends nothing.
+
+[detection]
+id      = "windows-terminal-file"
+version = "1.0.0"
+title   = "RDP and SMB exposed together"
+
+[detection.host]
+ports_open = [3389, 445]
+
+[[finding]]
+severity = "medium"
+title    = "RDP and SMB on one host"
+summary  = "TCP 3389 (RDP) and 445 (SMB) are open together"
+detail   = "A Windows host offering both Remote Desktop and file sharing exposes the two surfaces ransomware most often uses to arrive and to spread; neither should face untrusted networks."
+references = [{ cwe = 284 }]

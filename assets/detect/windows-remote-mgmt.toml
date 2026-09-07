@@ -1,0 +1,19 @@
+# Two Windows remote-management channels at once. TCP 3389 (RDP) open beside 5985
+# (WinRM) means a host offers both interactive and PowerShell remoting to the
+# network, a broad management surface and a favoured lateral-movement path. A
+# correlation over open ports; it sends nothing.
+
+[detection]
+id      = "windows-remote-mgmt"
+version = "1.0.0"
+title   = "RDP and WinRM exposed together"
+
+[detection.host]
+ports_open = [3389, 5985]
+
+[[finding]]
+severity = "medium"
+title    = "RDP and WinRM on one host"
+summary  = "TCP 3389 (RDP) and 5985 (WinRM) are open together"
+detail   = "A host offering both Remote Desktop and PowerShell remoting exposes two remote-management channels at once, each a route for credential attacks and lateral movement."
+references = [{ cwe = 284 }]

@@ -1,0 +1,19 @@
+# The full Windows RPC and file-sharing surface. TCP 135 (RPC endpoint mapper),
+# 139 (NetBIOS) and 445 (SMB) all open is a Windows host presenting its complete
+# legacy remote surface, which is what enumeration and lateral movement probe
+# first. A correlation over open ports; it sends nothing.
+
+[detection]
+id      = "windows-workstation"
+version = "1.0.0"
+title   = "Windows RPC, NetBIOS and SMB all exposed"
+
+[detection.host]
+ports_open = [135, 139, 445]
+
+[[finding]]
+severity = "medium"
+title    = "Full Windows remote surface"
+summary  = "TCP 135 (RPC), 139 (NetBIOS) and 445 (SMB) are all open"
+detail   = "A host exposing the RPC endpoint mapper, NetBIOS and SMB together presents the complete legacy Windows remote surface, the first thing domain enumeration and lateral movement reach for."
+references = [{ cwe = 668 }]

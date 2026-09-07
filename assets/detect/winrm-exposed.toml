@@ -1,0 +1,31 @@
+# Windows Remote Management reachable. WinRM runs PowerShell remoting and is a
+# common lateral-movement and remote-execution channel; its wsman endpoint should
+# not face untrusted networks. The endpoint answers a GET with 405 from the
+# Microsoft HTTP stack, which both confirms WinRM and marks it as exposed. A
+# single read-only request.
+
+[detection]
+id      = "winrm-exposed"
+version = "1.0.0"
+title   = "Windows Remote Management (WinRM) reachable"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = "GET /wsman HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 405", '(?im)^Server:\s*Microsoft-HTTPAPI']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "WinRM answered on its wsman endpoint"
+  detail       = "GET /wsman returned 405 from Microsoft-HTTPAPI, so Windows Remote Management is reachable; WinRM runs PowerShell remoting and is a common lateral-movement channel that should not be exposed."
+  references   = [{ cwe = 284 }]
+  excerpt_from = "$response"

@@ -1,0 +1,34 @@
+# SMB signing not required. When a server does not require message signing, an
+# attacker on the path can relay an authentication to it and act as the victim,
+# the basis of NTLM relay attacks. The SMB2 negotiate response carries a security
+# mode whose "signing required" bit is clear on such a server. One negotiate; it
+# authenticates nothing.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "smb-signing-not-required"
+version = "1.0.0"
+title   = "SMB signing is not required"
+
+[detection.when]
+service  = "smb"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 4096
+max_millis = 3000
+
+[[step]]
+send   = '\x00\x00\x00\x6e\xfe\x53\x4d\x42\x40\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x24\x00\x05\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x02\x10\x02\x00\x03\x02\x03\x11\x03'
+expect = '(?s)^\x00\x00\x00.\xfe\x53\x4d\x42.{62}[\x00\x01]\x00'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "SMB negotiated with signing not required"
+  detail       = "The SMB2 negotiate response leaves the signing-required bit clear, so an attacker on the path can relay an authentication to this host and act as the victim (NTLM relay)."
+  references   = [{ cwe = 290 }]
+  excerpt_from = "$response"

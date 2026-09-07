@@ -1,0 +1,18 @@
+# Kerberos beside DNS, the shape of an Active Directory server. TCP 88 (Kerberos)
+# open with 53 (DNS) is the signature of a domain controller or AD-integrated DNS
+# host, the core of a Windows domain and the highest-value target on it. A
+# correlation over open ports; it sends nothing.
+
+[detection]
+id      = "ad-dns-server"
+version = "1.0.0"
+title   = "Active Directory server (Kerberos + DNS)"
+
+[detection.host]
+ports_open = [88, 53]
+
+[[finding]]
+severity = "info"
+title    = "Active Directory server"
+summary  = "TCP 88 (Kerberos) and 53 (DNS) are open together"
+detail   = "Kerberos beside DNS is a domain controller or AD-integrated DNS host, the core of a Windows domain; it is the highest-value target on the network and its exposure is worth noting."
