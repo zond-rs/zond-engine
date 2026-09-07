@@ -1,0 +1,32 @@
+# FTP with no transport encryption on offer. FTP carries the login and every
+# command in cleartext unless the server advertises AUTH TLS in its FEAT reply,
+# which upgrades the control connection. The probe reads FEAT and quits; a FEAT
+# list without AUTH TLS is a server that only ever speaks in the clear. FEAT and
+# QUIT are pipelined onto the one connection a flow opens per send.
+
+[detection]
+id      = "ftp-cleartext"
+version = "1.0.0"
+title   = "FTP offers no transport encryption"
+
+[detection.when]
+service  = "ftp"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'FEAT\r\nQUIT\r\n'
+expect = '(?m)^211[ -]'
+bind   = { authtls = '(?i)(?<authtls>AUTH TLS)' }
+  [[step.finding]]
+  when         = "matched and unbound(authtls)"
+  severity     = "low"
+  summary      = "FTP advertised no AUTH TLS in its feature list"
+  detail       = "The server's FEAT reply offers no AUTH TLS, so the control channel and the credentials sent over it cross the network in cleartext."
+  references   = [{ cwe = 319 }]
+  excerpt_from = "$response"

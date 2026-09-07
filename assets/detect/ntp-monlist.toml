@@ -1,0 +1,34 @@
+# ntpd answering the monlist query. The mode-7 monlist command returns the
+# addresses of the last clients the server spoke to, which discloses the hosts
+# behind it and, because the reply dwarfs the request, makes the server a UDP
+# reflection amplifier (CVE-2013-5211). A patched or restricted ntpd does not
+# answer it. A single read-only query datagram.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "ntp-monlist"
+version = "1.0.0"
+title   = "NTP answers the monlist amplification query"
+
+[detection.when]
+service  = "ntp"
+protocol = "udp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = '\x17\x00\x03\x2a\x00\x00\x00\x00'
+expect = '(?s)^[\x97\xd7].\x03\x2a'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "NTP answered a mode-7 monlist request"
+  detail       = "The server returned a monlist response, disclosing recent client addresses and amplifying a small request into a large reply for use in reflection attacks (CVE-2013-5211)."
+  references   = [{ cve = "CVE-2013-5211" }, { cwe = 406 }]
+  excerpt_from = "$response"

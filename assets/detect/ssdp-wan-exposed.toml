@@ -1,0 +1,34 @@
+# SSDP answering discovery from off the local network. SSDP is meant to stay on
+# the LAN; a device that answers an M-SEARCH from a scan running outside it
+# exposes its UPnP stack, which is a control surface and a UDP amplification
+# source. The reply is an HTTP-shaped 200 naming the UPnP version. A single
+# discovery datagram.
+#
+# The payload is a single-quoted TOML literal string so its escapes reach the
+# interpreter rather than the TOML parser.
+
+[detection]
+id      = "ssdp-wan-exposed"
+version = "1.0.0"
+title   = "SSDP/UPnP answers discovery from off-network"
+
+[detection.when]
+service  = "ssdp"
+protocol = "udp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 1\r\nST: ssdp:all\r\n\r\n'
+expect = ["HTTP/[0-9.]+ 200", '(?i)UPnP/[0-9]']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "SSDP answered a discovery request from off-network"
+  detail       = "The device replied to a unicast M-SEARCH with its UPnP details, so its discovery stack is reachable from outside the LAN and can be used to amplify UDP traffic."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

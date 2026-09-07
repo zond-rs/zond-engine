@@ -1,0 +1,31 @@
+# A stock default landing page. A server still serving the page its package
+# ships has not been configured for whatever it is meant to host, which is worth
+# noting on its own and often sits in front of a fresh or forgotten install. The
+# match is the exact wording each vendor's default page carries, so an ordinary
+# site does not read as one.
+
+[detection]
+id      = "default-landing-page"
+version = "1.0.0"
+title   = "Server is serving a stock default page"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET / HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", '(?i)(Welcome to nginx!|Apache2 [A-Za-z]+ Default Page|<title>IIS Windows|Apache.{0,40}Test Page|<title>Test Page for|It works!)']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "info"
+  summary      = "The server returned a stock default page"
+  detail       = "GET / returned a vendor default landing page, so the server has not been configured for a site of its own and may be a fresh or forgotten install."
+  references   = [{ cwe = 1188 }]
+  excerpt_from = "$response"

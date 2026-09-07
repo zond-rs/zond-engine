@@ -1,0 +1,31 @@
+# WordPress XML-RPC enabled. xmlrpc.php answers system.listMethods to anyone,
+# and the methods it lists include system.multicall, which batches many calls
+# into one request and turns password guessing into a high-rate amplifier, and
+# pingback.ping, which can be pointed at internal hosts. A single POST that only
+# lists methods and changes nothing.
+
+[detection]
+id      = "wp-xmlrpc-open"
+version = "1.0.0"
+title   = "WordPress XML-RPC interface is enabled"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 65536
+max_millis = 3000
+
+[[step]]
+send   = "POST /xmlrpc.php HTTP/1.1\r\nHost: {host}\r\nContent-Type: text/xml\r\nContent-Length: 106\r\nConnection: close\r\n\r\n<?xml version=\"1.0\"?><methodCall><methodName>system.listMethods</methodName><params></params></methodCall>"
+expect = ["HTTP/[0-9.]+ 200", "(?s)<methodResponse>", "pingback.ping"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "WordPress XML-RPC listed its methods to an anonymous client"
+  detail       = "POST /xmlrpc.php returned system.listMethods including system.multicall and pingback.ping, so the endpoint amplifies credential guessing and can be aimed at internal hosts."
+  references   = [{ cwe = 799 }]
+  excerpt_from = "$response"

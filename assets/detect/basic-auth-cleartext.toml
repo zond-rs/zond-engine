@@ -1,0 +1,31 @@
+# HTTP Basic authentication offered over cleartext. Basic sends the credentials
+# base64-encoded, which is reversible, so on a connection with no TLS they cross
+# the network in effectively plain text. The gate is the plain `http` service
+# name, never the `ssl/` label, so this runs only where the transport is
+# unencrypted. A single read-only GET that draws the challenge.
+
+[detection]
+id      = "basic-auth-cleartext"
+version = "1.0.0"
+title   = "HTTP Basic authentication offered over cleartext"
+
+[detection.when]
+service  = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = "GET / HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 401", '(?im)^WWW-Authenticate:\s*Basic']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "A cleartext endpoint challenged for HTTP Basic credentials"
+  detail       = "The server answered 401 with WWW-Authenticate: Basic over an unencrypted connection, so any credentials a client sends cross the network in reversible base64."
+  references   = [{ cwe = 319 }]
+  excerpt_from = "$response"

@@ -1,0 +1,32 @@
+# Tomcat Manager reachable with the tomcat/tomcat default credentials. The
+# Manager application deploys and undeploys web applications, so a default login
+# is a straight path to running code on the host. The probe presents the stock
+# credentials once with HTTP Basic; the Manager page answers 200, a wrong
+# credential answers 401, and an IP-restricted one answers 403. A single
+# read-only GET that deploys nothing.
+
+[detection]
+id      = "tomcat-manager-creds"
+version = "1.0.0"
+title   = "Tomcat Manager accepts default credentials"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "GET /manager/html HTTP/1.1\r\nHost: {host}\r\nAuthorization: Basic dG9tY2F0OnRvbWNhdA==\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "(?i)Tomcat Web Application Manager"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Tomcat Manager accepted the tomcat/tomcat default login"
+  detail       = "GET /manager/html returned the Manager application with the stock tomcat/tomcat credentials, which can deploy a web application and run code on the host."
+  references   = [{ cwe = 1392 }]
+  excerpt_from = "$response"

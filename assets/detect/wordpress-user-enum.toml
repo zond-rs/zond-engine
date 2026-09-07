@@ -1,0 +1,30 @@
+# WordPress user enumeration through the REST API. /wp-json/wp/v2/users answers
+# with the site's authors, their display names and login slugs, unless the
+# instance has restricted it. The slugs are valid usernames, so the reply hands
+# an attacker the account list to guess passwords against. A single read-only GET.
+
+[detection]
+id      = "wordpress-user-enum"
+version = "1.0.0"
+title   = "WordPress discloses usernames through the REST API"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /wp-json/wp/v2/users HTTP/1.1\r\nHost: {host}\r\nAccept: application/json,*/*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", '"id"\s*:', '"slug"\s*:\s*"']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "WordPress returned its user list to an anonymous client"
+  detail       = "GET /wp-json/wp/v2/users returned account slugs, which are valid usernames, so the REST API hands an attacker the list to guess passwords against."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

@@ -1,0 +1,30 @@
+# A finger service answering queries. finger returns the local account names,
+# their real names and when they last logged in to anyone who asks, which is a
+# ready-made user list for an attacker. An empty query asks the server to list
+# its users, and a served answer carries the Login column its report opens with.
+
+[detection]
+id      = "finger-enabled"
+version = "1.0.0"
+title   = "Finger service discloses local accounts"
+
+[detection.when]
+service  = "finger"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = '\r\n'
+expect = '(?im)^Login'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "Finger answered a query with its user list"
+  detail       = "The finger service returned an account listing, disclosing local usernames, real names and login times that seed a password-guessing attack."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"
