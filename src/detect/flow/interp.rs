@@ -496,6 +496,23 @@ mod tests {
                 b"HTTP/1.1 200 OK\r\n\r\nAPP_KEY=base64:abcd\nDB_PASSWORD=hunter2\n",
                 Severity::High,
             ),
+            (
+                "mongodb-unauth",
+                // The bytes of an OP_MSG listDatabases reply matter only in that
+                // they carry the field the flow matches.
+                b"\x00\x00\x00\x00...sizeOnDisk\x00...admin\x00",
+                Severity::High,
+            ),
+            (
+                "http-spring-actuator",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"_links\":{\"self\":{\"href\":\"http://h/actuator\"},\"env\":{\"href\":\"http://h/actuator/env\"}}}",
+                Severity::High,
+            ),
+            (
+                "http-dir-listing",
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<title>Index of /</title><h1>Index of /</h1>",
+                Severity::Low,
+            ),
         ];
 
         for (name, reply, severity) in cases {
@@ -523,6 +540,9 @@ mod tests {
             "http-git-exposed",
             "http-server-status",
             "http-dotenv-exposed",
+            "mongodb-unauth",
+            "http-spring-actuator",
+            "http-dir-listing",
         ] {
             let flow = flow(name);
             let findings = run(&flow, "", &seed(), &mut Canned(quiet.to_vec()));

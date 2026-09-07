@@ -1,0 +1,32 @@
+# A directory whose index is a file listing rather than a page. With autoindex on
+# and no index file, a server hands back the contents of the directory, which
+# turns the web root into a browsable file tree: backups, dumps and dotfiles a
+# link never pointed at. The listing titles itself, which is the signal here.
+
+[detection]
+id      = "http-dir-listing"
+version = "1.0.0"
+title   = "Directory listing enabled"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 4000
+
+[[step]]
+send   = "GET / HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "(?:Index of /|Directory listing for )"]
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "The server returned a directory listing"
+  detail       = "A request for the path returned an auto-generated file index rather than a page, exposing the directory's contents to browse."
+  references   = [{ cwe = 548 }]                       # Exposure Through Directory Listing
+  remediation  = "Turn off automatic directory indexing, or add an index file."
+  excerpt_from = "$response"

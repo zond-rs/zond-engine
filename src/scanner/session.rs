@@ -87,7 +87,9 @@ use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::Positions;
 use crate::model::port::Protocol;
 use crate::report::ScannerKind;
-use crate::report::{Attachment, AttachmentSource, ProbeStats, Refusal, ScannerFailure};
+use crate::report::{
+    Attachment, AttachmentSource, CeilingHint, ProbeStats, Refusal, ScannerFailure,
+};
 use crate::scanner::handle::ScanHandle;
 
 /// Lightweight notifications for the status of an ongoing scan.
@@ -919,6 +921,12 @@ pub struct ScanContext {
     /// their own on the config. Cheap to clone: the compiled tiers sit behind
     /// `Arc`s.
     pub(crate) detections: crate::detect::Detections,
+    /// What a higher ceiling would additionally have run on what this scan
+    /// reached, filed by the detection phase for the recorder to lift onto the
+    /// [`ScanReport`](crate::report::ScanReport). One value per run: the
+    /// detection phase runs once and writes it once. See
+    /// [`ScanReport::ceiling_suppressed`](crate::report::ScanReport::ceiling_suppressed).
+    pub(crate) ceiling_hint: Arc<Mutex<Option<CeilingHint>>>,
 }
 
 impl ScanContext {
@@ -1101,6 +1109,24 @@ impl ScanContext {
         let _ = self
             .events_tx
             .send(ScanEvent::ScannerFailed { scanner, reason });
+    }
+
+    /// Files what a higher ceiling would additionally have run on what this scan
+    /// reached, for the recorder to lift onto the report. Called once, by the
+    /// detection phase; a second call replaces the first, which is what a phase
+    /// re-run would want.
+    pub(crate) fn record_ceiling_hint(&self, hint: CeilingHint) {
+        *self.ceiling_hint.lock().unwrap_or_else(|e| e.into_inner()) = Some(hint);
+    }
+
+    /// Takes what the detection phase filed about a higher ceiling, leaving the
+    /// slot empty so a context reused for a second phase does not hand the same
+    /// hint to two reports.
+    pub(crate) fn take_ceiling_hint(&self) -> Option<CeilingHint> {
+        self.ceiling_hint
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// The single place a refusal enters the record.
@@ -1607,6 +1633,7 @@ impl SessionBuilder {
             responses: Arc::new(Responses::default()),
             tapes: Arc::new(Tapes::default()),
             detections: self.detections,
+            ceiling_hint: Arc::new(Mutex::new(None)),
         };
 
         (session, ctx)

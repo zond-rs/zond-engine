@@ -68,13 +68,14 @@ use crate::detect::flow::{Probe, ProbeRefusal, stage};
 use crate::detect::host::stage as host_stage;
 use crate::detect::manifest::{
     CapabilitySpec, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS,
+    DetectionManifest,
 };
 use crate::fingerprint::{PortContext, Tunnel};
-use crate::model::finding::Finding;
+use crate::model::finding::{DetectionClass, Finding};
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
 use crate::record::{DetectionIdRecord, wire};
-use crate::report::ScannerKind;
+use crate::report::{CeilingHint, ScannerKind};
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Tapes};
 
@@ -99,6 +100,14 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
     // only what the service phase already found, so they run independently of the
     // per-port pass below.
     detect_hosts(ctx);
+
+    // Filed before the pass below and independent of it. The box worth flagging
+    // is the one where nothing gated in under the ceiling, so `targets` is empty
+    // and the pass never runs, yet something would gate in above it. Computing
+    // this after the early return would miss that box.
+    if let Some(hint) = ceiling_suppressed(ctx, envelope) {
+        ctx.record_ceiling_hint(hint);
+    }
 
     let targets = interested_ports(ctx, envelope);
     if targets.is_empty() {
@@ -209,6 +218,72 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
         }
     }
     targets
+}
+
+/// What raising the [envelope](DetectionEnvelope) would additionally run on what
+/// this scan reached, or [`None`] when the ceiling already admits every detection
+/// that gated onto a reached port.
+///
+/// A detection counts here when its class sits above the ceiling and its gate
+/// fits an open port this scan found: traffic the operator could send and a
+/// result they are not seeing, with nothing else in the report to say so. The
+/// gate-fit condition is what makes the count worth acting on, since an exploit
+/// for a service this scan never met is no reason to raise the ceiling. Distinct
+/// detections count once each; [`raise_to`](CeilingHint::raise_to) is the most
+/// intrusive class among them, the ceiling that would run them all.
+///
+/// Host correlations are [`Derived`](DetectionClass::Derived), which every
+/// envelope permits, so they are never withheld and are not consulted.
+fn ceiling_suppressed(ctx: &ScanContext, envelope: DetectionEnvelope) -> Option<CeilingHint> {
+    // SCTP is left out as the live pass leaves it out: no detection runs over one.
+    let reached: Vec<(Option<String>, u16, Protocol)> = ctx
+        .store
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .value()
+                .ports()
+                .filter(|port| port.state() == PortState::Open && port.protocol() != Protocol::Sctp)
+                .map(|port| {
+                    (
+                        port.service().map(|service| service.name().to_string()),
+                        port.number(),
+                        port.protocol(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if reached.is_empty() {
+        return None;
+    }
+
+    let mut matched = 0usize;
+    let mut raise_to: Option<DetectionClass> = None;
+    let mut consider = |manifest: &DetectionManifest| {
+        let class = manifest.capabilities.class.into_model();
+        if envelope.permits(class) {
+            return;
+        }
+        let gates_here = reached.iter().any(|(service, number, protocol)| {
+            manifest
+                .when
+                .applies(service.as_deref(), *number, *protocol)
+        });
+        if gates_here {
+            matched += 1;
+            raise_to = Some(raise_to.map_or(class, |current| current.max(class)));
+        }
+    };
+
+    for flow in ctx.detections.flows().flows() {
+        consider(&flow.flow().detection);
+    }
+    for module in ctx.detections.modules().detections() {
+        consider(module.manifest());
+    }
+
+    raise_to.map(|class| CeilingHint::new(matched, class))
 }
 
 /// Runs one port's detections on the blocking pool and returns the findings, or
@@ -830,6 +905,65 @@ mod tests {
         assert!(
             probe.speak(b"x").is_none(),
             "an exchange ran past the time budget"
+        );
+    }
+
+    /// Seeds a context with one open, identified port and returns both halves, so
+    /// a ceiling test can name what the scan reached without going near a socket.
+    fn context_with(number: u16, service: &str) -> (ScanSession, ScanContext) {
+        let (session, ctx) = ScanSession::new();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let mut host = Host::new(ip);
+        host.add_port(
+            Port::new(number, Protocol::Tcp, PortState::Open)
+                .with_service(Service::new(service, 100)),
+        );
+        session.hosts().insert(ip, host);
+        (session, ctx)
+    }
+
+    #[test]
+    fn an_exploit_gating_on_a_reached_service_is_reported_as_ceiling_suppressed() {
+        // The shipped corpus gates `grafana-path-traversal` (exploit) on an http
+        // service; the default ceiling withholds it. A scan that met http could
+        // send that traffic and does not, and the hint records it.
+        let (_session, ctx) = context_with(80, "http");
+
+        let hint = ceiling_suppressed(&ctx, DetectionEnvelope::default())
+            .expect("an exploit gated onto the http port the scan reached");
+        assert_eq!(
+            hint.raise_to(),
+            DetectionClass::Exploit,
+            "the ceiling to raise to is the most intrusive class withheld"
+        );
+        assert!(
+            hint.matched() >= 1,
+            "at least the grafana traversal was counted"
+        );
+    }
+
+    #[test]
+    fn raising_the_ceiling_to_the_class_clears_the_hint() {
+        // The same box, scanned with the ceiling already at exploit: nothing is
+        // withheld, so there is nothing to point at.
+        let (_session, ctx) = context_with(80, "http");
+
+        assert!(
+            ceiling_suppressed(&ctx, DetectionEnvelope::up_to(DetectionClass::Exploit)).is_none(),
+            "a ceiling that admits every matched detection suppresses nothing"
+        );
+    }
+
+    #[test]
+    fn a_service_no_withheld_detection_gates_on_yields_no_hint() {
+        // ssh: the corpus ships no exploit- or mutating-class detection that gates
+        // on it, so raising the ceiling would find nothing more here and the hint
+        // stays silent. This is the gate-fit condition.
+        let (_session, ctx) = context_with(22, "ssh");
+
+        assert!(
+            ceiling_suppressed(&ctx, DetectionEnvelope::default()).is_none(),
+            "no withheld detection gates onto ssh, so there is nothing to raise for"
         );
     }
 }

@@ -157,10 +157,13 @@ mod tests {
             ("couchdb-open", Class::ActiveBenign),
             ("elasticsearch-open", Class::ActiveBenign),
             ("grafana-path-traversal", Class::Exploit),
+            ("http-dir-listing", Class::ActiveBenign),
             ("http-dotenv-exposed", Class::ActiveBenign),
             ("http-git-exposed", Class::ActiveBenign),
             ("http-server-status", Class::ActiveBenign),
+            ("http-spring-actuator", Class::ActiveBenign),
             ("memcached-unauth", Class::ActiveBenign),
+            ("mongodb-unauth", Class::ActiveBenign),
             ("redis-unauth-access", Class::ActiveBenign),
             ("snmp-default-community", Class::ActiveBenign),
         ];

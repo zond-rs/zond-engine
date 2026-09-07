@@ -1,0 +1,34 @@
+# A Spring Boot Actuator left open. /actuator is the index of the management
+# endpoints, and where it answers unauthenticated the endpoints behind it —
+# /env, /configprops, /heapdump, /threaddump — usually do too, which is
+# environment variables, connection strings and a full heap dump to anyone. The
+# index answers a `_links` document naming the actuator endpoints, which an
+# ordinary page does not.
+
+[detection]
+id      = "http-spring-actuator"
+version = "1.0.0"
+title   = "Spring Boot Actuator exposed"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 4000
+
+[[step]]
+send   = "GET /actuator HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "\"_links\"", "actuator"]
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Spring Boot Actuator is reachable without authentication"
+  detail       = "/actuator returned its endpoint index unauthenticated; the endpoints it links (env, heapdump, threaddump) typically expose configuration, secrets and memory."
+  references   = [{ cwe = 200 }]
+  remediation  = "Restrict the actuator base path, or expose only /health and /info."
+  excerpt_from = "$response"

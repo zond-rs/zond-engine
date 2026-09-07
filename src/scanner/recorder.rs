@@ -150,7 +150,12 @@ impl PhaseRecorder {
         // Copied rather than taken: the store is shared with the `ScanSession`
         // the caller kept, which goes on answering after this returns.
         let hosts = ctx.store.iter().map(|entry| entry.value().clone());
-        ScanReport::new(phase, hosts)
+        let mut report = ScanReport::new(phase, hosts);
+        // What a higher ceiling would additionally have run, filed by the
+        // detection phase. Taken so a context reused for a second phase does not
+        // carry it twice; `None` for every phase that ran no detections.
+        report.set_ceiling_suppressed(ctx.take_ceiling_hint());
+        report
     }
 }
 
