@@ -35,8 +35,11 @@ product = "rpcbind"
 
 [[match]]
 name = "rpcbind_registrations"
+# The baseline: a dump this file has no more specific rule for. It names no
+# product, so a rule that names one outranks it rather than tying with it and
+# winning on declaration order. `rpcbind` would have been that product, and it
+# is what the port is already called, so nothing is lost by leaving it out.
 pattern = '(?i)^(?:portmapper|nfs|mountd|nlockmgr|status|nfs_acl|rquotad|rusersd|\d+) \d+ (?:tcp|udp) \d+'
-product = "rpcbind"
 context = "rpc.program_dump"
 example = "portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048"
 
@@ -44,9 +47,20 @@ example = "portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048"
 name = "rpc_nfs_registered"
 # A host registering both is a file server, and the pair is what says so: `nfs`
 # alone is registered by a client's own callback service on some systems.
-pattern = '(?i)(?:^|, )nfs (\d+) (?:tcp|udp) \d+.*(?:^|, )mountd '
-version_group = 1
+#
+# Two lookaheads rather than one expression, because the order is the
+# portmapper's to choose and not this rule's to assume. An earlier version read
+# `nfs ... mountd` in sequence and never fired on a real Linux server, which
+# lists every mountd version before the first nfs one.
+#
+# The space after each program name is what separates `nfs` from `nfs_acl`: the
+# latter is registered beside it on the same port and is not the file service.
+#
+# No version. The dump lists one record per version per transport, so a capture
+# here would name whichever the server happened to write first. The probe on
+# 2049 answers that question properly, with the range.
+pattern = '(?i)^(?=.*\bmountd \d+ (?:tcp|udp) )(?=.*\bnfs \d+ (?:tcp|udp) )'
 product = "NFS"
 context = "rpc.program_dump"
-example = "portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048"
+example = "portmapper 2 udp 111, mountd 3 udp 20048, nfs 3 tcp 2049"
 metadata = { "service.extrainfo" = "exported over RPC" }

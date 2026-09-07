@@ -38,7 +38,7 @@ version_group = 1
 product = "IPMI"
 context = "ipmi.auth"
 example = "IPMI-2.0 anonymous-login null-user"
-metadata = { "service.extrainfo" = "accepts a session with no user name" }
+metadata = { "service.extrainfo" = "anonymous login enabled" }
 
 [[match]]
 name = "ipmi_null_user"
@@ -47,7 +47,7 @@ version_group = 1
 product = "IPMI"
 context = "ipmi.auth"
 example = "IPMI-1.5 null-user"
-metadata = { "service.extrainfo" = "the null user is enabled" }
+metadata = { "service.extrainfo" = "null user enabled" }
 
 [[match]]
 name = "ipmi_channel"
@@ -55,4 +55,4 @@ pattern = '^IPMI-([\d.]+)\b'
 version_group = 1
 product = "IPMI"
 context = "ipmi.auth"
-example = "IPMI-2.0 non-null-user"
+example = "IPMI-2.0"

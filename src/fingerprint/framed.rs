@@ -439,9 +439,10 @@ pub(super) fn ipmi_auth_capabilities(datagram: &[u8]) -> Option<String> {
     if status & 0b0000_0010 != 0 {
         said.push("null-user");
     }
-    if status & 0b0000_0100 != 0 {
-        said.push("non-null-user");
-    }
+    // Bit 2 says non-null user names are enabled, which is the ordinary state
+    // of a controller somebody configured. It is not reported: it says nothing
+    // a reader would act on, and `non-null-user` contains `null-user`, so a
+    // rule reading the second matched a controller that had neither problem.
 
     Some(said.join(" "))
 }
@@ -814,12 +815,23 @@ mod tests {
     #[test]
     fn a_bmc_states_its_version_and_how_it_may_be_logged_into() {
         assert_eq!(
-            ipmi_auth_capabilities(&ipmi(0b1000_0000, 0b0000_0100)).as_deref(),
-            Some("IPMI-2.0 non-null-user")
-        );
-        assert_eq!(
             ipmi_auth_capabilities(&ipmi(0b0000_0000, 0b0000_0011)).as_deref(),
             Some("IPMI-1.5 anonymous-login null-user")
+        );
+        assert_eq!(
+            ipmi_auth_capabilities(&ipmi(0b1000_0000, 0b0000_0010)).as_deref(),
+            Some("IPMI-2.0 null-user")
+        );
+    }
+
+    /// A controller with neither weakness names its version and stops. Bit 2 is
+    /// the ordinary state and is not reported, which is also what keeps
+    /// `non-null-user` from being read as `null-user`.
+    #[test]
+    fn a_bmc_that_requires_a_real_user_says_only_what_it_speaks() {
+        assert_eq!(
+            ipmi_auth_capabilities(&ipmi(0b1000_0000, 0b0000_0100)).as_deref(),
+            Some("IPMI-2.0")
         );
     }
 

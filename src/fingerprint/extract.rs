@@ -1082,10 +1082,50 @@ mod framed_replies {
             texts,
             vec!["portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048"]
         );
+        // No version: the dump lists one record per version per transport, so a
+        // capture here would name whichever the server wrote first. The probe
+        // on 2049 answers that with the range.
+        assert_eq!(identify(111, &texts[0]), Some(("NFS".to_string(), None)));
+    }
+
+    /// The order a real portmapper lists in, captured from `rpcbind` and
+    /// `nfs-kernel-server` on Debian 12.
+    ///
+    /// Every mountd version comes before the first nfs one, and `nfs_acl` is
+    /// registered beside `nfs` on the same port. The first version of the NFS
+    /// rule read `nfs ... mountd` in sequence and matched neither this nor any
+    /// other real server, which nothing but a scan of one would have shown.
+    #[test]
+    fn the_order_a_real_portmapper_lists_in_is_not_the_order_a_rule_may_assume() {
+        const REAL: &str = "portmapper 4 tcp 111, portmapper 3 tcp 111, portmapper 2 tcp 111, \
+             portmapper 4 udp 111, portmapper 3 udp 111, portmapper 2 udp 111, \
+             status 1 udp 32818, status 1 tcp 37525, mountd 1 udp 44481, \
+             mountd 1 tcp 43111, mountd 2 udp 33385, mountd 2 tcp 60869, \
+             mountd 3 udp 43738, mountd 3 tcp 33227, nfs 3 tcp 2049, nfs 4 tcp 2049, \
+             nfs_acl 3 tcp 2049, nfs 3 udp 2049, nfs_acl 3 udp 2049, \
+             nlockmgr 1 udp 51523, nlockmgr 3 udp 51523, nlockmgr 4 udp 51523";
+
         assert_eq!(
-            identify(111, &texts[0]),
-            Some(("NFS".to_string(), Some("3".to_string())))
+            identify(111, REAL).map(|found| found.0),
+            Some("NFS".to_string())
         );
+    }
+
+    /// And `nfs_acl` alone does not stand in for `nfs`, which the space after
+    /// the program name is what enforces.
+    #[test]
+    fn a_host_registering_only_part_of_the_pair_is_not_a_file_server() {
+        for dump in [
+            "portmapper 4 tcp 111, mountd 3 udp 43738",
+            "mountd 3 udp 111, nfs_acl 3 tcp 2049",
+            "portmapper 2 udp 111",
+        ] {
+            assert_ne!(
+                identify(111, dump).map(|found| found.0),
+                Some("NFS".to_string()),
+                "{dump:?} was read as a file server"
+            );
+        }
     }
 
     #[test]
