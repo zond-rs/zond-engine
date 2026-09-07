@@ -1,0 +1,19 @@
+# A web server and a mail server on one host. HTTP answering alongside SMTP is a
+# machine carrying two internet-facing services at once, doubling its attack
+# surface and meaning a compromise of either reaches the other's data. A
+# correlation over identified services; it sends nothing.
+
+[detection]
+id      = "web-mail-host"
+version = "1.0.0"
+title   = "Web and mail on one host"
+
+[detection.host]
+services = ["http", "smtp"]
+
+[[finding]]
+severity = "low"
+title    = "Web and mail on one host"
+summary  = "HTTP and SMTP answer on the same host, two internet-facing services at once"
+detail   = "A host running both a web server and a mail server carries two internet-facing surfaces on one machine, so a compromise of either is a foothold beside the other's data."
+references = [{ cwe = 668 }]

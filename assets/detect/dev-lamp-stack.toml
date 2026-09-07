@@ -1,0 +1,19 @@
+# A web server and its MySQL database on one host. HTTP answering on the same
+# address as MySQL is the classic LAMP box, where the database sits on the web
+# server rather than behind it, so a web compromise reaches the data directly. A
+# correlation over identified services; it sends nothing.
+
+[detection]
+id      = "dev-lamp-stack"
+version = "1.0.0"
+title   = "LAMP host (web co-located with MySQL)"
+
+[detection.host]
+services = ["http", "mysql"]
+
+[[finding]]
+severity = "low"
+title    = "Web and MySQL on one host"
+summary  = "HTTP and MySQL answer on the same host, the LAMP shape"
+detail   = "With MySQL on the web server's own address, a web-tier compromise reaches the database directly and the database is one listen-address change from the network."
+references = [{ cwe = 668 }]

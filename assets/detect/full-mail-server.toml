@@ -1,0 +1,18 @@
+# A complete mail server. SMTP delivery together with both IMAP and POP3 mailbox
+# access is a full mail store rather than a machine that only relays, and its
+# exposure carries the weight of every account it holds. A correlation over
+# identified services; it sends nothing.
+
+[detection]
+id      = "full-mail-server"
+version = "1.0.0"
+title   = "Full mail server (SMTP + IMAP + POP3)"
+
+[detection.host]
+services = ["smtp", "imap", "pop3"]
+
+[[finding]]
+severity = "info"
+title    = "Full mail server"
+summary  = "SMTP, IMAP and POP3 answer on one host, a complete mail store"
+detail   = "A host serving delivery and both mailbox-access protocols is a full mail server; its patch level and exposure matter more than a machine that only relays."

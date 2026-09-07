@@ -1,0 +1,19 @@
+# A network printer's service pair. IPP (631) open alongside the raw JetDirect
+# port (9100) is a network printer or print server, a class that is rarely
+# patched, often unauthenticated, and a quiet foothold on the network. A
+# correlation over open ports; it sends nothing.
+
+[detection]
+id      = "printer-host"
+version = "1.0.0"
+title   = "Network printer / print server"
+
+[detection.host]
+ports_open = [631, 9100]
+
+[[finding]]
+severity = "low"
+title    = "Network printer"
+summary  = "IPP (631) and raw print (9100) are open together, a network printer"
+detail   = "A host answering IPP beside the raw JetDirect port is a printer or print server; these are rarely patched, often unauthenticated, and a common quiet foothold."
+references = [{ cwe = 1188 }]

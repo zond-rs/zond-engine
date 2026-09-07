@@ -1,0 +1,19 @@
+# The Windows RPC and file-sharing pair. TCP 135 (the RPC endpoint mapper) open
+# alongside 445 (SMB) is the fingerprint of a Windows host exposing its RPC and
+# file services, a broad remote-attack surface that lateral movement leans on. A
+# correlation over open ports; it sends nothing.
+
+[detection]
+id      = "windows-rpc-smb"
+version = "1.0.0"
+title   = "Windows RPC and SMB exposed together"
+
+[detection.host]
+ports_open = [135, 445]
+
+[[finding]]
+severity = "medium"
+title    = "Windows RPC and SMB exposed"
+summary  = "TCP 135 (RPC endpoint mapper) and 445 (SMB) are open together"
+detail   = "The RPC endpoint mapper beside SMB is a Windows host exposing its RPC and file-sharing surface, the ports lateral movement and remote exploitation lean on."
+references = [{ cwe = 668 }]

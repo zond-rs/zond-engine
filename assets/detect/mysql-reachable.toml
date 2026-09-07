@@ -1,0 +1,35 @@
+# MySQL reachable on the network. A MySQL or MariaDB server greets every new
+# connection with a handshake packet naming its version, before any credentials
+# are exchanged, so reading the greeting both proves the database is reachable and
+# discloses its version to match against known issues. The greeting is drawn out
+# by opening the connection; nothing authenticates.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "mysql-reachable"
+version = "1.0.0"
+title   = "MySQL reachable on the network"
+
+[detection.when]
+service  = "mysql"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 4096
+max_millis = 3000
+
+[[step]]
+send   = '\x00'
+expect = '(?s)^.{3}\x00\x0a'
+bind   = { version = '(?s)\x0a(?<version>[0-9][\w.\-+~]*)\x00' }
+  [[step.finding]]
+  when         = "matched"
+  severity     = "info"
+  summary      = "MySQL answered with its handshake greeting"
+  detail       = "The server sent its handshake for version {version} before any authentication, so a MySQL/MariaDB database is reachable directly on the network."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

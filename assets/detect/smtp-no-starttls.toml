@@ -1,0 +1,32 @@
+# SMTP with no STARTTLS on offer. A mail server that does not advertise STARTTLS
+# in its EHLO response has no way to encrypt the session, so the mail and any
+# authentication cross the network in cleartext. The probe sends EHLO and reads
+# the capability list; a list without STARTTLS is the finding. EHLO and QUIT are
+# pipelined onto the one connection a flow opens per send.
+
+[detection]
+id      = "smtp-no-starttls"
+version = "1.0.0"
+title   = "SMTP offers no STARTTLS"
+
+[detection.when]
+service  = "smtp"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'EHLO zond.example\r\nQUIT\r\n'
+expect = '(?m)^250[ -]'
+bind   = { starttls = '(?i)(?<starttls>STARTTLS)' }
+  [[step.finding]]
+  when         = "matched and unbound(starttls)"
+  severity     = "medium"
+  summary      = "SMTP advertised no STARTTLS in its EHLO response"
+  detail       = "The server's EHLO capabilities list no STARTTLS, so the session and any credentials sent over it cross the network in cleartext."
+  references   = [{ cwe = 319 }]
+  excerpt_from = "$response"

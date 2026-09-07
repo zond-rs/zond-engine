@@ -1,0 +1,19 @@
+# FTP alongside a web server. An FTP service on the same host as HTTP is usually
+# how a site's files are managed, so the FTP account reaches the web root; FTP is
+# cleartext, so those credentials and the content cross the network in the open. A
+# correlation over identified services; it sends nothing.
+
+[detection]
+id      = "ftp-web-host"
+version = "1.0.0"
+title   = "FTP managing a web server's content"
+
+[detection.host]
+services = ["ftp", "http"]
+
+[[finding]]
+severity = "low"
+title    = "FTP and web on one host"
+summary  = "FTP and HTTP answer on the same host, so FTP likely reaches the web root"
+detail   = "FTP beside a web server is typically the path that publishes the site; FTP carries its credentials in cleartext, and an account that writes the web root is a straight route to code execution."
+references = [{ cwe = 319 }]

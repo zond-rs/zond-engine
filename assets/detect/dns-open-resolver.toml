@@ -1,0 +1,35 @@
+# An open DNS resolver. A resolver that answers a recursive query for a name it
+# is not authoritative for will resolve anything for anyone, which both amplifies
+# reflection attacks and can be steered toward cache poisoning. The probe asks it
+# to recurse on an external name over TCP; a reply that carries the recursion
+# available flag and an answer is the finding. A patched or authoritative-only
+# server refuses. One query.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "dns-open-resolver"
+version = "1.0.0"
+title   = "Open DNS resolver answers recursive queries"
+
+[detection.when]
+service  = "dns"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = '\x00\x1d\x13\x37\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01'
+expect = '(?s)\x13\x37.[\x80-\x8f]\x00\x01\x00[\x01-\xff]'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "DNS answered a recursive query for an external name"
+  detail       = "The server recursed on a name it is not authoritative for and returned an answer with recursion available, so it is an open resolver usable for reflection amplification and cache attacks."
+  references   = [{ cwe = 406 }]
+  excerpt_from = "$response"

@@ -1,0 +1,31 @@
+# SMTP VRFY answering address lookups. VRFY asks the server to confirm a local
+# address, and one that answers 250 hands an attacker a way to enumerate valid
+# accounts before ever authenticating. Most servers disable it; one that does not
+# is the finding. VRFY and QUIT are pipelined onto the one connection a flow opens
+# per send.
+
+[detection]
+id      = "smtp-vrfy-enabled"
+version = "1.0.0"
+title   = "SMTP VRFY discloses valid accounts"
+
+[detection.when]
+service  = "smtp"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'VRFY root\r\nQUIT\r\n'
+expect = '(?m)^250[ -]'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "SMTP answered VRFY with 250"
+  detail       = "The server confirmed a local address through VRFY, so an attacker can enumerate valid accounts without authenticating; VRFY should be disabled."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"
