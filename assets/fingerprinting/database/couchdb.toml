@@ -11,5 +11,10 @@ protocol = "tcp"
 
 [[match]]
 name = "couchdb_json"
-pattern = 'couchdb"\s*:\s*"Welcome'
-product = "couchdb"
+# The welcome document names the product and carries the version. Capturing the
+# version raises this to a strong match, the equal of the generic http signature
+# that reads the same version from the Server header, so the port is named
+# couchdb rather than http with a CouchDB product.
+pattern = 'couchdb"\s*:\s*"Welcome"[\s\S]*?"version"\s*:\s*"([^"]+)"'
+version_group = 1
+product = "CouchDB"

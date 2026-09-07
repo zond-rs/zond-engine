@@ -537,6 +537,26 @@ mod tests {
                 b"\x00\x2c\x13\x37\x84\x00\x00\x01\x00\x01\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03\xc0\x0c\x00\x10\x00\x03\x00\x00\x00\x00\x00\x0d\x0c9.16.1-Debian",
                 Severity::Info,
             ),
+            (
+                "docker-api-unauth",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"Version\":\"24.0.6\",\"ApiVersion\":\"1.43\",\"Os\":\"linux\"}",
+                Severity::Critical,
+            ),
+            (
+                "k8s-api-anonymous",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"kind\":\"NamespaceList\",\"items\":[{\"metadata\":{\"name\":\"default\"}}]}",
+                Severity::High,
+            ),
+            (
+                "jenkins-unauth",
+                b"HTTP/1.1 200 OK\r\nX-Jenkins: 2.426.1\r\nContent-Type: application/json\r\n\r\n{\"_class\":\"hudson.model.Hudson\"}",
+                Severity::High,
+            ),
+            (
+                "phpmyadmin-exposed",
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><head><title>phpMyAdmin</title></head></html>",
+                Severity::Medium,
+            ),
         ];
 
         for (name, reply, severity) in cases {
@@ -567,12 +587,43 @@ mod tests {
             "mongodb-unauth",
             "http-spring-actuator",
             "http-dir-listing",
+            "docker-api-unauth",
+            "k8s-api-anonymous",
+            "jenkins-unauth",
+            "phpmyadmin-exposed",
         ] {
             let flow = flow(name);
             let findings = run(&flow, "", &seed(), &mut Canned(quiet.to_vec()));
             assert!(
                 findings.is_empty(),
                 "{name} fired on a non-confirming reply"
+            );
+        }
+    }
+
+    /// The two panel checks that turn on a 200 against a server that authenticates
+    /// instead: a Jenkins that redirects anonymous reads to a 403 still stamps its
+    /// X-Jenkins header, and a Kubernetes API that denies system:anonymous answers
+    /// 403 with a Status body that still names the kind. Neither may fire, because
+    /// the finding is anonymous *access*, not the mere presence of the software.
+    #[test]
+    fn a_panel_that_requires_authentication_does_not_fire() {
+        let cases: &[(&str, &[u8])] = &[
+            (
+                "jenkins-unauth",
+                b"HTTP/1.1 403 Forbidden\r\nX-Jenkins: 2.426.1\r\nContent-Type: text/html\r\n\r\nAuthentication required",
+            ),
+            (
+                "k8s-api-anonymous",
+                b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\n\r\n{\"kind\":\"Status\",\"status\":\"Failure\",\"reason\":\"Forbidden\"}",
+            ),
+        ];
+        for (name, reply) in cases {
+            let flow = flow(name);
+            let findings = run(&flow, "", &seed(), &mut Canned(reply.to_vec()));
+            assert!(
+                findings.is_empty(),
+                "{name} fired on a 403 that denied access"
             );
         }
     }
