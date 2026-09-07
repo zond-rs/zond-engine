@@ -547,6 +547,77 @@ async fn memcached_over_udp_is_named_by_the_rule_written_for_tcp() {
     assert_eq!(service.product(), None);
 }
 
+/// An NTP daemon is identified from the mode 6 control message, which is the
+/// *second* probe the corpus registers for its port.
+///
+/// The port scan sends one probe and stops, because any reply settles the port's
+/// state. Identification is a different question: a client request draws
+/// timestamps that prove the port open and say nothing else, and the daemon's
+/// own account of itself comes back only to a control message.
+///
+/// This shipped broken. The service pass took the first registered probe, sent
+/// the client request, discarded the timestamps, and left the rules unreached
+/// that had just been given a decoder. A scan of a real ntpd is what showed it.
+#[tokio::test]
+async fn a_port_registering_two_probes_is_asked_both() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    const VARS: &str = "version=\"ntpd 4.2.8p15@1.3728-o Wed May 12\", processor=\"x86_64\", \
+         system=\"Linux/6.1.0-18-arm64\", leap=00, stratum=3";
+
+    // Answers a client request with timestamps and a control message with the
+    // variables, which is what a real daemon does.
+    let Some(socket) = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 123))
+        .await
+        .ok()
+    else {
+        eprintln!("SKIP: 123/udp needs privilege or is in use on this machine");
+        return;
+    };
+    let task = tokio::spawn(async move {
+        let mut buf = vec![0u8; 2048];
+        while let Ok((read, from)) = socket.recv_from(&mut buf).await {
+            let reply = match buf.first().map(|first| first & 0b111) {
+                Some(6) => {
+                    let mut out = vec![0x16, 0x82];
+                    out.extend_from_slice(&1u16.to_be_bytes());
+                    out.extend_from_slice(&[0u8; 6]);
+                    out.extend_from_slice(&(VARS.len() as u16).to_be_bytes());
+                    out.extend_from_slice(VARS.as_bytes());
+                    out
+                }
+                // A client reply: forty-eight bytes carrying nothing to read.
+                _ => {
+                    let mut out = vec![0x24, 0x03, 0x06, 0xec];
+                    out.extend_from_slice(&[0u8; 44]);
+                    out
+                }
+            };
+            let _ = read;
+            let _ = socket.send_to(&reply, from).await;
+        }
+    });
+
+    let outcome = run_scan(target_map(LOOPBACK, "U:123"), &test_config()).await;
+    task.abort();
+
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let port = host
+        .ports()
+        .find(|p| p.number() == 123 && p.protocol() == Protocol::Udp)
+        .expect("the scanned UDP port is present in the results");
+
+    let service = port.service().expect("a service was identified");
+    assert_eq!(
+        service.version(),
+        Some("4.2.8p15@1.3728-o"),
+        "the control message was never sent, so the daemon named nothing"
+    );
+}
+
 /// A Minecraft Bedrock server is identified from the status line it publishes.
 ///
 /// One of four ports added in the same batch, and the one whose reply is proved

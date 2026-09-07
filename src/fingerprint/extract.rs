@@ -1282,6 +1282,20 @@ mod framed_replies {
                 .collect()
         }
 
+        // ntpsec 1.2.2 on the VM, answering the corpus probe. It sorts its reply
+        // alphabetically, which is the ordering the imported rules do not expect
+        // and `ntpsec_version` exists to cover.
+        const NTPSEC: &str = r#"processor="aarch64", system="Linux/6.1.0-50-cloud-arm64", version="ntpd ntpsec-1.2.2""#;
+        let mut reply = vec![0x16, 0x82];
+        reply.extend_from_slice(&1u16.to_be_bytes());
+        reply.extend_from_slice(&[0u8; 6]);
+        reply.extend_from_slice(&(NTPSEC.len() as u16).to_be_bytes());
+        reply.extend_from_slice(NTPSEC.as_bytes());
+        assert_eq!(
+            identify(123, &super::from_datagram(123, &reply)[0]),
+            Some(("NTPsec".to_string(), Some("1.2.2".to_string())))
+        );
+
         const STUN: &str = "0101001c2112a4427a6f6e642d7363616e2d303180220018436f7475726e2d342e352e32202764616e20456964657227";
         let texts = super::from_datagram(3478, &hex(STUN));
         assert_eq!(texts, vec!["Coturn-4.5.2 'dan Eider'"]);

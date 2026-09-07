@@ -509,19 +509,40 @@ pub async fn fingerprint_udp_detailed(
     Some((port, about_the_host, banners))
 }
 
-/// Sends this port's registered probe and reads back whatever text the reply
-/// carries, or `None` if it carried none.
+/// Sends this port's registered probes and reads back whatever text a reply
+/// carries, or `None` if none carried any.
 ///
 /// Bound to an ephemeral port of the same family as the target, and
 /// connected, so the kernel drops anything from another address before it
 /// reaches here: a scanner reading unsolicited datagrams off an unconnected
 /// socket would attribute one host's answer to another's port.
+///
+/// # Why this asks more than once where the port scan asks once
+///
+/// [`payload::for_port`](crate::scanner::payload::for_port) takes the first
+/// probe a port registers and stops, which is right for what it is doing: any
+/// reply at all settles the port's state, so a second datagram would buy
+/// nothing.
+///
+/// Identification is a different question, and one probe does not always ask
+/// it. NTP is the case this exists for. A client request draws a packet of
+/// timestamps, which proves the port open and says nothing else; the daemon's
+/// own account of itself comes back only to a mode 6 control message, and the
+/// corpus registers both. Taking the first here sent the client request,
+/// discarded the timestamps, and left seventy-five rules unreached that had
+/// just been given a decoder.
+///
+/// So each registered probe is tried in turn and the first that yields text
+/// wins. A port registering one probe, which is nearly all of them, costs
+/// exactly what it did before.
 async fn probe_udp(addr: std::net::SocketAddr) -> Option<Vec<String>> {
-    let payload = SignatureDb::global()
-        .udp_probe_payloads(addr.port())
-        .first()?;
-    let texts = probe_udp_with(addr, payload).await;
-    (!texts.is_empty()).then_some(texts)
+    for payload in SignatureDb::global().udp_probe_payloads(addr.port()) {
+        let texts = probe_udp_with(addr, payload).await;
+        if !texts.is_empty() {
+            return Some(texts);
+        }
+    }
+    None
 }
 
 /// Sends `payload` to `addr` and reads back whatever text the reply carries.

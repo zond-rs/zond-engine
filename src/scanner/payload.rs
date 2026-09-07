@@ -67,6 +67,10 @@ const DNS: u16 = 53;
 /// every name it has registered.
 const NETBIOS_NS: u16 = 137;
 
+/// Where a time server answers, and where its own account of itself comes back
+/// only to a second kind of question. See the test below.
+const NTP: u16 = 123;
+
 /// The payload to send when probing `port`.
 ///
 /// Returns an empty slice for a port no service registers a UDP probe for. The
@@ -238,6 +242,43 @@ mod tests {
 
         assert_eq!(declared_role(NETBIOS_NS, b"not netbios at all"), None);
         assert_eq!(declared_role(NETBIOS_NS, &[]), None);
+    }
+
+    /// NTP registers two probes, and which is first matters.
+    ///
+    /// A port scan sends one datagram and stops, so the first probe has to be
+    /// the one a daemon is most likely to answer: an ordinary client request,
+    /// which every server replies to. The control message is the second, and
+    /// the service pass is what asks it, because many daemons carry `noquery`
+    /// and would leave the port looking filtered if it were asked first.
+    ///
+    /// This is the pairing a scan of a real ntpd showed was wrong. The service
+    /// pass took `first` and stopped, so the control message never went out and
+    /// the rules that had just been given a decoder still read nothing.
+    #[test]
+    fn ntp_registers_a_client_request_first_and_a_control_message_behind_it() {
+        const MODE: u8 = 0b0000_0111;
+        const MODE_CLIENT: u8 = 3;
+        const MODE_CONTROL: u8 = 6;
+
+        let payloads = SignatureDb::global().udp_probe_payloads(NTP);
+        assert_eq!(
+            payloads.len(),
+            2,
+            "NTP registers a client and a control probe"
+        );
+
+        assert_eq!(
+            payloads[0][0] & MODE,
+            MODE_CLIENT,
+            "the port scan sends the first probe and needs the one every server answers"
+        );
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload[0] & MODE == MODE_CONTROL),
+            "the control message is what the readvar rules were written for"
+        );
     }
 
     #[test]

@@ -26,16 +26,40 @@ protocol = "udp"
 #   0000   status
 #   0000   association id 0, meaning the daemon itself rather than a peer
 #   0000   offset
-#   0000   count, no variables named, so the daemon chooses what to send
+#   0018   twenty-four bytes of data follow
+#   ...    "version,processor,system"
 #
-# Naming no variables is what makes this one payload rather than a list: a
-# daemon asked for nothing in particular answers with the set it considers its
-# own description, which is where `version`, `processor` and `system` are.
+# The variables are named rather than left to the daemon. A request naming none
+# gets whichever set the daemon considers its default, and the two families
+# disagree about that: classic ntpd answers with `version` first, which is what
+# the imported rules were written against, while ntpsec answers with `leap`,
+# `stratum` and the rest of the status block, which identifies nothing. Asking
+# for the three by name gets them from both.
 #
-# Many builds refuse this. `noquery` in the default `restrict` line has been
-# standard advice for years, and a daemon configured that way answers nothing.
-# The probe costs one datagram and the ones that do answer are worth it.
+# The order here is the order the imported rules read them in. ntpsec sorts its
+# reply alphabetically regardless, which costs those rules the version and not
+# the operating system; `ntpsec_version` below is what covers that.
+#
+# Many builds refuse this outright. `noquery` in the default `restrict` line has
+# been standard advice for years, and ntpsec goes further, answering a control
+# query only from an address a `restrict` line names. A daemon configured either
+# way says nothing, and the probe costs one datagram.
 [[probe]]
 name = "ntp_control_readvar"
-payload = '\x16\x02\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00'
+payload = '\x16\x02\x00\x01\x00\x00\x00\x00\x00\x00\x00\x18version,processor,system'
 protocol = "udp"
+
+# ── The daemon named wherever it puts its own version ────────────────────────
+
+[[match]]
+name = "ntpsec_version"
+# ntpsec sorts its reply alphabetically, so `version=` arrives last and the
+# imported rules, which read it first and reach the rest with `.*`, take the
+# operating system and leave the version behind. This reads it wherever it sits.
+pattern = '(?i)version="ntpd ntpsec-([\d.]+)'
+version_group = 1
+vendor = "NTPsec"
+product = "NTPsec"
+context = "ntp.readvar"
+example = 'processor="aarch64", system="Linux/6.1.0-50-cloud-arm64", version="ntpd ntpsec-1.2.2"'
+metadata = { "service.cpe23" = "cpe:/a:ntpsec:ntpsec:{service.version}" }
