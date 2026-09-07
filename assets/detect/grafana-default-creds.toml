@@ -1,0 +1,31 @@
+# Grafana with the admin/admin default login. Grafana ships with that account and
+# prompts for a change only after the first sign-in, so an instance never signed
+# into still accepts it. A GET of /api/user carrying the stock credentials as
+# HTTP Basic answers 200 with the account when they work and 401 when they do
+# not. A single read-only request; it changes nothing.
+
+[detection]
+id      = "grafana-default-creds"
+version = "1.0.0"
+title   = "Grafana accepts the admin/admin default login"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "GET /api/user HTTP/1.1\r\nHost: {host}\r\nAuthorization: Basic YWRtaW46YWRtaW4=\r\nAccept: application/json,*/*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", '(?i)"login"\s*:\s*"admin"']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Grafana accepted the admin/admin default login"
+  detail       = "GET /api/user with admin/admin returned the admin account, so the default login is live and grants full dashboard and data-source access."
+  references   = [{ cwe = 1392 }]
+  excerpt_from = "$response"

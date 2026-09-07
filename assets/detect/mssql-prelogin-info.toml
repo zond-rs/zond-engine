@@ -1,0 +1,34 @@
+# Microsoft SQL Server reachable, answering a TDS pre-login. The pre-login
+# exchange happens before authentication and returns the server's version and
+# whether it will encrypt the connection, so a reply both proves the port is SQL
+# Server and discloses its version to match against known issues. One pre-login
+# packet; it authenticates nothing.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "mssql-prelogin-info"
+version = "1.0.0"
+title   = "SQL Server discloses its version in a TDS pre-login"
+
+[detection.when]
+service  = "mssql"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = '\x12\x01\x00\x34\x00\x00\x00\x00\x00\x00\x15\x00\x06\x01\x00\x1b\x00\x01\x02\x00\x1c\x00\x0c\x03\x00\x28\x00\x04\x04\x00\x2c\x00\x01\xff\x08\x00\x01\x55\x00\x00\x00\x4d\x53\x53\x51\x4c\x53\x45\x52\x56\x45\x52\x00'
+expect = '^[\x04\x12][\x01\x00]'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "info"
+  summary      = "SQL Server answered a TDS pre-login"
+  detail       = "The pre-login reply, sent before any authentication, is reachable on the network and discloses the server version and its encryption posture."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

@@ -1,0 +1,34 @@
+# Aerospike answering its info protocol without authentication. The info protocol
+# returns cluster statistics, the node list and namespace names to anyone who can
+# reach the service port, which maps the deployment for an attacker. The probe
+# asks for "statistics" and a reply framed with the info response header confirms
+# it. One read-only info request.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "aerospike-info"
+version = "1.0.0"
+title   = "Aerospike info protocol readable without authentication"
+
+[detection.when]
+service  = "aerospike"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = '\x02\x01\x00\x00\x00\x00\x00\x00\x0astatistics'
+expect = '^\x02\x02'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "Aerospike answered an info request without authentication"
+  detail       = "The info protocol returned a statistics reply with no credentials, disclosing cluster statistics, the node list and namespace names."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

@@ -1,0 +1,34 @@
+# A downloadable backup or database dump left in the web root. Editors and deploy
+# scripts drop files like backup.zip or a .sql dump beside the site, and a server
+# that hands one back exposes source, configuration and often credentials. A few
+# conventional names are tried, and a served one is confirmed by an archive magic
+# or dump marker in the body, not by the 200 alone, so a catch-all page does not
+# read as a hit. One read-only GET per name.
+
+[detection]
+id      = "backup-files"
+version = "1.0.0"
+title   = "Backup or database dump exposed in the web root"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class           = "active-benign"
+speak           = "target"
+max_bytes       = 16384
+max_millis      = 3000
+max_connections = 6
+
+[[step]]
+for_each = { var = "path", in = ["/backup.zip", "/backup.sql", "/backup.tar.gz", "/database.sql", "/dump.sql", "/wp-config.php.bak"] }
+send     = "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect   = ["HTTP/[0-9.]+ 200", '(?s)(PK\x03\x04|\x1f\x8b\x08|-- MySQL dump|CREATE TABLE |INSERT INTO |DB_PASSWORD=|APP_KEY=)']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "A backup or database dump was downloadable"
+  detail       = "GET {path} returned an archive or SQL dump, exposing source, configuration and often credentials to anyone who can guess the name."
+  references   = [{ cwe = 530 }]
+  excerpt_from = "$response"

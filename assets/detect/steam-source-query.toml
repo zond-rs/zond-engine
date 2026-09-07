@@ -1,0 +1,34 @@
+# A Source engine server answering the A2S_INFO query. The query asks a Valve
+# Source server (Counter-Strike, Team Fortress and the rest) to describe itself,
+# and it replies with the server name, current map, player counts and other
+# details to anyone. It is an information disclosure and confirms an exposed game
+# server. One read-only query.
+#
+# The payload is a single-quoted TOML literal string so its escapes reach the
+# interpreter rather than the TOML parser.
+
+[detection]
+id      = "steam-source-query"
+version = "1.0.0"
+title   = "Source engine server answers A2S_INFO"
+
+[detection.when]
+service  = "steam_master"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = '\xff\xff\xff\xffTSource Engine Query\x00'
+expect = '^\xff\xff\xff\xffI'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "info"
+  summary      = "A Source engine server answered A2S_INFO"
+  detail       = "The server replied to an A2S_INFO query, disclosing its name, current map and player counts to an unauthenticated client."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

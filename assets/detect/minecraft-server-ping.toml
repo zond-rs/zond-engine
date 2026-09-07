@@ -1,0 +1,33 @@
+# A Minecraft server answering the server list ping. The legacy ping asks a
+# server to describe itself, and it replies with its version, message of the day
+# and current and maximum player counts to anyone, no authentication. It is an
+# information disclosure and confirms an exposed game server. One read-only ping.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "minecraft-server-ping"
+version = "1.0.0"
+title   = "Minecraft server answers the server list ping"
+
+[detection.when]
+service  = "minecraft"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = '\xfe\x01'
+expect = '^\xff'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "info"
+  summary      = "Minecraft answered the server list ping"
+  detail       = "The server replied to a list ping, disclosing its version, message of the day and player counts to an unauthenticated client."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

@@ -1,0 +1,34 @@
+# A reachable Gopher server. Gopher is a legacy protocol with no authentication,
+# and its bare request format makes it a favoured SSRF relay: a server-side
+# request coerced to a gopher:// URL can be shaped into arbitrary bytes to
+# another service. An empty selector asks for the root menu, and a served menu
+# line, tab-separated with a trailing port, confirms it. One read-only request.
+#
+# The payload is a single-quoted TOML literal string so its escapes reach the
+# interpreter rather than the TOML parser.
+
+[detection]
+id      = "gopher-open"
+version = "1.0.0"
+title   = "Gopher service reachable"
+
+[detection.when]
+service  = "gopher"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = '\r\n'
+expect = '(?m)^[0-9+igT][^\t\r\n]*\t[^\t\r\n]*\t[^\t\r\n]*\t\d{1,5}'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "Gopher answered a request with a menu"
+  detail       = "The server returned a Gopher menu with no authentication; Gopher is a common SSRF relay, letting a coerced server-side request be shaped into arbitrary bytes to another service."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

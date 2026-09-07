@@ -1,0 +1,34 @@
+# RethinkDB accepting a client with no authentication. The driver handshake ends
+# in SUCCESS when the server takes a connection without an auth key; a server
+# that requires one answers with an error instead. A SUCCESS is a database, and
+# its admin interface, reachable with no credentials. One handshake; it runs no
+# query.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "rethinkdb-open"
+version = "1.0.0"
+title   = "RethinkDB accepts clients without authentication"
+
+[detection.when]
+service  = "rethinkdb"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = '\x3f\x33\xc4\x40\x00\x00\x00\x00\x07\x00\x00\x00\x56\x5f\x30\x5f\x31\x30\x5f\x30'
+expect = '^SUCCESS'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "RethinkDB accepted a handshake without an auth key"
+  detail       = "The driver handshake returned SUCCESS with no auth key, so the database and its admin interface are reachable without credentials."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

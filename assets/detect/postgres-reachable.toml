@@ -1,0 +1,34 @@
+# PostgreSQL reachable on the network. A startup packet naming a protocol version
+# the server does not speak draws an error that names the versions it does, which
+# both proves the port is PostgreSQL and discloses its protocol range without a
+# login. Reaching a database directly is the exposure worth noting; whether it
+# then demands a password is a separate question this does not put. One probe.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach
+# the interpreter rather than the TOML parser.
+
+[detection]
+id      = "postgres-reachable"
+version = "1.0.0"
+title   = "PostgreSQL reachable on the network"
+
+[detection.when]
+service  = "postgresql"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = '\x00\x00\x00\x13\x00\x04\x00\x00user\x00zond\x00\x00'
+expect = 'unsupported frontend protocol'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "info"
+  summary      = "PostgreSQL answered a startup probe"
+  detail       = "The server returned its protocol-version error, so a PostgreSQL database is reachable directly on the network and should sit behind access controls."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"

@@ -1,0 +1,32 @@
+# Neo4j's HTTP API reachable. The root of the HTTP endpoint answers with a
+# discovery document that names the server version and the Bolt and transaction
+# URLs, with no authentication. It confirms Neo4j is exposed and discloses the
+# version to match against known issues; whether the database itself is open
+# depends on its auth, which this does not test. A single read-only GET.
+
+[detection]
+id      = "neo4j-http-open"
+version = "1.0.0"
+title   = "Neo4j HTTP API is reachable"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "GET / HTTP/1.1\r\nHost: {host}\r\nAccept: application/json,*/*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", '(?i)"neo4j_version"']
+bind   = { version = '"neo4j_version"\s*:\s*"(?<version>[^"]+)"' }
+  [[step.finding]]
+  when         = "matched"
+  severity     = "low"
+  summary      = "Neo4j served its HTTP discovery document"
+  detail       = "GET / returned the Neo4j discovery document for version {version} with no credentials, so the database's HTTP API is reachable and its version is disclosed."
+  references   = [{ cwe = 200 }]
+  excerpt_from = "$response"
