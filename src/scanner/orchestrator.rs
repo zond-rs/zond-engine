@@ -1005,6 +1005,42 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
     }
 }
 
+/// Assesses each gathered certificate's own posture — expiry, self-signing, a
+/// weak RSA key — and records a finding for each problem.
+///
+/// A sibling of [`run_correlation`]: it sends nothing, deriving entirely from the
+/// certificate the service pass already read off the handshake, and works in place
+/// in the store. A port with no certificate, or one a clean certificate, yields
+/// nothing, so this costs a walk of the store and no traffic. No gate: a scan that
+/// gathered no certificate has nothing here to find.
+pub(super) fn run_cert_posture(ctx: &ScanContext) {
+    let now = std::time::SystemTime::now();
+    for key in ctx.host_addresses() {
+        ctx.update_host(key, |host| {
+            // Collect first, mutate second: the read borrows the host's ports and
+            // the write needs them mutably, so the two cannot overlap.
+            let hits: Vec<(u16, Protocol, crate::model::finding::Finding)> = host
+                .ports()
+                .flat_map(|port| {
+                    let number = port.number();
+                    let protocol = port.protocol();
+                    port.security()
+                        .and_then(|security| security.certificate())
+                        .map(|cert| cert.findings(now))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(move |finding| (number, protocol, finding))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+
+            for (number, protocol, finding) in hits {
+                host.add_port_finding(number, protocol, finding);
+            }
+        });
+    }
+}
+
 /// Characterises the filter in front of each host that answered, if asked.
 ///
 /// A sibling of [`run_traceroute`]: it runs last, only against hosts that

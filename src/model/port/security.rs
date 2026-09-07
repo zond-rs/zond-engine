@@ -24,8 +24,12 @@
 //! after it ran, and "expired" answered from the current time would relabel a
 //! report every time it was opened.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use crate::model::confidence::Confidence;
+use crate::model::finding::{
+    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+};
 use crate::model::tls::TlsSupport;
 use std::time::{Duration, SystemTime};
 
@@ -293,7 +297,7 @@ impl Default for Security {
 /// other thing on a port that a target writes.
 ///
 /// Over-length lists are truncated rather than refused, as an
-/// [`Excerpt`](crate::model::finding::Excerpt) is: the names are evidence, and
+/// [`Excerpt`] is: the names are evidence, and
 /// dropping a certificate because it carried too many would lose the whole
 /// finding over the part of it that ran long.
 ///
@@ -421,6 +425,115 @@ impl CertificateInfo {
     pub fn fingerprint_sha256(&self) -> &str {
         &self.fingerprint_sha256
     }
+
+    /// What is wrong with this certificate's own posture at `at`, one finding per
+    /// problem, derived from what the handshake already produced: no probe of its
+    /// own.
+    ///
+    /// The three it checks are the ones the parsed fields can settle on their own:
+    /// a certificate past its validity window, one whose issuer names its own
+    /// subject (self-signed), and one carrying an RSA key below the 2048-bit floor.
+    /// Two neighbouring checks are deliberately absent. Hostname match is not one:
+    /// the scan reaches the endpoint by address with no SNI, so there is no name it
+    /// asked the certificate to present and nothing to hold its names against. Nor
+    /// is the signature algorithm, which is not among the fields parsed here.
+    ///
+    /// A not-yet-valid certificate is left alone rather than reported: a scanner
+    /// clock running ahead is the likelier cause, and flagging it would cry wolf.
+    pub fn findings(&self, at: SystemTime) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        let id = certificate_detection_id();
+
+        if at > self.validity_end
+            && let Ok(finding) = Finding::new(
+                id.clone(),
+                "TLS certificate has expired",
+                Severity::Medium,
+                Confidence::Certain,
+                DetectionClass::Passive,
+            )
+        {
+            findings.push(
+                finding
+                    .with_excerpt(Excerpt::new(format!(
+                        "the certificate for {} is past its validity window",
+                        self.common_name
+                    )))
+                    .with_reference(Reference::Cwe(324)), // Use of a Key Past its Expiration Date
+            );
+        }
+
+        // A heuristic on the common names, which is what is parsed: a certificate
+        // chained to a real authority names a different issuer. Probable, not
+        // Certain, for that reason.
+        if !self.common_name.is_empty()
+            && self.issuer.eq_ignore_ascii_case(self.common_name.as_ref())
+            && let Ok(finding) = Finding::new(
+                id.clone(),
+                "TLS certificate is self-signed",
+                Severity::Low,
+                Confidence::Probable,
+                DetectionClass::Passive,
+            )
+        {
+            findings.push(
+                finding
+                    .with_excerpt(Excerpt::new(format!(
+                        "issuer and subject are both {}",
+                        self.common_name
+                    )))
+                    .with_reference(Reference::Cwe(295)), // Improper Certificate Validation
+            );
+        }
+
+        // Gated on the key type, so an elliptic-curve key (256 bits and strong) is
+        // not read as weak against an RSA floor.
+        if self.pubkey_type.eq_ignore_ascii_case("RSA")
+            && self.pubkey_bits < 2048
+            && let Ok(finding) = Finding::new(
+                id,
+                "TLS certificate uses a weak RSA key",
+                Severity::Medium,
+                Confidence::Certain,
+                DetectionClass::Passive,
+            )
+        {
+            findings.push(
+                finding
+                    .with_excerpt(Excerpt::new(format!(
+                        "the RSA public key is {} bits, below the 2048-bit floor",
+                        self.pubkey_bits
+                    )))
+                    .with_reference(Reference::Cwe(326)), // Inadequate Encryption Strength
+            );
+        }
+
+        findings
+    }
+}
+
+/// The identity the certificate-posture findings are stamped with.
+///
+/// A built-in derivation like the TLS-suite one, so its content hash is taken
+/// over the checks it runs rather than a dataset: changing the set moves the hash,
+/// and two reports drawn by different rules can be told apart.
+fn certificate_detection_id() -> DetectionId {
+    static ID: OnceLock<DetectionId> = OnceLock::new();
+    ID.get_or_init(|| {
+        let version = env!("CARGO_PKG_VERSION")
+            .parse::<Version>()
+            .unwrap_or_else(|_| Version::new(0, 0, 0));
+        let census = "expired;self-signed;weak-rsa-key";
+        let digest = ring::digest::digest(&ring::digest::SHA256, census.as_bytes());
+        let mut hash = String::with_capacity(digest.as_ref().len() * 2);
+        for byte in digest.as_ref() {
+            use std::fmt::Write;
+            let _ = write!(hash, "{byte:02x}");
+        }
+        DetectionId::new("zond:certificate", version, hash)
+            .expect("the identifier is a non-empty literal")
+    })
+    .clone()
 }
 
 // ╔════════════════════════════════════════════╗
@@ -594,5 +707,87 @@ mod tests {
         let sec_future = Security::new().with_certificate(future_cert);
 
         assert!(!sec_future.is_cert_valid());
+    }
+
+    #[test]
+    fn a_clean_certificate_has_no_posture_findings() {
+        // CA-issued, in date, RSA 2048.
+        let now = SystemTime::now();
+        let cert = CertificateInfo::new(
+            "web.example",
+            "Example Root CA",
+            now - Duration::from_secs(86_400 * 30),
+            now + Duration::from_secs(86_400 * 300),
+            "deadbeef",
+        )
+        .with_public_key("RSA", 2048);
+        assert!(cert.findings(now).is_empty());
+    }
+
+    #[test]
+    fn certificate_posture_reports_expiry_self_signing_and_a_weak_key() {
+        let now = SystemTime::now();
+        let id = "zond:certificate";
+
+        // Expired: validity ended before `now`. Issuer differs from the subject, so
+        // it is the one finding and not also self-signed.
+        let expired = CertificateInfo::new(
+            "web.example",
+            "Example Root CA",
+            now - Duration::from_secs(86_400 * 400),
+            now - Duration::from_secs(86_400 * 30),
+            "aa",
+        )
+        .with_public_key("RSA", 2048);
+        let findings = expired.findings(now);
+        assert_eq!(findings.len(), 1, "expired alone");
+        assert_eq!(findings[0].detection().id(), id);
+        assert_eq!(findings[0].severity(), Severity::Medium);
+        assert!(findings[0].title().contains("expired"));
+
+        // Self-signed: issuer names the subject. In date, RSA 2048, so it is the
+        // one finding.
+        let self_signed = CertificateInfo::new(
+            "box.local",
+            "box.local",
+            now - Duration::from_secs(86_400 * 30),
+            now + Duration::from_secs(86_400 * 300),
+            "bb",
+        )
+        .with_public_key("RSA", 2048);
+        let findings = self_signed.findings(now);
+        assert_eq!(findings.len(), 1, "self-signed alone");
+        assert_eq!(findings[0].severity(), Severity::Low);
+        assert!(findings[0].title().contains("self-signed"));
+
+        // Weak RSA key: 1024 bits, CA-issued and in date.
+        let weak = CertificateInfo::new(
+            "legacy.example",
+            "Example Root CA",
+            now - Duration::from_secs(86_400 * 30),
+            now + Duration::from_secs(86_400 * 300),
+            "cc",
+        )
+        .with_public_key("RSA", 1024);
+        let findings = weak.findings(now);
+        assert_eq!(findings.len(), 1, "weak key alone");
+        assert_eq!(findings[0].severity(), Severity::Medium);
+        assert!(findings[0].title().contains("weak RSA key"));
+    }
+
+    #[test]
+    fn a_256_bit_elliptic_curve_key_is_not_read_as_weak() {
+        // 256-bit EC is strong; the weak-key check is gated on the key type so it
+        // is not flagged against the 2048-bit RSA floor.
+        let now = SystemTime::now();
+        let cert = CertificateInfo::new(
+            "ec.example",
+            "Example Root CA",
+            now - Duration::from_secs(86_400 * 30),
+            now + Duration::from_secs(86_400 * 300),
+            "dd",
+        )
+        .with_public_key("EC", 256);
+        assert!(cert.findings(now).is_empty());
     }
 }

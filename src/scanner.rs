@@ -1063,6 +1063,7 @@ fn spawn_scan(
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
         vantage::attribute(&ctx);
         orchestrator::run_correlation(&ctx, cfg.service_detection);
+        orchestrator::run_cert_posture(&ctx);
         let report = recorder.finish(&ctx);
 
         match liveness {
