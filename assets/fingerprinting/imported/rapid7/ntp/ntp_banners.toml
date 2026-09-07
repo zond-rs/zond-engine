@@ -565,7 +565,7 @@ metadata = { "service.family" = "NTP", "os.vendor" = "McAfee", "os.product" = "S
 
 [[match]]
 name = "ntpd running on linux"
-pattern = "processor=\"([^ ]+)\".*system=\"Linux([^ ]+)\""
+pattern = "processor=\"([^ ]+)\".*system=\"Linux/?([^ ]+)\""
 product = "NTP"
 context = "ntp.readvar"
 example = "\n      processor=\"i686\", system=\"Linux2.6.10\", leap=0, stratum=2,\n      precision=-17, rootdelay=44.644, rootdispersion=29.933, peer=13317,\n      refid=A.B.C.D, reftime=0xd2c29f69.407570c5, poll=10,\n      clock=0xd2c2a335.360999dc, state=4, phase=1.037, frequency=55.898,\n      jitter=0.203, stability=0.004\n    "

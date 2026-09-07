@@ -14,6 +14,33 @@ The converted files are edited in place where the imported metadata asserts more
 than its own pattern can establish. **Re-importing overwrites these**, so they are
 recorded here to be re-applied.
 
+### A kernel version that kept its separator (2026-09-07, 1 rule)
+
+`ntpd running on linux` captured the kernel straight after the word, with no
+allowance for the `/` that separates them:
+
+```
+system="Linux/6.1.0-50-cloud-arm64"
+           └┬──────────────────┘
+            └─ captured, slash and all
+```
+
+Its own example is `system="Linux2.6.10"`, which is how old ntpd wrote it and why
+the pattern was written that way. Every current daemon writes the separator, so
+the rule produced `os.version = "/6.1.0-50-cloud-arm64"`, rendered as
+`Linux /6.1.0-50-cloud-arm64`, and fed a malformed
+`cpe:/o:linux:linux_kernel:/6.1.0-50-cloud-arm64`.
+
+Corrected to the form its own sibling two hundred lines above already uses, which
+keeps the separatorless form matching:
+
+```
+system="Linux/?([^ ]+)"
+```
+
+Found by scanning ntpsec 1.2.2, which answers a mode 6 query with the fields in
+alphabetical order and so reaches this rule rather than the version-first one.
+
 ### The Python runtime, onto the key that reaches a report (2026-09-06, 5 rules)
 
 Five HTTP rules recorded the interpreter version under `python.version`, a key
