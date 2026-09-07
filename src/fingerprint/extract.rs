@@ -110,6 +110,32 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
         // a rule reads one of them: `model=Mac16,10` and `osxvers=25` are two
         // separate claims about the same machine.
         5353 => crate::protocols::mdns::text_records(datagram).unwrap_or_default(),
+        // An M-SEARCH answer is HTTP-shaped, and the UPnP Device Architecture
+        // fixes what its `SERVER` value holds: the operating system, the UPnP
+        // version, and the product, each with its own version.
+        //
+        //   SERVER: Linux/3.14.0 UPnP/1.0 MiniUPnPd/1.9
+        //           └─ OS ────┘  └─ UPnP ┘ └─ product ┘
+        //
+        // The value alone rather than the response it came in. Handing back the
+        // whole thing would make it a banner beginning `HTTP/`, which is what
+        // [`HttpHeadersAnalyzer`](super::http) gates on, and a UPnP responder
+        // would be reported as a web server on 1900. The header is the half that
+        // identifies anything.
+        //
+        // `ST` is not offered with it. The probe asks `ssdp:all` and a device
+        // answers it with one datagram per service it exposes; this exchange
+        // reads one, so the `ST` in hand is whichever the device happened to
+        // send first, and that is `upnp:rootdevice` on nearly everything.
+        // Reading a device type out of it would be reading the order the
+        // datagrams left in.
+        1900 => match std::str::from_utf8(datagram) {
+            Ok(text) => super::http::server_value(text)
+                .map(ToOwned::to_owned)
+                .into_iter()
+                .collect(),
+            Err(_) => Vec::new(),
+        },
         // A SIP endpoint answers OPTIONS over UDP far more often than over TCP,
         // and names itself in the same two headers either way.
         5060 | 5061 => match std::str::from_utf8(datagram) {
@@ -160,7 +186,7 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// Stated rather than derived, because a decoder cannot be asked whether it
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
-const DECODED_UDP_PORTS: &[u16] = &[53, 161, 5060, 5061, 5353];
+const DECODED_UDP_PORTS: &[u16] = &[53, 161, 1900, 5060, 5061, 5353];
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -229,7 +255,7 @@ mod tests {
         /// all, since UDP offers no handshake to infer it from, so a probe here
         /// earns its place without a decoder. Each entry is a decoder somebody
         /// could write.
-        const PROBED_BUT_NOT_DECODED: &[u16] = &[53, 123, 137, 1900, 5353];
+        const PROBED_BUT_NOT_DECODED: &[u16] = &[123, 137];
 
         let db = SignatureDb::global();
         let probed: Vec<u16> = (0..=u16::MAX)
@@ -651,5 +677,74 @@ mod ldap_root_dse {
             text.contains(char::REPLACEMENT_CHARACTER),
             "the fixture should exercise the lossy path"
         );
+    }
+}
+
+#[cfg(test)]
+mod ssdp_server {
+    use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
+
+    /// What a consumer router answers M-SEARCH with: an HTTP-shaped message
+    /// whose `SERVER` value carries the three tokens UPnP specifies.
+    const ROUTER: &str = "HTTP/1.1 200 OK\r\n\
+         CACHE-CONTROL: max-age=120\r\n\
+         ST: upnp:rootdevice\r\n\
+         USN: uuid:11111111-2222-3333-4444-555555555555::upnp:rootdevice\r\n\
+         EXT:\r\n\
+         SERVER: Linux/3.14.0, UPnP/1.0, MiniUPnPd/1.9\r\n\
+         LOCATION: http://192.0.2.1:5000/rootDesc.xml\r\n\r\n";
+
+    #[test]
+    fn a_datagram_yields_the_header_the_corpus_reads() {
+        assert_eq!(
+            super::from_datagram(1900, ROUTER.as_bytes()),
+            vec!["Linux/3.14.0, UPnP/1.0, MiniUPnPd/1.9"]
+        );
+    }
+
+    /// The header and not the message. A banner beginning `HTTP/` is what the
+    /// HTTP analyzer gates on, so handing the reply back whole would have a UPnP
+    /// responder reported as a web server running on 1900.
+    #[test]
+    fn the_reply_itself_is_not_offered_as_a_banner() {
+        assert!(
+            !super::from_datagram(1900, ROUTER.as_bytes())
+                .iter()
+                .any(|text| text.starts_with("HTTP/")),
+            "the message would be read as an HTTP response"
+        );
+    }
+
+    #[test]
+    fn the_header_names_the_daemon_behind_it() {
+        let evidence = SignatureDb::global()
+            .identify(1900, Protocol::Udp, "Linux/3.14.0, UPnP/1.0, MiniUPnPd/1.9")
+            .expect("the corpus names it");
+        assert_eq!(evidence.product.as_deref(), Some("MiniUPnPd"));
+        assert_eq!(evidence.version.as_deref(), Some("1.9"));
+    }
+
+    /// A device that names no product still resolves to UPnP rather than to
+    /// nothing, which is the baseline rule's whole job.
+    #[test]
+    fn a_stack_the_corpus_cannot_name_is_still_upnp() {
+        let evidence = SignatureDb::global()
+            .identify(1900, Protocol::Udp, "SomeRTOS/1.0 UPnP/1.0 Widget/2.3")
+            .expect("the baseline rule fires");
+        assert_eq!(evidence.product.as_deref(), Some("upnp"));
+    }
+
+    #[test]
+    fn port_1900_is_now_worth_a_second_datagram() {
+        assert!(super::reads(1900, Protocol::Udp));
+    }
+
+    /// A reply carrying no such header, and one that is not a message at all,
+    /// both decode to nothing rather than to noise.
+    #[test]
+    fn a_datagram_with_nothing_to_read_yields_nothing() {
+        assert!(super::from_datagram(1900, b"\x00\x01\x02 not ssdp").is_empty());
+        assert!(super::from_datagram(1900, b"HTTP/1.1 200 OK\r\nST: x\r\n\r\n").is_empty());
     }
 }

@@ -15,3 +15,120 @@ description = "Simple Service Discovery Protocol (UPnP)"
 name = "ssdp_m_search"
 payload = 'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 1\r\nST: ssdp:all\r\n\r\n'
 protocol = "udp"
+
+# ── What the answer names ────────────────────────────────────────────────────
+#
+# Every rule below reads `ssdp.server`, the `SERVER` value of the M-SEARCH
+# answer, which `extract::from_datagram` hands back on its own. The UPnP Device
+# Architecture fixes its grammar at three tokens:
+#
+#   Linux/3.14.0, UPnP/1.0, MiniUPnPd/1.9
+#   └─ OS ─────┘  └─ UPnP ┘  └─ product ┘
+#
+# so a rule anchored at both ends would have to spell out an operating system it
+# does not care about. Each is anchored on a token boundary instead: at the start
+# of the value or after the separator, which devices write as a comma, a space,
+# or both.
+#
+# ## What this probe can and cannot reach
+#
+# A scanner sends unicast, and not every UPnP stack can answer it. Some bind the
+# multicast group address itself rather than the wildcard, and the kernel then
+# never delivers a unicast datagram to that socket - the daemon is running,
+# reachable and correct, and silent to anything but a multicast M-SEARCH.
+#
+# Measured, in `vladgh/minidlna:1.3.3`: its only SSDP socket is
+# `239.255.255.250:1900`, and it answers nothing sent to the container's own
+# address. A ReadyMedia rule was written here and then removed, because its
+# example matched, its pattern was right, and the probe beside it could never
+# draw the string it was written for - which is the failure
+# `src/fingerprint/context.rs` exists to stop shipping.
+#
+# The rules that remain are for stacks that bind the wildcard and do answer:
+# router IGDs, the Windows device host, and the appliances whose own apps
+# discover them by unicast. Reaching the rest wants a listener for the NOTIFY
+# announcements a device multicasts unprompted, which is a passive capability
+# this engine does not have and a different piece of work from a probe.
+
+[[match]]
+name = "upnp_device"
+# The baseline: the token that makes this UPnP rather than an HTTP reply that
+# happened to arrive over UDP. It names no product, so a rule below that names
+# one outranks it rather than competing with it — the same arrangement
+# `generic_http` has with the server rules behind it.
+pattern = '(?i)(?:^|[,\s])UPnP/\d+\.\d+'
+product = "upnp"
+context = "ssdp.server"
+example = "Linux/3.14.0, UPnP/1.0, Portable SDK for UPnP devices/1.6.19"
+
+[[match]]
+name = "miniupnpd"
+# The daemon that answers UPnP on consumer routers and on the firewall
+# distributions built from them, so a match here is very often the gateway
+# itself.
+pattern = '(?i)(?:^|[,\s])MiniUPnPd/([\d.]+)'
+version_group = 1
+vendor = "Thomas Bernard"
+product = "MiniUPnPd"
+context = "ssdp.server"
+example = "Linux/3.14.0, UPnP/1.0, MiniUPnPd/1.9"
+metadata = { "service.cpe23" = "cpe:/a:miniupnp_project:miniupnpd:{service.version}" }
+
+[[match]]
+name = "portable_sdk_for_upnp_devices"
+# libupnp, the reference implementation. The most common of these by a wide
+# margin and the least specific: it is linked into routers, media servers,
+# printers and set-top boxes alike, so it names the library and leaves what is
+# using it to another rule.
+pattern = '(?i)(?:^|[,\s])Portable SDK for UPnP devices/([\d.]+)'
+version_group = 1
+product = "Portable SDK for UPnP devices"
+context = "ssdp.server"
+example = "Linux/2.6.39, UPnP/1.0, Portable SDK for UPnP devices/1.6.19"
+metadata = { "service.cpe23" = "cpe:/a:libupnp_project:libupnp:{service.version}" }
+
+[[match]]
+name = "rygel"
+pattern = '(?i)(?:^|[,\s])Rygel/([\d.]+)'
+version_group = 1
+vendor = "GNOME"
+product = "Rygel"
+context = "ssdp.server"
+example = "Linux/6.1.0, UPnP/1.0, Rygel/0.42.4"
+metadata = { "service.extrainfo" = "DLNA media server" }
+
+[[match]]
+name = "philips_hue_bridge"
+# The Hue bridge names its own daemon rather than the product, and the OS token
+# in front of it is the giveaway that this is an appliance and not a server: a
+# general-purpose machine does not run FreeRTOS.
+pattern = '(?i)(?:^|[,\s])IpBridge/([\d.]+)'
+version_group = 1
+vendor = "Signify"
+product = "Philips Hue Bridge"
+context = "ssdp.server"
+example = "FreeRTOS/6.0.5, UPnP/1.0, IpBridge/1.17.0"
+metadata = { "hw.device" = "media device" }
+
+[[match]]
+name = "sonos"
+pattern = '(?i)(?:^|[,\s])Sonos/([\w.-]+)'
+version_group = 1
+vendor = "Sonos"
+product = "Sonos"
+context = "ssdp.server"
+example = "Linux UPnP/1.0 Sonos/70.3-35220 (ZPS12)"
+metadata = { "hw.device" = "media device" }
+
+[[match]]
+name = "windows_upnp_device_host"
+# Windows answers with its own stack, and the OS token in front of it carries
+# the release. Read for the operating system as well as the service, because a
+# machine answering here is a machine, where most of the rules above match
+# appliances.
+pattern = '(?i)^Microsoft-Windows[/-]NT?[/ ]?([\d.]+).*(?:^|[,\s])UPnP-Device-Host/[\d.]+'
+product = "Windows UPnP Device Host"
+vendor = "Microsoft"
+context = "ssdp.server"
+example = "Microsoft-Windows-NT/5.1, UPnP/1.0, UPnP-Device-Host/1.0"
+metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows" }

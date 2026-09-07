@@ -972,7 +972,7 @@ impl PortScanner for TcpPortScanner {
     /// have enforced. After a window scan it runs, and a port whose openness
     /// rests on a reset's window is the one most worth putting a connection to.
     async fn detect_services(&mut self, ctx: &ScanContext) {
-        service::detect(ctx, self.service_detection).await;
+        service::detect(ctx, self.service_detection, Protocol::Tcp).await;
     }
 }
 

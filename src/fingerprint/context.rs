@@ -23,7 +23,7 @@
 //! use zond_engine::fingerprint::{Reach, reach_of};
 //!
 //! assert_eq!(reach_of(Some("ssh.banner")), Some(Reach::Produced));
-//! assert_eq!(reach_of(Some("favicon.md5")), Some(Reach::Unproduced));
+//! assert_eq!(reach_of(Some("tls.jarm")), Some(Reach::Unproduced));
 //!
 //! // A rule naming no context is matched against the whole banner.
 //! assert_eq!(reach_of(None), Some(Reach::Produced));
@@ -245,6 +245,11 @@ pub const CONTEXTS: &[Context] = &[
         name: "snmp.sys_object_id",
         reach: Reach::Produced,
         note: "`sysObjectID.0`, decoded by `snmp::sys_object_id` from the second varbind of the GetRequest already sent, and offered both alone and joined to the description",
+    },
+    Context {
+        name: "ssdp.server",
+        reach: Reach::Produced,
+        note: "the `SERVER` value of an M-SEARCH answer, read by `http::server_value` and handed back alone by `extract::from_datagram`. A separate field from `http_header.server` because UPnP fixes its grammar: three tokens naming the operating system, the UPnP version and the product, where a web server's is whatever the author felt like writing",
     },
     Context {
         name: "ssh.banner",

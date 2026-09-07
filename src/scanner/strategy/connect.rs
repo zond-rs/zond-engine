@@ -276,6 +276,13 @@ pub struct ConnectUdpPortScanner {
     /// What each probe changes about the packet it sends. Only the source port
     /// and hop limit reach the wire from here (see [`ConnectShaping`]).
     evasion: EvasionProfile,
+    /// How far the second pass may go to name what answered.
+    ///
+    /// Unlike [`ConnectPortScanner`] beside it, this one cannot identify a
+    /// service inline: there is no connection to hold, and the datagram that
+    /// establishes the port is open is not the one that identifies what is
+    /// behind it. So it runs the second pass, and holds the level to run it at.
+    service_detection: ServiceDetection,
 }
 
 impl ConnectUdpPortScanner {
@@ -289,10 +296,25 @@ impl ConnectUdpPortScanner {
     /// a router as easily as the target, is not surfaced through this API. Only
     /// a datagram coming back proves the port and the host at once.
     pub fn new(ctx: ScanContext, concurrency: usize, evasion: &EvasionProfile) -> Self {
+        Self::with_detection(ctx, concurrency, evasion, ServiceDetection::default())
+    }
+
+    /// The same scanner, told how far the second pass may go.
+    ///
+    /// [`new`](Self::new) is the ordinary way in and takes the default level;
+    /// this is for a caller carrying a level of its own, which is every caller
+    /// that read one from a configuration.
+    pub fn with_detection(
+        ctx: ScanContext,
+        concurrency: usize,
+        evasion: &EvasionProfile,
+        service_detection: ServiceDetection,
+    ) -> Self {
         Self {
             ctx,
             concurrency,
             evasion: evasion.clone(),
+            service_detection,
         }
     }
 }
@@ -305,6 +327,17 @@ impl PortScanner for ConnectUdpPortScanner {
 
     fn supported_protocols(&self) -> Vec<Protocol> {
         vec![Protocol::Udp]
+    }
+
+    /// Identifies the UDP services this scanner found open.
+    ///
+    /// [`ConnectPortScanner`] needs no such pass because it fingerprints over
+    /// the stream it already holds. There is no equivalent here: a UDP probe is
+    /// one datagram, sent to establish that the port is open, and the question
+    /// that identifies what answered is a second one. So the phase runs, scoped
+    /// to [`Protocol::Udp`] so a composite's TCP member keeps its own half.
+    async fn detect_services(&mut self, ctx: &ScanContext) {
+        crate::scanner::service::detect(ctx, self.service_detection, Protocol::Udp).await;
     }
 
     async fn scan(&mut self, mut rx: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {

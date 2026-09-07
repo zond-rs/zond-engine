@@ -369,3 +369,57 @@ async fn an_ssh_banners_distribution_build_survives_into_the_service() {
         assert_eq!(service.extrainfo(), build, "{shown:?}");
     }
 }
+
+/// A UPnP responder on 1900 is identified from the `SERVER` header of its
+/// M-SEARCH answer.
+///
+/// The first UDP service identification this suite covers, and it exercises the
+/// half of the pipeline TCP never reaches: a UDP reply becomes a banner only
+/// through `extract::from_datagram`, so nothing the corpus says about SSDP can
+/// fire unless that decoder produced the text. A rule matching its own example
+/// would pass with the decoder missing entirely.
+///
+/// Bound to 1900 rather than to a free port because the corpus keys a UDP probe
+/// on the destination number: on any other port this responder is sent nothing
+/// and says nothing.
+#[tokio::test]
+async fn identifies_a_upnp_responder_from_its_server_header() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    /// What a consumer router answers M-SEARCH with.
+    const ANSWER: &[u8] = b"HTTP/1.1 200 OK\r\n\
+        CACHE-CONTROL: max-age=120\r\n\
+        ST: upnp:rootdevice\r\n\
+        USN: uuid:11111111-2222-3333-4444-555555555555::upnp:rootdevice\r\n\
+        EXT:\r\n\
+        SERVER: Linux/3.14.0, UPnP/1.0, MiniUPnPd/1.9\r\n\
+        LOCATION: http://127.0.0.1:5000/rootDesc.xml\r\n\r\n";
+
+    let Some(server) = spawn_udp_server_on(1900, ANSWER).await else {
+        eprintln!("SKIP: 1900/udp is in use on this machine");
+        return;
+    };
+
+    let outcome = run_scan(target_map(LOOPBACK, "U:1900"), &test_config()).await;
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let port = host
+        .ports()
+        .find(|p| p.number() == server.port && p.protocol() == Protocol::Udp)
+        .expect("the scanned UDP port is present in the results");
+
+    let service = port.service().expect("a service was identified");
+    assert_eq!(
+        service.product(),
+        Some("MiniUPnPd"),
+        "the SERVER header names the daemon"
+    );
+    assert_eq!(service.version(), Some("1.9"));
+    assert_ne!(
+        service.name(),
+        "http",
+        "an HTTP-shaped answer over UDP is not a web server"
+    );
+}

@@ -197,6 +197,26 @@ pub enum NetworkRole {
     /// it.
     SnmpAgent,
 
+    /// Answered a NetBIOS node-status request with a name table holding a
+    /// suffix only a domain controller registers.
+    ///
+    /// `<1C>` is registered as a *group* name by every controller in a domain
+    /// and by nothing else, and `<1B>` as a *unique* name by the one that is
+    /// domain master browser. Either says what the machine is, from one
+    /// unauthenticated datagram, before anything has been asked of SMB or LDAP.
+    ///
+    /// The reply is the evidence and not the port, the same standard
+    /// [`DnsServer`](Self::DnsServer) is held to. A host with 137 open has a
+    /// socket bound; a host that lists `<1C>` has told a stranger it runs the
+    /// domain. It is a role rather than a service because it is a fact about the
+    /// machine: the same box says it over SMB, LDAP and Kerberos too, and each
+    /// of those is a service of its own.
+    ///
+    /// Not concluded from `<20>` or `<00>`. The first is the server service and
+    /// means the host shares something; the second every NetBIOS host
+    /// registers.
+    DomainController,
+
     /// Switches frames on behalf of the machines attached to it.
     ///
     /// Concluded from the device's own announcement, meaning LLDP's bridge
@@ -284,6 +304,7 @@ impl NetworkRole {
             Self::DhcpServer => "DHCP",
             Self::NtpServer => "NTP",
             Self::SnmpAgent => "SNMP",
+            Self::DomainController => "domain controller",
             Self::Switch => "switch",
             Self::Origin => "origin",
             Self::Tarpit => "tarpit",
@@ -300,12 +321,13 @@ impl NetworkRole {
     /// finding that survives a scan and disappears on the way to the report.
     /// Every round trip through [`wire`](crate::record::wire) is tested over
     /// this, so a new variant fails those tests until it is spelled everywhere.
-    pub const ALL: [NetworkRole; 9] = [
+    pub const ALL: [NetworkRole; 10] = [
         Self::Router,
         Self::DnsServer,
         Self::DhcpServer,
         Self::NtpServer,
         Self::SnmpAgent,
+        Self::DomainController,
         Self::Switch,
         Self::Origin,
         Self::Tarpit,

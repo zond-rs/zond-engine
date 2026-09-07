@@ -57,11 +57,15 @@
 
 use crate::fingerprint::SignatureDb;
 use crate::model::host::NetworkRole;
-use crate::protocols::dns;
+use crate::protocols::{dns, netbios};
 
 /// Where a name server answers. The rest of the vocabulary a role is read from
 /// lives beside each protocol's own parser.
 const DNS: u16 = 53;
+
+/// Where the NetBIOS name service answers, and where a Windows machine lists
+/// every name it has registered.
+const NETBIOS_NS: u16 = 137;
 
 /// The payload to send when probing `port`.
 ///
@@ -98,6 +102,12 @@ pub fn for_port(port: u16) -> &'static [u8] {
 pub fn declared_role(port: u16, reply: &[u8]) -> Option<NetworkRole> {
     match port {
         DNS => dns::is_response(reply).then_some(NetworkRole::DnsServer),
+        // The name table names the machine's part in a domain. See
+        // [`netbios::NameTable::domain_controller`] for which suffixes say so
+        // and why the others do not.
+        NETBIOS_NS => netbios::node_status(reply)
+            .is_some_and(|table| table.domain_controller())
+            .then_some(NetworkRole::DomainController),
         _ => None,
     }
 }
@@ -171,6 +181,63 @@ mod tests {
             None,
             "an mDNS responder is not a name server"
         );
+    }
+
+    /// A node-status answer listing the domain controllers group, in the layout
+    /// a responder writes it. Built here rather than imported so this test is
+    /// about what `declared_role` concludes and not about the parser's fixtures.
+    fn node_status_from_a_controller() -> Vec<u8> {
+        let mut out = vec![0x80, 0xf0, 0x84, 0x00];
+        out.extend_from_slice(&0u16.to_be_bytes()); // QDCOUNT
+        out.extend_from_slice(&1u16.to_be_bytes()); // ANCOUNT
+        out.extend_from_slice(&[0u8; 4]); // NSCOUNT, ARCOUNT
+        out.push(0x20);
+        out.extend_from_slice(b"CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        out.push(0x00);
+        out.extend_from_slice(&[0x00, 0x21, 0x00, 0x01]); // NBSTAT, IN
+        out.extend_from_slice(&0u32.to_be_bytes()); // TTL
+        out.extend_from_slice(&(1u16 + 18 + 46).to_be_bytes()); // RDLENGTH
+
+        out.push(1); // one name
+        out.extend_from_slice(b"CORP           ");
+        out.push(0x1C); // the domain controllers group
+        out.extend_from_slice(&0x8000u16.to_be_bytes()); // registered as a group
+        out.extend_from_slice(&[0u8; 46]); // statistics
+        out
+    }
+
+    /// The same standard the DNS arm is held to, one protocol over: the name
+    /// table is the evidence, and an open 137 is not.
+    ///
+    /// The third case is the one that matters most. A **workstation** answers
+    /// this probe as readily as a controller does, with a table that is the
+    /// same shape and says something else entirely, so a role read from the
+    /// reply arriving rather than from what it holds would mark every Windows
+    /// machine on a segment as running the domain.
+    #[test]
+    fn a_name_table_names_a_controller_and_a_workstation_is_not_one() {
+        assert_eq!(
+            declared_role(NETBIOS_NS, &node_status_from_a_controller()),
+            Some(NetworkRole::DomainController)
+        );
+
+        assert_eq!(
+            declared_role(NETBIOS_NS, for_port(NETBIOS_NS)),
+            None,
+            "our own query echoed back is not a name table"
+        );
+
+        let mut workstation = node_status_from_a_controller();
+        let suffix = 12 + 34 + 10 + 1 + 15;
+        workstation[suffix] = 0x00; // the workstation service
+        assert_eq!(
+            declared_role(NETBIOS_NS, &workstation),
+            None,
+            "an ordinary domain member is not a controller"
+        );
+
+        assert_eq!(declared_role(NETBIOS_NS, b"not netbios at all"), None);
+        assert_eq!(declared_role(NETBIOS_NS, &[]), None);
     }
 
     #[test]

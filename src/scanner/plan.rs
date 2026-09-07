@@ -725,10 +725,11 @@ impl PortScanStep {
                 tuning.service_detection,
                 &tuning.evasion,
             ))),
-            Self::ConnectUdp => Ok(Box::new(ConnectUdpPortScanner::new(
+            Self::ConnectUdp => Ok(Box::new(ConnectUdpPortScanner::with_detection(
                 ctx,
                 limits::CONNECT_CONCURRENCY,
                 &tuning.evasion,
+                tuning.service_detection,
             ))),
             Self::Idle {
                 zombie,

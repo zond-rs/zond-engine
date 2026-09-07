@@ -32,12 +32,14 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::*;
 use serde::Deserialize;
+use zond_engine::fingerprint::SignatureDb;
+use zond_engine::model::port::Protocol;
 
 /// How long an image may take to pull and a server to answer.
 ///
@@ -60,6 +62,44 @@ struct Manifest {
     target: Vec<Target>,
 }
 
+/// Which transport a target is reached over.
+///
+/// TCP unless the manifest says otherwise, because that is what almost every
+/// entry is and stating it on each would be noise.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Transport {
+    #[default]
+    Tcp,
+    Udp,
+}
+
+impl Transport {
+    /// The engine's own name for this transport.
+    fn protocol(self) -> Protocol {
+        match self {
+            Transport::Tcp => Protocol::Tcp,
+            Transport::Udp => Protocol::Udp,
+        }
+    }
+
+    /// How `docker run -p` spells it.
+    fn suffix(self) -> &'static str {
+        match self {
+            Transport::Tcp => "",
+            Transport::Udp => "/udp",
+        }
+    }
+
+    /// How a port is written in a scan's port specification.
+    fn port_spec(self, port: u16) -> String {
+        match self {
+            Transport::Tcp => port.to_string(),
+            Transport::Udp => format!("U:{port}"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct Target {
     /// What this entry is called in a failure message.
@@ -68,6 +108,9 @@ struct Target {
     image: String,
     /// The port the application listens on inside the container.
     port: u16,
+    /// The transport it listens on. TCP unless stated.
+    #[serde(default)]
+    protocol: Transport,
     /// The port to publish it on, where the scan has to reach it on its
     /// registered number.
     ///
@@ -77,6 +120,14 @@ struct Target {
     /// high port is asked for a web page and says nothing. Pinning one risks a
     /// collision with whatever the developer is already running, which is why it
     /// is stated only where it is needed.
+    ///
+    /// A **UDP** target never gets the choice, and does not have to state it.
+    /// TCP has the generic HTTP probe behind it, so a web application on a
+    /// random port is still asked something it can answer; UDP has no such
+    /// fallback, and a datagram service on a port the corpus registers no probe
+    /// for is sent nothing at all and reports as `open|filtered`. So a UDP
+    /// target is published on its own number, and a collision there is a docker
+    /// error the run prints rather than a silent identification failure.
     host_port: Option<u16>,
     /// What the engine should make of it. Absent means report-only, which is how
     /// a target is added before anybody has agreed what it should say.
@@ -118,6 +169,7 @@ fn manifest() -> Manifest {
 struct Container {
     id: String,
     addr: SocketAddr,
+    protocol: Transport,
 }
 
 impl Drop for Container {
@@ -147,39 +199,64 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Which host port to publish `target` on: its own number over UDP, a free one
+/// otherwise. See [`Target::host_port`] for why UDP has no choice.
+fn publish_on(target: &Target) -> u16 {
+    target.host_port.unwrap_or_else(|| match target.protocol {
+        Transport::Udp => target.port,
+        Transport::Tcp => free_port(),
+    })
+}
+
 /// Starts `target` on a free loopback port and waits for it to answer.
 ///
 /// Bound to `127.0.0.1` explicitly rather than to every interface: this starts
 /// real, unconfigured, often unauthenticated software, and it has no business
 /// being reachable from the network while a test runs.
 fn start(target: &Target) -> Result<Container, String> {
-    let host_port = target.host_port.unwrap_or_else(free_port);
+    let host_port = publish_on(target);
     let out = Command::new("docker")
         .args([
             "run",
             "-d",
             "--rm",
             "-p",
-            &format!("127.0.0.1:{host_port}:{}", target.port),
+            &format!(
+                "127.0.0.1:{host_port}:{}{}",
+                target.port,
+                target.protocol.suffix()
+            ),
             &target.image,
         ])
         .output()
         .map_err(|e| format!("docker run failed: {e}"))?;
 
     if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // A UDP target cannot be moved out of the way, so say that here rather
+        // than leaving a reader to try the obvious fix. Publishing it somewhere
+        // free is what breaks it: the corpus keys the probe on the number.
+        let hint = match target.protocol == Transport::Udp && stderr.contains("already allocated") {
+            true => format!(
+                "\n    {} must be published on {} itself, so this needs whatever holds                  that port stopped. Ports below 1024 are often taken on a developer                  machine; a UDP entry on a high port does not run into this.",
+                target.name, host_port
+            ),
+            false => String::new(),
+        };
         return Err(format!(
-            "docker run {}: {}",
+            "docker run {}: {}{hint}",
             target.image,
-            String::from_utf8_lossy(&out.stderr).trim()
+            stderr.trim()
         ));
     }
 
     let container = Container {
         id: String::from_utf8_lossy(&out.stdout).trim().to_string(),
         addr: SocketAddr::new(LOOPBACK, host_port),
+        protocol: target.protocol,
     };
 
-    match wait_until_ready(container.addr) {
+    match wait_until_ready(container.addr, target.protocol) {
         true => Ok(container),
         // The guard still removes it; returning the error rather than panicking
         // keeps a slow pull separate from a wrong verdict.
@@ -203,7 +280,11 @@ fn start(target: &Target) -> Result<Container, String> {
 /// So an HTTP reply means ready at once, and a port that merely keeps accepting
 /// is given [`SETTLE`] to start serving whatever it does speak before being
 /// taken at its word.
-fn wait_until_ready(addr: SocketAddr) -> bool {
+fn wait_until_ready(addr: SocketAddr, protocol: Transport) -> bool {
+    if protocol == Transport::Udp {
+        return wait_until_answering_udp(addr);
+    }
+
     let deadline = Instant::now() + READY_TIMEOUT;
     let mut accepting_since = None;
 
@@ -229,6 +310,59 @@ fn wait_until_ready(addr: SocketAddr) -> bool {
 
 /// How long a port that accepts but speaks no HTTP is given to start serving.
 const SETTLE: Duration = Duration::from_secs(2);
+
+/// Waits until a UDP service answers the probe the corpus registers for it.
+///
+/// None of the TCP signals exist here. There is no handshake, so nothing
+/// accepts; a datagram sent into a container that has not bound its socket yet
+/// is discarded in silence, which is the same silence a bound-but-unready
+/// service returns. The only evidence a UDP service is up is that it answered
+/// something, so this asks it the question the scan will ask and waits for a
+/// reply.
+///
+/// Asking with the corpus's own payload rather than an empty datagram is the
+/// whole point: an application handed zero bytes almost always discards them
+/// without a word, so a readiness check built on one would time out against a
+/// perfectly healthy container and report it as never having started.
+///
+/// A port the corpus has no probe for is refused outright rather than waited
+/// on. The scan would send that port nothing either, so the entry could only
+/// ever fail, and it should fail saying why.
+fn wait_until_answering_udp(addr: SocketAddr) -> bool {
+    let Some(payload) = SignatureDb::global()
+        .udp_probe_payloads(addr.port())
+        .first()
+        .cloned()
+    else {
+        eprintln!(
+            "  the corpus registers no UDP probe for {}, so nothing would be sent",
+            addr.port()
+        );
+        return false;
+    };
+
+    let deadline = Instant::now() + READY_TIMEOUT;
+    while Instant::now() < deadline {
+        if udp_answers(addr, &payload) {
+            return true;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    false
+}
+
+/// One datagram out, one reply in, or `false`. Bound to an ephemeral loopback
+/// port and connected, so the kernel drops anything from another address.
+fn udp_answers(addr: SocketAddr, payload: &[u8]) -> bool {
+    let Ok(socket) = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)) else {
+        return false;
+    };
+    if socket.connect(addr).is_err() || socket.set_read_timeout(Some(POLL_INTERVAL)).is_err() {
+        return false;
+    }
+    let mut reply = [0u8; 2048];
+    socket.send(payload).is_ok() && socket.recv(&mut reply).is_ok_and(|read| read > 0)
+}
 
 /// Whether the peer answers an HTTP request, which is the fast path for the web
 /// applications that make up most of the manifest.
@@ -291,16 +425,20 @@ impl Verdict {
 }
 
 /// Scans one container through the public API and reads the verdict off the port.
-async fn scan(addr: SocketAddr) -> Verdict {
+async fn scan(addr: SocketAddr, protocol: Transport) -> Verdict {
     let cfg = test_config();
-    let outcome = run_scan(target_map(addr.ip(), &addr.port().to_string()), &cfg).await;
+    let spec = protocol.port_spec(addr.port());
+    let outcome = run_scan(target_map(addr.ip(), &spec), &cfg).await;
 
     let Some(host) = outcome.host(addr.ip()) else {
         return Verdict::default();
     };
+    // Matched on the transport as well as the number, because a host may hold
+    // both: 137 is a name service over UDP and something else entirely over TCP,
+    // and a verdict read off the wrong one would be attributed to this target.
     let Some(service) = host
         .ports()
-        .find(|port| port.number() == addr.port())
+        .find(|port| port.number() == addr.port() && port.protocol() == protocol.protocol())
         .and_then(|port| port.service())
     else {
         return Verdict::default();
@@ -381,7 +519,7 @@ async fn every_target_is_identified_as_its_manifest_says() {
             }
         };
 
-        let found = scan(container.addr).await;
+        let found = scan(container.addr, container.protocol).await;
         let against = disagreements(expect, &found);
         checked += 1;
 
@@ -433,8 +571,12 @@ async fn report() {
             }
         };
 
-        let found = scan(container.addr).await;
-        let digest = zond_engine::fingerprint::favicon_digest(container.addr).await;
+        let found = scan(container.addr, container.protocol).await;
+        // A favicon is fetched over HTTP, which a UDP target does not speak.
+        let digest = match container.protocol {
+            Transport::Tcp => zond_engine::fingerprint::favicon_digest(container.addr).await,
+            Transport::Udp => None,
+        };
 
         println!("{:<12} {}", target.name, found.summary());
         match digest {
@@ -523,5 +665,101 @@ fn the_manifest_is_well_formed() {
                 target.name
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What the manifest means, without Docker
+// ---------------------------------------------------------------------------
+
+/// The rules a UDP entry is published and scanned under, checked directly.
+///
+/// These run everywhere, unlike the two passes above. The transport decides
+/// three separate things — how the port is published, which number it is
+/// published on, and how the scan asks for it — and each is a place a UDP entry
+/// could be silently scanned as TCP. That failure would not look like a failure:
+/// the container would start, the scan would find nothing, and the entry would
+/// read as software the corpus cannot identify.
+#[test]
+fn a_udp_target_is_published_and_scanned_over_udp() {
+    let manifest: Manifest = toml::from_str(
+        r#"
+        [[target]]
+        name = "tcp-by-default"
+        image = "example/one:1.0"
+        port = 8080
+
+        [[target]]
+        name = "over-udp"
+        image = "example/two:2.0"
+        port = 1900
+        protocol = "udp"
+        "#,
+    )
+    .expect("the manifest parses");
+
+    let [tcp, udp] = &manifest.target[..] else {
+        panic!("two targets");
+    };
+
+    assert_eq!(tcp.protocol, Transport::Tcp, "TCP unless stated");
+    assert_eq!(udp.protocol, Transport::Udp);
+
+    assert_eq!(udp.protocol.suffix(), "/udp", "docker publishes it as UDP");
+    assert_eq!(tcp.protocol.suffix(), "");
+
+    assert_eq!(
+        publish_on(udp),
+        1900,
+        "a UDP target keeps its own number, or the corpus sends it no probe"
+    );
+    assert_ne!(
+        publish_on(tcp),
+        8080,
+        "a TCP target takes a free port, so a developer's own 8080 is left alone"
+    );
+
+    assert_eq!(udp.protocol.port_spec(1900), "U:1900");
+    assert_eq!(tcp.protocol.port_spec(8080), "8080");
+}
+
+/// A stated `host_port` still wins over the UDP default, so an entry that has to
+/// avoid a collision can say so.
+#[test]
+fn a_stated_host_port_wins() {
+    let manifest: Manifest = toml::from_str(
+        r#"
+        [[target]]
+        name = "pinned"
+        image = "example/three:3.0"
+        port = 1900
+        protocol = "udp"
+        host_port = 11900
+        "#,
+    )
+    .expect("parses");
+    assert_eq!(publish_on(&manifest.target[0]), 11900);
+}
+
+/// Every UDP entry names a port the corpus has a probe for.
+///
+/// Without one the scan sends nothing, the container answers nothing, and the
+/// entry fails for a reason that has nothing to do with the software it started.
+/// Caught here, where it costs no image pull, rather than three minutes into a
+/// run.
+#[test]
+fn every_udp_target_names_a_port_the_corpus_probes() {
+    for target in &manifest().target {
+        if target.protocol != Transport::Udp {
+            continue;
+        }
+        assert!(
+            !SignatureDb::global()
+                .udp_probe_payloads(target.port)
+                .is_empty(),
+            "{} is scanned over UDP on {}, which the corpus registers no probe for",
+            target.name,
+            target.port
+        );
     }
 }

@@ -49,7 +49,7 @@ use pnet_packet::ip::IpNextHeaderProtocols;
 use pnet_packet::udp::UdpPacket;
 use tokio::sync::mpsc;
 
-use crate::config::ProbeTuning;
+use crate::config::{ProbeTuning, ServiceDetection};
 use crate::error;
 use crate::journal::settle::Outcome;
 use crate::model::capture::IpObservation;
@@ -173,6 +173,10 @@ pub struct UdpPortScanner {
     /// prove - which for UDP is mostly what an ICMP error proves, since an open
     /// port is under no obligation to say anything at all.
     core: RawProbeScan<()>,
+    /// How far the second pass may go to name what answered. Held here because
+    /// the raw scan that classifies a port opens no conversation with it; see
+    /// [`detect_services`](PortScanner::detect_services).
+    service_detection: ServiceDetection,
 }
 
 impl UdpPortScanner {
@@ -199,6 +203,7 @@ impl UdpPortScanner {
         )?;
 
         Ok(Self {
+            service_detection: tuning.service_detection,
             core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
         })
     }
@@ -221,6 +226,7 @@ impl UdpPortScanner {
     ) -> Self {
         let tuning = ProbeTuning::default();
         Self {
+            service_detection: tuning.service_detection,
             core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
         }
     }
@@ -654,13 +660,24 @@ impl PortScanner for UdpPortScanner {
         Ok(())
     }
 
-    // No `detect_services` override. The second pass in
-    // [`service`](crate::scanner::service) opens a TCP connection to each open
-    // port, so it identifies nothing this scanner found - and running it here
-    // as well as from the SYN scanner beside us would fingerprint every open
-    // *TCP* port twice, once per composite member. Identifying a UDP service
-    // needs a UDP conversation, and the engine has none yet; until it does, the
-    // trait's no-op default is the honest implementation.
+    /// Identifies the UDP services this scanner found open.
+    ///
+    /// The second pass asks each port the question the corpus registers for it
+    /// and reads the answer through
+    /// [`from_datagram`](crate::fingerprint::reads_replies), which is a
+    /// different exchange from the TCP one beside it: a datagram out and a
+    /// datagram back, with no connection between them.
+    ///
+    /// Scoped to [`Protocol::Udp`] so the SYN scanner sharing a composite with
+    /// this one keeps the TCP half. Both members run the phase over what each
+    /// discovered, which is what stops an open TCP port being fingerprinted once
+    /// per member.
+    ///
+    /// This used to be the trait's no-op, on the grounds that identifying a UDP
+    /// service needs a UDP conversation and the engine had none. It has one now.
+    async fn detect_services(&mut self, ctx: &ScanContext) {
+        crate::scanner::service::detect(ctx, self.service_detection, Protocol::Udp).await;
+    }
 }
 
 // ╔════════════════════════════════════════════╗

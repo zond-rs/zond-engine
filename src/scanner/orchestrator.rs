@@ -416,11 +416,14 @@ pub(super) fn ensure_coverage(
     }
 
     if missing(Protocol::Udp) {
-        scanners.push(Box::new(strategy::connect::ConnectUdpPortScanner::new(
-            ctx.clone(),
-            crate::config::limits::CONNECT_CONCURRENCY,
-            evasion,
-        )));
+        scanners.push(Box::new(
+            strategy::connect::ConnectUdpPortScanner::with_detection(
+                ctx.clone(),
+                crate::config::limits::CONNECT_CONCURRENCY,
+                evasion,
+                detection,
+            ),
+        ));
     }
 
     // Nothing stands in for an INIT scan. A protocol whose only strategy failed

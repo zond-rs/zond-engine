@@ -104,6 +104,7 @@ pub mod ip;
 pub mod lldp;
 pub mod mdns;
 pub mod ndp;
+pub mod netbios;
 pub mod sctp;
 pub mod sizes;
 pub mod tcp;

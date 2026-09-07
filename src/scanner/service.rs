@@ -48,7 +48,13 @@ use crate::scanner::session::ScanContext;
 /// not service identity, which is the SYN path. Ports that already carry a
 /// fingerprint from the connect scanner would be re-identified harmlessly, but the
 /// caller only runs this where it is actually needed.
-pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
+///
+/// `over` is which transport's ports to take. A scanner asks for the one it
+/// found, so a composite running a TCP and a UDP member fingerprints each port
+/// once, from the member that discovered it. Passing the whole store to both
+/// would identify every TCP port twice — once per member — which is what kept
+/// the UDP scanner from running this phase at all.
+pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protocol) {
     // A level that opens no connection has nothing for this phase to do. Checked
     // before the store is walked, so the phase costs nothing at all rather than
     // costing a snapshot it will not use.
@@ -57,7 +63,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
     }
 
     // Snapshot the targets up front so no DashMap guard is held across an await.
-    let targets = fingerprintable_ports(ctx);
+    let targets = fingerprintable_ports(ctx, over);
     if targets.is_empty() {
         return;
     }
@@ -116,12 +122,13 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
 /// traffic spent to learn a fact already in hand.
 ///
 /// [`reads_replies`]: crate::fingerprint::reads_replies
-fn fingerprintable_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16, Protocol)> {
+fn fingerprintable_ports(ctx: &ScanContext, over: Protocol) -> Vec<(ScopedIp, u16, Protocol)> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
         let address = host.value().scoped_ip();
         for port in host.value().ports() {
-            if port.state() == PortState::Open
+            if port.protocol() == over
+                && port.state() == PortState::Open
                 && crate::fingerprint::reads_replies(port.number(), port.protocol())
             {
                 targets.push((address.clone(), port.number(), port.protocol()));
@@ -250,7 +257,7 @@ mod tests {
         host.add_port(Port::new(addr.port(), Protocol::Tcp, PortState::Open));
         session.hosts().insert(ip, host);
 
-        detect(&ctx, ServiceDetection::default()).await;
+        detect(&ctx, ServiceDetection::default(), Protocol::Tcp).await;
 
         let host = session.hosts().get(ip).unwrap();
         let port = host
@@ -280,7 +287,7 @@ mod tests {
         });
 
         let started = std::time::Instant::now();
-        detect(&ctx, ServiceDetection::Off).await;
+        detect(&ctx, ServiceDetection::Off, Protocol::Tcp).await;
 
         assert!(
             started.elapsed() < CONNECT_PROBE_TIMEOUT,
@@ -298,7 +305,7 @@ mod tests {
         host.add_port(Port::new(9, Protocol::Tcp, PortState::Closed));
         session.hosts().insert(ip, host);
 
-        detect(&ctx, ServiceDetection::default()).await; // must return promptly without connecting anywhere
+        detect(&ctx, ServiceDetection::default(), Protocol::Tcp).await; // must return promptly without connecting anywhere
 
         let host = session.hosts().get(ip).unwrap();
         let port = host.ports().find(|p| p.number() == 9).unwrap();

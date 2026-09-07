@@ -359,7 +359,7 @@ async fn a_compute_module_grades_the_response_the_scan_already_gathered() {
         &EvasionProfile::default(),
     );
     run_port_scanner(&mut scanner, vec![tcp(LOOPBACK, server.port)]).await;
-    service::detect(&ctx, ServiceDetection::Probe).await;
+    service::detect(&ctx, ServiceDetection::Probe, Protocol::Tcp).await;
     detection::detect(&ctx, ServiceDetection::Probe, DetectionEnvelope::default()).await;
 
     let host = session.hosts().get(LOOPBACK).expect("the loopback host");
@@ -416,7 +416,7 @@ async fn the_http_module_reaches_a_web_application_the_corpus_names() {
         &EvasionProfile::default(),
     );
     run_port_scanner(&mut scanner, vec![tcp(LOOPBACK, server.port)]).await;
-    service::detect(&ctx, ServiceDetection::Probe).await;
+    service::detect(&ctx, ServiceDetection::Probe, Protocol::Tcp).await;
     detection::detect(&ctx, ServiceDetection::Probe, DetectionEnvelope::default()).await;
 
     let host = session.hosts().get(LOOPBACK).expect("the loopback host");

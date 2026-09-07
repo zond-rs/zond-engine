@@ -410,6 +410,24 @@ pub(super) fn corpus_fields(raw: &str) -> Vec<Cow<'_, str>> {
     fields
 }
 
+/// The `Server` value of an HTTP-shaped message, whole.
+///
+/// The header [`corpus_fields`] leaves out, offered on its own for the callers
+/// that have no analyzer reading it for them. [`HttpHeadersAnalyzer`] is what
+/// covers this for a TCP banner: it reads the header directly and hands the
+/// value to the corpus itself, which is why offering it as a field there would
+/// count one header twice.
+///
+/// A UDP reply has no such analyzer. [`from_datagram`](super::extract::from_datagram)
+/// is the whole of what an SSDP answer becomes, so a value this engine does not
+/// hand back there is a value nothing ever sees.
+///
+/// Borrowed from `raw`, and [`None`] for anything that is not an HTTP-shaped
+/// message or that carries no such header.
+pub(super) fn server_value(raw: &str) -> Option<&str> {
+    HttpResponse::parse(raw)?.header("server")
+}
+
 /// The title, held to what may stand in for a product name.
 ///
 /// Stricter than [`title_text`] because a title reaching the product slot is a
