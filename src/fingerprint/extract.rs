@@ -136,6 +136,24 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
                 .collect(),
             Err(_) => Vec::new(),
         },
+        // A display manager that answers this accepts remote X logins from the
+        // network, whatever the software behind it turns out to be.
+        177 => super::framed::xdmcp_willing(datagram).into_iter().collect(),
+        // Either the information a game server publishes, or the challenge it
+        // now asks for instead. Both say what is listening.
+        27015 => super::framed::source_engine(datagram).into_iter().collect(),
+        // The status line a Bedrock server builds from its own configuration,
+        // once the reply's magic has confirmed it is RakNet at all.
+        19132 => super::framed::raknet_pong(datagram)
+            .map(ToOwned::to_owned)
+            .into_iter()
+            .collect(),
+        // A device with no version string anywhere still lists the resources it
+        // exposes, which is what says what it is for.
+        5683 => super::framed::coap_payload(datagram)
+            .map(ToOwned::to_owned)
+            .into_iter()
+            .collect(),
         // The Browser's whole answer is a list of the instances on the host,
         // each with its build number and the TCP port it listens on.
         1434 => super::framed::sql_server_browser(datagram)
@@ -201,7 +219,9 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// Stated rather than derived, because a decoder cannot be asked whether it
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
-const DECODED_UDP_PORTS: &[u16] = &[53, 161, 1434, 1900, 3702, 5060, 5061, 5353, 11211];
+const DECODED_UDP_PORTS: &[u16] = &[
+    53, 161, 177, 1434, 1900, 3702, 5060, 5061, 5353, 5683, 11211, 19132, 27015,
+];
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -864,6 +884,10 @@ mod framed_replies {
             "SSH-2.0-OpenSSH_9.6p1 Debian-3",
             "Error: could not open file",
             "Computer Associates License Server",
+            "Willing to help with your display",
+            "</usr/share>;rw",
+            "MCPE Gaming Ltd",
+            "challenge-response authentication",
             "Device Manager Print Spooler",
             "Network Video Recorder",
             "ServerName Corp",
@@ -875,15 +899,141 @@ mod framed_replies {
                     named.as_deref(),
                     Some("WS-Discovery host" | "WSD print service" | "WSD scan service")
                         | Some("ONVIF device" | "Microsoft SQL Server Browser")
+                        | Some("GDM" | "XDM" | "xdmcp" | "coap")
+                        | Some("Source engine server" | "Minecraft Bedrock Server")
                 ),
                 "{text:?} was named {named:?}"
             );
         }
     }
 
+    /// A display manager willing to manage a session for a stranger, which is
+    /// the finding whatever the software behind it is.
+    #[test]
+    fn an_xdmcp_manager_is_named_from_what_it_says_about_itself() {
+        let mut reply = vec![0x00, 0x01, 0x00, 0x05, 0x00, 0x00];
+        for field in ["", "workstation", "Linux 6.1 gdm"] {
+            reply.extend_from_slice(&(field.len() as u16).to_be_bytes());
+            reply.extend_from_slice(field.as_bytes());
+        }
+
+        let texts = super::from_datagram(177, &reply);
+        assert_eq!(texts, vec!["workstation: Linux 6.1 gdm"]);
+        assert_eq!(
+            identify(177, &texts[0]).map(|found| found.0),
+            Some("GDM".to_string())
+        );
+    }
+
+    #[test]
+    fn a_source_server_names_the_game_it_runs() {
+        let mut reply = vec![0xFF, 0xFF, 0xFF, 0xFF, b'I', 17];
+        for field in ["Zond Test Server", "de_dust2", "csgo", "Counter-Strike"] {
+            reply.extend_from_slice(field.as_bytes());
+            reply.push(0);
+        }
+
+        let texts = super::from_datagram(27015, &reply);
+        assert_eq!(texts, vec!["Zond Test Server;de_dust2;csgo;Counter-Strike"]);
+        assert_eq!(
+            identify(27015, &texts[0]).map(|found| found.0),
+            Some("Counter-Strike".to_string())
+        );
+    }
+
+    /// A server that asked for a challenge instead of answering is still named,
+    /// because nothing else sends that reply.
+    #[test]
+    fn a_source_challenge_still_names_the_service() {
+        let reply = [0xFF, 0xFF, 0xFF, 0xFF, b'A', 0x11, 0x22, 0x33, 0x44];
+        let texts = super::from_datagram(27015, &reply);
+        assert_eq!(texts, vec!["challenge"]);
+        assert_eq!(
+            identify(27015, &texts[0]).map(|found| found.0),
+            Some("Source engine server".to_string())
+        );
+    }
+
+    #[test]
+    fn a_bedrock_server_names_its_version_and_its_players() {
+        const STATUS: &str =
+            "MCPE;Dedicated Server;390;1.14.60;3;10;13253860892328930865;Bedrock level";
+        let mut reply = vec![0x1C];
+        reply.extend_from_slice(&[0u8; 16]);
+        reply.extend_from_slice(&[
+            0x00, 0xFF, 0xFF, 0x00, 0xFE, 0xFE, 0xFE, 0xFE, 0xFD, 0xFD, 0xFD, 0xFD, 0x12, 0x34,
+            0x56, 0x78,
+        ]);
+        reply.extend_from_slice(&(STATUS.len() as u16).to_be_bytes());
+        reply.extend_from_slice(STATUS.as_bytes());
+
+        let texts = super::from_datagram(19132, &reply);
+        assert_eq!(texts, vec![STATUS]);
+        assert_eq!(
+            identify(19132, &texts[0]),
+            Some((
+                "Minecraft Bedrock Server".to_string(),
+                Some("1.14.60".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn a_coap_endpoint_lists_the_resources_it_exposes() {
+        let mut reply = vec![0x60, 0x45, 0x7a, 0x6e, 0xC1, 0x28, 0xFF];
+        reply.extend_from_slice(br#"</sensors/temp>;rt="temperature";if="sensor""#);
+
+        let texts = super::from_datagram(5683, &reply);
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].starts_with("</sensors/temp>"), "got {texts:?}");
+        assert_eq!(
+            identify(5683, &texts[0]).map(|found| found.0),
+            Some("coap".to_string())
+        );
+    }
+
+    /// The exact bytes the `zond-refresh.sh` fixtures answer with, captured off
+    /// the wire.
+    ///
+    /// The tests above build a reply from the same understanding of the format
+    /// that wrote the reader, so they agree with it by construction. These came
+    /// from a separate implementation, which is the one place a fixture and a
+    /// parser can be caught disagreeing before a VM run does it.
+    #[test]
+    fn the_fixtures_answer_with_bytes_these_readers_accept() {
+        fn hex(text: &str) -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex digits"))
+                .collect()
+        }
+
+        const BEDROCK: &str = "1c0000000000000000000000000000000000ffff00fefefefefdfdfdfd1234567800514d4350453b5a6f6e642054657374205265616c6d3b3339303b312e32302e31353b323b31303b31333235333836303839323332383933303836353b426564726f636b206c6576656c3b537572766976616c";
+        assert_eq!(
+            super::from_datagram(19132, &hex(BEDROCK)),
+            vec![
+                "MCPE;Zond Test Realm;390;1.20.15;2;10;13253860892328930865;Bedrock level;Survival"
+            ]
+        );
+
+        const A2S: &str = "ffffffff49115a6f6e642054657374205365727665720064655f6475737432006373676f00436f756e7465722d537472696b6500da02041000";
+        assert_eq!(
+            super::from_datagram(27015, &hex(A2S)),
+            vec!["Zond Test Server;de_dust2;csgo;Counter-Strike"]
+        );
+
+        const COAP: &str = "60457a6eff3c2f73656e736f72732f74656d703e3b72743d2274656d7065726174757265223b69663d2273656e736f72222c3c2f6163747561746f72732f6c65643e3b72743d226c69676874223b69663d22636f72652e6122";
+        let texts = super::from_datagram(5683, &hex(COAP));
+        assert!(texts[0].starts_with("</sensors/temp>"), "got {texts:?}");
+        assert_eq!(
+            identify(5683, &texts[0]).map(|found| found.0),
+            Some("coap".to_string())
+        );
+    }
+
     #[test]
     fn every_new_port_is_worth_a_second_datagram() {
-        for port in [1434, 3702, 11211] {
+        for port in [177, 1434, 3702, 5683, 11211, 19132, 27015] {
             assert!(super::reads(port, Protocol::Udp), "port {port}");
         }
     }

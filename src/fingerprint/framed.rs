@@ -81,6 +81,183 @@ pub(super) fn memcached_udp(datagram: &[u8]) -> Option<&str> {
     (!body.is_empty()).then_some(body)
 }
 
+/// What an XDMCP display manager says when asked whether it is willing.
+///
+/// A Willing response carries three counted strings: the authentication name it
+/// would use, the host it manages, and a free-text status. The status is the one
+/// worth reading, since a display manager writes its own name and often the
+/// machine's into it.
+///
+/// Returned as `host: status` where both are present, because either alone is
+/// half an answer: the host names the machine and the status names the software.
+///
+/// [`None`] for anything that is not a Willing response, or whose counted
+/// lengths run past the datagram.
+#[must_use]
+pub(super) fn xdmcp_willing(datagram: &[u8]) -> Option<String> {
+    const OPCODE_WILLING: u16 = 5;
+
+    let opcode = u16::from_be_bytes([*datagram.get(2)?, *datagram.get(3)?]);
+    if opcode != OPCODE_WILLING {
+        return None;
+    }
+
+    // Three ARRAY8s back to back, each a two-byte count and that many bytes.
+    let mut at = 6;
+    let mut fields = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let len = u16::from_be_bytes([*datagram.get(at)?, *datagram.get(at + 1)?]) as usize;
+        let value = datagram.get(at + 2..at + 2 + len)?;
+        fields.push(String::from_utf8_lossy(value).trim().to_string());
+        at += 2 + len;
+    }
+
+    let (host, status) = (&fields[1], &fields[2]);
+    match (host.is_empty(), status.is_empty()) {
+        (true, true) => None,
+        (true, false) => Some(status.clone()),
+        (false, true) => Some(host.clone()),
+        (false, false) => Some(format!("{host}: {status}")),
+    }
+}
+
+/// What a Source engine server answers a query with.
+///
+/// Two replies are possible and both identify the service. `I` is the info
+/// response, which names the server, its game and its build. `A` is the
+/// challenge Valve added in 2020, which carries no detail but is sent by
+/// nothing else.
+///
+/// The info response is a header, a protocol byte, and then four NUL-terminated
+/// strings: the server name, the map, the game directory, and the game. They are
+/// joined with `;` so a rule can anchor across them, and the trailing binary
+/// fields are left alone.
+///
+/// [`None`] for a datagram carrying neither reply.
+#[must_use]
+pub(super) fn source_engine(datagram: &[u8]) -> Option<String> {
+    const HEADER: &[u8] = &[0xFF, 0xFF, 0xFF, 0xFF];
+    const INFO: u8 = b'I';
+    const CHALLENGE: u8 = b'A';
+
+    if !datagram.starts_with(HEADER) {
+        return None;
+    }
+    match *datagram.get(4)? {
+        CHALLENGE => Some("challenge".to_string()),
+        INFO => {
+            // Header, kind, and the protocol version, then the strings.
+            let mut rest = datagram.get(6..)?;
+            let mut fields = Vec::with_capacity(4);
+            for _ in 0..4 {
+                let end = rest.iter().position(|byte| *byte == 0)?;
+                fields.push(String::from_utf8_lossy(&rest[..end]).to_string());
+                rest = rest.get(end + 1..)?;
+            }
+            Some(fields.join(";"))
+        }
+        _ => None,
+    }
+}
+
+/// The status line a Minecraft Bedrock server answers an unconnected ping with.
+///
+/// The pong repeats the ping's magic and then carries one counted string, which
+/// the server builds from its own configuration:
+///
+/// ```text
+/// MCPE;Dedicated Server;390;1.14.60;0;10;13253860892328930865;Bedrock level;Survival
+/// ```
+///
+/// Edition, message of the day, protocol number, version, players, capacity, and
+/// then the level. The version is the fourth field and is what a rule reads.
+///
+/// [`None`] for a datagram that is not a pong, or that does not repeat the
+/// magic. The magic is what separates this from any other protocol that happens
+/// to start with the same byte.
+#[must_use]
+pub(super) fn raknet_pong(datagram: &[u8]) -> Option<&str> {
+    const UNCONNECTED_PONG: u8 = 0x1C;
+    /// The constant every RakNet offline message carries, so a reply can be told
+    /// from an unrelated datagram.
+    const MAGIC: &[u8] = &[
+        0x00, 0xFF, 0xFF, 0x00, 0xFE, 0xFE, 0xFE, 0xFE, 0xFD, 0xFD, 0xFD, 0xFD, 0x12, 0x34, 0x56,
+        0x78,
+    ];
+
+    if *datagram.first()? != UNCONNECTED_PONG {
+        return None;
+    }
+    // The pong's own timestamp and server identifier sit before the magic.
+    if datagram.get(17..33)? != MAGIC {
+        return None;
+    }
+
+    let len = u16::from_be_bytes([*datagram.get(33)?, *datagram.get(34)?]) as usize;
+    let status = datagram.get(35..35 + len)?;
+
+    std::str::from_utf8(status).ok().map(str::trim)
+}
+
+/// The resource list a CoAP endpoint serves at `/.well-known/core`.
+///
+/// The payload is link format, a comma-separated list of the resources the
+/// device exposes with their attributes:
+///
+/// ```text
+/// </sensors/temp>;rt="temperature";if="sensor",</actuators/led>;rt="light"
+/// ```
+///
+/// Worth more than a version string on a device that has none. It is the
+/// closest thing the protocol has to a directory listing, and the resource
+/// names are what say whether this is a sensor, a lock or a light.
+///
+/// [`None`] for a reply that is not CoAP, or that carries no payload. Options
+/// are walked rather than skipped by a fixed offset, since their count and
+/// length vary with what the endpoint chose to say.
+#[must_use]
+pub(super) fn coap_payload(datagram: &[u8]) -> Option<&str> {
+    /// The byte separating the options from the payload.
+    const PAYLOAD_MARKER: u8 = 0xFF;
+    /// The two high bits of the first byte, which must be version 1.
+    const VERSION_1: u8 = 0b0100_0000;
+
+    let first = *datagram.first()?;
+    if first & 0b1100_0000 != VERSION_1 {
+        return None;
+    }
+    // Header, then a token as long as the low nibble says.
+    let mut at = 4 + (first & 0x0F) as usize;
+
+    // Options run until the payload marker or the end. Each is a delta/length
+    // pair whose nibbles may be extended by one or two further bytes.
+    while let Some(byte) = datagram.get(at) {
+        if *byte == PAYLOAD_MARKER {
+            let payload = datagram.get(at + 1..)?;
+            let text = std::str::from_utf8(payload).ok()?.trim();
+            return (!text.is_empty()).then_some(text);
+        }
+        at += 1;
+        let mut length = (*byte & 0x0F) as usize;
+        for nibble in [*byte >> 4, *byte & 0x0F] {
+            at += match nibble {
+                13 => 1,
+                14 => 2,
+                15 => return None,
+                _ => 0,
+            };
+        }
+        if length == 13 {
+            length = *datagram.get(at - 1)? as usize + 13;
+        } else if length == 14 {
+            length =
+                u16::from_be_bytes([*datagram.get(at - 2)?, *datagram.get(at - 1)?]) as usize + 269;
+        }
+        at += length;
+    }
+    None
+}
+
 /// The device types a WS-Discovery responder claims.
 ///
 /// A `ProbeMatches` reply is SOAP, and the element worth reading is `Types`: a
@@ -222,6 +399,132 @@ mod tests {
         assert!(wsd_types(b"<d:Types></d:Types>").is_none());
     }
 
+    /// Builds a Willing response carrying the three counted strings.
+    fn willing(auth: &str, host: &str, status: &str) -> Vec<u8> {
+        let mut out = vec![0x00, 0x01, 0x00, 0x05, 0x00, 0x00];
+        for field in [auth, host, status] {
+            out.extend_from_slice(&(field.len() as u16).to_be_bytes());
+            out.extend_from_slice(field.as_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn a_willing_response_names_the_host_and_the_manager() {
+        let reply = willing("", "workstation", "Linux 6.1 gdm");
+        assert_eq!(
+            xdmcp_willing(&reply).as_deref(),
+            Some("workstation: Linux 6.1 gdm")
+        );
+    }
+
+    /// Either field alone is still an answer; neither is not.
+    #[test]
+    fn a_willing_response_missing_a_field_yields_what_it_has() {
+        assert_eq!(
+            xdmcp_willing(&willing("", "", "gdm")).as_deref(),
+            Some("gdm")
+        );
+        assert_eq!(
+            xdmcp_willing(&willing("", "kiosk", "")).as_deref(),
+            Some("kiosk")
+        );
+        assert!(xdmcp_willing(&willing("", "", "")).is_none());
+    }
+
+    /// A Query echoed back by a reflector is not a Willing, and a counted length
+    /// past the datagram is refused rather than read through.
+    #[test]
+    fn anything_that_is_not_a_willing_response_yields_nothing() {
+        assert!(xdmcp_willing(b"\x00\x01\x00\x02\x00\x01\x00").is_none());
+        assert!(xdmcp_willing(b"").is_none());
+        let mut lying = willing("", "host", "status");
+        lying[6] = 0xff;
+        assert!(xdmcp_willing(&lying).is_none());
+    }
+
+    #[test]
+    fn a_source_info_reply_yields_the_server_and_its_game() {
+        let mut reply = vec![0xFF, 0xFF, 0xFF, 0xFF, b'I', 17];
+        for field in ["Zond Test Server", "de_dust2", "csgo", "Counter-Strike"] {
+            reply.extend_from_slice(field.as_bytes());
+            reply.push(0);
+        }
+        reply.extend_from_slice(&[0x00, 0x01, 0x02]);
+        assert_eq!(
+            source_engine(&reply).as_deref(),
+            Some("Zond Test Server;de_dust2;csgo;Counter-Strike")
+        );
+    }
+
+    /// The challenge Valve added in 2020, which carries no detail and is still
+    /// proof of what answered.
+    #[test]
+    fn a_source_challenge_is_recognised_as_one() {
+        let reply = [0xFF, 0xFF, 0xFF, 0xFF, b'A', 0x11, 0x22, 0x33, 0x44];
+        assert_eq!(source_engine(&reply).as_deref(), Some("challenge"));
+    }
+
+    #[test]
+    fn a_datagram_with_the_wrong_header_is_not_a_source_reply() {
+        assert!(source_engine(b"\xff\xff\xff\xffZ").is_none());
+        assert!(source_engine(b"\x00\x00\x00\x00I").is_none());
+        assert!(source_engine(b"\xff\xff\xff\xffItruncated").is_none());
+        assert!(source_engine(b"").is_none());
+    }
+
+    /// Builds an unconnected pong carrying `status`.
+    fn pong(status: &str) -> Vec<u8> {
+        let mut out = vec![0x1C];
+        out.extend_from_slice(&[0u8; 8]);
+        out.extend_from_slice(&[0u8; 8]);
+        out.extend_from_slice(&[
+            0x00, 0xFF, 0xFF, 0x00, 0xFE, 0xFE, 0xFE, 0xFE, 0xFD, 0xFD, 0xFD, 0xFD, 0x12, 0x34,
+            0x56, 0x78,
+        ]);
+        out.extend_from_slice(&(status.len() as u16).to_be_bytes());
+        out.extend_from_slice(status.as_bytes());
+        out
+    }
+
+    const MOTD: &str = "MCPE;Dedicated Server;390;1.14.60;0;10;13253860892328930865;Bedrock level";
+
+    #[test]
+    fn a_pong_yields_the_status_line() {
+        assert_eq!(raknet_pong(&pong(MOTD)), Some(MOTD));
+    }
+
+    /// The magic is what separates a pong from an unrelated datagram that
+    /// happens to start with the same byte.
+    #[test]
+    fn a_datagram_without_the_magic_is_not_a_pong() {
+        let mut wrong = pong(MOTD);
+        wrong[18] = 0x00; // the first 0xFF of the magic
+        assert!(raknet_pong(&wrong).is_none());
+        assert!(raknet_pong(b"\x1c").is_none());
+        assert!(raknet_pong(b"").is_none());
+    }
+
+    #[test]
+    fn a_coap_reply_yields_its_link_format_payload() {
+        // ACK, code 2.05 Content, one option, then the payload.
+        let mut reply = vec![0x60, 0x45, 0x7a, 0x6e, 0xC1, 0x28, 0xFF];
+        reply.extend_from_slice(br#"</sensors/temp>;rt="temperature""#);
+        assert_eq!(
+            coap_payload(&reply),
+            Some(r#"</sensors/temp>;rt="temperature""#)
+        );
+    }
+
+    /// A reply with no payload marker, and one that is not CoAP at all.
+    #[test]
+    fn a_coap_reply_without_a_payload_yields_nothing() {
+        assert!(coap_payload(&[0x60, 0x45, 0x7a, 0x6e, 0xC1, 0x28]).is_none());
+        assert!(coap_payload(&[0x60, 0x45, 0x7a, 0x6e, 0xFF]).is_none());
+        assert!(coap_payload(b"\x00\x01\x02\x03").is_none());
+        assert!(coap_payload(b"").is_none());
+    }
+
     /// Anything at all, without panicking. Each of these reads a datagram from
     /// an unauthenticated stranger.
     #[test]
@@ -235,6 +538,10 @@ mod tests {
             let _ = sql_server_browser(bytes);
             let _ = memcached_udp(bytes);
             let _ = wsd_types(bytes);
+            let _ = xdmcp_willing(bytes);
+            let _ = source_engine(bytes);
+            let _ = raknet_pong(bytes);
+            let _ = coap_payload(bytes);
         }
     }
 }

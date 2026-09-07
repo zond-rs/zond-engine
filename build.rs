@@ -972,6 +972,10 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
         "ssdp" => validate_ssdp_search(payload),
         "sip" => validate_sip_request(payload),
         "ms-sql-browser" => validate_browser_request(payload),
+        "xdmcp" => validate_xdmcp_query(payload),
+        "source-engine" => validate_a2s_request(payload),
+        "minecraft-bedrock" => validate_raknet_ping(payload),
+        "coap" => validate_coap_request(payload),
         "memcached" => validate_memcached_datagram(payload),
         "ws-discovery" => validate_wsd_probe(payload),
         _ => {
@@ -987,6 +991,136 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
     if let Err(reason) = outcome {
         panic!("{file}: service '{service}' udp probe #{index} {reason}");
     }
+}
+
+/// Checks an XDMCP Query: the version, the opcode a manager dispatches on, and
+/// a stated length that matches the body behind it.
+fn validate_xdmcp_query(payload: &[u8]) -> Result<(), String> {
+    const VERSION: u16 = 1;
+    const OPCODE_QUERY: u16 = 2;
+
+    let field = |at: usize| -> Result<u16, String> {
+        payload
+            .get(at..at + 2)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+            .ok_or_else(|| format!("is {} bytes, too short for an XDMCP header", payload.len()))
+    };
+
+    let version = field(0)?;
+    if version != VERSION {
+        return Err(format!(
+            "states XDMCP version {version}, and the protocol is {VERSION}"
+        ));
+    }
+    let opcode = field(2)?;
+    if opcode != OPCODE_QUERY {
+        return Err(format!(
+            "has opcode {opcode}; a manager answers a Query, opcode {OPCODE_QUERY}"
+        ));
+    }
+
+    let stated = field(4)? as usize;
+    let body = payload.len() - 6;
+    if stated != body {
+        return Err(format!("states a {stated}-byte body and carries {body}"));
+    }
+    Ok(())
+}
+
+/// Checks an A2S request: the header every Source query carries, the request
+/// byte, and the string the protocol requires after it.
+fn validate_a2s_request(payload: &[u8]) -> Result<(), String> {
+    const HEADER: &[u8] = &[0xFF, 0xFF, 0xFF, 0xFF];
+    const A2S_INFO: u8 = b'T';
+
+    if !payload.starts_with(HEADER) {
+        return Err("does not open with the four 0xFF bytes every Source query carries".into());
+    }
+    match payload.get(4) {
+        Some(&A2S_INFO) => {}
+        Some(other) => {
+            return Err(format!(
+                "is request {:?}, and this validator covers A2S_INFO",
+                *other as char
+            ));
+        }
+        None => return Err("carries a header and no request".into()),
+    }
+    match payload.ends_with(b"Source Engine Query\0") {
+        true => Ok(()),
+        false => Err("does not carry the `Source Engine Query` string A2S_INFO requires".into()),
+    }
+}
+
+/// Checks a RakNet unconnected ping: the packet id, the length, and the magic
+/// without which a server does not recognise the message as RakNet at all.
+fn validate_raknet_ping(payload: &[u8]) -> Result<(), String> {
+    const UNCONNECTED_PING: u8 = 0x01;
+    const MAGIC: &[u8] = &[
+        0x00, 0xFF, 0xFF, 0x00, 0xFE, 0xFE, 0xFE, 0xFE, 0xFD, 0xFD, 0xFD, 0xFD, 0x12, 0x34, 0x56,
+        0x78,
+    ];
+    // Packet id, timestamp, magic, and the client identifier.
+    const PING_BYTES: usize = 1 + 8 + 16 + 8;
+
+    if payload.first() != Some(&UNCONNECTED_PING) {
+        return Err(format!(
+            "opens with {:#04x}; an unconnected ping is {UNCONNECTED_PING:#04x}",
+            payload.first().copied().unwrap_or_default()
+        ));
+    }
+    if payload.len() != PING_BYTES {
+        return Err(format!(
+            "is {} bytes; an unconnected ping is {PING_BYTES}",
+            payload.len()
+        ));
+    }
+    match &payload[9..25] == MAGIC {
+        true => Ok(()),
+        false => {
+            Err("does not carry the offline message magic, so no server reads it as RakNet".into())
+        }
+    }
+}
+
+/// Checks a CoAP request: the version, the code, and options whose lengths
+/// describe the bytes behind them.
+fn validate_coap_request(payload: &[u8]) -> Result<(), String> {
+    const GET: u8 = 0x01;
+
+    let first = *payload.first().ok_or("is empty")?;
+    let version = first >> 6;
+    if version != 1 {
+        return Err(format!("states CoAP version {version}, and RFC 7252 is 1"));
+    }
+    if payload.get(1) != Some(&GET) {
+        return Err(format!(
+            "has code {:#04x}; a discovery probe is a GET, {GET:#04x}",
+            payload.get(1).copied().unwrap_or_default()
+        ));
+    }
+
+    // Walk the options the way an endpoint would, so a length that overruns is
+    // caught here rather than being dropped in silence by the device.
+    let mut at = 4 + (first & 0x0F) as usize;
+    while at < payload.len() {
+        let byte = payload[at];
+        if byte == 0xFF {
+            return Ok(());
+        }
+        at += 1;
+        let length = (byte & 0x0F) as usize;
+        if byte >> 4 == 15 || length == 15 {
+            return Err("uses the reserved option nibble 15".into());
+        }
+        at += length;
+        if at > payload.len() {
+            return Err(format!(
+                "has an option claiming {length} bytes past the end of the payload"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Checks a SQL Server Browser request: one byte, and one the Browser dispatches

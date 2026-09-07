@@ -1,0 +1,45 @@
+[service]
+name = "coap"
+default_ports = [5683]
+description = "Constrained Application Protocol"
+
+# A confirmable GET for `/.well-known/core`, the discovery resource RFC 7252
+# requires every endpoint to serve. It is the closest the protocol has to a
+# directory listing, and on a device with no version string anywhere it is the
+# only thing that says what the device is for.
+#
+#   40           version 1, confirmable, no token
+#   01           code 0.01, GET
+#   7a 6e        message id
+#   bb + 11      option 11 (Uri-Path), eleven bytes: ".well-known"
+#   04 + 4       the same option again, four bytes: "core"
+[[probe]]
+name = "coap_well_known_core"
+payload = '\x40\x01\x7a\x6e\xbb.well-known\x04core'
+protocol = "udp"
+
+# ── What the device exposes ──────────────────────────────────────────────────
+#
+# The payload is link format: each resource in angle brackets with its
+# attributes after it. Rules anchor on the leading bracket, which is what the
+# format guarantees and what keeps them from matching prose.
+
+[[match]]
+name = "coap_resource_list"
+# A resource followed by a link-format attribute, or by another resource. The
+# bracketed URI alone is not enough: a corpus rule is also matched against text
+# belonging to no port, and `^</[^>]*>` named a CoAP device from the string
+# `</usr/share>;rw`.
+pattern = '^</[^>]*>(?:;(?:rt|if|ct|sz|obs|title|anchor|rel|type|hreflang|media)[=;,]|,\s*</)'
+product = "coap"
+context = "coap.core"
+example = '</sensors/temp>;rt="temperature";if="sensor"'
+
+[[match]]
+name = "coap_resource_directory"
+# An endpoint offering registration is a resource directory rather than a
+# device: other things register with it, which makes it worth finding.
+pattern = '(?i)^</[^>]*>.*\brt="core\.rd(?:-lookup[^"]*)?"'
+product = "CoAP resource directory"
+context = "coap.core"
+example = '</rd>;rt="core.rd";ct=40'

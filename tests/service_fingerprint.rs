@@ -546,3 +546,82 @@ async fn memcached_over_udp_is_named_by_the_rule_written_for_tcp() {
     // repeats the service name instead of printing it twice.
     assert_eq!(service.product(), None);
 }
+
+/// A Minecraft Bedrock server is identified from the status line it publishes.
+///
+/// One of four ports added in the same batch, and the one whose reply is proved
+/// to be its protocol before anything is read from it: the pong repeats the
+/// offline message magic, so a datagram that merely starts with the same byte is
+/// not mistaken for one.
+#[tokio::test]
+async fn identifies_a_bedrock_server_from_its_status_line() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    static REPLY: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+        const STATUS: &str =
+            "MCPE;Zond Test Realm;390;1.20.15;2;10;13253860892328930865;Bedrock level;Survival";
+        let mut out = vec![0x1C];
+        out.extend_from_slice(&[0u8; 16]);
+        out.extend_from_slice(&[
+            0x00, 0xFF, 0xFF, 0x00, 0xFE, 0xFE, 0xFE, 0xFE, 0xFD, 0xFD, 0xFD, 0xFD, 0x12, 0x34,
+            0x56, 0x78,
+        ]);
+        out.extend_from_slice(&(STATUS.len() as u16).to_be_bytes());
+        out.extend_from_slice(STATUS.as_bytes());
+        out
+    });
+
+    let Some(server) = spawn_udp_server_on(19132, REPLY.as_slice()).await else {
+        eprintln!("SKIP: 19132/udp is in use on this machine");
+        return;
+    };
+
+    let outcome = run_scan(target_map(LOOPBACK, "U:19132"), &test_config()).await;
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let port = host
+        .ports()
+        .find(|p| p.number() == server.port && p.protocol() == Protocol::Udp)
+        .expect("the scanned UDP port is present in the results");
+
+    let service = port.service().expect("a service was identified");
+    assert_eq!(service.product(), Some("Minecraft Bedrock Server"));
+    assert_eq!(service.version(), Some("1.20.15"));
+    assert_eq!(service.extrainfo(), Some("2 of 10 players"));
+}
+
+/// A CoAP endpoint is identified from the resources it lists, which on a device
+/// carrying no version anywhere is the only thing that says what it is for.
+#[tokio::test]
+async fn identifies_a_coap_endpoint_from_its_resource_list() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    static REPLY: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+        // ACK, 2.05 Content, one option, the payload marker, then link format.
+        let mut out = vec![0x60, 0x45, 0x7a, 0x6e, 0xC1, 0x28, 0xFF];
+        out.extend_from_slice(br#"</sensors/temp>;rt="temperature";if="sensor""#);
+        out
+    });
+
+    let Some(server) = spawn_udp_server_on(5683, REPLY.as_slice()).await else {
+        eprintln!("SKIP: 5683/udp is in use on this machine");
+        return;
+    };
+
+    let outcome = run_scan(target_map(LOOPBACK, "U:5683"), &test_config()).await;
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let port = host
+        .ports()
+        .find(|p| p.number() == server.port && p.protocol() == Protocol::Udp)
+        .expect("the scanned UDP port is present in the results");
+
+    assert_eq!(
+        port.service().expect("a service was identified").name(),
+        "coap"
+    );
+}

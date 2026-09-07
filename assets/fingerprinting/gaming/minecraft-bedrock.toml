@@ -1,0 +1,45 @@
+[service]
+name = "minecraft-bedrock"
+default_ports = [19132]
+description = "Minecraft Bedrock Edition (RakNet)"
+
+# A RakNet unconnected ping: the packet id, a timestamp, the offline message
+# magic, and a client identifier. The magic is the constant every offline RakNet
+# message carries, and it is what makes the reply recognisable as RakNet rather
+# than as an arbitrary datagram.
+#
+# The Java edition does not answer this. It speaks TCP on 25565 and is queried
+# another way entirely, so a reply here is Bedrock or one of the server
+# implementations that speak its protocol.
+[[probe]]
+name = "raknet_unconnected_ping"
+payload = '\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78zondscan'
+protocol = "udp"
+
+# ── What the server publishes about itself ───────────────────────────────────
+#
+# The pong carries one semicolon-delimited status line. The fields are edition,
+# message of the day, protocol number, version, players, capacity, then the
+# level and the game mode.
+
+[[match]]
+name = "bedrock_server"
+# Anchored on the edition tag, which leads the line, and captures the version
+# from the fourth field. The message of the day between them is whatever the
+# operator typed, so it is matched loosely and read for nothing.
+pattern = '^MCPE;[^;]*;\d+;([\d.]+);(\d+);(\d+)'
+version_group = 1
+vendor = "Mojang"
+product = "Minecraft Bedrock Server"
+context = "raknet.status"
+example = "MCPE;Dedicated Server;390;1.14.60;0;10;13253860892328930865;Bedrock level"
+metadata = { "service.extrainfo" = "{capture:2} of {capture:3} players" }
+
+[[match]]
+name = "bedrock_education"
+pattern = '^MCEE;[^;]*;\d+;([\d.]+);'
+version_group = 1
+vendor = "Mojang"
+product = "Minecraft Education Edition"
+context = "raknet.status"
+example = "MCEE;Classroom;390;1.14.60;0;30;1;Lesson"

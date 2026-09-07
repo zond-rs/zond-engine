@@ -1,0 +1,48 @@
+[service]
+name = "xdmcp"
+default_ports = [177]
+description = "X Display Manager Control Protocol"
+
+# A Query with no authentication names, which is what asks a display manager
+# whether it would manage a session for whoever is asking.
+#
+#   00 01     protocol version 1
+#   00 02     opcode 2, Query
+#   00 01     one byte of body
+#   00        the count of authentication names offered, none
+#
+# A Willing answer means the host accepts remote X logins from the network,
+# which is worth reporting whatever the software turns out to be.
+[[probe]]
+name = "xdmcp_query"
+payload = '\x00\x01\x00\x02\x00\x01\x00'
+protocol = "udp"
+
+# ── What the manager says about itself ───────────────────────────────────────
+#
+# The reply carries the managed host and a free-text status, joined here as
+# `host: status`. Anchored at the start because the host comes first, and the
+# corpus is also matched against text belonging to no port.
+
+[[match]]
+name = "xdmcp_willing"
+pattern = '(?i)^\S+: .*\b(?:willing|display|manager|login)\b'
+product = "xdmcp"
+context = "xdmcp.willing"
+example = "workstation: Willing to manage"
+
+[[match]]
+name = "gdm_display_manager"
+pattern = '(?i)^\S+: .*\bgdm\b'
+vendor = "GNOME"
+product = "GDM"
+context = "xdmcp.willing"
+example = "workstation: Linux 6.1 gdm"
+metadata = { "os.family" = "Linux" }
+
+[[match]]
+name = "xdm_display_manager"
+pattern = '(?i)^\S+: .*\bxdm\b'
+product = "XDM"
+context = "xdmcp.willing"
+example = "kiosk: xdm running"

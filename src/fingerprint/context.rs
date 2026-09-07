@@ -97,6 +97,11 @@ pub struct Context {
 /// reached by construction.
 pub const CONTEXTS: &[Context] = &[
     Context {
+        name: "a2s.info",
+        reach: Reach::Produced,
+        note: "the strings a Source engine server answers A2S_INFO with, joined on `;` by `framed::source_engine`, or the word `challenge` where the server asked for one instead",
+    },
+    Context {
         name: "apache_modules",
         reach: Reach::Contained,
         note: "the module list Apache appends to its `Server` value, reached the same way and only when it is present",
@@ -110,6 +115,11 @@ pub const CONTEXTS: &[Context] = &[
         name: "architecture",
         reach: Reach::Unproduced,
         note: "nothing, and the blocker is not the text: these patterns are unanchored and match a `uname` banner already. They state only `os.arch`, which `OsMetadata` has no field for and which makes `from_map` drop the rule for naming neither a family nor a product",
+    },
+    Context {
+        name: "coap.core",
+        reach: Reach::Produced,
+        note: "the link-format payload served at `/.well-known/core`, read by `framed::coap_payload` after walking the options to the payload marker",
     },
     Context {
         name: "dhcp_vendor_class",
@@ -212,6 +222,11 @@ pub const CONTEXTS: &[Context] = &[
         note: "the greeting, whole, through `extract::texts`",
     },
     Context {
+        name: "raknet.status",
+        reach: Reach::Produced,
+        note: "the status line a RakNet unconnected pong carries, read by `framed::raknet_pong` once the reply's magic has confirmed it is RakNet",
+    },
+    Context {
         name: "rtsp_header.server",
         reach: Reach::Unproduced,
         note: "the `Server` value of an RTSP response; wants an OPTIONS probe",
@@ -290,6 +305,11 @@ pub const CONTEXTS: &[Context] = &[
         name: "x509.subject",
         reach: Reach::Produced,
         note: "the subject of the presented chain, rendered RFC 4514 by `tls_cert::distinguished_name` and matched by `SignatureDb::identify_field`",
+    },
+    Context {
+        name: "xdmcp.willing",
+        reach: Reach::Produced,
+        note: "the host and status strings of an XDMCP Willing response, joined by `framed::xdmcp_willing`",
     },
 ];
 

@@ -1,0 +1,72 @@
+[service]
+name = "source-engine"
+default_ports = [27015]
+description = "Valve Source engine server query"
+
+# A2S_INFO. The four 0xFF bytes are the header every Source query carries, `T`
+# is the request, and the string with its NUL is what the protocol requires
+# after it.
+#
+# Since 2020 a server may answer this with a challenge instead of the
+# information, and answering the challenge takes a second datagram carrying it
+# back. This engine sends one, so both replies are read: the info where a server
+# still gives it, and the challenge as proof of what is listening where it does
+# not.
+[[probe]]
+name = "a2s_info"
+payload = '\xff\xff\xff\xffTSource Engine Query\x00'
+protocol = "udp"
+
+# ── What the server says it is running ───────────────────────────────────────
+#
+# The info reply's four strings are joined with `;`: server name, map, game
+# directory, game. Rules anchor on the game directory rather than the server
+# name, since the name is whatever the operator typed.
+
+[[match]]
+name = "source_engine_info"
+# The baseline, for a game none of the rules below name. It states a product and
+# no vendor, so a rule that states both outranks it: the matcher breaks a tie at
+# equal confidence on how many identity fields a rule supplies, and a baseline
+# carrying as many as a specific rule wins the single product slot on
+# declaration order and buries the game. `generic_http` is arranged the same way
+# for the same reason.
+pattern = '^[^;]*;[^;]*;[^;]+;[^;]+$'
+product = "Source engine server"
+context = "a2s.info"
+example = "Zond Test Server;de_dust2;csgo;Counter-Strike"
+
+[[match]]
+name = "counter_strike"
+pattern = '(?i)^[^;]*;[^;]*;(?:csgo|cstrike|cs2);'
+product = "Counter-Strike"
+vendor = "Valve"
+context = "a2s.info"
+example = "Zond Test Server;de_dust2;csgo;Counter-Strike"
+
+[[match]]
+name = "team_fortress"
+pattern = '(?i)^[^;]*;[^;]*;tf;'
+product = "Team Fortress 2"
+vendor = "Valve"
+context = "a2s.info"
+example = "A TF2 Server;pl_upward;tf;Team Fortress"
+
+[[match]]
+name = "garrys_mod"
+pattern = '(?i)^[^;]*;[^;]*;garrysmod;'
+product = "Garry's Mod"
+vendor = "Facepunch Studios"
+context = "a2s.info"
+example = "Sandbox;gm_construct;garrysmod;Garry's Mod"
+
+[[match]]
+name = "source_engine_challenge"
+# A server that answered the challenge and nothing else. It names no game, and
+# it is still the only thing that sends this.
+pattern = '^challenge$'
+product = "Source engine server"
+vendor = "Valve"
+context = "a2s.info"
+example = "challenge"
+metadata = { "service.extrainfo" = "answered a challenge; no detail without a second query" }
