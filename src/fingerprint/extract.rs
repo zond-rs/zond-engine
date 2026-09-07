@@ -1266,6 +1266,46 @@ mod framed_replies {
         }
     }
 
+    /// The bytes the `zond-refresh.sh` fixtures put on the wire, captured from
+    /// them rather than rebuilt here.
+    ///
+    /// The tests above construct a reply from the same reading of each format
+    /// that wrote the reader, so they agree with it by construction. These came
+    /// from the other implementation, which is where a fixture and a parser are
+    /// caught disagreeing before a VM run does it.
+    #[test]
+    fn the_phase_three_fixtures_answer_with_bytes_these_readers_accept() {
+        fn hex(text: &str) -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex digits"))
+                .collect()
+        }
+
+        const STUN: &str = "0101001c2112a4427a6f6e642d7363616e2d303180220018436f7475726e2d342e352e32202764616e20456964657227";
+        let texts = super::from_datagram(3478, &hex(STUN));
+        assert_eq!(texts, vec!["Coturn-4.5.2 'dan Eider'"]);
+        assert_eq!(
+            identify(3478, &texts[0]).map(|found| found.0),
+            Some("coturn".to_string())
+        );
+
+        const IKE_500: &str = "7a6f6e647363616e726573706f6e64650d1002200000000000000030000000148299031757a36082c6a621de00000000";
+        let texts = super::from_datagram(500, &hex(IKE_500));
+        assert_eq!(texts, vec!["8299031757a36082c6a621de00000000"]);
+        assert_eq!(
+            identify(500, &texts[0]).map(|found| found.0),
+            Some("FortiGate".to_string())
+        );
+
+        const IKE_4500: &str = "7a6f6e647363616e726573706f6e64650d1002200000000000000034000000181e2b516905991c7d7c96fcbfb587e46100000009";
+        let texts = super::from_datagram(4500, &hex(IKE_4500));
+        assert_eq!(
+            identify(4500, &texts[0]).map(|found| found.0),
+            Some("Windows IKE".to_string())
+        );
+    }
+
     #[test]
     fn every_new_port_is_worth_a_second_datagram() {
         for port in [
