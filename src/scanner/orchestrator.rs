@@ -1406,13 +1406,30 @@ fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) -> 
     let mut contested: Vec<Ipv6Range> = Vec::new();
     let mut zones = ZoneMap::new();
 
+    // Read once, and only for a scan that named a zone at all: the names come
+    // from the host's interface table, and every target below is looked up in
+    // the same list.
+    let named_a_zone = target_map
+        .units
+        .iter()
+        .flat_map(|unit| unit.ips().v6())
+        .any(|range| range.zone().is_some());
+    let links = match named_a_zone {
+        true => crate::system::interface::interfaces(),
+        false => Vec::new(),
+    };
+    let names: Vec<(u32, &str)> = links
+        .iter()
+        .map(|link| (link.index(), link.name()))
+        .collect();
+
     for range in target_map.units.iter().flat_map(|unit| unit.ips().v6()) {
         if range.is_ambiguous() {
             refused.push(*range);
         } else if zones.contests(range) {
             contested.push(*range);
         } else {
-            zones.insert(*range);
+            zones.insert(*range, &names);
         }
     }
 
@@ -1476,6 +1493,9 @@ pub(super) async fn run_port_phase(
     if target_map.is_empty() {
         return;
     }
+    // Before any verdict is recorded: a finding written under a bare `fe80::…`
+    // has to reach the host the sweep already found on that interface.
+    ctx.learn_zones(zones.clone());
 
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
     // SCTP is planned from the targets rather than from the configuration,

@@ -8776,9 +8776,11 @@ pub struct zond_engine::model::ip::scoped::ZoneMap
 impl zond_engine::model::ip::scoped::ZoneMap
 pub fn zond_engine::model::ip::scoped::ZoneMap::contests(&self, &zond_engine::model::ip::range::Ipv6Range) -> bool
 pub fn zond_engine::model::ip::scoped::ZoneMap::endpoint(&self, core::net::ip_addr::IpAddr, u16) -> core::net::socket_addr::SocketAddr
-pub fn zond_engine::model::ip::scoped::ZoneMap::insert(&mut self, zond_engine::model::ip::range::Ipv6Range)
+pub fn zond_engine::model::ip::scoped::ZoneMap::insert(&mut self, zond_engine::model::ip::range::Ipv6Range, &[(u32, &str)])
 pub fn zond_engine::model::ip::scoped::ZoneMap::is_empty(&self) -> bool
+pub fn zond_engine::model::ip::scoped::ZoneMap::key(&self, core::net::ip_addr::IpAddr) -> zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ZoneMap::new() -> Self
+pub fn zond_engine::model::ip::scoped::ZoneMap::zone_for(&self, &core::net::ip_addr::IpAddr) -> core::option::Option<&zond_engine::model::ip::scoped::Zone>
 pub fn zond_engine::model::ip::scoped::ZoneMap::zone_of(&self, &core::net::ip_addr::IpAddr) -> core::option::Option<u32>
 impl core::clone::Clone for zond_engine::model::ip::scoped::ZoneMap
 pub fn zond_engine::model::ip::scoped::ZoneMap::clone(&self) -> zond_engine::model::ip::scoped::ZoneMap
@@ -9242,9 +9244,11 @@ pub struct zond_engine::model::ip::ZoneMap
 impl zond_engine::model::ip::scoped::ZoneMap
 pub fn zond_engine::model::ip::scoped::ZoneMap::contests(&self, &zond_engine::model::ip::range::Ipv6Range) -> bool
 pub fn zond_engine::model::ip::scoped::ZoneMap::endpoint(&self, core::net::ip_addr::IpAddr, u16) -> core::net::socket_addr::SocketAddr
-pub fn zond_engine::model::ip::scoped::ZoneMap::insert(&mut self, zond_engine::model::ip::range::Ipv6Range)
+pub fn zond_engine::model::ip::scoped::ZoneMap::insert(&mut self, zond_engine::model::ip::range::Ipv6Range, &[(u32, &str)])
 pub fn zond_engine::model::ip::scoped::ZoneMap::is_empty(&self) -> bool
+pub fn zond_engine::model::ip::scoped::ZoneMap::key(&self, core::net::ip_addr::IpAddr) -> zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ZoneMap::new() -> Self
+pub fn zond_engine::model::ip::scoped::ZoneMap::zone_for(&self, &core::net::ip_addr::IpAddr) -> core::option::Option<&zond_engine::model::ip::scoped::Zone>
 pub fn zond_engine::model::ip::scoped::ZoneMap::zone_of(&self, &core::net::ip_addr::IpAddr) -> core::option::Option<u32>
 impl core::clone::Clone for zond_engine::model::ip::scoped::ZoneMap
 pub fn zond_engine::model::ip::scoped::ZoneMap::clone(&self) -> zond_engine::model::ip::scoped::ZoneMap
@@ -17755,9 +17759,11 @@ pub struct zond_engine::ZoneMap
 impl zond_engine::model::ip::scoped::ZoneMap
 pub fn zond_engine::model::ip::scoped::ZoneMap::contests(&self, &zond_engine::model::ip::range::Ipv6Range) -> bool
 pub fn zond_engine::model::ip::scoped::ZoneMap::endpoint(&self, core::net::ip_addr::IpAddr, u16) -> core::net::socket_addr::SocketAddr
-pub fn zond_engine::model::ip::scoped::ZoneMap::insert(&mut self, zond_engine::model::ip::range::Ipv6Range)
+pub fn zond_engine::model::ip::scoped::ZoneMap::insert(&mut self, zond_engine::model::ip::range::Ipv6Range, &[(u32, &str)])
 pub fn zond_engine::model::ip::scoped::ZoneMap::is_empty(&self) -> bool
+pub fn zond_engine::model::ip::scoped::ZoneMap::key(&self, core::net::ip_addr::IpAddr) -> zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ZoneMap::new() -> Self
+pub fn zond_engine::model::ip::scoped::ZoneMap::zone_for(&self, &core::net::ip_addr::IpAddr) -> core::option::Option<&zond_engine::model::ip::scoped::Zone>
 pub fn zond_engine::model::ip::scoped::ZoneMap::zone_of(&self, &core::net::ip_addr::IpAddr) -> core::option::Option<u32>
 impl core::clone::Clone for zond_engine::model::ip::scoped::ZoneMap
 pub fn zond_engine::model::ip::scoped::ZoneMap::clone(&self) -> zond_engine::model::ip::scoped::ZoneMap

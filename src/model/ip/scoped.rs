@@ -349,14 +349,15 @@ impl FromStr for ScopedIp {
 ///
 /// let addr: Ipv6Addr = "fe80::1".parse().unwrap();
 /// let mut zones = ZoneMap::new();
-/// zones.insert(Ipv6Range::scoped(addr, addr, Some(7)).unwrap());
+/// zones.insert(Ipv6Range::scoped(addr, addr, Some(7)).unwrap(), &[(7, "en0")]);
 ///
 /// assert_eq!(zones.zone_of(&IpAddr::V6(addr)), Some(7));
+/// assert_eq!(zones.key(IpAddr::V6(addr)).to_string(), "fe80::1%en0");
 /// assert_eq!(zones.zone_of(&"2001:db8::1".parse().unwrap()), None);
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ZoneMap {
-    ranges: Vec<Ipv6Range>,
+    ranges: Vec<(Ipv6Range, Zone)>,
 }
 
 impl ZoneMap {
@@ -368,32 +369,59 @@ impl ZoneMap {
     /// Records `range` and the interface it names.
     ///
     /// A range carrying no zone is ignored, since it has nothing to answer with.
-    pub fn insert(&mut self, range: Ipv6Range) {
-        if range.zone().is_some() {
-            self.ranges.push(range);
-        }
+    /// The zone is taken from `interfaces`, which is the host's interface table
+    /// as a list of index and name: the scope id alone reaches a socket, and the
+    /// name is what a report prints and a person reads back.
+    pub fn insert(&mut self, range: Ipv6Range, interfaces: &[(u32, &str)]) {
+        let Some(index) = range.zone() else {
+            return;
+        };
+        let name = interfaces
+            .iter()
+            .find(|(held, _)| *held == index)
+            .map_or_else(|| index.to_string(), |(_, name)| (*name).to_owned());
+
+        self.ranges.push((range, Zone::new(index, name)));
     }
 
-    /// The interface index `ip` is valid on, if this scan named one for it.
+    /// The interface `ip` is valid on, if this scan named one for it.
     ///
     /// An address covered by two ranges naming different interfaces answers
-    /// `None`. Which segment was meant is exactly what cannot be told in that
-    /// case, and a probe sent to the first match would be sent to whichever
-    /// range happened to be recorded first.
-    pub fn zone_of(&self, ip: &IpAddr) -> Option<u32> {
+    /// `None`. Which segment was meant is what cannot be told in that case, and
+    /// a probe sent to the first match would go to whichever range happened to
+    /// be recorded first.
+    pub fn zone_for(&self, ip: &IpAddr) -> Option<&Zone> {
         let IpAddr::V6(v6) = ip else {
             return None;
         };
 
         let mut found = None;
-        for range in self.ranges.iter().filter(|range| range.contains(v6)) {
+        for (_, zone) in self.ranges.iter().filter(|(range, _)| range.contains(v6)) {
             match found {
-                None => found = range.zone(),
-                Some(zone) if Some(zone) == range.zone() => {}
+                None => found = Some(zone),
+                Some(held) if held == zone => {}
                 Some(_) => return None,
             }
         }
         found
+    }
+
+    /// The interface index `ip` is valid on, as a socket's scope id.
+    pub fn zone_of(&self, ip: &IpAddr) -> Option<u32> {
+        self.zone_for(ip).and_then(Zone::index)
+    }
+
+    /// `ip` as the engine keys a host under.
+    ///
+    /// A finding recorded against a bare `fe80::…` belongs to the host the scan
+    /// named on an interface, not beside it. Completing the key here is what
+    /// keeps a port scan's verdicts and a sweep's hardware address on one
+    /// record. An address needing no zone comes back as itself.
+    pub fn key(&self, ip: IpAddr) -> ScopedIp {
+        match self.zone_for(&ip) {
+            Some(zone) => ScopedIp::scoped(ip, zone.clone()),
+            None => ScopedIp::unscoped(ip),
+        }
     }
 
     /// Whether any address in `range` is also covered by a range already held
@@ -404,7 +432,7 @@ impl ZoneMap {
     pub fn contests(&self, range: &Ipv6Range) -> bool {
         self.ranges
             .iter()
-            .any(|held| held.zone() != range.zone() && held.overlaps(range))
+            .any(|(held, _)| held.zone() != range.zone() && held.overlaps(range))
     }
 
     /// `ip` and `port` as somewhere a socket can be opened to.

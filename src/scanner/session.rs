@@ -72,7 +72,7 @@
 
 use dashmap::DashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
@@ -83,7 +83,7 @@ use crate::info;
 use crate::journal::settle::{Outcome, Settled, Settlements};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::Host;
-use crate::model::ip::scoped::{ScopedIp, Zone};
+use crate::model::ip::scoped::{ScopedIp, Zone, ZoneMap};
 use crate::model::ip::set::Positions;
 use crate::model::port::Protocol;
 use crate::report::ScannerKind;
@@ -865,6 +865,16 @@ pub struct ScanContext {
     /// When each host's budget started, for a scan that set one.
     pub(crate) clocks: Arc<HostClocks>,
     pub(crate) spacing: Arc<HostSpacing>,
+    /// The interface each of this scan's link-local targets was named on.
+    ///
+    /// A link-local address is not a key on its own, and a scanner addressing
+    /// its targets one at a time holds a bare one. Completing the key from this
+    /// is what keeps a port scan's verdicts on the same record as the sweep's
+    /// hardware address, rather than beside it under a keyless `fe80::…`.
+    ///
+    /// Learned once the port phase knows which targets it kept, and empty for
+    /// every scan that named no zone.
+    pub(crate) zones: Arc<OnceLock<ZoneMap>>,
     pub(crate) swept_links: Arc<SweptLinks>,
     /// Where this machine turned out to be plugged in, as the equipment said.
     pub(crate) attachments: Arc<Attachments>,
@@ -989,7 +999,7 @@ impl ScanContext {
         key: impl Into<ScopedIp>,
         edit: impl FnOnce(&mut Host) -> bool,
     ) -> bool {
-        let key = key.into();
+        let key = self.key(key);
         let ip = key.addr();
 
         if self.exclusions.excludes(&ip) {
@@ -1056,7 +1066,32 @@ impl ScanContext {
         ip: impl Into<ScopedIp>,
         read: impl FnOnce(&Host) -> R,
     ) -> Option<R> {
-        self.store.get(&ip.into()).map(|entry| read(entry.value()))
+        self.store
+            .get(&self.key(ip))
+            .map(|entry| read(entry.value()))
+    }
+
+    /// `ip` as this scan keys a host under.
+    ///
+    /// A key that already names its interface is kept as it is. One that needs
+    /// an interface and has none is completed from the zones the scan named its
+    /// targets on, so a finding recorded against a bare `fe80::…` reaches the
+    /// host it belongs to. An address needing no zone passes straight through.
+    fn key(&self, ip: impl Into<ScopedIp>) -> ScopedIp {
+        let key = ip.into();
+        match key.is_unusable() {
+            true => self
+                .zones
+                .get()
+                .map_or(key.clone(), |zones| zones.key(key.addr())),
+            false => key,
+        }
+    }
+
+    /// Records which interface each of this scan's link-local targets was named
+    /// on. The first call decides; later ones are ignored.
+    pub(crate) fn learn_zones(&self, zones: ZoneMap) {
+        let _ = self.zones.set(zones);
     }
 
     /// Whether anything is recorded under `ip`.
@@ -1070,7 +1105,7 @@ impl ScanContext {
     /// at every address it holds and is recorded under one of them, so this
     /// answers "is there a record here" and never "is this machine known".
     pub fn contains_host(&self, ip: &ScopedIp) -> bool {
-        self.store.contains_key(ip)
+        self.store.contains_key(&self.key(ip.clone()))
     }
 
     /// Every address a host is currently recorded under.
@@ -1597,6 +1632,7 @@ impl SessionBuilder {
                 minimum: self.host_probe_interval,
                 last_sent: DashMap::new(),
             }),
+            zones: Arc::new(OnceLock::new()),
             swept_links: Arc::new(SweptLinks::default()),
             attachments: Arc::new(Attachments::default()),
             exclusions: Arc::new(self.exclusions),
@@ -1730,6 +1766,48 @@ mod tests {
             .collect();
         zones.sort();
         assert_eq!(zones, ["en0", "en1"]);
+    }
+
+    /// A port scan addresses its targets one at a time and holds the address
+    /// bare, so its verdicts arrive here with no interface on them. They belong
+    /// to the host the sweep found on the interface the scan named, not to a
+    /// second record beside it.
+    ///
+    /// The defect: a scoped link-local target came back as two hosts, one
+    /// carrying the hardware address and the NDP round trip, the other the
+    /// ports.
+    #[test]
+    fn a_port_verdict_on_a_bare_link_local_lands_on_the_host_the_scan_named() {
+        use crate::model::ip::range::Ipv6Range;
+
+        let address: IpAddr = "fe80::1".parse().expect("literal");
+        let (_session, ctx) = ScanSession::new();
+
+        let mut zones = ZoneMap::new();
+        let IpAddr::V6(v6) = address else {
+            panic!("a v6 literal");
+        };
+        zones.insert(
+            Ipv6Range::scoped(v6, v6, Some(1)).expect("a scoped range"),
+            &[(1, "en0")],
+        );
+        ctx.learn_zones(zones);
+
+        ctx.write_host(ScopedIp::scoped(address, Zone::new(1, "en0")), |host| {
+            host.set_status(HostStatus::Up);
+            true
+        });
+        ctx.write_host(address, |host| {
+            host.set_status(HostStatus::Up);
+            true
+        });
+
+        assert_eq!(ctx.store.len(), 1, "one machine, one record");
+        assert!(
+            ctx.read_host(address, |host| host.zone().is_some())
+                .expect("the bare address reaches it too"),
+            "and it is still the host on en0"
+        );
     }
 
     /// A global address is the same machine through whichever interface answered

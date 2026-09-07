@@ -321,7 +321,10 @@ mod tests {
 
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x99);
         let mut zones = ZoneMap::new();
-        zones.insert(Ipv6Range::scoped(target, target, Some(15)).expect("a scoped range"));
+        zones.insert(
+            Ipv6Range::scoped(target, target, Some(15)).expect("a scoped range"),
+            &[(15, "en1")],
+        );
 
         let mut resolver = SourceResolver::from_links(&[elsewhere, en1]).with_zones(zones);
 
