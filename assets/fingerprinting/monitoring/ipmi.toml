@@ -1,0 +1,58 @@
+[service]
+name = "ipmi"
+default_ports = [623]
+description = "Intelligent Platform Management Interface"
+
+# Get Channel Authentication Capabilities, wrapped in RMCP. It is the one IPMI
+# command a controller answers before any session exists, which is what makes it
+# the right question for a scan: nothing is being logged into, and the reply says
+# how one could be.
+#
+#   06 00 ff 07                 RMCP version 6, sequence 255, class 7 (IPMI)
+#   00 + 00000000 + 00000000    an IPMI v1.5 session header, unauthenticated
+#   09                          nine bytes of message
+#   20 18 c8                    to the BMC, netFn 6 (App), header checksum
+#   81 00 38                    from the remote console, sequence 0, command 0x38
+#   0e 04                       this channel, at ADMINISTRATOR privilege
+#   35                          data checksum
+#
+# Both checksums are two's complement over the bytes before them, and a
+# controller drops a message whose checksums do not hold without a word. See
+# `validate_ipmi_request` in build.rs, which recomputes them.
+[[probe]]
+name = "ipmi_channel_auth_capabilities"
+payload = '\x06\x00\xff\x07\x00\x00\x00\x00\x00\x00\x00\x00\x00\x09\x20\x18\xc8\x81\x00\x38\x0e\x04\x35'
+protocol = "udp"
+
+# ── What the controller admits to ────────────────────────────────────────────
+#
+# The reply names the IPMI version the channel speaks and, in its status byte,
+# which kinds of login it will accept. A controller that authenticates nobody is
+# reachable by anybody who can route to it, so those bits are the finding rather
+# than the version.
+
+[[match]]
+name = "ipmi_anonymous_login"
+pattern = '^IPMI-([\d.]+)\b.*\banonymous-login\b'
+version_group = 1
+product = "IPMI"
+context = "ipmi.auth"
+example = "IPMI-2.0 anonymous-login null-user"
+metadata = { "service.extrainfo" = "accepts a session with no user name" }
+
+[[match]]
+name = "ipmi_null_user"
+pattern = '^IPMI-([\d.]+)\b.*\bnull-user\b'
+version_group = 1
+product = "IPMI"
+context = "ipmi.auth"
+example = "IPMI-1.5 null-user"
+metadata = { "service.extrainfo" = "the null user is enabled" }
+
+[[match]]
+name = "ipmi_channel"
+pattern = '^IPMI-([\d.]+)\b'
+version_group = 1
+product = "IPMI"
+context = "ipmi.auth"
+example = "IPMI-2.0 non-null-user"

@@ -258,6 +258,194 @@ pub(super) fn coap_payload(datagram: &[u8]) -> Option<&str> {
     None
 }
 
+/// Every RPC program a portmapper says it has registered, with its version and
+/// the port it is on.
+///
+/// A `PMAPPROC_DUMP` reply is a chain of records, each preceded by a boolean
+/// saying another follows, ending in a false. Each carries a program number, a
+/// version, a transport and a port:
+///
+/// ```text
+/// nfs 3 tcp 2049, mountd 3 udp 20048, nlockmgr 4 tcp 46283
+/// ```
+///
+/// Programs are named where the number is one of the handful worth naming, and
+/// left as their number where it is not. That is the identifying half: a host
+/// running `nfs` and `mountd` is a file server, and the ports they are on are
+/// very often not the registered ones.
+///
+/// [`None`] for a reply that is not an accepted RPC response, or whose record
+/// chain runs past the datagram.
+#[must_use]
+pub(super) fn rpc_program_dump(datagram: &[u8]) -> Option<String> {
+    /// The programs worth spelling. Everything else keeps its number, which is
+    /// still what somebody would look up.
+    const NAMED: &[(u32, &str)] = &[
+        (100000, "portmapper"),
+        (100003, "nfs"),
+        (100005, "mountd"),
+        (100021, "nlockmgr"),
+        (100024, "status"),
+        (100227, "nfs_acl"),
+        (100011, "rquotad"),
+        (100002, "rusersd"),
+    ];
+
+    let body = accepted_rpc_reply(datagram)?;
+    let word = |at: usize| -> Option<u32> {
+        body.get(at..at + 4)
+            .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+
+    let mut at = 0;
+    let mut entries = Vec::new();
+    // A record chain: each entry is preceded by a one meaning another follows.
+    while word(at)? == 1 {
+        let (program, version, protocol, port) =
+            (word(at + 4)?, word(at + 8)?, word(at + 12)?, word(at + 16)?);
+        at += 20;
+
+        let name = NAMED
+            .iter()
+            .find(|(number, _)| *number == program)
+            .map_or_else(|| program.to_string(), |(_, name)| (*name).to_string());
+        let transport = match protocol {
+            6 => "tcp",
+            17 => "udp",
+            other => return Some(format!("{name} {version} proto{other} {port}")),
+        };
+        entries.push(format!("{name} {version} {transport} {port}"));
+
+        // A portmapper on a busy host registers dozens; the identifying part is
+        // which programs, not how many times each is bound.
+        if entries.len() >= 64 {
+            break;
+        }
+    }
+
+    (!entries.is_empty()).then(|| entries.join(", "))
+}
+
+/// What versions of a program an RPC server says it supports.
+///
+/// The probe calls a version nothing implements, so an accepted reply is a
+/// mismatch carrying the range the server does support. That says more than a
+/// success would: a call that worked would confirm only the version it was made
+/// with.
+///
+/// ```text
+/// versions 3-4
+/// ```
+///
+/// [`None`] where the reply is not a mismatch, which includes a server that does
+/// not run the program at all.
+#[must_use]
+pub(super) fn rpc_version_range(datagram: &[u8]) -> Option<String> {
+    /// `PROG_MISMATCH`, the accept status that carries the range.
+    const PROG_MISMATCH: u32 = 2;
+
+    let (status, body) = rpc_reply_status(datagram)?;
+    if status != PROG_MISMATCH {
+        return None;
+    }
+
+    let word = |at: usize| -> Option<u32> {
+        body.get(at..at + 4)
+            .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+    let (low, high) = (word(0)?, word(4)?);
+
+    (low <= high && high < 100).then(|| format!("versions {low}-{high}"))
+}
+
+/// The body of an RPC reply that was accepted and succeeded.
+fn accepted_rpc_reply(datagram: &[u8]) -> Option<&[u8]> {
+    match rpc_reply_status(datagram)? {
+        (0, body) => Some(body),
+        _ => None,
+    }
+}
+
+/// The accept status of an RPC reply and whatever follows it.
+///
+/// Walks the header rather than indexing past it, because the verifier between
+/// the reply status and the accept status is variable length and a server may
+/// send one.
+fn rpc_reply_status(datagram: &[u8]) -> Option<(u32, &[u8])> {
+    const MSG_TYPE_REPLY: u32 = 1;
+    const MSG_ACCEPTED: u32 = 0;
+
+    let word = |at: usize| -> Option<u32> {
+        datagram
+            .get(at..at + 4)
+            .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+
+    if word(4)? != MSG_TYPE_REPLY || word(8)? != MSG_ACCEPTED {
+        return None;
+    }
+    // The verifier: a flavour and a length, then that many bytes rounded up to
+    // a four-byte boundary.
+    let verifier = word(16)? as usize;
+    let at = 20 + verifier.next_multiple_of(4);
+
+    Some((word(at)?, datagram.get(at + 4..)?))
+}
+
+/// What a BMC says about how it may be logged into.
+///
+/// A Get Channel Authentication Capabilities response states the IPMI version
+/// the channel speaks and, in its status byte, whether it will accept a session
+/// with no user name and whether the null user is enabled. Either is worth
+/// reporting: a management controller that authenticates nobody is reachable by
+/// anybody who can route to it.
+///
+/// ```text
+/// IPMI-2.0 anonymous-login null-user
+/// ```
+///
+/// [`None`] for a datagram that is not an RMCP-wrapped IPMI response, or whose
+/// completion code says the command failed.
+#[must_use]
+pub(super) fn ipmi_auth_capabilities(datagram: &[u8]) -> Option<String> {
+    /// The RMCP class byte that marks the payload as IPMI.
+    const CLASS_IPMI: u8 = 0x07;
+    /// Where the response data begins: the RMCP header, the v1.5 session
+    /// header, the message length, and the IPMB header up to the completion
+    /// code.
+    const DATA_AT: usize = 4 + 9 + 1 + 7;
+
+    if *datagram.first()? != 0x06 || *datagram.get(3)? != CLASS_IPMI {
+        return None;
+    }
+    // A non-zero completion code means the BMC refused the command rather than
+    // answering it, and the bytes after it mean nothing.
+    if *datagram.get(DATA_AT - 1)? != 0x00 {
+        return None;
+    }
+
+    let support = *datagram.get(DATA_AT + 1)?;
+    let status = *datagram.get(DATA_AT + 2)?;
+
+    let mut said = Vec::new();
+    // Bit 7 of the auth support byte is set by a channel that speaks IPMI 2.0.
+    said.push(match support & 0b1000_0000 != 0 {
+        true => "IPMI-2.0",
+        false => "IPMI-1.5",
+    });
+    if status & 0b0000_0001 != 0 {
+        said.push("anonymous-login");
+    }
+    if status & 0b0000_0010 != 0 {
+        said.push("null-user");
+    }
+    if status & 0b0000_0100 != 0 {
+        said.push("non-null-user");
+    }
+
+    Some(said.join(" "))
+}
+
 /// The device types a WS-Discovery responder claims.
 ///
 /// A `ProbeMatches` reply is SOAP, and the element worth reading is `Types`: a
@@ -525,6 +713,130 @@ mod tests {
         assert!(coap_payload(b"").is_none());
     }
 
+    /// An accepted RPC reply header with an empty verifier, then `body`.
+    fn rpc_reply(accept_status: u32, body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&0x7a6f6e64u32.to_be_bytes()); // xid
+        out.extend_from_slice(&1u32.to_be_bytes()); // REPLY
+        out.extend_from_slice(&0u32.to_be_bytes()); // MSG_ACCEPTED
+        out.extend_from_slice(&0u32.to_be_bytes()); // verifier flavour
+        out.extend_from_slice(&0u32.to_be_bytes()); // verifier length
+        out.extend_from_slice(&accept_status.to_be_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn a_program_dump_names_the_services_and_their_ports() {
+        let mut body = Vec::new();
+        for (program, version, protocol, port) in [
+            (100000u32, 2u32, 17u32, 111u32),
+            (100003, 3, 6, 2049),
+            (100005, 3, 17, 20048),
+        ] {
+            body.extend_from_slice(&1u32.to_be_bytes());
+            for field in [program, version, protocol, port] {
+                body.extend_from_slice(&field.to_be_bytes());
+            }
+        }
+        body.extend_from_slice(&0u32.to_be_bytes());
+
+        assert_eq!(
+            rpc_program_dump(&rpc_reply(0, &body)).as_deref(),
+            Some("portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048")
+        );
+    }
+
+    /// A program number nothing names keeps its number, which is still what
+    /// somebody would look up.
+    #[test]
+    fn an_unnamed_program_keeps_its_number() {
+        let mut body = 1u32.to_be_bytes().to_vec();
+        for field in [391_002u32, 2, 6, 39_845] {
+            body.extend_from_slice(&field.to_be_bytes());
+        }
+        body.extend_from_slice(&0u32.to_be_bytes());
+        assert_eq!(
+            rpc_program_dump(&rpc_reply(0, &body)).as_deref(),
+            Some("391002 2 tcp 39845")
+        );
+    }
+
+    /// The probe calls a version nothing implements, so the useful reply is the
+    /// mismatch carrying the range the server does support.
+    #[test]
+    fn a_version_mismatch_yields_the_range_the_server_supports() {
+        let mut body = 3u32.to_be_bytes().to_vec();
+        body.extend_from_slice(&4u32.to_be_bytes());
+        assert_eq!(
+            rpc_version_range(&rpc_reply(2, &body)).as_deref(),
+            Some("versions 3-4")
+        );
+    }
+
+    /// A server that does not run the program at all answers with a different
+    /// status, and there is no range in it to read.
+    #[test]
+    fn anything_but_a_mismatch_yields_no_range() {
+        assert!(rpc_version_range(&rpc_reply(0, &[])).is_none());
+        assert!(rpc_version_range(&rpc_reply(1, &[])).is_none());
+        assert!(rpc_version_range(b"").is_none());
+        assert!(rpc_program_dump(&rpc_reply(1, &[])).is_none());
+    }
+
+    /// A call echoed back by a reflector is not a reply, and a chain that runs
+    /// past the datagram is refused rather than read through.
+    #[test]
+    fn an_rpc_call_is_not_read_as_a_reply() {
+        let mut call = 0x7a6f6e64u32.to_be_bytes().to_vec();
+        call.extend_from_slice(&0u32.to_be_bytes()); // CALL
+        call.extend_from_slice(&[0u8; 32]);
+        assert!(rpc_program_dump(&call).is_none());
+
+        let mut truncated = rpc_reply(0, &1u32.to_be_bytes());
+        truncated.truncate(truncated.len() - 1);
+        assert!(rpc_program_dump(&truncated).is_none());
+    }
+
+    /// An IPMI response with `support` and `status` in the two bytes read.
+    fn ipmi(support: u8, status: u8) -> Vec<u8> {
+        let mut out = vec![0x06, 0x00, 0xFF, 0x07];
+        out.extend_from_slice(&[0u8; 9]); // v1.5 session header
+        out.push(8); // message length
+        out.extend_from_slice(&[0x81, 0x1C, 0x00, 0x20, 0x00, 0x38]); // IPMB header
+        out.push(0x00); // completion code, success
+        out.push(0x01); // channel number
+        out.push(support);
+        out.push(status);
+        out
+    }
+
+    #[test]
+    fn a_bmc_states_its_version_and_how_it_may_be_logged_into() {
+        assert_eq!(
+            ipmi_auth_capabilities(&ipmi(0b1000_0000, 0b0000_0100)).as_deref(),
+            Some("IPMI-2.0 non-null-user")
+        );
+        assert_eq!(
+            ipmi_auth_capabilities(&ipmi(0b0000_0000, 0b0000_0011)).as_deref(),
+            Some("IPMI-1.5 anonymous-login null-user")
+        );
+    }
+
+    /// A completion code the BMC set is a refusal, and the bytes behind it mean
+    /// nothing.
+    #[test]
+    fn a_refused_ipmi_command_yields_nothing() {
+        let mut refused = ipmi(0b1000_0000, 0b0000_0001);
+        refused[20] = 0xC1; // invalid command
+        assert!(ipmi_auth_capabilities(&refused).is_none());
+
+        let mut wrong_class = ipmi(0b1000_0000, 0b0000_0001);
+        wrong_class[3] = 0x06; // ASF rather than IPMI
+        assert!(ipmi_auth_capabilities(&wrong_class).is_none());
+        assert!(ipmi_auth_capabilities(b"").is_none());
+    }
+
     /// Anything at all, without panicking. Each of these reads a datagram from
     /// an unauthenticated stranger.
     #[test]
@@ -542,6 +854,9 @@ mod tests {
             let _ = source_engine(bytes);
             let _ = raknet_pong(bytes);
             let _ = coap_payload(bytes);
+            let _ = rpc_program_dump(bytes);
+            let _ = rpc_version_range(bytes);
+            let _ = ipmi_auth_capabilities(bytes);
         }
     }
 }

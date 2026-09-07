@@ -976,6 +976,8 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
         "source-engine" => validate_a2s_request(payload),
         "minecraft-bedrock" => validate_raknet_ping(payload),
         "coap" => validate_coap_request(payload),
+        "rpcbind" | "nfs" => validate_rpc_call(payload),
+        "ipmi" => validate_ipmi_request(payload),
         "memcached" => validate_memcached_datagram(payload),
         "ws-discovery" => validate_wsd_probe(payload),
         _ => {
@@ -990,6 +992,125 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
 
     if let Err(reason) = outcome {
         panic!("{file}: service '{service}' udp probe #{index} {reason}");
+    }
+}
+
+/// Checks an ONC RPC call: the message type, the RPC version, and a header
+/// whose credential and verifier lengths describe the bytes behind them.
+fn validate_rpc_call(payload: &[u8]) -> Result<(), String> {
+    const MSG_TYPE_CALL: u32 = 0;
+    const RPC_VERSION: u32 = 2;
+
+    let word = |at: usize| -> Result<u32, String> {
+        payload
+            .get(at..at + 4)
+            .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .ok_or_else(|| {
+                format!(
+                    "is {} bytes, too short for an RPC call header",
+                    payload.len()
+                )
+            })
+    };
+
+    let msg_type = word(4)?;
+    if msg_type != MSG_TYPE_CALL {
+        return Err(format!(
+            "has message type {msg_type}; a probe is a call, type {MSG_TYPE_CALL}"
+        ));
+    }
+    let version = word(8)?;
+    if version != RPC_VERSION {
+        return Err(format!(
+            "states RPC version {version}, and the protocol is {RPC_VERSION}"
+        ));
+    }
+
+    // The credential and the verifier each state a flavour and a length, and a
+    // server reading past the end of one drops the call in silence.
+    let mut at = 24;
+    for which in ["credential", "verifier"] {
+        let length = word(at + 4)? as usize;
+        at += 8 + length.next_multiple_of(4);
+        if at > payload.len() {
+            return Err(format!(
+                "has a {which} claiming {length} bytes past the end of the call"
+            ));
+        }
+    }
+    match at == payload.len() {
+        true => Ok(()),
+        false => Err(format!(
+            "has {} bytes after its verifier, and these procedures take no arguments",
+            payload.len() - at
+        )),
+    }
+}
+
+/// Checks an RMCP-wrapped IPMI request, checksums included.
+///
+/// The checksums are the reason this exists. A controller drops a message whose
+/// checksums do not hold without answering, which on the wire is
+/// indistinguishable from a filtered port, so a payload edited by hand and not
+/// recomputed would look exactly like a BMC that was not there.
+fn validate_ipmi_request(payload: &[u8]) -> Result<(), String> {
+    const RMCP_VERSION: u8 = 0x06;
+    const CLASS_IPMI: u8 = 0x07;
+    /// The RMCP header and the unauthenticated v1.5 session header before the
+    /// message length byte.
+    const MESSAGE_AT: usize = 13;
+
+    let at = |index: usize| -> Result<u8, String> {
+        payload
+            .get(index)
+            .copied()
+            .ok_or_else(|| format!("is {} bytes, too short for an RMCP message", payload.len()))
+    };
+
+    if at(0)? != RMCP_VERSION {
+        return Err(format!(
+            "states RMCP version {:#04x}, and it is {RMCP_VERSION:#04x}",
+            at(0)?
+        ));
+    }
+    if at(3)? != CLASS_IPMI {
+        return Err(format!(
+            "is RMCP class {:#04x}; an IPMI message is class {CLASS_IPMI:#04x}",
+            at(3)?
+        ));
+    }
+
+    let stated = at(MESSAGE_AT)? as usize;
+    let body = payload
+        .get(MESSAGE_AT + 1..)
+        .ok_or("carries a length and no message")?;
+    if body.len() != stated {
+        return Err(format!(
+            "states a {stated}-byte message and carries {}",
+            body.len()
+        ));
+    }
+    if body.len() < 7 {
+        return Err(format!(
+            "has a {}-byte message, too short for an IPMB request",
+            body.len()
+        ));
+    }
+
+    // Both checksums are two's complement over the bytes preceding them, so a
+    // correct one sums to zero with what it covers.
+    let header: u8 = body[..3]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    if header != 0 {
+        return Err("has a header checksum that does not hold; the BMC would drop it".into());
+    }
+    let data: u8 = body[3..]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    match data == 0 {
+        true => Ok(()),
+        false => Err("has a data checksum that does not hold; the BMC would drop it".into()),
     }
 }
 

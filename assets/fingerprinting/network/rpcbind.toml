@@ -3,9 +3,50 @@ name = "rpcbind"
 default_ports = [111]
 description = "SUN Remote Procedure Call (Portmapper)"
 
-# Rpcbind usually needs a specific RPC call to get a response.
-# For now, we'll rely on the default port lookup unless we add complex RPC parsing.
+# A PMAPPROC_DUMP call: ask the portmapper for everything it has registered.
+# There are no arguments, so the whole call is the header.
+#
+#   7a6f6e64     transaction id
+#   00000000     message type 0, a call
+#   00000002     RPC version 2
+#   000186a0     program 100000, the portmapper
+#   00000002     program version 2
+#   00000004     procedure 4, DUMP
+#   00000000 x4  a null credential and a null verifier
+#
+# The reply is the interesting part. It names every program the host runs, its
+# version, and the port it is on, which for `nfs` and `mountd` is very often not
+# the registered number.
+[[probe]]
+name = "rpcbind_dump"
+payload = 'zond\x00\x00\x00\x00\x00\x00\x00\x02\x00\x01\x86\xa0\x00\x00\x00\x02\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+protocol = "udp"
+
 [[match]]
 name = "rpc_tcp_fragment"
 pattern = '^[\x80-\xff][\x00-\xff]{3}'
 product = "rpcbind"
+
+# ── What the portmapper says it has ──────────────────────────────────────────
+#
+# The dump is rendered as `name version transport port`, comma separated. Rules
+# anchor on a program name at a record boundary, which is the start of the text
+# or just after a comma.
+
+[[match]]
+name = "rpcbind_registrations"
+pattern = '(?i)^(?:portmapper|nfs|mountd|nlockmgr|status|nfs_acl|rquotad|rusersd|\d+) \d+ (?:tcp|udp) \d+'
+product = "rpcbind"
+context = "rpc.program_dump"
+example = "portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048"
+
+[[match]]
+name = "rpc_nfs_registered"
+# A host registering both is a file server, and the pair is what says so: `nfs`
+# alone is registered by a client's own callback service on some systems.
+pattern = '(?i)(?:^|, )nfs (\d+) (?:tcp|udp) \d+.*(?:^|, )mountd '
+version_group = 1
+product = "NFS"
+context = "rpc.program_dump"
+example = "portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048"
+metadata = { "service.extrainfo" = "exported over RPC" }

@@ -1,0 +1,37 @@
+[service]
+name = "nfs"
+default_ports = [2049]
+description = "Network File System"
+
+# A NULL call for a version of the NFS program that nothing implements.
+#
+# A call that succeeded would confirm only the version it was made with. A
+# version no server runs is answered with PROG_MISMATCH, and a mismatch carries
+# the range the server does support, so one datagram learns what several would
+# have.
+#
+#   zone         transaction id
+#   00000000     message type 0, a call
+#   00000002     RPC version 2
+#   000186a3     program 100003, NFS
+#   00000001     version 1, which no server implements
+#   00000000     procedure 0, NULL
+#   00000000 x4  a null credential and a null verifier
+[[probe]]
+name = "nfs_version_probe"
+payload = 'zone\x00\x00\x00\x00\x00\x00\x00\x02\x00\x01\x86\xa3\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+protocol = "udp"
+
+# ── What the mismatch says ───────────────────────────────────────────────────
+
+[[match]]
+name = "nfs_supported_versions"
+# Anchored whole. The text is this reader's own rendering of the range and
+# nothing else produces it, but a corpus rule is also matched against text
+# belonging to no port, and `versions 3-4` is a phrase that could occur anywhere.
+pattern = '^versions (\d+)-(\d+)$'
+version_group = 2
+product = "NFS"
+context = "rpc.versions"
+example = "versions 3-4"
+metadata = { "service.extrainfo" = "versions {capture:1} to {capture:2}" }

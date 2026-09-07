@@ -172,6 +172,11 @@ pub const CONTEXTS: &[Context] = &[
         note: "the greeting, whole, through `extract::texts`",
     },
     Context {
+        name: "ipmi.auth",
+        reach: Reach::Produced,
+        note: "the IPMI version and login bits of a Get Channel Authentication Capabilities response, read by `framed::ipmi_auth_capabilities`",
+    },
+    Context {
         name: "ldap.search_result",
         reach: Reach::Produced,
         note: "the bytes a root DSE search draws, matched as text through `extract::texts`; the corpus probe now asks for the entry at the empty DN as well as binding",
@@ -225,6 +230,16 @@ pub const CONTEXTS: &[Context] = &[
         name: "raknet.status",
         reach: Reach::Produced,
         note: "the status line a RakNet unconnected pong carries, read by `framed::raknet_pong` once the reply's magic has confirmed it is RakNet",
+    },
+    Context {
+        name: "rpc.program_dump",
+        reach: Reach::Produced,
+        note: "the programs a portmapper says it has registered, rendered as `name version transport port` by `framed::rpc_program_dump`",
+    },
+    Context {
+        name: "rpc.versions",
+        reach: Reach::Produced,
+        note: "the version range an RPC server states in a PROG_MISMATCH, read by `framed::rpc_version_range`. The probe calls a version nothing implements so that the mismatch is the answer",
     },
     Context {
         name: "rtsp_header.server",

@@ -136,6 +136,20 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
                 .collect(),
             Err(_) => Vec::new(),
         },
+        // Every program the host has registered, with the port each is on.
+        111 => super::framed::rpc_program_dump(datagram)
+            .into_iter()
+            .collect(),
+        // The probe asks for a version nothing implements, so the mismatch that
+        // comes back names the versions the server does support.
+        2049 => super::framed::rpc_version_range(datagram)
+            .into_iter()
+            .collect(),
+        // What a management controller says about how it may be logged into,
+        // before anything has logged into it.
+        623 => super::framed::ipmi_auth_capabilities(datagram)
+            .into_iter()
+            .collect(),
         // A display manager that answers this accepts remote X logins from the
         // network, whatever the software behind it turns out to be.
         177 => super::framed::xdmcp_willing(datagram).into_iter().collect(),
@@ -220,7 +234,7 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
 const DECODED_UDP_PORTS: &[u16] = &[
-    53, 161, 177, 1434, 1900, 3702, 5060, 5061, 5353, 5683, 11211, 19132, 27015,
+    53, 111, 161, 177, 623, 1434, 1900, 2049, 3702, 5060, 5061, 5353, 5683, 11211, 19132, 27015,
 ];
 
 // ╔════════════════════════════════════════════╗
@@ -888,6 +902,9 @@ mod framed_replies {
             "</usr/share>;rw",
             "MCPE Gaming Ltd",
             "challenge-response authentication",
+            "nfs shares are exported read-only",
+            "supports versions 3-4 of the specification",
+            "IPMI 2.0 compliant baseboard controller",
             "Device Manager Print Spooler",
             "Network Video Recorder",
             "ServerName Corp",
@@ -901,6 +918,7 @@ mod framed_replies {
                         | Some("ONVIF device" | "Microsoft SQL Server Browser")
                         | Some("GDM" | "XDM" | "xdmcp" | "coap")
                         | Some("Source engine server" | "Minecraft Bedrock Server")
+                        | Some("NFS" | "IPMI" | "rpcbind")
                 ),
                 "{text:?} was named {named:?}"
             );
@@ -1031,9 +1049,78 @@ mod framed_replies {
         );
     }
 
+    /// An RPC reply header with an empty verifier, then `body`.
+    fn rpc_reply(accept_status: u32, body: &[u8]) -> Vec<u8> {
+        let mut out = 0x7a6f6e64u32.to_be_bytes().to_vec();
+        for word in [1u32, 0, 0, 0, accept_status] {
+            out.extend_from_slice(&word.to_be_bytes());
+        }
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// The portmapper is worth asking because it says where things are, not
+    /// only what they are: `mountd` on 20048 is a port nothing would have
+    /// guessed.
+    #[test]
+    fn a_portmapper_names_the_services_and_where_they_are() {
+        let mut body = Vec::new();
+        for entry in [
+            (100000u32, 2u32, 17u32, 111u32),
+            (100003, 3, 6, 2049),
+            (100005, 3, 17, 20048),
+        ] {
+            body.extend_from_slice(&1u32.to_be_bytes());
+            for field in [entry.0, entry.1, entry.2, entry.3] {
+                body.extend_from_slice(&field.to_be_bytes());
+            }
+        }
+        body.extend_from_slice(&0u32.to_be_bytes());
+
+        let texts = super::from_datagram(111, &rpc_reply(0, &body));
+        assert_eq!(
+            texts,
+            vec!["portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048"]
+        );
+        assert_eq!(
+            identify(111, &texts[0]),
+            Some(("NFS".to_string(), Some("3".to_string())))
+        );
+    }
+
+    #[test]
+    fn an_nfs_server_states_the_versions_it_supports() {
+        let mut body = 3u32.to_be_bytes().to_vec();
+        body.extend_from_slice(&4u32.to_be_bytes());
+
+        let texts = super::from_datagram(2049, &rpc_reply(2, &body));
+        assert_eq!(texts, vec!["versions 3-4"]);
+        assert_eq!(
+            identify(2049, &texts[0]),
+            Some(("NFS".to_string(), Some("4".to_string())))
+        );
+    }
+
+    /// The finding a scan of a management network is looking for.
+    #[test]
+    fn a_bmc_that_authenticates_nobody_says_so() {
+        let mut reply = vec![0x06, 0x00, 0xFF, 0x07];
+        reply.extend_from_slice(&[0u8; 9]);
+        reply.push(8);
+        reply.extend_from_slice(&[0x81, 0x1C, 0x00, 0x20, 0x00, 0x38]);
+        reply.extend_from_slice(&[0x00, 0x01, 0b1000_0000, 0b0000_0011]);
+
+        let texts = super::from_datagram(623, &reply);
+        assert_eq!(texts, vec!["IPMI-2.0 anonymous-login null-user"]);
+        assert_eq!(
+            identify(623, &texts[0]),
+            Some(("IPMI".to_string(), Some("2.0".to_string())))
+        );
+    }
+
     #[test]
     fn every_new_port_is_worth_a_second_datagram() {
-        for port in [177, 1434, 3702, 5683, 11211, 19132, 27015] {
+        for port in [111, 177, 623, 1434, 2049, 3702, 5683, 11211, 19132, 27015] {
             assert!(super::reads(port, Protocol::Udp), "port {port}");
         }
     }
