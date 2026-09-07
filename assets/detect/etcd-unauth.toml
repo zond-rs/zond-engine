@@ -1,0 +1,35 @@
+# etcd reachable without a client certificate. etcd holds the key-value store a
+# Kubernetes cluster keeps its secrets in, and is meant to require mutual TLS; a
+# /version that answers is an API a client reached with no certificate. A server
+# that requires one fails the handshake and never answers, so reaching 200 here is
+# the exposure. The etcdserver field is etcd naming itself, not a plain web server.
+#
+# The gate is `speaks = "http"`, which reaches 2379 whether it is plain or inside
+# a server-only TLS handshake; a mutual-TLS etcd refuses the handshake and is never
+# gated in.
+
+[detection]
+id      = "etcd-unauth"
+version = "1.0.0"
+title   = "etcd reachable without a client certificate"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one read-only GET /version
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "GET /version HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "etcdserver"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "etcd answered /version without a client certificate"
+  detail       = "The etcd API returned its version with no client certificate, so it is reachable without the mutual TLS it is meant to require; etcd holds a cluster's secrets."
+  references   = [{ cwe = 306 }]   # Missing Authentication for a Critical Function
+  excerpt_from = "$response"

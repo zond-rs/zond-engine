@@ -557,6 +557,21 @@ mod tests {
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><head><title>phpMyAdmin</title></head></html>",
                 Severity::Medium,
             ),
+            (
+                "etcd-unauth",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"etcdserver\":\"3.5.9\",\"etcdcluster\":\"3.5.0\"}",
+                Severity::High,
+            ),
+            (
+                "consul-no-acl",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"consul\":[],\"redis\":[\"primary\"]}",
+                Severity::High,
+            ),
+            (
+                "influxdb-noauth",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"results\":[{\"statement_id\":0,\"series\":[{\"name\":\"databases\",\"values\":[[\"_internal\"]]}]}]}",
+                Severity::High,
+            ),
         ];
 
         for (name, reply, severity) in cases {
@@ -591,6 +606,9 @@ mod tests {
             "k8s-api-anonymous",
             "jenkins-unauth",
             "phpmyadmin-exposed",
+            "etcd-unauth",
+            "consul-no-acl",
+            "influxdb-noauth",
         ] {
             let flow = flow(name);
             let findings = run(&flow, "", &seed(), &mut Canned(quiet.to_vec()));

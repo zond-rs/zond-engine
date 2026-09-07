@@ -1,0 +1,32 @@
+# Consul serving its catalogue without an ACL token. A Consul agent with ACLs in
+# default-allow, or with none configured, answers /v1/catalog/services to anyone,
+# disclosing every service registered in the mesh; one with ACLs enforcing denies
+# the request 403 without a token. A single read-only GET. The consul service is
+# always registered, so it names the catalogue as Consul's rather than another
+# JSON API's.
+
+[detection]
+id      = "consul-no-acl"
+version = "1.0.0"
+title   = "Consul catalogue readable without an ACL token"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one read-only GET of the service catalogue
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /v1/catalog/services HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "\"consul\""]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Consul served its service catalogue without a token"
+  detail       = "GET /v1/catalog/services returned the registered services with no ACL token, so the mesh is enumerable by anyone who can reach the agent."
+  references   = [{ cwe = 284 }]   # Improper Access Control
+  excerpt_from = "$response"

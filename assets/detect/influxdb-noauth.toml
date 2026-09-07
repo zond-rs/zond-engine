@@ -1,0 +1,34 @@
+# InfluxDB 1.x answering queries without authentication. With auth off, /query
+# runs SHOW DATABASES for anyone and returns the database names; with auth on it
+# answers 401. A single read-only query. The statement_id field is InfluxDB's own
+# query-response shape, so a 200 carrying it is the database answering rather than
+# an unrelated JSON API.
+#
+# This targets the 1.x line, whose /query endpoint is the common exposure; 2.x
+# moves to a token-gated /api/v2 and is not matched here.
+
+[detection]
+id      = "influxdb-noauth"
+version = "1.0.0"
+title   = "InfluxDB answering queries without authentication"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"   # one read-only SHOW DATABASES query
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+send   = "GET /query?q=SHOW+DATABASES HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ["HTTP/[0-9.]+ 200", "statement_id"]
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "InfluxDB ran a query without authentication"
+  detail       = "GET /query?q=SHOW DATABASES returned a result with no credentials, so the database is readable, and usually writable, unauthenticated."
+  references   = [{ cwe = 306 }]   # Missing Authentication for a Critical Function
+  excerpt_from = "$response"
