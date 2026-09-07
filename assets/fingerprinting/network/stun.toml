@@ -1,0 +1,46 @@
+[service]
+name = "stun"
+default_ports = [3478]
+description = "Session Traversal Utilities for NAT"
+
+# A binding request. The magic cookie is what RFC 5389 added so a response can
+# be told from the RFC 3489 message it otherwise resembles, and it is echoed
+# back, so the reply identifies itself as STUN without anything else being read.
+#
+#   0001            binding request
+#   0000            no attributes
+#   2112a442        the magic cookie
+#   zond-scan-01    the transaction id, twelve bytes
+[[probe]]
+name = "stun_binding_request"
+payload = '\x00\x01\x00\x00\x21\x12\xa4\x42zond-scan-01'
+protocol = "udp"
+
+# ── What answered ────────────────────────────────────────────────────────────
+#
+# The `SOFTWARE` attribute where the server sends one, and the word `stun` where
+# it does not. The mapped address is not read: it describes the network between
+# the scanner and the target rather than the target.
+
+[[match]]
+name = "coturn"
+pattern = '(?i)^Coturn[- ]([\d.]+)'
+version_group = 1
+product = "coturn"
+context = "stun.software"
+example = "Coturn-4.5.2 'dan Eider'"
+
+[[match]]
+name = "stunserver"
+pattern = '(?i)^stunserver[- ]?([\d.]*)'
+product = "stunserver"
+context = "stun.software"
+example = "stunserver 1.2.16"
+
+[[match]]
+name = "stun_service"
+# The baseline, naming no product so a rule above outranks it rather than tying
+# and winning on declaration order.
+pattern = '^stun$'
+context = "stun.software"
+example = "stun"

@@ -1,0 +1,96 @@
+[service]
+name = "isakmp"
+default_ports = [500, 4500]
+description = "IKE / ISAKMP"
+
+# An IKEv1 main mode proposal: one transform offering 3DES, SHA1, a pre-shared
+# key and MODP group 2. A gateway that accepts it answers with its own payload
+# chain; one that does not answers with a notification. Both are replies, and
+# both prove an IKE daemon is listening, so the proposal is chosen to be
+# ordinary rather than to be accepted.
+#
+#   zondscan        initiator cookie
+#   00 x8           responder cookie, zero in a request and set in every reply
+#   01              first payload: security association
+#   10              version 1.0
+#   02              exchange type 2, identity protection (main mode)
+#   00              no flags
+#   00000000        message id
+#   00000050        length
+[[probe]]
+name = "ike_main_mode_proposal"
+payload = 'zondscan\x00\x00\x00\x00\x00\x00\x00\x00\x01\x10\x02\x00\x00\x00\x00\x00\x00\x00\x00\x50\x00\x00\x00\x34\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x28\x01\x01\x00\x01\x00\x00\x00\x20\x01\x01\x00\x00\x80\x01\x00\x05\x80\x02\x00\x02\x80\x03\x00\x01\x80\x04\x00\x02\x80\x0b\x00\x01\x80\x0c\x70\x80'
+protocol = "udp"
+
+# ── Which implementation answered ────────────────────────────────────────────
+#
+# Vendor ID payloads, as lowercase hex, space separated. An implementation puts
+# a fixed value there, most often a hash of its own name and version, and the
+# published ones are what these rules read. Anchored on a payload boundary, at
+# the start of the text or after a space, because the order a gateway sends them
+# in is its own.
+
+[[match]]
+name = "cisco_unity"
+# The Unity vendor id, sent by Cisco IOS and ASA.
+pattern = '(?i)(?:^|\s)12f5f28c457168a9702d9fe274cc[0-9a-f]{4}'
+vendor = "Cisco"
+product = "Cisco IPsec VPN"
+context = "ike.vendor_id"
+example = "12f5f28c457168a9702d9fe274cc0100"
+metadata = { "os.vendor" = "Cisco" }
+
+[[match]]
+name = "cisco_fragmentation"
+pattern = '(?i)(?:^|\s)4048b7d56ebce88525e7de7f00d6c2d3[0-9a-f]*'
+vendor = "Cisco"
+product = "Cisco IPsec VPN"
+context = "ike.vendor_id"
+example = "4048b7d56ebce88525e7de7f00d6c2d380000000"
+
+[[match]]
+name = "fortinet_endpoint"
+pattern = '(?i)(?:^|\s)8299031757a36082c6a621de00000000'
+vendor = "Fortinet"
+product = "FortiGate"
+context = "ike.vendor_id"
+example = "8299031757a36082c6a621de00000000"
+metadata = { "os.vendor" = "Fortinet", "hw.device" = "firewall" }
+
+[[match]]
+name = "watchguard"
+pattern = '(?i)(?:^|\s)da8e937880010000'
+vendor = "WatchGuard"
+product = "WatchGuard Firebox"
+context = "ike.vendor_id"
+example = "da8e937880010000"
+metadata = { "hw.device" = "firewall" }
+
+[[match]]
+name = "windows_ike"
+# The vendor id Windows sends for its own IKE implementation, followed by a
+# build number the rule does not read: it varies by patch level and the mapping
+# is not published.
+pattern = '(?i)(?:^|\s)1e2b516905991c7d7c96fcbfb587e461[0-9a-f]{8}'
+vendor = "Microsoft"
+product = "Windows IKE"
+context = "ike.vendor_id"
+example = "1e2b516905991c7d7c96fcbfb587e46100000009"
+metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows" }
+
+[[match]]
+name = "isakmp_notify"
+# A gateway that liked none of the proposal. It names nothing, and it is still a
+# daemon answering on this port.
+pattern = '^notify$'
+product = "isakmp"
+context = "ike.vendor_id"
+example = "notify"
+
+[[match]]
+name = "isakmp_responder"
+# The baseline: a reply carrying vendor ids this file has no rule for, or none
+# at all. It names no product, so any rule above outranks it.
+pattern = '^(?:isakmp|[0-9a-f]{8,}(?: [0-9a-f]{8,})*)$'
+context = "ike.vendor_id"
+example = "afcad71368a1f1c96b8696fc77570100"

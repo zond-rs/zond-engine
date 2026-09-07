@@ -15,3 +15,27 @@ description = "Network Time Protocol"
 name = "ntp_client_request"
 payload = '\x23\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
 protocol = "udp"
+
+# A mode 6 control message, asking the daemon to read out its system variables.
+# The client request above proves the port is open and carries nothing to read;
+# this asks the question the corpus was already written for.
+#
+#   16     leap 0, version 2, mode 6 (control)
+#   02     not a response, no error, no more fragments, opcode 2 (read variables)
+#   0001   sequence
+#   0000   status
+#   0000   association id 0, meaning the daemon itself rather than a peer
+#   0000   offset
+#   0000   count, no variables named, so the daemon chooses what to send
+#
+# Naming no variables is what makes this one payload rather than a list: a
+# daemon asked for nothing in particular answers with the set it considers its
+# own description, which is where `version`, `processor` and `system` are.
+#
+# Many builds refuse this. `noquery` in the default `restrict` line has been
+# standard advice for years, and a daemon configured that way answers nothing.
+# The probe costs one datagram and the ones that do answer are worth it.
+[[probe]]
+name = "ntp_control_readvar"
+payload = '\x16\x02\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00'
+protocol = "udp"

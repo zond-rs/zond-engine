@@ -136,6 +136,17 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
                 .collect(),
             Err(_) => Vec::new(),
         },
+        // The corpus registers two probes here. The client request proves the
+        // port is open and carries nothing to read; the mode 6 control message
+        // draws the variables the daemon describes itself with.
+        123 => super::framed::ntp_control_variables(datagram)
+            .into_iter()
+            .collect(),
+        // The gateway's own vendor ids, which is what separates one IPsec
+        // implementation from another.
+        500 | 4500 => super::framed::ike_response(datagram).into_iter().collect(),
+        // What a STUN server calls itself, where it says.
+        3478 => super::framed::stun_binding(datagram).into_iter().collect(),
         // Every program the host has registered, with the port each is on.
         111 => super::framed::rpc_program_dump(datagram)
             .into_iter()
@@ -234,7 +245,8 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
 const DECODED_UDP_PORTS: &[u16] = &[
-    53, 111, 161, 177, 623, 1434, 1900, 2049, 3702, 5060, 5061, 5353, 5683, 11211, 19132, 27015,
+    53, 111, 123, 161, 177, 500, 623, 1434, 1900, 2049, 3478, 3702, 4500, 5060, 5061, 5353, 5683,
+    11211, 19132, 27015,
 ];
 
 // ╔════════════════════════════════════════════╗
@@ -304,7 +316,7 @@ mod tests {
         /// all, since UDP offers no handshake to infer it from, so a probe here
         /// earns its place without a decoder. Each entry is a decoder somebody
         /// could write.
-        const PROBED_BUT_NOT_DECODED: &[u16] = &[123, 137];
+        const PROBED_BUT_NOT_DECODED: &[u16] = &[137];
 
         let db = SignatureDb::global();
         let probed: Vec<u16> = (0..=u16::MAX)
@@ -345,8 +357,12 @@ mod tests {
             "every TCP port can be read for a banner"
         );
         assert!(
-            !reads(123, Protocol::Udp),
-            "an NTP reply has no decoder yet"
+            reads(123, Protocol::Udp),
+            "a mode 6 control response is read for the variables a daemon reports"
+        );
+        assert!(
+            !reads(137, Protocol::Udp),
+            "a NetBIOS name table is read as a host role rather than as service text"
         );
     }
 }
@@ -905,6 +921,8 @@ mod framed_replies {
             "nfs shares are exported read-only",
             "supports versions 3-4 of the specification",
             "IPMI 2.0 compliant baseboard controller",
+            "stunning performance",
+            "notify the administrator",
             "Device Manager Print Spooler",
             "Network Video Recorder",
             "ServerName Corp",
@@ -919,6 +937,7 @@ mod framed_replies {
                         | Some("GDM" | "XDM" | "xdmcp" | "coap")
                         | Some("Source engine server" | "Minecraft Bedrock Server")
                         | Some("NFS" | "IPMI" | "rpcbind")
+                        | Some("coturn" | "stunserver" | "isakmp" | "FortiGate")
                 ),
                 "{text:?} was named {named:?}"
             );
@@ -1158,9 +1177,100 @@ mod framed_replies {
         );
     }
 
+    /// The point of the mode 6 probe: an imported rule that could not fire
+    /// before now reads a real daemon's answer.
+    ///
+    /// Seventy-five rules were written against `ntp.readvar` and none of them
+    /// had ever matched anything, because the only probe this port carried was
+    /// an ordinary client request and its reply is timestamps. Nothing about
+    /// them was wrong; the engine was asking the wrong question.
+    #[test]
+    fn the_ntp_rules_that_never_fired_now_read_a_daemon_that_answers() {
+        const VARS: &str = "version=\"ntpd 4.2.8p15@1.3728-o Wed May 12 08:30:00 UTC 2021 (1)\", \
+             processor=\"x86_64\", system=\"Linux/6.1.0-18-arm64\", leap=00, stratum=3";
+
+        let mut reply = vec![0x16, 0x82];
+        reply.extend_from_slice(&1u16.to_be_bytes());
+        reply.extend_from_slice(&[0u8; 6]);
+        reply.extend_from_slice(&(VARS.len() as u16).to_be_bytes());
+        reply.extend_from_slice(VARS.as_bytes());
+
+        let texts = super::from_datagram(123, &reply);
+        assert_eq!(texts.len(), 1, "got {texts:?}");
+        assert!(texts[0].starts_with("version=\"ntpd"), "got {texts:?}");
+
+        // The version is what the imported rule captures, build suffix included:
+        // its pattern takes everything up to the first space. That is Recog's
+        // reading and not this engine's, and the point here is that the rule now
+        // gets a string to read at all.
+        let found = identify(123, &texts[0]).expect("the corpus names it");
+        assert_eq!(found.1.as_deref(), Some("4.2.8p15@1.3728-o"));
+    }
+
+    /// The client probe's own reply is still not read, which is why the control
+    /// probe had to be added rather than the rules rewritten.
+    #[test]
+    fn the_client_reply_this_port_used_to_draw_still_says_nothing() {
+        let mut timestamps = vec![0x24, 0x03, 0x06, 0xec];
+        timestamps.extend_from_slice(&[0u8; 44]);
+        assert!(super::from_datagram(123, &timestamps).is_empty());
+    }
+
+    #[test]
+    fn a_stun_server_is_named_by_the_software_it_reports() {
+        let name = b"Coturn-4.5.2 'dan Eider'";
+        let mut reply = 0x0101u16.to_be_bytes().to_vec();
+        reply.extend_from_slice(&((4 + name.len()) as u16).to_be_bytes());
+        reply.extend_from_slice(&0x2112_A442u32.to_be_bytes());
+        reply.extend_from_slice(b"zond-scan-01");
+        reply.extend_from_slice(&0x8022u16.to_be_bytes());
+        reply.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        reply.extend_from_slice(name);
+
+        let texts = super::from_datagram(3478, &reply);
+        assert_eq!(texts, vec!["Coturn-4.5.2 'dan Eider'"]);
+        assert_eq!(
+            identify(3478, &texts[0]),
+            Some(("coturn".to_string(), Some("4.5.2".to_string())))
+        );
+    }
+
+    /// A gateway is named by the vendor ids it announces, and both IKE ports
+    /// read the same way.
+    #[test]
+    fn an_ike_gateway_is_named_by_its_vendor_ids() {
+        let mut reply = b"initiat0responde".to_vec();
+        reply.push(13); // first payload: vendor id
+        reply.extend_from_slice(&[0x10, 0x02, 0x00]);
+        reply.extend_from_slice(&[0u8; 8]); // message id and length
+        let vendor = [
+            0x82u8, 0x99, 0x03, 0x17, 0x57, 0xa3, 0x60, 0x82, 0xc6, 0xa6, 0x21, 0xde, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+        reply.extend_from_slice(&[0, 0]);
+        reply.extend_from_slice(&((4 + vendor.len()) as u16).to_be_bytes());
+        reply.extend_from_slice(&vendor);
+
+        for port in [500u16, 4500] {
+            let texts = super::from_datagram(port, &reply);
+            assert_eq!(
+                texts,
+                vec!["8299031757a36082c6a621de00000000"],
+                "port {port}"
+            );
+            assert_eq!(
+                identify(port, &texts[0]).map(|found| found.0),
+                Some("FortiGate".to_string()),
+                "port {port}"
+            );
+        }
+    }
+
     #[test]
     fn every_new_port_is_worth_a_second_datagram() {
-        for port in [111, 177, 623, 1434, 2049, 3702, 5683, 11211, 19132, 27015] {
+        for port in [
+            111, 123, 177, 500, 623, 1434, 2049, 3478, 3702, 4500, 5683, 11211, 19132, 27015,
+        ] {
             assert!(super::reads(port, Protocol::Udp), "port {port}");
         }
     }

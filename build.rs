@@ -978,6 +978,8 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
         "coap" => validate_coap_request(payload),
         "rpcbind" | "nfs" => validate_rpc_call(payload),
         "ipmi" => validate_ipmi_request(payload),
+        "isakmp" => validate_isakmp_request(payload),
+        "stun" => validate_stun_request(payload),
         "memcached" => validate_memcached_datagram(payload),
         "ws-discovery" => validate_wsd_probe(payload),
         _ => {
@@ -992,6 +994,40 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
 
     if let Err(reason) = outcome {
         panic!("{file}: service '{service}' udp probe #{index} {reason}");
+    }
+}
+
+/// Checks a STUN binding request: the type, the magic cookie that separates it
+/// from the RFC 3489 message it otherwise resembles, and the fixed header size.
+fn validate_stun_request(payload: &[u8]) -> Result<(), String> {
+    const BINDING_REQUEST: u16 = 0x0001;
+    const MAGIC_COOKIE: u32 = 0x2112_A442;
+    const HEADER_BYTES: usize = 20;
+
+    if payload.len() < HEADER_BYTES {
+        return Err(format!(
+            "is {} bytes; a STUN header is {HEADER_BYTES}",
+            payload.len()
+        ));
+    }
+    let kind = u16::from_be_bytes([payload[0], payload[1]]);
+    if kind != BINDING_REQUEST {
+        return Err(format!(
+            "is message type {kind:#06x}, not a binding request"
+        ));
+    }
+    let cookie = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+    if cookie != MAGIC_COOKIE {
+        return Err("carries no magic cookie, so the reply could not be told from RFC 3489".into());
+    }
+
+    let stated = u16::from_be_bytes([payload[2], payload[3]]) as usize;
+    match stated == payload.len() - HEADER_BYTES {
+        true => Ok(()),
+        false => Err(format!(
+            "states {stated} bytes of attributes and carries {}",
+            payload.len() - HEADER_BYTES
+        )),
     }
 }
 
@@ -1369,33 +1405,131 @@ fn validate_ber(payload: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks an SNTP client request: the fixed 48-byte size, and the mode field a
-/// server dispatches on. A packet in the wrong mode is answered by nobody.
+/// Checks an NTP request, dispatching on the mode the first byte carries.
+///
+/// Two shapes are sent to this port and they share nothing but that byte. A
+/// client request is a fixed 48-byte packet a server answers with timestamps; a
+/// control message is a 12-byte header a daemon answers with the text that
+/// describes it. A validator that knew only the first refused the second for
+/// being the wrong length, which is how this one came to dispatch.
 fn validate_ntp_request(payload: &[u8]) -> Result<(), String> {
-    const NTP_PACKET_BYTES: usize = 48;
     const MODE_CLIENT: u8 = 3;
+    const MODE_CONTROL: u8 = 6;
 
-    if payload.len() != NTP_PACKET_BYTES {
-        return Err(format!(
-            "is {} bytes; an SNTP packet is exactly {NTP_PACKET_BYTES}",
-            payload.len()
-        ));
-    }
-
-    let mode = payload[0] & 0b111;
-    if mode != MODE_CLIENT {
-        return Err(format!(
-            "has mode {mode}; a request a server will answer must be mode {MODE_CLIENT} (client)"
-        ));
-    }
-
-    let version = (payload[0] >> 3) & 0b111;
+    let first = *payload.first().ok_or("is empty")?;
+    let version = (first >> 3) & 0b111;
     if !(1..=4).contains(&version) {
         return Err(format!(
             "has NTP version {version}, outside the 1..=4 range"
         ));
     }
-    Ok(())
+
+    match first & 0b111 {
+        MODE_CLIENT => validate_ntp_client_request(payload),
+        MODE_CONTROL => validate_ntp_control_message(payload),
+        mode => Err(format!(
+            "has mode {mode}; a request a server will answer is mode {MODE_CLIENT} (client) \
+             or mode {MODE_CONTROL} (control)"
+        )),
+    }
+}
+
+/// A client request is a fixed 48 bytes, and a server answers nothing else.
+fn validate_ntp_client_request(payload: &[u8]) -> Result<(), String> {
+    const NTP_PACKET_BYTES: usize = 48;
+
+    match payload.len() == NTP_PACKET_BYTES {
+        true => Ok(()),
+        false => Err(format!(
+            "is {} bytes; an SNTP packet is exactly {NTP_PACKET_BYTES}",
+            payload.len()
+        )),
+    }
+}
+
+/// A control message is a 12-byte header plus the data its count describes, and
+/// a request carries neither the response bit nor an error.
+fn validate_ntp_control_message(payload: &[u8]) -> Result<(), String> {
+    const HEADER_BYTES: usize = 12;
+    const RESPONSE: u8 = 0b1000_0000;
+    const ERROR: u8 = 0b0100_0000;
+
+    if payload.len() < HEADER_BYTES {
+        return Err(format!(
+            "is {} bytes; a control header is {HEADER_BYTES}",
+            payload.len()
+        ));
+    }
+    let second = payload[1];
+    if second & RESPONSE != 0 {
+        return Err("has the response bit set, and a probe is a request".into());
+    }
+    if second & ERROR != 0 {
+        return Err("has the error bit set, which a request never carries".into());
+    }
+
+    let count = u16::from_be_bytes([payload[10], payload[11]]) as usize;
+    match payload.len() == HEADER_BYTES + count {
+        true => Ok(()),
+        false => Err(format!(
+            "states a {count}-byte data field and carries {}",
+            payload.len() - HEADER_BYTES
+        )),
+    }
+}
+
+/// Checks an ISAKMP request: the header, a responder cookie a request leaves
+/// zero, and a length field that agrees with the payload chain behind it.
+fn validate_isakmp_request(payload: &[u8]) -> Result<(), String> {
+    const HEADER_BYTES: usize = 28;
+
+    if payload.len() < HEADER_BYTES {
+        return Err(format!(
+            "is {} bytes; an ISAKMP header is {HEADER_BYTES}",
+            payload.len()
+        ));
+    }
+    if payload[8..16] != [0u8; 8] {
+        return Err("carries a responder cookie, which only a reply sets".into());
+    }
+
+    let stated = u32::from_be_bytes([payload[24], payload[25], payload[26], payload[27]]) as usize;
+    if stated != payload.len() {
+        return Err(format!(
+            "states a length of {stated} and is {} bytes",
+            payload.len()
+        ));
+    }
+
+    // Walk the payload chain the way a responder would. A length that overruns
+    // is dropped in silence, which on the wire is a filtered port.
+    let mut next = payload[16];
+    let mut at = HEADER_BYTES;
+    while next != 0 {
+        let header = payload
+            .get(at..at + 4)
+            .ok_or("has a payload chain running past the end of the message")?;
+        let length = u16::from_be_bytes([header[2], header[3]]) as usize;
+        if length < 4 {
+            return Err(format!(
+                "has a payload claiming {length} bytes, less than its own header"
+            ));
+        }
+        next = header[0];
+        at += length;
+        if at > payload.len() {
+            return Err(format!(
+                "has a payload claiming {length} bytes past the end"
+            ));
+        }
+    }
+    match at == payload.len() {
+        true => Ok(()),
+        false => Err(format!(
+            "has {} bytes after its last payload",
+            payload.len() - at
+        )),
+    }
 }
 
 /// Checks a NetBIOS Name Service query: one question, and a name field whose

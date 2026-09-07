@@ -447,6 +447,200 @@ pub(super) fn ipmi_auth_capabilities(datagram: &[u8]) -> Option<String> {
     Some(said.join(" "))
 }
 
+/// The system variables an NTP server reports in answer to a mode 6 control
+/// message.
+///
+/// The data is the text `ntpq` prints, a comma-separated list the daemon builds
+/// from its own configuration:
+///
+/// ```text
+/// version="ntpd 4.2.8p15@1.3728-o Wed May 12", processor="x86_64", system="Linux/6.1.0"
+/// ```
+///
+/// This is what the corpus's largest block of unreachable rules was written
+/// against. The ordinary client probe on this port draws a packet of timestamps
+/// with nothing in it to read, which is why they sat unreached: the field was
+/// never a decoding problem, it was the wrong question.
+///
+/// Line breaks are folded to spaces and nothing else is touched. A daemon wraps
+/// this text for a terminal, and the imported rules match across the wrap with
+/// `.*`, which does not cross a newline. Spacing around the commas is left
+/// exactly as sent, because the rules distinguish products by it.
+///
+/// [`None`] for a reply that is not a mode 6 response, or that carries no data.
+/// A response split across several packets is read as far as the first, which
+/// is where a daemon puts these three variables.
+#[must_use]
+pub(super) fn ntp_control_variables(datagram: &[u8]) -> Option<String> {
+    /// Bit 7 of the second byte, set on a response.
+    const RESPONSE: u8 = 0b1000_0000;
+    /// The low five bits of the same byte, which carry the operation.
+    const OPCODE: u8 = 0b0001_1111;
+    /// Read variables, the operation the probe asks for.
+    const READVAR: u8 = 2;
+    /// The fixed control header, before the data the count describes.
+    const HEADER_BYTES: usize = 12;
+
+    let mode = *datagram.first()? & 0b0000_0111;
+    if mode != 6 {
+        return None;
+    }
+    let second = *datagram.get(1)?;
+    if second & RESPONSE == 0 || second & OPCODE != READVAR {
+        return None;
+    }
+
+    let count = u16::from_be_bytes([*datagram.get(10)?, *datagram.get(11)?]) as usize;
+    let data = datagram.get(HEADER_BYTES..HEADER_BYTES + count)?;
+    let text = std::str::from_utf8(data).ok()?;
+
+    // A run of line-break characters becomes one space, not one space each: a
+    // daemon wraps with CRLF, and turning that into two spaces would put a gap
+    // where a rule expects `", processor=`.
+    let mut folded = String::with_capacity(text.len());
+    let mut breaking = false;
+    for character in text.chars() {
+        match character {
+            '\r' | '\n' => breaking = true,
+            _ => {
+                if breaking {
+                    folded.push(' ');
+                    breaking = false;
+                }
+                folded.push(character);
+            }
+        }
+    }
+    let folded = folded.trim().to_string();
+
+    (!folded.is_empty()).then_some(folded)
+}
+
+/// What a STUN server calls itself.
+///
+/// A binding response carries attributes, and `SOFTWARE` is the one that names
+/// the implementation. Most servers send it; the ones that do not are still
+/// identified as STUN by the reply's own shape, which is what the second return
+/// covers.
+///
+/// The mapped address is deliberately not read. It is the address the *client*
+/// appears to come from, which says something about the network between here
+/// and there rather than about the host being scanned.
+///
+/// [`None`] for a datagram that is not a binding response. The magic cookie is
+/// what establishes that: without it this is RFC 3489 and the type field alone
+/// is too weak to key on.
+#[must_use]
+pub(super) fn stun_binding(datagram: &[u8]) -> Option<String> {
+    /// The value RFC 5389 fixed so a response can be told from anything else.
+    const MAGIC_COOKIE: u32 = 0x2112_A442;
+    /// A successful binding response.
+    const BINDING_SUCCESS: u16 = 0x0101;
+    /// The attribute naming the implementation.
+    const SOFTWARE: u16 = 0x8022;
+    const HEADER_BYTES: usize = 20;
+
+    let kind = u16::from_be_bytes([*datagram.first()?, *datagram.get(1)?]);
+    let cookie = u32::from_be_bytes([
+        *datagram.get(4)?,
+        *datagram.get(5)?,
+        *datagram.get(6)?,
+        *datagram.get(7)?,
+    ]);
+    if cookie != MAGIC_COOKIE || kind != BINDING_SUCCESS {
+        return None;
+    }
+
+    let mut at = HEADER_BYTES;
+    while at + 4 <= datagram.len() {
+        let attribute = u16::from_be_bytes([datagram[at], datagram[at + 1]]);
+        let length = u16::from_be_bytes([datagram[at + 2], datagram[at + 3]]) as usize;
+        let value = datagram.get(at + 4..at + 4 + length)?;
+
+        if attribute == SOFTWARE
+            && let Ok(name) = std::str::from_utf8(value)
+            && let name = name.trim().trim_end_matches('\0')
+            && !name.is_empty()
+        {
+            return Some(name.to_string());
+        }
+        // Attributes are padded to a four-byte boundary, and the padding is not
+        // counted in the length.
+        at += 4 + length.next_multiple_of(4);
+    }
+
+    Some("stun".to_string())
+}
+
+/// What an IKE responder announces about itself.
+///
+/// A gateway answers a proposal with its own payload chain, and the Vendor ID
+/// payloads in it are the fingerprint: an implementation puts a fixed value
+/// there, usually a hash of its own name and version, and no two products send
+/// the same one. They are returned as hex, lowercase and space separated, which
+/// is what a rule can be written against.
+///
+/// A responder that liked none of the proposal answers with a Notify instead.
+/// That is a reply too, and it still proves an IKE daemon is listening, so it
+/// comes back named rather than dropped.
+///
+/// [`None`] for a datagram too short to be ISAKMP, or whose payload chain runs
+/// past its end.
+#[must_use]
+pub(super) fn ike_response(datagram: &[u8]) -> Option<String> {
+    /// The ISAKMP header: two cookies, the next payload, the version, the
+    /// exchange type, flags, a message id and a length.
+    const HEADER_BYTES: usize = 28;
+    const PAYLOAD_VENDOR_ID: u8 = 13;
+    const PAYLOAD_NOTIFY: u8 = 11;
+    /// A payload header: next type, reserved, and the length including itself.
+    const PAYLOAD_HEADER_BYTES: usize = 4;
+
+    if datagram.len() < HEADER_BYTES {
+        return None;
+    }
+    // The responder cookie is zero in a request and set in every reply, which
+    // is what separates an answer from this engine's own probe echoed back.
+    if datagram.get(8..16)? == [0u8; 8] {
+        return None;
+    }
+
+    let mut next = *datagram.get(16)?;
+    let mut at = HEADER_BYTES;
+    let mut vendor_ids = Vec::new();
+    let mut notified = false;
+
+    while next != 0 && at + PAYLOAD_HEADER_BYTES <= datagram.len() {
+        let length = u16::from_be_bytes([datagram[at + 2], datagram[at + 3]]) as usize;
+        if length < PAYLOAD_HEADER_BYTES {
+            return None;
+        }
+        let body = datagram.get(at + PAYLOAD_HEADER_BYTES..at + length)?;
+
+        match next {
+            PAYLOAD_VENDOR_ID => vendor_ids.push(
+                body.iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
+            ),
+            PAYLOAD_NOTIFY => notified = true,
+            _ => {}
+        }
+
+        next = datagram[at];
+        at += length;
+        if vendor_ids.len() >= 16 {
+            break;
+        }
+    }
+
+    match (vendor_ids.is_empty(), notified) {
+        (false, _) => Some(vendor_ids.join(" ")),
+        (true, true) => Some("notify".to_string()),
+        (true, false) => Some("isakmp".to_string()),
+    }
+}
+
 /// The device types a WS-Discovery responder claims.
 ///
 /// A `ProbeMatches` reply is SOAP, and the element worth reading is `Types`: a
@@ -849,6 +1043,154 @@ mod tests {
         assert!(ipmi_auth_capabilities(b"").is_none());
     }
 
+    /// A mode 6 response carrying `data` as its variables.
+    fn control_response(data: &str) -> Vec<u8> {
+        let mut out = vec![0x16, 0x82]; // VN 2 mode 6; response, opcode 2
+        out.extend_from_slice(&1u16.to_be_bytes()); // sequence
+        out.extend_from_slice(&0u16.to_be_bytes()); // status
+        out.extend_from_slice(&0u16.to_be_bytes()); // association id
+        out.extend_from_slice(&0u16.to_be_bytes()); // offset
+        out.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        out.extend_from_slice(data.as_bytes());
+        out
+    }
+
+    #[test]
+    fn a_control_response_yields_the_variables_a_daemon_reports() {
+        const VARS: &str =
+            r#"version="ntpd 4.2.8p15@1.3728-o", processor="x86_64", system="Linux/6.1.0""#;
+        assert_eq!(
+            ntp_control_variables(&control_response(VARS)).as_deref(),
+            Some(VARS)
+        );
+    }
+
+    /// A daemon wraps this text for a terminal. The imported rules match across
+    /// the wrap with `.*`, which does not cross a newline, so the breaks are
+    /// folded and the spacing around the commas is left alone.
+    #[test]
+    fn line_breaks_are_folded_and_nothing_else_is_touched() {
+        let wrapped =
+            "version=\"ntpd 4.2.8p15\",\r\nprocessor=\"x86_64\",\r\nsystem=\"Linux/6.1.0\"";
+        assert_eq!(
+            ntp_control_variables(&control_response(wrapped)).as_deref(),
+            Some("version=\"ntpd 4.2.8p15\", processor=\"x86_64\", system=\"Linux/6.1.0\"")
+        );
+    }
+
+    /// The ordinary client reply on this port, which is what the corpus probe
+    /// used to draw: forty-eight bytes of timestamps and nothing to read.
+    #[test]
+    fn a_client_mode_reply_is_not_a_control_response() {
+        let mut client = vec![0x24];
+        client.extend_from_slice(&[0u8; 47]);
+        assert!(ntp_control_variables(&client).is_none());
+
+        // A control *request* echoed back is not a response either.
+        assert!(ntp_control_variables(&[0x16, 0x02, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]).is_none());
+        assert!(ntp_control_variables(b"").is_none());
+    }
+
+    /// A binding response carrying `attributes` after the header.
+    fn binding_response(attributes: &[u8]) -> Vec<u8> {
+        let mut out = 0x0101u16.to_be_bytes().to_vec();
+        out.extend_from_slice(&(attributes.len() as u16).to_be_bytes());
+        out.extend_from_slice(&0x2112_A442u32.to_be_bytes());
+        out.extend_from_slice(b"zond-scan-01");
+        out.extend_from_slice(attributes);
+        out
+    }
+
+    #[test]
+    fn a_binding_response_yields_the_software_that_sent_it() {
+        let name = b"Coturn-4.5.2";
+        let mut attributes = 0x8022u16.to_be_bytes().to_vec();
+        attributes.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        attributes.extend_from_slice(name);
+        assert_eq!(
+            stun_binding(&binding_response(&attributes)).as_deref(),
+            Some("Coturn-4.5.2")
+        );
+    }
+
+    /// A server naming no software is still STUN, which the magic cookie and the
+    /// response type together establish.
+    #[test]
+    fn a_binding_response_without_software_is_still_stun() {
+        // A mapped address, which is read for nothing: it describes the network
+        // between here and there, not the host.
+        let mut attributes = 0x0020u16.to_be_bytes().to_vec();
+        attributes.extend_from_slice(&8u16.to_be_bytes());
+        attributes.extend_from_slice(&[0x00, 0x01, 0x2B, 0x3C, 0x5E, 0x12, 0xA4, 0x43]);
+        assert_eq!(
+            stun_binding(&binding_response(&attributes)).as_deref(),
+            Some("stun")
+        );
+    }
+
+    #[test]
+    fn a_datagram_without_the_magic_cookie_is_not_stun() {
+        let mut wrong = binding_response(&[]);
+        wrong[4] = 0x00;
+        assert!(stun_binding(&wrong).is_none());
+        assert!(stun_binding(b"").is_none());
+    }
+
+    /// An ISAKMP reply whose payload chain starts with `first` and carries
+    /// `payloads` as (type, body) pairs.
+    fn isakmp(payloads: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        let mut out = b"initiator".to_vec();
+        out.truncate(8);
+        out.extend_from_slice(b"responder"); // a non-zero responder cookie
+        out.truncate(16);
+        out.push(payloads.first().map_or(0, |(kind, _)| *kind));
+        out.extend_from_slice(&[0x10, 0x02, 0x00]); // version, exchange, flags
+        out.extend_from_slice(&0u32.to_be_bytes()); // message id
+        out.extend_from_slice(&0u32.to_be_bytes()); // length, not read
+
+        for (index, (_, body)) in payloads.iter().enumerate() {
+            let next = payloads.get(index + 1).map_or(0, |(kind, _)| *kind);
+            out.push(next);
+            out.push(0);
+            out.extend_from_slice(&((4 + body.len()) as u16).to_be_bytes());
+            out.extend_from_slice(body);
+        }
+        out
+    }
+
+    #[test]
+    fn a_gateway_is_named_by_the_vendor_ids_it_announces() {
+        let reply = isakmp(&[
+            (1, vec![0u8; 8]), // an SA payload
+            (13, vec![0x4a, 0x13, 0x1c, 0x81, 0x07, 0x03, 0x58, 0x45]),
+            (13, vec![0xaf, 0xca, 0xd7, 0x13]),
+        ]);
+        assert_eq!(
+            ike_response(&reply).as_deref(),
+            Some("4a131c8107035845 afcad713")
+        );
+    }
+
+    /// A responder that liked none of the proposal still proves an IKE daemon
+    /// is listening.
+    #[test]
+    fn a_notify_is_a_reply_rather_than_a_refusal_to_answer() {
+        assert_eq!(
+            ike_response(&isakmp(&[(11, vec![0u8; 12])])).as_deref(),
+            Some("notify")
+        );
+    }
+
+    /// This engine's own probe echoed back carries a zero responder cookie, and
+    /// a reflector must not be read as a gateway.
+    #[test]
+    fn a_request_echoed_back_is_not_a_response() {
+        let mut echoed = isakmp(&[(13, vec![0xaa; 8])]);
+        echoed[8..16].fill(0);
+        assert!(ike_response(&echoed).is_none());
+        assert!(ike_response(b"too short").is_none());
+    }
+
     /// Anything at all, without panicking. Each of these reads a datagram from
     /// an unauthenticated stranger.
     #[test]
@@ -869,6 +1211,9 @@ mod tests {
             let _ = rpc_program_dump(bytes);
             let _ = rpc_version_range(bytes);
             let _ = ipmi_auth_capabilities(bytes);
+            let _ = ntp_control_variables(bytes);
+            let _ = stun_binding(bytes);
+            let _ = ike_response(bytes);
         }
     }
 }

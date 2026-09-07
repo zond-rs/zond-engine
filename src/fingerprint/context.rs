@@ -167,6 +167,11 @@ pub const CONTEXTS: &[Context] = &[
         note: "the `X-Powered-By` value, through `http::corpus_fields`",
     },
     Context {
+        name: "ike.vendor_id",
+        reach: Reach::Produced,
+        note: "the Vendor ID payloads of an IKE response, as lowercase hex from `framed::ike_response`, or `notify` where the gateway refused the proposal instead of answering it",
+    },
+    Context {
         name: "imap4.banner",
         reach: Reach::Produced,
         note: "the greeting, whole, through `extract::texts`",
@@ -213,8 +218,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "ntp.readvar",
-        reach: Reach::Unproduced,
-        note: "a mode-6 control response; the corpus probe is an ordinary client request and draws a timestamp instead",
+        reach: Reach::Produced,
+        note: "the system variables a mode 6 control message draws, read by `framed::ntp_control_variables`. The corpus probe for this port was an ordinary client request, which draws timestamps; the control probe beside it asks the question these rules were written for",
     },
     Context {
         name: "operating_system.name",
@@ -290,6 +295,11 @@ pub const CONTEXTS: &[Context] = &[
         name: "ssh.banner",
         reach: Reach::Produced,
         note: "the software identifier `ssh::software_version` splits out of the identification line, offered beside the whole line by `extract::texts`",
+    },
+    Context {
+        name: "stun.software",
+        reach: Reach::Produced,
+        note: "the `SOFTWARE` attribute of a STUN binding response, read by `framed::stun_binding`, or `stun` where the server sends none",
     },
     Context {
         name: "tls.jarm",
