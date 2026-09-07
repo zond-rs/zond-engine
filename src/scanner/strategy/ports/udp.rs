@@ -302,6 +302,23 @@ impl UdpPortScanner {
 /// The port a direct UDP reply answers for, if the datagram is addressed to
 /// this scan's source port.
 ///
+/// ## The protocols this cannot reach
+///
+/// The port credited is the port the reply came *from*, which is what lets one
+/// socket probe many ports on a host and still say which of them answered.
+/// TFTP breaks that assumption by design: RFC 1350 has the server allocate a
+/// fresh transfer identifier on receiving a request and send every packet after
+/// that, the error included, from the new port. Port 69 only ever *receives*.
+///
+/// So a TFTP error is credited to a transient port nobody asked about, and 69
+/// is reported `open|filtered` on a host that answered. Measured against
+/// `tftpd-hpa`, which replied from 54154, 43519 and 34965 on three consecutive
+/// probes; no request form draws a reply from 69 at all.
+///
+/// Identifying it wants a second way to correlate, not another signature. A
+/// corpus rule for TFTP was written and then removed, because the reply it read
+/// could not reach the matcher.
+///
 /// The capture filter already narrows the UDP half to `src_port`, but that is a
 /// performance boundary rather than a guarantee: a transport can be built with
 /// no filter at all (`ProbeTransport::from_parts`), and a filter that silently

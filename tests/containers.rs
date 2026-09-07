@@ -121,7 +121,7 @@ struct Target {
     /// collision with whatever the developer is already running, which is why it
     /// is stated only where it is needed.
     ///
-    /// A **UDP** target never gets the choice, and does not have to state it.
+    /// A UDP target never gets the choice, and does not have to state it.
     /// TCP has the generic HTTP probe behind it, so a web application on a
     /// random port is still asked something it can answer; UDP has no such
     /// fallback, and a datagram service on a port the corpus registers no probe
@@ -675,9 +675,9 @@ fn the_manifest_is_well_formed() {
 /// The rules a UDP entry is published and scanned under, checked directly.
 ///
 /// These run everywhere, unlike the two passes above. The transport decides
-/// three separate things — how the port is published, which number it is
-/// published on, and how the scan asks for it — and each is a place a UDP entry
-/// could be silently scanned as TCP. That failure would not look like a failure:
+/// three separate things: how the port is published, which number it is
+/// published on, and how the scan asks for it. Each is a place a UDP entry could
+/// be silently scanned as TCP. That failure would not look like a failure:
 /// the container would start, the scan would find nothing, and the entry would
 /// read as software the corpus cannot identify.
 #[test]

@@ -54,7 +54,7 @@ protocol = "udp"
 name = "upnp_device"
 # The baseline: the token that makes this UPnP rather than an HTTP reply that
 # happened to arrive over UDP. It names no product, so a rule below that names
-# one outranks it rather than competing with it — the same arrangement
+# one outranks it rather than competing with it, the same arrangement
 # `generic_http` has with the server rules behind it.
 pattern = '(?i)(?:^|[,\s])UPnP/\d+\.\d+'
 product = "upnp"

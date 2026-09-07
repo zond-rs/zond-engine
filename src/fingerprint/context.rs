@@ -177,6 +177,11 @@ pub const CONTEXTS: &[Context] = &[
         note: "as the device-info record, where a responder publishes one",
     },
     Context {
+        name: "mssql.browser",
+        reach: Reach::Produced,
+        note: "the instance list a SQL Server Browser answers with, read by `framed::sql_server_browser` from behind the three-byte response header",
+    },
+    Context {
         name: "mysql.banners",
         reach: Reach::Produced,
         note: "the text of the greeting packet, through `extract::texts`",
@@ -265,6 +270,11 @@ pub const CONTEXTS: &[Context] = &[
         name: "unknown",
         reach: Reach::Produced,
         note: "the imported rule stated no field, so it is matched against the banner whole, which every TCP port yields",
+    },
+    Context {
+        name: "wsd.types",
+        reach: Reach::Produced,
+        note: "the `Types` element of a WS-Discovery ProbeMatches, read by `framed::wsd_types` with the namespace prefixes stripped, since a responder picks its own",
     },
     Context {
         name: "x11.vendor",

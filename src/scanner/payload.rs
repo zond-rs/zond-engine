@@ -209,8 +209,8 @@ mod tests {
     /// The same standard the DNS arm is held to, one protocol over: the name
     /// table is the evidence, and an open 137 is not.
     ///
-    /// The third case is the one that matters most. A **workstation** answers
-    /// this probe as readily as a controller does, with a table that is the
+    /// The third case is the one that matters most. A workstation answers this
+    /// probe as readily as a controller does, with a table that is the
     /// same shape and says something else entirely, so a role read from the
     /// reply arriving rather than from what it holds would mark every Windows
     /// machine on a segment as running the domain.

@@ -423,3 +423,126 @@ async fn identifies_a_upnp_responder_from_its_server_header() {
         "an HTTP-shaped answer over UDP is not a web server"
     );
 }
+
+/// A SQL Server Browser is identified from the instance list it answers with,
+/// and the instance's own TCP port survives into what the scan recorded.
+///
+/// The second half is why this port is worth asking about. A named instance is
+/// very often not on 1433, and the Browser is the only thing on the network that
+/// will say where it is.
+#[tokio::test]
+async fn identifies_a_sql_server_browser_from_its_instance_list() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    const INSTANCES: &[u8] = b"ServerName;WIN-DB01;InstanceName;SQLEXPRESS;IsClustered;No;\
+                               Version;15.0.2000.5;tcp;49812;;";
+    // `0x05`, a little-endian length, then the list.
+    static REPLY: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+        let mut out = vec![0x05];
+        out.extend_from_slice(&(INSTANCES.len() as u16).to_le_bytes());
+        out.extend_from_slice(INSTANCES);
+        out
+    });
+
+    let Some(server) = spawn_udp_server_on(1434, REPLY.as_slice()).await else {
+        eprintln!("SKIP: 1434/udp is in use on this machine");
+        return;
+    };
+
+    let outcome = run_scan(target_map(LOOPBACK, "U:1434"), &test_config()).await;
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let port = host
+        .ports()
+        .find(|p| p.number() == server.port && p.protocol() == Protocol::Udp)
+        .expect("the scanned UDP port is present in the results");
+
+    let service = port.service().expect("a service was identified");
+    assert_eq!(service.product(), Some("Microsoft SQL Server"));
+    assert_eq!(service.version(), Some("15.0.2000.5"));
+    assert_eq!(
+        service.extrainfo(),
+        Some("instance SQLEXPRESS"),
+        "the instance name reaches the report"
+    );
+}
+
+/// A WS-Discovery responder is identified from the device type it publishes,
+/// and the type says nothing about the operating system.
+///
+/// The second half is the point. `wsdd` publishes these two types from a Linux
+/// host so a Samba server shows up under Computers in the Windows network view,
+/// so a rule reading Windows off `Computer` would put the wrong OS on a NAS.
+#[tokio::test]
+async fn identifies_a_wsd_responder_from_the_type_it_publishes() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    const REPLY: &[u8] = br#"<?xml version="1.0" encoding="utf-8"?><s:Envelope
+        xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+        xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"><s:Body>
+        <d:ProbeMatches><d:ProbeMatch><d:Types>wsdp:Device pub:Computer</d:Types>
+        </d:ProbeMatch></d:ProbeMatches></s:Body></s:Envelope>"#;
+
+    let Some(server) = spawn_udp_server_on(3702, REPLY).await else {
+        eprintln!("SKIP: 3702/udp is in use on this machine");
+        return;
+    };
+
+    let outcome = run_scan(target_map(LOOPBACK, "U:3702"), &test_config()).await;
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let port = host
+        .ports()
+        .find(|p| p.number() == server.port && p.protocol() == Protocol::Udp)
+        .expect("the scanned UDP port is present in the results");
+
+    let service = port.service().expect("a service was identified");
+    assert_eq!(service.product(), Some("WS-Discovery host"));
+
+    let os = host.os();
+    assert!(
+        !format!("{os:?}").contains("Windows"),
+        "a Computer type must not name an operating system: {os:?}"
+    );
+}
+
+/// memcached over UDP is identified by the rule written for its TCP banner.
+///
+/// No new match rule was added for this port. The UDP probe draws the same
+/// `VERSION` line the TCP probe does, so a product here means the existing rule
+/// read a datagram it was never written for.
+#[tokio::test]
+async fn memcached_over_udp_is_named_by_the_rule_written_for_tcp() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    const REPLY: &[u8] = b"\x00\x01\x00\x00\x00\x01\x00\x00VERSION 1.6.21\r\n";
+
+    let Some(server) = spawn_udp_server_on(11211, REPLY).await else {
+        eprintln!("SKIP: 11211/udp is in use on this machine");
+        return;
+    };
+
+    let outcome = run_scan(target_map(LOOPBACK, "U:11211"), &test_config()).await;
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let port = host
+        .ports()
+        .find(|p| p.number() == server.port && p.protocol() == Protocol::Udp)
+        .expect("the scanned UDP port is present in the results");
+
+    let service = port.service().expect("a service was identified");
+    assert_eq!(service.name(), "memcached");
+    assert_eq!(service.version(), Some("1.6.21"));
+
+    // No product, and that is the resolver working rather than a rule missing.
+    // The corpus rule names the product `memcached`, which is what the service
+    // is already called, and `matcher::names_the_same` drops a product that
+    // repeats the service name instead of printing it twice.
+    assert_eq!(service.product(), None);
+}

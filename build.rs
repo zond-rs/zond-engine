@@ -971,6 +971,9 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
         "netbios-ns" => validate_netbios_query(payload),
         "ssdp" => validate_ssdp_search(payload),
         "sip" => validate_sip_request(payload),
+        "ms-sql-browser" => validate_browser_request(payload),
+        "memcached" => validate_memcached_datagram(payload),
+        "ws-discovery" => validate_wsd_probe(payload),
         _ => {
             println!(
                 "cargo:warning={file}: service '{service}' udp probe #{index} has no \
@@ -983,6 +986,77 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
 
     if let Err(reason) = outcome {
         panic!("{file}: service '{service}' udp probe #{index} {reason}");
+    }
+}
+
+/// Checks a SQL Server Browser request: one byte, and one the Browser dispatches
+/// on. Anything else is dropped without a reply.
+fn validate_browser_request(payload: &[u8]) -> Result<(), String> {
+    // CLNT_UCAST_EX lists every instance; CLNT_UCAST_INST and CLNT_UCAST_DAC
+    // name one the client already knows.
+    const REQUESTS: &[u8] = &[0x02, 0x03, 0x04];
+
+    match payload {
+        [request] if REQUESTS.contains(request) => Ok(()),
+        [request] => Err(format!(
+            "is request type {request:#04x}, which the Browser does not dispatch on"
+        )),
+        _ => Err(format!(
+            "is {} bytes; a Browser request is one",
+            payload.len()
+        )),
+    }
+}
+
+/// Checks a memcached UDP datagram: the eight-byte frame, a command behind it,
+/// and a frame that describes one datagram rather than part of a larger request.
+fn validate_memcached_datagram(payload: &[u8]) -> Result<(), String> {
+    const FRAME_BYTES: usize = 8;
+
+    let frame = payload
+        .get(..FRAME_BYTES)
+        .ok_or_else(|| format!("is {} bytes, shorter than the 8-byte frame", payload.len()))?;
+
+    let sequence = u16::from_be_bytes([frame[2], frame[3]]);
+    let total = u16::from_be_bytes([frame[4], frame[5]]);
+    if sequence != 0 || total != 1 {
+        return Err(format!(
+            "declares datagram {sequence} of {total}; a probe is datagram 0 of 1, and a              server waits for the rest of anything else"
+        ));
+    }
+
+    let command = &payload[FRAME_BYTES..];
+    if command.is_empty() {
+        return Err("carries a frame and no command".into());
+    }
+    match command.ends_with(b"\r\n") {
+        true => Ok(()),
+        false => Err("does not end its command with CRLF, so the server keeps reading".into()),
+    }
+}
+
+/// Checks a WS-Discovery Probe: that it parses as the SOAP envelope a responder
+/// expects, and that it carries the action a responder dispatches on.
+fn validate_wsd_probe(payload: &[u8]) -> Result<(), String> {
+    const ACTION: &str = "http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe";
+
+    let text = std::str::from_utf8(payload).map_err(|_| "is not UTF-8, and SOAP is text")?;
+
+    for wanted in ["<s:Envelope", "<s:Header>", "<s:Body>", "</s:Envelope>"] {
+        if !text.contains(wanted) {
+            return Err(format!(
+                "carries no `{wanted}`, so it is not a SOAP envelope"
+            ));
+        }
+    }
+    if !text.contains(ACTION) {
+        return Err(format!(
+            "names no `{ACTION}` action, which is what a responder dispatches on"
+        ));
+    }
+    match text.contains("MessageID") {
+        true => Ok(()),
+        false => Err("carries no MessageID, which WS-Addressing requires of a request".into()),
     }
 }
 

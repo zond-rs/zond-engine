@@ -1,0 +1,84 @@
+[service]
+name = "ws-discovery"
+default_ports = [3702]
+description = "WS-Discovery (Web Services Dynamic Discovery)"
+
+# A SOAP Probe, sent to the target rather than to the discovery multicast group.
+# What answers is anything on the segment that publishes itself this way, which
+# on a Windows network is every machine with file sharing on, and elsewhere is
+# mostly printers and IP cameras.
+#
+# `To` names the discovery URN even though this goes to one address: it is part
+# of the message, not the addressing, the same way SSDP carries a multicast
+# `HOST`.
+#
+# The message is 481 bytes against a 512-byte ceiling, so there is no room to
+# add to it. Anything further to ask a responder wants a second probe.
+[[probe]]
+name = "wsd_probe"
+payload = '<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"><s:Header><a:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To><a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action><a:MessageID>urn:uuid:7a3b1c40-0000-4000-8000-5a6f6e644d31</a:MessageID></s:Header><s:Body><d:Probe/></s:Body></s:Envelope>'
+protocol = "udp"
+
+# ── What kind of thing answered ──────────────────────────────────────────────
+#
+# The `Types` element of a ProbeMatches names it. Namespace prefixes are
+# stripped before matching, because a responder picks its own and no two agree:
+# see `fingerprint::framed::wsd_types`.
+#
+# Every rule is anchored at both ends on the shape of a type list, and reads a
+# whole type name rather than a word inside one. That is not decoration. A corpus
+# rule is also matched against text belonging to no port, a certificate subject
+# or a `Server` header, through `SignatureDb::identify_field`, so a rule that
+# fires on the word `Computer` anywhere will name a Windows machine from a
+# licence server's banner. It did.
+#
+# There is no baseline rule here for the same reason: a bare type list has
+# nothing distinctive enough to recognise one by, and a rule that settled for
+# less would fire on ordinary prose.
+
+[[match]]
+name = "wsd_computer"
+# A general-purpose machine advertising itself, as against the appliances the
+# rules below match. Both halves of the pair are required: a reply naming
+# `Computer` without `Device` is not this, and asking for one of them alone was
+# enough to name `Computer Associates License Server` a WS-Discovery host, which
+# is what a rule matched against a field belonging to no port will do.
+#
+# It says nothing about the operating system, and an earlier version of this rule
+# saying Windows was wrong. `wsdd` exists to publish exactly these two types from
+# a Linux host, so that a Samba server appears under Computers in the Windows
+# network view, and it is what a NAS or a home file server runs. Reading Windows
+# off this type would put the wrong OS on the machines most likely to answer.
+pattern = '(?i)^(?=.*\bDevice\b)(?=.*\bComputer\b)[A-Za-z0-9]+(?: [A-Za-z0-9]+)*$'
+product = "WS-Discovery host"
+context = "wsd.types"
+example = "Device Computer"
+
+[[match]]
+name = "wsd_printer"
+# The compound type names WS-Print defines, rather than the bare word: `Printer`
+# on its own appears in plenty of text that has nothing to do with this.
+pattern = '(?i)^(?:[A-Za-z0-9]+ )*Print(?:er)?(?:Device|Service)Type(?: [A-Za-z0-9]+)*$'
+product = "WSD print service"
+context = "wsd.types"
+example = "PrintDeviceType"
+metadata = { "hw.device" = "printer" }
+
+[[match]]
+name = "wsd_scanner"
+pattern = '(?i)^(?:[A-Za-z0-9]+ )*Scan(?:ner)?(?:Device|Service)Type(?: [A-Za-z0-9]+)*$'
+product = "WSD scan service"
+context = "wsd.types"
+example = "ScanDeviceType"
+metadata = { "hw.device" = "printer" }
+
+[[match]]
+name = "onvif_camera"
+# ONVIF is the standard IP cameras publish under, and this is the type a camera
+# advertises its video stream as.
+pattern = '(?i)^(?:[A-Za-z0-9]+ )*NetworkVideo(?:Transmitter|Display|Storage)(?: [A-Za-z0-9]+)*$'
+product = "ONVIF device"
+context = "wsd.types"
+example = "NetworkVideoTransmitter"
+metadata = { "hw.device" = "webcam" }
+

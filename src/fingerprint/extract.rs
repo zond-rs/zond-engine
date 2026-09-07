@@ -136,6 +136,21 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
                 .collect(),
             Err(_) => Vec::new(),
         },
+        // The Browser's whole answer is a list of the instances on the host,
+        // each with its build number and the TCP port it listens on.
+        1434 => super::framed::sql_server_browser(datagram)
+            .map(ToOwned::to_owned)
+            .into_iter()
+            .collect(),
+        // Behind the frame is the same `VERSION` line the TCP probe draws, so
+        // the rule written for that banner reads this one too.
+        11211 => super::framed::memcached_udp(datagram)
+            .map(ToOwned::to_owned)
+            .into_iter()
+            .collect(),
+        // A ProbeMatches names what kind of thing answered, and the prefixes are
+        // stripped on the way out because no two responders agree on them.
+        3702 => super::framed::wsd_types(datagram).into_iter().collect(),
         // A SIP endpoint answers OPTIONS over UDP far more often than over TCP,
         // and names itself in the same two headers either way.
         5060 | 5061 => match std::str::from_utf8(datagram) {
@@ -186,7 +201,7 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// Stated rather than derived, because a decoder cannot be asked whether it
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
-const DECODED_UDP_PORTS: &[u16] = &[53, 161, 1900, 5060, 5061, 5353];
+const DECODED_UDP_PORTS: &[u16] = &[53, 161, 1434, 1900, 3702, 5060, 5061, 5353, 11211];
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -746,5 +761,130 @@ mod ssdp_server {
     fn a_datagram_with_nothing_to_read_yields_nothing() {
         assert!(super::from_datagram(1900, b"\x00\x01\x02 not ssdp").is_empty());
         assert!(super::from_datagram(1900, b"HTTP/1.1 200 OK\r\nST: x\r\n\r\n").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod framed_replies {
+    use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
+
+    /// What the corpus makes of one decoded reply, port-scoped as a scan would
+    /// match it.
+    fn identify(port: u16, text: &str) -> Option<(String, Option<String>)> {
+        SignatureDb::global()
+            .identify(port, Protocol::Udp, text)
+            .map(|found| (found.product.unwrap_or_default(), found.version))
+    }
+
+    /// The Browser's answer names the release and the instance behind it.
+    #[test]
+    fn a_browser_response_names_the_instance_and_its_build() {
+        let reply = {
+            let body = b"ServerName;WIN-DB01;InstanceName;SQLEXPRESS;IsClustered;No;\
+                         Version;15.0.2000.5;tcp;1433;;";
+            let mut out = vec![0x05];
+            out.extend_from_slice(&(body.len() as u16).to_le_bytes());
+            out.extend_from_slice(body);
+            out
+        };
+
+        let texts = super::from_datagram(1434, &reply);
+        assert_eq!(texts.len(), 1, "got {texts:?}");
+        assert!(texts[0].starts_with("ServerName;WIN-DB01"));
+
+        assert_eq!(
+            identify(1434, &texts[0]),
+            Some((
+                "Microsoft SQL Server".to_string(),
+                Some("15.0.2000.5".to_string())
+            ))
+        );
+    }
+
+    /// The reason this port is worth asking at all: a named instance says which
+    /// TCP port it listens on, which a port scan would otherwise have to find.
+    #[test]
+    fn the_instance_list_carries_the_port_the_engine_listens_on() {
+        let body = b"ServerName;WIN-DB01;InstanceName;SQLEXPRESS;IsClustered;No;\
+                     Version;15.0.2000.5;tcp;49812;;";
+        let mut reply = vec![0x05];
+        reply.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        reply.extend_from_slice(body);
+
+        let texts = super::from_datagram(1434, &reply);
+        assert!(texts[0].contains("tcp;49812"), "got {texts:?}");
+    }
+
+    /// The UDP probe draws the same line the TCP one does, and the rule written
+    /// for that banner reads it unchanged.
+    #[test]
+    fn memcached_over_udp_reuses_the_rule_written_for_tcp() {
+        let reply = b"\x00\x01\x00\x00\x00\x01\x00\x00VERSION 1.6.21\r\n";
+        let texts = super::from_datagram(11211, reply);
+        assert_eq!(texts, vec!["VERSION 1.6.21"]);
+
+        assert_eq!(
+            identify(11211, &texts[0]),
+            Some(("memcached".to_string(), Some("1.6.21".to_string())))
+        );
+    }
+
+    #[test]
+    fn a_wsd_probe_match_names_what_answered() {
+        let windows = br#"<s:Envelope><s:Body><d:ProbeMatches><d:ProbeMatch>
+            <d:Types>wsdp:Device pub:Computer</d:Types>
+            </d:ProbeMatch></d:ProbeMatches></s:Body></s:Envelope>"#;
+        let texts = super::from_datagram(3702, windows);
+        assert_eq!(texts, vec!["Device Computer"]);
+        assert_eq!(
+            identify(3702, &texts[0]).map(|found| found.0),
+            Some("WS-Discovery host".to_string())
+        );
+
+        let printer = b"<d:ProbeMatches><d:Types>print:PrintDeviceType</d:Types></d:ProbeMatches>";
+        let texts = super::from_datagram(3702, printer);
+        assert_eq!(
+            identify(3702, &texts[0]).map(|found| found.0),
+            Some("WSD print service".to_string())
+        );
+    }
+
+    /// Each of these fields is also matched against text belonging to no port,
+    /// through `identify_field`, so a rule loose enough to fire there would put
+    /// a WS-Discovery device behind a certificate subject. This is what caught
+    /// that when these rules were first written.
+    #[test]
+    fn the_new_rules_do_not_fire_on_text_that_is_not_theirs() {
+        let db = SignatureDb::global();
+        for text in [
+            "CN=example.invalid,O=Nobody,C=ZZ",
+            "Apache/2.4.62 (Debian)",
+            "220 mail.example ESMTP Postfix",
+            "SSH-2.0-OpenSSH_9.6p1 Debian-3",
+            "Error: could not open file",
+            "Computer Associates License Server",
+            "Device Manager Print Spooler",
+            "Network Video Recorder",
+            "ServerName Corp",
+            "Scanner Ready",
+        ] {
+            let named = db.identify_field(text).and_then(|found| found.product);
+            assert!(
+                !matches!(
+                    named.as_deref(),
+                    Some("WS-Discovery host" | "WSD print service" | "WSD scan service")
+                        | Some("ONVIF device" | "Microsoft SQL Server Browser")
+                ),
+                "{text:?} was named {named:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_new_port_is_worth_a_second_datagram() {
+        for port in [1434, 3702, 11211] {
+            assert!(super::reads(port, Protocol::Udp), "port {port}");
+        }
     }
 }

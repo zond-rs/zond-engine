@@ -1,0 +1,50 @@
+[service]
+name = "ms-sql-browser"
+default_ports = [1434]
+description = "Microsoft SQL Server Browser"
+
+# A separate file from `mssql.toml` because it is a separate service. The
+# Browser answers on 1434/udp and its whole job is to say where the database
+# engines are; the engine itself speaks TDS on 1433 and answers the probe in
+# that file.
+#
+# One byte, `0x02`, which is CLNT_UCAST_EX: list every instance on this host.
+# The other two request forms name an instance the client already knows, which a
+# scan does not.
+#
+# The reply is the point. It carries the exact build number and, for each named
+# instance, the TCP port that instance is actually listening on, which is very
+# often not 1433:
+#
+#   ServerName;WIN-DB01;InstanceName;SQLEXPRESS;IsClustered;No;Version;15.0.2000.5;tcp;1433;;
+[[probe]]
+name = "browser_enumerate_instances"
+payload = '\x02'
+protocol = "udp"
+
+# ── What the instance list names ─────────────────────────────────────────────
+
+[[match]]
+name = "sql_server_instance"
+# `Version` is the build number, which maps to a release: 15.x is 2019, 16.x is
+# 2022. The rule captures it whole rather than the major alone, because the
+# minor is what separates a patched instance from an unpatched one.
+pattern = '(?i)^ServerName;[^;]*;InstanceName;([^;]*);.*?Version;([\d.]+)'
+version_group = 2
+vendor = "Microsoft"
+product = "Microsoft SQL Server"
+context = "mssql.browser"
+example = "ServerName;WIN-DB01;InstanceName;SQLEXPRESS;IsClustered;No;Version;15.0.2000.5;tcp;1433;;"
+metadata = { "service.extrainfo" = "instance {capture:1}", "service.cpe23" = "cpe:/a:microsoft:sql_server:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows" }
+
+[[match]]
+name = "sql_server_browser"
+# The baseline, for a Browser whose reply is shaped differently enough that the
+# rule above misses it. It still establishes the service and the platform, since
+# nothing but Windows runs this: the Linux build of SQL Server ships no Browser.
+pattern = '(?i)^ServerName;[^;]*;InstanceName;'
+vendor = "Microsoft"
+product = "Microsoft SQL Server Browser"
+context = "mssql.browser"
+example = "ServerName;DB;InstanceName;MSSQLSERVER;IsClustered;No;"
+metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows" }

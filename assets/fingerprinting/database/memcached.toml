@@ -10,6 +10,26 @@ payload = 'version\r\n'
 protocol = "tcp"
 rarity = 1
 
+# The same command over UDP, behind the eight-byte frame memcached wraps a
+# datagram in: a request id, the sequence number within the request, how many
+# datagrams the request is, and two reserved bytes.
+#
+#   00 01     request id, echoed back
+#   00 00     sequence number, the first datagram
+#   00 01     one datagram in this request
+#   00 00     reserved
+#
+# The reply carries the same frame and then the ordinary `VERSION` line, which
+# `memcached_version_response` below reads unchanged.
+#
+# Most servers will not answer. UDP has been off by default since 1.5.6, which
+# closed the amplification this port was used for, so a reply here says the
+# listener was turned back on.
+[[probe]]
+name = "memcached_version_udp"
+payload = '\x00\x01\x00\x00\x00\x01\x00\x00version\r\n'
+protocol = "udp"
+
 [[match]]
 name = "memcached_version_response"
 pattern = '^VERSION ([\w.-]+)'

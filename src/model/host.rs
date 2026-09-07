@@ -200,9 +200,9 @@ pub enum NetworkRole {
     /// Answered a NetBIOS node-status request with a name table holding a
     /// suffix only a domain controller registers.
     ///
-    /// `<1C>` is registered as a *group* name by every controller in a domain
-    /// and by nothing else, and `<1B>` as a *unique* name by the one that is
-    /// domain master browser. Either says what the machine is, from one
+    /// `<1C>` is registered as a group name by every controller in a domain and
+    /// by nothing else, and `<1B>` as a unique name by the one that is domain
+    /// master browser. Either says what the machine is, from one
     /// unauthenticated datagram, before anything has been asked of SMB or LDAP.
     ///
     /// The reply is the evidence and not the port, the same standard

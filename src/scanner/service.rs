@@ -52,8 +52,8 @@ use crate::scanner::session::ScanContext;
 /// `over` is which transport's ports to take. A scanner asks for the one it
 /// found, so a composite running a TCP and a UDP member fingerprints each port
 /// once, from the member that discovered it. Passing the whole store to both
-/// would identify every TCP port twice — once per member — which is what kept
-/// the UDP scanner from running this phase at all.
+/// would identify every TCP port twice, once per member, which is what kept the
+/// UDP scanner from running this phase at all.
 pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protocol) {
     // A level that opens no connection has nothing for this phase to do. Checked
     // before the store is walked, so the phase costs nothing at all rather than

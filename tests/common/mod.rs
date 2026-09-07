@@ -137,7 +137,7 @@ pub async fn spawn_udp_server(reply: &'static [u8]) -> Server {
     Server { port, _task: task }
 }
 
-/// Serves `reply` to every datagram, on a *chosen* loopback port.
+/// Serves `reply` to every datagram, on a caller's chosen loopback port.
 ///
 /// [`spawn_udp_server`] takes whatever port is free, which is right for
 /// asserting a port state and wrong for asserting an identification: the corpus
@@ -148,9 +148,9 @@ pub async fn spawn_udp_server(reply: &'static [u8]) -> Server {
 /// [`None`] when that number is already in use, which the caller should skip on
 /// rather than fail: the port belongs to the machine, not to the test.
 ///
-/// Answers every datagram rather than one, because a scan asks twice — once to
-/// establish the port is open, once for the service pass — and a responder that
-/// exited after the first would make the second read as silence.
+/// Answers every datagram rather than one, because a scan asks twice, once to
+/// establish the port is open and once for the service pass, and a responder
+/// that exited after the first would make the second read as silence.
 pub async fn spawn_udp_server_on(port: u16, reply: &'static [u8]) -> Option<Server> {
     let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
         .await

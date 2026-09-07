@@ -18,12 +18,12 @@
 //!
 //! ## What is in a name table, and what is not
 //!
-//! Each entry is a sixteen-byte name whose last byte is a **suffix** saying which
+//! Each entry is a sixteen-byte name whose last byte is a suffix saying which
 //! service registered it, and a flags word whose top bit says whether the name is
-//! a group rather than one machine's own. The names themselves are site-specific
-//! — a machine and a workgroup somebody chose — so there is nothing here for a
-//! signature to match, which is why this produces no corpus text. What the
-//! *suffixes* say is not site-specific at all, and that is what
+//! a group rather than one machine's own. The names themselves are site-specific,
+//! a machine and a workgroup somebody chose, so there is nothing here for a
+//! signature to match, which is why this produces no corpus text. The suffixes
+//! are not site-specific at all, and they are what
 //! [`NameTable::domain_controller`] reads.
 //!
 //! ## Which suffix means a domain controller
@@ -107,8 +107,8 @@ impl NameTable {
     /// The name this machine registered for itself, if it named one.
     ///
     /// The `<00>` unique name is the workstation service, which every NetBIOS
-    /// host registers under its own computer name. The same suffix as a *group*
-    /// is the workgroup or domain instead, which is why the group bit is part of
+    /// host registers under its own computer name. The same suffix on a group
+    /// name is the workgroup or domain instead, which is why the group bit is part of
     /// the question rather than an afterthought.
     #[must_use]
     pub fn workstation(&self) -> Option<&str> {
@@ -275,8 +275,8 @@ mod tests {
     /// said it is a controller.
     #[test]
     fn a_suffix_in_the_wrong_form_names_nothing() {
-        let unique_1c = node_status(&response(&[("CORP", SUFFIX_DOMAIN_CONTROLLERS, false)]))
-            .expect("parses");
+        let unique_1c =
+            node_status(&response(&[("CORP", SUFFIX_DOMAIN_CONTROLLERS, false)])).expect("parses");
         assert!(!unique_1c.domain_controller());
 
         let group_1b = node_status(&response(&[("CORP", SUFFIX_DOMAIN_MASTER_BROWSER, true)]))

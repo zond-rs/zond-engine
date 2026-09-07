@@ -45,6 +45,7 @@ mod context;
 mod db;
 mod extract;
 mod favicon;
+mod framed;
 mod http;
 mod matcher;
 // Crate-visible so the Tier-1 flow interpreter compiles its `expect`/`bind`

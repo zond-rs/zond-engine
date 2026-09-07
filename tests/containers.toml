@@ -16,13 +16,13 @@
 # `protocol = "udp"` scans the target over UDP instead. Two things follow from
 # that and neither needs stating per entry:
 #
-#   * It is published on its **own** port number rather than a free one. TCP has
+#   * It is published on its own port number rather than a free one. TCP has
 #     the generic HTTP probe behind it, so a web application on a random port is
 #     still asked something it can answer. UDP has no such fallback: the corpus
 #     keys a probe on the destination port, and a service on any other number is
 #     sent nothing and reports as `open|filtered`.
-#   * Readiness is that it **answers the corpus probe**, not that a connection
-#     succeeds — there is no connection. A container whose socket is not bound
+#   * Readiness is that it answers the corpus probe, not that a connection
+#     succeeds. There is no connection: a container whose socket is not bound
 #     yet discards a datagram in silence, which is the same silence a filtered
 #     port returns, so the only usable signal is a reply.
 #
@@ -32,11 +32,11 @@
 # Two things learned looking for the first UDP entry, so the next attempt does
 # not repeat them:
 #
-#   * **A well-known port may not be publishable.** 53 is already allocated on a
+#   * A well-known port may not be publishable. 53 is already allocated on a
 #     machine running almost any local resolver, and is privileged besides. The
 #     publishable corpus ports are the high ones: 1900, 5060, 5061, 5353.
-#   * **Not every daemon can answer a unicast probe.** `vladgh/minidlna` binds
-#     `239.255.255.250:1900` — the multicast group itself — so the kernel never
+#   * Not every daemon can answer a unicast probe. `vladgh/minidlna` binds
+#     `239.255.255.250:1900`, the multicast group itself, so the kernel never
 #     delivers it a unicast datagram and it answers a scan with silence. That is
 #     the daemon working as designed, not a defect to chase. See the note in
 #     `assets/fingerprinting/network/ssdp.toml`.
