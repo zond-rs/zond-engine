@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, UdpSocket};
 
-use crate::model::ip::scoped::ScopedIp;
+use crate::model::ip::scoped::{ScopedIp, ZoneMap};
 use crate::system::interface::{Link, LinkAddress};
 
 /// The links usable as a probe source: up, not loopback, and holding at least
@@ -73,23 +73,15 @@ impl OnLinkTable {
     /// Returns the source address for `target` if it sits on one of the host's
     /// own subnets, or `None` if it has to be routed off-link.
     ///
-    /// A bare link-local target answers `None`, and that is the whole of why
-    /// this is not a one-line `find`. Every interface holds an `fe80::/64`, so
-    /// such a target matches all of them and identifies none, and the first
-    /// match is decided by whatever order the host listed its interfaces in.
-    /// [`RoutedTargets::ambiguous`](super::RoutedTargets) is the same refusal
-    /// made earlier and with a reason the caller can read; this is the one that
-    /// holds for a caller who never went through the classifier.
+    /// A link-local target answers `None`. Every interface holds an
+    /// `fe80::/64`, so such a target matches all of them and identifies none,
+    /// and the first match would be decided by whatever order the host listed
+    /// its interfaces in. [`RoutedTargets::ambiguous`](super::RoutedTargets) is
+    /// the same refusal made earlier and with a reason the caller can read.
     ///
-    /// Both are needed. The classifier runs on the discovery path, and a port
-    /// scan with [`assume_up`](crate::config::ZondConfig::assume_up) set skips
-    /// that path entirely -- so before this check a bare `fe80::` port target
-    /// reached the raw scanner and was probed from an arbitrary segment.
-    ///
-    /// A link-local target written `fe80::1%en0` carries its interface and never
-    /// arrives here bare: the classifier places it against that interface and
-    /// the local scanner reaches it at the link layer, where a source address is
-    /// not the question.
+    /// A target that named its interface is answered before this table is
+    /// consulted, from the interface it named. See
+    /// [`SourceResolver::with_zones`](super::SourceResolver::with_zones).
     pub fn source_for(&self, target: IpAddr) -> Option<IpAddr> {
         if ScopedIp::needs_zone(&target) {
             return None;
@@ -195,12 +187,14 @@ pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<
 /// same host recurs across every port it probes: the first probe to a host
 /// does the work, and every later port reuses the cached result.
 ///
-/// Three sources, in descending order of confidence. On-link destinations are
-/// answered from an in-memory table of each interface's own subnets. Everything
-/// else is put to the kernel, by connecting a UDP socket to the target and
-/// reading back the address it chose, which asks the routing table without
-/// sending a packet. When the kernel declines, the last resort is any address
-/// on an interface that could plausibly carry the traffic.
+/// Four sources, in descending order of confidence. A link-local destination the
+/// scan scoped to an interface is answered from that interface's own link-local
+/// address, which [`with_zones`](Self::with_zones) supplies. Other on-link
+/// destinations are answered from an in-memory table of each interface's own
+/// subnets. Everything else is put to the kernel, by connecting a UDP socket to
+/// the target and reading back the address it chose, which asks the routing
+/// table without sending a packet. When the kernel declines, the last resort is
+/// any address on an interface that could plausibly carry the traffic.
 pub struct SourceResolver {
     onlink: OnLinkTable,
     sockets: ProbeSockets,
@@ -210,6 +204,10 @@ pub struct SourceResolver {
     /// against a prefix, and the case this exists for is a destination on no
     /// prefix this host holds.
     links: Vec<Link>,
+    /// The interfaces this scan's link-local targets were named on, empty for a
+    /// scan that named none. A prefix match cannot answer for these, since every
+    /// interface holds an `fe80::/64`.
+    zones: ZoneMap,
 }
 
 impl SourceResolver {
@@ -225,7 +223,44 @@ impl SourceResolver {
             sockets: ProbeSockets::default(),
             cache: HashMap::new(),
             links: links.to_vec(),
+            zones: ZoneMap::new(),
         }
+    }
+
+    /// Teaches the resolver which interface each of a scan's link-local targets
+    /// was named on.
+    ///
+    /// Without this a link-local destination has no source address, since the
+    /// prefix it sits in is one every interface holds. With it, the source is the
+    /// link-local address of the interface the target named, and
+    /// [`zone_of`](Self::zone_of) is the scope id the send needs alongside it.
+    pub fn with_zones(mut self, zones: ZoneMap) -> Self {
+        self.zones = zones;
+        self
+    }
+
+    /// The interface index a destination is valid on, for a scan that named one.
+    ///
+    /// A raw send carries this as the scope id of its destination. Everything
+    /// that identifies its host on its own answers `None` and needs none.
+    pub fn zone_of(&self, target: IpAddr) -> Option<u32> {
+        self.zones.zone_of(&target)
+    }
+
+    /// The link-local address of the interface `target` was named on.
+    ///
+    /// A link-local source is the only one a link-local destination can be
+    /// reached from, and which interface holds it is the whole question a zone
+    /// answers.
+    fn scoped_source(&self, target: IpAddr) -> Option<IpAddr> {
+        let zone = self.zones.zone_of(&target)?;
+        self.links
+            .iter()
+            .find(|link| link.index() == zone)?
+            .addresses()
+            .iter()
+            .map(LinkAddress::address)
+            .find(|address| matches!(address, IpAddr::V6(v6) if v6.is_unicast_link_local()))
     }
 
     /// Whether this host has any address to send probes from. When false,
@@ -237,17 +272,18 @@ impl SourceResolver {
     /// Returns the source address to send a probe to `target` from, or `None`
     /// if no address on this host could plausibly reach it.
     ///
-    /// Three answers in order of authority: this host's own segments, then the
-    /// kernel's routing table, then `plausible_source` for the case where the
-    /// kernel refuses but the host visibly holds an address of the right scope.
+    /// Four answers in order of authority: the interface a link-local target
+    /// named, this host's own segments, the kernel's routing table, then
+    /// `plausible_source` for the case where the kernel refuses but the host
+    /// visibly holds an address of the right scope.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
         if let Some(cached) = self.cache.get(&target) {
             return *cached;
         }
 
-        let source = self
-            .onlink
-            .source_for(target)
+        let scoped = self.scoped_source(target);
+        let source = scoped
+            .or_else(|| self.onlink.source_for(target))
             .or_else(|| probe_route_source(target, &mut self.sockets))
             .or_else(|| plausible_source(&self.links, target));
 
@@ -267,6 +303,39 @@ impl SourceResolver {
 
 #[cfg(test)]
 mod tests {
+
+    /// The same address, with the interface named. The source is that
+    /// interface's own link-local address, which is the only one a link-local
+    /// destination can be reached from.
+    #[test]
+    fn a_link_local_target_that_named_an_interface_is_sourced_from_it() {
+        use crate::model::ip::range::Ipv6Range;
+        use crate::model::ip::scoped::ZoneMap;
+
+        let mine = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xa);
+        let en1 = Link::new("en1", 15).with_addresses(vec![v6net(mine, 64)]);
+        let elsewhere = Link::new("en0", 16).with_addresses(vec![v6net(
+            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xb),
+            64,
+        )]);
+
+        let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x99);
+        let mut zones = ZoneMap::new();
+        zones.insert(Ipv6Range::scoped(target, target, Some(15)).expect("a scoped range"));
+
+        let mut resolver = SourceResolver::from_links(&[elsewhere, en1]).with_zones(zones);
+
+        assert_eq!(
+            resolver.resolve(IpAddr::V6(target)),
+            Some(IpAddr::V6(mine)),
+            "the interface named, not whichever was listed first"
+        );
+        assert_eq!(
+            resolver.zone_of(IpAddr::V6(target)),
+            Some(15),
+            "and the scope id the send has to carry"
+        );
+    }
 
     /// The defect this guard exists for, and the shape of it: every interface
     /// holds an `fe80::/64`, so a bare link-local target matched whichever one

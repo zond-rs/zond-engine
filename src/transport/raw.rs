@@ -22,15 +22,14 @@
 //! send to nor receive from an IPv6 destination, and vice versa. TCP scanning
 //! needs both, since targets can be either, so [`open_sender`] opens one
 //! socket per address family for [`TransportType::TcpLayer4`].
-//! [`TransportType::UdpLayer4`] stays IPv4-only, since nothing in this crate
-//! currently needs UDP over IPv6. [`TransportType::SctpLayer4`] and
+//! [`TransportType::UdpLayer4`], [`TransportType::SctpLayer4`] and
 //! [`TransportType::IcmpLayer4`] open both, and the ICMP one is
 //! is the only way this crate can put an ICMP message on the wire for a host it
 //! cannot reach at the link layer: the echo builders in
 //! [`crate::protocols::icmp`] emit whole Ethernet frames and so need a
 //! neighbour.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddrV6};
 use std::sync::{Arc, Mutex};
 
 use pnet_packet::{
@@ -44,6 +43,8 @@ use pnet_transport::{
 const TRANSPORT_BUFFER_SIZE: usize = 4096;
 const CHANNEL_TYPE_UDP_V4: TransportChannelType =
     TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Udp));
+const CHANNEL_TYPE_UDP_V6: TransportChannelType =
+    TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Udp));
 const CHANNEL_TYPE_TCP_V4: TransportChannelType =
     TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
 const CHANNEL_TYPE_TCP_V6: TransportChannelType =
@@ -222,10 +223,15 @@ impl TransportSenderHandle {
     /// there is no header here to write it into. That makes it *sticky*, which
     /// is why the value in force is tracked alongside the socket: what a caller
     /// asks for is what goes out, whatever the previous send asked for.
+    /// `zone` is the interface a link-local destination is valid on. A
+    /// `SocketAddrV6` carrying a zero scope id is not deliverable to `fe80::1`
+    /// however close the neighbour is, and `pnet`'s own send builds one, so a
+    /// scoped destination takes a `sendto` of its own instead.
     pub fn send_to<T: Packet>(
         &self,
         packet: T,
         destination: IpAddr,
+        zone: Option<u32>,
         hop_limit: u8,
     ) -> Result<usize, RawSocketError> {
         let socket = match destination {
@@ -244,14 +250,76 @@ impl TransportSenderHandle {
             socket.hop_limit = Some(hop_limit);
         }
 
-        socket
-            .sender
-            .send_to(packet, destination)
-            .map_err(|source| RawSocketError::Send {
-                destination,
-                source,
-            })
+        match (destination, zone) {
+            (IpAddr::V6(v6), Some(zone)) => {
+                send_scoped(socket.sender.socket.fd, packet.packet(), v6, 0, zone)
+            }
+            _ => socket.sender.send_to(packet, destination),
+        }
+        .map_err(|source| RawSocketError::Send {
+            destination,
+            source,
+        })
     }
+}
+
+/// Writes `bytes` to a destination that names the interface it is valid on.
+///
+/// The one thing `pnet`'s send cannot express. It builds its destination from an
+/// `IpAddr` alone, which leaves `sin6_scope_id` zero, and a link-local address
+/// with no scope id names no segment: the kernel refuses it rather than guessing
+/// which of the host's `fe80::/64`s was meant.
+///
+/// `port` is zero for a raw socket, which reads the port from the segment it is
+/// handed and none from the address it is sent to. It is a parameter because a
+/// datagram socket does read one, and refuses a zero, which is how this is
+/// exercised without the privilege a raw socket needs.
+#[cfg(unix)]
+fn send_scoped(
+    fd: std::os::fd::RawFd,
+    bytes: &[u8],
+    destination: Ipv6Addr,
+    port: u16,
+    zone: u32,
+) -> std::io::Result<usize> {
+    let address = socket2::SockAddr::from(SocketAddrV6::new(destination, port, 0, zone));
+
+    // SAFETY: the socket outlives the call, `bytes` is a live slice for its
+    // length, and the address and its length come from the same `SockAddr`.
+    let written = unsafe {
+        libc::sendto(
+            fd,
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            0,
+            address.as_ptr().cast(),
+            address.len(),
+        )
+    };
+
+    match written {
+        -1 => Err(std::io::Error::last_os_error()),
+        written => Ok(written as usize),
+    }
+}
+
+/// Refuses a scoped send on a platform with no `sendto` to reach for.
+///
+/// Windows blocks raw TCP sends outright, so the scan that would arrive here
+/// has already fallen back to a connected socket, which carries its own scope
+/// id.
+#[cfg(not(unix))]
+fn send_scoped(
+    _fd: std::os::windows::io::RawSocket,
+    _bytes: &[u8],
+    _destination: Ipv6Addr,
+    _port: u16,
+    _zone: u32,
+) -> std::io::Result<usize> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "a scoped raw send is not built on this platform",
+    ))
 }
 
 /// Opens only the outgoing half of a raw transport capture: the raw
@@ -278,9 +346,15 @@ pub fn open_sender(transport_type: TransportType) -> Result<TransportSenderHandl
         }
         TransportType::UdpLayer4 => {
             let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_UDP_V4)?;
+            // As for TCP: a host without IPv6 raw sockets still scans UDP over
+            // IPv4, so a failure here narrows the transport rather than ending
+            // it.
+            let v6 = open_channel(CHANNEL_TYPE_UDP_V6)
+                .ok()
+                .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
             Ok(TransportSenderHandle {
                 v4: Some(Socket::new(v4_tx)),
-                v6: None,
+                v6,
             })
         }
         TransportType::SctpLayer4 => {
@@ -337,4 +411,71 @@ fn open_channel(
 ) -> Result<(TransportSender, TransportReceiver), RawSocketError> {
     transport::transport_channel(TRANSPORT_BUFFER_SIZE, channel_type)
         .map_err(|source| RawSocketError::Open { source })
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::net::UdpSocket;
+    use std::os::fd::AsRawFd;
+
+    /// A datagram addressed to a link-local neighbour, sent through the scoped
+    /// path on an ordinary UDP socket.
+    ///
+    /// The raw socket this exists for needs privilege to open, and the syscall
+    /// underneath is the same one either way: what is being checked is that the
+    /// destination reaches the kernel with its scope id on it. Sent to this
+    /// host's own link-local address, so nothing leaves the machine.
+    ///
+    /// Skipped on a host holding no link-local address, which is a host that
+    /// could not answer the question.
+    /// Nothing listens here, and a discard port keeps the datagram from
+    /// reaching anything that does.
+    const DISCARD: u16 = 9;
+
+    #[test]
+    fn a_scoped_send_reaches_the_kernel_with_its_interface_on_it() {
+        let Some((address, zone)) =
+            crate::system::interface::interfaces()
+                .iter()
+                .find_map(|link| {
+                    link.addresses()
+                        .iter()
+                        .map(|held| held.address())
+                        .find_map(|address| match address {
+                            IpAddr::V6(v6) if v6.is_unicast_link_local() => {
+                                Some((v6, link.index()))
+                            }
+                            _ => None,
+                        })
+                })
+        else {
+            return;
+        };
+
+        let socket = UdpSocket::bind("[::]:0").expect("an unprivileged socket");
+        let sent = send_scoped(socket.as_raw_fd(), b"zond", address, DISCARD, zone);
+
+        assert!(
+            sent.is_ok(),
+            "a scoped destination is deliverable: {}",
+            sent.unwrap_err()
+        );
+
+        let unscoped = send_scoped(socket.as_raw_fd(), b"zond", address, DISCARD, 0);
+        assert!(
+            unscoped.is_err(),
+            "and a zero scope id names no segment, which is the whole reason \
+             the scope id is carried"
+        );
+    }
 }

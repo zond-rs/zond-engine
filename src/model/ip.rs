@@ -31,7 +31,7 @@ pub mod scoped;
 pub mod set;
 
 pub use range::{IpError, IpRange, Ipv4Range, Ipv6Range};
-pub use scoped::{ScopedIp, ScopedIpError, Zone};
+pub use scoped::{ScopedIp, ScopedIpError, Zone, ZoneMap};
 pub use set::{IpSet, IpSetError, Positions};
 
 /// Whether `ipv6_addr` falls in `2000::/3`, the range IANA currently allocates

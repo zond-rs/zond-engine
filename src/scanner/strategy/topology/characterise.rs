@@ -307,7 +307,7 @@ fn send_diagnostic(
     // A refused send files nothing: the fragmented stateless probe reaches only
     // a host the Ethernet path can route to, and one it cannot simply goes
     // uncharacterised rather than credited a conclusion no probe proved.
-    if sender.send(&packet, source, host, emission).is_ok() {
+    if sender.send(&packet, source, host, None, emission).is_ok() {
         awaiting.insert(nonce, (host, conclusion));
     }
 }

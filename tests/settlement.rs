@@ -197,6 +197,7 @@ async fn the_connect_path_settles_what_it_probed() {
         ctx,
         ServiceDetection::Off,
         &zond_engine::EvasionProfile::default(),
+        &zond_engine::ZoneMap::new(),
     )
     .await
     .expect("the connect scan runs");

@@ -442,7 +442,7 @@ impl OsSeriesScanner {
         match self
             .transport
             .tx
-            .send(&segment, source, address, self.emission)
+            .send(&segment, source, address, None, self.emission)
         {
             Ok(()) => {
                 // Recorded after a successful send, which is the point of
@@ -813,6 +813,7 @@ mod tests {
             segment: &[u8],
             _src: IpAddr,
             _dst: IpAddr,
+            _zone: Option<u32>,
             _emission: Emission,
         ) -> Result<(), SendError> {
             let source_port = u16::from_be_bytes([segment[0], segment[1]]);
@@ -1078,6 +1079,7 @@ mod tests {
                 _s: &[u8],
                 _src: IpAddr,
                 _dst: IpAddr,
+                _zone: Option<u32>,
                 _emission: Emission,
             ) -> Result<(), SendError> {
                 Ok(())

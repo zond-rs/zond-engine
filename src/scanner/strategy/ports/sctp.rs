@@ -526,6 +526,7 @@ impl RawPortScan for SctpPortScanner {
             self.core.src_port,
             src_addr,
             ip,
+            self.core.resolver.zone_of(ip),
             port,
             self.core.emission,
             &self.core.decoys,
@@ -555,6 +556,7 @@ fn send_probe(
     src_port: u16,
     src_addr: IpAddr,
     dst_addr: IpAddr,
+    dst_zone: Option<u32>,
     dst_port: u16,
     emission: Emission,
     decoys: &[IpAddr],
@@ -585,6 +587,7 @@ fn send_probe(
     match super::super::raw::emit_among_decoys(
         sender,
         dst_addr,
+        dst_zone,
         emission,
         src_addr,
         &packet,

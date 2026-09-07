@@ -48,10 +48,13 @@ pub enum TargetError {
 pub struct Target {
     /// The address to probe.
     ///
-    /// Bare, with no zone, because a target set is produced by a scan that
-    /// already knows which interface it is bound to. See
-    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for where the interface
-    /// is carried when it does matter.
+    /// Bare, with no zone. A link-local address needs one, and it travels
+    /// beside the targets rather than on each of them: the zone is written on
+    /// the range a target came from, and a scan holds the pairing in a
+    /// [`ZoneMap`](crate::model::ip::scoped::ZoneMap) for the phases that open a
+    /// socket or send a frame. See
+    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for an address that
+    /// carries its own.
     pub ip: IpAddr,
     /// The port to probe.
     pub port: u16,

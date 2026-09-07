@@ -301,7 +301,7 @@ pub use crate::config::{RetryConfig, ScanEffort, ZondConfig};
 pub use crate::evasion::EvasionProfile;
 pub use crate::model::exclusion::Exclusions;
 pub use crate::model::host::{Host, HostStatus};
-pub use crate::model::ip::scoped::{ScopedIp, Zone};
+pub use crate::model::ip::scoped::{ScopedIp, Zone, ZoneMap};
 pub use crate::model::ip::set::IpSet;
 pub use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 pub use crate::model::target::{Target, TargetMap, TargetSet};

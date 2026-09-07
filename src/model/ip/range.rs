@@ -329,6 +329,16 @@ impl Ipv6Range {
         (u128::from(self.start_addr)..=u128::from(self.end_addr)).contains(&u128::from(*ip))
     }
 
+    /// Whether any address falls in both ranges.
+    ///
+    /// Blind to the zone, as [`contains`](Self::contains) is. Two ranges naming
+    /// the same addresses on different interfaces overlap here and are still two
+    /// segments, which is what a caller comparing zones wants to know.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        u128::from(self.start_addr) <= u128::from(other.end_addr)
+            && u128::from(other.start_addr) <= u128::from(self.end_addr)
+    }
+
     /// How many addresses the range covers, never fewer than one. See
     /// [`Ipv4Range::len`] for why there is no `is_empty` beside it.
     ///

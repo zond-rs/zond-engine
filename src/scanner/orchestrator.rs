@@ -48,7 +48,7 @@ use crate::evasion::EvasionProfile;
 use crate::fingerprint::os;
 use crate::journal::cursor::Checkpoint;
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
-use crate::model::ip::scoped::Zone;
+use crate::model::ip::scoped::{Zone, ZoneMap};
 use crate::model::{
     ip::set::IpSet,
     port::{Discovery as PortDiscovery, Port, PortState, Protocol, ScanResponse},
@@ -317,6 +317,7 @@ pub(super) fn build_port_scanner(
     ctx: &ScanContext,
     target_count: usize,
     tuning: ProbeTuning,
+    zones: &ZoneMap,
 ) -> BuiltPortScan {
     for refusal in plan.refusals() {
         ctx.record_refusal(refusal.clone().into());
@@ -334,7 +335,7 @@ pub(super) fn build_port_scanner(
     let mut scanners: Vec<Box<dyn PortScanner>> = Vec::new();
     let mut opened = Vec::new();
     for step in plan.into_steps() {
-        match step.into_scanner(ctx.clone(), target_count, tuning.clone()) {
+        match step.into_scanner(ctx.clone(), target_count, tuning.clone(), zones.clone()) {
             Ok(scanner) => {
                 opened.push(step);
                 scanners.push(scanner);
@@ -1375,33 +1376,57 @@ pub(super) async fn spawn_resolver(
     })
 }
 
-/// Takes the bare IPv6 link-local targets out of `target_map`, refusing each.
+/// Takes the link-local targets that name no interface out of `target_map`,
+/// refusing each, and hands back the zones the rest were named on.
 ///
 /// A port scan reaches its targets over the routing table, which cannot carry a
 /// link-local address without an interface, and every interface holds an
-/// `fe80::/64`, so there is nothing to choose between them. The discovery path
-/// refuses these in the classifier; this is the same refusal for the path that
-/// skips it, which is any scan with
-/// [`assume_up`](crate::config::ZondConfig::assume_up) set.
+/// `fe80::/64`, so an unscoped one names nothing this scan can send to. Written
+/// `fe80::1%en0` it names a segment outright, and the [`ZoneMap`] returned here
+/// is how the interface reaches the scanners: a target is addressed one at a
+/// time, and the zone is written on the range rather than on the addresses
+/// inside it.
+///
+/// A range only partly link-local, such as `fe80::/10` widened by hand, is
+/// judged by [`Ipv6Range::is_ambiguous`](crate::model::ip::range::Ipv6Range::is_ambiguous),
+/// which is the predicate the discovery classifier uses for the same question.
+///
+/// Two ranges naming one address on different interfaces are refused together.
+/// Which segment was meant is the one thing that cannot be recovered, and a
+/// verdict filed under a bare address would be a verdict about whichever of them
+/// answered first.
 ///
 /// Withheld here rather than declined at the socket, because a target dropped
 /// at the send is a target with no verdict, no settlement and no line in the
 /// report: `resolve_unasked` only accounts for what is still queued, and one
 /// already taken off the stream is simply gone. A refusal says what was not
 /// covered and why, which is what the caller can act on.
-fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) {
-    let mut refused: Vec<IpAddr> = Vec::new();
-    let mut kept = Vec::with_capacity(target_map.units.len());
+fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) -> ZoneMap {
+    let mut refused: Vec<Ipv6Range> = Vec::new();
+    let mut contested: Vec<Ipv6Range> = Vec::new();
+    let mut zones = ZoneMap::new();
 
+    for range in target_map.units.iter().flat_map(|unit| unit.ips().v6()) {
+        if range.is_ambiguous() {
+            refused.push(*range);
+        } else if zones.contests(range) {
+            contested.push(*range);
+        } else {
+            zones.insert(*range);
+        }
+    }
+
+    let mut kept = Vec::with_capacity(target_map.units.len());
     for unit in std::mem::take(&mut target_map.units) {
         let (ips, ports) = unit.into_parts();
         let mut walkable = IpSet::new();
 
-        for ip in ips.iter() {
-            if crate::model::ip::scoped::ScopedIp::needs_zone(&ip) {
-                refused.push(ip);
-            } else {
-                push_single(&mut walkable, ip, None);
+        for range in ips.v4() {
+            walkable.push_v4_range(*range);
+        }
+        for range in ips.v6() {
+            if !refused.contains(range) && !contested.contains(range) {
+                walkable.push_v6_range(*range);
             }
         }
         walkable.canonicalize();
@@ -1412,13 +1437,20 @@ fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) {
     }
     target_map.units = kept;
 
-    refused.sort_unstable();
+    refused.sort_unstable_by_key(|range| range.start_addr());
     refused.dedup();
-    for address in refused {
+    for range in refused {
         ctx.record_refusal(
-            plan::RefusedStep::link_local_port_target_needs_an_interface(address).into(),
+            plan::RefusedStep::link_local_port_target_needs_an_interface(&range).into(),
         );
     }
+    for range in contested {
+        ctx.record_refusal(
+            plan::RefusedStep::link_local_port_target_names_two_segments(&range).into(),
+        );
+    }
+
+    zones
 }
 
 /// Probes `target_map`'s ports, enriching the hosts as it goes.
@@ -1440,7 +1472,7 @@ pub(super) async fn run_port_phase(
 
     // Before the plan is built, so the counts a phase records describe what it
     // was actually going to probe.
-    withhold_ambiguous_targets(&mut target_map, ctx);
+    let zones = withhold_ambiguous_targets(&mut target_map, ctx);
     if target_map.is_empty() {
         return;
     }
@@ -1452,7 +1484,7 @@ pub(super) async fn run_port_phase(
     if target_map.names(Protocol::Sctp) {
         plan.cover_sctp(caps.privilege);
     }
-    let built = build_port_scanner(plan, ctx, target_count, cfg.probe_tuning());
+    let built = build_port_scanner(plan, ctx, target_count, cfg.probe_tuning(), &zones);
 
     // Only when nothing has enriched these hosts already. With the liveness
     // phase on, it has: the pass that established they are there is the same one
@@ -1680,12 +1712,20 @@ mod tests {
         assert_eq!(sctp_discovery_port(&map), None);
     }
 
-    /// `fe80::1` names a different machine on every segment, and a port scan
-    /// reaches its targets over the routing table, which cannot carry one
-    /// without an interface. The classifier refuses these on the discovery
-    /// path; a scan with `assume_up` never reaches the classifier, so before
-    /// this the target arrived at a raw scanner and was probed from whichever
-    /// segment the host listed first.
+    /// One address, valid on the interface with index `zone`.
+    fn scoped_set(addr: &str, zone: u32) -> IpSet {
+        let addr: std::net::Ipv6Addr = addr.parse().expect("an address");
+        let mut set = IpSet::new();
+        set.insert_range(IpRange::V6(
+            Ipv6Range::scoped(addr, addr, Some(zone)).expect("a scoped range"),
+        ));
+        set.canonicalize();
+        set
+    }
+
+    /// `fe80::1` with no interface named. Every interface holds an `fe80::/64`,
+    /// so a scan given one has no segment to send on and nothing to choose
+    /// between them.
     #[test]
     fn a_bare_link_local_port_target_is_refused_rather_than_probed() {
         use crate::model::target::TargetSet;
@@ -1704,13 +1744,75 @@ mod tests {
         let refusals = ctx.refusals_snapshot();
         assert_eq!(refusals.len(), 1);
         assert!(
-            refusals[0].reason().contains("%<interface>"),
+            refusals[0].reason().contains("fe80::1%en0"),
             "the refusal says what the caller could write instead: {}",
             refusals[0].reason()
         );
         assert!(
             ctx.failures_snapshot().is_empty(),
             "nothing went wrong; the engine declined"
+        );
+    }
+
+    /// The same address written `fe80::1%en0`. It names one segment, the scan
+    /// can send to it, and the interface it named comes back for the phases that
+    /// open a socket or a raw send.
+    #[test]
+    fn a_link_local_target_that_names_an_interface_is_kept_with_its_zone() {
+        use crate::model::target::TargetSet;
+        use crate::scanner::session::ScanSession;
+
+        let (_session, ctx) = ScanSession::new();
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            scoped_set("fe80::1", 15),
+            "80".parse().expect("a port set"),
+        ));
+
+        let zones = withhold_ambiguous_targets(&mut map, &ctx);
+
+        assert_eq!(map.units.len(), 1, "the target is still there to probe");
+        assert_eq!(
+            zones.zone_of(&"fe80::1".parse().expect("an address")),
+            Some(15),
+            "and the send knows which interface to leave by"
+        );
+        assert!(ctx.refusals_snapshot().is_empty());
+    }
+
+    /// `fe80::1%en0` and `fe80::1%en1` are two machines, and a port scan files
+    /// its verdicts under the address it probed. Both are refused rather than
+    /// merged into one host holding two segments' answers.
+    #[test]
+    fn one_link_local_address_on_two_interfaces_is_refused() {
+        use crate::model::target::TargetSet;
+        use crate::scanner::session::ScanSession;
+
+        let (_session, ctx) = ScanSession::new();
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            scoped_set("fe80::1", 15),
+            "80".parse().expect("a port set"),
+        ));
+        map.add_unit(TargetSet::new(
+            scoped_set("fe80::1", 16),
+            "80".parse().expect("a port set"),
+        ));
+
+        let zones = withhold_ambiguous_targets(&mut map, &ctx);
+
+        assert_eq!(map.units.len(), 1, "the first one named is still probed");
+        assert_eq!(
+            zones.zone_of(&"fe80::1".parse().expect("an address")),
+            Some(15)
+        );
+
+        let refusals = ctx.refusals_snapshot();
+        assert_eq!(refusals.len(), 1);
+        assert!(
+            refusals[0].reason().contains("two interfaces"),
+            "the refusal says which question could not be answered: {}",
+            refusals[0].reason()
         );
     }
 
@@ -1894,6 +1996,7 @@ mod tests {
             &ctx,
             0,
             cfg.probe_tuning(),
+            &ZoneMap::new(),
         );
 
         let refusals = ctx.take_refusals();

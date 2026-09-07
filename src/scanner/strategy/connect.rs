@@ -30,6 +30,7 @@ use crate::error;
 use crate::evasion::EvasionProfile;
 use crate::journal::settle::{Outcome, Settled};
 use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
+use crate::model::ip::scoped::ZoneMap;
 use crate::model::ip::set::IpSet;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::{Port, PortSet, PortState, Protocol};
@@ -222,6 +223,11 @@ pub struct ConnectPortScanner {
     /// What each probe changes about the packet it sends. Only the source port
     /// and hop limit reach the wire from here (see [`ConnectShaping`]).
     evasion: EvasionProfile,
+    /// The interface each link-local target was named on, empty for a scan that
+    /// named none. A `SocketAddrV6` with a zero scope id will not connect to a
+    /// neighbour however close it is, so the scope id is carried per target and
+    /// applied where the endpoint is built.
+    zones: ZoneMap,
 }
 
 impl ConnectPortScanner {
@@ -243,7 +249,17 @@ impl ConnectPortScanner {
             concurrency,
             detection,
             evasion: evasion.clone(),
+            zones: ZoneMap::new(),
         }
+    }
+
+    /// Names the interface each of the scan's link-local targets was given on.
+    ///
+    /// Without it a link-local endpoint is built with a zero scope id, which the
+    /// kernel refuses to connect however reachable the neighbour is.
+    pub fn with_zones(mut self, zones: ZoneMap) -> Self {
+        self.zones = zones;
+        self
     }
 }
 
@@ -264,6 +280,7 @@ impl PortScanner for ConnectPortScanner {
             self.ctx.clone(),
             self.detection,
             &self.evasion,
+            &self.zones,
         )
         .await
     }
@@ -283,6 +300,11 @@ pub struct ConnectUdpPortScanner {
     /// establishes the port is open is not the one that identifies what is
     /// behind it. So it runs the second pass, and holds the level to run it at.
     service_detection: ServiceDetection,
+    /// The interface each link-local target was named on, empty for a scan that
+    /// named none. A `SocketAddrV6` with a zero scope id will not connect to a
+    /// neighbour however close it is, so the scope id is carried per target and
+    /// applied where the endpoint is built.
+    zones: ZoneMap,
 }
 
 impl ConnectUdpPortScanner {
@@ -315,7 +337,15 @@ impl ConnectUdpPortScanner {
             concurrency,
             evasion: evasion.clone(),
             service_detection,
+            zones: ZoneMap::new(),
         }
+    }
+
+    /// Names the interface each of the scan's link-local targets was given on,
+    /// as on the TCP scanner beside it.
+    pub fn with_zones(mut self, zones: ZoneMap) -> Self {
+        self.zones = zones;
+        self
     }
 }
 
@@ -367,7 +397,8 @@ impl PortScanner for ConnectUdpPortScanner {
                 continue;
             }
             pool.audit().record_send(true);
-            pool.admit(udp_port_prober(target, shaping)).await;
+            let endpoint = self.zones.endpoint(target.ip(), target.port());
+            pool.admit(udp_port_prober(target, shaping, endpoint)).await;
         }
 
         // Anything still queued was never sent, and carries no position to
@@ -399,6 +430,7 @@ pub async fn scan(
     ctx: ScanContext,
     detection: ServiceDetection,
     evasion: &EvasionProfile,
+    zones: &ZoneMap,
 ) -> Result<(), StrategyError> {
     let shaping = ConnectShaping::from(evasion);
     let folder = ctx.clone();
@@ -427,7 +459,9 @@ pub async fn scan(
             continue;
         }
         pool.audit().record_send(true);
-        pool.admit(port_prober(target, detection, shaping)).await;
+        let endpoint = zones.endpoint(target.ip(), target.port());
+        pool.admit(port_prober(target, detection, shaping, endpoint))
+            .await;
     }
 
     // Anything still queued was never sent, and carries no position to settle.
@@ -566,6 +600,7 @@ async fn port_prober(
     planned: PlannedTarget,
     detection: ServiceDetection,
     shaping: ConnectShaping,
+    socket_addr: SocketAddr,
 ) -> ProbedPort {
     let target = planned.target;
     if target.protocol == Protocol::Udp {
@@ -576,7 +611,6 @@ async fn port_prober(
     }
 
     let position = planned.position;
-    let socket_addr = SocketAddr::new(target.ip, target.port);
 
     match timeout(CONNECT_PROBE_TIMEOUT, connect_shaped(socket_addr, shaping)).await {
         Ok(Ok(stream)) => {
@@ -786,14 +820,17 @@ async fn shaped_udp_socket(
 /// the same three verdicts the raw scanner reaches, by a different route.
 /// Errors that say nothing about the target (no local socket, no route) are
 /// logged and yield no record rather than a guess.
-async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> ProbedPort {
+async fn udp_port_prober(
+    planned: PlannedTarget,
+    shaping: ConnectShaping,
+    socket_addr: SocketAddr,
+) -> ProbedPort {
     let target = planned.target;
     if target.protocol != Protocol::Udp {
         return None;
     }
 
     let position = planned.position;
-    let socket_addr = SocketAddr::new(target.ip, target.port);
     // `answered` is set only where the kernel vouches for who sent the packet.
     // A datagram arriving on a connected socket came from the peer, so `Open`
     // proves the host. A refusal does not: it is an ICMP error the kernel
@@ -1195,7 +1232,12 @@ mod tests {
         let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
         let port = closed_loopback_udp_port(ip).await;
 
-        let probed = udp_port_prober(udp_target(ip, port), ConnectShaping::default()).await;
+        let probed = udp_port_prober(
+            udp_target(ip, port),
+            ConnectShaping::default(),
+            SocketAddr::new(ip, port),
+        )
+        .await;
 
         let probed = probed.expect("an IPv6 target must produce a verdict");
         let probed_port = probed.port.expect("a closed port is still a verdict");
@@ -1209,7 +1251,12 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let port = closed_loopback_udp_port(ip).await;
 
-        let probed = udp_port_prober(udp_target(ip, port), ConnectShaping::default()).await;
+        let probed = udp_port_prober(
+            udp_target(ip, port),
+            ConnectShaping::default(),
+            SocketAddr::new(ip, port),
+        )
+        .await;
 
         assert_eq!(
             probed
@@ -1236,7 +1283,12 @@ mod tests {
                 }
             });
 
-            let probed = udp_port_prober(udp_target(ip, port), ConnectShaping::default()).await;
+            let probed = udp_port_prober(
+                udp_target(ip, port),
+                ConnectShaping::default(),
+                SocketAddr::new(ip, port),
+            )
+            .await;
 
             assert_eq!(
                 probed
@@ -1262,9 +1314,13 @@ mod tests {
             },
         );
         assert!(
-            udp_port_prober(target, ConnectShaping::default())
-                .await
-                .is_none()
+            udp_port_prober(
+                target,
+                ConnectShaping::default(),
+                SocketAddr::new(target.ip(), target.port()),
+            )
+            .await
+            .is_none()
         );
     }
 

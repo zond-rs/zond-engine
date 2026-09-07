@@ -282,7 +282,7 @@ impl OsEchoScanner {
         let sent = match self
             .transport
             .tx
-            .send(&message, source, target, self.emission)
+            .send(&message, source, target, None, self.emission)
         {
             Ok(()) => {
                 success!(verbosity = 2, "sent OS echo probe to {target}");
@@ -346,7 +346,7 @@ impl OsEchoScanner {
         match self
             .transport
             .tx
-            .send(&message, source, target, self.emission)
+            .send(&message, source, target, None, self.emission)
         {
             Ok(()) => {
                 success!(verbosity = 2, "sent OS timestamp probe to {target}");
@@ -666,6 +666,7 @@ mod tests {
             segment: &[u8],
             _src: IpAddr,
             _dst: IpAddr,
+            _zone: Option<u32>,
             _emission: Emission,
         ) -> Result<(), SendError> {
             let _ = self.replies.try_send(echo_reply(segment, self.hops));
@@ -747,6 +748,7 @@ mod tests {
                 _s: &[u8],
                 _src: IpAddr,
                 _dst: IpAddr,
+                _zone: Option<u32>,
                 _emission: Emission,
             ) -> Result<(), SendError> {
                 Ok(())
@@ -809,6 +811,7 @@ mod tests {
             segment: &[u8],
             _src: IpAddr,
             _dst: IpAddr,
+            _zone: Option<u32>,
             _emission: Emission,
         ) -> Result<(), SendError> {
             self.0.lock().expect("the log").push(segment.to_vec());

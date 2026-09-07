@@ -532,6 +532,7 @@ impl RawPortScan for UdpPortScanner {
             self.core.src_port,
             src_addr,
             ip,
+            self.core.resolver.zone_of(ip),
             port,
             EvasionParts {
                 emission: self.core.emission,

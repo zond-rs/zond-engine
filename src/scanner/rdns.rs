@@ -982,6 +982,7 @@ mod tests {
             _: &[u8],
             _: IpAddr,
             _: IpAddr,
+            _: Option<u32>,
             _emission: Emission,
         ) -> Result<(), SendError> {
             Ok(())

@@ -24,6 +24,7 @@
 //! it needs one. Addresses that do not need a zone do not carry one, so
 //! equality and hashing stay the ordinary thing for the ordinary case.
 
+use super::range::Ipv6Range;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::str::FromStr;
@@ -325,6 +326,103 @@ impl FromStr for ScopedIp {
             addr,
             zone: Some(Zone::unresolved(zone)),
         })
+    }
+}
+
+/// Which interface each of a scan's link-local ranges was named on.
+///
+/// A port scan addresses its targets one at a time and reaches them over the
+/// routing table, which cannot carry `fe80::1` without an interface. The zone is
+/// written on the range a target came from rather than on the address itself, so
+/// something has to hold the pairing for the length of the scan. This is it: the
+/// zoned ranges a scan was given, and the lookup that answers which interface an
+/// address in one of them is valid on.
+///
+/// Ranges that need no zone are not held. `zone_of` answers `None` for
+/// everything else, which is what a global address, an IPv4 address and a
+/// link-local nobody scoped all want.
+///
+/// ```
+/// use zond_engine::model::ip::range::Ipv6Range;
+/// use zond_engine::model::ip::scoped::ZoneMap;
+/// use std::net::{IpAddr, Ipv6Addr};
+///
+/// let addr: Ipv6Addr = "fe80::1".parse().unwrap();
+/// let mut zones = ZoneMap::new();
+/// zones.insert(Ipv6Range::scoped(addr, addr, Some(7)).unwrap());
+///
+/// assert_eq!(zones.zone_of(&IpAddr::V6(addr)), Some(7));
+/// assert_eq!(zones.zone_of(&"2001:db8::1".parse().unwrap()), None);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ZoneMap {
+    ranges: Vec<Ipv6Range>,
+}
+
+impl ZoneMap {
+    /// An empty map, holding no scan's zones yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records `range` and the interface it names.
+    ///
+    /// A range carrying no zone is ignored, since it has nothing to answer with.
+    pub fn insert(&mut self, range: Ipv6Range) {
+        if range.zone().is_some() {
+            self.ranges.push(range);
+        }
+    }
+
+    /// The interface index `ip` is valid on, if this scan named one for it.
+    ///
+    /// An address covered by two ranges naming different interfaces answers
+    /// `None`. Which segment was meant is exactly what cannot be told in that
+    /// case, and a probe sent to the first match would be sent to whichever
+    /// range happened to be recorded first.
+    pub fn zone_of(&self, ip: &IpAddr) -> Option<u32> {
+        let IpAddr::V6(v6) = ip else {
+            return None;
+        };
+
+        let mut found = None;
+        for range in self.ranges.iter().filter(|range| range.contains(v6)) {
+            match found {
+                None => found = range.zone(),
+                Some(zone) if Some(zone) == range.zone() => {}
+                Some(_) => return None,
+            }
+        }
+        found
+    }
+
+    /// Whether any address in `range` is also covered by a range already held
+    /// under a different interface.
+    ///
+    /// Answers before the insertion, so a caller can refuse both rather than
+    /// keep a target it cannot address.
+    pub fn contests(&self, range: &Ipv6Range) -> bool {
+        self.ranges
+            .iter()
+            .any(|held| held.zone() != range.zone() && held.overlaps(range))
+    }
+
+    /// `ip` and `port` as somewhere a socket can be opened to.
+    ///
+    /// A link-local destination carries the scope id the scan named it under,
+    /// which is what makes it reachable: a `SocketAddrV6` with a zero scope id
+    /// fails to connect however close the neighbour is. Everything else is the
+    /// ordinary pairing of an address and a port.
+    pub fn endpoint(&self, ip: IpAddr, port: u16) -> SocketAddr {
+        match (ip, self.zone_of(&ip)) {
+            (IpAddr::V6(v6), Some(zone)) => SocketAddr::V6(SocketAddrV6::new(v6, port, 0, zone)),
+            _ => SocketAddr::new(ip, port),
+        }
+    }
+
+    /// Whether this scan named no zoned range at all.
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
     }
 }
 

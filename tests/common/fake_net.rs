@@ -588,6 +588,7 @@ impl ProbeSender for FakeLink {
         segment: &[u8],
         src: IpAddr,
         dst: IpAddr,
+        _zone: Option<u32>,
         emission: Emission,
     ) -> Result<(), SendError> {
         let Some(probe) = self.parse(segment) else {
@@ -1278,6 +1279,7 @@ pub fn unsendable_transport(reason: &'static str) -> ProbeTransport {
             _segment: &[u8],
             _src: IpAddr,
             dst: IpAddr,
+            _zone: Option<u32>,
             _emission: Emission,
         ) -> Result<(), SendError> {
             Err(SendError::Refused(format!(

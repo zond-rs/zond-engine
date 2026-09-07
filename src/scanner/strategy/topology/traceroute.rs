@@ -322,7 +322,7 @@ impl Tracer {
         match self
             .transport
             .tx
-            .send(&segment, source, target, Emission::at_hop(distance))
+            .send(&segment, source, target, None, Emission::at_hop(distance))
         {
             Ok(()) => {
                 self.in_flight
@@ -1043,6 +1043,7 @@ mod tests {
             segment: &[u8],
             src: IpAddr,
             dst: IpAddr,
+            _zone: Option<u32>,
             emission: Emission,
         ) -> Result<(), SendError> {
             if emission.hop_limit >= self.distance {

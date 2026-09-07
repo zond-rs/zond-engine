@@ -211,6 +211,7 @@ impl ProbeSender for SilentSender {
         _segment: &[u8],
         _src: IpAddr,
         _dst: IpAddr,
+        _zone: Option<u32>,
         _emission: Emission,
     ) -> Result<(), SendError> {
         panic!("the hostname resolver must not emit raw probes");

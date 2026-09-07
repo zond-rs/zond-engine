@@ -620,6 +620,7 @@ impl RawPortScan for TcpPortScanner {
             self.core.src_port,
             src_addr,
             ip,
+            self.core.resolver.zone_of(ip),
             port,
             self.core.emission,
             self.core.shaping,
@@ -835,6 +836,7 @@ fn send_tcp_probe(
     src_port: u16,
     src_addr: IpAddr,
     dst_addr: IpAddr,
+    dst_zone: Option<u32>,
     dst_port: u16,
     emission: Emission,
     shaping: SegmentShaping,
@@ -888,6 +890,7 @@ fn send_tcp_probe(
     match super::super::raw::emit_among_decoys(
         sender,
         dst_addr,
+        dst_zone,
         emission,
         src_addr,
         &packet,
@@ -1093,6 +1096,7 @@ mod tests {
             _segment: &[u8],
             _src: IpAddr,
             _dst: IpAddr,
+            _zone: Option<u32>,
             _emission: Emission,
         ) -> Result<(), crate::transport::probe::SendError> {
             Err(crate::transport::probe::SendError::Refused(

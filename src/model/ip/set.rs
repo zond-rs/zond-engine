@@ -364,6 +364,50 @@ impl IpSet {
         }
     }
 
+    /// Every address the set covers, each paired with the interface index it is
+    /// only meaningful on.
+    ///
+    /// The zone lives on the range rather than on the addresses inside it, so
+    /// [`iter`](Self::iter) cannot report it. An IPv6 address yields the zone of
+    /// the range it came from, `None` when that range carries none; IPv4 always
+    /// yields `None`.
+    ///
+    /// ```
+    /// use zond_engine::model::ip::{IpRange, set::IpSet};
+    /// use zond_engine::model::ip::range::Ipv6Range;
+    /// use std::net::{IpAddr, Ipv6Addr};
+    ///
+    /// let addr: Ipv6Addr = "fe80::1".parse().unwrap();
+    /// let mut set = IpSet::new();
+    /// set.insert_range(IpRange::V6(Ipv6Range::scoped(addr, addr, Some(7)).unwrap()));
+    ///
+    /// let held: Vec<_> = set.iter_scoped().collect();
+    /// assert_eq!(held, vec![(IpAddr::V6(addr), Some(7))]);
+    /// ```
+    pub fn iter_scoped(&self) -> Box<dyn Iterator<Item = (IpAddr, Option<u32>)> + Send> {
+        let (v4, v6) = if self.v4_dirty || self.v6_dirty {
+            let mut merged = self.clone();
+            merged.canonicalize();
+            (merged.v4, merged.v6)
+        } else {
+            (self.v4.clone(), self.v6.clone())
+        };
+
+        let v4 = v4.into_iter().flat_map(|range| {
+            let start: u32 = range.start_addr().into();
+            let end: u32 = range.end_addr().into();
+            (start..=end).map(|ip| (IpAddr::V4(Ipv4Addr::from(ip)), None))
+        });
+        let v6 = v6.into_iter().flat_map(|range| {
+            let zone = range.zone();
+            let start: u128 = range.start_addr().into();
+            let end: u128 = range.end_addr().into();
+            (start..=end).map(move |ip| (IpAddr::V6(Ipv6Addr::from(ip)), zone))
+        });
+
+        Box::new(v4.chain(v6))
+    }
+
     // ─── Query API (Read-Only / Sync) ────────────────────────────────────────
 
     /// Whether the family `ip` belongs to has been merged.

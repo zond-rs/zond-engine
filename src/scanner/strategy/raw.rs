@@ -231,13 +231,14 @@ pub(super) struct EvasionParts<'a> {
 pub(super) fn emit_among_decoys(
     sender: &dyn ProbeSender,
     dst: IpAddr,
+    zone: Option<u32>,
     emission: Emission,
     real_src: IpAddr,
     real_packet: &[u8],
     decoy_packets: &[(IpAddr, Vec<u8>)],
 ) -> Result<(), SendError> {
     if decoy_packets.is_empty() {
-        return sender.send(real_packet, real_src, dst, emission);
+        return sender.send(real_packet, real_src, dst, zone, emission);
     }
 
     use rand::seq::SliceRandom;
@@ -253,7 +254,7 @@ pub(super) fn emit_among_decoys(
 
     let mut real_result = None;
     for (src, packet, is_real) in &probes {
-        let result = sender.send(packet, *src, dst, emission);
+        let result = sender.send(packet, *src, dst, zone, emission);
         if *is_real {
             real_result = Some(result);
         }
@@ -280,6 +281,7 @@ pub(super) fn send_init(
     sender: &dyn ProbeSender,
     src_addr: IpAddr,
     dst_addr: IpAddr,
+    dst_zone: Option<u32>,
     dst_port: u16,
     src_port: u16,
     decoys: &[IpAddr],
@@ -309,6 +311,7 @@ pub(super) fn send_init(
     match emit_among_decoys(
         sender,
         dst_addr,
+        dst_zone,
         emission,
         src_addr,
         &packet,
@@ -334,10 +337,12 @@ pub(super) fn send_init(
 /// reached the wire can say why in its report rather than only in a log line. A
 /// probe that was never sent and a probe nobody answered are indistinguishable
 /// in a host count and could hardly be more different in what they mean.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn send_syn(
     sender: &dyn ProbeSender,
     src_addr: IpAddr,
     dst_addr: IpAddr,
+    dst_zone: Option<u32>,
     dst_port: u16,
     src_port_override: Option<u16>,
     evasion: EvasionParts<'_>,
@@ -399,6 +404,7 @@ pub(super) fn send_syn(
     match emit_among_decoys(
         sender,
         dst_addr,
+        dst_zone,
         emission,
         src_addr,
         &packet,
@@ -460,11 +466,13 @@ pub(super) fn send_syn(
 /// [`send_syn`]. A UDP scan whose probes never left reports every port
 /// open-filtered - the same answer a firewall produces - and only this says
 /// otherwise.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn send_udp(
     sender: &dyn ProbeSender,
     src_port: u16,
     src_addr: IpAddr,
     dst_addr: IpAddr,
+    dst_zone: Option<u32>,
     dst_port: u16,
     evasion: EvasionParts<'_>,
     reason: &mut Option<String>,
@@ -519,6 +527,7 @@ pub(super) fn send_udp(
     match emit_among_decoys(
         sender,
         dst_addr,
+        dst_zone,
         emission,
         src_addr,
         &packet,
@@ -611,6 +620,7 @@ mod tests {
             _segment: &[u8],
             src: IpAddr,
             _dst: IpAddr,
+            _zone: Option<u32>,
             _emission: Emission,
         ) -> Result<(), SendError> {
             if src == self.0 {
@@ -637,7 +647,16 @@ mod tests {
         // real source appears exactly once.
         let mock = MockSender::default();
         assert!(
-            emit_among_decoys(&mock, dst, Emission::routed(), real, &real_packet, &decoys).is_ok()
+            emit_among_decoys(
+                &mock,
+                dst,
+                None,
+                Emission::routed(),
+                real,
+                &real_packet,
+                &decoys
+            )
+            .is_ok()
         );
         let sent = mock.sent.lock().unwrap();
         assert_eq!(sent.len(), 3, "the real probe and both decoys are all sent");
@@ -646,7 +665,16 @@ mod tests {
 
         // With no decoys it is a single ordinary send.
         let mock = MockSender::default();
-        emit_among_decoys(&mock, dst, Emission::routed(), real, &real_packet, &[]).unwrap();
+        emit_among_decoys(
+            &mock,
+            dst,
+            None,
+            Emission::routed(),
+            real,
+            &real_packet,
+            &[],
+        )
+        .unwrap();
         assert_eq!(mock.sent.lock().unwrap().len(), 1);
 
         // The outcome returned is the real probe's own, never a decoy's, which
@@ -657,6 +685,7 @@ mod tests {
             emit_among_decoys(
                 &refusing_the_real,
                 dst,
+                None,
                 Emission::routed(),
                 real,
                 &real_packet,
@@ -669,6 +698,7 @@ mod tests {
             emit_among_decoys(
                 &refusing_a_decoy,
                 dst,
+                None,
                 Emission::routed(),
                 real,
                 &real_packet,

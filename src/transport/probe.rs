@@ -553,6 +553,11 @@ impl Default for Emission {
 pub trait ProbeSender: Send + Sync {
     /// Emits one probe, or names why it did not leave.
     ///
+    /// `zone` is the interface a link-local `dst` is valid on, and `None` for
+    /// every address that identifies its host on its own. `fe80::1` names a
+    /// different machine on every segment, so a sender given one without a zone
+    /// has no destination it can reach.
+    ///
     /// [`SendError::Unroutable`] says something about `dst` rather than about
     /// this sender: that address was asked about and not covered, while the
     /// sender itself is still working.
@@ -561,6 +566,7 @@ pub trait ProbeSender: Send + Sync {
         segment: &[u8],
         src: IpAddr,
         dst: IpAddr,
+        zone: Option<u32>,
         emission: Emission,
     ) -> Result<(), SendError>;
 }
@@ -657,6 +663,7 @@ impl ProbeSender for RawIpSender {
         segment: &[u8],
         _src: IpAddr,
         dst: IpAddr,
+        zone: Option<u32>,
         emission: Emission,
     ) -> Result<(), SendError> {
         // The kernel builds the IP header and the frame around it here, so a
@@ -670,7 +677,7 @@ impl ProbeSender for RawIpSender {
             ));
         }
         self.handle
-            .send_to(RawSegment(segment), dst, emission.hop_limit)
+            .send_to(RawSegment(segment), dst, zone, emission.hop_limit)
             .map(|_| ())
             .map_err(SendError::from_io)
     }
@@ -688,6 +695,7 @@ impl ProbeSender for NoopSender {
         _segment: &[u8],
         _src: IpAddr,
         _dst: IpAddr,
+        _zone: Option<u32>,
         _emission: Emission,
     ) -> Result<(), SendError> {
         Err(SendError::Unsupported("it is receive-only"))
@@ -876,6 +884,7 @@ impl ProbeSender for MockSender {
         segment: &[u8],
         src: IpAddr,
         dst: IpAddr,
+        _zone: Option<u32>,
         _emission: Emission,
     ) -> Result<(), SendError> {
         self.sent.lock().unwrap().push((segment.to_vec(), src, dst));
@@ -910,7 +919,7 @@ mod tests {
         let dst = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
         transport
             .tx
-            .send(&[0xAA, 0xBB], src, dst, Emission::routed())
+            .send(&[0xAA, 0xBB], src, dst, None, Emission::routed())
             .unwrap();
 
         let sent = recorded.lock().unwrap().clone();

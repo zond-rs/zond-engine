@@ -186,11 +186,15 @@ impl EthernetSender {
 }
 
 impl ProbeSender for EthernetSender {
+    /// The zone is unused here. A frame this sender builds leaves on the
+    /// interface its own route names, and the destination it can reach that way
+    /// is IPv4: `next_hop_mac` has no NDP to resolve an IPv6 neighbour with.
     fn send(
         &self,
         segment: &[u8],
         src: IpAddr,
         dst: IpAddr,
+        _zone: Option<u32>,
         emission: Emission,
     ) -> Result<(), SendError> {
         // Every step here can fail for a reason outside this process - no route,

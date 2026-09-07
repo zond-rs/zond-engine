@@ -264,7 +264,7 @@ impl IdlePortScanner {
             let sent = self
                 .transport
                 .tx
-                .send(&probe, source, self.zombie, Emission::routed())
+                .send(&probe, source, self.zombie, None, Emission::routed())
                 .is_ok();
             self.audit.record_send(sent);
             if !sent {
@@ -387,7 +387,7 @@ impl IdlePortScanner {
             let sent = self
                 .transport
                 .tx
-                .send(&probe, self.zombie, target, Emission::routed())
+                .send(&probe, self.zombie, target, None, Emission::routed())
                 .is_ok();
             self.audit.record_send(sent);
         }
@@ -618,6 +618,7 @@ mod tests {
             segment: &[u8],
             _src: IpAddr,
             dst: IpAddr,
+            _zone: Option<u32>,
             _emission: Emission,
         ) -> Result<(), SendError> {
             let Ok(tcp) = tcp::parse(segment) else {

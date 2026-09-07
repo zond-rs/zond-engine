@@ -59,6 +59,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::config::limits;
 use crate::config::{ProbeTuning, ZondConfig};
 use crate::model::ip::range::{IpRange, Ipv6Range};
+use crate::model::ip::scoped::ZoneMap;
 use crate::model::ip::set::IpSet;
 use crate::model::port::Protocol;
 use crate::model::technique::TcpScanTechnique;
@@ -206,30 +207,39 @@ impl RefusedStep {
         }
     }
 
-    /// A port target that is a bare IPv6 link-local address.
+    /// A port target that is link-local and names no interface.
     ///
-    /// `fe80::1` names a different machine on every segment, and a port scan
-    /// reaches its targets over the routing table rather than at the link
-    /// layer, so it has no interface to send from and no way to choose one.
-    /// Every interface holds an `fe80::/64`, which is why picking the first
-    /// match is a guess dressed as an answer.
+    /// `fe80::1` names a different machine on every segment, and every interface
+    /// holds an `fe80::/64`, so there is nothing to choose between them. Written
+    /// `fe80::1%en0` it names one, and the scan sends from that interface.
     ///
     /// [`RoutedTargets::ambiguous`](crate::system::interface::RoutedTargets)
-    /// refuses the same address on the discovery path. A port scan run with
-    /// [`assume_up`](crate::config::ZondConfig::assume_up) never reaches that
-    /// path, which is how such a target used to arrive at a raw scanner and be
-    /// probed from whichever segment the host listed first.
-    ///
-    /// Written `fe80::1%en0` it is unambiguous, and the sweep that reaches it
-    /// is the local one.
-    pub fn link_local_port_target_needs_an_interface(address: IpAddr) -> Self {
+    /// refuses the same target on the discovery path.
+    pub fn link_local_port_target_needs_an_interface(range: &Ipv6Range) -> Self {
+        let target = name(range);
         Self {
             scanner: ScannerKind::SynPort,
             reason: format!(
-                "{address} is link-local, so it names a different machine on \
-                 every segment and a port scan has no interface to reach it \
-                 from. Say which: {address}%<interface>, which is swept at the \
-                 link layer."
+                "{target} is link-local and names no interface, so it names a \
+                 different machine on every segment this host is on. Say which: \
+                 {}%en0, naming the interface the segment is reached through.",
+                range.start_addr()
+            ),
+        }
+    }
+
+    /// One link-local address given on two interfaces in a single scan.
+    ///
+    /// Each is a different machine, and a port scan records its verdicts under
+    /// the address it probed, so the two sets of answers would land on one host
+    /// with nothing to say which segment either came from.
+    pub fn link_local_port_target_names_two_segments(range: &Ipv6Range) -> Self {
+        let target = name(range);
+        Self {
+            scanner: ScannerKind::SynPort,
+            reason: format!(
+                "{target} was named on two interfaces at once, and each is a \
+                 different machine. Scan one segment at a time."
             ),
         }
     }
@@ -308,6 +318,15 @@ impl From<RefusedStep> for crate::report::Refusal {
     /// inventing the decision from the words.
     fn from(step: RefusedStep) -> Self {
         Self::new(step.scanner, step.reason)
+    }
+}
+
+/// A range as a person wrote it: one address when it covers one, and the span
+/// otherwise.
+fn name(range: &Ipv6Range) -> String {
+    match range.start_addr() == range.end_addr() {
+        true => range.start_addr().to_string(),
+        false => format!("{}-{}", range.start_addr(), range.end_addr()),
     }
 }
 
@@ -693,44 +712,55 @@ impl PortScanStep {
     ///
     /// `target_count` sizes the probe ledger; a raw scanner uses it to reserve
     /// correlation state up front rather than growing it under load.
+    ///
+    /// `zones` names the interface each of the scan's link-local targets was
+    /// given on, which is where both families of scanner get the scope id they
+    /// send under. It is empty for a scan that named none.
     pub fn into_scanner(
         self,
         ctx: ScanContext,
         target_count: usize,
         tuning: ProbeTuning,
+        zones: ZoneMap,
     ) -> Result<Box<dyn PortScanner>, StrategyError> {
         match self {
             Self::RawTcp { technique } => Ok(Box::new(TcpPortScanner::new(
-                interface::SourceResolver::from_system(),
+                interface::SourceResolver::from_system().with_zones(zones),
                 ctx,
                 technique,
                 target_count,
                 tuning,
             )?)),
             Self::RawUdp => Ok(Box::new(UdpPortScanner::new(
-                interface::SourceResolver::from_system(),
+                interface::SourceResolver::from_system().with_zones(zones),
                 ctx,
                 target_count,
                 tuning,
             )?)),
             Self::RawSctp => Ok(Box::new(SctpPortScanner::new(
-                interface::SourceResolver::from_system(),
+                interface::SourceResolver::from_system().with_zones(zones),
                 ctx,
                 target_count,
                 tuning,
             )?)),
-            Self::ConnectTcp => Ok(Box::new(ConnectPortScanner::new(
-                ctx,
-                limits::CONNECT_CONCURRENCY,
-                tuning.service_detection,
-                &tuning.evasion,
-            ))),
-            Self::ConnectUdp => Ok(Box::new(ConnectUdpPortScanner::with_detection(
-                ctx,
-                limits::CONNECT_CONCURRENCY,
-                &tuning.evasion,
-                tuning.service_detection,
-            ))),
+            Self::ConnectTcp => Ok(Box::new(
+                ConnectPortScanner::new(
+                    ctx,
+                    limits::CONNECT_CONCURRENCY,
+                    tuning.service_detection,
+                    &tuning.evasion,
+                )
+                .with_zones(zones),
+            )),
+            Self::ConnectUdp => Ok(Box::new(
+                ConnectUdpPortScanner::with_detection(
+                    ctx,
+                    limits::CONNECT_CONCURRENCY,
+                    &tuning.evasion,
+                    tuning.service_detection,
+                )
+                .with_zones(zones),
+            )),
             Self::Idle {
                 zombie,
                 zombie_port,
@@ -1279,6 +1309,7 @@ mod tests {
                 _: &[u8],
                 _: IpAddr,
                 _: IpAddr,
+                _: Option<u32>,
                 _emission: Emission,
             ) -> Result<(), SendError> {
                 Ok(())

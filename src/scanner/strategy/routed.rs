@@ -791,6 +791,7 @@ impl RoutedScanner {
                 self.transport.tx.as_ref(),
                 source,
                 target,
+                None,
                 dst_port,
                 src_port,
                 EvasionParts {
@@ -805,6 +806,7 @@ impl RoutedScanner {
                 self.transport.tx.as_ref(),
                 source,
                 target,
+                None,
                 dst_port,
                 src_port,
                 &self.decoys,
