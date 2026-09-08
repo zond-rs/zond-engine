@@ -1,0 +1,30 @@
+# Anonymous FTP that accepts a write. anonymous-ftp proves the login; this proves
+# the write, by creating a directory and removing it on the control connection,
+# so no data channel and no file transfer are needed. MKD is the smallest write an
+# FTP server offers, and RMD undoes it. active-mutating, opt-in only.
+
+[detection]
+id      = "ftp-anon-writable"
+version = "1.0.0"
+title   = "Anonymous FTP accepts writes"
+
+[detection.when]
+service  = "ftp"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 4000
+
+[[step]]
+send   = "USER anonymous\r\nPASS zond@zond.test\r\nMKD zond-canary\r\nRMD zond-canary\r\n"
+expect = '(?m)^257'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Anonymous FTP accepted a directory create"
+  detail       = "Logged in as anonymous, MKD created a directory (257) which was then removed; the server accepts writes from an anonymous user, not only reads."
+  references   = [{ cwe = 276 }]
+  excerpt_from = "$response"

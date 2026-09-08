@@ -1,0 +1,35 @@
+# A web root that accepts an unauthenticated PUT (WebDAV or a misconfigured
+# upload path). A small file is PUT and then DELETEd. Gated on http, so the write
+# is filtered by the response: only a 201/204 to PUT reads as a hit, and the
+# cleanup DELETE runs whatever the PUT returned. active-mutating, opt-in only.
+
+[detection]
+id      = "webdav-writable"
+version = "1.0.0"
+title   = "HTTP endpoint accepts an unauthenticated file upload"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 4000
+
+[[step]]
+send        = "PUT /zond-canary.txt HTTP/1.1\r\nHost: {host}\r\nContent-Type: text/plain\r\nContent-Length: 4\r\nConnection: close\r\n\r\nzond"
+on_no_match = "continue"
+expect      = 'HTTP/[0-9.]+ 20[14]'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "An unauthenticated PUT was accepted"
+  detail       = "PUT of a probe file returned 201/204 with no credentials; the web root accepts uploads. The file was deleted afterward."
+  references   = [{ cwe = 276 }]
+  excerpt_from = "$response"
+
+[[step]]
+send   = "DELETE /zond-canary.txt HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+expect = 'HTTP'

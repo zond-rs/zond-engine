@@ -1,0 +1,33 @@
+# TFTP that accepts a write request. TFTP has no authentication, so a server that
+# answers a write request (WRQ) with an ACK is one anyone can upload to. Only the
+# WRQ is sent, not the data that would follow, so the transfer never completes and
+# no file content is written; the WRQ acknowledgement is the whole proof. TFTP has
+# no delete, so a server that creates an empty placeholder on WRQ may leave one.
+# active-mutating, opt-in only.
+
+[detection]
+id      = "tftp-writable"
+version = "1.0.0"
+title   = "TFTP accepts unauthenticated write requests"
+
+[detection.when]
+port     = 69
+protocol = "udp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 512
+max_millis = 3000
+
+[[step]]
+# WRQ: opcode 0x0002, filename "zond-canary", NUL, mode "octet", NUL.
+send   = '\x00\x02zond-canary\x00octet\x00'
+expect = '^\x00\x04'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "TFTP acknowledged an unauthenticated write request"
+  detail       = "A WRQ for a probe file was acknowledged, so the server accepts uploads with no authentication. Only the request was sent, not its data, so the transfer did not complete."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"
