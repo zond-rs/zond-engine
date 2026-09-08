@@ -114,7 +114,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "apache_os",
         reach: Reach::Contained,
-        note: "the platform Apache names inside its own `Server` value, reached through `http::os_from` when the value carries it",
+        note: "the platform Apache names inside its own `Server` value, reached through `http::corpus_reading` when the value carries it",
     },
     Context {
         name: "architecture",
@@ -159,7 +159,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "http_header.server",
         reach: Reach::Produced,
-        note: "the `Server` value, through `http::os_from`, which matches it globally rather than through the port index",
+        note: "the `Server` value, through `http::corpus_reading`, which matches it globally rather than through the port index",
     },
     Context {
         name: "http_header.wwwauth",
@@ -319,7 +319,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "tls.jarm",
         reach: Reach::Produced,
-        note: "a JARM hash, computed by `jarm::JarmAnalyzer` from how a TLS port answers ten deliberately awkward hellos and matched whole by `SignatureDb::identify_field`. Ten connections, so it is asked only at `ServiceDetection::Thorough` and only where a handshake already succeeded",
+        note: "a JARM hash, computed by `jarm::JarmAnalyzer` from how a TLS port answers ten deliberately awkward hellos and matched by `SignatureDb::identify_jarm` against the rules written for a hash and nothing else. Ten connections, so it is asked only at `ServiceDetection::Thorough` and only where a handshake already succeeded",
     },
     Context {
         name: "unknown",

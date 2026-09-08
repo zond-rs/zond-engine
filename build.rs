@@ -785,9 +785,12 @@ fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
 /// is one entry in the register, and refusing to build without it keeps that a
 /// decision rather than an oversight.
 ///
-/// A field that is classified and not yet produced fails nothing, since most of
-/// the corpus is in that state. The tally is printed instead, so the figure is
-/// derived on every compile.
+/// A field that is classified and not yet produced fails nothing: importing a
+/// block of rules before building the decoder they need is a legitimate way to
+/// work, and the register is where that state is recorded rather than lost. It
+/// is reported instead — and only then. A corpus with nothing waiting prints
+/// nothing, so the line is an alarm and not a meter, and a build that has been
+/// quiet for months is still counting.
 fn census_contexts(defs: &[ServiceDefinition], paths: &[PathBuf]) {
     use context::Reach;
 
@@ -831,6 +834,15 @@ fn census_contexts(defs: &[ServiceDefinition], paths: &[PathBuf]) {
                 entry.name
             );
         }
+    }
+
+    // Nothing is waiting, so there is nothing to say. Every other state the
+    // tally counts is a settled one: `Produced` fires, `Contained` fires from
+    // inside another field's text, and `OutOfScope` is a decision somebody wrote
+    // down in the register. Only `Unproduced` is work nobody has noticed.
+    let waiting = tally.get(&Reach::Unproduced).copied().unwrap_or(0);
+    if waiting == 0 {
+        return;
     }
 
     let total: usize = tally.values().sum();

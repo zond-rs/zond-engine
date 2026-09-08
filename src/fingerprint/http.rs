@@ -389,7 +389,7 @@ fn title_text(body: &str) -> Option<String> {
 /// for.
 ///
 /// `Server` is absent on purpose. It is already read for an operating system by
-/// [`os_from`], and offering it here as well would let one header contribute the
+/// [`corpus_reading`], and offering it here as well would let one header contribute the
 /// same reading twice to a resolver that settles by vote.
 ///
 /// Borrowed where the field is a slice of the response, owned only for the
