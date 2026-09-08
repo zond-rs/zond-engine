@@ -1,0 +1,29 @@
+[service]
+name = "rtsp"
+default_ports = [554, 8554]
+description = "Real Time Streaming Protocol"
+
+# An OPTIONS request for the server itself rather than for a stream.
+#
+# RFC 2326 gives `*` as the request URI meaning "the server in general", which
+# is the only form a static probe can use: every other RTSP request names a
+# stream URL, and a scanner knows neither the host's name for itself nor what it
+# is serving.
+#
+# The reply's status line is `RTSP/1.0`, not `HTTP/1.1`, which is why the HTTP
+# reader declines it and this port needs one of its own.
+[[probe]]
+name = "rtsp_options"
+payload = 'OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: ZondScanner/1.0\r\n\r\n'
+protocol = "tcp"
+
+# ── What answered ────────────────────────────────────────────────────────────
+#
+# The twelve imported rules read the `Server` value and are anchored at both
+# ends of it. This baseline names no product so any of them outranks it.
+
+[[match]]
+name = "rtsp_response"
+pattern = '^RTSP/\d\.\d \d{3}'
+product = "rtsp"
+example = "RTSP/1.0 200 OK"

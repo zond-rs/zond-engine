@@ -1,0 +1,22 @@
+# A Tier-2 compute detection. Active-benign: it asks an unauthenticated Redis for
+# INFO and compares the reported version against the supported line.
+
+[detection]
+id      = "redis-version-eol"
+version = "1.0.0"
+title   = "Redis reports an end-of-life version"
+
+[detection.when]
+service  = "redis"
+protocol = "tcp"
+
+[detection.capabilities]
+class           = "active-benign"
+speak           = "target"
+max_bytes       = 65535
+max_millis      = 3000
+max_connections = 2
+
+[compute]
+language = "rhai"
+body     = "redis-version-eol.rhai"

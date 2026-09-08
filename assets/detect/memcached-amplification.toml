@@ -1,0 +1,23 @@
+# A Tier-2 compute detection. Active-benign: it sends one crafted datagram to the
+# scanned UDP port and judges the reply. Gated on the port number and udp, so the
+# probe only goes where the protocol lives.
+
+[detection]
+id      = "memcached-amplification"
+version = "1.0.0"
+title   = "memcached UDP enables traffic amplification"
+
+[detection.when]
+port     = 11211
+protocol = "udp"
+
+[detection.capabilities]
+class           = "active-benign"
+speak           = "target"
+max_bytes       = 65535
+max_millis      = 3000
+max_connections = 2
+
+[compute]
+language = "rhai"
+body     = "memcached-amplification.rhai"

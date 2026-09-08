@@ -1,0 +1,22 @@
+# A Tier-2 compute detection. Active-benign: it POSTs a GraphQL introspection query
+# to a few conventional paths and reports one that returns a schema.
+
+[detection]
+id      = "graphql-introspection-open"
+version = "1.0.0"
+title   = "GraphQL introspection is exposed without authentication"
+
+[detection.when]
+speaks   = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class           = "active-benign"
+speak           = "target"
+max_bytes       = 65535
+max_millis      = 4000
+max_connections = 5
+
+[compute]
+language = "rhai"
+body     = "graphql-introspection-open.rhai"
