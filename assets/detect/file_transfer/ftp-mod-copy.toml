@@ -1,0 +1,34 @@
+# ProFTPD mod_copy reachable without authentication (CVE-2015-3306). mod_copy adds
+# SITE CPFR/CPTO to copy a file on the server; the flaw is that it runs them before
+# the session authenticates, so anyone who can reach the port can copy any file the
+# daemon can read or write — over the web root, that is remote code execution. The
+# probe sends a single SITE CPFR, before any login, naming a path that will not
+# exist, and reads the reply. A daemon that processes it answers 350 (staged) or 550
+# (no such file); one that demands a login first answers 530, and one without
+# mod_copy answers 500. Only CPFR is sent, which stages a source and copies nothing.
+
+[detection]
+id      = "ftp-mod-copy"
+version = "1.0.0"
+title   = "ProFTPD mod_copy usable without authentication"
+
+[detection.when]
+service  = "ftp"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'SITE CPFR /zond-modcopy-probe\r\nQUIT\r\n'
+expect = '(?m)^(?:350|550)'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "ProFTPD mod_copy processed SITE CPFR without a login"
+  detail       = "Before any authentication, the server accepted SITE CPFR — the copy command mod_copy adds — rather than demanding a login (530) or rejecting it as unknown (500). An unauthenticated client can copy any file the daemon can reach, which over the web root is remote code execution (CVE-2015-3306)."
+  references   = [{ cve = "CVE-2015-3306" }, { cwe = 306 }]
+  excerpt_from = "$response"

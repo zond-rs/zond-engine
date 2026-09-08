@@ -1,0 +1,38 @@
+# FTP bounce (FXP). The PORT command names the address the server should open the
+# data connection to, and a server that accepts an address other than the client's
+# will relay a connection to any host and port it can reach — a port scanner or a
+# way past a firewall, wearing the FTP server's address. anonymous-ftp proves the
+# login; this logs in the same way, then names a data address in the reserved
+# TEST-NET-1 range (192.0.2.1) and reads whether the server takes it. A 200 is the
+# server agreeing to connect there; nothing asks it to, so no connection is made.
+#
+# FTP holds its state on the control connection, so USER, PASS, PORT and QUIT are
+# pipelined onto the one exchange a flow opens, and the drained reply carries each
+# code in order. Requiring the 230 as well as the 200 keeps a server that takes a
+# PORT before it takes a login from reading as a bounce on its own.
+
+[detection]
+id      = "ftp-bounce"
+version = "1.0.0"
+title   = "FTP server allows the bounce attack"
+
+[detection.when]
+service  = "ftp"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'USER anonymous\r\nPASS zond@zond.test\r\nPORT 192,0,2,1,0,80\r\nQUIT\r\n'
+expect = ['(?m)^230[ -]', '(?m)^200']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "FTP accepted a data connection to a third-party host"
+  detail       = "Logged in anonymously, the server accepted a PORT command directing its data connection to 192.0.2.1, a host other than the client. A server that opens data connections to arbitrary hosts can be turned into a port scanner or a relay through its network boundary — the FTP bounce attack."
+  references   = [{ cwe = 441 }]
+  excerpt_from = "$response"
