@@ -149,8 +149,8 @@ pub use signature::{
     Provenance, ReplyKind, RuleError,
 };
 pub use text::{
-    AGENT_CEILING, BANNER_CEILING, OsMetadata, ceiling, evidence_from as banner_evidence,
-    hardware_from,
+    AGENT_CEILING, BANNER_CEILING, OsMetadata, canonicalise, ceiling,
+    evidence_from as banner_evidence, hardware_from,
 };
 // The capture resolver, for the service reading rather than the host one: a
 // rule's `service.component.*` fields take the same `{capture:N}` templates its

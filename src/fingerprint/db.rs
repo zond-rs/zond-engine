@@ -41,7 +41,13 @@ use rayon::prelude::*;
 use crate::fingerprint::signature::{DefinitionError, ServiceDefinition, unescape};
 use crate::model::port::Protocol;
 
+/// The field a rule reads when it takes an operating system's own name rather
+/// than something a service said. See
+/// [`canonical_os_name`](SignatureDb::canonical_os_name).
+const OS_NAME_CONTEXT: &str = "operating_system.name";
+
 use super::model::Evidence;
+use crate::model::host::OsEvidence;
 
 use super::matcher::Signature;
 use super::prefilter::{LiteralPrefilter, Prefilter};
@@ -92,6 +98,21 @@ pub struct SignatureDb {
     signatures: Vec<Signature>,
     /// `port -> primary service name` (first definition to claim the port).
     name_index: HashMap<u16, Arc<str>>,
+    /// The signatures whose rules read `operating_system.name`: an operating
+    /// system's own name, normalised.
+    ///
+    /// Held apart from every other index because they answer a different
+    /// question. A rule elsewhere in the corpus reads what a *service* said and
+    /// concludes what the host is; these read a bare operating-system name and
+    /// say what that name canonically is. `Windows Server 2008 R2 Standard` is
+    /// the Windows family, the 2008 R2 product, the Standard edition.
+    ///
+    /// They cannot be matched against the whole corpus, which is what
+    /// [`identify_field`](Self::identify_field) would do. Loose banner rules
+    /// elsewhere match an operating-system name as ordinary text and flatten it:
+    /// four FTP rules read `Windows Server 2008` and conclude `Windows`, which is
+    /// coarser than what went in. See [`canonical_os_name`](Self::canonical_os_name).
+    os_name_signatures: Vec<usize>,
     /// `port -> signature indices` matchable on that port.
     ///
     /// Service-linked: the union, over every service reachable on the port, of
@@ -195,9 +216,13 @@ impl SignatureDb {
         // definition for the same reason the generic ones are: what qualifies
         // a probe here is a property of the question, not of the port.
         let mut universal_tcp_probes: Vec<(u8, Vec<u8>)> = Vec::new();
+        let mut os_name_signatures: Vec<usize> = Vec::new();
         for def in &defs {
             for rule in &def.r#match {
                 let idx = signatures.len();
+                if rule.context.as_deref() == Some(OS_NAME_CONTEXT) {
+                    os_name_signatures.push(idx);
+                }
                 signatures.push(Signature::new(&def.service.name, rule));
                 service_sigs
                     .entry(def.service.name.clone())
@@ -290,6 +315,7 @@ impl SignatureDb {
         Self {
             signatures,
             name_index,
+            os_name_signatures,
             by_port,
             tcp_probes,
             generic_tcp_probes,
@@ -355,6 +381,33 @@ impl SignatureDb {
             &[text],
             crate::model::host::OsSource::ServiceBanner,
         )
+    }
+
+    /// What the corpus canonically calls the operating system `name`.
+    ///
+    /// A second stage over a first match's own reading. A rule that identified a
+    /// service often names the operating system loosely, as the string the
+    /// service happened to report: `Windows Server 2008 R2 Standard` from an SMB
+    /// session setup, say. The corpus carries 59 rules that take exactly such a
+    /// string and say what it canonically is, and this is how they are reached.
+    ///
+    /// Matched against those rules alone rather than against the corpus, because
+    /// the corpus contains banner rules loose enough to match an operating-system
+    /// name as ordinary text and answer with something coarser than the input.
+    /// Measured: `Windows Server 2008` through the whole set comes back
+    /// `Windows`, from an FTP rule written for a greeting.
+    ///
+    /// [`None`] where nothing recognises the name, which is the ordinary outcome
+    /// for a product that is not an operating system at all.
+    pub(crate) fn canonical_os_name(&self, name: &str) -> Option<OsEvidence> {
+        self.warm(&self.os_name_signatures);
+        best_match_within(
+            self,
+            &self.os_name_signatures,
+            &[name],
+            crate::model::host::OsSource::ServiceBanner,
+        )?
+        .os
     }
 
     /// The primary service name registered for `port`, if any. No compilation.
@@ -502,6 +555,39 @@ impl SignatureDb {
 /// line matches a loose rule naming a family, and the field matches the rule
 /// naming the release.
 fn best_match(
+    db: &SignatureDb,
+    indices: &[usize],
+    texts: &[&str],
+    attested_by: crate::model::host::OsSource,
+) -> Option<Evidence> {
+    let found = best_match_within(db, indices, texts, attested_by)?;
+
+    // A second stage over the name the winner produced, filling in what the
+    // corpus canonically knows about it. A rule that identified a service names
+    // the operating system as the string the service handed over, which carries
+    // a release and often no family; the rules behind `canonical_os_name`
+    // supply the family, and the merge may only add. See `os::canonicalise`.
+    let os = found.os.map(|evidence| {
+        let canonical = evidence
+            .product
+            .as_deref()
+            .and_then(|product| db.canonical_os_name(product));
+        match canonical {
+            Some(canonical) => super::os::canonicalise(evidence, &canonical),
+            None => evidence,
+        }
+    });
+
+    Some(Evidence { os, ..found })
+}
+
+/// [`best_match`] without the canonical-name stage, which is what that stage
+/// itself runs on.
+///
+/// The split exists because the stage would otherwise call itself: it matches a
+/// name against the corpus, that match produces a name, and so on. Nothing here
+/// consults `canonical_os_name`, so the recursion has a floor.
+fn best_match_within(
     db: &SignatureDb,
     indices: &[usize],
     texts: &[&str],
@@ -1018,6 +1104,102 @@ mod tests {
             refused.error,
             DefinitionError::UdpProbeSize { probe: 0, bytes: 0 }
         );
+    }
+
+    /// The canonical stage fills in the family a service rule could not state,
+    /// and leaves the release it did state alone.
+    ///
+    /// An SMB session setup reports `Windows Server 2008 R2 Standard 7601
+    /// Service Pack 1`. The rule reading it names a vendor, a product and a CPE
+    /// and no family, because the string carries none, so `evidence_from` reads
+    /// the product as the family and the host votes as its own edition. This is
+    /// what puts `Windows` there instead.
+    #[test]
+    fn a_canonical_name_supplies_the_family_and_keeps_the_release() {
+        let found = SignatureDb::global()
+            .identify(
+                445,
+                Protocol::Tcp,
+                "Windows Server 2008 R2 Standard 7601 Service Pack 1",
+            )
+            .expect("the corpus names it");
+        let os = found.os.expect("it says something about the machine");
+
+        assert_eq!(os.family.as_deref(), Some("Windows"));
+        assert_eq!(
+            os.product.as_deref(),
+            Some("Windows Server 2008 R2"),
+            "the release the service reported must survive the stage"
+        );
+    }
+
+    /// The family is what the stage is consulted for, and it is the same one for
+    /// every release in a line.
+    ///
+    /// This is the whole value: a host whose family is its own release votes as
+    /// its edition, so two Windows machines running different ones disagree
+    /// about what they are. Against a common family they agree.
+    #[test]
+    fn every_windows_release_canonicalises_to_one_family() {
+        let db = SignatureDb::global();
+        for name in [
+            "Windows Server 2008",
+            "Windows Server 2012 R2",
+            "Windows 7",
+            "Windows XP",
+            "Windows 10",
+        ] {
+            let canonical = db
+                .canonical_os_name(name)
+                .unwrap_or_else(|| panic!("{name} is not recognised"));
+            assert_eq!(
+                canonical.family.as_deref(),
+                Some("Windows"),
+                "{name} canonicalised to a different family"
+            );
+        }
+    }
+
+    /// A product that is not an operating system is left alone rather than
+    /// forced into one. Most products a scan names are software, and this stage
+    /// runs on all of them.
+    #[test]
+    fn a_product_that_is_not_an_operating_system_is_not_canonicalised() {
+        let db = SignatureDb::global();
+        for product in ["nginx", "OpenSSH", "Grafana", "NC-8700w"] {
+            assert!(
+                db.canonical_os_name(product).is_none(),
+                "{product} was read as an operating system"
+            );
+        }
+    }
+
+    /// A rule that genuinely states the family and the product as the same word
+    /// is untouched. Linux and AIX are written that way, and the canonical
+    /// reading agrees with them rather than overriding anything.
+    #[test]
+    fn a_family_that_is_honestly_the_product_is_left_alone() {
+        let canonical = SignatureDb::global()
+            .canonical_os_name("Linux")
+            .expect("the os-name rules recognise it");
+        assert_eq!(canonical.family.as_deref(), Some("Linux"));
+        assert_eq!(canonical.product.as_deref(), Some("Linux"));
+    }
+
+    /// The stage runs on the output of a match, and its own output is a match,
+    /// so it has to stop. `best_match_within` is the floor, and this is a
+    /// regression guard: the first version of this recursed until the stack ran
+    /// out.
+    #[test]
+    fn the_canonical_stage_does_not_call_itself() {
+        for name in [
+            "Windows Server 2008",
+            "Linux",
+            "Mac OS X",
+            "not an os at all",
+        ] {
+            let _ = SignatureDb::global().canonical_os_name(name);
+        }
     }
 
     /// Everything the build compiled passes the check the build ran. Circular if

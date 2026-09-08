@@ -394,6 +394,73 @@ pub fn evidence_from(
     })
 }
 
+/// Fills in what the corpus canonically knows about the operating system this
+/// evidence names, where it names one that is recognised.
+///
+/// A rule that identified a service reports the operating system as the string
+/// the service handed over. An SMB session setup says `Windows Server 2008 R2
+/// Standard`, and the rule reading it states a vendor, a product and a CPE and
+/// no *family*, because the string it matched had no family in it to state.
+/// [`evidence_from`] then falls back to reading the product as the family, so
+/// the host votes as its own edition, and two Windows machines running
+/// different editions disagree about what they are.
+///
+/// The corpus already holds the answer: 59 rules that take an operating
+/// system's name and say what it canonically is. This is the stage that
+/// consults them, through
+/// [`canonical_os_name`](crate::fingerprint::SignatureDb).
+///
+/// # It may only add
+///
+/// Every field the first match stated is kept. The canonical reading is
+/// generally coarser about the product, naming a family where the service named
+/// a release, so letting it overwrite would turn `Windows Server 2008 R2` into
+/// `Windows`. The product stands, and so does everything else already present;
+/// only the empty fields are filled.
+///
+/// The family is the one field that is replaced, and only where it is the
+/// product repeated, which is what [`evidence_from`]'s own fallback leaves
+/// behind. That is the point of the stage: a host whose family is its release
+/// votes as its edition, and two Windows machines running different ones
+/// disagree about what they are.
+///
+/// The confidence is the first match's own. A canonical name is a naming rather
+/// than a second observation of the host, so it adds no weight and takes none
+/// away.
+pub fn canonicalise(evidence: OsEvidence, canonical: &OsEvidence) -> OsEvidence {
+    /// Keeps what the first match said, and takes the canonical reading only
+    /// where it said nothing.
+    fn or(mine: Option<String>, theirs: &Option<String>) -> Option<String> {
+        mine.or_else(|| theirs.clone())
+    }
+
+    // The family is the exception, because there is rarely an empty one to
+    // fill: `evidence_from` reads the product as the family where a rule
+    // states none, so by the time this runs the field usually holds the
+    // release. A family equal to the product is that fallback showing, and the
+    // canonical reading is the answer it was standing in for.
+    //
+    // A rule that genuinely states both as the same word, which the Linux and
+    // AIX rules do, is unaffected: the canonical reading agrees with it.
+    let family = match (&evidence.family, &evidence.product, &canonical.family) {
+        (Some(family), Some(product), Some(canonical)) if family == product => {
+            Some(canonical.clone())
+        }
+        _ => or(evidence.family, &canonical.family),
+    };
+
+    OsEvidence {
+        family,
+        vendor: or(evidence.vendor, &canonical.vendor),
+        version: or(evidence.version, &canonical.version),
+        kernel: or(evidence.kernel, &canonical.kernel),
+        arch: or(evidence.arch, &canonical.arch),
+        cpe: or(evidence.cpe, &canonical.cpe),
+        device: evidence.device.or_else(|| canonical.device.clone()),
+        ..evidence
+    }
+}
+
 /// The most a rule matched against `source`'s text may be worth, before the
 /// corpus's own certainty scales it.
 ///

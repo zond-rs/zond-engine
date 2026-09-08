@@ -233,8 +233,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "operating_system.name",
-        reach: Reach::Unproduced,
-        note: "a second matching stage: the `os.product` an earlier match produced, fed back through the corpus. The text reaches the matcher only when a reply happens to be a bare operating-system name",
+        reach: Reach::Produced,
+        note: "the `os.product` a first match produced, looked up in these rules alone by `SignatureDb::canonical_os_name` once `best_match` has chosen a winner. Matched against this field's own rules rather than the corpus, because loose banner rules elsewhere read an operating-system name as ordinary text and answer with something coarser than went in",
     },
     Context {
         name: "pop3.banner",
