@@ -830,7 +830,14 @@ pub struct FindingRecord {
     #[serde(default)]
     pub references: Vec<ReferenceRecord>,
     /// Remediation advice, if any.
-    #[serde(default)]
+    ///
+    /// Omitted when absent, as the report's own field is. The two documents
+    /// describe the same finding and `export::conformance` holds them to
+    /// spelling it the same way; a journal that wrote `null` where the report
+    /// wrote nothing was a difference nobody had noticed because every entry in
+    /// the shipped catalogue used to carry advice. A converted feed carries
+    /// none, and the asymmetry surfaced the moment one was shipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
 }
 

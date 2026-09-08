@@ -134,6 +134,8 @@ fn main() {
     let encoded = bincode::serialize(&services).expect("failed to serialize fingerprint database");
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
 
+    compile_cve_catalogue(Path::new(&out_dir));
+
     compile_os_rules(Path::new(&out_dir));
     compile_detections(
         Path::new(&out_dir),
@@ -776,6 +778,108 @@ fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
 
 /// Validates one service definition, aborting the build on any defect that would
 /// silently degrade detection, and warning on softer issues.
+/// Compiles `assets/cve/` into the pooled form `cve::Catalogue` loads.
+///
+/// The documents are TOML because they are reviewed as text and one of them is
+/// hand-written, and TOML is the wrong thing to parse at start-up: the shipped
+/// catalogue is twenty megabytes and seventy thousand entries, which is a tenth
+/// of a second every time a process first correlates.
+///
+/// So the strings are pooled here and the entries reduced to indices, which is
+/// the shape the engine holds them in anyway. Seventeen thousand distinct
+/// strings back four hundred thousand field slots, because a feed states one
+/// entry per affected version and every one repeats the same title.
+///
+/// The shape is duplicated rather than shared through `#[path]`, as the context
+/// register is: `cve.rs` is a module with half the crate behind it and cannot be
+/// spliced into a build script. Drift is caught rather than prevented — every
+/// test that reads the embedded catalogue deserializes this blob, and a changed
+/// field would fail all of them at once.
+fn compile_cve_catalogue(out_dir: &Path) {
+    #[derive(serde::Deserialize)]
+    struct Document {
+        #[serde(default)]
+        vulnerability: Vec<DocumentEntry>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct DocumentEntry {
+        cve: String,
+        title: String,
+        severity: String,
+        vendor: String,
+        product: String,
+        affected: String,
+        #[serde(default)]
+        cwe: Option<u32>,
+        #[serde(default)]
+        remediation: Option<String>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct Entry {
+        cve: u32,
+        title: u32,
+        severity: u32,
+        vendor: u32,
+        product: u32,
+        affected: u32,
+        cwe: Option<u32>,
+        remediation: Option<u32>,
+    }
+
+    let mut sources: Vec<PathBuf> = fs::read_dir("assets/cve")
+        .expect("assets/cve is readable")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("toml"))
+        .collect();
+    // Sorted for a reproducible artifact: two builds of the same tree must
+    // produce the same bytes, and a directory listing is not ordered.
+    sources.sort();
+
+    let mut pool: Vec<String> = Vec::new();
+    let mut seen: BTreeMap<String, u32> = BTreeMap::new();
+    let intern = |value: &str, pool: &mut Vec<String>, seen: &mut BTreeMap<String, u32>| -> u32 {
+        if let Some(index) = seen.get(value) {
+            return *index;
+        }
+        let index = pool.len() as u32;
+        pool.push(value.to_string());
+        seen.insert(value.to_string(), index);
+        index
+    };
+
+    let mut entries: Vec<Entry> = Vec::new();
+    for path in &sources {
+        println!("cargo:rerun-if-changed={}", path.display());
+        let text = fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("{}: unreadable: {e}", path.display()));
+        let document: Document = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{}: not a catalogue: {e}", path.display()));
+
+        for entry in &document.vulnerability {
+            entries.push(Entry {
+                cve: intern(&entry.cve, &mut pool, &mut seen),
+                title: intern(&entry.title, &mut pool, &mut seen),
+                severity: intern(&entry.severity, &mut pool, &mut seen),
+                vendor: intern(&entry.vendor, &mut pool, &mut seen),
+                product: intern(&entry.product, &mut pool, &mut seen),
+                affected: intern(&entry.affected, &mut pool, &mut seen),
+                cwe: entry.cwe,
+                remediation: entry
+                    .remediation
+                    .as_deref()
+                    .map(|value| intern(value, &mut pool, &mut seen)),
+            });
+        }
+    }
+
+    let encoded =
+        bincode::serialize(&(&pool, &entries)).expect("failed to serialize the CVE catalogue");
+    fs::write(out_dir.join("cve_catalogue.bin"), encoded)
+        .expect("failed to write the CVE catalogue");
+}
+
 /// Holds every rule's declared `context` against the register in
 /// `src/fingerprint/context.rs`, and reports how much of the corpus can fire.
 ///

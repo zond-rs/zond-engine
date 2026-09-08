@@ -96,8 +96,21 @@ const CORRELATOR_ID: &str = "zond:cve-kev";
 /// The prefix a catalogue read from outside this crate may not claim.
 const RESERVED_PREFIX: &str = "zond:";
 
-/// The shipped seed's version, carried on every finding it produces.
-const SEED_VERSION: Version = Version::new(0, 1, 0);
+/// The shipped catalogue's version, carried on every finding it produces.
+///
+/// Moved to `0.2.0` when the catalogue stopped being five hand-picked entries
+/// and became the converted feed beside them. A report from before the change
+/// and one from after are distinguishable by it, which is the whole reason a
+/// dataset carries a version.
+const SEED_VERSION: Version = Version::new(0, 2, 0);
+
+/// The catalogue compiled from `assets/cve/` by `build.rs`: a string pool and
+/// the entries that index into it.
+///
+/// Compiled rather than parsed because the documents are twenty megabytes of
+/// TOML and parsing them costs a tenth of a second on the first correlation of
+/// every process. See `compile_cve_catalogue` in `build.rs`.
+const EMBEDDED_DB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cve_catalogue.bin"));
 
 /// The most a catalogue document may be.
 ///
@@ -358,16 +371,16 @@ impl Catalogue {
     pub fn embedded() -> &'static Self {
         static EMBEDDED: OnceLock<Catalogue> = OnceLock::new();
         EMBEDDED.get_or_init(|| {
-            const SOURCE: &str = include_str!("../assets/cve/seed.toml");
+            let (pool, vulnerability) = bincode::deserialize(EMBEDDED_DB)
+                .expect("the embedded CVE catalogue is the shape build.rs writes");
 
-            let document: CatalogueDocument =
-                toml::from_str(SOURCE).expect("the embedded CVE seed is valid TOML");
-
-            let (pool, vulnerability) = intern_all(&document.vulnerability);
             Catalogue {
                 id: CORRELATOR_ID.to_string(),
                 version: SEED_VERSION,
-                content_hash: content_hash(SOURCE.as_bytes()),
+                // Of the compiled bytes rather than of the documents they came
+                // from. It answers the same question — which dataset concluded
+                // this — and it is the only thing the running process has.
+                content_hash: content_hash(EMBEDDED_DB),
                 pool,
                 vulnerability,
             }
@@ -1062,12 +1075,23 @@ affected = "*"
         assert!(!Catalogue::embedded().vulnerability.is_empty());
     }
 
+    /// Every CVE identifier the embedded catalogue reports for one CPE.
+    fn embedded_cves(cpe: &str) -> Vec<String> {
+        Catalogue::embedded()
+            .findings_for(cpe)
+            .iter()
+            .flat_map(|finding| finding.references())
+            .filter_map(|reference| match reference {
+                Reference::Cve(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn a_matching_cpe_yields_a_probable_finding_a_safe_version_does_not() {
-        // Apache 2.4.49 is the vulnerable build; 2.4.51 carries the fix.
         let hits = Catalogue::embedded().findings_for("cpe:/a:apache:http_server:2.4.49");
-        assert_eq!(hits.len(), 1);
-        let finding = &hits[0];
+        let finding = hits.first().expect("2.4.49 is a vulnerable build");
         assert_eq!(finding.severity(), Severity::Critical);
         assert_eq!(
             finding.confidence(),
@@ -1076,48 +1100,48 @@ affected = "*"
         );
         assert_eq!(finding.detection().id(), "zond:cve-kev");
         assert!(
-            finding
-                .references()
-                .any(|r| matches!(r, Reference::Cve(id) if id == "CVE-2021-41773"))
+            embedded_cves("cpe:/a:apache:http_server:2.4.49")
+                .contains(&"CVE-2021-41773".to_string())
         );
 
+        // 2.4.51 carries the fix for that one. It is not a clean build — a real
+        // catalogue knows plenty about it — so the claim is the narrow one the
+        // version range actually makes, and asserting emptiness here would only
+        // hold while the catalogue was five entries long.
         assert!(
-            Catalogue::embedded()
-                .findings_for("cpe:/a:apache:http_server:2.4.51")
-                .is_empty(),
-            "the fixed version is not reported"
+            !embedded_cves("cpe:/a:apache:http_server:2.4.51")
+                .contains(&"CVE-2021-41773".to_string()),
+            "the range stops at 2.4.49 and the fixed build is outside it"
         );
         assert!(
             Catalogue::embedded()
                 .findings_for("cpe:/a:nginx:nginx:1.24.0")
                 .is_empty(),
-            "an unrelated product does not match"
+            "a vendor nothing is keyed under does not match: nginx is `f5:nginx`"
         );
 
         // The curated identities fire against the shapes the corpus actually
         // emits: OpenSSH banners carry a `p` suffix, and vsftpd is an exact match.
-        assert_eq!(
-            Catalogue::embedded()
-                .findings_for("cpe:/a:openbsd:openssh:9.6p1")
-                .len(),
-            1
+        // regreSSHion is `>= 8.5, < 9.8`, so it is reported for 9.6p1 and not for
+        // 9.8p1. The `p` suffix is the shape the corpus emits and has to compare
+        // correctly against a range that carries none.
+        assert!(
+            embedded_cves("cpe:/a:openbsd:openssh:9.6p1").contains(&"CVE-2024-6387".to_string())
         );
         assert!(
-            Catalogue::embedded()
-                .findings_for("cpe:/a:openbsd:openssh:9.8p1")
-                .is_empty(),
-            "the fixed OpenSSH release is not reported"
+            !embedded_cves("cpe:/a:openbsd:openssh:9.8p1").contains(&"CVE-2024-6387".to_string()),
+            "the fixed OpenSSH release is outside the range"
         );
-        assert_eq!(
-            Catalogue::embedded()
-                .findings_for("cpe:/a:vsftpd_project:vsftpd:2.3.4")
-                .len(),
-            1
+
+        // The backdoored vsftpd tarball, which is an exact version rather than a
+        // range and is the one every CTF host runs.
+        assert!(
+            embedded_cves("cpe:/a:vsftpd_project:vsftpd:2.3.4")
+                .contains(&"CVE-2011-2523".to_string())
         );
         assert!(
-            Catalogue::embedded()
-                .findings_for("cpe:/a:vsftpd_project:vsftpd:3.0.5")
-                .is_empty()
+            !embedded_cves("cpe:/a:vsftpd_project:vsftpd:3.0.5")
+                .contains(&"CVE-2011-2523".to_string())
         );
     }
 
