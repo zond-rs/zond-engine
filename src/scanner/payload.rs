@@ -67,10 +67,6 @@ const DNS: u16 = 53;
 /// every name it has registered.
 const NETBIOS_NS: u16 = 137;
 
-/// Where a time server answers, and where its own account of itself comes back
-/// only to a second kind of question. See the test below.
-const NTP: u16 = 123;
-
 /// The payload to send when probing `port`.
 ///
 /// Returns an empty slice for a port no service registers a UDP probe for. The
@@ -128,6 +124,14 @@ pub fn declared_role(port: u16, reply: &[u8]) -> Option<NetworkRole> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where a time server answers, and where its own account of itself comes
+    /// back only to a second kind of question.
+    const NTP: u16 = 123;
+
+    /// Where an L2TP concentrator answers, and where asking the same thing
+    /// twice gets an acknowledgement the second time.
+    const L2TP: u16 = 1701;
 
     /// The ports the shipped corpus is expected to carry a UDP probe for.
     ///
@@ -278,6 +282,26 @@ mod tests {
                 .iter()
                 .any(|payload| payload[0] & MODE == MODE_CONTROL),
             "the control message is what the readvar rules were written for"
+        );
+    }
+
+    /// L2TP registers two requests that differ only in the tunnel they name.
+    ///
+    /// The protocol remembers. A concentrator answers a repeat of a tunnel
+    /// request with a zero-length acknowledgement rather than with its own name,
+    /// and a scan sends this port a probe twice: once to establish it is open,
+    /// once to identify it. The second request exists so the identification pass
+    /// has one the concentrator has not seen.
+    #[test]
+    fn l2tp_registers_two_requests_naming_different_tunnels() {
+        let payloads = SignatureDb::global().udp_probe_payloads(L2TP);
+        assert_eq!(payloads.len(), 2, "L2TP registers a second tunnel request");
+
+        let tunnel = |payload: &Vec<u8>| payload[payload.len() - 2..].to_vec();
+        assert_ne!(
+            tunnel(&payloads[0]),
+            tunnel(&payloads[1]),
+            "both requests name the same tunnel, so the second draws only an acknowledgement"
         );
     }
 

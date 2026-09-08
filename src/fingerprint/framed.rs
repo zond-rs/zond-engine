@@ -794,7 +794,9 @@ pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
     let mut at = HEADER_BYTES;
     let mut vendor = None;
     let mut host = None;
+    let mut attributes = 0usize;
     while at + ATTRIBUTE_HEADER_BYTES <= datagram.len() {
+        attributes += 1;
         // The top six bits are flags and the low ten are the length, which
         // counts this header along with the value.
         let length = (u16::from_be_bytes([datagram[at], datagram[at + 1]]) & 0x03FF) as usize;
@@ -818,6 +820,16 @@ pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
         at += length;
     }
 
+    // A control message carrying no attributes at all is a zero-length body,
+    // which acknowledges a message rather than answering one. A concentrator
+    // sends it for a repeat of a tunnel request it has already seen, so a scan
+    // that probes this port twice gets the real answer once and an
+    // acknowledgement after. Reading that as a service would name L2TP from a
+    // datagram that says nothing.
+    if attributes == 0 {
+        return None;
+    }
+
     let mut said = Vec::new();
     if let Some(vendor) = vendor {
         said.push(format!("vendor={vendor}"));
@@ -826,6 +838,8 @@ pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
         said.push(format!("host={host}"));
     }
     match said.is_empty() {
+        // Some other control message: a refusal names no vendor and is still an
+        // L2TP daemon answering.
         true => Some("l2tp".to_string()),
         false => Some(said.join(" ")),
     }
@@ -1381,6 +1395,29 @@ mod tests {
         assert!(ike_response(b"too short").is_none());
     }
 
+    /// A zero-length body is an acknowledgement, not an answer.
+    ///
+    /// A concentrator sends one for a repeat of a tunnel request it has already
+    /// seen, and a scan sends the same probe twice: once to establish the port
+    /// is open, once to identify it. Reading these twelve bytes as a service
+    /// named L2TP from a datagram that says nothing, which is what shipped
+    /// until a scan of xl2tpd showed the port coming back with no product.
+    #[test]
+    fn a_zero_length_body_is_an_acknowledgement_and_not_an_answer() {
+        let zlb = [0xC8u8, 0x02, 0x00, 0x0C, 0x7A, 0x6F, 0, 0, 0, 0, 0, 1];
+        assert!(l2tp_control(&zlb).is_none());
+    }
+
+    /// A control message that carries attributes but names neither the vendor
+    /// nor the host is still a daemon answering.
+    #[test]
+    fn a_control_message_naming_nothing_is_still_l2tp() {
+        let mut message = vec![0xC8u8, 0x02, 0x00, 0x14, 0x7A, 0x6F, 0, 0, 0, 0, 0, 1];
+        // Message Type = 4, StopCCN.
+        message.extend_from_slice(&[0x80, 0x08, 0, 0, 0, 0, 0, 4]);
+        assert_eq!(l2tp_control(&message).as_deref(), Some("l2tp"));
+    }
+
     /// Anything at all, without panicking. Each of these reads a datagram from
     /// an unauthenticated stranger.
     #[test]
@@ -1404,6 +1441,8 @@ mod tests {
             let _ = ntp_control_variables(bytes);
             let _ = stun_binding(bytes);
             let _ = ike_response(bytes);
+            let _ = kerberos_error(bytes);
+            let _ = l2tp_control(bytes);
         }
     }
 }

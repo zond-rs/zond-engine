@@ -22,6 +22,22 @@ name = "l2tp_sccrq"
 payload = '\xc8\x02\x00\x3d\x00\x00\x00\x00\x00\x00\x00\x00\x80\x08\x00\x00\x00\x00\x00\x01\x80\x08\x00\x00\x00\x02\x01\x00\x80\x0a\x00\x00\x00\x03\x00\x00\x00\x03\x80\x0f\x00\x00\x00\x07zond-scan\x80\x08\x00\x00\x00\x09zo'
 protocol = "udp"
 
+# The same request under a different tunnel id, because L2TP remembers.
+#
+# A concentrator that has already seen a tunnel request answers a repeat of it
+# with a zero-length acknowledgement rather than with its own name, and a scan
+# sends this probe twice: once to establish the port is open, once to identify
+# what is behind it. The second datagram was drawing the acknowledgement and the
+# port came back named `l2tp` and nothing else.
+#
+# So the identification pass has a request of its own to send. Measured against
+# xl2tpd 1.3.16: a fresh tunnel id draws a full SCCRP where a repeated one draws
+# twelve bytes.
+[[probe]]
+name = "l2tp_sccrq_second_tunnel"
+payload = '\xc8\x02\x00\x3d\x00\x00\x00\x00\x00\x00\x00\x00\x80\x08\x00\x00\x00\x00\x00\x01\x80\x08\x00\x00\x00\x02\x01\x00\x80\x0a\x00\x00\x00\x03\x00\x00\x00\x03\x80\x0f\x00\x00\x00\x07zond-scan\x80\x08\x00\x00\x00\x09Z1'
+protocol = "udp"
+
 # ── What the concentrator names ──────────────────────────────────────────────
 #
 # The vendor name identifies the implementation and the host name is the
