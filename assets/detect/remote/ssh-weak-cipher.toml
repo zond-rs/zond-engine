@@ -1,0 +1,31 @@
+# SSH offering a CBC-mode or legacy stream cipher. The server's KEXINIT lists the
+# symmetric ciphers it will accept; the CBC modes are subject to a plaintext-recovery
+# attack (CVE-2008-5161) and arcfour is RC4, broken outright. The probe sends a client
+# identification string and reads the KEXINIT the server answers with. A single read
+# of the handshake; nothing authenticates.
+
+[detection]
+id      = "ssh-weak-cipher"
+version = "1.0.0"
+title   = "SSH offers a weak cipher"
+
+[detection.when]
+service  = "ssh"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'SSH-2.0-zond_1.0\r\n'
+expect = '(arcfour[0-9]*|[a-z0-9]+-cbc)'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "SSH offered a CBC-mode or legacy stream cipher"
+  detail       = "The server's KEXINIT lists a cipher a modern client should refuse: a CBC mode, vulnerable to the plaintext-recovery attack of CVE-2008-5161, or arcfour (RC4), broken outright."
+  references   = [{ cwe = 327 }]
+  excerpt_from = "$response"

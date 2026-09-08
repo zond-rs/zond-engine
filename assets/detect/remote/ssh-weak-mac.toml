@@ -1,0 +1,31 @@
+# SSH offering an MD5 or truncated message authentication code. The server's KEXINIT
+# lists the MAC algorithms it will accept; hmac-md5 rests on a broken hash, and the
+# 96-bit and 64-bit truncations (hmac-sha1-96, umac-64) cut the tag short enough to
+# forge. The probe sends a client identification string and reads the KEXINIT the
+# server answers with. A single read of the handshake; nothing authenticates.
+
+[detection]
+id      = "ssh-weak-mac"
+version = "1.0.0"
+title   = "SSH offers a weak MAC"
+
+[detection.when]
+service  = "ssh"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'SSH-2.0-zond_1.0\r\n'
+expect = '(hmac-md5|hmac-sha1-96|umac-64|hmac-ripemd160)'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "SSH offered an MD5 or truncated MAC"
+  detail       = "The server's KEXINIT lists a MAC a modern client should refuse: hmac-md5 rests on a broken hash, and the 96-bit or 64-bit truncations leave a tag short enough to forge."
+  references   = [{ cwe = 327 }]
+  excerpt_from = "$response"

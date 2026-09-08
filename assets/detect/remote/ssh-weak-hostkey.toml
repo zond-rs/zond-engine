@@ -1,0 +1,31 @@
+# SSH offering a DSA host key. The server's KEXINIT lists the host-key algorithms it
+# will authenticate itself with; ssh-dss is DSA, fixed at a 1024-bit key and a SHA-1
+# signature, weak enough that OpenSSH disabled it by default in 7.0. The probe sends a
+# client identification string and reads the KEXINIT the server answers with. A single
+# read of the handshake; nothing authenticates.
+
+[detection]
+id      = "ssh-weak-hostkey"
+version = "1.0.0"
+title   = "SSH offers a DSA host key"
+
+[detection.when]
+service  = "ssh"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = 'SSH-2.0-zond_1.0\r\n'
+expect = '(ssh-dss)'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "SSH offered a DSA host key"
+  detail       = "The server's KEXINIT lists ssh-dss, a DSA host key fixed at 1024 bits and a SHA-1 signature, which OpenSSH disabled by default in 7.0. A modern client should refuse it."
+  references   = [{ cwe = 327 }]
+  excerpt_from = "$response"
