@@ -373,9 +373,16 @@ mod tests {
     use crate::model::port::Service;
     use std::net::{IpAddr, Ipv4Addr};
 
-    /// The default grant: passive and active-benign run.
+    /// The default grant: what the scan already gathered, and nothing that opens
+    /// a connection of its own.
     fn default_envelope() -> DetectionEnvelope {
         DetectionEnvelope::default()
+    }
+
+    /// The grant a `-d` scan runs under, which is what a flow needs: every flow
+    /// speaks, so a test about one running names this rather than the default.
+    fn benign_envelope() -> DetectionEnvelope {
+        DetectionEnvelope::up_to(Class::ActiveBenign.into_model())
     }
 
     /// A socket that answers every send with one canned reply.
@@ -400,7 +407,7 @@ mod tests {
     fn a_matching_flow_runs_and_records_its_finding_on_the_port() {
         let mut host = host_with(open(6379, Protocol::Tcp, "redis"));
 
-        run_flows(&mut host, FlowDb::global(), &default_envelope(), |_port| {
+        run_flows(&mut host, FlowDb::global(), &benign_envelope(), |_port| {
             Some(Box::new(Canned(b"# Server\r\nredis_version:7.2.4")))
         });
 
@@ -414,10 +421,11 @@ mod tests {
 
     #[test]
     fn the_envelope_decides_which_classes_run() {
-        // The default permits benign flows but withholds the intrusive ones.
+        // The default reads what the scan gathered and withholds everything that
+        // would open a connection of its own.
         let default = default_envelope();
         assert!(enabled(Class::Passive, &default));
-        assert!(enabled(Class::ActiveBenign, &default));
+        assert!(!enabled(Class::ActiveBenign, &default));
         assert!(!enabled(Class::ActiveMutating, &default));
         assert!(!enabled(Class::Exploit, &default));
         assert!(!enabled(Class::Dos, &default));
@@ -432,7 +440,7 @@ mod tests {
         // Wrong service: the redis flow's `when.service = "redis"` does not fit an
         // http port, so nothing fires even though the socket would answer.
         let mut http = host_with(open(6379, Protocol::Tcp, "http"));
-        run_flows(&mut http, FlowDb::global(), &default_envelope(), |_| {
+        run_flows(&mut http, FlowDb::global(), &benign_envelope(), |_| {
             Some(Box::new(Canned(b"# Server\r\nredis_version:7.2.4")))
         });
         let port = http.ports().find(|port| port.number() == 6379).unwrap();
@@ -443,7 +451,7 @@ mod tests {
             Port::new(6379, Protocol::Tcp, PortState::Closed)
                 .with_service(Service::new("redis", 100)),
         );
-        run_flows(&mut closed, FlowDb::global(), &default_envelope(), |_| {
+        run_flows(&mut closed, FlowDb::global(), &benign_envelope(), |_| {
             Some(Box::new(Canned(b"# Server\r\nredis_version:7.2.4")))
         });
         let port = closed.ports().find(|port| port.number() == 6379).unwrap();
@@ -521,7 +529,7 @@ mod tests {
 
         let (findings, refusals) = detect_port(
             FlowDb::global(),
-            &default_envelope(),
+            &benign_envelope(),
             "192.0.2.10",
             Some("redis"),
             6379,
@@ -771,7 +779,7 @@ mod tests {
         let ordered = || {
             let (findings, _) = detect_port(
                 &corpus,
-                &default_envelope(),
+                &benign_envelope(),
                 "192.0.2.10",
                 Some("redis"),
                 6379,
@@ -858,7 +866,7 @@ mod tests {
         let counted = std::sync::Arc::clone(&opened);
         detect_port(
             &corpus,
-            &default_envelope(),
+            &benign_envelope(),
             "192.0.2.10",
             Some("redis"),
             6379,

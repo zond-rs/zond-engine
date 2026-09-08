@@ -312,6 +312,7 @@ mod tests {
             addr: None,
             tunnel: None,
             speaks_http: false,
+            detection: crate::config::ServiceDetection::default(),
         }
     }
 
@@ -377,6 +378,9 @@ mod tests {
     }
 
     #[test]
+    /// Named rather than defaulted: the default ceiling reads what a scan
+    /// gathered and permits nothing that opens a connection, which is the whole
+    /// of what this test is about.
     fn an_active_detection_is_served_its_socket_and_decides_on_the_reply() {
         let runtime = RhaiRuntime::new();
         // Speaks, and fires only because the stub answered.
@@ -401,7 +405,7 @@ mod tests {
         let findings = detect_port(
             &runtime,
             &detections,
-            &DetectionEnvelope::default(),
+            &DetectionEnvelope::up_to(DetectionClass::ActiveBenign),
             Some("redis"),
             &ctx(6379),
             &[],
@@ -446,6 +450,9 @@ mod tests {
     }
 
     #[test]
+    /// The ceiling is named for the reason the test above names one: a tape is
+    /// what a module's socket work leaves behind, and the default ceiling grants
+    /// none.
     fn a_run_is_recorded_and_its_tape_handed_back() {
         // An active detection that speaks once. The tape the stage captures must
         // hold that exchange, so a later replay can reproduce the run.
@@ -472,7 +479,7 @@ mod tests {
         let findings = detect_port(
             &runtime,
             &detections,
-            &DetectionEnvelope::default(),
+            &DetectionEnvelope::up_to(DetectionClass::ActiveBenign),
             Some("redis"),
             &ctx(6379),
             &[],

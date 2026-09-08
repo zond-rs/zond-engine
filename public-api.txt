@@ -425,6 +425,8 @@ impl core::convert::From<core::io::error::Error> for zond_engine::cve::Catalogue
 pub fn zond_engine::cve::CatalogueError::from(core::io::error::Error) -> Self
 impl core::convert::From<zond_engine::cve::CatalogueError> for zond_engine::import::kev::KevError
 pub fn zond_engine::import::kev::KevError::from(zond_engine::cve::CatalogueError) -> Self
+impl core::convert::From<zond_engine::cve::CatalogueError> for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::from(zond_engine::cve::CatalogueError) -> Self
 impl core::error::Error for zond_engine::cve::CatalogueError
 pub fn zond_engine::cve::CatalogueError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::cve::CatalogueError
@@ -5439,6 +5441,7 @@ pub fn zond_engine::fingerprint::SignatureDb::tcp_probe_payloads(&self, u16) -> 
 pub fn zond_engine::fingerprint::SignatureDb::try_from_definitions(alloc::vec::Vec<zond_engine::fingerprint::ServiceDefinition>) -> core::result::Result<Self, zond_engine::fingerprint::InvalidDefinition>
 pub fn zond_engine::fingerprint::SignatureDb::udp_probe_payloads(&self, u16) -> &[alloc::vec::Vec<u8>]
 pub fn zond_engine::fingerprint::SignatureDb::universal_tcp_probe_payloads(&self, u16, u8) -> alloc::vec::Vec<&[u8]>
+pub fn zond_engine::fingerprint::SignatureDb::versioned_products(&self) -> &alloc::collections::btree::set::BTreeSet<alloc::string::String>
 impl core::fmt::Debug for zond_engine::fingerprint::SignatureDb
 pub fn zond_engine::fingerprint::SignatureDb::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl !core::marker::Freeze for zond_engine::fingerprint::SignatureDb
@@ -5724,6 +5727,38 @@ impl core::marker::Unpin for zond_engine::import::nmap::NmapXmlImporter
 impl core::marker::UnsafeUnpin for zond_engine::import::nmap::NmapXmlImporter
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::nmap::NmapXmlImporter
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::nmap::NmapXmlImporter
+pub mod zond_engine::import::nvd
+#[non_exhaustive] pub enum zond_engine::import::nvd::NvdError
+pub zond_engine::import::nvd::NvdError::Io(core::io::error::Error)
+pub zond_engine::import::nvd::NvdError::Malformed(alloc::string::String)
+pub zond_engine::import::nvd::NvdError::Rejected(zond_engine::cve::CatalogueError)
+pub zond_engine::import::nvd::NvdError::TooLarge
+pub zond_engine::import::nvd::NvdError::TooLarge::limit: u64
+pub zond_engine::import::nvd::NvdError::TooManyEntries
+pub zond_engine::import::nvd::NvdError::TooManyEntries::entries: usize
+pub zond_engine::import::nvd::NvdError::TooManyEntries::limit: u64
+impl core::convert::From<core::io::error::Error> for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::from(core::io::error::Error) -> Self
+impl core::convert::From<zond_engine::cve::CatalogueError> for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::from(zond_engine::cve::CatalogueError) -> Self
+impl core::error::Error for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::import::nvd::NvdError
+impl core::marker::Send for zond_engine::import::nvd::NvdError
+impl core::marker::Sync for zond_engine::import::nvd::NvdError
+impl core::marker::Unpin for zond_engine::import::nvd::NvdError
+impl core::marker::UnsafeUnpin for zond_engine::import::nvd::NvdError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::nvd::NvdError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::import::nvd::NvdError
+pub const zond_engine::import::nvd::MAX_FEED_BYTES: u64
+pub const zond_engine::import::nvd::NVD_ID: &str
+pub fn zond_engine::import::nvd::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::cve::Catalogue, zond_engine::import::nvd::NvdError>
+pub fn zond_engine::import::nvd::to_document(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<alloc::string::String, zond_engine::import::nvd::NvdError>
+pub fn zond_engine::import::nvd::to_document_for(&mut dyn alloc::io::buf_read::BufRead, &alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> core::result::Result<alloc::string::String, zond_engine::import::nvd::NvdError>
 pub mod zond_engine::import::report
 pub mod zond_engine::import::report::json
 pub struct zond_engine::import::report::json::JsonLinesReportReader

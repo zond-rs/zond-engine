@@ -22,9 +22,10 @@
 //! [`Dos`](DetectionClass::Dos) may degrade the service), so the grant is one
 //! number: the most intrusive class permitted. A detection runs when its class is
 //! at or below the ceiling. The default ceiling is
-//! [`ActiveBenign`](DetectionClass::ActiveBenign): a flow may exchange bytes with
-//! a scanned socket to decide, but a detection that mutates, exploits, or degrades
-//! the target waits for an operator to raise the ceiling to it.
+//! [`Passive`](DetectionClass::Passive): a detection reads the responses the scan
+//! already drew, and anything that opens a connection of its own waits for an
+//! operator to raise the ceiling to it. See [`Default`] for what that costs and
+//! why it is the operator's call.
 
 use std::fmt;
 use std::str::FromStr;
@@ -40,30 +41,49 @@ use crate::model::finding::DetectionClass;
 /// flag keeps no table of its own; see [`FromStr`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DetectionEnvelope {
-    ceiling: DetectionClass,
+    /// The most intrusive class permitted, or [`None`] where the operator
+    /// granted nothing and the phase does not run.
+    ceiling: Option<DetectionClass>,
 }
 
 impl DetectionEnvelope {
     /// An envelope permitting every class up to and including `ceiling`.
     pub const fn up_to(ceiling: DetectionClass) -> Self {
-        Self { ceiling }
+        Self {
+            ceiling: Some(ceiling),
+        }
+    }
+
+    /// An envelope permitting nothing, so no detection runs at all.
+    ///
+    /// Below [`Passive`](DetectionClass::Passive) rather than equal to it. A
+    /// passive detection sends nothing, but it still reads the responses a scan
+    /// gathered and still puts findings in the report, and an operator who wants
+    /// a port scan and nothing else is asking for neither.
+    pub const fn none() -> Self {
+        Self { ceiling: None }
     }
 
     /// Whether a detection of `class` is permitted to run.
     pub fn permits(self, class: DetectionClass) -> bool {
-        class <= self.ceiling
+        matches!(self.ceiling, Some(ceiling) if class <= ceiling)
     }
 
-    /// The most intrusive class this envelope permits.
-    pub const fn ceiling(self) -> DetectionClass {
+    /// The most intrusive class this envelope permits, or [`None`] where it
+    /// permits nothing.
+    pub const fn ceiling(self) -> Option<DetectionClass> {
         self.ceiling
     }
 }
 
 impl fmt::Display for DetectionEnvelope {
-    /// The ceiling's own name, which is the whole of what an envelope is.
+    /// The ceiling's own name, or `off` where there is no ceiling because
+    /// nothing is granted.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.ceiling.label())
+        match self.ceiling {
+            Some(ceiling) => f.write_str(ceiling.label()),
+            None => f.write_str("off"),
+        }
     }
 }
 
@@ -80,16 +100,16 @@ pub struct UnknownDetectionEnvelope {
 
 impl fmt::Display for UnknownDetectionEnvelope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names: Vec<&str> = DetectionClass::ALL
-            .iter()
-            .map(|class| class.label())
-            .collect();
+        // `off` leads, because it is the step the class list does not name and
+        // the one a reader given only the classes would not guess exists.
+        let mut names = vec!["off"];
+        names.extend(DetectionClass::ALL.iter().map(|class| class.label()));
         write!(
             f,
             "unknown detection envelope '{}', expected one of: {} (or 0 to {})",
             self.input,
             names.join(", "),
-            DetectionClass::ALL.len() - 1
+            DetectionClass::ALL.len()
         )
     }
 }
@@ -109,8 +129,9 @@ impl FromStr for DetectionEnvelope {
     ///
     /// Names are [`DetectionClass::label`], matched without regard to case, and
     /// `-` and `_` are read alike so a command-line word and a settings key
-    /// spell the same thing. The number is the class's position in
-    /// [`DetectionClass::ALL`], least intrusive first.
+    /// spell the same thing, plus `off` for the envelope that grants nothing.
+    /// The number is a step along the same scale, `0` being `off` and the classes
+    /// following in [`DetectionClass::ALL`] order, least intrusive first.
     ///
     /// Distinct from the on-disk vocabulary in `record::wire`, which is a
     /// versioned file format rather than something a person types, and which
@@ -123,39 +144,76 @@ impl FromStr for DetectionEnvelope {
     /// use zond_engine::model::finding::DetectionClass;
     ///
     /// assert_eq!("exploit".parse(), Ok(DetectionEnvelope::up_to(DetectionClass::Exploit)));
-    /// assert_eq!("active_benign".parse(), Ok(DetectionEnvelope::default()));
-    /// assert_eq!("0".parse(), Ok(DetectionEnvelope::up_to(DetectionClass::Passive)));
+    /// assert_eq!("passive".parse(), Ok(DetectionEnvelope::default()));
+    /// assert_eq!("0".parse(), Ok(DetectionEnvelope::none()));
+    /// assert_eq!("off".parse(), Ok(DetectionEnvelope::none()));
+    /// assert_eq!("1".parse(), Ok(DetectionEnvelope::up_to(DetectionClass::Passive)));
     /// assert!("everything".parse::<DetectionEnvelope>().is_err());
     /// ```
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let written = input.trim();
+        let refused = || UnknownDetectionEnvelope {
+            input: input.to_string(),
+        };
 
-        let found = if let Ok(level) = written.parse::<usize>() {
-            DetectionClass::ALL.get(level).copied()
-        } else {
-            let wanted = written.replace('_', "-");
-            DetectionClass::ALL.into_iter().find(|class| {
+        if let Ok(level) = written.parse::<usize>() {
+            // Zero is off and the classes start at one, so the numbers run the
+            // whole scale an operator chooses along rather than starting part way
+            // up it.
+            let Some(step) = level.checked_sub(1) else {
+                return Ok(Self::none());
+            };
+            return DetectionClass::ALL
+                .get(step)
+                .copied()
+                .map(Self::up_to)
+                .ok_or_else(refused);
+        }
+
+        let wanted = written.replace('_', "-");
+        if wanted.eq_ignore_ascii_case("off") {
+            return Ok(Self::none());
+        }
+
+        DetectionClass::ALL
+            .into_iter()
+            .find(|class| {
                 class
                     .label()
                     .replace('_', "-")
                     .eq_ignore_ascii_case(&wanted)
             })
-        };
-
-        found
             .map(Self::up_to)
-            .ok_or_else(|| UnknownDetectionEnvelope {
-                input: input.to_string(),
-            })
+            .ok_or_else(refused)
     }
 }
 
 impl Default for DetectionEnvelope {
-    /// Passive and active-benign detections run; the intrusive classes need an
-    /// operator to opt in by raising the ceiling.
+    /// Only what the scan already gathered is read. Everything that opens a
+    /// connection of its own, [`ActiveBenign`](DetectionClass::ActiveBenign)
+    /// upward, waits for an operator to raise the ceiling.
+    ///
+    /// The default was `ActiveBenign` and the reason it moved is what that costs
+    /// against the hosts it is pointed at. An HTTP port attracts three dozen
+    /// active flows, and they are not one question asked thirty-six ways: each
+    /// guesses a path belonging to a particular product, `/wp-config.php.bak`,
+    /// `/v1/sys/seal-status`, `/v2/_catalog`, so each opens its own connection
+    /// and each is a miss unless the target happens to run that product. Against
+    /// a device that accepts a connection and then says nothing, which is most
+    /// consumer and embedded gear, every one of those misses costs the flow's
+    /// whole time budget. Measured against four such ports: thirteen seconds and
+    /// twenty-eight connections to reach the same findings this ceiling reaches
+    /// in three and a half, because all of them came from reading what the
+    /// service pass had already collected.
+    ///
+    /// So the tier that pays for itself everywhere is the default, and the tier
+    /// that pays for itself against a chosen target is asked for. It is the same
+    /// reasoning already applied one rung up: intrusiveness is not the only thing
+    /// an operator should be the one to decide, and neither is spending a minute
+    /// on a network to learn nothing.
     fn default() -> Self {
         Self {
-            ceiling: DetectionClass::ActiveBenign,
+            ceiling: Some(DetectionClass::Passive),
         }
     }
 }
@@ -164,11 +222,59 @@ impl Default for DetectionEnvelope {
 mod tests {
     use super::*;
 
+    /// Zero is off, one is the first class, and the scale runs from there. An
+    /// operator who wants a port scan and no claims about it says so with a
+    /// number at the bottom of the same dial they would raise.
     #[test]
-    fn the_default_permits_benign_detection_but_not_intrusive() {
+    fn the_scale_runs_from_off_through_the_classes() {
+        assert_eq!("off".parse(), Ok(DetectionEnvelope::none()));
+        assert_eq!("OFF".parse(), Ok(DetectionEnvelope::none()));
+        assert_eq!("0".parse(), Ok(DetectionEnvelope::none()));
+
+        for (level, class) in DetectionClass::ALL.into_iter().enumerate() {
+            let asked = (level + 1).to_string();
+            assert_eq!(
+                asked.parse(),
+                Ok(DetectionEnvelope::up_to(class)),
+                "{asked} is not {}",
+                class.label()
+            );
+        }
+
+        assert!(
+            (DetectionClass::ALL.len() + 1)
+                .to_string()
+                .parse::<DetectionEnvelope>()
+                .is_err(),
+            "a step past the top of the scale was accepted"
+        );
+    }
+
+    /// An envelope granting nothing permits nothing, and says so rather than
+    /// naming a ceiling it does not have.
+    #[test]
+    fn off_permits_nothing_and_is_the_bottom_of_the_scale() {
+        let off = DetectionEnvelope::none();
+
+        for class in DetectionClass::ALL {
+            assert!(!off.permits(class), "{} ran under off", class.label());
+        }
+        assert_eq!(off.ceiling(), None);
+        assert_eq!(off.to_string(), "off");
+        assert!(
+            off < DetectionEnvelope::up_to(DetectionClass::Passive),
+            "off does not sort below the quietest class"
+        );
+    }
+
+    #[test]
+    fn the_default_reads_but_does_not_probe() {
         let envelope = DetectionEnvelope::default();
         assert!(envelope.permits(DetectionClass::Passive));
-        assert!(envelope.permits(DetectionClass::ActiveBenign));
+        assert!(
+            !envelope.permits(DetectionClass::ActiveBenign),
+            "a detection that opens its own connection runs without being asked for"
+        );
         assert!(!envelope.permits(DetectionClass::ActiveMutating));
         assert!(!envelope.permits(DetectionClass::Exploit));
         assert!(!envelope.permits(DetectionClass::Dos));
@@ -181,8 +287,9 @@ mod tests {
         for (index, class) in DetectionClass::ALL.into_iter().enumerate() {
             let expected = DetectionEnvelope::up_to(class);
             assert_eq!(class.label().parse(), Ok(expected), "{class:?} by name");
+            // Off holds zero, so a class sits one above its own index.
             assert_eq!(
-                index.to_string().parse(),
+                (index + 1).to_string().parse(),
                 Ok(expected),
                 "{class:?} by number"
             );
@@ -201,8 +308,7 @@ mod tests {
 
         assert!("everything".parse::<DetectionEnvelope>().is_err());
         assert!(
-            DetectionClass::ALL
-                .len()
+            (DetectionClass::ALL.len() + 1)
                 .to_string()
                 .parse::<DetectionEnvelope>()
                 .is_err(),

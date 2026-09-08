@@ -3,13 +3,18 @@ name = "redis"
 default_ports = [6379]
 description = "Redis Key-Value Store"
 
+# INFO is both the liveness check and the version source: an unauthenticated
+# server answers it with redis_version in the first section, and one that refuses
+# it refuses PING too, so nothing is lost by asking the question that also names
+# the build.
 [[probe]]
-name = "redis_ping"
-payload = 'PING\r\n'
+name = "redis_info"
+payload = 'INFO\r\n'
 protocol = "tcp"
 rarity = 1
 
 [[match]]
-name = "redis_pong"
-pattern = '^\+PONG'
+name = "redis_info_version"
+pattern = 'redis_version:([\d.]+)'
+version_group = 1
 product = "redis"

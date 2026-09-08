@@ -74,6 +74,14 @@ export-json = ["dep:serde_json"]
 # already share, and nothing else.
 import-kev = ["dep:serde_json"]
 
+# The National Vulnerability Database's feed, converted into the same dataset.
+# What `import-kev` cannot give: NVD carries the version ranges a vulnerability
+# applies to, so a finding says *this release is affected* rather than *this
+# product has had vulnerabilities*. It filters against the shipped fingerprint
+# corpus, so it needs that corpus and the `serde_json` the other importers
+# already share, and nothing else.
+import-nvd = ["dep:serde_json"]
+
 # The same data one record per line: streamable, and a file cut off part way
 # through is still readable. Shares `serde_json` and the DTOs with `export-json`,
 # so it costs nothing on top of it.

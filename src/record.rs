@@ -1834,7 +1834,7 @@ impl From<&ScanSettings> for SettingsRecord {
             redact: settings.redact,
             os_detection: settings.os_detection.name().to_owned(),
             service_detection: settings.service_detection.name().to_owned(),
-            detection: wire::detection_class_name(settings.detection.ceiling()).to_owned(),
+            detection: wire::detection_ceiling_name(settings.detection.ceiling()).to_owned(),
             traceroute: settings.traceroute,
             characterise: settings.characterise,
             ip_protocols: settings.ip_protocols.clone(),
@@ -1883,9 +1883,12 @@ impl From<&SettingsRecord> for ScanSettings {
             redact: record.redact,
             os_detection: record.os_detection.parse().unwrap_or_default(),
             service_detection: record.service_detection.parse().unwrap_or_default(),
-            detection: wire::detection_class(&record.detection)
-                .map(DetectionEnvelope::up_to)
-                .unwrap_or_default(),
+            detection: match record.detection.as_str() {
+                "off" => DetectionEnvelope::none(),
+                name => wire::detection_class(name)
+                    .map(DetectionEnvelope::up_to)
+                    .unwrap_or_default(),
+            },
             traceroute: record.traceroute,
             characterise: record.characterise,
             ip_protocols: record.ip_protocols.clone(),
@@ -2771,7 +2774,7 @@ mod tests {
         let rebuilt = ScanSettings::from(&SettingsRecord::from(&settings));
         assert_eq!(
             rebuilt.detection.ceiling(),
-            DetectionClass::Exploit,
+            Some(DetectionClass::Exploit),
             "the envelope ceiling was lost in the round trip"
         );
     }

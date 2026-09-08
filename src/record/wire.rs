@@ -231,6 +231,19 @@ pub fn detection_class_name(class: DetectionClass) -> &'static str {
     }
 }
 
+/// The name a whole envelope's ceiling is written under, `off` where it grants
+/// nothing.
+///
+/// Beside [`detection_class_name`] rather than folded into it: a finding always
+/// carries the class it ran under, and only a scan's settings can say that no
+/// class was permitted at all.
+pub fn detection_ceiling_name(ceiling: Option<DetectionClass>) -> &'static str {
+    match ceiling {
+        Some(class) => detection_class_name(class),
+        None => "off",
+    }
+}
+
 /// [`detection_class_name`] read back.
 pub fn detection_class(name: &str) -> Option<DetectionClass> {
     Some(match name {

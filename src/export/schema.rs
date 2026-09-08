@@ -122,10 +122,10 @@ pub use crate::report::ENGINE_VERSION;
 // them back, so a name and its inverse cannot drift apart. Re-exported rather
 // than called through, since a caller should not have to know where they live.
 pub use crate::record::wire::{
-    attachment_source_name, confidence_name, detection_class_name, filtering_name,
-    host_status_name, ip_protocol_state_name, network_role_name, port_scope_name, port_state_name,
-    protocol_name, reference_kind_name, scan_kind_name, scan_response_name, scanner_kind_name,
-    severity_name, status_protocol_name, stop_reason_name, tcp_flags_name,
+    attachment_source_name, confidence_name, detection_ceiling_name, detection_class_name,
+    filtering_name, host_status_name, ip_protocol_state_name, network_role_name, port_scope_name,
+    port_state_name, protocol_name, reference_kind_name, scan_kind_name, scan_response_name,
+    scanner_kind_name, severity_name, status_protocol_name, stop_reason_name, tcp_flags_name,
 };
 
 /// The wire name of a send mode.
@@ -1060,7 +1060,7 @@ impl SettingsDto {
             redact: settings.redact,
             os_detection: settings.os_detection.name(),
             service_detection: settings.service_detection.name(),
-            detection: detection_class_name(settings.detection.ceiling()),
+            detection: detection_ceiling_name(settings.detection.ceiling()),
             traceroute: settings.traceroute,
             characterise: settings.characterise,
             ip_protocols: settings.ip_protocols.clone(),

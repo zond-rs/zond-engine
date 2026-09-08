@@ -1777,7 +1777,7 @@ mod tests {
     /// The intrusiveness ceiling the fixture's settings record, spelled as the
     /// document spells it.
     fn fixture_detection_ceiling() -> String {
-        crate::record::wire::detection_class_name(
+        crate::record::wire::detection_ceiling_name(
             crate::export::fixture::report().phases()[0]
                 .settings()
                 .detection

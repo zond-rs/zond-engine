@@ -96,6 +96,14 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         return;
     }
 
+    // An envelope granting nothing is a scan that wants its ports and services
+    // and no claims about them. Returned on here rather than left to the gates,
+    // which would reach the same answer after walking every host's ports and
+    // every detection in the corpus to establish that none of them may run.
+    if envelope.ceiling().is_none() {
+        return;
+    }
+
     // Host-level detections correlate a host's ports into a Host finding. They read
     // only what the service phase already found, so they run independently of the
     // per-port pass below.
@@ -861,10 +869,12 @@ mod tests {
         );
         session.hosts().insert(ip, host);
 
+        // The ceiling is named rather than defaulted: this test is about a
+        // flow reaching a live socket, and the default grants no flow one.
         detect(
             &ctx,
             ServiceDetection::default(),
-            DetectionEnvelope::default(),
+            DetectionEnvelope::up_to(crate::model::finding::DetectionClass::ActiveBenign),
         )
         .await;
 

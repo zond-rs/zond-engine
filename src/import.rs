@@ -104,6 +104,9 @@ pub mod kev;
 #[cfg(feature = "import-nmap")]
 pub mod nmap;
 
+#[cfg(feature = "import-nvd")]
+pub mod nvd;
+
 // The hardened XML pull parser both nmap readers share. Not public: it is this
 // module's own machinery, confined to what an nmap document needs.
 #[cfg(feature = "import-nmap")]

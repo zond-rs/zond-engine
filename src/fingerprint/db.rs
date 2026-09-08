@@ -33,7 +33,7 @@
 //! disk/mmap loading of a versioned, integrity-checked artifact will slot in
 //! without touching callers.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
@@ -49,6 +49,28 @@ const OS_NAME_CONTEXT: &str = "operating_system.name";
 /// The field a rule reads when its whole job is to name an instruction set.
 /// See [`architecture_of`](SignatureDb::architecture_of).
 const ARCHITECTURE_CONTEXT: &str = "architecture";
+
+/// The `vendor:product` a rule's CPE template names, where the template carries
+/// a version to fill and names an application.
+///
+/// [`None`] for a rule with no CPE, one whose CPE is literal (nothing to fill,
+/// so the version is whatever was written, usually `-`), and one naming an
+/// operating system, whose CPE version is a release family rather than anything
+/// a banner states.
+fn versioned_product(rule: &super::signature::MatchRule) -> Option<String> {
+    const VERSION: &str = "{service.version}";
+
+    let template = rule.metadata.as_ref()?.get("service.cpe23")?;
+    let rest = template.strip_prefix("cpe:/a:")?;
+    if !rest.contains(VERSION) {
+        return None;
+    }
+
+    let mut parts = rest.split(':');
+    let vendor = parts.next().filter(|part| !part.is_empty())?;
+    let product = parts.next().filter(|part| !part.is_empty())?;
+    Some(format!("{vendor}:{product}"))
+}
 
 /// The context whose rules read a JARM hash, held in an index of their own.
 const JARM_CONTEXT: &str = "tls.jarm";
@@ -139,6 +161,21 @@ pub struct SignatureDb {
     /// unfalsifiable: nothing about the answer says it came from a rule written
     /// for a different field. See [`identify_jarm`](Self::identify_jarm).
     jarm_signatures: Vec<usize>,
+    /// Every `vendor:product` the corpus can name *with a version*, as a CPE
+    /// spells them.
+    ///
+    /// The join key a vulnerability catalogue is keyed on, and the reason it is
+    /// derived here rather than written down anywhere: an entry naming software
+    /// this corpus cannot put a version to can never match, in exactly the sense
+    /// [`Reach::Unproduced`](super::Reach) means. Two hundred and sixty-nine
+    /// products are named by some rule and never with a version, and a ranged
+    /// entry for one of those is a rule that cannot fire.
+    ///
+    /// The test is the corpus's own: a `service.cpe23` template carrying
+    /// `{service.version}` resolves to a versioned CPE and one without it does
+    /// not. Applications only — an operating-system CPE's version is a family
+    /// name, `windows_server_2016`, not something a scan reads off a banner.
+    versioned_products: BTreeSet<String>,
     /// `port -> signature indices` matchable on that port.
     ///
     /// Service-linked: the union, over every service reachable on the port, of
@@ -245,6 +282,7 @@ impl SignatureDb {
         let mut os_name_signatures: Vec<usize> = Vec::new();
         let mut architecture_signatures: Vec<usize> = Vec::new();
         let mut jarm_signatures: Vec<usize> = Vec::new();
+        let mut versioned_products: BTreeSet<String> = BTreeSet::new();
         for def in &defs {
             for rule in &def.r#match {
                 let idx = signatures.len();
@@ -253,6 +291,9 @@ impl SignatureDb {
                     Some(ARCHITECTURE_CONTEXT) => architecture_signatures.push(idx),
                     Some(JARM_CONTEXT) => jarm_signatures.push(idx),
                     _ => {}
+                }
+                if let Some(product) = versioned_product(rule) {
+                    versioned_products.insert(product);
                 }
                 signatures.push(Signature::new(&def.service.name, rule));
                 service_sigs
@@ -349,6 +390,7 @@ impl SignatureDb {
             os_name_signatures,
             architecture_signatures,
             jarm_signatures,
+            versioned_products,
             by_port,
             tcp_probes,
             generic_tcp_probes,
@@ -441,6 +483,17 @@ impl SignatureDb {
             crate::model::host::OsSource::ServiceBanner,
         )?
         .os
+    }
+
+    /// Every `vendor:product` the corpus can name with a version.
+    ///
+    /// What a vulnerability catalogue is filtered against: an entry for software
+    /// no scan can put a version to matches nothing, so keeping it costs a
+    /// megabyte and buys a finding that cannot fire. See
+    /// [`versioned_products`](Self::versioned_products) on the field for the
+    /// test applied.
+    pub fn versioned_products(&self) -> &BTreeSet<String> {
+        &self.versioned_products
     }
 
     /// What the corpus makes of a JARM hash.
