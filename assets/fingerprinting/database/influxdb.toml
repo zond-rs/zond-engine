@@ -14,3 +14,5 @@ name = "influxdb_header"
 pattern = '(?i)X-Influxdb-Version:\s*([\d.]+)'
 version_group = 1
 product = "influxdb"
+metadata = { "service.cpe23" = "cpe:/a:influxdata:influxdb:{service.version}" }
+

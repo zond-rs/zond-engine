@@ -21,3 +21,5 @@ name = "elasticsearch_version"
 pattern = '"number"\s*:\s*"([\d.]+)"'
 version_group = 1
 product = "elasticsearch"
+metadata = { "service.cpe23" = "cpe:/a:elastic:elasticsearch:{service.version}" }
+

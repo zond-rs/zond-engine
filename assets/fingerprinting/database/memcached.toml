@@ -35,3 +35,5 @@ name = "memcached_version_response"
 pattern = '^VERSION ([\w.-]+)'
 version_group = 1
 product = "memcached"
+metadata = { "service.cpe23" = "cpe:/a:memcached:memcached:{service.version}" }
+

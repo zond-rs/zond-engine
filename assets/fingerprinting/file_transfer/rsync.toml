@@ -8,3 +8,5 @@ name = "rsync_banner"
 pattern = '^@RSYNCD: ([\d.]+)'
 version_group = 1
 product = "rsync"
+metadata = { "service.cpe23" = "cpe:/a:samba:rsync:{service.version}" }
+

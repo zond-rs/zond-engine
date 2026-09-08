@@ -14,3 +14,5 @@ name = "docker_version"
 pattern = 'ApiVersion"\s*:\s*"([\d.]+)"'
 version_group = 1
 product = "docker"
+metadata = { "service.cpe23" = "cpe:/a:docker:docker:{service.version}" }
+

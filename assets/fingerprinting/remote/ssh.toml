@@ -24,7 +24,7 @@ vendor = "OpenBSD"
 product = "OpenSSH"
 context = "ssh.banner"
 example = "SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4"
-metadata = { "service.extrainfo" = "{capture:3}" }
+metadata = { "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "service.extrainfo" = "{capture:3}" }
 
 [[match]]
 name = "dropbear_match"
@@ -64,6 +64,7 @@ product = "dropbear"
 # unnamed until this file. Capturing the release from the stamp instead covers
 # every Debian there has been and every one there will be, and stops the corpus
 # needing an edit each time either project makes a release.
+metadata = { "service.cpe23" = "cpe:/a:dropbear_ssh_project:dropbear_ssh:{service.version}" }
 
 [[match]]
 name = "OpenSSH on Debian, by the release its package names"
@@ -73,7 +74,7 @@ vendor = "OpenBSD"
 product = "OpenSSH"
 context = "ssh.banner"
 example = "OpenSSH_10.0p2 Debian-7+deb13u4"
-metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:debian:debian_linux:{capture:2}" }
+metadata = { "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:debian:debian_linux:{capture:2}" }
 
 [[match]]
 name = "OpenSSH on Debian backports, by the release it was built for"
@@ -86,4 +87,4 @@ vendor = "OpenBSD"
 product = "OpenSSH"
 context = "ssh.banner"
 example = "OpenSSH_9.7p1 Debian-1~bpo12+1"
-metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:debian:debian_linux:{capture:2}" }
+metadata = { "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:debian:debian_linux:{capture:2}" }

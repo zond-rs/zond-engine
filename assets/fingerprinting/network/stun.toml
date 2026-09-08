@@ -29,6 +29,7 @@ version_group = 1
 product = "coturn"
 context = "stun.software"
 example = "Coturn-4.5.2 'dan Eider'"
+metadata = { "service.cpe23" = "cpe:/a:coturn_project:coturn:{service.version}" }
 
 [[match]]
 name = "stunserver"

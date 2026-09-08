@@ -9,3 +9,5 @@ name = "mysql_handshake"
 pattern = '(?s)^.{3}\x00\x0a([\w.\-+~]+)'
 version_group = 1
 product = "mysql"
+metadata = { "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}" }
+

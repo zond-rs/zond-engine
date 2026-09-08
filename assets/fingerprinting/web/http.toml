@@ -31,6 +31,7 @@ pattern = '(?i)Server:\s*nginx/([\d\.]+)'
 version_group = 1
 vendor = "NGINX"
 product = "nginx"
+metadata = { "service.cpe23" = "cpe:/a:f5:nginx:{service.version}" }
 
 [[match]]
 name = "apache_server_header"
@@ -38,6 +39,7 @@ pattern = '(?i)Server:\s*Apache/([\d\.]+)'
 version_group = 1
 vendor = "Apache Software Foundation"
 product = "Apache HTTP Server"
+metadata = { "service.cpe23" = "cpe:/a:apache:http_server:{service.version}" }
 
 [[match]]
 name = "lighttpd_server_header"
@@ -45,3 +47,5 @@ pattern = '(?i)Server:\s*lighttpd/([\d\.]+)'
 version_group = 1
 vendor = "lighttpd"
 product = "lighttpd"
+metadata = { "service.cpe23" = "cpe:/a:lighttpd:lighttpd:{service.version}" }
+

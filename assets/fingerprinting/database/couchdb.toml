@@ -18,3 +18,5 @@ name = "couchdb_json"
 pattern = 'couchdb"\s*:\s*"Welcome"[\s\S]*?"version"\s*:\s*"([^"]+)"'
 version_group = 1
 product = "CouchDB"
+metadata = { "service.cpe23" = "cpe:/a:apache:couchdb:{service.version}" }
+

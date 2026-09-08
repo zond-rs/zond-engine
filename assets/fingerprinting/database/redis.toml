@@ -18,3 +18,5 @@ name = "redis_info_version"
 pattern = 'redis_version:([\d.]+)'
 version_group = 1
 product = "redis"
+metadata = { "service.cpe23" = "cpe:/a:redis:redis:{service.version}" }
+
