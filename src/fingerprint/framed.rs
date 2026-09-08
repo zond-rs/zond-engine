@@ -641,6 +641,196 @@ pub(super) fn ike_response(datagram: &[u8]) -> Option<String> {
     }
 }
 
+/// The realm a probe names, so the reader can tell an answer from an echo.
+///
+/// A KDC replies to an unknown principal by repeating the realm it was asked
+/// about, so the realm in the reply is usually this string coming back. See
+/// [`kerberos_error`].
+const PROBE_REALM: &str = "ZOND-SCAN";
+
+/// What a Kerberos KDC says about a request it cannot serve.
+///
+/// The probe asks for a principal in a realm nothing serves, and the reply is a
+/// `KRB-ERROR`. Three of its fields are worth reading: the error code, the
+/// human text where the implementation sends one, and the realm.
+///
+/// ```text
+/// krb-error 6 CLIENT_NOT_FOUND
+/// ```
+///
+/// ## Why the realm is usually absent
+///
+/// A realm has to be named in the request and a scanner does not know the
+/// target's, so the probe invents one. Measured against MIT krb5 on Debian 12:
+/// the KDC repeats that invented realm back in both `crealm` and `realm`, so
+/// what looks like a discovered domain is this engine's own guess reflected.
+///
+/// The realm is therefore reported only when it differs from
+/// [`PROBE_REALM`]. RFC 4120 has a KDC that serves a different realm answer
+/// `KDC_ERR_WRONG_REALM` and name the right one, and that case is worth the
+/// whole probe: on a domain controller it is the Active Directory domain, from
+/// one unauthenticated datagram. It was not reproduced here, MIT answered
+/// `KDC_ERR_C_PRINCIPAL_UNKNOWN` for a realm it does not serve, so the branch
+/// is written from the specification rather than from a measurement.
+///
+/// [`None`] for anything that is not a `KRB-ERROR`.
+#[must_use]
+pub(super) fn kerberos_error(datagram: &[u8]) -> Option<String> {
+    /// `[APPLICATION 30]`, which is what a `KRB-ERROR` is tagged with.
+    const KRB_ERROR: u8 = 0x7E;
+
+    if *datagram.first()? != KRB_ERROR {
+        return None;
+    }
+    // The application tag wraps a SEQUENCE, and the fields are context-tagged
+    // inside it.
+    let body = der_value(datagram)?;
+    let fields = der_value(body)?;
+
+    let mut code = None;
+    let mut realm = None;
+    let mut text = None;
+    let mut at = 0;
+    while at < fields.len() {
+        let (tag, value, next) = der_element(&fields[at..])?;
+        match tag {
+            // error-code, an INTEGER inside its context tag.
+            0xA6 => code = der_value(value).map(der_unsigned),
+            // realm, the service realm, a GeneralString.
+            0xA9 => realm = der_value(value).and_then(|v| std::str::from_utf8(v).ok()),
+            // e-text, which MIT fills in and which names the implementation.
+            0xAB => text = der_value(value).and_then(|v| std::str::from_utf8(v).ok()),
+            _ => {}
+        }
+        at += next;
+    }
+
+    let code = code?;
+    let mut said = format!("krb-error {code}");
+    if let Some(realm) = realm.filter(|realm| *realm != PROBE_REALM) {
+        said.push_str(&format!(" realm={realm}"));
+    }
+    if let Some(text) = text.filter(|text| !text.is_empty()) {
+        said.push(' ');
+        said.push_str(text);
+    }
+    Some(said)
+}
+
+/// The contents of the DER element at the start of `bytes`.
+fn der_value(bytes: &[u8]) -> Option<&[u8]> {
+    der_element(bytes).map(|(_, value, _)| value)
+}
+
+/// The tag, contents and total encoded length of the DER element at the start
+/// of `bytes`.
+///
+/// Long-form lengths are read up to four bytes, which is past anything a
+/// datagram can hold. Nothing here recurses on its own: callers walk.
+fn der_element(bytes: &[u8]) -> Option<(u8, &[u8], usize)> {
+    let tag = *bytes.first()?;
+    let first = *bytes.get(1)? as usize;
+
+    let (length, header) = if first & 0x80 == 0 {
+        (first, 2)
+    } else {
+        let count = first & 0x7F;
+        if count == 0 || count > 4 {
+            return None;
+        }
+        let mut length = 0usize;
+        for index in 0..count {
+            length = (length << 8) | *bytes.get(2 + index)? as usize;
+        }
+        (length, 2 + count)
+    };
+
+    let value = bytes.get(header..header + length)?;
+    Some((tag, value, header + length))
+}
+
+/// A DER INTEGER's value, as far as one fits.
+fn der_unsigned(bytes: &[u8]) -> u32 {
+    bytes
+        .iter()
+        .take(4)
+        .fold(0u32, |value, byte| (value << 8) | u32::from(*byte))
+}
+
+/// What an L2TP concentrator says about itself when a tunnel is proposed.
+///
+/// An `SCCRQ` draws an `SCCRP`, and the reply carries the two attributes worth
+/// reading: the vendor name, which identifies the implementation, and the host
+/// name, which is the machine's own.
+///
+/// ```text
+/// vendor=xelerance.com host=lima-deb12
+/// ```
+///
+/// Measured against `xl2tpd` on Debian 12, which fills in both. Either may be
+/// absent, and a reply carrying neither still says an L2TP daemon answered.
+///
+/// [`None`] for a datagram that is not a control message, or whose attribute
+/// chain runs past its end.
+#[must_use]
+pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
+    /// The first byte of a control message: type and length bits set, and the
+    /// version in the low nibble of the second.
+    const CONTROL: u8 = 0b1100_0000;
+    /// A control header carries a length, a tunnel and session id, and two
+    /// sequence numbers.
+    const HEADER_BYTES: usize = 12;
+    const ATTRIBUTE_HEADER_BYTES: usize = 6;
+    const VENDOR_NAME: u16 = 8;
+    const HOST_NAME: u16 = 7;
+
+    if *datagram.first()? & CONTROL != CONTROL {
+        return None;
+    }
+    if *datagram.get(1)? & 0x0F != 2 {
+        return None;
+    }
+
+    let mut at = HEADER_BYTES;
+    let mut vendor = None;
+    let mut host = None;
+    while at + ATTRIBUTE_HEADER_BYTES <= datagram.len() {
+        // The top six bits are flags and the low ten are the length, which
+        // counts this header along with the value.
+        let length = (u16::from_be_bytes([datagram[at], datagram[at + 1]]) & 0x03FF) as usize;
+        if length < ATTRIBUTE_HEADER_BYTES {
+            return None;
+        }
+        let attribute = u16::from_be_bytes([datagram[at + 4], datagram[at + 5]]);
+        let value = datagram.get(at + ATTRIBUTE_HEADER_BYTES..at + length)?;
+
+        let text = |value: &[u8]| {
+            std::str::from_utf8(value)
+                .ok()
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty())
+        };
+        match attribute {
+            VENDOR_NAME => vendor = text(value),
+            HOST_NAME => host = text(value),
+            _ => {}
+        }
+        at += length;
+    }
+
+    let mut said = Vec::new();
+    if let Some(vendor) = vendor {
+        said.push(format!("vendor={vendor}"));
+    }
+    if let Some(host) = host {
+        said.push(format!("host={host}"));
+    }
+    match said.is_empty() {
+        true => Some("l2tp".to_string()),
+        false => Some(said.join(" ")),
+    }
+}
+
 /// The device types a WS-Discovery responder claims.
 ///
 /// A `ProbeMatches` reply is SOAP, and the element worth reading is `Types`: a

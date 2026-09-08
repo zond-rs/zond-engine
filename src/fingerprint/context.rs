@@ -182,6 +182,16 @@ pub const CONTEXTS: &[Context] = &[
         note: "the IPMI version and login bits of a Get Channel Authentication Capabilities response, read by `framed::ipmi_auth_capabilities`",
     },
     Context {
+        name: "krb.error",
+        reach: Reach::Produced,
+        note: "the error code, realm and text of a `KRB-ERROR`, read by `framed::kerberos_error`. The realm appears only where it differs from the one the probe invented, since a KDC repeats what it was asked about",
+    },
+    Context {
+        name: "l2tp.sccrp",
+        reach: Reach::Produced,
+        note: "the vendor and host names an L2TP concentrator answers an SCCRQ with, read by `framed::l2tp_control`",
+    },
+    Context {
         name: "ldap.search_result",
         reach: Reach::Produced,
         note: "the bytes a root DSE search draws, matched as text through `extract::texts`; the corpus probe now asks for the entry at the empty DN as well as binding",

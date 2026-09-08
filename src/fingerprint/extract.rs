@@ -136,6 +136,13 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
                 .collect(),
             Err(_) => Vec::new(),
         },
+        // A KRB-ERROR is proof of a KDC, and on a domain controller the realm
+        // it names is the Active Directory domain, where it names one at all.
+        88 => super::framed::kerberos_error(datagram)
+            .into_iter()
+            .collect(),
+        // What a concentrator calls itself, and what it calls the machine.
+        1701 => super::framed::l2tp_control(datagram).into_iter().collect(),
         // The corpus registers two probes here. The client request proves the
         // port is open and carries nothing to read; the mode 6 control message
         // draws the variables the daemon describes itself with.
@@ -245,8 +252,8 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// would succeed without a datagram to try it on, and this question is asked
 /// before one has been drawn.
 const DECODED_UDP_PORTS: &[u16] = &[
-    53, 111, 123, 161, 177, 500, 623, 1434, 1900, 2049, 3478, 3702, 4500, 5060, 5061, 5353, 5683,
-    11211, 19132, 27015,
+    53, 88, 111, 123, 161, 177, 500, 623, 1434, 1701, 1900, 2049, 3478, 3702, 4500, 5060, 5061,
+    5353, 5683, 11211, 19132, 27015,
 ];
 
 // ╔════════════════════════════════════════════╗
@@ -923,6 +930,8 @@ mod framed_replies {
             "IPMI 2.0 compliant baseboard controller",
             "stunning performance",
             "notify the administrator",
+            "krb-error handling is disabled",
+            "vendor=example, host unreachable",
             "Device Manager Print Spooler",
             "Network Video Recorder",
             "ServerName Corp",
@@ -938,6 +947,7 @@ mod framed_replies {
                         | Some("Source engine server" | "Minecraft Bedrock Server")
                         | Some("NFS" | "IPMI" | "rpcbind")
                         | Some("coturn" | "stunserver" | "isakmp" | "FortiGate")
+                        | Some("MIT Kerberos" | "Kerberos KDC" | "xl2tpd" | "Windows RRAS")
                 ),
                 "{text:?} was named {named:?}"
             );
@@ -1317,6 +1327,83 @@ mod framed_replies {
         assert_eq!(
             identify(4500, &texts[0]).map(|found| found.0),
             Some("Windows IKE".to_string())
+        );
+    }
+
+    /// What MIT krb5 1.20 on Debian 12 actually answered the corpus probe with,
+    /// captured off the wire.
+    ///
+    /// The realm is absent from the reading on purpose. This reply carries
+    /// `ZOND-SCAN` in both realm fields, which is the realm the probe invented
+    /// coming back: a KDC repeats what it was asked about. Reporting it would
+    /// print this engine's own guess as though it were a discovered domain.
+    #[test]
+    fn a_kdc_is_named_and_its_echo_of_our_realm_is_not_reported() {
+        fn hex(text: &str) -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex digits"))
+                .collect()
+        }
+        const MIT: &str = "7e8198308195a003020105a10302011ea411180f32303236303930383133313432325aa50502030f13baa603020106a70b1b095a4f4e442d5343414ea81c301aa003020101a11330111b0f7a6f6e642d7363616e2d70726f6265a90b1b095a4f4e442d5343414eaa1e301ca003020102a11530131b066b72627467741b095a4f4e442d5343414eab121b10434c49454e545f4e4f545f464f554e44";
+
+        let texts = super::from_datagram(88, &hex(MIT));
+        assert_eq!(texts, vec!["krb-error 6 CLIENT_NOT_FOUND"]);
+        assert!(
+            !texts[0].contains("ZOND-SCAN"),
+            "the probe's own realm came back as though it were the KDC's: {texts:?}"
+        );
+        assert_eq!(
+            identify(88, &texts[0]).map(|found| found.0),
+            Some("MIT Kerberos".to_string())
+        );
+    }
+
+    /// A realm the probe did not supply is reported, which is the case the whole
+    /// probe is for: on a domain controller it names the Active Directory
+    /// domain.
+    #[test]
+    fn a_realm_this_engine_did_not_ask_about_is_reported() {
+        // A KRB-ERROR carrying error 68 and a realm of its own.
+        let realm = b"CORP.EXAMPLE";
+        let mut fields = vec![0xA6, 0x03, 0x02, 0x01, 68];
+        fields.push(0xA9);
+        fields.push((realm.len() + 2) as u8);
+        fields.push(0x1B);
+        fields.push(realm.len() as u8);
+        fields.extend_from_slice(realm);
+
+        let mut sequence = vec![0x30, fields.len() as u8];
+        sequence.extend_from_slice(&fields);
+        let mut reply = vec![0x7E, sequence.len() as u8];
+        reply.extend_from_slice(&sequence);
+
+        let texts = super::from_datagram(88, &reply);
+        assert_eq!(texts, vec!["krb-error 68 realm=CORP.EXAMPLE"]);
+        assert_eq!(
+            identify(88, &texts[0]).and_then(|found| found.1),
+            None,
+            "the realm reaches the report as extra info rather than as a version"
+        );
+    }
+
+    /// What xl2tpd 1.3.16 on Debian 12 actually answered, captured off the wire.
+    /// The host name in it is the VM's own.
+    #[test]
+    fn a_concentrator_names_itself_and_the_machine() {
+        fn hex(text: &str) -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex digits"))
+                .collect()
+        }
+        const SCCRP: &str = "c802006b7a6f00000000000180080000000000028008000000020100800a0000000300000003800a000000040000000000080000000606908010000000076c696d612d646562313200130000000878656c6572616e63652e636f6d800800000009503180080000000a0004";
+
+        let texts = super::from_datagram(1701, &hex(SCCRP));
+        assert_eq!(texts, vec!["vendor=xelerance.com host=lima-deb12"]);
+        assert_eq!(
+            identify(1701, &texts[0]).map(|found| found.0),
+            Some("xl2tpd".to_string())
         );
     }
 

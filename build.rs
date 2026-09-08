@@ -980,6 +980,8 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
         "ipmi" => validate_ipmi_request(payload),
         "isakmp" => validate_isakmp_request(payload),
         "stun" => validate_stun_request(payload),
+        "kerberos" => validate_as_req(payload),
+        "l2tp" => validate_l2tp_control(payload),
         "memcached" => validate_memcached_datagram(payload),
         "ws-discovery" => validate_wsd_probe(payload),
         _ => {
@@ -994,6 +996,157 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
 
     if let Err(reason) = outcome {
         panic!("{file}: service '{service}' udp probe #{index} {reason}");
+    }
+}
+
+/// Checks a Kerberos AS-REQ: the application tag, and a DER structure whose
+/// lengths describe the bytes behind them.
+///
+/// A KDC drops a request it cannot parse without answering, which on the wire is
+/// a filtered port, so the encoding is walked here rather than trusted. The
+/// probe is hand-built DER and one wrong length byte would make it invisible.
+fn validate_as_req(payload: &[u8]) -> Result<(), String> {
+    /// `[APPLICATION 10]`, which is what an AS-REQ is tagged with.
+    const AS_REQ: u8 = 0x6A;
+
+    /// Returns the contents and total encoded length of the element at the
+    /// start of `bytes`.
+    fn element(bytes: &[u8]) -> Result<(&[u8], usize), String> {
+        let first = *bytes.get(1).ok_or("has a DER tag with no length")? as usize;
+        let (length, header) = if first & 0x80 == 0 {
+            (first, 2)
+        } else {
+            let count = first & 0x7F;
+            if count == 0 || count > 4 {
+                return Err(format!(
+                    "uses a {count}-byte DER length, which this check does not cover"
+                ));
+            }
+            let mut length = 0usize;
+            for index in 0..count {
+                length = (length << 8)
+                    | *bytes
+                        .get(2 + index)
+                        .ok_or("has a truncated DER long-form length")?
+                        as usize;
+            }
+            (length, 2 + count)
+        };
+        let value = bytes
+            .get(header..header + length)
+            .ok_or_else(|| format!("has a DER element claiming {length} bytes it does not have"))?;
+        Ok((value, header + length))
+    }
+
+    if payload.first() != Some(&AS_REQ) {
+        return Err(format!(
+            "opens with {:#04x}; an AS-REQ is {AS_REQ:#04x}",
+            payload.first().copied().unwrap_or_default()
+        ));
+    }
+    let (body, consumed) = element(payload)?;
+    if consumed != payload.len() {
+        return Err(format!(
+            "has {} bytes after its application element",
+            payload.len() - consumed
+        ));
+    }
+
+    // The application tag wraps a SEQUENCE whose fields are context-tagged, and
+    // every one of their lengths has to hold for a KDC to read the request.
+    let (fields, consumed) = element(body)?;
+    if consumed != body.len() {
+        return Err("has trailing bytes after the request sequence".into());
+    }
+    let mut at = 0;
+    let mut seen = Vec::new();
+    while at < fields.len() {
+        let (_, next) = element(&fields[at..])?;
+        seen.push(fields[at]);
+        at += next;
+    }
+    // pvno, msg-type and the request body: a KDC rejects a request missing any.
+    for wanted in [0xA1u8, 0xA2, 0xA4] {
+        if !seen.contains(&wanted) {
+            return Err(format!(
+                "carries no [{}] field, which an AS-REQ requires",
+                wanted & 0x1F
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Checks an L2TP control message: the flag bits, the version, and a length
+/// field and attribute chain that agree with the bytes behind them.
+fn validate_l2tp_control(payload: &[u8]) -> Result<(), String> {
+    /// Type and length bits, which a control message sets.
+    const CONTROL: u8 = 0b1100_0000;
+    /// The sequence bit, which a control message also sets.
+    const SEQUENCE: u8 = 0b0000_1000;
+    const HEADER_BYTES: usize = 12;
+    const ATTRIBUTE_HEADER_BYTES: usize = 6;
+    /// Message Type, which has to lead the attribute chain.
+    const MESSAGE_TYPE: u16 = 0;
+    /// SCCRQ, the message that proposes a tunnel.
+    const SCCRQ: u16 = 1;
+
+    let first = *payload.first().ok_or("is empty")?;
+    if first & CONTROL != CONTROL {
+        return Err("does not set the type and length bits a control message carries".into());
+    }
+    if first & SEQUENCE == 0 {
+        return Err("does not set the sequence bit, and a control message always does".into());
+    }
+    let version = *payload.get(1).ok_or("is too short for a header")? & 0x0F;
+    if version != 2 {
+        return Err(format!(
+            "states L2TP version {version}, and the protocol is 2"
+        ));
+    }
+
+    let stated = u16::from_be_bytes([
+        *payload.get(2).ok_or("has no length field")?,
+        *payload.get(3).ok_or("has a truncated length field")?,
+    ]) as usize;
+    if stated != payload.len() {
+        return Err(format!(
+            "states a length of {stated} and is {} bytes",
+            payload.len()
+        ));
+    }
+
+    let mut at = HEADER_BYTES;
+    let mut first_attribute = None;
+    while at + ATTRIBUTE_HEADER_BYTES <= payload.len() {
+        let length = (u16::from_be_bytes([payload[at], payload[at + 1]]) & 0x03FF) as usize;
+        if length < ATTRIBUTE_HEADER_BYTES {
+            return Err(format!(
+                "has an attribute claiming {length} bytes, less than its own header"
+            ));
+        }
+        let attribute = u16::from_be_bytes([payload[at + 4], payload[at + 5]]);
+        let value = payload
+            .get(at + ATTRIBUTE_HEADER_BYTES..at + length)
+            .ok_or_else(|| format!("has an attribute claiming {length} bytes past the end"))?;
+        if first_attribute.is_none() {
+            first_attribute = Some((attribute, u16::from_be_bytes([value[0], value[1]])));
+        }
+        at += length;
+    }
+    if at != payload.len() {
+        return Err(format!(
+            "has {} bytes after its last attribute",
+            payload.len() - at
+        ));
+    }
+
+    match first_attribute {
+        Some((MESSAGE_TYPE, SCCRQ)) => Ok(()),
+        Some((MESSAGE_TYPE, other)) => Err(format!(
+            "opens with message type {other}; a probe proposing a tunnel is {SCCRQ} (SCCRQ)"
+        )),
+        _ => Err("does not lead with a Message Type attribute, which RFC 2661 requires".into()),
     }
 }
 

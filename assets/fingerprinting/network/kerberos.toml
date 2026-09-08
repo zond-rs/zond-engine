@@ -1,0 +1,56 @@
+[service]
+name = "kerberos"
+default_ports = [88]
+description = "Kerberos KDC"
+
+# An AS-REQ for a principal in a realm nothing serves. A KDC answers it with a
+# KRB-ERROR, and that reply is the whole finding: nothing else on a network
+# answers this port with an ASN.1 message tagged [APPLICATION 30].
+#
+# The realm is invented because a scanner does not know the target's, and a
+# request has to name one. `ZOND-SCAN` is that invention, and the reader knows
+# it: a KDC repeats the realm it was asked about, so a realm in the reply is
+# reported only when it differs from the one sent. See `framed::kerberos_error`.
+#
+#   6a          [APPLICATION 10], an AS-REQ
+#     a1 .. 05  pvno 5
+#     a2 .. 0a  msg-type 10
+#     a4 ..     the request body: no options, a client name nothing will match,
+#               the invented realm, krbtgt for that realm, a distant expiry, a
+#               nonce, and the three encryption types a modern KDC offers
+[[probe]]
+name = "kerberos_as_req"
+payload = 'j\x81\x8d0\x81\x8a\xa1\x03\x02\x01\x05\xa2\x03\x02\x01\x0a\xa4\x7e0\x7c\xa0\x07\x03\x05\x00\x00\x00\x00\x10\xa1\x1c0\x1a\xa0\x03\x02\x01\x01\xa1\x130\x11\x1b\x0fzond-scan-probe\xa2\x0b\x1b\x09ZOND-SCAN\xa3\x1e0\x1c\xa0\x03\x02\x01\x02\xa1\x150\x13\x1b\x06krbtgt\x1b\x09ZOND-SCAN\xa5\x11\x18\x0f20370913024805Z\xa7\x06\x02\x04zond\xa8\x0b0\x09\x02\x01\x12\x02\x01\x11\x02\x01\x17'
+protocol = "udp"
+
+# ── What the error says ──────────────────────────────────────────────────────
+
+[[match]]
+name = "mit_kerberos"
+# MIT krb5 fills in the `e-text` field with its own wording. Measured against
+# krb5-kdc 1.20 on Debian 12, which answers `CLIENT_NOT_FOUND` to this probe.
+pattern = '^krb-error \d+ (?:CLIENT_NOT_FOUND|CLIENT_EXPIRED|POLICY|LOOKING_UP_CLIENT)'
+vendor = "MIT"
+product = "MIT Kerberos"
+context = "krb.error"
+example = "krb-error 6 CLIENT_NOT_FOUND"
+
+[[match]]
+name = "kerberos_wrong_realm"
+# The case worth the whole probe. RFC 4120 has a KDC serving a different realm
+# answer error 68 and name the right one, and the reader reports a realm only
+# when it is not the one this engine asked about. On a domain controller that
+# name is the Active Directory domain.
+pattern = '^krb-error 68 realm=(\S+)'
+product = "Kerberos KDC"
+context = "krb.error"
+example = "krb-error 68 realm=CORP.EXAMPLE"
+metadata = { "service.extrainfo" = "realm {capture:1}" }
+
+[[match]]
+name = "kerberos_kdc"
+# The baseline. It names no product, so either rule above outranks it, and a
+# KRB-ERROR is proof of a KDC whatever the code turns out to be.
+pattern = '^krb-error \d+'
+context = "krb.error"
+example = "krb-error 6"

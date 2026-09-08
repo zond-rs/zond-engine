@@ -137,6 +137,7 @@ pub(crate) fn detect_port(
             inner,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(millis / 4 * 3),
             budget: manifest
                 .capabilities
@@ -144,9 +145,9 @@ pub(crate) fn detect_port(
                 .map_or(DEFAULT_MAX_BYTES, u64::from),
         };
         findings.extend(flow.run(&seed, &mut probe));
-        // A budget the flow spent halts it without a reply, which a silent port
-        // does too; the probe says which, so a detection cut short by its own
-        // budget is recorded rather than mistaken for a clean run over a quiet port.
+        // A flow that outran its own budget on a port still answering is recorded as
+        // a coverage gap. One the probe withholds because a dead port stalled it is
+        // not: that shortfall is the port's, the same as a clean run over a quiet one.
         if let Some(refusal) = probe.last_refusal() {
             refusals.push((manifest.id.clone(), refusal));
         }
@@ -179,6 +180,11 @@ pub(crate) fn detect_port(
 /// cached is still served, and a request not seen before yields nothing rather than
 /// another dead wait. On an HTTP port this is the difference between one slow host
 /// and that host multiplied across the dozens of flows a web port attracts.
+///
+/// A flow that hit a dead wait is also not reported as a coverage gap. When it runs
+/// out of budget waiting on a silent port, the shortfall is the port's, not the
+/// flow's, so its refusal is withheld. A flow that spends its budget on a port still
+/// answering never stalls, so a genuine shortfall on a live port is still surfaced.
 struct CachingProbe<'a> {
     inner: Box<dyn Probe>,
     cache: &'a RefCell<HashMap<Vec<u8>, Vec<u8>>>,
@@ -189,14 +195,18 @@ struct CachingProbe<'a> {
     /// quarters of the flow's time budget. A real reply lands well inside this; a
     /// port that holds the socket to its read timeout does not.
     dead_after: Duration,
+    /// Whether this flow itself hit a dead wait, so a refusal it then reports is the
+    /// port's doing rather than the flow outrunning its own budget.
+    stalled: bool,
     budget: u64,
 }
 
 /// How many dead exchanges a port may cost before its remaining flows stop opening
-/// sockets to it and read only from the shared cache. A live service answers every
-/// probe promptly, even with an error, so this trips only on a port that takes a
-/// connection and then stalls or stays silent.
-const DEAD_PORT_STRIKES: u32 = 3;
+/// sockets to it and read only from the shared cache. A live service answers a
+/// simple request in milliseconds, so holding one exchange past three quarters of a
+/// detection's whole budget is already aberrant; two in a row is the port, not the
+/// network, and the rest of its flows are spared the same wait.
+const DEAD_PORT_STRIKES: u32 = 2;
 
 impl Probe for CachingProbe<'_> {
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
@@ -213,8 +223,9 @@ impl Probe for CachingProbe<'_> {
         }
         let started = Instant::now();
         let reply = self.inner.speak(bytes);
-        if reply.is_none() || started.elapsed() >= self.dead_after {
+        if started.elapsed() >= self.dead_after {
             self.strikes.set(self.strikes.get() + 1);
+            self.stalled = true;
         }
         let reply = reply?;
         if self.inner.reply_complete() {
@@ -231,6 +242,9 @@ impl Probe for CachingProbe<'_> {
     }
 
     fn last_refusal(&self) -> Option<ProbeRefusal> {
+        if self.stalled {
+            return None;
+        }
         self.inner.last_refusal()
     }
 }
@@ -473,6 +487,7 @@ mod tests {
             inner: first,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
@@ -480,6 +495,7 @@ mod tests {
             inner: second,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
@@ -511,6 +527,7 @@ mod tests {
             inner: first,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
@@ -518,6 +535,7 @@ mod tests {
             inner: second,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
@@ -545,6 +563,7 @@ mod tests {
             inner: first,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
@@ -557,6 +576,7 @@ mod tests {
             inner: second,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(1500),
             budget: 40,
         };
@@ -585,6 +605,7 @@ mod tests {
             inner: first,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
@@ -599,6 +620,7 @@ mod tests {
             inner: second,
             cache: &cache,
             strikes: &strikes,
+            stalled: false,
             dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
@@ -625,14 +647,16 @@ mod tests {
         let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
 
         // Each flow over the port gets its own probe but shares the strike count,
-        // as detect_port hands them out. Every probe answers nothing, the way a port
-        // that accepts the connection and stays silent would.
+        // as detect_port hands them out. Every probe answers nothing and, with a
+        // dead_after of zero, does so only after the whole budget, the way a port
+        // that accepts the connection and then stays silent holds a real socket.
         for n in 0..DEAD_PORT_STRIKES + 5 {
             let mut probe = CachingProbe {
                 inner: Box::new(Silent(calls.clone())),
                 cache: &cache,
                 strikes: &strikes,
-                dead_after: Duration::from_millis(1500),
+                stalled: false,
+                dead_after: Duration::ZERO,
                 budget: 4096,
             };
             let request = format!("GET /{n} HTTP/1.1\r\n\r\n");
@@ -644,6 +668,52 @@ mod tests {
             DEAD_PORT_STRIKES,
             "the socket was spared once the port had shown it will not answer"
         );
+    }
+
+    #[test]
+    fn a_refusal_is_withheld_after_a_dead_wait_but_kept_otherwise() {
+        // A probe that gives nothing and always blames its own budget.
+        struct Refuser;
+        impl Probe for Refuser {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                None
+            }
+            fn last_refusal(&self) -> Option<ProbeRefusal> {
+                Some(ProbeRefusal::Deadline)
+            }
+        }
+
+        let cache = RefCell::new(HashMap::new());
+
+        // A fast refusal with no dead wait is the flow outrunning its own budget on
+        // a port still answering, so it is reported.
+        let strikes = Cell::new(0u32);
+        let mut live = CachingProbe {
+            inner: Box::new(Refuser),
+            cache: &cache,
+            strikes: &strikes,
+            stalled: false,
+            dead_after: Duration::from_secs(3600),
+            budget: 4096,
+        };
+        live.speak(b"GET /a HTTP/1.1\r\n\r\n");
+        assert!(!live.stalled);
+        assert_eq!(live.last_refusal(), Some(ProbeRefusal::Deadline));
+
+        // The same refusal after a dead wait is the port's doing, so it is withheld.
+        // A dead_after of zero makes the exchange count as having run the clock out.
+        let strikes = Cell::new(0u32);
+        let mut dead = CachingProbe {
+            inner: Box::new(Refuser),
+            cache: &cache,
+            strikes: &strikes,
+            stalled: false,
+            dead_after: Duration::ZERO,
+            budget: 4096,
+        };
+        dead.speak(b"GET /b HTTP/1.1\r\n\r\n");
+        assert!(dead.stalled);
+        assert_eq!(dead.last_refusal(), None);
     }
 
     #[test]
@@ -660,6 +730,7 @@ mod tests {
                 inner,
                 cache: &cache,
                 strikes: &strikes,
+                stalled: false,
                 dead_after: Duration::ZERO,
                 budget: 4096,
             };
