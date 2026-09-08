@@ -1,0 +1,45 @@
+# An rsync daemon module reachable without a password. A module with no `auth
+# users` answers a connection request with `@RSYNCD: OK` and hands its files to
+# anyone; one behind auth answers `@RSYNCD: AUTHREQD`. The probe lists the daemon's
+# modules, then asks to enter the first one and reads which of the two it gets back.
+# It reads only the handshake, never a file, and offers no password, so it proves
+# the module is open without touching its contents.
+#
+# One module is tested, the first the daemon lists — the common single-share case
+# exactly, and a representative sample of a multi-module daemon. The payloads are
+# single-quoted TOML literals so their `\n` escapes reach the interpreter.
+
+[detection]
+id      = "rsync-anonymous-module"
+version = "1.0.0"
+title   = "rsync module accessible without authentication"
+
+[detection.when]
+service  = "rsync"
+protocol = "tcp"
+
+[detection.capabilities]
+class           = "active-benign"
+speak           = "target"
+max_bytes       = 8192
+max_millis      = 3000
+max_connections = 2
+
+# The module list the daemon serves an anonymous client. Each line is a module name
+# and a comment; the `@RSYNCD:` protocol lines are skipped by the leading class.
+[[step]]
+send = '@RSYNCD: 29\n#list\n'
+bind = { module = '(?m)^(?<module>[A-Za-z0-9][\w.\-]*)[ \t]' }
+
+# Ask to enter that module. `@RSYNCD: OK` is the daemon letting us in with no
+# password; a module behind auth would answer `@RSYNCD: AUTHREQD` and not match.
+[[step]]
+send   = '@RSYNCD: 29\n{module}\n'
+expect = '@RSYNCD: OK'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "An rsync module is accessible without authentication"
+  detail       = "The daemon let an anonymous client enter module '{module}' with no password (@RSYNCD: OK), so its files are readable, and writable if the module is not read-only, to anyone who can reach the port."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"
