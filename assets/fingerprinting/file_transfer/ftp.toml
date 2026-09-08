@@ -5,10 +5,16 @@ description = "File Transfer Protocol"
 
 [[match]]
 name = "ftp_banner"
-# The capture stops at the end of the banner line. `\s` would have matched the
-# trailing CRLF and run the version on into whatever the next probe drew, so a
-# server that answered one with a 500 had "500 Command ..." folded into its
-# version string.
-pattern = '(?i)^220[\s-]([\w\d .-]*ftp[\w\d .-]*)'
+# The capture stops at the end of the banner line, and at a '(' or '[': `\s` would
+# have matched the trailing CRLF and run the version on into whatever the next probe
+# drew, so a server that answered one with a 500 had "500 Command ..." folded into
+# its version string.
+#
+# `\(?` steps over the parenthesis vsftpd wraps its banner in — `220 (vsFTPd 3.0.5)`
+# — which otherwise sat before the capture and left the whole line unmatched. Most
+# daemons name themselves with an "ftpd"; FileZilla and Serv-U do not, so they are
+# named outright rather than by loosening the anchor into every 220 greeting (an
+# SMTP server greets with 220 too).
+pattern = '(?i)^220[\s-]\(?((?:[\w\d .-]*ftp|filezilla|serv-u)[\w\d .-]*)'
 version_group = 1
 product = "ftp"

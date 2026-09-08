@@ -43,5 +43,17 @@ protocol = "tcp"
 
 [[match]]
 name = "dns_tcp_match"
-pattern = '^[\x00-\xff][\x00-\xff][\x01\x00]' # Basic DNS header response part
+# A DNS response carries back the question it was asked, verbatim and uncompressed.
+# Our probe asks for `version.bind`, so a real nameserver's reply contains those
+# length-prefixed labels — bytes a MySQL/MariaDB handshake or a Postgres error packet
+# never carry, and all under 0x80 so `from_utf8_lossy` leaves them intact. The old
+# `^..[\x01\x00]` matched any reply whose third byte was 0x00, which both of those are
+# (a 3-byte MySQL length has a 0x00 high byte), and 3306 came back labelled dns.
+#
+# When the server answers the question rather than refusing it, dnsmasq gives its
+# version in the TXT record as `dnsmasq-<v>`, so it is read out. The capture is
+# optional: a nameserver that hides its version, or one whose string this does not
+# recognise, still matches and is still named dns, just without a version.
+pattern = '\x07version\x04bind(?:[\s\S]*?(dnsmasq-[0-9.]+))?'
+version_group = 1
 product = "dns"
