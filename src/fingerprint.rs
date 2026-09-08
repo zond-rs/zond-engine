@@ -809,7 +809,7 @@ async fn last_resort(
 async fn plaintext(stream: &mut TcpStream, port: u16, socket: Option<SocketAddr>) -> ResponseSet {
     let probes = SignatureDb::global().tcp_probe_payloads(port);
     if !probes.is_empty() {
-        let banners = collect_responses(stream, probes).await;
+        let banners = collect_responses(stream, port, probes).await;
         // Read back off the decoded text, which is sound only because every
         // byte `looks_like_tls` constrains is under 0x80 and survives
         // `from_utf8_lossy` unchanged.
@@ -1064,7 +1064,7 @@ async fn tunneled(
         [] => db.generic_tcp_probe_payloads(),
         own => own,
     };
-    let banners = collect_responses(&mut tunnel, probes).await;
+    let banners = collect_responses(&mut tunnel, port, probes).await;
     let responses = ResponseSet {
         banners,
         tls: Some(info),
@@ -1079,7 +1079,7 @@ async fn tunneled(
 /// The probes are passed in rather than looked up, because the caller is what
 /// knows which set applies: a port's own where it has them, and the generic set
 /// where it does not.
-async fn collect_responses<S>(stream: &mut S, probes: &[Vec<u8>]) -> Vec<String>
+async fn collect_responses<S>(stream: &mut S, port: u16, probes: &[Vec<u8>]) -> Vec<String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -1094,9 +1094,13 @@ where
         if stream.write_all(payload).await.is_err() {
             break;
         }
-        if let Some(reply) = read_document(stream, PROBE_READ_TIMEOUT).await {
-            banners.push(reply);
-        }
+        let Some(bytes) = read_bytes(stream, PROBE_READ_TIMEOUT, CONTINUATION_GRACE).await else {
+            continue;
+        };
+        // A reply this engine can read as structure is offered as the fields it
+        // holds, before the lossy text of the whole. See `extract::from_stream`.
+        banners.extend(extract::from_stream(port, &bytes));
+        banners.push(String::from_utf8_lossy(&bytes).into_owned());
     }
 
     banners

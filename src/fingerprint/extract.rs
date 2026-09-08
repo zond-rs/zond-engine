@@ -214,6 +214,29 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
     }
 }
 
+/// The texts a TCP reply carries, where this engine knows how to read one.
+///
+/// The counterpart to [`from_datagram`], keyed the same way and for the same
+/// reason. Almost every TCP service answers in text a banner grab can hand
+/// straight to the matcher, so this is empty for nearly all of them and the
+/// lossy conversion beside it does the work.
+///
+/// It exists for the ones that do not. An SMB session setup carries the
+/// operating system and the LAN manager dialect as UTF-16 inside a binary
+/// frame, and `from_utf8_lossy` turns the frame around them into replacement
+/// characters. Reading them wants the bytes.
+///
+/// Offered *beside* the lossy banner rather than instead of it, so nothing that
+/// already matched stops matching.
+pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
+    match port {
+        // The three strings a session setup answers with, each on its own,
+        // because the corpus rules are anchored at both ends of one field.
+        445 | 139 => super::framed::smb_session_setup(bytes),
+        _ => Vec::new(),
+    }
+}
+
 /// Whether this engine can read a reply from `port` over `protocol` at all.
 ///
 /// What decides whether a UDP port is worth a second datagram: there is no
@@ -1405,6 +1428,61 @@ mod framed_replies {
             identify(1701, &texts[0]).map(|found| found.0),
             Some("xl2tpd".to_string())
         );
+    }
+
+    /// What Samba 4.17.12 on Debian 12 answered the corpus probe with, captured
+    /// off the wire: a negotiate response and a session setup, back to back.
+    ///
+    /// Eighty-five imported rules were written against these two fields and none
+    /// had ever read one, because the probe stopped at the negotiate and a
+    /// negotiate response carries neither.
+    #[test]
+    fn a_session_setup_yields_the_fields_eighty_five_rules_were_written_against() {
+        fn hex(text: &str) -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex digits"))
+                .collect()
+        }
+        const SAMBA: &str = "0000009fff534d4272000000008801c80000000000000000000000000000fffe000001001100000332000100044100000000010088220000fdf3808039dcb70b9d3fdd0188ff005a007a6f6e64736d62000000000000000000604806062b0601050502a03e303ca00e300c060a2b06010401823702020aa32a3028a0261b246e6f745f646566696e65645f696e5f5246433431373840706c656173655f69676e6f72650000007cff534d4273000000008803880000000000000000000000000000fffe85e4010003ff0000000000530000570069006e0064006f0077007300200036002e0031000000530061006d0062006100200034002e00310037002e00310032002d00440065006200690061006e0000005a004f004e0044004c00410042000000";
+
+        let texts = super::from_stream(445, &hex(SAMBA));
+        assert_eq!(
+            texts,
+            vec!["Windows 6.1", "Samba 4.17.12-Debian", "ZONDLAB"],
+            "each field on its own, since the rules anchor at both ends of one"
+        );
+
+        // The imported rule reads the release and stops at the packager's
+        // suffix: its capture is `(\d\.\d+.\d+\w*)`, and `\w` does not cross
+        // the hyphen. That is Recog's reading, and the point here is that the
+        // rule has a field to read at all.
+        assert_eq!(
+            SignatureDb::global()
+                .identify(445, Protocol::Tcp, &texts[1])
+                .and_then(|found| found.version),
+            Some("4.17.12".to_string())
+        );
+
+        // And the operating-system field reaches its own rule, anchored whole.
+        assert!(
+            SignatureDb::global()
+                .identify(445, Protocol::Tcp, &texts[0])
+                .is_some(),
+            "the native OS field matched nothing"
+        );
+    }
+
+    /// A negotiate response on its own carries none of it, which is why the
+    /// probe had to grow a second message rather than the rules a new pattern.
+    #[test]
+    fn a_negotiate_response_alone_yields_nothing() {
+        let mut negotiate = vec![0x00, 0x00, 0x00, 0x23];
+        negotiate.extend_from_slice(b"\xffSMBr");
+        negotiate.extend_from_slice(&[0u8; 31]);
+        assert!(super::from_stream(445, &negotiate).is_empty());
+        assert!(super::from_stream(445, b"").is_empty());
+        assert!(super::from_stream(80, b"HTTP/1.1 200 OK").is_empty());
     }
 
     #[test]

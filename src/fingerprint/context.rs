@@ -273,13 +273,13 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "smb.native_lm",
-        reach: Reach::Unproduced,
-        note: "the LAN manager string of a session setup; the corpus probe stops at a protocol negotiate",
+        reach: Reach::Produced,
+        note: "the LAN manager string of a session setup, read by `framed::smb_session_setup`. The corpus probe now sends a session setup behind its negotiate, in the same write",
     },
     Context {
         name: "smb.native_os",
-        reach: Reach::Unproduced,
-        note: "the native OS string of a session setup; as above, and the larger half of the pair",
+        reach: Reach::Produced,
+        note: "the native OS string of the same session setup, and the larger half of the pair",
     },
     Context {
         name: "smtp.banner",

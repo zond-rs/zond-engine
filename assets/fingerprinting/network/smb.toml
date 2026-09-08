@@ -3,10 +3,32 @@ name = "smb"
 default_ports = [445]
 description = "Microsoft-DS / SMB"
 
-# SMB usually needs a hand-shake, but many servers send nothing until spoken to.
+# A protocol negotiate and a session setup, in one write.
+#
+# The negotiate alone was what this file used to send, and its response carries
+# nothing a signature reads: no operating system, no dialect, no domain. Those
+# three arrive only in answer to a *session setup*, which is a second message,
+# and eighty-five imported rules were written against them and had never read
+# one.
+#
+# Both messages go in a single write because a server processes them in order
+# and answers each on the same connection, so one exchange draws both replies.
+# That keeps this a probe rather than a conversation.
+#
+#   00 00 00 2f  NetBIOS length, then SMB_COM_NEGOTIATE offering NT LM 0.12
+#   00 00 00 71  NetBIOS length, then SESSION_SETUP_ANDX with no credentials
+#
+# The session setup asks for nothing: no password, no extended security, an
+# empty account. A server configured to allow it answers as the guest or
+# anonymous user and names itself; one that is not refuses, and the refusal is
+# read as no answer rather than as a service.
+#
+# Nothing current answers this. Windows has shipped with SMB1 off since 2017 and
+# Samba since 4.11, so the hosts that reply are the old ones, which is exactly
+# the population these rules were harvested from.
 [[probe]]
-name = "smb_negotiate"
-payload = '\x00\x00\x00\x2f\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x50\x43\x20\x4e\x45\x54\x57\x4f\x52\x4b\x20\x50\x52\x4f\x47\x52\x41\x4d\x20\x31\x2e\x30\x00'
+name = "smb_negotiate_and_session_setup"
+payload = '\x00\x00\x00\x2f\xffSMBr\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x00\x0c\x00\x02NT LM 0.12\x00\x00\x00\x00\x71\xffSMBs\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x0d\xff\x00\x00\x04\x11\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x5c\x00\x00\x00\x35\x00\x00z\x00o\x00n\x00d\x00\x00\x00Z\x00O\x00N\x00D\x00L\x00A\x00B\x00\x00\x00Z\x00o\x00n\x00d\x00 \x00S\x00c\x00a\x00n\x00n\x00e\x00r\x00\x00\x00'
 protocol = "tcp"
 
 [[match]]

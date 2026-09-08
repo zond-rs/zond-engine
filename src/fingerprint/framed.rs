@@ -845,6 +845,121 @@ pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
     }
 }
 
+/// The three strings an SMB1 session setup answers with.
+///
+/// A server that accepts a session names the operating system it runs, the LAN
+/// manager dialect it speaks, and the domain it belongs to:
+///
+/// ```text
+/// Windows 6.1
+/// Samba 4.17.12-Debian
+/// ZONDLAB
+/// ```
+///
+/// Each is returned on its own, because the corpus rules are anchored at both
+/// ends of one field: `^Windows 6.1$` matches the first of those and nothing
+/// that contains it.
+///
+/// This is what eighty-five imported rules were written against and none of
+/// them had ever read. The corpus probe stopped at a protocol negotiate, and a
+/// negotiate response carries none of these: they arrive only in answer to a
+/// session setup, which is a second message on the same connection.
+///
+/// ## Why this reads a stream rather than a datagram
+///
+/// The reply is several SMB messages back to back, each behind a four-byte
+/// NetBIOS length. Both of the probe's messages are answered, so the stream
+/// holds a negotiate response and then the session setup, and this walks to the
+/// second.
+///
+/// Empty where no session setup was accepted, which includes a server that
+/// refused the null session and one that speaks no SMB1 at all. Windows has
+/// shipped with SMB1 off since 2017 and Samba since 4.11, so silence here is
+/// the ordinary answer from anything current.
+#[must_use]
+pub(super) fn smb_session_setup(stream: &[u8]) -> Vec<String> {
+    /// `SESSION_SETUP_ANDX`.
+    const SESSION_SETUP: u8 = 0x73;
+    /// The flags2 bit saying the strings are UTF-16.
+    const UNICODE: u16 = 0x8000;
+    /// The NetBIOS session header before each SMB message.
+    const NBSS_HEADER_BYTES: usize = 4;
+    const SMB_HEADER_BYTES: usize = 32;
+
+    let mut at = 0;
+    while at + NBSS_HEADER_BYTES <= stream.len() {
+        // A NetBIOS length is three bytes, big-endian, behind a message type.
+        let length =
+            u32::from_be_bytes([0, stream[at + 1], stream[at + 2], stream[at + 3]]) as usize;
+        let Some(message) = stream.get(at + NBSS_HEADER_BYTES..at + NBSS_HEADER_BYTES + length)
+        else {
+            break;
+        };
+        at += NBSS_HEADER_BYTES + length;
+
+        if !message.starts_with(b"\xffSMB") || message.get(4) != Some(&SESSION_SETUP) {
+            continue;
+        }
+        if message.len() < SMB_HEADER_BYTES + 3 {
+            continue;
+        }
+        // A non-zero status is a refusal, and the fields behind it are absent.
+        if u32::from_le_bytes([message[5], message[6], message[7], message[8]]) != 0 {
+            continue;
+        }
+
+        let unicode = u16::from_le_bytes([message[10], message[11]]) & UNICODE != 0;
+        // The parameter block: a word count, that many words, then a byte count.
+        let words = message[SMB_HEADER_BYTES] as usize;
+        let bytes_at = SMB_HEADER_BYTES + 1 + words * 2;
+        let (Some(low), Some(high)) = (message.get(bytes_at), message.get(bytes_at + 1)) else {
+            continue;
+        };
+        let count = u16::from_le_bytes([*low, *high]) as usize;
+        let Some(field) = message.get(bytes_at + 2..bytes_at + 2 + count) else {
+            continue;
+        };
+
+        let names = match unicode {
+            true => utf16_strings(field),
+            false => field
+                .split(|byte| *byte == 0)
+                .map(|part| String::from_utf8_lossy(part).trim().to_string())
+                .filter(|part| !part.is_empty())
+                .collect(),
+        };
+        if !names.is_empty() {
+            return names;
+        }
+    }
+    Vec::new()
+}
+
+/// The NUL-terminated UTF-16 strings in `field`, in order.
+///
+/// A server may pad to an even offset before the first, so a leading odd byte is
+/// skipped rather than folded into the text.
+fn utf16_strings(field: &[u8]) -> Vec<String> {
+    let field = match field.first() {
+        Some(0) if field.len() % 2 == 1 => &field[1..],
+        _ => field,
+    };
+
+    let units: Vec<u16> = field
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .collect();
+
+    units
+        .split(|unit| *unit == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf16_lossy(part).trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
 /// The device types a WS-Discovery responder claims.
 ///
 /// A `ProbeMatches` reply is SOAP, and the element worth reading is `Types`: a
