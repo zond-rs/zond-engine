@@ -1,0 +1,29 @@
+# Unauthenticated WRITE to memcached. memcached-unauth proves it answers stats;
+# this proves it stores a value. A canary is set, read back, and deleted in one
+# pipelined exchange. active-mutating, opt-in only.
+
+[detection]
+id      = "memcached-writable"
+version = "1.0.0"
+title   = "Memcached accepts unauthenticated writes"
+
+[detection.when]
+service  = "memcached"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 3000
+
+[[step]]
+send   = "set zond_canary 0 0 4\r\nzond\r\nget zond_canary\r\ndelete zond_canary\r\n"
+expect = 'STORED'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "Memcached stored an unauthenticated write"
+  detail       = "A canary key was stored and immediately deleted with no credentials, so the cache takes writes unauthenticated."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

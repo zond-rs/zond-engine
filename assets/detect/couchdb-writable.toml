@@ -1,0 +1,34 @@
+# Unauthenticated WRITE to CouchDB. couchdb-open proves the admin party is on for
+# reads; this proves it for writes by creating a zond database and deleting it.
+# active-mutating, opt-in only.
+
+[detection]
+id      = "couchdb-writable"
+version = "1.0.0"
+title   = "CouchDB accepts unauthenticated writes"
+
+[detection.when]
+services = ["couchdb", "http"]
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 4000
+
+[[step]]
+send   = "PUT /zond-canary HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+on_no_match = "continue"
+expect = ['HTTP/[0-9.]+ 201', 'ok']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "CouchDB created a database without authentication"
+  detail       = "A canary database was created with no credentials; the admin party extends to writes. The database was deleted afterward."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"
+
+[[step]]
+send   = "DELETE /zond-canary HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+expect = 'HTTP'

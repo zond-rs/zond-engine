@@ -1,0 +1,30 @@
+# Unauthenticated WRITE to Redis. redis-unauth-access proves the store answers a
+# read; this proves it takes a write. A canary key is SET, read back, and DELeted
+# in one pipelined exchange, so the only trace is gone by the time the reply is
+# read. active-mutating, so it runs only when an operator opts in.
+
+[detection]
+id      = "redis-writable"
+version = "1.0.0"
+title   = "Redis accepts unauthenticated writes"
+
+[detection.when]
+service  = "redis"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = "SET zond:canary zond\r\nGET zond:canary\r\nDEL zond:canary\r\n"
+expect = '^\+OK'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Redis accepted an unauthenticated write"
+  detail       = "A canary key was SET and immediately DELeted with no password, so the key-value store takes writes unauthenticated, not only reads."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"

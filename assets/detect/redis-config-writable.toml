@@ -1,0 +1,36 @@
+# Unauthenticated CONFIG SET on Redis. maxmemory is read and then set back to the
+# value it already held: a no-op that proves the running configuration is
+# writable without a password, which is the usual path to RCE via CONFIG SET dir
+# and dbfilename. If the first read is refused (auth), the second step's template
+# has no value and never runs, so nothing is written.
+
+[detection]
+id      = "redis-config-writable"
+version = "1.0.0"
+title   = "Redis CONFIG SET reachable without authentication"
+
+[detection.when]
+service  = "redis"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = "CONFIG GET maxmemory\r\n"
+expect = 'maxmemory'
+bind   = { maxmemory = 'maxmemory\r\n\$[0-9]+\r\n(?<maxmemory>[0-9]+)' }
+
+[[step]]
+send   = "CONFIG SET maxmemory {maxmemory}\r\n"
+expect = '^\+OK'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "critical"
+  summary      = "Redis CONFIG SET is reachable without authentication"
+  detail       = "CONFIG SET was accepted with no password (maxmemory re-set to its own value, a no-op), so the server configuration is writable — the path to code execution through CONFIG SET dir and dbfilename."
+  references   = [{ cwe = 732 }]
+  excerpt_from = "$response"

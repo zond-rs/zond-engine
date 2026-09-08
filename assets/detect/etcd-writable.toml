@@ -1,0 +1,24 @@
+# Unauthenticated WRITE to etcd. A Tier-2 compute detection: the v3 write API
+# needs a JSON body, which a flow's send template cannot carry, so the request is
+# built in Rhai. A canary key is PUT through the v3 gateway and then deleted.
+# Gated on 2379 so the write only ever reaches an etcd client port. active-mutating.
+
+[detection]
+id      = "etcd-writable"
+version = "1.0.0"
+title   = "etcd accepts writes without a client certificate"
+
+[detection.when]
+port     = 2379
+protocol = "tcp"
+
+[detection.capabilities]
+class           = "active-mutating"
+speak           = "target"
+max_bytes       = 16384
+max_millis      = 4000
+max_connections = 3
+
+[compute]
+language = "rhai"
+body     = "etcd-writable.rhai"

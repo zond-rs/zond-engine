@@ -1,0 +1,34 @@
+# Unauthenticated WRITE to Elasticsearch. elasticsearch-open proves it answers
+# reads; this proves it takes writes by creating an index (a bodyless PUT, so no
+# request body is needed) and then DELETEing it. active-mutating, opt-in only.
+
+[detection]
+id      = "elasticsearch-writable"
+version = "1.0.0"
+title   = "Elasticsearch accepts unauthenticated writes"
+
+[detection.when]
+service  = "elasticsearch"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 32768
+max_millis = 4000
+
+[[step]]
+send   = "PUT /zond-canary HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+on_no_match = "continue"
+expect = ['HTTP/[0-9.]+ 200', 'acknowledged']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Elasticsearch created an index without authentication"
+  detail       = "A canary index was created with no credentials; the cluster accepts writes, not only reads. The index was deleted afterward."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"
+
+[[step]]
+send   = "DELETE /zond-canary HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+expect = 'HTTP'
