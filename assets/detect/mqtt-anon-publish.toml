@@ -1,0 +1,32 @@
+# Anonymous MQTT that accepts a publish. mqtt-anonymous proves the broker takes an
+# anonymous CONNECT; this proves it takes an anonymous write, by publishing one
+# non-retained QoS-1 message and reading its PUBACK. Non-retained with no
+# subscriber, the message is dropped rather than stored. active-mutating, opt-in.
+
+[detection]
+id      = "mqtt-anon-publish"
+version = "1.0.0"
+title   = "MQTT broker accepts an anonymous publish"
+
+[detection.when]
+service  = "mqtt"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 4096
+max_millis = 4000
+
+[[step]]
+# CONNECT (clean session, no credentials, client id "zondx") then PUBLISH QoS 1
+# to "zond/canary". The PUBACK for packet id 1 is the proof the write was taken.
+send   = '\x10\x11\x00\x04MQTT\x04\x02\x00\x3c\x00\x05zondx\x32\x10\x00\x0bzond/canary\x00\x01x'
+expect = '\x40\x02\x00\x01'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "MQTT broker acknowledged an anonymous publish"
+  detail       = "A non-retained message was published to a test topic over an anonymous connection and acknowledged; the broker accepts writes, not only connections."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"
