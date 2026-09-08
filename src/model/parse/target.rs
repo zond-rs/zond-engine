@@ -221,9 +221,17 @@ impl fmt::Debug for TargetContext<'_> {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TargetParseError {
-    /// The token was empty or nothing but whitespace.
+    /// The token was empty.
     #[error("a target expression cannot be empty")]
     Empty,
+
+    /// The token held nothing but whitespace.
+    ///
+    /// Its own variant because a token of spaces looks exactly like the gap
+    /// between two arguments, so a reader is checking a command line whose every
+    /// word is plainly there.
+    #[error("a target of {0} space{1}; a stray '\\' in the shell?")]
+    Blank(usize, &'static str),
 
     /// A bracketed address was never closed.
     #[error("'{0}': a bracketed address must be closed with ']'")]
@@ -301,6 +309,16 @@ pub enum TargetParseError {
     ResolvedToNothing(String),
 }
 
+/// Which of the two empties a token is: nothing at all, or whitespace.
+fn blank_or_empty(token: &str) -> TargetParseError {
+    let spaces = token.chars().count();
+    match spaces {
+        0 => TargetParseError::Empty,
+        1 => TargetParseError::Blank(1, ""),
+        _ => TargetParseError::Blank(spaces, "s"),
+    }
+}
+
 /// A target expression split into the part that says *what* and the part that
 /// says *where on it*.
 ///
@@ -342,10 +360,11 @@ impl<'a> TargetExpr<'a> {
     /// assert_eq!(ambiguous.ports, None);
     /// ```
     pub fn parse(token: &'a str) -> Result<Self, TargetParseError> {
-        let token = token.trim();
-        if token.is_empty() {
-            return Err(TargetParseError::Empty);
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            return Err(blank_or_empty(token));
         }
+        let token = trimmed;
 
         if let Some(rest) = token.strip_prefix('[') {
             let close = rest
@@ -938,8 +957,26 @@ mod tests {
             TargetExpr::parse(":80"),
             Err(TargetParseError::Empty)
         ));
+        // A token of spaces is its own answer: it looks like the gap between two
+        // arguments on screen, so the message names what it actually got.
+        let blank = TargetExpr::parse("   ").expect_err("whitespace is not a target");
+        assert!(
+            matches!(blank, TargetParseError::Blank(3, "s")),
+            "{blank:?}"
+        );
+        assert_eq!(
+            blank.to_string(),
+            "a target of 3 spaces; a stray '\\' in the shell?"
+        );
+
+        let one = TargetExpr::parse(" ").expect_err("a space is not a target");
+        assert_eq!(
+            one.to_string(),
+            "a target of 1 space; a stray '\\' in the shell?"
+        );
+
         assert!(matches!(
-            TargetExpr::parse("   "),
+            TargetExpr::parse(""),
             Err(TargetParseError::Empty)
         ));
     }
@@ -1029,9 +1066,13 @@ mod tests {
         );
         assert!(!error.to_string().contains("cannot be empty"), "{error}");
 
-        // And a token that really is empty keeps its own error.
+        // And a token with nothing written in it keeps its own error.
         assert_eq!(
             builder.push("   ", &ctx).expect_err("nothing was written"),
+            TargetParseError::Blank(3, "s")
+        );
+        assert_eq!(
+            builder.push("", &ctx).expect_err("nothing was written"),
             TargetParseError::Empty
         );
     }

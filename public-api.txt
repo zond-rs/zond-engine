@@ -3,7 +3,8 @@ pub mod zond_engine::config
 pub mod zond_engine::config::envelope
 pub struct zond_engine::config::envelope::DetectionEnvelope
 impl zond_engine::config::envelope::DetectionEnvelope
-pub const fn zond_engine::config::envelope::DetectionEnvelope::ceiling(self) -> zond_engine::model::finding::DetectionClass
+pub const fn zond_engine::config::envelope::DetectionEnvelope::ceiling(self) -> core::option::Option<zond_engine::model::finding::DetectionClass>
+pub const fn zond_engine::config::envelope::DetectionEnvelope::none() -> Self
 pub fn zond_engine::config::envelope::DetectionEnvelope::permits(self, zond_engine::model::finding::DetectionClass) -> bool
 pub const fn zond_engine::config::envelope::DetectionEnvelope::up_to(zond_engine::model::finding::DetectionClass) -> Self
 impl core::clone::Clone for zond_engine::config::envelope::DetectionEnvelope
@@ -184,7 +185,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ServiceDet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ServiceDetection
 pub struct zond_engine::config::DetectionEnvelope
 impl zond_engine::config::envelope::DetectionEnvelope
-pub const fn zond_engine::config::envelope::DetectionEnvelope::ceiling(self) -> zond_engine::model::finding::DetectionClass
+pub const fn zond_engine::config::envelope::DetectionEnvelope::ceiling(self) -> core::option::Option<zond_engine::model::finding::DetectionClass>
+pub const fn zond_engine::config::envelope::DetectionEnvelope::none() -> Self
 pub fn zond_engine::config::envelope::DetectionEnvelope::permits(self, zond_engine::model::finding::DetectionClass) -> bool
 pub const fn zond_engine::config::envelope::DetectionEnvelope::up_to(zond_engine::model::finding::DetectionClass) -> Self
 impl core::clone::Clone for zond_engine::config::envelope::DetectionEnvelope
@@ -3930,6 +3932,7 @@ pub const zond_engine::export::schema::ENGINE_VERSION: &str
 pub const zond_engine::export::schema::SCHEMA_VERSION: u32
 pub fn zond_engine::export::schema::attachment_source_name(zond_engine::report::AttachmentSource) -> &'static str
 pub fn zond_engine::export::schema::confidence_name(zond_engine::model::confidence::Confidence) -> &'static str
+pub fn zond_engine::export::schema::detection_ceiling_name(core::option::Option<zond_engine::model::finding::DetectionClass>) -> &'static str
 pub fn zond_engine::export::schema::detection_class_name(zond_engine::model::finding::DetectionClass) -> &'static str
 pub fn zond_engine::export::schema::filtering_name(zond_engine::model::host::Filtering) -> &'static str
 pub fn zond_engine::export::schema::host_status_name(zond_engine::model::host::status::HostStatus) -> &'static str
@@ -9417,6 +9420,7 @@ pub mod zond_engine::model::parse::target
 pub zond_engine::model::parse::target::TargetParseError::Address
 pub zond_engine::model::parse::target::TargetParseError::Address::expression: alloc::string::String
 pub zond_engine::model::parse::target::TargetParseError::Address::source: zond_engine::model::parse::ip::IpParseError
+pub zond_engine::model::parse::target::TargetParseError::Blank(usize, &'static str)
 pub zond_engine::model::parse::target::TargetParseError::Empty
 pub zond_engine::model::parse::target::TargetParseError::EmptyPorts(alloc::string::String)
 pub zond_engine::model::parse::target::TargetParseError::MistypedAddress(alloc::string::String)
@@ -9571,6 +9575,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::ip::Key
 pub zond_engine::model::parse::TargetParseError::Address
 pub zond_engine::model::parse::TargetParseError::Address::expression: alloc::string::String
 pub zond_engine::model::parse::TargetParseError::Address::source: zond_engine::model::parse::ip::IpParseError
+pub zond_engine::model::parse::TargetParseError::Blank(usize, &'static str)
 pub zond_engine::model::parse::TargetParseError::Empty
 pub zond_engine::model::parse::TargetParseError::EmptyPorts(alloc::string::String)
 pub zond_engine::model::parse::TargetParseError::MistypedAddress(alloc::string::String)
@@ -12092,6 +12097,7 @@ pub fn zond_engine::record::wire::attachment_source(&str) -> core::option::Optio
 pub fn zond_engine::record::wire::attachment_source_name(zond_engine::report::AttachmentSource) -> &'static str
 pub fn zond_engine::record::wire::confidence(&str) -> core::option::Option<zond_engine::model::confidence::Confidence>
 pub fn zond_engine::record::wire::confidence_name(zond_engine::model::confidence::Confidence) -> &'static str
+pub fn zond_engine::record::wire::detection_ceiling_name(core::option::Option<zond_engine::model::finding::DetectionClass>) -> &'static str
 pub fn zond_engine::record::wire::detection_class(&str) -> core::option::Option<zond_engine::model::finding::DetectionClass>
 pub fn zond_engine::record::wire::detection_class_name(zond_engine::model::finding::DetectionClass) -> &'static str
 pub fn zond_engine::record::wire::filtering(&str) -> core::option::Option<zond_engine::model::host::Filtering>
