@@ -282,7 +282,72 @@ pub struct Catalogue {
     id: String,
     version: Version,
     content_hash: String,
-    vulnerability: Vec<Vulnerability>,
+    /// Every distinct string the entries below are built from, written once.
+    ///
+    /// A real feed repeats itself enormously: seventy-one thousand entries are
+    /// backed by seven thousand advisories, because NVD states one entry per
+    /// affected version rather than one per vulnerability, and every one of them
+    /// carries the same title. Six thousand distinct titles, a hundred and
+    /// forty-seven distinct products.
+    ///
+    /// Stored flat with the entries holding indices, which is what makes the
+    /// shipped catalogue two megabytes rather than sixteen. The saving is the
+    /// same in memory as on disk, so a scan pays it once either way.
+    pool: Vec<String>,
+    vulnerability: Vec<Entry>,
+}
+
+/// One catalogue entry, as indices into [`Catalogue::pool`].
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+struct Entry {
+    cve: u32,
+    title: u32,
+    severity: u32,
+    vendor: u32,
+    product: u32,
+    affected: u32,
+    cwe: Option<u32>,
+    remediation: Option<u32>,
+}
+
+/// One entry with its strings resolved, which is what everything that reads a
+/// catalogue actually wants.
+///
+/// Borrowed from the pool rather than copied out of it: an entry is looked at
+/// once per matching CPE and never outlives the catalogue it came from.
+struct Vulnerability<'a> {
+    cve: &'a str,
+    title: &'a str,
+    severity: &'a str,
+    vendor: &'a str,
+    product: &'a str,
+    affected: &'a str,
+    cwe: Option<u32>,
+    remediation: Option<&'a str>,
+}
+
+/// Builds a pool and hands back indices, so a string written a thousand times is
+/// stored once.
+#[derive(Default)]
+struct Interner {
+    pool: Vec<String>,
+    seen: std::collections::HashMap<String, u32>,
+}
+
+impl Interner {
+    fn intern(&mut self, value: &str) -> u32 {
+        if let Some(index) = self.seen.get(value) {
+            return *index;
+        }
+        let index = self.pool.len() as u32;
+        self.pool.push(value.to_string());
+        self.seen.insert(value.to_string(), index);
+        index
+    }
+
+    fn maybe(&mut self, value: Option<&str>) -> Option<u32> {
+        value.map(|value| self.intern(value))
+    }
 }
 
 impl Catalogue {
@@ -298,11 +363,13 @@ impl Catalogue {
             let document: CatalogueDocument =
                 toml::from_str(SOURCE).expect("the embedded CVE seed is valid TOML");
 
+            let (pool, vulnerability) = intern_all(&document.vulnerability);
             Catalogue {
                 id: CORRELATOR_ID.to_string(),
                 version: SEED_VERSION,
                 content_hash: content_hash(SOURCE.as_bytes()),
-                vulnerability: document.vulnerability,
+                pool,
+                vulnerability,
             }
         })
     }
@@ -357,11 +424,13 @@ impl Catalogue {
             .parse()
             .map_err(|_| CatalogueError::UnreadableVersion { version })?;
 
+        let (pool, vulnerability) = intern_all(&document.vulnerability);
         Ok(Self {
             id,
             version: parsed,
             content_hash: content_hash(source.as_bytes()),
-            vulnerability: document.vulnerability,
+            pool,
+            vulnerability,
         })
     }
 
@@ -390,15 +459,31 @@ impl Catalogue {
         self.vulnerability.is_empty()
     }
 
+    /// One entry with its strings resolved.
+    fn view(&self, entry: &Entry) -> Vulnerability<'_> {
+        let at = |index: u32| self.pool[index as usize].as_str();
+        Vulnerability {
+            cve: at(entry.cve),
+            title: at(entry.title),
+            severity: at(entry.severity),
+            vendor: at(entry.vendor),
+            product: at(entry.product),
+            affected: at(entry.affected),
+            cwe: entry.cwe,
+            remediation: entry.remediation.map(at),
+        }
+    }
+
     /// Every finding this catalogue has for a service CPE.
     fn findings_for(&self, cpe: &str) -> Vec<Finding> {
         let Some(parsed) = Cpe::parse(cpe) else {
             return Vec::new();
         };
 
-        let mut matched: Vec<&Vulnerability> = self
+        let mut matched: Vec<Vulnerability<'_>> = self
             .vulnerability
             .iter()
+            .map(|entry| self.view(entry))
             .filter(|vulnerability| vulnerability.matches(&parsed))
             .collect();
 
@@ -406,9 +491,9 @@ impl Catalogue {
         // entries a summary names are the ones worth naming and two runs over
         // the same catalogue name the same ones.
         matched.sort_by(|a, b| {
-            wire::severity(&b.severity)
-                .cmp(&wire::severity(&a.severity))
-                .then_with(|| a.cve.cmp(&b.cve))
+            wire::severity(b.severity)
+                .cmp(&wire::severity(a.severity))
+                .then_with(|| a.cve.cmp(b.cve))
         });
 
         // Split before summarising, because the two halves are different claims
@@ -448,9 +533,14 @@ impl Catalogue {
     /// the worst of them as references. A reader scanning a port table sees one
     /// row per affected service; a reader with the report open has the
     /// identifiers.
-    fn summary_of(&self, cpe: &str, parsed: &Cpe, matched: &[&Vulnerability]) -> Option<Finding> {
+    fn summary_of(
+        &self,
+        cpe: &str,
+        parsed: &Cpe,
+        matched: &[Vulnerability<'_>],
+    ) -> Option<Finding> {
         let worst = matched.first()?;
-        let severity = wire::severity(&worst.severity)?;
+        let severity = wire::severity(worst.severity)?;
         let detection =
             DetectionId::new(self.id.clone(), self.version, self.content_hash.clone()).ok()?;
 
@@ -466,7 +556,7 @@ impl Catalogue {
         let counted = |wanted: Severity| {
             matched
                 .iter()
-                .filter(|entry| wire::severity(&entry.severity) == Some(wanted))
+                .filter(|entry| wire::severity(entry.severity) == Some(wanted))
                 .count()
         };
         let critical = counted(Severity::Critical);
@@ -478,7 +568,7 @@ impl Catalogue {
         // quotes, for anyone who needs to tell two products of the same name
         // apart.
         let software = match parsed.version.is_empty() {
-            true => worst.product.clone(),
+            true => worst.product.to_string(),
             false => format!("{} {}", worst.product, parsed.version),
         };
         let title = format!("{software} has {} known vulnerabilities", matched.len());
@@ -486,7 +576,7 @@ impl Catalogue {
         let named: Vec<&str> = matched
             .iter()
             .take(MAX_NAMED_IN_EXCERPT)
-            .map(|entry| entry.cve.as_str())
+            .map(|entry| entry.cve)
             .collect();
         let excerpt = match checked {
             true => format!(
@@ -515,7 +605,7 @@ impl Catalogue {
         // reference list cut at twenty must be cut at the twenty worst rather
         // than at whichever twenty the catalogue happened to list first.
         for entry in matched.iter().take(MAX_CVE_REFERENCES) {
-            if let Some(reference) = Reference::cve(&entry.cve) {
+            if let Some(reference) = Reference::cve(entry.cve) {
                 finding = finding.with_reference(reference);
             }
         }
@@ -534,7 +624,7 @@ struct CatalogueDocument {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    vulnerability: Vec<Vulnerability>,
+    vulnerability: Vec<DocumentEntry>,
 }
 
 /// The SHA-256 of a catalogue's bytes, as lowercase hex.
@@ -564,9 +654,28 @@ const MAX_CVE_REFERENCES: usize = 20;
 /// reads, and a sentence listing twenty identifiers is not one.
 const MAX_NAMED_IN_EXCERPT: usize = 3;
 
-/// One known vulnerability, keyed by the CPE identity it affects.
+/// Turns the entries a document states into a pool and a list of indices.
+fn intern_all(entries: &[DocumentEntry]) -> (Vec<String>, Vec<Entry>) {
+    let mut interner = Interner::default();
+    let interned = entries
+        .iter()
+        .map(|entry| Entry {
+            cve: interner.intern(&entry.cve),
+            title: interner.intern(&entry.title),
+            severity: interner.intern(&entry.severity),
+            vendor: interner.intern(&entry.vendor),
+            product: interner.intern(&entry.product),
+            affected: interner.intern(&entry.affected),
+            cwe: entry.cwe,
+            remediation: interner.maybe(entry.remediation.as_deref()),
+        })
+        .collect();
+    (interner.pool, interned)
+}
+
+/// One known vulnerability as a document states it, before interning.
 #[derive(Debug, Clone, Deserialize)]
-struct Vulnerability {
+struct DocumentEntry {
     cve: String,
     title: String,
     severity: String,
@@ -579,12 +688,12 @@ struct Vulnerability {
     remediation: Option<String>,
 }
 
-impl Vulnerability {
+impl Vulnerability<'_> {
     /// Whether this vulnerability names `cpe`'s software at an affected version.
     fn matches(&self, cpe: &Cpe) -> bool {
         self.vendor.eq_ignore_ascii_case(&cpe.vendor)
             && self.product.eq_ignore_ascii_case(&cpe.product)
-            && version_matches(&cpe.version, &self.affected)
+            && version_matches(&cpe.version, self.affected)
     }
 
     /// Whether this entry constrains the version at all, or names a product and
@@ -601,7 +710,7 @@ impl Vulnerability {
     /// The finding this vulnerability produces for a matched `cpe`, or [`None`]
     /// if the entry is malformed: an unknown severity, a bad CVE identifier.
     fn to_finding(&self, cpe: &str, catalogue: &Catalogue) -> Option<Finding> {
-        let severity = wire::severity(&self.severity)?;
+        let severity = wire::severity(self.severity)?;
         let detection = DetectionId::new(
             catalogue.id.clone(),
             catalogue.version,
@@ -633,20 +742,20 @@ impl Vulnerability {
 
         let mut finding = Finding::new(
             detection,
-            self.title.clone(),
+            self.title,
             severity,
             confidence,
             DetectionClass::Passive,
         )
         .ok()?
-        .with_reference(Reference::cve(&self.cve)?)
+        .with_reference(Reference::cve(self.cve)?)
         .with_excerpt(Excerpt::new(excerpt));
 
         if let Some(cwe) = self.cwe {
             finding = finding.with_reference(Reference::cwe(cwe));
         }
-        if let Some(remediation) = &self.remediation {
-            finding = finding.with_remediation(remediation.clone());
+        if let Some(remediation) = self.remediation {
+            finding = finding.with_remediation(remediation);
         }
         Some(finding)
     }
