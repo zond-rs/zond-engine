@@ -1,0 +1,18 @@
+# A Tier-2 compute detection: the [detection] manifest a flow also carries, plus a
+# [compute] body that computes the verdict. Passive, so it reads only the response
+# the scan already gathered and touches the network in no new way.
+
+[detection]
+id      = "jwt-missing-expiry"
+version = "1.0.0"
+title   = "JWT issued without an expiry claim"
+
+[detection.when]
+speaks = "http"
+
+[detection.capabilities]
+class = "passive"
+
+[compute]
+language = "rhai"
+body     = "jwt-missing-expiry.rhai"

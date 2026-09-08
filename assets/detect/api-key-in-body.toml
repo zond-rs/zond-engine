@@ -1,0 +1,18 @@
+# A Tier-2 compute detection: the [detection] manifest a flow also carries, plus a
+# [compute] body that computes the verdict. Passive, so it reads only the response
+# the scan already gathered and touches the network in no new way.
+
+[detection]
+id      = "api-key-in-body"
+version = "1.0.0"
+title   = "API key or cloud secret exposed in a response"
+
+[detection.when]
+speaks = "http"
+
+[detection.capabilities]
+class = "passive"
+
+[compute]
+language = "rhai"
+body     = "api-key-in-body.rhai"
