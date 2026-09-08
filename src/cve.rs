@@ -79,7 +79,9 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 use crate::model::confidence::Confidence;
-use crate::model::finding::{DetectionClass, DetectionId, Excerpt, Finding, Reference, Version};
+use crate::model::finding::{
+    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+};
 use crate::model::host::Host;
 use crate::model::port::Protocol;
 use crate::record::wire;
@@ -393,11 +395,134 @@ impl Catalogue {
         let Some(parsed) = Cpe::parse(cpe) else {
             return Vec::new();
         };
-        self.vulnerability
+
+        let mut matched: Vec<&Vulnerability> = self
+            .vulnerability
             .iter()
             .filter(|vulnerability| vulnerability.matches(&parsed))
-            .filter_map(|vulnerability| vulnerability.to_finding(cpe, self))
+            .collect();
+
+        // Worst first, and by identifier where two are equally bad, so the
+        // entries a summary names are the ones worth naming and two runs over
+        // the same catalogue name the same ones.
+        matched.sort_by(|a, b| {
+            wire::severity(&b.severity)
+                .cmp(&wire::severity(&a.severity))
+                .then_with(|| a.cve.cmp(&b.cve))
+        });
+
+        // Split before summarising, because the two halves are different claims
+        // and a summary may not average them. An entry naming a version range was
+        // checked against the version found; one naming the product at any
+        // version was not, and matches a patched host just as readily. Folding
+        // them together would report the second at the first's confidence, which
+        // is the distinction the whole two-axis model exists to keep.
+        let (checked, unchecked): (Vec<_>, Vec<_>) = matched
+            .into_iter()
+            .partition(|vulnerability| vulnerability.constrains_the_version());
+
+        [checked, unchecked]
+            .into_iter()
+            .filter_map(|group| match group.as_slice() {
+                [] => None,
+                // One match is its own best description. This is the whole of
+                // what a hand-written catalogue or a converted KEV produces for
+                // most products, and it reads exactly as it did before
+                // summarising existed.
+                [only] => only.to_finding(cpe, self),
+                many => self.summary_of(cpe, &parsed, many),
+            })
             .collect()
+    }
+
+    /// The single finding a run of matches produces.
+    ///
+    /// A version-matched CPE against a real feed draws dozens: Apache 2.4.49 has
+    /// sixty-eight, MySQL 8.0.32 a hundred and eighteen. Recorded one by one they
+    /// are not a report, they are a wall — and they push past
+    /// [`MAX_FINDINGS_PER_SUBJECT`](crate::model::finding::MAX_FINDINGS_PER_SUBJECT)
+    /// on a host running a handful of identifiable services, at which point the
+    /// ones that survive are decided by arrival order rather than by severity.
+    ///
+    /// So they arrive as one finding that says how many and how bad, carrying
+    /// the worst of them as references. A reader scanning a port table sees one
+    /// row per affected service; a reader with the report open has the
+    /// identifiers.
+    fn summary_of(&self, cpe: &str, parsed: &Cpe, matched: &[&Vulnerability]) -> Option<Finding> {
+        let worst = matched.first()?;
+        let severity = wire::severity(&worst.severity)?;
+        let detection =
+            DetectionId::new(self.id.clone(), self.version, self.content_hash.clone()).ok()?;
+
+        // Uniform by construction: `findings_for` splits on this before calling
+        // here, so every entry in the group makes the same kind of claim and the
+        // summary can state it without qualifying.
+        let checked = worst.constrains_the_version();
+        let confidence = match checked {
+            true => Confidence::Probable,
+            false => Confidence::Weak,
+        };
+
+        let counted = |wanted: Severity| {
+            matched
+                .iter()
+                .filter(|entry| wire::severity(&entry.severity) == Some(wanted))
+                .count()
+        };
+        let critical = counted(Severity::Critical);
+        let high = counted(Severity::High);
+
+        // Named the way the port table names it — `tomcat 9.0.71`, not
+        // `apache tomcat` — so a reader matching the row to the port above it
+        // does not have to translate. The vendor is in the CPE the excerpt
+        // quotes, for anyone who needs to tell two products of the same name
+        // apart.
+        let software = match parsed.version.is_empty() {
+            true => worst.product.clone(),
+            false => format!("{} {}", worst.product, parsed.version),
+        };
+        let title = format!("{software} has {} known vulnerabilities", matched.len());
+
+        let named: Vec<&str> = matched
+            .iter()
+            .take(MAX_NAMED_IN_EXCERPT)
+            .map(|entry| entry.cve.as_str())
+            .collect();
+        let excerpt = match checked {
+            true => format!(
+                "{cpe} matches {} catalogue entries, {critical} critical and {high} high. The worst are {}",
+                matched.len(),
+                named.join(", ")
+            ),
+            false => format!(
+                "{cpe} matches {} catalogue entries naming this software at any version: the version found was not checked against anything. They include {}",
+                matched.len(),
+                named.join(", ")
+            ),
+        };
+
+        let mut finding = Finding::new(
+            detection,
+            title,
+            severity,
+            confidence,
+            DetectionClass::Passive,
+        )
+        .ok()?
+        .with_excerpt(Excerpt::new(excerpt));
+
+        // Bounded, and the bound is why the sort above is by severity: a
+        // reference list cut at twenty must be cut at the twenty worst rather
+        // than at whichever twenty the catalogue happened to list first.
+        for entry in matched.iter().take(MAX_CVE_REFERENCES) {
+            if let Some(reference) = Reference::cve(&entry.cve) {
+                finding = finding.with_reference(reference);
+            }
+        }
+        if let Some(cwe) = worst.cwe {
+            finding = finding.with_reference(Reference::cwe(cwe));
+        }
+        Some(finding)
     }
 }
 
@@ -424,6 +549,20 @@ fn content_hash(bytes: &[u8]) -> String {
     }
     hex
 }
+
+/// The most CVE identifiers a summary finding carries.
+///
+/// A cap rather than the whole set, because the whole set runs to thousands for
+/// a product with a long history and a report is not an archive. Twenty is what
+/// fits a reader's attention and a terminal's width, and the sort that fills it
+/// is by severity so the twenty are the twenty that matter.
+const MAX_CVE_REFERENCES: usize = 20;
+
+/// How many identifiers a summary spells out in its excerpt.
+///
+/// Fewer than it carries as references: the excerpt is a sentence somebody
+/// reads, and a sentence listing twenty identifiers is not one.
+const MAX_NAMED_IN_EXCERPT: usize = 3;
 
 /// One known vulnerability, keyed by the CPE identity it affects.
 #[derive(Debug, Clone, Deserialize)]
@@ -664,6 +803,94 @@ mod tests {
     /// An entry whose `affected` is `*` matched on the software and checked no
     /// version, so it describes a patched installation exactly as well as a
     /// vulnerable one. Reporting it beside a version match, at the same
+    /// Many matches against one service become one finding, not many.
+    ///
+    /// A real feed gives a version-matched CPE dozens of entries. Recorded one by
+    /// one they crowd out everything else a scan found and, past
+    /// `MAX_FINDINGS_PER_SUBJECT`, the survivors are chosen by arrival order
+    /// rather than by severity. The summary says how many and how bad, and
+    /// carries the identifiers.
+    #[test]
+    fn many_matches_become_one_finding_that_counts_them() {
+        let mut document = String::from("id = \"acme:advisories\"\nversion = \"1.0.0\"\n");
+        // One critical, one high, and twenty-four mediums behind them.
+        for (index, severity) in std::iter::once("critical")
+            .chain(std::iter::once("high"))
+            .chain(std::iter::repeat_n("medium", 24))
+            .enumerate()
+        {
+            document.push_str(&format!(
+                "\n[[vulnerability]]\ncve = \"CVE-2024-{:04}\"\ntitle = \"Something {index}\"\n\
+                 severity = \"{severity}\"\nvendor = \"apache\"\nproduct = \"tomcat\"\n\
+                 affected = \"== 9.0.71\"\n",
+                index + 1
+            ));
+        }
+        let catalogue = Catalogue::read(&mut document.as_bytes()).expect("a valid document");
+
+        let hits = catalogue.findings_for("cpe:/a:apache:tomcat:9.0.71");
+        assert_eq!(hits.len(), 1, "twenty-six entries, one finding");
+
+        let summary = &hits[0];
+        assert_eq!(
+            summary.title(),
+            "tomcat 9.0.71 has 26 known vulnerabilities"
+        );
+        assert_eq!(
+            summary.severity(),
+            Severity::Critical,
+            "the summary is as bad as the worst of them"
+        );
+        assert!(summary.excerpt().as_str().contains("1 critical and 1 high"));
+
+        // Capped, and cut at the worst rather than at whichever the document
+        // happened to list first: the critical one is `CVE-2024-0001`.
+        let cves: Vec<&str> = summary
+            .references()
+            .filter_map(|reference| match reference {
+                Reference::Cve(id) => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cves.len(), MAX_CVE_REFERENCES);
+        assert!(cves.contains(&"CVE-2024-0001"), "the critical one is named");
+        assert!(cves.contains(&"CVE-2024-0002"), "and the high one");
+    }
+
+    /// The split survives summarising. A service matched by many entries of both
+    /// kinds gets one finding per kind, never one averaging them.
+    #[test]
+    fn a_summary_never_averages_the_two_kinds_of_claim() {
+        let mut document = String::from("id = \"acme:advisories\"\nversion = \"1.0.0\"\n");
+        for (index, affected) in ["== 2.4.49", "== 2.4.49", "*", "*"].iter().enumerate() {
+            document.push_str(&format!(
+                "\n[[vulnerability]]\ncve = \"CVE-2021-{:04}\"\ntitle = \"Entry {index}\"\n\
+                 severity = \"high\"\nvendor = \"apache\"\nproduct = \"http_server\"\n\
+                 affected = \"{affected}\"\n",
+                index + 1
+            ));
+        }
+        let catalogue = Catalogue::read(&mut document.as_bytes()).expect("a valid document");
+
+        let hits = catalogue.findings_for("cpe:/a:apache:http_server:2.4.49");
+        assert_eq!(hits.len(), 2, "one summary per kind of claim");
+
+        let checked = hits
+            .iter()
+            .find(|finding| finding.confidence() == Confidence::Probable)
+            .expect("the version-checked summary");
+        assert!(checked.excerpt().as_str().contains("2 catalogue entries"));
+
+        let unchecked = hits
+            .iter()
+            .find(|finding| finding.confidence() == Confidence::Weak)
+            .expect("the unchecked summary");
+        assert!(
+            unchecked.excerpt().as_str().contains("not checked"),
+            "a summary of unbounded entries still says the version was never in question"
+        );
+    }
+
     /// confidence, would put the two in the same row of a report with nothing to
     /// separate them.
     #[test]
