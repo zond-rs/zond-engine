@@ -314,6 +314,11 @@ impl Signature {
             hardware: self.hardware.as_deref().and_then(|metadata| {
                 super::os::hardware_from(metadata, matched.captures.as_deref().unwrap_or(&[]))
             }),
+            arch: self.os.as_deref().and_then(|metadata| {
+                metadata
+                    .resolve(matched.captures.as_deref().unwrap_or(&[]))
+                    .arch
+            }),
             os: self.os.as_deref().and_then(|metadata| {
                 super::os::banner_evidence(
                     metadata,
@@ -393,6 +398,21 @@ pub struct Match {
     /// What this match says about the operating system underneath the service,
     /// with its templates already resolved against the capture groups.
     ///
+    /// The instruction set this match named, whether or not it named anything
+    /// else.
+    ///
+    /// Held apart from [`os`](Self::os) because seven rules state an
+    /// architecture and nothing more: `x64|amd64|x86_64` matched against a
+    /// `uname` banner says what the silicon is and not what runs on it.
+    /// [`evidence_from`](super::os::banner_evidence) declines those, and rightly:
+    /// evidence naming nothing describable cannot stand as an operating-system
+    /// reading, and letting it would put a nameless candidate into a resolver
+    /// that settles by vote.
+    ///
+    /// So the architecture is collected rather than voted on, the way
+    /// [`hardware`](Self::hardware) already is, and filled into whichever
+    /// reading wins. A third axis beside what the machine runs and what it is.
+    pub arch: Option<String>,
     /// A separate field rather than more fields on [`Evidence`] because it
     /// answers a different question and is resolved by a different set of rules.
     /// A banner identifies a *service*; that it also implies a host is a second
@@ -415,6 +435,18 @@ pub struct MatchQuality {
     confidence: Confidence,
     detail: u8,
     specificity: usize,
+}
+
+impl MatchQuality {
+    /// How much of the response the pattern accounted for.
+    ///
+    /// Exposed so a caller collecting a field from several matches can prefer
+    /// the one that read most of the text: `x86_64` and the `x86` rule that
+    /// matches inside it both fire on one banner, and the longer read is the
+    /// one that saw the whole word.
+    pub fn specificity(self) -> usize {
+        self.specificity
+    }
 }
 
 // ╔════════════════════════════════════════════╗

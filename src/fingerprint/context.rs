@@ -113,8 +113,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "architecture",
-        reach: Reach::Unproduced,
-        note: "nothing, and the blocker is not the text: these patterns are unanchored and match a `uname` banner already. They state only `os.arch`, which `OsMetadata` has no field for and which makes `from_map` drop the rule for naming neither a family nor a product",
+        reach: Reach::Produced,
+        note: "the instruction set a rule states, collected by `best_match` from every match that named one and filled into whichever operating-system reading won. These seven rules name an architecture and nothing else, so `evidence_from` still declines them as a reading of their own: evidence naming nothing describable cannot stand in a resolver that settles by vote. The most specific match wins, which is what separates `x86_64` from the `x86` rule that matches inside it",
     },
     Context {
         name: "coap.core",
@@ -258,8 +258,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "rtsp_header.server",
-        reach: Reach::Unproduced,
-        note: "the `Server` value of an RTSP response; wants an OPTIONS probe",
+        reach: Reach::Produced,
+        note: "the `Server` value of an RTSP response, read by `framed::rtsp_server` through `extract::from_stream`. An RTSP status line is not an HTTP one, so the HTTP reader declines the response and this port has a reader of its own",
     },
     Context {
         name: "sip_header.server",

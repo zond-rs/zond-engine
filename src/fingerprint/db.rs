@@ -46,6 +46,10 @@ use crate::model::port::Protocol;
 /// [`canonical_os_name`](SignatureDb::canonical_os_name).
 const OS_NAME_CONTEXT: &str = "operating_system.name";
 
+/// The field a rule reads when its whole job is to name an instruction set.
+/// See [`architecture_of`](SignatureDb::architecture_of).
+const ARCHITECTURE_CONTEXT: &str = "architecture";
+
 use super::model::Evidence;
 use crate::model::host::OsEvidence;
 
@@ -113,6 +117,15 @@ pub struct SignatureDb {
     /// four FTP rules read `Windows Server 2008` and conclude `Windows`, which is
     /// coarser than what went in. See [`canonical_os_name`](Self::canonical_os_name).
     os_name_signatures: Vec<usize>,
+    /// The signatures whose rules read `architecture`: seven patterns thatname
+    /// nothing but an instruction set.
+    ///
+    /// Apart for the same reason as [`os_name_signatures`](Self::os_name_signatures),
+    /// and one more: these state no product, family or vendor, so
+    /// [`evidence_from`](super::os::banner_evidence) declines them as a reading
+    /// of their own and they would be dropped whatever index held them. They are
+    /// consulted for one field and never voted with.
+    architecture_signatures: Vec<usize>,
     /// `port -> signature indices` matchable on that port.
     ///
     /// Service-linked: the union, over every service reachable on the port, of
@@ -217,11 +230,14 @@ impl SignatureDb {
         // a probe here is a property of the question, not of the port.
         let mut universal_tcp_probes: Vec<(u8, Vec<u8>)> = Vec::new();
         let mut os_name_signatures: Vec<usize> = Vec::new();
+        let mut architecture_signatures: Vec<usize> = Vec::new();
         for def in &defs {
             for rule in &def.r#match {
                 let idx = signatures.len();
-                if rule.context.as_deref() == Some(OS_NAME_CONTEXT) {
-                    os_name_signatures.push(idx);
+                match rule.context.as_deref() {
+                    Some(OS_NAME_CONTEXT) => os_name_signatures.push(idx),
+                    Some(ARCHITECTURE_CONTEXT) => architecture_signatures.push(idx),
+                    _ => {}
                 }
                 signatures.push(Signature::new(&def.service.name, rule));
                 service_sigs
@@ -316,6 +332,7 @@ impl SignatureDb {
             signatures,
             name_index,
             os_name_signatures,
+            architecture_signatures,
             by_port,
             tcp_probes,
             generic_tcp_probes,
@@ -408,6 +425,36 @@ impl SignatureDb {
             crate::model::host::OsSource::ServiceBanner,
         )?
         .os
+    }
+
+    /// The instruction set the corpus reads out of `text`, where it reads one.
+    ///
+    /// Seven rules exist for this and nothing else: `x64|amd64|x86_64` against a
+    /// `uname` banner says what the silicon is and not what runs on it. They
+    /// state no product, family or vendor, so they cannot become an
+    /// operating-system reading and are asked directly instead.
+    ///
+    /// The most specific match wins, which is what separates `x86_64` from the
+    /// `x86` rule that matches inside it.
+    ///
+    /// [`None`] where the text names no architecture, which is most text.
+    pub(crate) fn architecture_of(&self, text: &str) -> Option<String> {
+        self.warm(&self.architecture_signatures);
+
+        self.architecture_signatures
+            .iter()
+            .filter_map(|&idx| {
+                self.signature(idx)?
+                    .identify(text, crate::model::host::OsSource::ServiceBanner)
+            })
+            .reduce(|best, m| {
+                if m.quality.specificity() > best.quality.specificity() {
+                    m
+                } else {
+                    best
+                }
+            })?
+            .arch
     }
 
     /// The primary service name registered for `port`, if any. No compilation.
@@ -638,6 +685,33 @@ fn best_match_within(
             }
         })
         .cloned();
+
+    // Collected rather than voted on, for the reason `Match::arch` gives, and
+    // asked of the rules whose whole job it is before anything else. A rule that
+    // identified a service and named an architecture in passing took its answer
+    // from a capture, and a capture in a banner is a position rather than a
+    // meaning: one shipped rule read the distribution out of a Debian `uname`
+    // and called it the instruction set.
+    let arch = texts
+        .iter()
+        .find_map(|text| db.architecture_of(text))
+        .or_else(|| {
+            matched
+                .iter()
+                .filter(|m| m.arch.is_some())
+                .reduce(|best, m| {
+                    if m.quality.specificity() > best.quality.specificity() {
+                        m
+                    } else {
+                        best
+                    }
+                })
+                .and_then(|m| m.arch.clone())
+        });
+    let os = os.map(|evidence| OsEvidence {
+        arch: evidence.arch.or(arch),
+        ..evidence
+    });
 
     // Merged rather than chosen. Two rules matching one response may each name a
     // different part of the box, and a vendor from one beside a model from
@@ -1171,6 +1245,53 @@ mod tests {
                 db.canonical_os_name(product).is_none(),
                 "{product} was read as an operating system"
             );
+        }
+    }
+
+    /// An architecture reaches the reading even though the rule that named it
+    /// named nothing else.
+    ///
+    /// Seven rules state an instruction set and no product, so they are not an
+    /// operating-system reading of their own and `evidence_from` declines them.
+    /// Their answer is collected instead and filled into whichever reading won,
+    /// the way hardware already is.
+    #[test]
+    fn an_architecture_is_collected_from_a_rule_that_named_nothing_else() {
+        let found = SignatureDb::global()
+            .identify(
+                161,
+                Protocol::Udp,
+                "Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) x86_64",
+            )
+            .expect("the corpus names it");
+        let os = found.os.expect("it says something about the machine");
+
+        assert_eq!(
+            os.family.as_deref(),
+            Some("Linux"),
+            "the reading is unchanged"
+        );
+        assert_eq!(
+            os.arch.as_deref(),
+            Some("x86_64"),
+            "and carries the architecture a separate rule named"
+        );
+    }
+
+    /// `x86` matches inside `x86_64`, so both rules fire on one banner and the
+    /// longer read is the one that saw the whole word.
+    #[test]
+    fn the_more_specific_architecture_wins() {
+        let db = SignatureDb::global();
+        for (banner, expected) in [
+            ("Linux host 6.1.0 x86_64", "x86_64"),
+            ("Linux host 2.6.32 i686", "x86"),
+        ] {
+            let arch = db
+                .identify(161, Protocol::Udp, banner)
+                .and_then(|found| found.os)
+                .and_then(|os| os.arch);
+            assert_eq!(arch.as_deref(), Some(expected), "for {banner:?}");
         }
     }
 

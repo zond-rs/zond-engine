@@ -14,6 +14,35 @@ The converted files are edited in place where the imported metadata asserts more
 than its own pattern can establish. **Re-importing overwrites these**, so they are
 recorded here to be re-applied.
 
+### A distribution read as an instruction set (2026-09-08, 1 rule)
+
+`Linux x86_64 Generic - hostname variant` took `os.arch` from its third capture,
+which its own example puts the architecture in:
+
+```
+Linux hostname 2.6.9 #2 SMP Tue Jun 26 16:10:49 EDT 2012 x86_64
+                                                  └─ EDT ─┘ └ capture 3 ┘
+```
+
+The capture is a position rather than a meaning. The marker before it is
+`(?:[0-9]{4}|[A-Z][A-Z][A-Z]{1,2}|...)`, and on a current Debian banner `SMP`
+satisfies it, so the capture takes the next word:
+
+```
+Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) x86_64
+                             └─┘ └ capture 3 ┘
+```
+
+giving `os.arch = "Debian"`. Anchoring the capture at the end loses the banner
+entirely, and requiring it to look like an architecture does too: the rule's
+shape does not fit a banner with a parenthesised date, so this cannot be
+corrected in the capture.
+
+The `os.arch` claim is dropped instead. The corpus carries seven rules whose
+whole job is naming an instruction set, they read `x86_64` out of the same
+banner, and `SignatureDb::architecture_of` asks them first. A rule identifying
+Linux no longer guesses at the silicon.
+
 ### A kernel version that kept its separator (2026-09-07, 1 rule)
 
 `ntpd running on linux` captured the kernel straight after the word, with no

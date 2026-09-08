@@ -233,6 +233,9 @@ pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
         // The three strings a session setup answers with, each on its own,
         // because the corpus rules are anchored at both ends of one field.
         445 | 139 => super::framed::smb_session_setup(bytes),
+        // An RTSP status line is not an HTTP one, so the HTTP reader declines
+        // the response and the `Server` value would go unread.
+        554 | 8554 => super::framed::rtsp_server(bytes).into_iter().collect(),
         _ => Vec::new(),
     }
 }
@@ -1471,6 +1474,40 @@ mod framed_replies {
                 .is_some(),
             "the native OS field matched nothing"
         );
+    }
+
+    /// An RTSP `Server` value reaches the rules written for it.
+    ///
+    /// The status line is what makes this a reader of its own: `RTSP/1.0` is not
+    /// `HTTP/1.1`, so the HTTP reader declines the response and the header would
+    /// go unread whatever the rules said.
+    #[test]
+    fn an_rtsp_options_reply_yields_the_server_that_sent_it() {
+        const REPLY: &[u8] = b"RTSP/1.0 200 OK\r\n\
+            CSeq: 1\r\n\
+            Public: DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE\r\n\
+            Server: GStreamer RTSP server\r\n\r\n";
+
+        let texts = super::from_stream(554, REPLY);
+        assert_eq!(texts, vec!["GStreamer RTSP server"]);
+        assert_eq!(
+            identify(554, &texts[0]).map(|found| found.0),
+            Some("GStreamer RTSP Server".to_string())
+        );
+    }
+
+    /// A camera that names a version has it read, and an HTTP response on the
+    /// same port is not mistaken for one.
+    #[test]
+    fn an_rtsp_reader_declines_what_is_not_rtsp() {
+        const CAMERA: &[u8] =
+            b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nServer: AvigilonOnvifNvt/2.6.0.130\r\n\r\n";
+        let texts = super::from_stream(554, CAMERA);
+        assert_eq!(texts, vec!["AvigilonOnvifNvt/2.6.0.130"]);
+
+        assert!(super::from_stream(554, b"HTTP/1.1 200 OK\r\nServer: nginx\r\n\r\n").is_empty());
+        assert!(super::from_stream(554, b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n").is_empty());
+        assert!(super::from_stream(554, b"").is_empty());
     }
 
     /// A negotiate response on its own carries none of it, which is why the

@@ -960,6 +960,38 @@ fn utf16_strings(field: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The `Server` value of an RTSP response.
+///
+/// An `OPTIONS` request draws a reply whose status line is `RTSP/1.0` rather
+/// than `HTTP/1.1`, so the HTTP reader declines it, and the header carries what
+/// twelve imported rules are anchored on: `GStreamer RTSP server`,
+/// `Wowza Streaming Engine 4.7.7`, `AvigilonOnvifNvt/2.6.0.130`. Cameras,
+/// recorders and streaming servers, which is most of what answers this port.
+///
+/// The value alone rather than the response, for the reason every other rule of
+/// this shape has: they are anchored at both ends of the header value and match
+/// nothing that merely contains it.
+///
+/// [`None`] for a reply that is not RTSP, or that names no server.
+#[must_use]
+pub(super) fn rtsp_server(stream: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(stream).ok()?;
+    if !text.starts_with("RTSP/") {
+        return None;
+    }
+
+    text.lines()
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("server")
+                .then(|| value.trim().to_string())
+        })
+        .filter(|value| !value.is_empty())
+}
+
 /// The device types a WS-Discovery responder claims.
 ///
 /// A `ProbeMatches` reply is SOAP, and the element worth reading is `Types`: a

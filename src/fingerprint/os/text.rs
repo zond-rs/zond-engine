@@ -158,9 +158,13 @@ impl OsMetadata {
             certainty: get("os.certainty").and_then(|v| v.parse().ok()),
         };
 
-        // A rule naming neither a family nor a product says nothing this layer
-        // can use, whatever else it carries.
-        (found.family.is_some() || found.product.is_some()).then_some(found)
+        // A rule naming neither a family nor a product cannot become an
+        // operating-system *reading*, and `evidence_from` is what declines it.
+        // It is kept here where it names an instruction set, because that is a
+        // fact about the host collected rather than voted on: seven rules state
+        // one and nothing else, and dropping them at this layer put their answer
+        // out of reach of every layer above.
+        (found.family.is_some() || found.product.is_some() || found.arch.is_some()).then_some(found)
     }
 
     /// Resolves this rule's templates against what its pattern captured.
@@ -671,15 +675,38 @@ mod tests {
         );
     }
 
-    /// A rule naming neither a family nor a product describes no operating system
-    /// this layer can use, whatever else it carries. Several hundred rules in the
-    /// corpus record only an architecture or a device class.
+    /// A rule naming neither a family nor a product describes no operating
+    /// system, and does not become one however it is carried.
     #[test]
-    fn metadata_that_names_no_system_is_not_kept() {
-        let map: HashMap<String, String> = [("os.arch".to_string(), "mips".to_string())]
+    fn metadata_that_names_no_system_is_not_a_reading() {
+        let map: HashMap<String, String> = [("os.certainty".to_string(), "1.0".to_string())]
             .into_iter()
             .collect();
         assert!(OsMetadata::from_map(&map).is_none());
+    }
+
+    /// An architecture alone is kept, and is still not a reading.
+    ///
+    /// The two halves are the whole arrangement. Seven rules state an
+    /// instruction set and nothing else, and dropping them at `from_map` put
+    /// their answer out of reach of every layer above, so the metadata survives.
+    /// It cannot stand as an operating-system reading, though: evidence naming
+    /// nothing describable would enter a resolver that settles by vote as a
+    /// nameless candidate, so `evidence_from` declines it and the architecture is
+    /// collected instead.
+    #[test]
+    fn an_architecture_alone_is_kept_but_is_not_a_reading() {
+        let map: HashMap<String, String> = [("os.arch".to_string(), "mips".to_string())]
+            .into_iter()
+            .collect();
+
+        let metadata = OsMetadata::from_map(&map).expect("the architecture survives");
+        assert_eq!(metadata.arch.as_deref(), Some("mips"));
+
+        assert!(
+            evidence_from(&metadata, &[], OsSource::ServiceBanner).is_none(),
+            "an architecture is a fact about the host, not a reading of its system"
+        );
     }
 
     /// 362 rules name an operating system in `os.product` and no family at all,

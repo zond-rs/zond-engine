@@ -2408,7 +2408,7 @@ name = "Linux x86_64 Generic - hostname variant"
 pattern = "^Linux (.*?) ([0-9]+\\.[0-9]+\\.[0-9]+\\S*).* (?:[0-9]{4}|[A-Z][A-Z][A-Z]{1,2}|\\+[0-9]+|Local time.*(?:manual|zic|m\\S*)) (\\S+)"
 context = "snmp.sys_description"
 example = "Linux hostname 2.6.9 #2 SMP Tue Jun 26 16:10:49 EDT 2012 x86_64"
-metadata = { "os.certainty" = "0.5", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:2}", "host.name" = "{capture:1}", "linux.kernel.version" = "{capture:2}", "os.arch" = "{capture:3}" }
+metadata = { "os.certainty" = "0.5", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:2}", "host.name" = "{capture:1}", "linux.kernel.version" = "{capture:2}" }
 
 [[match]]
 name = "Linux Generic"
