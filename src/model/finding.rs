@@ -46,7 +46,6 @@
 //! unstructured script blob never has, and it is what lets a detection be
 //! accepted from a stranger and still answer for itself.
 
-use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
@@ -301,8 +300,8 @@ impl fmt::Display for Version {
 /// computes over, a CWE *is* a number (its canonical MITRE URL is built from it),
 /// and a URL is arbitrary and untrusted.
 ///
-/// `Ord` so a finding's references live in a [`BTreeSet`], deduplicated and
-/// written in a stable order so two runs produce the same file.
+/// `Ord` because a claim key needs the lowest CVE a finding carries, which has to
+/// be the same one on every run; see [`Finding::claim_id`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reference {
@@ -508,7 +507,14 @@ pub struct Finding {
     confidence: Confidence,
     class: DetectionClass,
     excerpt: Excerpt,
-    references: BTreeSet<Reference>,
+    /// In the order the detection added them, deduplicated.
+    ///
+    /// Order carries meaning and sorting would throw it away. A vulnerability
+    /// correlation cites the worst first, and a front end with room for three of
+    /// forty-four wants the three that matter rather than the three whose
+    /// identifiers happen to sort lowest. Two runs still write the same file,
+    /// because what produced them is deterministic.
+    references: Vec<Reference>,
     remediation: Option<String>,
 }
 
@@ -538,16 +544,18 @@ impl Finding {
             confidence,
             class,
             excerpt: Excerpt::default(),
-            references: BTreeSet::new(),
+            references: Vec::new(),
             remediation: None,
         })
     }
 
-    /// Adds a reference. Duplicates fold away and the set stays ordered, so two
-    /// runs that found the same references write the same file.
+    /// Adds a reference, keeping the order they arrive in. A duplicate folds
+    /// away, so two runs that found the same references write the same file.
     #[must_use]
     pub fn with_reference(mut self, reference: Reference) -> Self {
-        self.references.insert(reference);
+        if !self.references.contains(&reference) {
+            self.references.push(reference);
+        }
         self
     }
 
@@ -595,7 +603,8 @@ impl Finding {
         &self.excerpt
     }
 
-    /// The external references, in sorted order.
+    /// The external references, in the order the detection stated them, which is
+    /// most-relevant-first where it had an order to state.
     pub fn references(&self) -> impl Iterator<Item = &Reference> {
         self.references.iter()
     }
@@ -608,16 +617,24 @@ impl Finding {
     /// The key that decides whether this finding and another are the same claim.
     ///
     /// The producing detection's id, paired with the subject it discriminates on:
-    /// the first (lowest, hence stable) CVE identifier this finding references,
-    /// or its title where it references no CVE.
+    /// the lowest CVE identifier this finding references, or its title where it
+    /// references none.
+    ///
+    /// The lowest rather than the first, and that distinction is load-bearing
+    /// now that references keep the order a detection stated them in. A
+    /// correlation states its worst first, and which one is worst changes when
+    /// the catalogue does — so a claim keyed on the first would rename itself
+    /// after a data refresh, and a diff between two scans of an unchanged host
+    /// would report a finding gone and another arrived.
     pub fn claim_id(&self) -> ClaimId {
         let subject = self
             .references
             .iter()
-            .find_map(|r| match r {
+            .filter_map(|r| match r {
                 Reference::Cve(id) => Some(id.clone()),
                 _ => None,
             })
+            .min()
             .unwrap_or_else(|| self.title.clone());
         ClaimId {
             detection: self.detection.id.clone(),
@@ -732,7 +749,10 @@ impl Finding {
         }
 
         for reference in references {
-            changed |= self.references.insert(reference);
+            if !self.references.contains(&reference) {
+                self.references.push(reference);
+                changed = true;
+            }
         }
 
         changed
@@ -824,18 +844,46 @@ mod tests {
         assert_eq!(excerpt.as_str(), "redis_version:7.2.4");
     }
 
+    /// A duplicate folds away and the rest keep the order they arrived in.
+    ///
+    /// Order is the detection's to state: a vulnerability correlation cites its
+    /// worst first, and a front end with room for three of forty-four wants
+    /// those three. Sorting here would throw that away and hand back the three
+    /// whose identifiers sort lowest, which is a fact about numbering rather
+    /// than about the host.
     #[test]
-    fn references_dedup_and_sort() {
-        // Held in a BTreeSet so two runs write the same file. A mutant using a
-        // Vec would keep the duplicate and the insertion order.
+    fn references_dedup_and_keep_the_order_they_were_added_in() {
+        let worst = Reference::cve("CVE-2024-6387").expect("a CVE");
+        let older = Reference::cve("CVE-2015-5600").expect("a CVE");
+
         let f = finding()
             .with_reference(Reference::cwe(306))
             .with_reference(Reference::cwe(306))
-            .with_reference(Reference::cve("CVE-2021-44228").unwrap());
+            .with_reference(worst.clone())
+            .with_reference(older.clone());
+
         let refs: Vec<_> = f.references().cloned().collect();
-        assert_eq!(refs.len(), 2, "the duplicate CWE must fold away");
-        // Cve sorts before Cwe by variant order, so the CVE leads.
-        assert_eq!(refs[0], Reference::Cve("CVE-2021-44228".to_string()));
+        assert_eq!(refs.len(), 3, "the duplicate CWE must fold away");
+        assert_eq!(refs, vec![Reference::cwe(306), worst, older]);
+    }
+
+    /// The claim key takes the lowest CVE, not the first.
+    ///
+    /// Which reference a detection states first changes when its dataset does,
+    /// and a claim keyed on that would rename itself after a catalogue refresh:
+    /// a diff between two scans of an unchanged host would report one finding
+    /// gone and another arrived.
+    #[test]
+    fn a_claim_is_keyed_on_the_lowest_cve_however_they_were_ordered() {
+        let ranked = finding()
+            .with_reference(Reference::cve("CVE-2024-6387").expect("a CVE"))
+            .with_reference(Reference::cve("CVE-2015-5600").expect("a CVE"));
+        let reordered = finding()
+            .with_reference(Reference::cve("CVE-2015-5600").expect("a CVE"))
+            .with_reference(Reference::cve("CVE-2024-6387").expect("a CVE"));
+
+        assert_eq!(ranked.claim_id(), reordered.claim_id());
+        assert_eq!(ranked.claim_id().subject(), "CVE-2015-5600");
     }
 
     #[test]
