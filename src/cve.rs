@@ -509,6 +509,13 @@ impl Catalogue {
                 .then_with(|| a.cve.cmp(b.cve))
         });
 
+        // One vulnerability, however many ways it is stated. A CVE with disjoint
+        // ranges is two entries and matches through whichever range covers the
+        // version found, and a report saying a host has nineteen when eighteen
+        // identifiers back them is a report a reader cannot reconcile. Adjacent
+        // after the sort, since equal severity orders by identifier.
+        matched.dedup_by(|a, b| a.cve == b.cve);
+
         // Split before summarising, because the two halves are different claims
         // and a summary may not average them. An entry naming a version range was
         // checked against the version found; one naming the product at any
@@ -593,12 +600,12 @@ impl Catalogue {
             .collect();
         let excerpt = match checked {
             true => format!(
-                "{cpe} matches {} catalogue entries, {critical} critical and {high} high. The worst are {}",
+                "{cpe} matches {} known vulnerabilities, {critical} critical and {high} high. The worst are {}",
                 matched.len(),
                 named.join(", ")
             ),
             false => format!(
-                "{cpe} matches {} catalogue entries naming this software at any version: the version found was not checked against anything. They include {}",
+                "{cpe} matches {} entries naming this software at any version: the version found was not checked against anything. They include {}",
                 matched.len(),
                 named.join(", ")
             ),
@@ -614,10 +621,12 @@ impl Catalogue {
         .ok()?
         .with_excerpt(Excerpt::new(excerpt));
 
-        // Bounded, and the bound is why the sort above is by severity: a
-        // reference list cut at twenty must be cut at the twenty worst rather
-        // than at whichever twenty the catalogue happened to list first.
-        for entry in matched.iter().take(MAX_CVE_REFERENCES) {
+        // Every one of them, because this is the record: a summary that says
+        // forty-four and cites twenty is a report a reader cannot reconcile, and
+        // the presentation is the right place to decide how many of them fit on
+        // a line. The severity sort above still decides the order, so a front
+        // end showing the first few shows the worst few.
+        for entry in matched.iter() {
             if let Some(reference) = Reference::cve(entry.cve) {
                 finding = finding.with_reference(reference);
             }
@@ -652,14 +661,6 @@ fn content_hash(bytes: &[u8]) -> String {
     }
     hex
 }
-
-/// The most CVE identifiers a summary finding carries.
-///
-/// A cap rather than the whole set, because the whole set runs to thousands for
-/// a product with a long history and a report is not an archive. Twenty is what
-/// fits a reader's attention and a terminal's width, and the sort that fills it
-/// is by severity so the twenty are the twenty that matter.
-const MAX_CVE_REFERENCES: usize = 20;
 
 /// How many identifiers a summary spells out in its excerpt.
 ///
@@ -965,8 +966,8 @@ mod tests {
         );
         assert!(summary.excerpt().as_str().contains("1 critical and 1 high"));
 
-        // Capped, and cut at the worst rather than at whichever the document
-        // happened to list first: the critical one is `CVE-2024-0001`.
+        // Every entry is cited, so a reader can reconcile the count in the title
+        // against the references beside it.
         let cves: Vec<&str> = summary
             .references()
             .filter_map(|reference| match reference {
@@ -974,7 +975,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(cves.len(), MAX_CVE_REFERENCES);
+        assert_eq!(cves.len(), 26, "the title says 26 and 26 are cited");
         assert!(cves.contains(&"CVE-2024-0001"), "the critical one is named");
         assert!(cves.contains(&"CVE-2024-0002"), "and the high one");
     }
@@ -1001,7 +1002,12 @@ mod tests {
             .iter()
             .find(|finding| finding.confidence() == Confidence::Probable)
             .expect("the version-checked summary");
-        assert!(checked.excerpt().as_str().contains("2 catalogue entries"));
+        assert!(
+            checked
+                .excerpt()
+                .as_str()
+                .contains("2 known vulnerabilities")
+        );
 
         let unchecked = hits
             .iter()
