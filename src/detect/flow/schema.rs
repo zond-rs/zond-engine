@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn the_redis_example_parses_into_its_structure() {
-        let flow = parse(include_str!("../../../assets/detect/redis-unauth.toml"));
+        let flow = parse(include_str!("../../../assets/detect/database/redis-unauth.toml"));
 
         assert_eq!(flow.detection.id, "redis-unauth-access");
         assert_eq!(flow.detection.when.service.as_deref(), Some("redis"));

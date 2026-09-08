@@ -889,7 +889,7 @@ mod tests {
     fn a_shipped_flow_loaded_loose_keeps_the_hash_the_build_gave_it() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/assets/detect/redis-unauth.toml"
+            "/assets/detect/database/redis-unauth.toml"
         );
         let shipped = std::fs::read_to_string(path).expect("the shipped flow is readable");
 

@@ -572,7 +572,7 @@ mod identity {
     fn a_path_outside_the_corpus_has_no_slug() {
         assert_eq!(corpus_slug(Path::new("src/fingerprint/signature.rs")), None);
         assert_eq!(
-            corpus_slug(Path::new("assets/detect/redis-unauth.toml")),
+            corpus_slug(Path::new("assets/detect/database/redis-unauth.toml")),
             None
         );
         assert_eq!(corpus_slug(Path::new("remote/ssh.toml")), None);
