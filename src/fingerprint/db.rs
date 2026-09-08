@@ -50,6 +50,9 @@ const OS_NAME_CONTEXT: &str = "operating_system.name";
 /// See [`architecture_of`](SignatureDb::architecture_of).
 const ARCHITECTURE_CONTEXT: &str = "architecture";
 
+/// The context whose rules read a JARM hash, held in an index of their own.
+const JARM_CONTEXT: &str = "tls.jarm";
+
 use super::model::Evidence;
 use crate::model::host::OsEvidence;
 
@@ -126,6 +129,16 @@ pub struct SignatureDb {
     /// of their own and they would be dropped whatever index held them. They are
     /// consulted for one field and never voted with.
     architecture_signatures: Vec<usize>,
+    /// The signatures whose rules read a JARM hash.
+    ///
+    /// Apart for the same reason as the two above, and it bites hardest here. A
+    /// JARM hash is sixty-two hex characters, and the corpus carries a baseline
+    /// rule that matches any run of hex as an ISAKMP responder's vendor-id list.
+    /// Through [`identify_field`](Self::identify_field) every hash the corpus
+    /// did not publish would come back named `isakmp`, which is both wrong and
+    /// unfalsifiable: nothing about the answer says it came from a rule written
+    /// for a different field. See [`identify_jarm`](Self::identify_jarm).
+    jarm_signatures: Vec<usize>,
     /// `port -> signature indices` matchable on that port.
     ///
     /// Service-linked: the union, over every service reachable on the port, of
@@ -231,12 +244,14 @@ impl SignatureDb {
         let mut universal_tcp_probes: Vec<(u8, Vec<u8>)> = Vec::new();
         let mut os_name_signatures: Vec<usize> = Vec::new();
         let mut architecture_signatures: Vec<usize> = Vec::new();
+        let mut jarm_signatures: Vec<usize> = Vec::new();
         for def in &defs {
             for rule in &def.r#match {
                 let idx = signatures.len();
                 match rule.context.as_deref() {
                     Some(OS_NAME_CONTEXT) => os_name_signatures.push(idx),
                     Some(ARCHITECTURE_CONTEXT) => architecture_signatures.push(idx),
+                    Some(JARM_CONTEXT) => jarm_signatures.push(idx),
                     _ => {}
                 }
                 signatures.push(Signature::new(&def.service.name, rule));
@@ -333,6 +348,7 @@ impl SignatureDb {
             name_index,
             os_name_signatures,
             architecture_signatures,
+            jarm_signatures,
             by_port,
             tcp_probes,
             generic_tcp_probes,
@@ -425,6 +441,26 @@ impl SignatureDb {
             crate::model::host::OsSource::ServiceBanner,
         )?
         .os
+    }
+
+    /// What the corpus makes of a JARM hash.
+    ///
+    /// Matched against the rules written for a hash and nothing else. The whole
+    /// corpus would answer for every hash: sixty-two hex characters satisfies
+    /// the ISAKMP baseline, so an unrecognised TLS stack would be reported as an
+    /// IKE gateway rather than as unrecognised.
+    ///
+    /// [`None`] where nothing published this hash, which is the ordinary outcome
+    /// and the honest one: JARM says two hosts run the same stack, and the
+    /// corpus says what that stack is only for the stacks somebody named.
+    pub(crate) fn identify_jarm(&self, found: &str) -> Option<Evidence> {
+        self.warm(&self.jarm_signatures);
+        best_match_within(
+            self,
+            &self.jarm_signatures,
+            &[found],
+            crate::model::host::OsSource::ServiceBanner,
+        )
     }
 
     /// The instruction set the corpus reads out of `text`, where it reads one.

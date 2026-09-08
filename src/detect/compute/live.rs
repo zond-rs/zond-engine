@@ -286,6 +286,7 @@ mod tests {
             addr: Some(addr),
             tunnel: None,
             speaks_http: false,
+            detection: crate::config::ServiceDetection::default(),
         };
 
         let findings = runtime

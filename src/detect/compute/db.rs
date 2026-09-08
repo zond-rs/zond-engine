@@ -165,12 +165,16 @@ pub fn replay_run(run: &DetectionRunRecord) -> Result<Vec<Finding>, ReplayError>
         .parse::<IpAddr>()
         .ok()
         .map(|ip| SocketAddr::new(ip, run.port));
+    // A replay feeds recorded responses back through the same modules, so the
+    // level that was scanned at is not one of its inputs: nothing here reaches
+    // the network, and an active analyzer would have nowhere to send a probe.
     let ctx = PortContext {
         port: run.port,
         protocol,
         addr,
         tunnel: None,
         speaks_http: false,
+        detection: crate::config::ServiceDetection::default(),
     };
 
     let responses: Vec<Vec<u8>> = run
@@ -296,6 +300,7 @@ mod tests {
             addr: None,
             tunnel: None,
             speaks_http: false,
+            detection: crate::config::ServiceDetection::default(),
         }
     }
 

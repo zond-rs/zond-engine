@@ -39,6 +39,7 @@ use async_trait::async_trait;
 use super::db::SignatureDb;
 use super::model::{Evidence, SourceId, Tunnel};
 use super::response::{Collected, ResponseSet};
+use crate::config::ServiceDetection;
 use crate::model::port::Protocol;
 
 /// What an [`Analyzer`] is told about the port it is examining.
@@ -84,6 +85,17 @@ pub struct PortContext {
     /// `false` wherever nothing was read, which is every passive-only path and
     /// every unit test that builds a context by hand.
     pub speaks_http: bool,
+    /// How far the caller asked this scan to go.
+    ///
+    /// What an *expensive* active analyzer gates on. The two phases already
+    /// separate I/O from CPU, but nothing in them says what a probe exchange
+    /// costs, and a JARM fingerprint is ten connections where a favicon is one.
+    /// Reading the level here is what lets the expensive ones stay out of a
+    /// default scan without a flag of their own.
+    ///
+    /// [`ServiceDetection::default()`] wherever a context is built by hand,
+    /// which is the level a caller who said nothing asked for.
+    pub detection: ServiceDetection,
 }
 
 impl PortContext {
@@ -100,6 +112,7 @@ impl PortContext {
             addr: None,
             tunnel: None,
             speaks_http: false,
+            detection: ServiceDetection::default(),
         }
     }
 
@@ -121,6 +134,13 @@ impl PortContext {
     #[must_use]
     pub fn with_tunnel(mut self, tunnel: Option<Tunnel>) -> Self {
         self.tunnel = tunnel;
+        self
+    }
+
+    /// Records how far the caller asked the scan to go.
+    #[must_use]
+    pub fn with_detection(mut self, detection: ServiceDetection) -> Self {
+        self.detection = detection;
         self
     }
 }
@@ -285,6 +305,7 @@ mod tests {
             addr: None,
             tunnel: None,
             speaks_http: false,
+            detection: crate::config::ServiceDetection::default(),
         };
         // Drive the two phases exactly as the orchestrator does.
         let collected = EchoAnalyzer.collect(&ctx, &ResponseSet::default()).await;
@@ -304,6 +325,7 @@ mod tests {
             addr: None,
             tunnel: None,
             speaks_http: false,
+            detection: crate::config::ServiceDetection::default(),
         };
         assert!(
             BannerRegexAnalyzer

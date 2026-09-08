@@ -923,6 +923,7 @@ mod tests {
             addr: None,
             tunnel: None,
             speaks_http: false,
+            detection: crate::config::ServiceDetection::default(),
         }
     }
 

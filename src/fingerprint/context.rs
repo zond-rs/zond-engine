@@ -23,7 +23,12 @@
 //! use zond_engine::fingerprint::{Reach, reach_of};
 //!
 //! assert_eq!(reach_of(Some("ssh.banner")), Some(Reach::Produced));
-//! assert_eq!(reach_of(Some("tls.jarm")), Some(Reach::Unproduced));
+//!
+//! // Reachable, but only from inside another field's text.
+//! assert_eq!(reach_of(Some("apache_modules")), Some(Reach::Contained));
+//!
+//! // Nothing this engine scans ever carries it.
+//! assert_eq!(reach_of(Some("dhcp_vendor_class")), Some(Reach::OutOfScope));
 //!
 //! // A rule naming no context is matched against the whole banner.
 //! assert_eq!(reach_of(None), Some(Reach::Produced));
@@ -313,8 +318,8 @@ pub const CONTEXTS: &[Context] = &[
     },
     Context {
         name: "tls.jarm",
-        reach: Reach::Unproduced,
-        note: "a JARM hash; wants the probe sequence and the digest, neither of which this engine computes",
+        reach: Reach::Produced,
+        note: "a JARM hash, computed by `jarm::JarmAnalyzer` from how a TLS port answers ten deliberately awkward hellos and matched whole by `SignatureDb::identify_field`. Ten connections, so it is asked only at `ServiceDetection::Thorough` and only where a handshake already succeeded",
     },
     Context {
         name: "unknown",

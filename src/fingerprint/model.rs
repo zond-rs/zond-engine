@@ -43,7 +43,9 @@ pub enum SourceId {
     /// The MD5 of the icon a web application serves, which the corpus keys
     /// several hundred products on.
     Favicon,
-    // Future analyzers: Jarm, Snmp, ...
+    /// A JARM hash: how a TLS stack answered ten deliberately awkward hellos.
+    Jarm,
+    // Future analyzers: Snmp, ...
 }
 
 /// A transport the observed traffic was carried *inside*.

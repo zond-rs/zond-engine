@@ -4170,6 +4170,7 @@ pub mod zond_engine::fingerprint::model
 pub zond_engine::fingerprint::model::SourceId::BannerRegex
 pub zond_engine::fingerprint::model::SourceId::Favicon
 pub zond_engine::fingerprint::model::SourceId::HttpHeaders
+pub zond_engine::fingerprint::model::SourceId::Jarm
 pub zond_engine::fingerprint::model::SourceId::PortHeuristic
 pub zond_engine::fingerprint::model::SourceId::Ssh
 pub zond_engine::fingerprint::model::SourceId::TlsCert
@@ -4951,6 +4952,7 @@ pub const zond_engine::fingerprint::os::MAX_STACK_ACCURACY: u8
 pub const zond_engine::fingerprint::os::MIN_REPORTABLE_ACCURACY: u8
 pub fn zond_engine::fingerprint::os::accepts<T: core::cmp::PartialOrd>(&zond_engine::fingerprint::os::Predicate<T>, &T) -> bool
 pub fn zond_engine::fingerprint::os::banner_evidence(&zond_engine::fingerprint::os::OsMetadata, &[alloc::string::String], zond_engine::model::host::os::OsSource) -> core::option::Option<zond_engine::model::host::os::OsEvidence>
+pub fn zond_engine::fingerprint::os::canonicalise(zond_engine::model::host::os::OsEvidence, &zond_engine::model::host::os::OsEvidence) -> zond_engine::model::host::os::OsEvidence
 pub fn zond_engine::fingerprint::os::ceiling(zond_engine::model::host::os::OsSource) -> f32
 pub fn zond_engine::fingerprint::os::classify(&zond_engine::fingerprint::os::RuleDb, &zond_engine::fingerprint::os::StackReply) -> core::option::Option<zond_engine::fingerprint::os::OsVerdict>
 pub fn zond_engine::fingerprint::os::classify_echo_reply(zond_engine::model::capture::IpObservation, &[u8], &[u8]) -> core::option::Option<zond_engine::fingerprint::os::OsVerdict>
@@ -5056,6 +5058,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::RuleIdDe
 pub zond_engine::fingerprint::SourceId::BannerRegex
 pub zond_engine::fingerprint::SourceId::Favicon
 pub zond_engine::fingerprint::SourceId::HttpHeaders
+pub zond_engine::fingerprint::SourceId::Jarm
 pub zond_engine::fingerprint::SourceId::PortHeuristic
 pub zond_engine::fingerprint::SourceId::Ssh
 pub zond_engine::fingerprint::SourceId::TlsCert
@@ -5246,6 +5249,19 @@ impl core::marker::Unpin for zond_engine::fingerprint::InvalidDefinition
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::InvalidDefinition
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::InvalidDefinition
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::InvalidDefinition
+pub struct zond_engine::fingerprint::JarmAnalyzer
+impl zond_engine::fingerprint::Analyzer for zond_engine::fingerprint::JarmAnalyzer
+pub fn zond_engine::fingerprint::JarmAnalyzer::analyze(&self, &zond_engine::fingerprint::PortContext, &zond_engine::fingerprint::ResponseSet, &zond_engine::fingerprint::Collected) -> alloc::vec::Vec<zond_engine::fingerprint::model::Evidence>
+pub fn zond_engine::fingerprint::JarmAnalyzer::collect<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 zond_engine::fingerprint::PortContext, &'life2 zond_engine::fingerprint::ResponseSet) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = zond_engine::fingerprint::Collected> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn zond_engine::fingerprint::JarmAnalyzer::id(&self) -> zond_engine::fingerprint::model::SourceId
+pub fn zond_engine::fingerprint::JarmAnalyzer::interested(&self, &zond_engine::fingerprint::PortContext) -> bool
+impl core::marker::Freeze for zond_engine::fingerprint::JarmAnalyzer
+impl core::marker::Send for zond_engine::fingerprint::JarmAnalyzer
+impl core::marker::Sync for zond_engine::fingerprint::JarmAnalyzer
+impl core::marker::Unpin for zond_engine::fingerprint::JarmAnalyzer
+impl core::marker::UnsafeUnpin for zond_engine::fingerprint::JarmAnalyzer
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::JarmAnalyzer
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::JarmAnalyzer
 pub struct zond_engine::fingerprint::MatchRule
 pub zond_engine::fingerprint::MatchRule::context: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::MatchRule::example: core::option::Option<alloc::string::String>
@@ -5272,6 +5288,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::Match
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::MatchRule
 #[non_exhaustive] pub struct zond_engine::fingerprint::PortContext
 pub zond_engine::fingerprint::PortContext::addr: core::option::Option<core::net::socket_addr::SocketAddr>
+pub zond_engine::fingerprint::PortContext::detection: zond_engine::config::ServiceDetection
 pub zond_engine::fingerprint::PortContext::port: u16
 pub zond_engine::fingerprint::PortContext::protocol: zond_engine::model::port::Protocol
 pub zond_engine::fingerprint::PortContext::speaks_http: bool
@@ -5279,6 +5296,7 @@ pub zond_engine::fingerprint::PortContext::tunnel: core::option::Option<zond_eng
 impl zond_engine::fingerprint::PortContext
 pub fn zond_engine::fingerprint::PortContext::new(u16, zond_engine::model::port::Protocol) -> Self
 pub fn zond_engine::fingerprint::PortContext::with_addr(self, core::option::Option<core::net::socket_addr::SocketAddr>) -> Self
+pub fn zond_engine::fingerprint::PortContext::with_detection(self, zond_engine::config::ServiceDetection) -> Self
 pub fn zond_engine::fingerprint::PortContext::with_speaks_http(self, bool) -> Self
 pub fn zond_engine::fingerprint::PortContext::with_tunnel(self, core::option::Option<zond_engine::fingerprint::model::Tunnel>) -> Self
 impl core::clone::Clone for zond_engine::fingerprint::PortContext
@@ -5505,6 +5523,11 @@ pub fn zond_engine::fingerprint::HttpHeadersAnalyzer::analyze(&self, &zond_engin
 pub fn zond_engine::fingerprint::HttpHeadersAnalyzer::collect<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 zond_engine::fingerprint::PortContext, &'life2 zond_engine::fingerprint::ResponseSet) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = zond_engine::fingerprint::Collected> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn zond_engine::fingerprint::HttpHeadersAnalyzer::id(&self) -> zond_engine::fingerprint::model::SourceId
 pub fn zond_engine::fingerprint::HttpHeadersAnalyzer::interested(&self, &zond_engine::fingerprint::PortContext) -> bool
+impl zond_engine::fingerprint::Analyzer for zond_engine::fingerprint::JarmAnalyzer
+pub fn zond_engine::fingerprint::JarmAnalyzer::analyze(&self, &zond_engine::fingerprint::PortContext, &zond_engine::fingerprint::ResponseSet, &zond_engine::fingerprint::Collected) -> alloc::vec::Vec<zond_engine::fingerprint::model::Evidence>
+pub fn zond_engine::fingerprint::JarmAnalyzer::collect<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 zond_engine::fingerprint::PortContext, &'life2 zond_engine::fingerprint::ResponseSet) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = zond_engine::fingerprint::Collected> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn zond_engine::fingerprint::JarmAnalyzer::id(&self) -> zond_engine::fingerprint::model::SourceId
+pub fn zond_engine::fingerprint::JarmAnalyzer::interested(&self, &zond_engine::fingerprint::PortContext) -> bool
 impl zond_engine::fingerprint::Analyzer for zond_engine::fingerprint::SshAnalyzer
 pub fn zond_engine::fingerprint::SshAnalyzer::analyze(&self, &zond_engine::fingerprint::PortContext, &zond_engine::fingerprint::ResponseSet, &zond_engine::fingerprint::Collected) -> alloc::vec::Vec<zond_engine::fingerprint::model::Evidence>
 pub fn zond_engine::fingerprint::SshAnalyzer::collect<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 zond_engine::fingerprint::PortContext, &'life2 zond_engine::fingerprint::ResponseSet) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = zond_engine::fingerprint::Collected> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait

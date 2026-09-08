@@ -47,6 +47,7 @@ mod extract;
 mod favicon;
 mod framed;
 mod http;
+mod jarm;
 mod matcher;
 // Crate-visible so the Tier-1 flow interpreter compiles its `expect`/`bind`
 // patterns through the one engine every Tier-0 signature does.
@@ -76,6 +77,7 @@ pub use favicon::FaviconAnalyzer;
 #[cfg(any(test, feature = "test-support"))]
 pub use favicon::digest_of as favicon_digest;
 pub use http::HttpHeadersAnalyzer;
+pub use jarm::JarmAnalyzer;
 pub use model::{Evidence, ServiceVerdict, SourceId, Tunnel};
 pub use response::{Collected, ResponseSet, TlsInfo};
 // The schema an `assets/fingerprinting` signature file is written against.
@@ -433,7 +435,16 @@ pub async fn fingerprint_tcp_detailed(
     let fallback = first_printable(&responses.banners);
     let banners = responses.banners.clone();
     let mut about_the_host = AboutTheHost::default();
-    match analyze(port.number(), Protocol::Tcp, addr, responses, tunnel).await {
+    match analyze(
+        port.number(),
+        Protocol::Tcp,
+        addr,
+        responses,
+        tunnel,
+        detection,
+    )
+    .await
+    {
         Some(verdict) if !verdict.is_empty() => {
             // Taken from the whole retained evidence set rather than from the
             // winning service alone: a host running two identifiable services
@@ -496,10 +507,19 @@ pub async fn fingerprint_udp_detailed(
 
     // No tunnel: nothing here carries UDP over TLS, and no peer address is
     // handed to the analyzers either, since an active analyzer dials TCP and
-    // this port's address is not one it could speak to.
-    let verdict = analyze(addr.port(), Protocol::Udp, None, responses, None)
-        .await
-        .filter(|verdict| !verdict.is_empty())?;
+    // this port's address is not one it could speak to. With no address, the
+    // detection level cannot change what runs, so the default stands in for a
+    // parameter this function would otherwise have to take and never use.
+    let verdict = analyze(
+        addr.port(),
+        Protocol::Udp,
+        None,
+        responses,
+        None,
+        ServiceDetection::default(),
+    )
+    .await
+    .filter(|verdict| !verdict.is_empty())?;
 
     let about_the_host = AboutTheHost::from_evidence(&verdict.evidence);
     if let Some(service) = verdict.to_service() {
@@ -1115,6 +1135,7 @@ static ANALYZERS: &[&dyn Analyzer] = &[
     &BannerRegexAnalyzer,
     &FaviconAnalyzer,
     &HttpHeadersAnalyzer,
+    &JarmAnalyzer,
     &SshAnalyzer,
     &TlsCertAnalyzer,
 ];
@@ -1152,6 +1173,7 @@ async fn analyze(
     addr: Option<std::net::SocketAddr>,
     responses: ResponseSet,
     tunnel: Option<Tunnel>,
+    detection: ServiceDetection,
 ) -> Option<ServiceVerdict> {
     // Read before the context is built, so an active analyzer's `collect` can
     // gate on it: `collect` is handed no responses and runs before any evidence
@@ -1164,7 +1186,8 @@ async fn analyze(
     let ctx = PortContext::new(port, protocol)
         .with_addr(addr)
         .with_tunnel(tunnel)
-        .with_speaks_http(speaks_http);
+        .with_speaks_http(speaks_http)
+        .with_detection(detection);
     analyze_with(ctx, responses, analyzers()).await
 }
 
@@ -1564,9 +1587,16 @@ mod tests {
         // passive analyzers) followed by the off-reactor analyze phase, over a
         // recorded SSH banner, and asserts it resolves through to a verdict.
         let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1 Debian".to_string()]);
-        let verdict = analyze(22, Protocol::Tcp, None, responses, None)
-            .await
-            .expect("names a service");
+        let verdict = analyze(
+            22,
+            Protocol::Tcp,
+            None,
+            responses,
+            None,
+            ServiceDetection::default(),
+        )
+        .await
+        .expect("names a service");
 
         assert_eq!(verdict.service.as_deref(), Some("ssh"));
         assert_eq!(verdict.product.as_deref(), Some("OpenSSH"));
@@ -1582,9 +1612,16 @@ mod tests {
             "HTTP/1.1 200 OK\r\nServer: gunicorn/21.2.0\r\nContent-Type: text/html\r\n\r\n"
                 .to_string(),
         ]);
-        let verdict = analyze(8000, Protocol::Tcp, None, responses, None)
-            .await
-            .expect("names a service");
+        let verdict = analyze(
+            8000,
+            Protocol::Tcp,
+            None,
+            responses,
+            None,
+            ServiceDetection::default(),
+        )
+        .await
+        .expect("names a service");
 
         assert_eq!(verdict.service.as_deref(), Some("http"));
         assert_eq!(verdict.product.as_deref(), Some("gunicorn"));
@@ -1601,11 +1638,18 @@ mod tests {
             "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58\r\nX-Powered-By: PHP/8.2.1\r\n\r\n"
                 .to_string(),
         ]);
-        let service = analyze(80, Protocol::Tcp, None, responses, None)
-            .await
-            .expect("names a service")
-            .to_service()
-            .expect("projects onto a service");
+        let service = analyze(
+            80,
+            Protocol::Tcp,
+            None,
+            responses,
+            None,
+            ServiceDetection::default(),
+        )
+        .await
+        .expect("names a service")
+        .to_service()
+        .expect("projects onto a service");
 
         assert_eq!(service.name(), "http");
         assert_eq!(service.product(), Some("Apache HTTP Server"));
@@ -1623,9 +1667,16 @@ mod tests {
         let responses = ResponseSet::from_banners(vec![
             "HTTP/1.1 403 Forbidden\r\nServer: cloudflare\r\n\r\n".to_string(),
         ]);
-        let verdict = analyze(8000, Protocol::Tcp, None, responses, None)
-            .await
-            .expect("names a service");
+        let verdict = analyze(
+            8000,
+            Protocol::Tcp,
+            None,
+            responses,
+            None,
+            ServiceDetection::default(),
+        )
+        .await
+        .expect("names a service");
 
         assert_eq!(verdict.service.as_deref(), Some("http"));
         assert_eq!(verdict.product.as_deref(), Some("cloudflare"));
@@ -1877,9 +1928,16 @@ mod tests {
         // No banners and no TLS: both phases run, no analyzer produces evidence,
         // so the orchestration resolves to nothing rather than an empty verdict.
         assert!(
-            analyze(1, Protocol::Tcp, None, ResponseSet::default(), None)
-                .await
-                .is_none()
+            analyze(
+                1,
+                Protocol::Tcp,
+                None,
+                ResponseSet::default(),
+                None,
+                ServiceDetection::default(),
+            )
+            .await
+            .is_none()
         );
     }
 }

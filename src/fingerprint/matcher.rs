@@ -385,8 +385,21 @@ fn names_the_same(service: &str, product: &str) -> bool {
     product.contains(&service) || service.contains(&product)
 }
 
+/// One signature's reading of one response.
+///
+/// Four axes, because a rule answers up to four separate questions and a caller
+/// interested in one of them should not have to take the rest: what service this
+/// is ([`evidence`](Self::evidence)), what box it runs on
+/// ([`hardware`](Self::hardware)), what system runs on that box
+/// ([`os`](Self::os)), and what silicon underneath ([`arch`](Self::arch)).
+/// [`quality`](Self::quality) is how firmly, and is what the ranking settles on
+/// when two rules both fire.
 pub struct Match {
+    /// What this match says the service is: product, vendor, version, CPE, with
+    /// every template already resolved against the capture groups.
     pub evidence: Evidence,
+    /// How firmly this match holds, and what separates it from another rule that
+    /// also fired on the same response.
     pub quality: MatchQuality,
     /// The hardware this match describes, templates already resolved.
     ///
@@ -395,9 +408,6 @@ pub struct Match {
     /// the box and the system on it are two facts rather than one. Five hundred
     /// and thirty-six shipped rules name only the box.
     pub hardware: Option<crate::model::host::HardwareInfo>,
-    /// What this match says about the operating system underneath the service,
-    /// with its templates already resolved against the capture groups.
-    ///
     /// The instruction set this match named, whether or not it named anything
     /// else.
     ///
@@ -413,6 +423,9 @@ pub struct Match {
     /// [`hardware`](Self::hardware) already is, and filled into whichever
     /// reading wins. A third axis beside what the machine runs and what it is.
     pub arch: Option<String>,
+    /// What this match says about the operating system underneath the service,
+    /// with its templates already resolved against the capture groups.
+    ///
     /// A separate field rather than more fields on [`Evidence`] because it
     /// answers a different question and is resolved by a different set of rules.
     /// A banner identifies a *service*; that it also implies a host is a second
@@ -493,7 +506,6 @@ mod tests {
     /// The runtime under the server is the half worth scanning for: a
     /// `SimpleHTTP` listener is nobody's target and the interpreter behind it
     /// has a CVE history. The corpus captured it and nothing carried it.
-    #[test]
     /// A rule may state extrainfo outright, as a template over its captures,
     /// for supplementary detail that is not a runtime.
     #[test]
