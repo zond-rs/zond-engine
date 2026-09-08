@@ -1,0 +1,18 @@
+# A Tier-2 compute detection: the [detection] manifest a flow also carries, plus a
+# [compute] body that computes the verdict. Passive, so it reads only the response
+# the scan already gathered and touches the network in no new way.
+
+[detection]
+id      = "http-insecure-cookies"
+version = "1.0.0"
+title   = "Session cookie set without security flags"
+
+[detection.when]
+speaks = "http"
+
+[detection.capabilities]
+class = "passive"
+
+[compute]
+language = "rhai"
+body     = "http-insecure-cookies.rhai"
