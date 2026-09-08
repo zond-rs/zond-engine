@@ -58,6 +58,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::envelope::Unk
 pub mod zond_engine::config::limits
 pub const zond_engine::config::limits::CONNECT_CONCURRENCY: usize
 pub const zond_engine::config::limits::CONNECT_PROBE_TIMEOUT: core::time::Duration
+pub const zond_engine::config::limits::DETECTION_FLOW_CONCURRENCY: usize
 pub const zond_engine::config::limits::DISCOVERY_CONCURRENCY: usize
 #[non_exhaustive] pub enum zond_engine::config::OsDetection
 pub zond_engine::config::OsDetection::Active
@@ -1513,8 +1514,9 @@ impl core::marker::Unpin for zond_engine::detect::flow::FlowSeed
 impl core::marker::UnsafeUnpin for zond_engine::detect::flow::FlowSeed
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::FlowSeed
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::FlowSeed
-pub trait zond_engine::detect::flow::Probe
+pub trait zond_engine::detect::flow::Probe: core::marker::Send
 pub fn zond_engine::detect::flow::Probe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
+pub fn zond_engine::detect::flow::Probe::reply_complete(&self) -> bool
 pub fn zond_engine::detect::flow::Probe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn zond_engine::detect::flow::check(&zond_engine::detect::flow::schema::FlowDetection) -> alloc::vec::Vec<zond_engine::detect::flow::ValidationError>
 pub fn zond_engine::detect::flow::run(&zond_engine::detect::flow::schema::FlowDetection, &str, &zond_engine::detect::flow::FlowSeed, &mut dyn zond_engine::detect::flow::Probe) -> alloc::vec::Vec<zond_engine::model::finding::Finding>

@@ -59,6 +59,23 @@ const HOST_SYN_RETRANSMIT: Duration = Duration::from_secs(1);
 /// sockets.
 pub const CONNECT_CONCURRENCY: usize = 50;
 
+/// How many of one port's detection flows run at once.
+///
+/// A port's flows are independent conversations that happen to share an address,
+/// and an HTTP port attracts dozens of them: forty-seven against the built-in
+/// corpus, forty-three of them asking a different question, so a shared reply
+/// cache collapses almost none of it. Run one after another that is forty-seven
+/// round trips in a row, and a host 140ms away spends ten seconds on detections
+/// for a scan whose ports were settled in one.
+///
+/// It does not raise what a scan opens at once. [`CONNECT_CONCURRENCY`] is still
+/// the ceiling on sockets in flight, held by the gate the detection phase
+/// acquires a probe through, so this changes how that budget is spent rather
+/// than how large it is: a scan of one host with four web ports stops queueing
+/// its work one deep, and a scan of two hundred does the same total work it did
+/// before.
+pub const DETECTION_FLOW_CONCURRENCY: usize = 8;
+
 /// How many connect probes the unprivileged discovery sweep keeps in flight.
 /// Far higher than [`CONNECT_CONCURRENCY`] because each probe is a bare liveness
 /// check against a handful of ports, not a full fingerprint conversation.

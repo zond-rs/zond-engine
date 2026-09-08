@@ -59,7 +59,12 @@ pub enum ProbeRefusal {
 /// The one capability a flow reaches the world through: send bytes to the scanned
 /// socket and read its reply. A test supplies a canned one; a scan supplies the
 /// real socket.
-pub trait Probe {
+///
+/// [`Send`], because a port's flows are run several at a time and each holds a
+/// probe of its own. An HTTP port attracts dozens of flows, every one of them a
+/// separate conversation with the same socket address, and run one after another
+/// they cost that many round trips in a row.
+pub trait Probe: Send {
     /// Sends `bytes` and returns the reply, or [`None`] if the socket said
     /// nothing.
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>>;

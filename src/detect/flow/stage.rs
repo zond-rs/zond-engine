@@ -35,12 +35,14 @@ use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::{Port, PortState, Protocol};
 
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use super::db::FlowDb;
 use super::{FlowSeed, Probe, ProbeRefusal};
+use crate::config::limits::DETECTION_FLOW_CONCURRENCY;
 use crate::detect::manifest::{CapabilitySpec, Class, DEFAULT_MAX_BYTES, DEFAULT_MAX_MILLIS};
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
@@ -54,7 +56,7 @@ pub(crate) fn run_flows(
     host: &mut Host,
     corpus: &FlowDb,
     envelope: &DetectionEnvelope,
-    mut probe_for: impl FnMut(&Port) -> Option<Box<dyn Probe>>,
+    probe_for: impl Fn(&Port) -> Option<Box<dyn Probe>> + Sync,
 ) {
     let host_addr = host.scoped_ip().addr().to_string();
     // Collect first, mutate second: reading the ports borrows the host, and
@@ -101,10 +103,23 @@ pub(crate) fn detect_port(
     service: Option<&str>,
     number: u16,
     protocol: Protocol,
-    mut probe_for: impl FnMut(&CapabilitySpec) -> Option<Box<dyn Probe>>,
+    probe_for: impl Fn(&CapabilitySpec) -> Option<Box<dyn Probe>> + Sync,
 ) -> (Vec<Finding>, Vec<(String, ProbeRefusal)>) {
-    let mut findings = Vec::new();
-    let mut refusals = Vec::new();
+    // Which flows this port answers to, settled before any of them runs. The pass
+    // is cheap, it decides how wide the run below should be, and it gives every
+    // flow the index that puts its findings back in corpus order afterwards.
+    let applicable: Vec<_> = corpus
+        .flows()
+        .filter(|flow| {
+            let manifest = &flow.flow().detection;
+            enabled(manifest.capabilities.class, envelope)
+                && manifest.when.applies(service, number, protocol)
+        })
+        .collect();
+    if applicable.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
     // One seed for the port serves every flow that runs against it: the address
     // and number are the port's, not any flow's, so a `{host}`/`{port}` template
     // resolves to the endpoint under probe whichever detection names it.
@@ -113,22 +128,17 @@ pub(crate) fn detect_port(
     // port and send a byte-identical request, every one that opens with `GET /`,
     // share a single fetch instead of each opening its own connection. See
     // [`CachingProbe`].
-    let cache = RefCell::new(HashMap::new());
+    let cache = Mutex::new(HashMap::new());
     // A port that accepts a connection but then answers slowly or not at all costs
     // each flow its whole time budget for nothing. This counts those dead exchanges
     // across the port so the flows that follow can stop paying for them. See
     // [`CachingProbe`].
-    let strikes = Cell::new(0u32);
-    for flow in corpus.flows() {
+    let strikes = AtomicU32::new(0);
+
+    let run_one = |index: usize| -> Option<Run> {
+        let flow = applicable[index];
         let manifest = &flow.flow().detection;
-        if !enabled(manifest.capabilities.class, envelope)
-            || !manifest.when.applies(service, number, protocol)
-        {
-            continue;
-        }
-        let Some(inner) = probe_for(&manifest.capabilities) else {
-            continue;
-        };
+        let inner = probe_for(&manifest.capabilities)?;
         let millis = manifest
             .capabilities
             .max_millis
@@ -144,15 +154,93 @@ pub(crate) fn detect_port(
                 .max_bytes
                 .map_or(DEFAULT_MAX_BYTES, u64::from),
         };
-        findings.extend(flow.run(&seed, &mut probe));
+        let found = flow.run(&seed, &mut probe);
         // A flow that outran its own budget on a port still answering is recorded as
         // a coverage gap. One the probe withholds because a dead port stalled it is
         // not: that shortfall is the port's, the same as a clean run over a quiet one.
-        if let Some(refusal) = probe.last_refusal() {
-            refusals.push((manifest.id.clone(), refusal));
-        }
+        let refusal = probe
+            .last_refusal()
+            .map(|refusal| (manifest.id.clone(), refusal));
+        Some(Run {
+            index,
+            findings: found,
+            refusal,
+        })
+    };
+
+    // The first flow runs alone, and the rest widen out behind it only if that one
+    // came back without stalling.
+    //
+    // Widening from the start defeats the very thing that makes a slow host
+    // bearable. [`DEAD_PORT_STRIKES`] works because the flows that follow a dead
+    // wait can be spared it, and eight flows launched together are all already
+    // waiting when the first strike lands: a port that stalls costs eight dead
+    // waits instead of two, and eight connections instead of two, for exactly the
+    // wall clock it cost before. So the port answers one question first, and only
+    // a port that answered is asked the rest at once.
+    let mut runs: Vec<Run> = Vec::with_capacity(applicable.len());
+    runs.extend(run_one(0));
+
+    let widen = strikes.load(Ordering::Relaxed) == 0;
+    let width = if widen {
+        DETECTION_FLOW_CONCURRENCY.min(applicable.len() - 1)
+    } else {
+        1
+    };
+
+    if width <= 1 {
+        // Serially, which is where the strike count does its work: each dead wait
+        // is seen before the next flow decides whether to open a socket.
+        runs.extend((1..applicable.len()).filter_map(&run_one));
+    } else {
+        let next = AtomicUsize::new(1);
+        let done: Mutex<Vec<Run>> = Mutex::new(Vec::with_capacity(applicable.len()));
+        std::thread::scope(|scope| {
+            for _ in 0..width {
+                scope.spawn(|| {
+                    loop {
+                        // Checked before a flow is taken up rather than only inside
+                        // an exchange, so a port that went quiet partway through
+                        // stops costing whole flows as well as whole exchanges.
+                        if strikes.load(Ordering::Relaxed) >= DEAD_PORT_STRIKES {
+                            break;
+                        }
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        if index >= applicable.len() {
+                            break;
+                        }
+                        if let Some(run) = run_one(index) {
+                            done.lock()
+                                .unwrap_or_else(|held| held.into_inner())
+                                .push(run);
+                        }
+                    }
+                });
+            }
+        });
+        runs.extend(done.into_inner().unwrap_or_else(|held| held.into_inner()));
+    }
+
+    // Back into corpus order. A scan is written down and read back, and a report
+    // whose findings are in whatever order the threads happened to finish is one
+    // that cannot be diffed against the same scan run twice.
+    runs.sort_by_key(|run| run.index);
+
+    let mut findings = Vec::new();
+    let mut refusals = Vec::new();
+    for run in runs {
+        findings.extend(run.findings);
+        refusals.extend(run.refusal);
     }
     (findings, refusals)
+}
+
+/// What one flow left behind, carrying the position it holds in the corpus so a
+/// run finished out of order can be put back into it.
+struct Run {
+    index: usize,
+    findings: Vec<Finding>,
+    refusal: Option<(String, ProbeRefusal)>,
 }
 
 /// A [`Probe`] that shares one port's replies across the flows run against it.
@@ -187,10 +275,10 @@ pub(crate) fn detect_port(
 /// answering never stalls, so a genuine shortfall on a live port is still surfaced.
 struct CachingProbe<'a> {
     inner: Box<dyn Probe>,
-    cache: &'a RefCell<HashMap<Vec<u8>, Vec<u8>>>,
+    cache: &'a Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     /// Fresh exchanges that answered nothing or ran out the clock, shared across
     /// the port's flows so one dead wait is not repeated by every one of them.
-    strikes: &'a Cell<u32>,
+    strikes: &'a AtomicU32,
     /// How long a fresh exchange may run before it counts as a dead wait, three
     /// quarters of the flow's time budget. A real reply lands well inside this; a
     /// port that holds the socket to its read timeout does not.
@@ -204,33 +292,40 @@ struct CachingProbe<'a> {
 /// How many dead exchanges a port may cost before its remaining flows stop opening
 /// sockets to it and read only from the shared cache. A live service answers a
 /// simple request in milliseconds, so holding one exchange past three quarters of a
-/// detection's whole budget is already aberrant; two in a row is the port, not the
-/// network, and the rest of its flows are spared the same wait.
+/// detection's whole budget is already aberrant; two is the port, not the network,
+/// and the rest of its flows are spared the same wait.
+///
+/// The count is a floor rather than an exact stop. The port's flows run
+/// [`DETECTION_FLOW_CONCURRENCY`] at a time, so the ones already waiting when the
+/// second strike lands still finish their own wait: a silent port costs that many
+/// dead exchanges rather than two. It is bounded either way, and bounded by a
+/// number far below the dozens of flows a web port attracts.
 const DEAD_PORT_STRIKES: u32 = 2;
 
 impl Probe for CachingProbe<'_> {
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
         {
-            let cache = self.cache.borrow();
+            let cache = self.cache.lock().unwrap_or_else(|held| held.into_inner());
             if let Some(reply) = cache.get(bytes)
                 && reply.len() as u64 <= self.budget
             {
                 return Some(reply.clone());
             }
         }
-        if self.strikes.get() >= DEAD_PORT_STRIKES {
+        if self.strikes.load(Ordering::Relaxed) >= DEAD_PORT_STRIKES {
             return None;
         }
         let started = Instant::now();
         let reply = self.inner.speak(bytes);
         if started.elapsed() >= self.dead_after {
-            self.strikes.set(self.strikes.get() + 1);
+            self.strikes.fetch_add(1, Ordering::Relaxed);
             self.stalled = true;
         }
         let reply = reply?;
         if self.inner.reply_complete() {
             self.cache
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|held| held.into_inner())
                 .entry(bytes.to_vec())
                 .or_insert_with(|| reply.clone());
         }
@@ -447,14 +542,14 @@ mod tests {
     /// from a real fetch, and can be told to answer with a complete reply or one
     /// a budget would have cut short.
     struct Counting {
-        calls: std::rc::Rc<std::cell::Cell<u32>>,
+        calls: std::sync::Arc<AtomicU32>,
         reply: Vec<u8>,
         complete: bool,
     }
 
     impl Probe for Counting {
         fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
-            self.calls.set(self.calls.get() + 1);
+            self.calls.fetch_add(1, Ordering::Relaxed);
             Some(self.reply.clone())
         }
         fn reply_complete(&self) -> bool {
@@ -462,11 +557,8 @@ mod tests {
         }
     }
 
-    fn counting(
-        reply: &[u8],
-        complete: bool,
-    ) -> (Box<Counting>, std::rc::Rc<std::cell::Cell<u32>>) {
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    fn counting(reply: &[u8], complete: bool) -> (Box<Counting>, std::sync::Arc<AtomicU32>) {
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
         let probe = Box::new(Counting {
             calls: calls.clone(),
             reply: reply.to_vec(),
@@ -478,8 +570,8 @@ mod tests {
     #[test]
     fn a_complete_reply_is_served_from_the_cache_to_a_later_flow() {
         let request = b"GET / HTTP/1.1\r\nHost: h\r\n\r\n";
-        let cache = RefCell::new(HashMap::new());
-        let strikes = Cell::new(0u32);
+        let cache = Mutex::new(HashMap::new());
+        let strikes = AtomicU32::new(0);
 
         let (first, first_calls) = counting(b"the page", true);
         let (second, second_calls) = counting(b"never read", true);
@@ -506,12 +598,12 @@ mod tests {
         assert_eq!(from_a.as_deref(), Some(&b"the page"[..]));
         assert_eq!(from_b, from_a, "the second flow got the first flow's reply");
         assert_eq!(
-            first_calls.get(),
+            first_calls.load(Ordering::Relaxed),
             1,
             "the first flow did the one real fetch"
         );
         assert_eq!(
-            second_calls.get(),
+            second_calls.load(Ordering::Relaxed),
             0,
             "the second flow never touched the socket"
         );
@@ -519,8 +611,8 @@ mod tests {
 
     #[test]
     fn a_different_request_is_fetched_rather_than_served() {
-        let cache = RefCell::new(HashMap::new());
-        let strikes = Cell::new(0u32);
+        let cache = Mutex::new(HashMap::new());
+        let strikes = AtomicU32::new(0);
         let (first, _) = counting(b"root", true);
         let (second, second_calls) = counting(b"login", true);
         let mut a = CachingProbe {
@@ -545,7 +637,7 @@ mod tests {
 
         assert_eq!(from_b.as_deref(), Some(&b"login"[..]));
         assert_eq!(
-            second_calls.get(),
+            second_calls.load(Ordering::Relaxed),
             1,
             "a request not in the cache is fetched"
         );
@@ -554,8 +646,8 @@ mod tests {
     #[test]
     fn a_reply_larger_than_a_flow_budget_is_not_shared() {
         let request = b"GET / HTTP/1.1\r\n\r\n";
-        let cache = RefCell::new(HashMap::new());
-        let strikes = Cell::new(0u32);
+        let cache = Mutex::new(HashMap::new());
+        let strikes = AtomicU32::new(0);
 
         // The first flow reads a large page under a large budget and caches it.
         let (first, _) = counting(&[b'x'; 100], true);
@@ -583,7 +675,7 @@ mod tests {
         let from_b = b.speak(request);
 
         assert_eq!(
-            second_calls.get(),
+            second_calls.load(Ordering::Relaxed),
             1,
             "the oversized cache entry was not served"
         );
@@ -597,8 +689,8 @@ mod tests {
     #[test]
     fn an_incomplete_reply_is_never_cached() {
         let request = b"GET / HTTP/1.1\r\n\r\n";
-        let cache = RefCell::new(HashMap::new());
-        let strikes = Cell::new(0u32);
+        let cache = Mutex::new(HashMap::new());
+        let strikes = AtomicU32::new(0);
 
         let (first, _) = counting(b"cut short", false);
         let mut a = CachingProbe {
@@ -611,7 +703,7 @@ mod tests {
         };
         a.speak(request);
         assert!(
-            cache.borrow().is_empty(),
+            cache.lock().expect("uncontended in a test").is_empty(),
             "a reply cut short by a budget was not cached"
         );
 
@@ -626,25 +718,178 @@ mod tests {
         };
         b.speak(request);
         assert_eq!(
-            second_calls.get(),
+            second_calls.load(Ordering::Relaxed),
             1,
             "with nothing cached the next flow fetched"
         );
     }
 
+    /// A port's flows run several at a time, so the findings they draw come back
+    /// out of order, and the run puts them back into the order the corpus holds.
+    ///
+    /// A scan is written down and read back: a report whose findings arrive in
+    /// whatever order the threads happened to finish is one that cannot be diffed
+    /// against the same scan run twice.
     #[test]
-    fn a_port_that_never_answers_stops_being_probed() {
-        struct Silent(std::rc::Rc<std::cell::Cell<u32>>);
-        impl Probe for Silent {
+    fn findings_come_back_in_corpus_order_however_the_flows_finish() {
+        use crate::detect::flow::db::CompiledFlow;
+        use crate::detect::flow::schema::FlowDetection;
+
+        // More flows than there are workers, so the run fills more than one round
+        // and the last of them cannot simply finish last.
+        let corpus = FlowDb::from_flows(
+            (0..DETECTION_FLOW_CONCURRENCY * 3)
+                .map(|n| {
+                    let source = format!(
+                        r#"
+                        [detection]
+                        id      = "ordered-{n:02}"
+                        version = "1.0.0"
+                        title   = "ordered {n:02}"
+                        [detection.when]
+                        service = "redis"
+                        [detection.capabilities]
+                        class = "active-benign"
+                        [[step]]
+                        send   = "PING"
+                        expect = "ok"
+                        [[step.finding]]
+                        when     = "matched"
+                        severity = "low"
+                        summary  = "flow {n:02} fired"
+                        "#
+                    );
+                    let flow: FlowDetection = toml::from_str(&source).expect("a valid flow");
+                    CompiledFlow::from_parts(flow, "0".repeat(64))
+                })
+                .collect(),
+        );
+
+        // Each flow sleeps for a different slice of a millisecond, so a run that
+        // reported findings as the threads finished would come back shuffled.
+        let answered = std::sync::atomic::AtomicU64::new(0);
+        let ordered = || {
+            let (findings, _) = detect_port(
+                &corpus,
+                &default_envelope(),
+                "192.0.2.10",
+                Some("redis"),
+                6379,
+                Protocol::Tcp,
+                |_caps| {
+                    let nth = answered.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_micros((nth * 37) % 900));
+                    Some(Box::new(Canned(b"ok")))
+                },
+            );
+            findings
+                .iter()
+                .map(|finding| finding.detection().id().to_string())
+                .collect::<Vec<_>>()
+        };
+
+        let first = ordered();
+        assert_eq!(
+            first.len(),
+            DETECTION_FLOW_CONCURRENCY * 3,
+            "every flow should have fired: {first:?}"
+        );
+        let mut sorted = first.clone();
+        sorted.sort();
+        assert_eq!(first, sorted, "the findings are not in corpus order");
+
+        for _ in 0..4 {
+            assert_eq!(ordered(), first, "the order moved between runs");
+        }
+    }
+
+    /// A port that stalls on the first flow is not then asked eight questions at
+    /// once.
+    ///
+    /// The strike count only saves anything if the flows that follow a dead wait
+    /// can be spared it, and flows launched together are all already waiting when
+    /// the first strike lands. So the widening waits on one flow coming back
+    /// clean, and a port that stalls stays on the serial path where the count
+    /// does its work.
+    #[test]
+    fn a_stalling_port_is_not_widened_onto() {
+        use crate::detect::flow::db::CompiledFlow;
+        use crate::detect::flow::schema::FlowDetection;
+
+        // Budgets in milliseconds rather than seconds, so a dead wait is a dead
+        // wait at test speed: `dead_after` is three quarters of this.
+        let corpus = FlowDb::from_flows(
+            (0..DETECTION_FLOW_CONCURRENCY * 4)
+                .map(|n| {
+                    let source = format!(
+                        r#"
+                        [detection]
+                        id      = "stalls-{n:02}"
+                        version = "1.0.0"
+                        title   = "stalls {n:02}"
+                        [detection.when]
+                        service = "redis"
+                        [detection.capabilities]
+                        class      = "active-benign"
+                        max_millis = 40
+                        [[step]]
+                        send   = "PING"
+                        expect = "ok"
+                        "#
+                    );
+                    let flow: FlowDetection = toml::from_str(&source).expect("a valid flow");
+                    CompiledFlow::from_parts(flow, "0".repeat(64))
+                })
+                .collect(),
+        );
+
+        // Every exchange holds past the dead-wait mark and answers nothing, which
+        // is what a port that accepts a connection and then says nothing does.
+        struct Stalling(std::sync::Arc<AtomicU32>);
+        impl Probe for Stalling {
             fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
-                self.0.set(self.0.get() + 1);
+                self.0.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(40));
                 None
             }
         }
 
-        let cache = RefCell::new(HashMap::new());
-        let strikes = Cell::new(0u32);
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let opened = std::sync::Arc::new(AtomicU32::new(0));
+        let counted = std::sync::Arc::clone(&opened);
+        detect_port(
+            &corpus,
+            &default_envelope(),
+            "192.0.2.10",
+            Some("redis"),
+            6379,
+            Protocol::Tcp,
+            move |_caps| Some(Box::new(Stalling(std::sync::Arc::clone(&counted))) as Box<dyn Probe>),
+        );
+
+        // The flow that earns each strike is the only flow that pays for it. A run
+        // that widened first would have a worker already waiting for every one of
+        // the eight it launched.
+        let sockets = opened.load(Ordering::Relaxed);
+        assert!(
+            sockets <= DEAD_PORT_STRIKES + 1,
+            "a stalling port was asked {sockets} times over, not {}",
+            DEAD_PORT_STRIKES + 1
+        );
+    }
+
+    #[test]
+    fn a_port_that_never_answers_stops_being_probed() {
+        struct Silent(std::sync::Arc<AtomicU32>);
+        impl Probe for Silent {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+
+        let cache = Mutex::new(HashMap::new());
+        let strikes = AtomicU32::new(0);
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
 
         // Each flow over the port gets its own probe but shares the strike count,
         // as detect_port hands them out. Every probe answers nothing and, with a
@@ -664,7 +909,7 @@ mod tests {
         }
 
         assert_eq!(
-            calls.get(),
+            calls.load(Ordering::Relaxed),
             DEAD_PORT_STRIKES,
             "the socket was spared once the port had shown it will not answer"
         );
@@ -683,11 +928,11 @@ mod tests {
             }
         }
 
-        let cache = RefCell::new(HashMap::new());
+        let cache = Mutex::new(HashMap::new());
 
         // A fast refusal with no dead wait is the flow outrunning its own budget on
         // a port still answering, so it is reported.
-        let strikes = Cell::new(0u32);
+        let strikes = AtomicU32::new(0);
         let mut live = CachingProbe {
             inner: Box::new(Refuser),
             cache: &cache,
@@ -702,7 +947,7 @@ mod tests {
 
         // The same refusal after a dead wait is the port's doing, so it is withheld.
         // A dead_after of zero makes the exchange count as having run the clock out.
-        let strikes = Cell::new(0u32);
+        let strikes = AtomicU32::new(0);
         let mut dead = CachingProbe {
             inner: Box::new(Refuser),
             cache: &cache,
@@ -718,8 +963,8 @@ mod tests {
 
     #[test]
     fn a_port_that_answers_but_runs_out_the_clock_stops_being_probed() {
-        let cache = RefCell::new(HashMap::new());
-        let strikes = Cell::new(0u32);
+        let cache = Mutex::new(HashMap::new());
+        let strikes = AtomicU32::new(0);
 
         // A dead_after of zero makes every exchange count as having run the clock
         // out, standing in for a port that dribbles a reply back only as its read
@@ -738,7 +983,7 @@ mod tests {
             probe.speak(request.as_bytes());
             let expected = if n < DEAD_PORT_STRIKES { 1 } else { 0 };
             assert_eq!(
-                calls.get(),
+                calls.load(Ordering::Relaxed),
                 expected,
                 "flow {n} {} touch the socket",
                 if expected == 1 {

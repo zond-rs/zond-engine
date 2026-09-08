@@ -62,7 +62,8 @@ use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::detect::compute::stage as compute_stage;
 use crate::detect::compute::{
-    CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities, RunOutcome,
+    CapError, CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities, RunOutcome,
+    ScanInstant,
 };
 use crate::detect::flow::{Probe, ProbeRefusal, stage};
 use crate::detect::host::stage as host_stage;
@@ -105,6 +106,10 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         return;
     }
 
+    // One budget for the phase, shared by every port in the pool and every flow
+    // inside each. See [`Gate`].
+    let gate = Arc::new(Gate::new(CONNECT_CONCURRENCY));
+
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
         ctx.clone(),
@@ -138,8 +143,10 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         pool.admit(detect_one(
             target,
             ctx.detections.clone(),
+            detection,
             envelope,
             Arc::clone(&ctx.tapes),
+            Arc::clone(&gate),
         ))
         .await;
     }
@@ -216,8 +223,10 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
 async fn detect_one(
     target: PortTarget,
     detections: crate::detect::Detections,
+    detection: ServiceDetection,
     envelope: DetectionEnvelope,
     tapes: Arc<Tapes>,
+    gate: Arc<Gate>,
 ) -> Option<PortResult> {
     let PortTarget {
         address,
@@ -246,7 +255,15 @@ async fn detect_one(
             service.as_deref(),
             number,
             protocol,
-            |caps| Some(Box::new(SocketProbe::new(addr, protocol, tunnel, caps)) as Box<dyn Probe>),
+            |caps| {
+                Some(Box::new(SocketProbe::new(
+                    addr,
+                    protocol,
+                    tunnel,
+                    caps,
+                    gate.acquire(),
+                )) as Box<dyn Probe>)
+            },
         );
 
         // A passive module reads the gathered responses; an active one speaks
@@ -262,6 +279,7 @@ async fn detect_one(
             addr: Some(addr),
             tunnel,
             speaks_http: false,
+            detection,
         };
         let computed = compute_stage::detect_port(
             modules.runtime(),
@@ -271,10 +289,10 @@ async fn detect_one(
             &port_context,
             &response_slices,
             |grant| {
-                Some(
-                    Box::new(LiveCapabilities::new(addr, protocol, tunnel, &grant.budget))
-                        as Box<dyn Capabilities>,
-                )
+                Some(Box::new(Permitted {
+                    inner: LiveCapabilities::new(addr, protocol, tunnel, &grant.budget),
+                    _permit: gate.acquire(),
+                }) as Box<dyn Capabilities>)
             },
             |grant, tape| {
                 tapes.record(DetectionRunRecord {
@@ -404,6 +422,98 @@ fn detect_hosts(ctx: &ScanContext) {
     }
 }
 
+/// The socket budget the whole detection phase spends through.
+///
+/// A port's flows run several at a time now, and every port in the pool does the
+/// same, so the two multiply: without a shared count a busy scan would open
+/// [`CONNECT_CONCURRENCY`] ports times [`DETECTION_FLOW_CONCURRENCY`] flows at
+/// once, hundreds of sockets against a ceiling written for fifty. This holds that
+/// ceiling for the phase as a whole, so the concurrency is spent where the work
+/// is: a host with four web ports gets most of the budget on those four, and a
+/// scan with fifty ports in flight is bounded exactly as it was before.
+///
+/// A permit is taken when a flow's probe is built and given back when the probe
+/// is dropped, which is the flow's whole run. Nothing here waits on a permit while
+/// holding another, so the count cannot deadlock, and the wait happens before
+/// [`SocketProbe::new`] starts the flow's clock rather than inside an exchange,
+/// so queueing never counts against a detection's own time budget.
+struct Gate {
+    /// Permits still to be handed out.
+    free: std::sync::Mutex<usize>,
+    /// Woken as each is given back.
+    returned: std::sync::Condvar,
+}
+
+impl Gate {
+    /// A gate holding `permits` sockets.
+    fn new(permits: usize) -> Self {
+        Self {
+            free: std::sync::Mutex::new(permits),
+            returned: std::sync::Condvar::new(),
+        }
+    }
+
+    /// Waits for a socket to come free and takes it.
+    fn acquire(self: &Arc<Self>) -> Permit {
+        let mut free = self.free.lock().unwrap_or_else(|held| held.into_inner());
+        while *free == 0 {
+            free = self
+                .returned
+                .wait(free)
+                .unwrap_or_else(|held| held.into_inner());
+        }
+        *free -= 1;
+        Permit {
+            gate: Arc::clone(self),
+        }
+    }
+}
+
+/// One socket's worth of the phase's budget, given back when the flow holding it
+/// is done.
+struct Permit {
+    gate: Arc<Gate>,
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        let mut free = self
+            .gate
+            .free
+            .lock()
+            .unwrap_or_else(|held| held.into_inner());
+        *free += 1;
+        self.gate.returned.notify_one();
+    }
+}
+
+/// A compute module's live capabilities, holding one of the phase's sockets for
+/// as long as the module runs.
+///
+/// A passive module takes a permit it never spends, which costs nothing worth
+/// avoiding: the compute tier runs one module at a time per port, so a passive
+/// one holds its permit for the length of a pure computation. What it buys is one
+/// count covering both tiers, so [`Gate`] is the whole answer to how many sockets
+/// this phase has open.
+struct Permitted {
+    inner: LiveCapabilities,
+    _permit: Permit,
+}
+
+impl Capabilities for Permitted {
+    fn speak(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CapError> {
+        self.inner.speak(bytes)
+    }
+
+    fn resolve(&mut self, name: &str) -> Result<Vec<std::net::IpAddr>, CapError> {
+        self.inner.resolve(name)
+    }
+
+    fn now(&mut self) -> ScanInstant {
+        self.inner.now()
+    }
+}
+
 /// A blocking [`Probe`] over a fresh connection to one scanned port, holding the
 /// flow's budget and debiting it as it goes. Each `speak` is one request and its
 /// reply, which is enough for the corpus's stateless exchanges; it is bound to
@@ -431,6 +541,9 @@ struct SocketProbe {
     /// Whether the last `speak` read its reply to a clean close, so a caching
     /// layer can tell a complete reply from one a budget cut short.
     last_complete: bool,
+    /// The phase's socket budget, held for this flow's run and given back when
+    /// the probe is dropped.
+    _permit: Permit,
 }
 
 impl SocketProbe {
@@ -439,6 +552,7 @@ impl SocketProbe {
         protocol: Protocol,
         tunnel: Option<Tunnel>,
         caps: &CapabilitySpec,
+        permit: Permit,
     ) -> Self {
         let millis = caps.max_millis.map_or(DEFAULT_MAX_MILLIS, u64::from);
         Self {
@@ -452,6 +566,7 @@ impl SocketProbe {
                 .map_or(DEFAULT_MAX_CONNECTIONS, u32::from),
             last_refusal: None,
             last_complete: false,
+            _permit: permit,
         }
     }
 }
@@ -808,7 +923,14 @@ mod tests {
         });
 
         // 20-byte budget, one of which the `x` send spends: the reply gets 19.
-        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &caps(Some(20), None, None));
+        let gate = Arc::new(Gate::new(1));
+        let mut probe = SocketProbe::new(
+            addr,
+            Protocol::Tcp,
+            None,
+            &caps(Some(20), None, None),
+            gate.acquire(),
+        );
         let reply = probe.speak(b"x").expect("a reply within budget");
         assert!(
             reply.len() <= 19,
@@ -830,7 +952,14 @@ mod tests {
             }
         });
 
-        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &caps(None, None, Some(1)));
+        let gate = Arc::new(Gate::new(1));
+        let mut probe = SocketProbe::new(
+            addr,
+            Protocol::Tcp,
+            None,
+            &caps(None, None, Some(1)),
+            gate.acquire(),
+        );
         assert!(
             probe.speak(b"a").is_some(),
             "the one permitted exchange failed"
@@ -846,7 +975,14 @@ mod tests {
         // A zero-millisecond budget is spent the instant it is granted, so no
         // packet leaves; the unreachable address is never dialed.
         let addr: SocketAddr = "192.0.2.1:9".parse().unwrap();
-        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &caps(None, Some(0), None));
+        let gate = Arc::new(Gate::new(1));
+        let mut probe = SocketProbe::new(
+            addr,
+            Protocol::Tcp,
+            None,
+            &caps(None, Some(0), None),
+            gate.acquire(),
+        );
         assert!(
             probe.speak(b"x").is_none(),
             "an exchange ran past the time budget"
