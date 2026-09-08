@@ -408,15 +408,24 @@ fn check_template(
 }
 
 /// The variable names a template interpolates, read exactly as the interpreter
-/// reads them: each `{` opens a name that runs to the next `}`.
+/// reads them: `{ident}` names a variable, `{{` and `}}` are literal braces, and a
+/// lone `}` is literal. Kept in step with [`interpolate`](super::interp) so the
+/// build validates the names the runtime will actually read.
 fn template_vars(template: &str) -> Vec<String> {
     let mut vars = Vec::new();
     let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('}') else { break };
-        vars.push(after[..close].to_string());
-        rest = &after[close + 1..];
+    while let Some(brace) = rest.find(|c| c == '{' || c == '}') {
+        let this = rest.as_bytes()[brace];
+        let after = &rest[brace + 1..];
+        if after.as_bytes().first() == Some(&this) {
+            rest = &after[1..];
+        } else if this == b'{' {
+            let Some(close) = after.find('}') else { break };
+            vars.push(after[..close].to_string());
+            rest = &after[close + 1..];
+        } else {
+            rest = after;
+        }
     }
     vars
 }
@@ -723,5 +732,15 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ValidationError::LoopVarShadows(1, v) if v == "host"))
         );
+    }
+
+    #[test]
+    fn template_vars_reads_names_and_skips_escaped_braces() {
+        assert_eq!(template_vars("{host}:{port}"), vec!["host", "port"]);
+        // A doubled brace is a literal brace, not a name, so a JSON body reads clean.
+        assert_eq!(template_vars(r#"{{"key":"{host}"}}"#), vec!["host"]);
+        assert!(template_vars(r#"{{"key":"value"}}"#).is_empty());
+        // A lone `}` is literal; only `{` opens a name.
+        assert_eq!(template_vars("a}b {host}"), vec!["host"]);
     }
 }

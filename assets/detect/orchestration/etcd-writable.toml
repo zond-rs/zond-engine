@@ -1,7 +1,9 @@
-# Unauthenticated WRITE to etcd. A Tier-2 compute detection: the v3 write API
-# needs a JSON body, which a flow's send template cannot carry, so the request is
-# built in Rhai. A canary key is PUT through the v3 gateway and then deleted.
-# Gated on 2379 so the write only ever reaches an etcd client port. active-mutating.
+# Unauthenticated WRITE to etcd. etcd-unauth proves /version answers with no
+# client certificate; this proves the key-value API takes writes. A canary key is
+# PUT through the v3 gateway and then deleted. The JSON bodies carry braces of
+# their own, escaped `{{`/`}}`, so the send template passes them through unchanged.
+# Gated on 2379 so the write is only ever sent to an etcd client port.
+# active-mutating, opt-in only.
 
 [detection]
 id      = "etcd-writable"
@@ -13,12 +15,23 @@ port     = 2379
 protocol = "tcp"
 
 [detection.capabilities]
-class           = "active-mutating"
-speak           = "target"
-max_bytes       = 16384
-max_millis      = 4000
-max_connections = 3
+class      = "active-mutating"
+speak      = "target"
+max_bytes  = 16384
+max_millis = 4000
 
-[compute]
-language = "rhai"
-body     = "etcd-writable.rhai"
+[[step]]
+send        = "POST /v3/kv/put HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: 45\r\nConnection: close\r\n\r\n{{\"key\":\"em9uZC1jYW5hcnk=\",\"value\":\"em9uZA==\"}}"
+on_no_match = "continue"
+expect      = ['HTTP/[0-9.]+ 200', 'header']
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "etcd accepted a write without a client certificate"
+  detail       = "A canary key was written through the v3 API with no client certificate; etcd holds a cluster's secrets and is meant to require mutual TLS. The key was deleted afterward."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"
+
+[[step]]
+send   = "POST /v3/kv/deleterange HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{{\"key\":\"em9uZC1jYW5hcnk=\"}}"
+expect = 'HTTP'

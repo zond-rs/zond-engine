@@ -378,18 +378,29 @@ fn build_finding(
     Some(finding)
 }
 
-/// Substitutes each `{ident}` in `template` for the variable's value. [`None`] if
-/// a name is unbound, or the braces are unbalanced, the caller drops the field
-/// rather than emit a half-built one.
+/// Substitutes each `{ident}` in `template` for the variable's value. `{{` and
+/// `}}` stand for a literal `{` and `}`, so a body carrying braces of its own, a
+/// JSON payload for one, survives the pass intact. [`None`] if a name is unbound
+/// or a `{` opens no `{ident}`, the caller dropping the field rather than emit a
+/// half-built one. A lone `}` is literal; only `{` can open a name.
 fn interpolate(template: &str, env: &Env) -> Option<String> {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        let close = after.find('}')?;
-        out.push_str(env.get(&after[..close])?);
-        rest = &after[close + 1..];
+    while let Some(brace) = rest.find(|c| c == '{' || c == '}') {
+        out.push_str(&rest[..brace]);
+        let this = rest.as_bytes()[brace];
+        let after = &rest[brace + 1..];
+        if after.as_bytes().first() == Some(&this) {
+            out.push(this as char);
+            rest = &after[1..];
+        } else if this == b'{' {
+            let close = after.find('}')?;
+            out.push_str(env.get(&after[..close])?);
+            rest = &after[close + 1..];
+        } else {
+            out.push('}');
+            rest = after;
+        }
     }
     out.push_str(rest);
     Some(out)
