@@ -11,5 +11,5 @@ protocol = "tcp"
 
 [[match]]
 name = "rdp_negotiate_resp"
-pattern = '^\x03\x00\x00\x0b\x06\xd0'
+pattern = '(?s)^\x03\x00\x00\x0b\x06.'
 product = "rdp"

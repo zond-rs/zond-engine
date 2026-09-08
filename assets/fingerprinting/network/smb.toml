@@ -11,5 +11,5 @@ protocol = "tcp"
 
 [[match]]
 name = "smb_header_match"
-pattern = '^\xffSMB'
+pattern = '(?s)^\x00\x00\x00..SMB'
 product = "smb"

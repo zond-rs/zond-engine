@@ -35,12 +35,13 @@ use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::{Port, PortState, Protocol};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use super::db::FlowDb;
 use super::{FlowSeed, Probe, ProbeRefusal};
-use crate::detect::manifest::{CapabilitySpec, Class, DEFAULT_MAX_BYTES};
+use crate::detect::manifest::{CapabilitySpec, Class, DEFAULT_MAX_BYTES, DEFAULT_MAX_MILLIS};
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
 /// recording every finding they produce. `probe_for` supplies the [`Probe`] a
@@ -113,6 +114,11 @@ pub(crate) fn detect_port(
     // share a single fetch instead of each opening its own connection. See
     // [`CachingProbe`].
     let cache = RefCell::new(HashMap::new());
+    // A port that accepts a connection but then answers slowly or not at all costs
+    // each flow its whole time budget for nothing. This counts those dead exchanges
+    // across the port so the flows that follow can stop paying for them. See
+    // [`CachingProbe`].
+    let strikes = Cell::new(0u32);
     for flow in corpus.flows() {
         let manifest = &flow.flow().detection;
         if !enabled(manifest.capabilities.class, envelope)
@@ -123,9 +129,15 @@ pub(crate) fn detect_port(
         let Some(inner) = probe_for(&manifest.capabilities) else {
             continue;
         };
+        let millis = manifest
+            .capabilities
+            .max_millis
+            .map_or(DEFAULT_MAX_MILLIS, u64::from);
         let mut probe = CachingProbe {
             inner,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(millis / 4 * 3),
             budget: manifest
                 .capabilities
                 .max_bytes
@@ -158,11 +170,33 @@ pub(crate) fn detect_port(
 /// real fetch are indistinguishable to the flow. A reply larger than this flow's
 /// budget is not served: that flow fetches its own, which its smaller budget
 /// truncates exactly as it would have without the cache.
+///
+/// The wrapper also cuts a port loose once it has proven unresponsive. A port that
+/// takes a probe's connection but then answers slowly or not at all holds the flow
+/// until its whole time budget is spent, and a port that does this to
+/// [`DEAD_PORT_STRIKES`] fresh exchanges will do it to every detection that gates
+/// onto it. After that many the wrapper stops opening new sockets: a request already
+/// cached is still served, and a request not seen before yields nothing rather than
+/// another dead wait. On an HTTP port this is the difference between one slow host
+/// and that host multiplied across the dozens of flows a web port attracts.
 struct CachingProbe<'a> {
     inner: Box<dyn Probe>,
     cache: &'a RefCell<HashMap<Vec<u8>, Vec<u8>>>,
+    /// Fresh exchanges that answered nothing or ran out the clock, shared across
+    /// the port's flows so one dead wait is not repeated by every one of them.
+    strikes: &'a Cell<u32>,
+    /// How long a fresh exchange may run before it counts as a dead wait, three
+    /// quarters of the flow's time budget. A real reply lands well inside this; a
+    /// port that holds the socket to its read timeout does not.
+    dead_after: Duration,
     budget: u64,
 }
+
+/// How many dead exchanges a port may cost before its remaining flows stop opening
+/// sockets to it and read only from the shared cache. A live service answers every
+/// probe promptly, even with an error, so this trips only on a port that takes a
+/// connection and then stalls or stays silent.
+const DEAD_PORT_STRIKES: u32 = 3;
 
 impl Probe for CachingProbe<'_> {
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
@@ -174,7 +208,15 @@ impl Probe for CachingProbe<'_> {
                 return Some(reply.clone());
             }
         }
-        let reply = self.inner.speak(bytes)?;
+        if self.strikes.get() >= DEAD_PORT_STRIKES {
+            return None;
+        }
+        let started = Instant::now();
+        let reply = self.inner.speak(bytes);
+        if reply.is_none() || started.elapsed() >= self.dead_after {
+            self.strikes.set(self.strikes.get() + 1);
+        }
+        let reply = reply?;
         if self.inner.reply_complete() {
             self.cache
                 .borrow_mut()
@@ -423,17 +465,22 @@ mod tests {
     fn a_complete_reply_is_served_from_the_cache_to_a_later_flow() {
         let request = b"GET / HTTP/1.1\r\nHost: h\r\n\r\n";
         let cache = RefCell::new(HashMap::new());
+        let strikes = Cell::new(0u32);
 
         let (first, first_calls) = counting(b"the page", true);
         let (second, second_calls) = counting(b"never read", true);
         let mut a = CachingProbe {
             inner: first,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
         let mut b = CachingProbe {
             inner: second,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
 
@@ -457,16 +504,21 @@ mod tests {
     #[test]
     fn a_different_request_is_fetched_rather_than_served() {
         let cache = RefCell::new(HashMap::new());
+        let strikes = Cell::new(0u32);
         let (first, _) = counting(b"root", true);
         let (second, second_calls) = counting(b"login", true);
         let mut a = CachingProbe {
             inner: first,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
         let mut b = CachingProbe {
             inner: second,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
 
@@ -485,12 +537,15 @@ mod tests {
     fn a_reply_larger_than_a_flow_budget_is_not_shared() {
         let request = b"GET / HTTP/1.1\r\n\r\n";
         let cache = RefCell::new(HashMap::new());
+        let strikes = Cell::new(0u32);
 
         // The first flow reads a large page under a large budget and caches it.
         let (first, _) = counting(&[b'x'; 100], true);
         let mut a = CachingProbe {
             inner: first,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
         a.speak(request);
@@ -501,6 +556,8 @@ mod tests {
         let mut b = CachingProbe {
             inner: second,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(1500),
             budget: 40,
         };
         let from_b = b.speak(request);
@@ -521,11 +578,14 @@ mod tests {
     fn an_incomplete_reply_is_never_cached() {
         let request = b"GET / HTTP/1.1\r\n\r\n";
         let cache = RefCell::new(HashMap::new());
+        let strikes = Cell::new(0u32);
 
         let (first, _) = counting(b"cut short", false);
         let mut a = CachingProbe {
             inner: first,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
         a.speak(request);
@@ -538,6 +598,8 @@ mod tests {
         let mut b = CachingProbe {
             inner: second,
             cache: &cache,
+            strikes: &strikes,
+            dead_after: Duration::from_millis(1500),
             budget: 4096,
         };
         b.speak(request);
@@ -546,5 +608,74 @@ mod tests {
             1,
             "with nothing cached the next flow fetched"
         );
+    }
+
+    #[test]
+    fn a_port_that_never_answers_stops_being_probed() {
+        struct Silent(std::rc::Rc<std::cell::Cell<u32>>);
+        impl Probe for Silent {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                self.0.set(self.0.get() + 1);
+                None
+            }
+        }
+
+        let cache = RefCell::new(HashMap::new());
+        let strikes = Cell::new(0u32);
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+
+        // Each flow over the port gets its own probe but shares the strike count,
+        // as detect_port hands them out. Every probe answers nothing, the way a port
+        // that accepts the connection and stays silent would.
+        for n in 0..DEAD_PORT_STRIKES + 5 {
+            let mut probe = CachingProbe {
+                inner: Box::new(Silent(calls.clone())),
+                cache: &cache,
+                strikes: &strikes,
+                dead_after: Duration::from_millis(1500),
+                budget: 4096,
+            };
+            let request = format!("GET /{n} HTTP/1.1\r\n\r\n");
+            assert!(probe.speak(request.as_bytes()).is_none());
+        }
+
+        assert_eq!(
+            calls.get(),
+            DEAD_PORT_STRIKES,
+            "the socket was spared once the port had shown it will not answer"
+        );
+    }
+
+    #[test]
+    fn a_port_that_answers_but_runs_out_the_clock_stops_being_probed() {
+        let cache = RefCell::new(HashMap::new());
+        let strikes = Cell::new(0u32);
+
+        // A dead_after of zero makes every exchange count as having run the clock
+        // out, standing in for a port that dribbles a reply back only as its read
+        // timeout expires. Such a reply is real but as slow as silence.
+        for n in 0..DEAD_PORT_STRIKES + 5 {
+            let (inner, calls) = counting(b"slow but complete", true);
+            let mut probe = CachingProbe {
+                inner,
+                cache: &cache,
+                strikes: &strikes,
+                dead_after: Duration::ZERO,
+                budget: 4096,
+            };
+            let request = format!("GET /{n} HTTP/1.1\r\n\r\n");
+            probe.speak(request.as_bytes());
+            let expected = if n < DEAD_PORT_STRIKES { 1 } else { 0 };
+            assert_eq!(
+                calls.get(),
+                expected,
+                "flow {n} {} touch the socket",
+                if expected == 1 {
+                    "should"
+                } else {
+                    "should not"
+                }
+            );
+        }
     }
 }

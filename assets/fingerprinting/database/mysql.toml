@@ -6,6 +6,6 @@ description = "MySQL Database"
 # MySQL sends a handshake on connect.
 [[match]]
 name = "mysql_handshake"
-pattern = '^.[\x00\x00\x00]([\d.]+)'
+pattern = '(?s)^.{3}\x00\x0a([\w.\-+~]+)'
 version_group = 1
 product = "mysql"

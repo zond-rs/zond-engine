@@ -99,6 +99,11 @@ pub struct PatternMatch {
     /// no version group, or the group did not participate in the match.
     pub version: Option<String>,
 
+    /// How many characters of the response the whole match spanned. Longer means
+    /// the signature pinned down more of the bytes, so a specific pattern outranks
+    /// a generic one that matched the same response.
+    pub match_len: usize,
+
     /// Every capture group, index 0 being the whole match, when the caller asked
     /// for them via
     /// [`identify_with_captures`](CompiledPattern::identify_with_captures).
@@ -229,6 +234,10 @@ impl CompiledPattern {
         macro_rules! extract {
             ($captures:expr) => {{
                 let captures = $captures;
+                // Group 0 is the whole match; its length is how much of the
+                // response the pattern pinned down, which ranks a specific
+                // signature over a generic one that matched the same bytes.
+                let match_len = captures.get(0).map_or(0, |m| m.as_str().chars().count());
                 let version = version_group
                     .and_then(|group| captures.get(group as usize))
                     .map(|m| m.as_str().to_string());
@@ -242,18 +251,22 @@ impl CompiledPattern {
                         })
                         .collect::<Vec<String>>()
                 });
-                (version, groups)
+                (version, groups, match_len)
             }};
         }
 
-        let (version, captures) = match self {
+        let (version, captures, match_len) = match self {
             CompiledPattern::Fast(regex) => extract!(regex.captures(text)?),
             // `Err` is a bounded runtime failure (backtrack limit / stack
             // overflow); `Ok(None)` is a clean non-match. Both mean "no match"
             // here.
             CompiledPattern::Fancy(regex) => extract!(regex.captures(text).ok()??),
         };
-        Some(PatternMatch { version, captures })
+        Some(PatternMatch {
+            version,
+            captures,
+            match_len,
+        })
     }
 }
 

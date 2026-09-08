@@ -9,6 +9,6 @@ name = "ftp_banner"
 # trailing CRLF and run the version on into whatever the next probe drew, so a
 # server that answered one with a 500 had "500 Command ..." folded into its
 # version string.
-pattern = '(?i)^220[\s-]([\w\d .-]+)'
+pattern = '(?i)^220[\s-]([\w\d .-]*ftp[\w\d .-]*)'
 version_group = 1
 product = "ftp"

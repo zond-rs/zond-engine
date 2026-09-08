@@ -274,21 +274,8 @@ impl Signature {
             Confidence::Probable
         };
 
-        // Detail counts the identity fields the signature *itself* supplies,
-        // beyond what confidence already conveys, an explicit product and an
-        // explicit vendor. It breaks ties between equal-confidence matches so a
-        // signature that names a product outranks a bare protocol match.
         let detail = self.product.is_some() as u8 + self.vendor.is_some() as u8;
 
-        // A signature that names no product leaves none. Filling it with the
-        // service name would put "dns" in a field meaning "the software behind
-        // the protocol", which is a different claim and not one anything
-        // established. The `detail` score above already reads
-        // `self.product.is_some()` to rank a rule that does name one, so
-        // nothing here depends on the field being populated. The platform
-        // identifier the corpus carries beside the product, resolved against
-        // the version this match found, the field CVE correlation joins on, and
-        // one a report consumer such as DefectDojo reads directly.
         let cpe = self.cpe.as_deref().and_then(|template| {
             resolve_service_cpe(
                 template,
@@ -319,7 +306,11 @@ impl Signature {
 
         Some(Match {
             evidence,
-            quality: MatchQuality { confidence, detail },
+            quality: MatchQuality {
+                confidence,
+                detail,
+                specificity: matched.match_len,
+            },
             hardware: self.hardware.as_deref().and_then(|metadata| {
                 super::os::hardware_from(metadata, matched.captures.as_deref().unwrap_or(&[]))
             }),
@@ -423,6 +414,7 @@ pub struct Match {
 pub struct MatchQuality {
     confidence: Confidence,
     detail: u8,
+    specificity: usize,
 }
 
 // ╔════════════════════════════════════════════╗
