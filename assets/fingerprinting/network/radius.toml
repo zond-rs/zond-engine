@@ -3,5 +3,5 @@ name = "radius"
 default_ports = [1812, 1813, 1645, 1646]
 description = "RADIUS authentication and accounting"
 
-# No probe yet: an Access-Request is authenticated with a shared secret, and the
-# Access-Reject that comes back needs a decoder before it can be read.
+# No probe. A server answers only the clients its configuration names and
+# discards the rest, so a scan is a stranger and draws nothing.

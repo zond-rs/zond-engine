@@ -4,4 +4,3 @@ default_ports = [514]
 description = "Syslog"
 
 # No probe, and there will not be one: syslog receives and does not answer.
-# The port is the whole claim.

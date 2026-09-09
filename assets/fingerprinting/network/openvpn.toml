@@ -3,6 +3,5 @@ name = "openvpn"
 default_ports = [1194]
 description = "OpenVPN"
 
-# No probe. A UDP peer answers only a correctly framed hard-reset with a session
-# id it will check, and the reply is unreadable until extract::from_datagram
-# learns the framing. Naming the port does not wait for that.
+# No probe yet. A hard-reset draws a reply from 1194 itself, so this one could be
+# authored; a server using tls-auth or tls-crypt discards it unsigned.

@@ -3,4 +3,5 @@ name = "bacnet"
 default_ports = [47808]
 description = "BACnet/IP building automation"
 
-# No probe yet: see openvpn.toml.
+# No probe yet. Who-Is draws an I-Am from the device's own port and is worth
+# authoring; nothing here has a BACnet device to write it against.

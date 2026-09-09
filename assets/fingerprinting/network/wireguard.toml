@@ -3,4 +3,5 @@ name = "wireguard"
 default_ports = [51820]
 description = "WireGuard"
 
-# No probe yet: see openvpn.toml.
+# No probe. A handshake initiation carries a MAC keyed on the responder's public
+# key, and one that fails it is discarded without a reply.
