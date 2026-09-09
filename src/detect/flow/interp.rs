@@ -386,7 +386,7 @@ fn build_finding(
 fn interpolate(template: &str, env: &Env) -> Option<String> {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
-    while let Some(brace) = rest.find(|c| c == '{' || c == '}') {
+    while let Some(brace) = rest.find(['{', '}']) {
         out.push_str(&rest[..brace]);
         let this = rest.as_bytes()[brace];
         let after = &rest[brace + 1..];
@@ -418,10 +418,13 @@ mod tests {
     use super::*;
     use crate::model::finding::{Reference, Severity};
 
-    fn flow(name: &str) -> FlowDetection {
-        let path = format!("assets/detect/{name}.toml");
-        let toml = std::fs::read_to_string(&path).expect("the example flow file");
-        toml::from_str(&toml).expect("a valid flow")
+    /// The shipped flow with this id, as the crate embeds it.
+    ///
+    /// By id, not by file path: see
+    /// [`db::shipped_flow`](crate::detect::flow::db::shipped_flow) for what
+    /// addressing these by path cost.
+    fn flow(id: &str) -> FlowDetection {
+        crate::detect::flow::db::shipped_flow(id)
     }
 
     /// A seed for a stand-in endpoint, for the flows that never read `{host}`.
@@ -749,7 +752,7 @@ mod tests {
 
     #[test]
     fn the_redis_flow_runs_and_produces_a_finding() {
-        let redis = flow("redis-unauth");
+        let redis = flow("redis-unauth-access");
         let mut probe = Canned(b"# Server\r\nredis_version:7.2.4\r\nrun_id:abc".to_vec());
 
         let findings = run(&redis, "", &seed(), &mut probe);
@@ -776,7 +779,7 @@ mod tests {
 
     #[test]
     fn a_gate_that_does_not_match_halts_and_emits_nothing() {
-        let redis = flow("redis-unauth");
+        let redis = flow("redis-unauth-access");
         // No "# Server" line, so the step's `expect` gate fails and the flow halts.
         let mut probe = Canned(b"-ERR NOAUTH Authentication required".to_vec());
 

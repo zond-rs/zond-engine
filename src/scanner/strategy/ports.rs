@@ -646,16 +646,6 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             self.deadline.record_rtt(rtt);
         }
 
-        // An answer settles what nothing else can: the probe reached something
-        // that replied to it, so it left this machine whether or not the capture
-        // caught it going. Without this the first few probes of every run - sent
-        // while the capture threads were still coming up - are reported as sends
-        // that never made it, and a scan that resolved every port it asked about
-        // says it covered less than it was asked to.
-        if resolution.witnessed_now {
-            self.audit.record_witnessed_send();
-        }
-
         // Three cases, and the middle one is the reason this reads the attempt
         // rather than the fact of an answer.
         match (resolution.attempts, resolution.answered_attempt) {
@@ -1645,7 +1635,6 @@ mod tests {
             rtt: None,
             attempts: 1,
             answered_attempt: Some(1),
-            witnessed_now: false,
         });
         assert!(core.window.capacity() > 64, "a clean answer buys headroom");
 
@@ -1655,7 +1644,6 @@ mod tests {
             rtt: None,
             attempts: 2,
             answered_attempt: Some(2),
-            witnessed_now: false,
         });
         assert!(
             core.window.capacity() < grown,

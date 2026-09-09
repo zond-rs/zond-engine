@@ -249,10 +249,18 @@ async fn spawn_challenge_server(question: &'static [u8], answer: &'static [u8]) 
 #[tokio::test]
 async fn a_service_that_answers_only_its_own_probe_is_still_identified() {
     // The version is what proves the reply was read rather than merely matched.
-    // Redis has none to give: `+PONG` carries no version, which is why its own
-    // signature captures none.
+    // Redis gives one now: the corpus asks `INFO` rather than `PING`, since an
+    // unauthenticated server answers it with `redis_version` and one that refuses
+    // it refuses `PING` too, so the question that also names the build costs
+    // nothing. The postgres case below is the versionless one.
     for (question, answer, number, expected, version) in [
-        (&b"PING"[..], &b"+PONG\r\n"[..], 8443u16, "redis", None),
+        (
+            &b"INFO\r\n"[..],
+            &b"# Server\r\nredis_version:7.0.15\r\n"[..],
+            8443u16,
+            "redis",
+            Some("7.0.15"),
+        ),
         (
             &b"version"[..],
             &b"VERSION 1.6.21\r\n"[..],

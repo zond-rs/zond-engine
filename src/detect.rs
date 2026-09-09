@@ -34,6 +34,31 @@
 //! A sandbox nobody can put a stranger's detection into buys nothing, so
 //! [`bundle`] is the other half: a signed set of detections that a caller loads by
 //! naming the key they trust, held to that key before a byte of it is compiled.
+//!
+//! ## Loading detections a caller wrote
+//!
+//! The builder takes what the files hold, name to contents; the engine opens
+//! nothing itself. This is the same text the README carries, so a rename that
+//! misses one is caught by `tests/readme.rs`.
+//!
+//! ```no_run
+//! # use std::collections::BTreeMap;
+//! # use zond_engine::{TargetMap, ZondConfig, scan};
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # let sources = BTreeMap::<String, String>::new();
+//! # let targets = TargetMap::new();
+//! # let cfg = ZondConfig::default();
+//! use zond_engine::detect::Detections;
+//!
+//! let detections = Detections::builder()
+//!     .sources(&sources)?   // name to contents, from wherever they came
+//!     .build();
+//!
+//! let (session, task) = scan(targets, &cfg, detections).await?;
+//! # let _ = (session, task);
+//! # Ok(())
+//! # }
+//! ```
 
 pub mod authoring;
 pub mod bundle;

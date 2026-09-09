@@ -414,7 +414,7 @@ fn check_template(
 fn template_vars(template: &str) -> Vec<String> {
     let mut vars = Vec::new();
     let mut rest = template;
-    while let Some(brace) = rest.find(|c| c == '{' || c == '}') {
+    while let Some(brace) = rest.find(['{', '}']) {
         let this = rest.as_bytes()[brace];
         let after = &rest[brace + 1..];
         if after.as_bytes().first() == Some(&this) {
@@ -479,16 +479,30 @@ mod tests {
         assert!(check(&sound()).is_empty(), "{:?}", check(&sound()));
     }
 
+    /// Every flow the crate ships, as it ships it.
+    ///
+    /// `build.rs` runs this same `check` over the corpus before embedding it, so
+    /// nothing here can be shipped unvalidated. What this adds is the round
+    /// trip: the source that was embedded is re-parsed and validated again, so a
+    /// flow that survived validation and then failed to come back out the other
+    /// side is caught here rather than at a scan.
+    ///
+    /// Three examples were named by path until the corpus was filed into
+    /// directories by subject and every one of those paths stopped existing.
+    /// Taking the whole corpus from the embedding is both wider and unable to go
+    /// stale that way.
     #[test]
-    fn the_shipped_examples_all_validate() {
-        for name in [
-            "redis-unauth",
-            "snmp-default-community",
-            "grafana-path-traversal",
-        ] {
-            let toml = std::fs::read_to_string(format!("assets/detect/{name}.toml")).unwrap();
-            let errors = check(&flow(&toml));
-            assert!(errors.is_empty(), "{name}: {errors:?}");
+    fn every_shipped_flow_validates() {
+        let shipped = crate::detect::flow::db::embedded_flows();
+        assert!(!shipped.is_empty(), "the corpus ships no flows at all");
+
+        for compiled in &shipped {
+            let errors = check(compiled.flow());
+            assert!(
+                errors.is_empty(),
+                "{}: {errors:?}",
+                compiled.flow().detection.id
+            );
         }
     }
 

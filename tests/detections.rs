@@ -469,13 +469,22 @@ async fn a_detection_whose_gate_does_not_fit_the_port_never_runs() {
         "the gate is only meaningful once the service pass has named the port"
     );
     assert!(!ssh.saw("/login"), "an http-gated flow probed an ssh port");
-    let fired: Vec<&str> = ssh_port
+
+    // The http-gated flow specifically, rather than every finding on the port.
+    // A passive detection reads the version the service pass already took off
+    // the banner and reaches its own verdict without a probe of its own, so an
+    // ssh port announcing a vulnerable OpenSSH draws a passive CVE finding that
+    // is correct and gated on the version, not on the service being http. What
+    // the gate under test forbids is the flow that would have to *speak* http to
+    // this port, and that is what this names.
+    let flowed: Vec<&str> = ssh_port
         .findings()
         .map(|finding| finding.detection().id())
+        .filter(|id| *id == "grafana-path-traversal")
         .collect();
     assert!(
-        fired.is_empty(),
-        "an http-gated detection ran over an ssh port: {fired:?}"
+        flowed.is_empty(),
+        "an http-gated flow ran over an ssh port: {flowed:?}"
     );
 }
 
@@ -740,7 +749,12 @@ async fn a_caller_supplied_detection_runs_in_a_scan() {
     "#;
 
     let server = spawn_web_server(0).await;
-    let cfg = test_config();
+    // The caller's flow is active-benign, and the default envelope now runs only
+    // passive detections: an active flow that opens its own connection waits for
+    // the ceiling to be raised, whoever wrote it. So an embedder shipping one
+    // opts in exactly as an operator does, which is what this asks for.
+    let mut cfg = test_config();
+    cfg.detection = DetectionEnvelope::up_to(DetectionClass::ActiveBenign);
     let detections = Detections::builder()
         .flow(CALLER_FLOW, "caller-hash")
         .expect("the caller flow validates")

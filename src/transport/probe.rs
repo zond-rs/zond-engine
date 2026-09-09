@@ -840,7 +840,7 @@ impl ProbeTransport {
     }
 
     /// Opens a transport that frames its own probes where it can and falls back
-    /// to the raw socket where it cannot ([`LinkLayerFirst`]).
+    /// to the raw socket where it cannot.
     ///
     /// The default on macOS, where the raw socket discards sends it has already
     /// accepted. A host with no Ethernet-capable interface has nothing to frame

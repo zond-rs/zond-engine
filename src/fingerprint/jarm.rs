@@ -982,7 +982,7 @@ async fn exchange(addr: SocketAddr, probe: &Probe, host: &str) -> Option<Vec<u8>
 ///
 /// The third is where the hash goes. A JARM rule is registered under no port —
 /// a Chromecast and a Cobalt Strike listener are not on one — so it is matched
-/// by [`identify_jarm`](super::db::SignatureDb::identify_jarm), against the
+/// by `SignatureDb::identify_jarm`, against the
 /// rules written for a hash and nothing else. Not the whole corpus: sixty-two
 /// hex characters also satisfies an ISAKMP baseline written for a vendor-id
 /// list, which would name every unrecognised TLS stack an IKE gateway.

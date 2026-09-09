@@ -107,6 +107,24 @@ impl CompiledFlow {
     }
 }
 
+/// The shipped flow with this id, for a test exercising the interpreter or the
+/// validator against real corpus content.
+///
+/// Looked up by id rather than opened by path. The tests here used to read
+/// `assets/detect/<id>.toml`, which stopped existing the day the corpus was
+/// filed into directories by subject: eleven of them broke at once, none for a
+/// reason that had anything to do with what they were testing. An id is what a
+/// detection is actually called, and it survives the corpus being rearranged
+/// again.
+#[cfg(test)]
+pub(crate) fn shipped_flow(id: &str) -> FlowDetection {
+    embedded_flows()
+        .into_iter()
+        .map(|compiled| compiled.flow)
+        .find(|flow| flow.detection.id == id)
+        .unwrap_or_else(|| panic!("the corpus ships no flow with the id '{id}'"))
+}
+
 /// The embedded flow corpus as compiled flows, for combining with a caller's own.
 pub(crate) fn embedded_flows() -> Vec<CompiledFlow> {
     let sources: Vec<(String, String)> =
@@ -156,7 +174,29 @@ mod tests {
     fn the_corpus_ships_the_classes_it_is_known_to_ship() {
         use crate::detect::manifest::Class;
 
-        let blessed = [("grafana-path-traversal", Class::Exploit)];
+        // Every entry here was read before it was added, which is the whole
+        // point of the list. The ten writers each send a uniquely-named
+        // `zond-canary` and then remove it — `DEL`/`RMD`/`DELETE`/`deleterange`
+        // — leaving the target as they found it; `redis-config-writable`
+        // re-sets `maxmemory` to the value it just read, a no-op; `tftp-writable`
+        // cannot delete because the protocol has no such verb, which is itself a
+        // reason it is gated; `mqtt-anon-publish` sends one non-retained
+        // message. All ten genuinely write, so `ActiveMutating` is the honest
+        // class and the ceiling holds them out of a default scan. Sorted by id,
+        // because that is the order the assertion below builds its own list in.
+        let blessed = [
+            ("couchdb-writable", Class::ActiveMutating),
+            ("elasticsearch-writable", Class::ActiveMutating),
+            ("etcd-writable", Class::ActiveMutating),
+            ("ftp-anon-writable", Class::ActiveMutating),
+            ("grafana-path-traversal", Class::Exploit),
+            ("memcached-writable", Class::ActiveMutating),
+            ("mqtt-anon-publish", Class::ActiveMutating),
+            ("redis-config-writable", Class::ActiveMutating),
+            ("redis-writable", Class::ActiveMutating),
+            ("tftp-writable", Class::ActiveMutating),
+            ("webdav-writable", Class::ActiveMutating),
+        ];
 
         let mut exceptions: Vec<(String, Class)> = FlowDb::global()
             .flows()

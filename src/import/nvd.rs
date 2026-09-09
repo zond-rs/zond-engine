@@ -412,6 +412,9 @@ struct Record {
     configurations: Vec<Configuration>,
 }
 
+/// One human-readable string the feed carries in a given language, used for both
+/// a CVE's summary and a weakness's text. The language is kept because the feed
+/// ships several and only the English one is read.
 #[derive(Deserialize)]
 struct Description {
     lang: String,
@@ -446,6 +449,9 @@ struct Metric {
     cvss_data: CvssData,
 }
 
+/// The inner `cvssData` object of a 3.x metric, where that version of the
+/// specification puts the severity beside the score it was derived from. See
+/// [`Metric`] for why the same field is read from two places.
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CvssData {
@@ -453,18 +459,24 @@ struct CvssData {
     base_severity: Option<String>,
 }
 
+/// A weakness the record cites, whose CWE identifier is carried in the text of
+/// its [`Description`] rather than a field of its own.
 #[derive(Deserialize)]
 struct Weakness {
     #[serde(default)]
     description: Vec<Description>,
 }
 
+/// One affected-configuration entry, a tree of [`Node`]s the feed uses to express
+/// which products and versions the record applies to.
 #[derive(Deserialize)]
 struct Configuration {
     #[serde(default)]
     nodes: Vec<Node>,
 }
 
+/// One node of a [`Configuration`] tree, holding the CPE matches that name the
+/// affected products.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Node {
@@ -486,6 +498,8 @@ struct CpeMatch {
     version_end_excluding: Option<String>,
 }
 
+/// The serde default for [`CpeMatch::vulnerable`], which the feed omits when the
+/// match is vulnerable and states only to say it is not.
 fn yes() -> bool {
     true
 }

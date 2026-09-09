@@ -645,19 +645,6 @@ pub struct Resolution<P = ()> {
     /// meanwhile. Only the token says which, and the difference decides whether
     /// coverage is bought with more packets or with more patience.
     pub answered_attempt: Option<u8>,
-    /// Whether resolving this probe was the first evidence that the attempt it
-    /// answers ever left the machine.
-    ///
-    /// An answer is the strongest such evidence there is: something on the far
-    /// side received the probe and replied to it, which seeing the frame go past
-    /// only suggests. It matters because the two sightings race. The capture is
-    /// not running when the first probes go out, and a reply can be read before
-    /// the copy of the outbound frame that provoked it, so a scanner counting
-    /// only frames concludes that a handful of probes it plainly got answers to
-    /// were never sent. Measured across three scans of a host on Wi-Fi: five,
-    /// six and six phantom losses per run, each one enough to mark the whole
-    /// scan as having covered less than it was asked to.
-    pub witnessed_now: bool,
 }
 
 /// The outstanding probes of one scanner, and the schedule on which they are
@@ -797,19 +784,6 @@ where
             None => record.unambiguous_sent_at().map(|sent_at| (1, sent_at)),
         };
 
-        // An answer is evidence the attempt left, whether or not anything saw it
-        // go. Recorded before the record is removed below, and only for a reply
-        // that named its attempt: a resolution that could not say which send it
-        // answers cannot say which send it is evidence for either.
-        let witnessed_now = match (attributed, token) {
-            (Some(_), Some(token)) => self
-                .records
-                .get_mut(key)
-                .is_some_and(|record| record.witness(&token)),
-            _ => false,
-        };
-        let record = self.records.get(key)?;
-
         let answered_attempt = attributed.map(|(ordinal, _)| ordinal);
         let sent_at = attributed.map(|(_, sent_at)| sent_at);
 
@@ -832,7 +806,6 @@ where
             rtt,
             attempts,
             answered_attempt,
-            witnessed_now,
         })
     }
 

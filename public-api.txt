@@ -14184,7 +14184,6 @@ pub zond_engine::scanner::pacing::retry::Resolution::answered_attempt: core::opt
 pub zond_engine::scanner::pacing::retry::Resolution::attempts: u8
 pub zond_engine::scanner::pacing::retry::Resolution::payload: P
 pub zond_engine::scanner::pacing::retry::Resolution::rtt: core::option::Option<core::time::Duration>
-pub zond_engine::scanner::pacing::retry::Resolution::witnessed_now: bool
 impl<P: core::clone::Clone> core::clone::Clone for zond_engine::scanner::pacing::retry::Resolution<P>
 pub fn zond_engine::scanner::pacing::retry::Resolution<P>::clone(&self) -> zond_engine::scanner::pacing::retry::Resolution<P>
 impl<P: core::cmp::Eq> core::cmp::Eq for zond_engine::scanner::pacing::retry::Resolution<P>
