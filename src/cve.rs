@@ -863,6 +863,117 @@ fn clause_holds(version: &str, clause: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    /// Every product a scan can put a version to either has entries here or is
+    /// listed below with the reason it does not.
+    ///
+    /// The join is `vendor:product` and a mismatch is silent in both directions:
+    /// a scan identifies the software, the catalogue holds records for it, and
+    /// nothing correlates because the two spell it differently. That is how
+    /// `microsoft:iis` shipped, emitted by twenty-seven rules and matching a
+    /// vocabulary NVD has never used.
+    ///
+    /// The list is checked in both directions. An entry that gains rows has to
+    /// be removed from it, which is what turns a regeneration into a visible
+    /// event rather than something nobody notices.
+    const UNCOVERED: &[(&str, &str)] = &[
+        // The shipped catalogue was converted before these products were in the
+        // corpus, or before the corpus could put a version to them. NVD holds
+        // the record count named, read from its 2.0 API on 2026-09-09, and a
+        // regeneration is all that stands between them and a finding.
+        (
+            "aerospike:aerospike_server",
+            "stale catalogue: 1 record in NVD",
+        ),
+        (
+            "coturn_project:coturn",
+            "stale catalogue: 20 records in NVD",
+        ),
+        ("docker:docker", "stale catalogue: 53 records in NVD"),
+        (
+            "elastic:elasticsearch",
+            "stale catalogue: 74 records in NVD",
+        ),
+        ("etcd:etcd", "stale catalogue: 11 records in NVD"),
+        ("influxdata:influxdb", "stale catalogue: 3 records in NVD"),
+        ("jellyfin:jellyfin", "stale catalogue: 19 records in NVD"),
+        ("memcached:memcached", "stale catalogue: 21 records in NVD"),
+        ("redis:redis", "stale catalogue: 47 records in NVD"),
+        ("samba:rsync", "stale catalogue: 47 records in NVD"),
+        ("syncthing:syncthing", "stale catalogue: 3 records in NVD"),
+        (
+            "microsoft:internet_information_services",
+            "stale catalogue: 93 records in NVD",
+        ),
+        ("aiohttp:aiohttp", "stale catalogue: 46 records in NVD"),
+        ("mongrel:mongrel", "stale catalogue: 1 record in NVD"),
+        // Nothing has ever published a record against these names, under any
+        // spelling that could be found. The corpus identifies the software and
+        // there is no vulnerability data to join to.
+        ("avocent:dsview", "no records in NVD"),
+        ("darkhttpd_project:darkhttpd", "no records in NVD"),
+        ("mcafee:webshield", "no records in NVD"),
+        ("novell:netware_enterprise_web_server", "no records in NVD"),
+        ("zaphoyd:websocketpp", "no records in NVD"),
+        // The separator arrived URL-encoded from the imported corpus and no
+        // spelling of it can be queried. The product is the Ripple20 stack.
+        (
+            "treck:tcp%2fip",
+            "import artifact in the identifier, and no reachable records",
+        ),
+    ];
+
+    /// The distinct `vendor:product` the shipped catalogue holds rows for.
+    fn covered() -> BTreeSet<String> {
+        let catalogue = Catalogue::embedded();
+        catalogue
+            .vulnerability
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}:{}",
+                    catalogue.pool[entry.vendor as usize], catalogue.pool[entry.product as usize]
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_versioned_product_is_covered_or_listed() {
+        let covered = covered();
+        let listed: BTreeSet<&str> = UNCOVERED.iter().map(|(key, _)| *key).collect();
+
+        let unexplained: Vec<&String> = crate::fingerprint::SignatureDb::global()
+            .versioned_products()
+            .iter()
+            .filter(|key| !covered.contains(*key) && !listed.contains(key.as_str()))
+            .collect();
+
+        assert!(
+            unexplained.is_empty(),
+            "a scan can put a version to these and the catalogue has no row for any of them: \
+             {unexplained:?}. Regenerate the catalogue, correct the identifier, or add it to \
+             UNCOVERED with the reason."
+        );
+    }
+
+    /// And the other direction, so the list cannot outlive what put it there.
+    #[test]
+    fn nothing_listed_as_uncovered_is_covered() {
+        let covered = covered();
+        let stale: Vec<&str> = UNCOVERED
+            .iter()
+            .map(|(key, _)| *key)
+            .filter(|key| covered.contains(*key))
+            .collect();
+
+        assert!(
+            stale.is_empty(),
+            "these are listed as having no rows and the catalogue has rows for them: {stale:?}. \
+             Remove them from UNCOVERED."
+        );
+    }
 
     /// The 2.3 grammar puts a patch level in a field of its own and the URI
     /// form runs it onto the version, so one release has two spellings. A

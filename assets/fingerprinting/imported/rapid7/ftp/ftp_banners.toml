@@ -16,7 +16,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "ftp.banner"
 example = "foo.bar Microsoft FTP Service (Version 3.0)."
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows NT", "os.cpe23" = "cpe:/o:microsoft:windows_nt:-", "host.name" = "{capture:1}" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows NT", "os.cpe23" = "cpe:/o:microsoft:windows_nt:-", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Microsoft FTP Server on Windows 2000"
@@ -25,7 +25,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "ftp.banner"
 example = "foo.bar Microsoft FTP Service (Version 5.0)."
-metadata = { "service.family" = "IIS", "service.version" = "5.0", "service.cpe23" = "cpe:/a:microsoft:iis:5.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows 2000", "os.cpe23" = "cpe:/o:microsoft:windows_2000:-", "host.name" = "{capture:1}" }
+metadata = { "service.family" = "IIS", "service.version" = "5.0", "service.cpe23" = "cpe:/a:microsoft:internet_information_server:5.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows 2000", "os.cpe23" = "cpe:/o:microsoft:windows_2000:-", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Microsoft FTP Server on Windows XP, 2003 or later versions of 2000"
@@ -34,7 +34,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "ftp.banner"
 example = "foo.bar Microsoft FTP Service (Version 5.1)."
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-", "host.name" = "{capture:1}" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Microsoft FTP Server on Windows XP, 2003 or later without version"
@@ -43,7 +43,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "ftp.banner"
 example = "foo.bar Microsoft FTP Service"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-", "host.name" = "{capture:1}" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Microsoft FTP Server on Windows XP, 2003 or later without version or hostname"
@@ -52,7 +52,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "ftp.banner"
 example = "Microsoft FTP Service"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "FTP on HPUX with a PHNE (HP Networking patch) installed"

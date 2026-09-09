@@ -34,7 +34,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "nntp.banner"
 example = "NNTP Service 5.00.0984 Version: 5.0.2195.7034 Posting Allowed"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows 2000", "os.cpe23" = "cpe:/o:microsoft:windows_2000:-", "ms.nttp.version" = "{capture:1}" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows 2000", "os.cpe23" = "cpe:/o:microsoft:windows_2000:-", "ms.nttp.version" = "{capture:1}" }
 
 [[match]]
 name = "Microsoft IIS NNTP Server on Windows Server 2003"
@@ -44,7 +44,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "nntp.banner"
 example = "NNTP Service 6.0.3790.3959 Version: 6.0.3790.3959 Posting Allowed"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2003", "os.cpe23" = "cpe:/o:microsoft:windows_server_2003:-", "ms.nttp.version" = "{capture:1}" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2003", "os.cpe23" = "cpe:/o:microsoft:windows_server_2003:-", "ms.nttp.version" = "{capture:1}" }
 
 [[match]]
 name = "Older Microsoft IIS NNTP Servers"

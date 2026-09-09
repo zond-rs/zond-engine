@@ -246,7 +246,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "html_title"
 example = "IIS7"
-metadata = { "service.family" = "IIS", "service.version" = "7", "service.cpe23" = "cpe:/a:microsoft:iis:7", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
+metadata = { "service.family" = "IIS", "service.version" = "7", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:7", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "Default IIS 8"
@@ -255,7 +255,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "html_title"
 example = "Microsoft Internet Information Services 8"
-metadata = { "service.family" = "IIS", "service.version" = "8", "service.cpe23" = "cpe:/a:microsoft:iis:8", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
+metadata = { "service.family" = "IIS", "service.version" = "8", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:8", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "IIS Detailed Error"
@@ -265,7 +265,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "html_title"
 example = "IIS 7.0 Detailed Error - 401.2 - Unauthorized"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "Default IIS"
@@ -274,7 +274,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "html_title"
 example = "IIS Windows"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "Netia Spot wireless router"

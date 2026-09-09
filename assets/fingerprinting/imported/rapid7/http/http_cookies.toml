@@ -51,7 +51,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.cookie"
 example = "ASPSESSIONIDQSBRRTTB=BECILMBCPMGHJGAHKCHNGENF; path=/"
-metadata = { "cookie" = "{capture:1}", "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:-", "service.component.vendor" = "Microsoft", "service.component.family" = "ASP.NET", "service.component.product" = "ASP.NET", "service.component.cpe23" = "cpe:/a:microsoft:asp.net:-" }
+metadata = { "cookie" = "{capture:1}", "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:-", "service.component.vendor" = "Microsoft", "service.component.family" = "ASP.NET", "service.component.product" = "ASP.NET", "service.component.cpe23" = "cpe:/a:microsoft:asp.net:-" }
 
 [[match]]
 name = "Adobe (Macromedia) ColdFusion uses various cookies"

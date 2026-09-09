@@ -14,6 +14,31 @@ The converted files are edited in place where the imported metadata asserts more
 than its own pattern can establish. **Re-importing overwrites these**, so they are
 recorded here to be re-applied.
 
+### CPEs naming products the vulnerability data does not have (2026-09-09, 29 rules)
+
+Three identifiers were spelled in a way NVD has never used, so every finding
+carrying one correlated against nothing:
+
+| emitted | rows in NVD | corrected to |
+|---|---|---|
+| `microsoft:iis` | 0 | `internet_information_server` at 6.0 and below, `internet_information_services` above |
+| `aiohttp_project:aiohttp` | 0 | `aiohttp:aiohttp`, 46 |
+| `zed_shaw:mongrel` | 0 | `mongrel:mongrel`, 1 |
+
+IIS is the largest single CPE in this corpus, 27 rules across six files, and NVD
+splits it by era: 111 records under `internet_information_server`, 93 under
+`internet_information_services`. The version each rule states decides which it
+gets, and a rule that captures the version from a banner takes the modern name,
+since that is what a live server answers with.
+
+Counts are `totalResults` from the NVD 2.0 API on 2026-09-09, per
+`cpe:2.3:a:<vendor>:<product>`.
+
+Two more are wrong and are left alone, because no spelling has any rows behind
+it: `zaphoyd:websocketpp` and `darkhttpd_project:darkhttpd`. A third,
+`treck:tcp%2fip`, carries a URL-encoded separator that is an import artifact; the
+product is the Ripple20 stack and nothing a scan meets runs it.
+
 ### A distribution read as an instruction set (2026-09-08, 1 rule)
 
 `Linux x86_64 Generic - hostname variant` took `os.arch` from its third capture,

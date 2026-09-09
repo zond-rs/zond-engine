@@ -235,7 +235,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/4.0"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows NT", "os.version" = "4.0", "os.cpe23" = "cpe:/o:microsoft:windows_nt:4.0" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows NT", "os.version" = "4.0", "os.cpe23" = "cpe:/o:microsoft:windows_nt:4.0" }
 
 [[match]]
 name = "Microsoft IIS 5.0 runs on Windows 2000"
@@ -244,7 +244,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/5.0"
-metadata = { "service.family" = "IIS", "service.version" = "5.0", "service.cpe23" = "cpe:/a:microsoft:iis:5.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows 2000", "os.cpe23" = "cpe:/o:microsoft:windows_2000:-" }
+metadata = { "service.family" = "IIS", "service.version" = "5.0", "service.cpe23" = "cpe:/a:microsoft:internet_information_server:5.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows 2000", "os.cpe23" = "cpe:/o:microsoft:windows_2000:-" }
 
 [[match]]
 name = "Microsoft IIS 5.1 runs on Windows XP"
@@ -253,7 +253,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/5.1"
-metadata = { "service.family" = "IIS", "service.version" = "5.1", "service.cpe23" = "cpe:/a:microsoft:iis:5.1", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows XP", "os.cpe23" = "cpe:/o:microsoft:windows_xp:-" }
+metadata = { "service.family" = "IIS", "service.version" = "5.1", "service.cpe23" = "cpe:/a:microsoft:internet_information_server:5.1", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows XP", "os.cpe23" = "cpe:/o:microsoft:windows_xp:-" }
 
 [[match]]
 name = "Microsoft IIS 6.0 runs on Windows Server 2003 (and Windows XP x64)"
@@ -262,7 +262,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/6.0"
-metadata = { "service.family" = "IIS", "service.version" = "6.0", "service.cpe23" = "cpe:/a:microsoft:iis:6.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2003", "os.cpe23" = "cpe:/o:microsoft:windows_server_2003:-" }
+metadata = { "service.family" = "IIS", "service.version" = "6.0", "service.cpe23" = "cpe:/a:microsoft:internet_information_server:6.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2003", "os.cpe23" = "cpe:/o:microsoft:windows_server_2003:-" }
 
 [[match]]
 name = "Microsoft IIS 7.0 runs on Windows Server 2008 (and Windows Vista)"
@@ -271,7 +271,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/7.0"
-metadata = { "service.family" = "IIS", "service.version" = "7.0", "service.cpe23" = "cpe:/a:microsoft:iis:7.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
+metadata = { "service.family" = "IIS", "service.version" = "7.0", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:7.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
 
 [[match]]
 name = "Microsoft IIS 7.5 runs on Windows Server 2008 R2 (and Windows 7)"
@@ -280,7 +280,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/7.5"
-metadata = { "service.family" = "IIS", "service.version" = "7.5", "service.cpe23" = "cpe:/a:microsoft:iis:7.5", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
+metadata = { "service.family" = "IIS", "service.version" = "7.5", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:7.5", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
 
 [[match]]
 name = "Microsoft IIS 8.0 runs on Windows Server 2012 (and Windows 8)"
@@ -289,7 +289,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/8.0"
-metadata = { "service.family" = "IIS", "service.version" = "8.0", "service.cpe23" = "cpe:/a:microsoft:iis:8.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
+metadata = { "service.family" = "IIS", "service.version" = "8.0", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:8.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
 
 [[match]]
 name = "Microsoft IIS 8.5 runs on Windows Server 2012 R2 (and Windows 8.1)"
@@ -298,7 +298,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/8.5"
-metadata = { "service.family" = "IIS", "service.version" = "8.5", "service.cpe23" = "cpe:/a:microsoft:iis:8.5", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
+metadata = { "service.family" = "IIS", "service.version" = "8.5", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:8.5", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
 
 [[match]]
 name = "Microsoft IIS 10.0 runs on Windows Server 2016 and 2019"
@@ -307,7 +307,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/10.0"
-metadata = { "service.family" = "IIS", "service.version" = "10.0", "service.cpe23" = "cpe:/a:microsoft:iis:10.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.certainty" = "0.5" }
+metadata = { "service.family" = "IIS", "service.version" = "10.0", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:10.0", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.certainty" = "0.5" }
 
 [[match]]
 name = "Microsoft IIS new, unknown Windows version"
@@ -317,7 +317,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS/9.0"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}" }
 
 [[match]]
 name = "Microsoft IIS, no version information"
@@ -326,7 +326,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "http_header.server"
 example = "Microsoft-IIS"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:-", "os.vendor" = "Microsoft", "os.family" = "Windows" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:-", "os.vendor" = "Microsoft", "os.family" = "Windows" }
 
 [[match]]
 name = "Microsoft .NET Remoting and Common Language Runtime (CLR)"
@@ -2019,7 +2019,7 @@ vendor = "AIOHTTP Project"
 product = "AIOHTTP"
 context = "http_header.server"
 example = "Python/3.8 aiohttp/3.7.4.post0"
-metadata = { "service.cpe23" = "cpe:/a:aiohttp_project:aiohttp:{service.version}", "service.component.vendor" = "Python Software Foundation", "service.component.product" = "Python", "service.component.version" = "{capture:1}" }
+metadata = { "service.cpe23" = "cpe:/a:aiohttp:aiohttp:{service.version}", "service.component.vendor" = "Python Software Foundation", "service.component.product" = "Python", "service.component.version" = "{capture:1}" }
 
 [[match]]
 name = "Encode uvicorn"
@@ -2258,7 +2258,7 @@ vendor = "Zed Shaw"
 product = "Mongrel"
 context = "http_header.server"
 example = "Mongrel 1.1.5"
-metadata = { "service.family" = "Mongrel", "service.cpe23" = "cpe:/a:zed_shaw:mongrel:{service.version}" }
+metadata = { "service.family" = "Mongrel", "service.cpe23" = "cpe:/a:mongrel:mongrel:{service.version}" }
 
 [[match]]
 name = "Embedded web server used by Microplex."

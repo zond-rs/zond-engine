@@ -196,7 +196,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "smtp.banner"
 example = "foo.bar Microsoft ESMTP MAIL Service, Version: 10.0.14393.2608 ready at  Sun, 19 May 2019 09:04:29 -0500"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "host.name" = "{capture:1}", "system.time" = "{capture:3}", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2016", "os.cpe23" = "cpe:/o:microsoft:windows_server_2016:-" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "host.name" = "{capture:1}", "system.time" = "{capture:3}", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2016", "os.cpe23" = "cpe:/o:microsoft:windows_server_2016:-" }
 
 [[match]]
 name = "Microsoft IIS builtin SMTP service - Windows Server 2019"
@@ -206,7 +206,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "smtp.banner"
 example = "foo.bar Microsoft ESMTP MAIL Service, Version: 10.0.17763.1 ready at  Sun, 19 May 2019 09:04:29 -0500"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "host.name" = "{capture:1}", "system.time" = "{capture:3}", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2019", "os.cpe23" = "cpe:/o:microsoft:windows_server_2019:-" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "host.name" = "{capture:1}", "system.time" = "{capture:3}", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2019", "os.cpe23" = "cpe:/o:microsoft:windows_server_2019:-" }
 
 [[match]]
 name = "Microsoft IIS builtin SMTP service, or Microsoft Exchange Server (they are differentiated from each other in smtp-iis.clp)  - variant 1"
@@ -216,7 +216,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "smtp.banner"
 example = "foo.bar Microsoft SMTP MAIL ready at Wed, 29 Nov 2017 23:48:59 +0000 Version: 5.5.1877.197.19"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "host.name" = "{capture:1}", "system.time" = "{capture:2}", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "host.name" = "{capture:1}", "system.time" = "{capture:2}", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "Microsoft IIS builtin SMTP service, or Microsoft Exchange Server (they are differentiated from each other in smtp-iis.clp) - variant 2 "
@@ -226,7 +226,7 @@ vendor = "Microsoft"
 product = "IIS"
 context = "smtp.banner"
 example = " Microsoft ESMTP MAIL Service, Version: 5.0.2195.5329 ready Thu, 30 Nov 2017 11:40:25 +0200"
-metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:iis:{service.version}", "host.name" = "{capture:1}", "system.time" = "{capture:3}", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
+metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:internet_information_services:{service.version}", "host.name" = "{capture:1}", "system.time" = "{capture:3}", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "Exim - without version string or hostname - timestamp optional"
