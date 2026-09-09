@@ -107,15 +107,8 @@ impl CompiledFlow {
     }
 }
 
-/// The shipped flow with this id, for a test exercising the interpreter or the
-/// validator against real corpus content.
-///
-/// Looked up by id rather than opened by path. The tests here used to read
-/// `assets/detect/<id>.toml`, which stopped existing the day the corpus was
-/// filed into directories by subject: eleven of them broke at once, none for a
-/// reason that had anything to do with what they were testing. An id is what a
-/// detection is actually called, and it survives the corpus being rearranged
-/// again.
+/// The shipped flow with this id, for tests. By id rather than file path, which
+/// breaks whenever the corpus is refiled into directories.
 #[cfg(test)]
 pub(crate) fn shipped_flow(id: &str) -> FlowDetection {
     embedded_flows()

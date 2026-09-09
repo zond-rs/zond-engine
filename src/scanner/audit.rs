@@ -54,11 +54,9 @@ pub struct ProbeAudit {
     /// Of those, ones the sender refused. A non-zero count means the shortfall
     /// starts at home, before the network is implicated at all.
     pub(crate) sends_failed: u64,
-    /// Of those, ones seen leaving on the wire carrying their own token. The
-    /// counter that is evidence rather than testimony: a send the operating
-    /// system accepted and then discarded is counted above and not here, and
-    /// the gap between the two is the only way a scan can tell a port it never
-    /// asked from one that stayed quiet.
+    /// Of those, ones seen leaving on the wire. A send the OS accepted and
+    /// dropped is counted above and not here; the gap is what tells an unasked
+    /// port from a silent one.
     pub(crate) sends_witnessed: u64,
 
     /// Segments the capture handed up, before any of the scanner's own checks.
@@ -173,24 +171,16 @@ impl ProbeAudit {
         }
     }
 
-    /// Records one probe seen leaving on the wire carrying its own token.
-    ///
-    /// The other half of [`record_send`](Self::record_send), and the half that
-    /// is evidence. That one says the operating system took the write; this one
-    /// says the packet was watched going out. They agree on a healthy host and
-    /// they are the whole diagnosis when they do not: macOS takes a raw-socket
-    /// write, returns success and discards the packet, and without this the
-    /// ports it swallowed are indistinguishable from ports that stayed quiet.
+    /// Records one probe seen leaving on the wire, the evidence half of
+    /// [`record_send`](Self::record_send): that one says the OS took the write,
+    /// this that the packet was watched going out.
     pub fn record_witnessed_send(&mut self) {
         self.sends_witnessed += 1;
     }
 
-    /// Whether this run has seen any of its own probes leave.
-    ///
-    /// Zero means no sighting was possible - a platform or a path where the
-    /// capture does not see egress - and nothing may read a probe's own count
-    /// as evidence of anything. It is the guard on every conclusion drawn from
-    /// [`record_witnessed_send`](Self::record_witnessed_send).
+    /// Whether this run can see its own probes leave at all. Zero is a path with
+    /// no egress capture, where a probe's own count says nothing; the guard on
+    /// every conclusion drawn from it.
     pub fn witnesses_its_sends(&self) -> bool {
         self.sends_witnessed > 0
     }

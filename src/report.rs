@@ -1008,13 +1008,9 @@ impl ProbeStats {
         self.sends_failed
     }
 
-    /// How many probes were watched leaving on the wire.
-    ///
-    /// Read against [`sends_attempted`](Self::sends_attempted), and only when
-    /// this is non-zero: a scanner whose capture cannot see its own egress
-    /// reports zero here and the comparison means nothing. When it can, the
-    /// difference is the probes the operating system took and discarded, and
-    /// the ports behind them were never asked whatever the scan was told.
+    /// How many probes were watched leaving on the wire. Read against
+    /// [`sends_attempted`](Self::sends_attempted), and only when non-zero: the
+    /// gap is probes the OS took and dropped. Zero means no egress capture.
     pub fn sends_witnessed(&self) -> u64 {
         self.sends_witnessed
     }

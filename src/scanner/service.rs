@@ -83,11 +83,6 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
                 ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
                 write_back(ctx, ip, port, about_the_host);
             }
-            // A port the scan proved open that would not take a connection is a
-            // port this phase never got to ask. It keeps the discovery phase's
-            // name-only guess, and without this the report would present that
-            // guess as the answer rather than as what was left when the
-            // conversation failed.
             Attempt::Unreachable { ip, number, reason } => ctx.record_failure(
                 ScannerKind::Service,
                 format!("{ip}:{number} could not be fingerprinted: {reason}"),
@@ -148,27 +143,21 @@ fn fingerprintable_ports(ctx: &ScanContext, over: Protocol) -> Vec<(ScopedIp, u1
     targets
 }
 
-/// What one port's fingerprint attempt produced.
-///
-/// Three outcomes and not two, because "nothing was learned" and "the port would
-/// not take a connection" are different facts about a scan and only the second
-/// is a shortfall. A silent UDP port taught the scan what it was going to teach
-/// it; an open TCP port that refused a connection is one this phase never got to
-/// ask, and a report that cannot tell them apart presents a name-only guess as
-/// though it were an identification.
+/// What one port's fingerprint attempt produced. [`Unreachable`](Self::Unreachable)
+/// is kept apart from [`Quiet`](Self::Quiet) because an open port that refused a
+/// connection is a shortfall the report must show, while a silent UDP port is
+/// not.
 enum Attempt {
-    /// The port answered, and this is what it said. Boxed because it is an
-    /// order of magnitude larger than the other two, and every attempt would
-    /// otherwise be carried at its width.
+    /// The port answered. Boxed: much larger than the other two variants.
     Identified(Box<Identified>),
-    /// The connection could not be made, so the port keeps whatever the
-    /// discovery phase recorded and the scan covered less than it was asked to.
+    /// The connection could not be made; the port keeps its discovery-phase name
+    /// and the scan covered less than it was asked to.
     Unreachable {
         /// The address the connection was aimed at.
         ip: ScopedIp,
-        /// The port number, which the reason names alongside the address.
+        /// The port number, named alongside the address in the reason.
         number: u16,
-        /// Why it failed, in the words the operating system used.
+        /// Why it failed, in the operating system's words.
         reason: String,
     },
     /// Nothing was learned and nothing went wrong.
@@ -213,11 +202,6 @@ async fn fingerprint_one(
 
     let (port, about_the_host, banners) = match protocol {
         Protocol::Tcp => {
-            // Every way this can fail is written down. The connection is the
-            // whole of what this phase needs from the port, so one that does not
-            // open is the difference between an identified service and a guess,
-            // and a caller reading the report has no other way to tell which it
-            // is holding.
             let stream = match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr)).await {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(e)) => {
@@ -237,10 +221,8 @@ async fn fingerprint_one(
             };
             crate::fingerprint::fingerprint_tcp_detailed(stream, port, detection).await
         }
-        // No connection to establish and no banner to wait for: one datagram
-        // out, one back, and whatever text it carries. Silence leaves the port
-        // exactly as the scan recorded it, and is not a failure: a UDP port that
-        // says nothing has told the scan what it had to tell it.
+        // Silence is not a failure here: a UDP port that says nothing has told
+        // the scan what it had to.
         Protocol::Udp => match crate::fingerprint::fingerprint_udp_detailed(addr, port).await {
             Some(fingerprinted) => fingerprinted,
             None => return Attempt::Quiet,
@@ -381,14 +363,11 @@ mod tests {
         assert!(port.service().is_none());
     }
 
-    /// An open port that will not take a connection is the one case where this
-    /// phase's answer is narrower than the scan asked for, and the port itself
-    /// cannot say so: it keeps the discovery phase's name-only guess, which
-    /// reads exactly like an identification that happened to find little.
+    /// An open port that refuses a connection is a shortfall the port itself
+    /// cannot show, so the phase records it as a failure.
     #[tokio::test]
     async fn a_port_that_refuses_a_connection_is_written_into_the_report() {
-        // A listener bound and immediately dropped, so the address is one
-        // nothing answers on but the host stack still refuses promptly.
+        // Bound and dropped: nothing answers, but the stack refuses promptly.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);

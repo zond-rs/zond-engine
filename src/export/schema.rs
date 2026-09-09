@@ -1183,11 +1183,8 @@ pub struct ProbeStatsDto {
     /// Of those, ones the sender refused. Non-zero means the shortfall starts
     /// at home, before the network is implicated at all.
     pub sends_failed: u64,
-    /// Of those, ones seen leaving on the wire. Below `sends_attempted` while
-    /// above zero, the difference is probes the operating system took and threw
-    /// away: the ports behind them were never asked, whatever the scan was
-    /// told. Zero means this run could not watch its own egress and the
-    /// comparison says nothing.
+    /// Of those, ones seen leaving on the wire. The gap below `sends_attempted`
+    /// is probes the OS took and dropped; zero means no egress capture.
     pub sends_witnessed: u64,
     /// Segments the capture handed up, before any of the scanner's own checks.
     pub segments_seen: u64,

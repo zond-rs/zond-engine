@@ -479,18 +479,8 @@ mod tests {
         assert!(check(&sound()).is_empty(), "{:?}", check(&sound()));
     }
 
-    /// Every flow the crate ships, as it ships it.
-    ///
-    /// `build.rs` runs this same `check` over the corpus before embedding it, so
-    /// nothing here can be shipped unvalidated. What this adds is the round
-    /// trip: the source that was embedded is re-parsed and validated again, so a
-    /// flow that survived validation and then failed to come back out the other
-    /// side is caught here rather than at a scan.
-    ///
-    /// Three examples were named by path until the corpus was filed into
-    /// directories by subject and every one of those paths stopped existing.
-    /// Taking the whole corpus from the embedding is both wider and unable to go
-    /// stale that way.
+    /// Every flow the crate ships re-validates after the round trip through the
+    /// embedding, catching one that parsed at build time but not at runtime.
     #[test]
     fn every_shipped_flow_validates() {
         let shipped = crate::detect::flow::db::embedded_flows();

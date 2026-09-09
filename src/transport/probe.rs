@@ -691,31 +691,14 @@ impl ProbeSender for RawIpSender {
     }
 }
 
-/// A sender that builds its own frames and falls back to the raw socket for
-/// the destinations it cannot frame.
+/// Builds its own Ethernet frames, and falls back to the raw socket for the
+/// destinations [`EthernetSender`] cannot frame: on-link IPv6 (no NDP),
+/// loopback, and tunnels.
 ///
-/// Exists because on macOS the raw socket loses packets, silently and in bulk.
-/// Measured against one host on a local segment: a 10 000-port SYN scan made
-/// 11 916 sends that `sendto` accepted and returned success for, and 9 081 of
-/// them reached the wire. The ports behind the missing quarter answered nothing
-/// because nothing was ever asked of them, and the scan reported a host with no
-/// service versions, no TLS and four findings. The same scan over
-/// [`EthernetSender`] sent every probe, found thirteen open ports with their
-/// versions and certificates, and produced twenty-three findings. Neither the
-/// rate nor the network is implicated: the same packets at the same rate
-/// through the kernel's own IP output path, and through link-layer injection,
-/// each lost under 0.2%.
-///
-/// So the frames go out at Layer 2 where that works, and through the socket
-/// where it does not. The fallback is what keeps the change from costing
-/// anything: [`EthernetSender`] has no NDP, so it cannot reach an on-link IPv6
-/// neighbour, and it has no route to loopback or through a tunnel. Those were
-/// the reasons the raw socket was the default, and they are still true - they
-/// are just no longer reasons to send *everything* that way.
-///
-/// An emission that only a self-built frame can carry is never retried: the
-/// socket would send it without the field that was asked for, which is a
-/// different probe reported as the one requested.
+/// The macOS default. There the raw socket accepts a quarter of a large scan's
+/// sends and drops them before the wire, where a self-built frame goes out. An
+/// emission only a frame can carry is not retried through the socket, which
+/// would send a different probe than the one asked for.
 struct LinkLayerFirst {
     link: EthernetSender,
     socket: RawIpSender,
@@ -734,11 +717,6 @@ impl ProbeSender for LinkLayerFirst {
         if framed.is_ok() || emission.requires_link_layer() {
             return framed;
         }
-        // Whatever the frame path could not do with this destination, the
-        // socket may still manage: it has the host's own routing table, its own
-        // neighbour cache and NDP, and it reaches loopback and tunnels. Its
-        // answer is the one returned, because it is the one that decided the
-        // outcome.
         self.socket.send(segment, src, dst, zone, emission)
     }
 }
@@ -806,11 +784,9 @@ impl ProbeTransport {
         match mode {
             SendMode::Ethernet => Self::open_ethernet(kind),
             SendMode::RawSocket => Self::open_on(kind, &capturable_interfaces()),
-            // Windows blocks raw-socket TCP sends outright, so Layer 2 is the
-            // only path there. macOS takes them and drops a quarter of them
-            // without saying so, which is worse than refusing: see
-            // [`LinkLayerFirst`] for the measurement. Everywhere else the raw
-            // socket is simplest and reaches everything without ARP.
+            // Windows blocks raw-socket TCP sends; macOS accepts them and drops
+            // a quarter silently. Elsewhere the raw socket reaches everything
+            // without ARP. See [`LinkLayerFirst`].
             SendMode::Auto => {
                 #[cfg(windows)]
                 {
@@ -839,13 +815,9 @@ impl ProbeTransport {
         Ok(Self { tx, rx, capture })
     }
 
-    /// Opens a transport that frames its own probes where it can and falls back
-    /// to the raw socket where it cannot.
-    ///
-    /// The default on macOS, where the raw socket discards sends it has already
-    /// accepted. A host with no Ethernet-capable interface has nothing to frame
-    /// onto, so it gets the raw-socket transport rather than a failure: the
-    /// fallback would be the whole of what it did anyway.
+    /// A `LinkLayerFirst` transport: frames what it can, raw socket for the
+    /// rest. The macOS default. A host with no Ethernet interface gets the
+    /// plain raw-socket transport, which is all the fallback would do anyway.
     pub fn open_link_first(kind: ProbeKind) -> Result<Self, TransportError> {
         let Some(link) = EthernetSender::from_system(kind.ip_protocols()) else {
             return Self::open_on(kind, &capturable_interfaces());

@@ -1936,9 +1936,8 @@ pub struct ProbeStatsRecord {
     pub sends_attempted: u64,
     /// How many the host refused.
     pub sends_failed: u64,
-    /// How many were seen leaving on the wire. Defaulted, so a record written
-    /// before the count existed reads as a run that witnessed nothing, which is
-    /// what a reader must conclude from a run that could not watch its egress.
+    /// How many were seen leaving on the wire. Defaulted, so an older record
+    /// reads as a run that witnessed nothing.
     #[serde(default)]
     pub sends_witnessed: u64,
     /// How many segments its capture handed it.

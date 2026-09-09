@@ -254,16 +254,9 @@ const QUEUE_FULL_PAUSE: Duration = Duration::from_millis(1);
 pub struct CapturedSegment {
     /// The address the segment came from.
     pub source: IpAddr,
-    /// The address it was going to, or `None` for a segment that did not come
-    /// off a wire.
-    ///
-    /// A capture that admits both directions has to be able to say which one a
-    /// segment is, and [`source`](Self::source) alone cannot: a scan's own
-    /// probe and the answer to it are both this scan's traffic between the same
-    /// two addresses. `None` for the same reason
-    /// [`observation`](Self::observation) is - a synthetic receive stream
-    /// composed its Layer-4 bytes and there was never an IP header to read a
-    /// destination out of.
+    /// The address it was going to, so a capture admitting both directions can
+    /// tell a scan's own probe from the answer to it. `None` for a synthetic
+    /// stream with no IP header, as [`observation`](Self::observation) is.
     pub destination: Option<IpAddr>,
     /// The protocol [`bytes`](Self::bytes) should be parsed as.
     pub protocol: IpNextHeaderProtocol,

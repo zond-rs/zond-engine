@@ -248,11 +248,9 @@ async fn spawn_challenge_server(question: &'static [u8], answer: &'static [u8]) 
 /// not merely on a port nobody claims.
 #[tokio::test]
 async fn a_service_that_answers_only_its_own_probe_is_still_identified() {
-    // The version is what proves the reply was read rather than merely matched.
-    // Redis gives one now: the corpus asks `INFO` rather than `PING`, since an
-    // unauthenticated server answers it with `redis_version` and one that refuses
-    // it refuses `PING` too, so the question that also names the build costs
-    // nothing. The postgres case below is the versionless one.
+    // A captured version proves the reply was read. Redis gives one because the
+    // corpus asks INFO, which carries `redis_version`; postgres below is the
+    // versionless case.
     for (question, answer, number, expected, version) in [
         (
             &b"INFO\r\n"[..],

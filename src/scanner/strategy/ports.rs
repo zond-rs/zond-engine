@@ -287,15 +287,9 @@ pub struct RawProbeScan<T> {
     /// is a claim about the network; a probe that was never sent is a claim
     /// about this host.
     pub send_failure: Option<String>,
-    /// How many ports were settled unasked because nothing ever witnessed a
-    /// probe leaving for them.
-    ///
-    /// Counted rather than derived from the send tally, because the two are not
-    /// the same number and only this one is a shortfall. A send nothing saw
-    /// leave costs nothing if a later attempt was answered; what costs coverage
-    /// is a port that ran out of attempts having never been seen asked. Reported
-    /// off this, so a run that resolved every port stays quiet about a
-    /// discrepancy that cost it nothing.
+    /// Ports settled unasked because no probe for them was ever seen leaving.
+    /// The report is driven off this, not the send tally, so a run that lost
+    /// sends but still resolved every port stays quiet.
     pub unasked_unsent: u64,
     /// Per-run counters, so a scan that classified fewer ports than it asked
     /// about can be attributed to loss, to its own deadline, or to correlation
@@ -750,11 +744,6 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             );
         }
 
-        // The ports this machine swallowed the probes for. Reported off the
-        // ports rather than off the send tally: a scan can lose sends and still
-        // resolve every port, because a later attempt was answered, and saying
-        // so anyway raises an alarm about a run that covered everything it was
-        // asked to.
         if self.unasked_unsent > 0 {
             self.ctx.record_failure(
                 kind,
@@ -1067,18 +1056,9 @@ pub trait RawPortScan: PortScanner {
                     if attempts == 1 {
                         self.core_mut().judge_timeout(ip);
                     }
-                    // A probe none of whose sends was ever seen leaving is a
-                    // port this scan did not ask, however many attempts it was
-                    // charged and whatever the operating system said when it
-                    // took the write. Silence from a question nobody heard is
-                    // evidence of nothing, so it is recorded as the unasked
-                    // port it is rather than borrowing the verdict earned by a
-                    // port that was probed and stayed quiet.
-                    //
-                    // Guarded on the run having witnessed something, because
-                    // otherwise it has no way to watch its own egress and every
-                    // probe would look unsent. See
-                    // [`ProbeAudit::witnesses_its_sends`].
+                    // No send ever seen leaving: unasked, not silent. Guarded on
+                    // the run witnessing its egress at all, or every probe looks
+                    // unsent.
                     if witnessed == 0 && self.core().audit.witnesses_its_sends() {
                         self.core_mut().unasked_unsent += 1;
                         self.record_unasked_endpoint(ip, port);

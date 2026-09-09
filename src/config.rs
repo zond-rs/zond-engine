@@ -1429,41 +1429,19 @@ pub struct ZondConfig {
     pub evasion: EvasionProfile,
 
     /// Whether to capture ICMP errors for a technique whose verdict does not
-    /// depend on them. On by default.
+    /// depend on them, such as a SYN scan. On by default.
     ///
-    /// It used to be off, on the argument that a SYN scan calls a port filtered
-    /// whether an unreachable arrived or nothing did, so the capture may as well
-    /// not pay for errors it will not read: one names no ports, so no kernel
-    /// filter can narrow it, and admitting one copies every ICMP packet on every
-    /// captured link into userspace.
-    ///
-    /// The first half of that stopped being true. A firewall answering for a
-    /// port and a probe going missing are the same *state* and no longer the
-    /// same *finding*: a scan that was outrun cannot read silence as a verdict
-    /// and says so, while an error is a verdict whatever the scan's pacing did.
-    /// Measured against a host that answers for seven of its ports that way, the
-    /// difference is seven ports positively refused against a hundred and seven
-    /// the reader is told nothing certain about.
-    ///
-    /// The second half is true and costs almost nothing: twenty seconds of an
-    /// ordinary Wi-Fi link carried five ICMP packets, against the thousands of
-    /// TCP segments the same capture already admits. A caller on a link where
-    /// that is not so turns this off.
-    ///
-    /// The other TCP techniques read ICMP already, their verdicts depending on
-    /// it, and this leaves them as they are.
+    /// An ICMP error is a firewall answering, and a scan too outrun to read
+    /// silence as a verdict can still report it, so the difference between a
+    /// refused port and an unreached one is worth the errors the capture copies
+    /// up. A caller on a link noisy with ICMP turns it off. The other TCP
+    /// techniques read ICMP for their verdicts regardless.
     pub icmp_evidence: bool,
 }
 
 impl Default for ZondConfig {
-    /// Every field its own type's default, except the one that is a decision
-    /// rather than a zero value.
-    ///
-    /// Written out rather than derived so that
-    /// [`icmp_evidence`](Self::icmp_evidence) can be on. The rest are
-    /// `Default::default()` literally, so this cannot drift from what the derive
-    /// produced, and a field added above without a default here is a compile
-    /// error rather than a setting that silently arrives switched off.
+    /// Hand-written so [`icmp_evidence`](Self::icmp_evidence) defaults on; every
+    /// other field takes its own type's default.
     fn default() -> Self {
         Self {
             icmp_evidence: true,

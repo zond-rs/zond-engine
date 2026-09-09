@@ -38,8 +38,7 @@
 //! ## Loading detections a caller wrote
 //!
 //! The builder takes what the files hold, name to contents; the engine opens
-//! nothing itself. This is the same text the README carries, so a rename that
-//! misses one is caught by `tests/readme.rs`.
+//! nothing itself.
 //!
 //! ```no_run
 //! # use std::collections::BTreeMap;

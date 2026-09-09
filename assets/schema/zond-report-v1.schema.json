@@ -1117,7 +1117,7 @@
           "$ref": "#/$defs/count"
         },
         "sends_witnessed": {
-          "description": "Probes seen leaving on the wire. Below sends_attempted while above zero, the difference is probes the operating system accepted and discarded: the ports behind them were never asked, whatever the scan was told. Zero means this run could not watch its own egress and the comparison says nothing.",
+          "description": "Probes seen leaving on the wire. The gap below sends_attempted is probes the OS accepted and dropped; zero means this run could not watch its own egress.",
           "$ref": "#/$defs/count"
         },
         "segments_seen": {

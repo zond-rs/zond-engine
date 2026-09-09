@@ -419,10 +419,6 @@ mod tests {
     use crate::model::finding::{Reference, Severity};
 
     /// The shipped flow with this id, as the crate embeds it.
-    ///
-    /// By id, not by file path: see
-    /// [`db::shipped_flow`](crate::detect::flow::db::shipped_flow) for what
-    /// addressing these by path cost.
     fn flow(id: &str) -> FlowDetection {
         crate::detect::flow::db::shipped_flow(id)
     }

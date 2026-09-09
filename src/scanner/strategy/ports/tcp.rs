@@ -276,15 +276,9 @@ impl TcpPortScanner {
             return;
         };
 
-        // This scan's own probe on its way out, admitted because the capture
-        // takes both directions. It is witnessed rather than read as a reply:
-        // seeing it leave is the one thing a successful `sendto` does not
-        // establish, and without it a probe the operating system accepted and
-        // discarded is indistinguishable from a port that stayed quiet.
-        //
-        // Tested before the reply check below, and requiring the destination to
-        // be some other port, so a scan whose source port collides with the
-        // port it is probing still reads that segment as the answer it is.
+        // This scan's own probe leaving, witnessed rather than read as a reply.
+        // The destination check keeps a src==dst port collision reading as the
+        // reply it is.
         if tcp_packet.source_port() == self.core.src_port
             && tcp_packet.destination_port() != self.core.src_port
         {
@@ -352,12 +346,8 @@ impl TcpPortScanner {
         self.identify_stack(ip, state, captured);
     }
 
-    /// Marks the probe this outbound segment carries as seen on the wire.
-    ///
-    /// Silent about anything it cannot match. A frame whose destination the
-    /// capture could not read, or one carrying a nonce no live probe was sent
-    /// with, proves nothing about a probe this scan is waiting on, and counting
-    /// it would put a sighting against work nobody did.
+    /// Marks the probe this outbound segment carries as seen on the wire,
+    /// ignoring a frame it cannot match to a live probe.
     fn witness_probe(&mut self, captured: &CapturedSegment, probe: &tcp::Segment<'_>) {
         let Some(destination) = captured.destination else {
             return;
@@ -1378,10 +1368,8 @@ mod tests {
         sent.lock().unwrap().last().expect("a probe").0.clone()
     }
 
-    /// A successful `sendto` says the operating system took the write, not that
-    /// the packet left. Seeing the probe on the wire is what says that, and it
-    /// is filed against the attempt it belongs to rather than resolving
-    /// anything: the port is still waiting for an answer.
+    /// A probe seen on the wire is witnessed, and the port still waits for an
+    /// answer rather than being resolved by the sighting.
     #[test]
     fn a_probe_seen_leaving_is_witnessed_against_its_own_attempt() {
         let (mut scanner, _session, sent) = scanner_with_mock();
@@ -1400,10 +1388,8 @@ mod tests {
         );
     }
 
-    /// The same frame captured on a bridge and again on the member underneath
-    /// it is one probe seen twice. Counting both would report more probes on
-    /// the wire than the scan ever handed over, and the comparison those two
-    /// numbers exist for would read backwards.
+    /// One frame captured on a bridge and its member underneath is one probe
+    /// seen twice, counted once.
     #[test]
     fn the_same_probe_seen_twice_is_witnessed_once() {
         let (mut scanner, _session, sent) = scanner_with_mock();
@@ -1416,9 +1402,8 @@ mod tests {
         assert_eq!(scanner.core.audit.sends_witnessed(), 1);
     }
 
-    /// A segment on this scan's port that is not one of its probes teaches it
-    /// nothing about what it sent. It is somebody else's traffic and is counted
-    /// where every other stranger is.
+    /// A segment on this scan's port carrying no live nonce is someone else's
+    /// traffic, and witnesses nothing.
     #[test]
     fn a_stranger_on_the_scans_own_port_witnesses_nothing() {
         let (mut scanner, _session, sent) = scanner_with_mock();
@@ -1941,18 +1926,13 @@ mod tests {
         assert_eq!(port_state(&session, 80), None, "no verdict has been earned");
     }
 
-    /// A port whose probes the operating system took and never emitted is a
-    /// port this scan did not ask, and its silence is evidence of nothing. It
-    /// used to be reported filtered: measured against one host, a ten-thousand
-    /// port scan handed over 12 832 probes, 8 605 reached the target, and the
-    /// 1 415 ports behind the difference were given a verdict about a firewall
-    /// nobody had spoken to.
+    /// A port whose probes were never seen leaving is unasked, not filtered:
+    /// silence from a question nobody heard is evidence of nothing.
     #[test]
     fn a_port_whose_probes_were_never_seen_leaving_is_unasked_not_filtered() {
         let (mut scanner, session, sent) = scanner_with_mock();
 
-        // One port watched leaving, so the scan is one that can see its own
-        // egress; another that never appears on the wire.
+        // One port witnessed leaving so the run can see its egress; another not.
         probe(&mut scanner, &sent, 80);
         scanner.handle_reply(&own_probe_leaving(last_sent(&sent)), Instant::now());
         probe(&mut scanner, &sent, 443);
@@ -1975,9 +1955,7 @@ mod tests {
         );
     }
 
-    /// The guard on all of it. A scanner whose capture cannot see its own
-    /// egress witnesses nothing, and must go on reading silence exactly as it
-    /// did rather than reporting every port as one it never asked.
+    /// A scan that witnesses no egress reads silence as filtered, as before.
     #[test]
     fn a_scan_that_witnesses_nothing_reads_silence_as_it_always_did() {
         let (mut scanner, session, sent) = scanner_with_mock();
