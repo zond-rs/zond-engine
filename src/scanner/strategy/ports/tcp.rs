@@ -1975,6 +1975,52 @@ mod tests {
         );
     }
 
+    /// An answer is evidence the probe left, and has to be counted as one.
+    /// The capture threads are not running when the first probes go out, and a
+    /// reply can reach the loop before the copy of the frame that provoked it,
+    /// so a scan believing only frames reports a handful of ports it plainly
+    /// got answers for as ports it never asked.
+    #[test]
+    fn an_answered_probe_is_witnessed_though_no_frame_was_seen() {
+        let (mut scanner, _session, sent) = scanner_with_mock();
+        let token = probe(&mut scanner, &sent, 81);
+        assert_eq!(
+            scanner.core.audit.sends_witnessed(),
+            0,
+            "nothing was watched leaving"
+        );
+
+        let reply = tcp_segment(&scanner, 81, token, RST | ACK);
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            Instant::now(),
+        );
+
+        assert_eq!(
+            scanner.core.audit.sends_witnessed(),
+            1,
+            "the answer is the evidence"
+        );
+    }
+
+    /// And counted once, whichever evidence arrives first. A probe seen leaving
+    /// and then answered is one send, and a tally that took both would report
+    /// more probes on the wire than the scan ever handed over.
+    #[test]
+    fn a_probe_both_seen_and_answered_is_witnessed_once() {
+        let (mut scanner, _session, sent) = scanner_with_mock();
+        let token = probe(&mut scanner, &sent, 81);
+
+        scanner.handle_reply(&own_probe_leaving(last_sent(&sent)), Instant::now());
+        let reply = tcp_segment(&scanner, 81, token, RST | ACK);
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            Instant::now(),
+        );
+
+        assert_eq!(scanner.core.audit.sends_witnessed(), 1);
+    }
+
     /// The guard on all of it. A scanner whose capture cannot see its own
     /// egress witnesses nothing, and must go on reading silence exactly as it
     /// did rather than reporting every port as one it never asked.

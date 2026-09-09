@@ -14184,6 +14184,7 @@ pub zond_engine::scanner::pacing::retry::Resolution::answered_attempt: core::opt
 pub zond_engine::scanner::pacing::retry::Resolution::attempts: u8
 pub zond_engine::scanner::pacing::retry::Resolution::payload: P
 pub zond_engine::scanner::pacing::retry::Resolution::rtt: core::option::Option<core::time::Duration>
+pub zond_engine::scanner::pacing::retry::Resolution::witnessed_now: bool
 impl<P: core::clone::Clone> core::clone::Clone for zond_engine::scanner::pacing::retry::Resolution<P>
 pub fn zond_engine::scanner::pacing::retry::Resolution<P>::clone(&self) -> zond_engine::scanner::pacing::retry::Resolution<P>
 impl<P: core::cmp::Eq> core::cmp::Eq for zond_engine::scanner::pacing::retry::Resolution<P>
@@ -15274,6 +15275,7 @@ pub zond_engine::scanner::strategy::ports::RawProbeScan::send_tick: core::time::
 pub zond_engine::scanner::strategy::ports::RawProbeScan::shaping: zond_engine::evasion::SegmentShaping
 pub zond_engine::scanner::strategy::ports::RawProbeScan::src_port: u16
 pub zond_engine::scanner::strategy::ports::RawProbeScan::transport: zond_engine::transport::probe::ProbeTransport
+pub zond_engine::scanner::strategy::ports::RawProbeScan::unasked_unsent: u64
 pub zond_engine::scanner::strategy::ports::RawProbeScan::window: zond_engine::scanner::pacing::congestion::CongestionWindow
 impl<T: core::marker::Copy + core::cmp::PartialEq> zond_engine::scanner::strategy::ports::RawProbeScan<T>
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::admitting(&self, bool) -> bool

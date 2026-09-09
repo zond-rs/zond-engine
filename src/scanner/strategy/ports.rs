@@ -287,6 +287,16 @@ pub struct RawProbeScan<T> {
     /// is a claim about the network; a probe that was never sent is a claim
     /// about this host.
     pub send_failure: Option<String>,
+    /// How many ports were settled unasked because nothing ever witnessed a
+    /// probe leaving for them.
+    ///
+    /// Counted rather than derived from the send tally, because the two are not
+    /// the same number and only this one is a shortfall. A send nothing saw
+    /// leave costs nothing if a later attempt was answered; what costs coverage
+    /// is a port that ran out of attempts having never been seen asked. Reported
+    /// off this, so a run that resolved every port stays quiet about a
+    /// discrepancy that cost it nothing.
+    pub unasked_unsent: u64,
     /// Per-run counters, so a scan that classified fewer ports than it asked
     /// about can be attributed to loss, to its own deadline, or to correlation
     /// rather than guessed at. Reported once when the loop exits.
@@ -425,6 +435,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             shaping: tuning.evasion.segment_shaping(),
             decoys: tuning.evasion.decoys.clone(),
             send_failure: None,
+            unasked_unsent: 0,
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(window),
             send_tick,
@@ -635,6 +646,16 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             self.deadline.record_rtt(rtt);
         }
 
+        // An answer settles what nothing else can: the probe reached something
+        // that replied to it, so it left this machine whether or not the capture
+        // caught it going. Without this the first few probes of every run - sent
+        // while the capture threads were still coming up - are reported as sends
+        // that never made it, and a scan that resolved every port it asked about
+        // says it covered less than it was asked to.
+        if resolution.witnessed_now {
+            self.audit.record_witnessed_send();
+        }
+
         // Three cases, and the middle one is the reason this reads the attempt
         // rather than the fact of an answer.
         match (resolution.attempts, resolution.answered_attempt) {
@@ -739,21 +760,17 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             );
         }
 
-        // The sends the operating system took and never emitted. Counted only
-        // where the scan could see its own egress at all, since otherwise every
-        // probe looks unsent; where it could, this is the whole difference
-        // between a port that stayed quiet and one that was never asked, and it
-        // is a shortfall of this machine rather than of the network.
-        let unseen = self
-            .audit
-            .sends_attempted
-            .saturating_sub(self.audit.sends_witnessed);
-        if unseen > 0 && self.audit.witnesses_its_sends() {
+        // The ports this machine swallowed the probes for. Reported off the
+        // ports rather than off the send tally: a scan can lose sends and still
+        // resolve every port, because a later attempt was answered, and saying
+        // so anyway raises an alarm about a run that covered everything it was
+        // asked to.
+        if self.unasked_unsent > 0 {
             self.ctx.record_failure(
                 kind,
                 format!(
-                    "{unseen} of {} probes were accepted by this machine and never reached the                      wire, so their ports are recorded unasked rather than {silence_verdict}",
-                    self.audit.sends_attempted,
+                    "{} recorded unasked rather than {silence_verdict}: this machine accepted                      their probes and never put them on the wire",
+                    crate::logging::counted(u128::from(self.unasked_unsent), "port", "ports"),
                 ),
             );
         }
@@ -1073,6 +1090,7 @@ pub trait RawPortScan: PortScanner {
                     // probe would look unsent. See
                     // [`ProbeAudit::witnesses_its_sends`].
                     if witnessed == 0 && self.core().audit.witnesses_its_sends() {
+                        self.core_mut().unasked_unsent += 1;
                         self.record_unasked_endpoint(ip, port);
                         continue;
                     }
@@ -1391,6 +1409,7 @@ mod tests {
             shaping: SegmentShaping::default(),
             decoys: Vec::new(),
             send_failure: None,
+            unasked_unsent: 0,
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
             send_tick: Duration::from_millis(1),
@@ -1420,6 +1439,7 @@ mod tests {
             shaping: SegmentShaping::default(),
             decoys: Vec::new(),
             send_failure: None,
+            unasked_unsent: 0,
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
             send_tick: Duration::from_millis(1),
@@ -1625,6 +1645,7 @@ mod tests {
             rtt: None,
             attempts: 1,
             answered_attempt: Some(1),
+            witnessed_now: false,
         });
         assert!(core.window.capacity() > 64, "a clean answer buys headroom");
 
@@ -1634,6 +1655,7 @@ mod tests {
             rtt: None,
             attempts: 2,
             answered_attempt: Some(2),
+            witnessed_now: false,
         });
         assert!(
             core.window.capacity() < grown,
