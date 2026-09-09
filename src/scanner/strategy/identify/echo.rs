@@ -823,13 +823,27 @@ mod tests {
 
     /// A scanner over `target` whose link records rather than answers.
     fn recording(ctx: &ScanContext, target: IpAddr) -> (OsEchoScanner, Recording) {
+        use crate::system::interface::{Link, LinkAddress, SourceResolver};
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
         let link = Recording::default();
         let (_tx, rx) = mpsc::channel(16);
         let transport = ProbeTransport::from_parts(Box::new(link.clone()), rx as CaptureStream);
-        (
-            OsEchoScanner::with_transport(ctx.clone(), vec![target], transport),
-            link,
-        )
+        let mut scanner = OsEchoScanner::with_transport(ctx.clone(), vec![target], transport);
+
+        // A fixed resolver, not the host's: `from_system` can find no route to a
+        // documentation target under the suite's parallel load. Both families
+        // on-link so every target these tests use resolves.
+        scanner.resolver =
+            SourceResolver::from_links(&[Link::new("test0", 0).with_addresses(vec![
+                LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+                LinkAddress::new(
+                    IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+                    64,
+                ),
+            ])]);
+
+        (scanner, link)
     }
 
     /// A timestamp reply to `request`, built from the RFC 792 layout rather than

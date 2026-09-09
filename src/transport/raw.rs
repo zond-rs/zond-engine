@@ -444,21 +444,24 @@ mod tests {
 
     #[test]
     fn a_scoped_send_reaches_the_kernel_with_its_interface_on_it() {
-        let Some((address, zone)) =
-            crate::system::interface::interfaces()
+        // A real broadcast interface, lowest index first, so the pick is the same
+        // every run. A point-to-point link (a VPN tunnel) can carry a link-local
+        // the kernel will deliver to with no scope, which is not the segment this
+        // is about and made the negative below flake under load.
+        let mut links: Vec<_> = crate::system::interface::interfaces()
+            .into_iter()
+            .filter(|link| link.is_up() && !link.is_loopback() && !link.is_point_to_point())
+            .collect();
+        links.sort_by_key(crate::system::interface::Link::index);
+        let Some((address, zone)) = links.iter().find_map(|link| {
+            link.addresses()
                 .iter()
-                .find_map(|link| {
-                    link.addresses()
-                        .iter()
-                        .map(|held| held.address())
-                        .find_map(|address| match address {
-                            IpAddr::V6(v6) if v6.is_unicast_link_local() => {
-                                Some((v6, link.index()))
-                            }
-                            _ => None,
-                        })
+                .map(|held| held.address())
+                .find_map(|address| match address {
+                    IpAddr::V6(v6) if v6.is_unicast_link_local() => Some((v6, link.index())),
+                    _ => None,
                 })
-        else {
+        }) else {
             return;
         };
 

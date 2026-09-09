@@ -369,6 +369,7 @@ async fn exchange(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
         }
         response.extend_from_slice(&buffer[..read]);
         if response.len() >= MAX_ICON_BYTES {
+            response.truncate(MAX_ICON_BYTES);
             break;
         }
     }
