@@ -1,23 +1,11 @@
-# The fuzzing harnesses: built and run on a schedule, and on demand, never on an
-# ordinary push.
+# The fuzzing harnesses: built and run weekly and on demand, never on an ordinary
+# push. Installing cargo-fuzz and building every target is minutes a commit
+# should not spend, and the weekly run is what finds anything; harness rot is
+# caught by the same run, or by a workflow_dispatch before a release.
 #
-# Two jobs because they answer different questions and cost different amounts. A
-# target that no longer compiles is the failure that actually happens — an API it
-# drives moves, and nobody notices until somebody goes to fuzz and finds the
-# harness rotted. Finding a crash takes hours, not the sixty seconds a pull
-# request will wait.
-#
-# Neither is on the per-commit path any more. Installing `cargo-fuzz` and
-# building every target is minutes a feature branch should not spend on every
-# push, and the weekly run is what actually finds anything; the harness-build
-# rot it used to catch per-change is caught by the same weekly job one cycle
-# later, or by a `workflow_dispatch` before a release. `main` and its pull
-# requests carry the fast gates instead — see `lint.yml` and `test.yml`.
-#
-# Neither runs on the library's own toolchain. `cargo fuzz` reads a sanitizer
-# runtime that is nightly-only, and `fuzz/` is a crate of its own with its own
-# `[workspace]` for exactly that reason; nothing here touches what the other
-# workflows build.
+# `build` compiles the targets and checks their seeds; `run` fuzzes. Both run on
+# nightly, which cargo-fuzz's sanitizer runtime needs, over `fuzz/`'s own
+# workspace, so nothing here touches what the other workflows build.
 name: Fuzz
 
 on:

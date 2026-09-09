@@ -75,11 +75,9 @@ jobs:
   compile:
     name: Compiles and lints
     runs-on: windows-latest
-    # A merge gate. Windows is platform bring-up on a paid-premium runner, and
-    # what it guards against — a Unix-only call sneaking in — is caught on the
-    # way into `main` rather than on every feature-branch push. The
-    # `pull_request` trigger still gives a branch this run before it lands.
-    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+    # Integration branches (main, feat/main) and every PR; a scratch branch
+    # gets only the fast gates.
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/main' || github.event_name == 'pull_request'
 
     steps:
       - name: Checkout repository
@@ -117,9 +115,9 @@ jobs:
     name: Links against Npcap
     runs-on: windows-latest
 
-    # The same merge gate as `compile`, stated rather than only inherited through
-    # `needs`: this is the more expensive Windows job of the two.
-    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+    # Integration branches (main, feat/main) and every PR; a scratch branch
+    # gets only the fast gates.
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/main' || github.event_name == 'pull_request'
 
     # The compile job is the cheap one and the one that will fail first. There is
     # no point downloading an SDK to discover a type error.
