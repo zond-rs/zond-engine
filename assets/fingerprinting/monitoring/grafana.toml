@@ -1,6 +1,8 @@
 [service]
 name = "grafana"
-default_ports = [3000]
+default_ports = []
+# 3000 is shared with Aerospike.
+shared_ports  = [3000]
 description = "Grafana Dashboard"
 speaks = "http"
 

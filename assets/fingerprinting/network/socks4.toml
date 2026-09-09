@@ -1,6 +1,8 @@
 [service]
 name = "socks4"
-default_ports = [1080]
+default_ports = []
+# 1080 is both dialects' port. SOCKS5 is what is deployed, so socks5.toml names it.
+shared_ports  = [1080]
 description = "SOCKS4 Proxy"
 
 [[probe]]

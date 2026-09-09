@@ -1,6 +1,8 @@
 [service]
 name = "aerospike"
-default_ports = [3000]
+# 3000 is shared with Grafana and every development server ever started.
+default_ports = [3001, 3002]
+shared_ports  = [3000]
 description = "Aerospike Database"
 
 [[probe]]

@@ -1,6 +1,8 @@
 [service]
 name = "zeromq"
-default_ports = [5555, 5556, 5557]
+# 5555 is Android Debug Bridge more often than it is ZeroMQ.
+default_ports = [5556, 5557]
+shared_ports  = [5555]
 description = "ZeroMQ / ZMTP"
 
 [[probe]]

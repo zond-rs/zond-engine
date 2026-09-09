@@ -1,6 +1,8 @@
 [service]
 name = "docker_registry"
-default_ports = [5000]
+default_ports = []
+# 5000 is shared; on macOS it is AirPlay Receiver.
+shared_ports  = [5000]
 description = "Docker Container Registry"
 speaks = "http"
 

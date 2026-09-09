@@ -1,6 +1,8 @@
 [service]
 name = "clickhouse"
-default_ports = [8123, 9000]
+default_ports = []
+# 8123 is shared with Home Assistant, 9000 with PHP-FPM, Portainer and MinIO.
+shared_ports  = [8123, 9000]
 description = "ClickHouse Database"
 speaks = "http"
 

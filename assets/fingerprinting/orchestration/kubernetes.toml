@@ -1,6 +1,8 @@
 [service]
 name = "kubernetes"
-default_ports = [6443, 8443, 10250]
+default_ports = [6443, 10250]
+# 8443 is the generic TLS-HTTP alternate long before it is an API server.
+shared_ports  = [8443]
 description = "Kubernetes API Server"
 speaks = "http"
 

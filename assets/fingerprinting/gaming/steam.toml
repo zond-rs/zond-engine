@@ -1,6 +1,7 @@
 [service]
 name = "steam_master"
-default_ports = [27010, 27011, 27012, 27013, 27014, 27015]
+default_ports = [27010, 27011, 27012, 27013, 27014]
+shared_ports  = [27015]
 description = "Steam Master Server / Source Engine"
 
 [[probe]]

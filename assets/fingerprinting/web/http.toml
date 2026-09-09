@@ -1,6 +1,7 @@
 [service]
 name = "http"
-default_ports = [80, 8080, 8000, 443, 8443]
+default_ports = [80, 443, 5000, 8000, 8080, 8123, 8443, 9000]
+# 3000 is left out: a third probe on it pushes the service pass past COLLECTION_BUDGET.
 description = "Hypertext Transfer Protocol"
 
 # The probe that will be sent to the target to elicit an HTTP response.

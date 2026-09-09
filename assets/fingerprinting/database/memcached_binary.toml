@@ -1,6 +1,8 @@
 [service]
 name = "memcached_binary"
-default_ports = [11211]
+default_ports = []
+# The same daemon and port as memcached.toml, in the binary protocol.
+shared_ports  = [11211]
 description = "Memcached Binary Protocol"
 
 [[probe]]

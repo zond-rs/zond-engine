@@ -1,15 +1,25 @@
 [service]
 name = "squid"
-default_ports = [3128, 8080]
+default_ports = [3128]
+# 8080 is shared with every other HTTP server.
+shared_ports  = [8080]
 description = "Squid HTTP Proxy"
 speaks = "http"
 
-[[probe]]
-name = "get_root"
-payload = 'GET http://www.google.com/ HTTP/1.1\r\nHost: www.google.com\r\nProxy-Connection: keep-alive\r\n\r\n'
-protocol = "tcp"
+# No probe. Squid answers the generic `GET /` with its own `Server:` line, and a
+# proxy-form probe would make the proxy fetch the URL and be fingerprinted as it.
 
 [[match]]
-name = "squid_header"
+name = "squid_server_header"
+pattern = '(?i)Server:\s*squid/([\d.]+)'
+version_group = 1
+vendor = "squid-cache"
+product = "squid"
+context = "http_header.server"
+example = "Server: squid/6.13"
+metadata = { "service.cpe23" = "cpe:/a:squid-cache:squid:{service.version}" }
+
+[[match]]
+name = "squid_error_header"
 pattern = '(?i)X-Squid-Error'
 product = "squid"
