@@ -978,7 +978,7 @@ impl IdleScan {
 /// cfg.traceroute = true;
 /// ```
 #[non_exhaustive]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ZondConfig {
     /// Forbids the scan from generating any DNS traffic of its own: no A, AAAA
     /// or PTR queries, and no name resolution to go with the addresses it finds.
@@ -1429,20 +1429,69 @@ pub struct ZondConfig {
     pub evasion: EvasionProfile,
 
     /// Whether to capture ICMP errors for a technique whose verdict does not
-    /// depend on them.
+    /// depend on them. On by default.
     ///
-    /// A SYN scan calls a port filtered whether an unreachable arrived or
-    /// nothing did, so by default it does not ask its capture for ICMP. An error
-    /// names no ports, so no kernel filter can narrow it, and admitting one
-    /// copies every ICMP packet on every captured link into userspace.
+    /// It used to be off, on the argument that a SYN scan calls a port filtered
+    /// whether an unreachable arrived or nothing did, so the capture may as well
+    /// not pay for errors it will not read: one names no ports, so no kernel
+    /// filter can narrow it, and admitting one copies every ICMP packet on every
+    /// captured link into userspace.
     ///
-    /// Setting this pays that cost to record which of the two happened, which is
-    /// the difference between a firewall answering for a port and a probe going
-    /// missing. It changes no verdict, only the evidence stored beside one.
+    /// The first half of that stopped being true. A firewall answering for a
+    /// port and a probe going missing are the same *state* and no longer the
+    /// same *finding*: a scan that was outrun cannot read silence as a verdict
+    /// and says so, while an error is a verdict whatever the scan's pacing did.
+    /// Measured against a host that answers for seven of its ports that way, the
+    /// difference is seven ports positively refused against a hundred and seven
+    /// the reader is told nothing certain about.
+    ///
+    /// The second half is true and costs almost nothing: twenty seconds of an
+    /// ordinary Wi-Fi link carried five ICMP packets, against the thousands of
+    /// TCP segments the same capture already admits. A caller on a link where
+    /// that is not so turns this off.
     ///
     /// The other TCP techniques read ICMP already, their verdicts depending on
     /// it, and this leaves them as they are.
     pub icmp_evidence: bool,
+}
+
+impl Default for ZondConfig {
+    /// Every field its own type's default, except the one that is a decision
+    /// rather than a zero value.
+    ///
+    /// Written out rather than derived so that
+    /// [`icmp_evidence`](Self::icmp_evidence) can be on. The rest are
+    /// `Default::default()` literally, so this cannot drift from what the derive
+    /// produced, and a field added above without a default here is a compile
+    /// error rather than a setting that silently arrives switched off.
+    fn default() -> Self {
+        Self {
+            icmp_evidence: true,
+            no_dns: Default::default(),
+            segment_sweep: Default::default(),
+            assume_up: Default::default(),
+            traceroute: Default::default(),
+            characterise: Default::default(),
+            ip_protocols: Default::default(),
+            tls_enumeration: Default::default(),
+            idle_scan: Default::default(),
+            exclusions: Default::default(),
+            redact: Default::default(),
+            send_mode: Default::default(),
+            max_probe_rate: Default::default(),
+            min_probe_rate: Default::default(),
+            host_probe_interval: Default::default(),
+            host_timeout: Default::default(),
+            scan_timeout: Default::default(),
+            tcp_technique: Default::default(),
+            sctp_technique: Default::default(),
+            retry: Default::default(),
+            os_detection: Default::default(),
+            service_detection: Default::default(),
+            detection: Default::default(),
+            evasion: Default::default(),
+        }
+    }
 }
 
 impl ZondConfig {
@@ -1524,12 +1573,18 @@ mod tests {
     /// The capture knob reaches the strategies, which is the whole of what it
     /// does: a scan asked for the evidence and the tuning has to carry it.
     #[test]
-    fn asking_for_icmp_evidence_reaches_the_probe_tuning() {
+    fn icmp_evidence_reaches_the_probe_tuning_and_is_on_unless_declined() {
         let mut cfg = ZondConfig::default();
-        assert!(!cfg.probe_tuning().icmp_evidence, "off unless asked");
+        assert!(
+            cfg.probe_tuning().icmp_evidence,
+            "an error is a verdict a scan that was outrun cannot reach any other way"
+        );
 
-        cfg.icmp_evidence = true;
-        assert!(cfg.probe_tuning().icmp_evidence);
+        cfg.icmp_evidence = false;
+        assert!(
+            !cfg.probe_tuning().icmp_evidence,
+            "and a caller may decline it"
+        );
     }
     use super::*;
     use std::num::NonZeroU8;

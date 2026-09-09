@@ -401,7 +401,7 @@ pub fn zond_engine::config::ZondConfig::clone(&self) -> zond_engine::config::Zon
 impl core::convert::From<&zond_engine::config::ZondConfig> for zond_engine::report::ScanSettings
 pub fn zond_engine::report::ScanSettings::from(&zond_engine::config::ZondConfig) -> Self
 impl core::default::Default for zond_engine::config::ZondConfig
-pub fn zond_engine::config::ZondConfig::default() -> zond_engine::config::ZondConfig
+pub fn zond_engine::config::ZondConfig::default() -> Self
 impl core::fmt::Debug for zond_engine::config::ZondConfig
 pub fn zond_engine::config::ZondConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for zond_engine::config::ZondConfig
@@ -17793,7 +17793,7 @@ pub fn zond_engine::config::ZondConfig::clone(&self) -> zond_engine::config::Zon
 impl core::convert::From<&zond_engine::config::ZondConfig> for zond_engine::report::ScanSettings
 pub fn zond_engine::report::ScanSettings::from(&zond_engine::config::ZondConfig) -> Self
 impl core::default::Default for zond_engine::config::ZondConfig
-pub fn zond_engine::config::ZondConfig::default() -> zond_engine::config::ZondConfig
+pub fn zond_engine::config::ZondConfig::default() -> Self
 impl core::fmt::Debug for zond_engine::config::ZondConfig
 pub fn zond_engine::config::ZondConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for zond_engine::config::ZondConfig

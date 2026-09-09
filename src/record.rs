@@ -2765,12 +2765,15 @@ mod tests {
         use crate::config::ZondConfig;
 
         let mut settings = ScanSettings::from(&ZondConfig::default());
-        assert!(!settings.icmp_evidence, "off unless asked");
+        assert!(settings.icmp_evidence, "on unless declined");
+
+        // Both ways round: a run that declined it has to say so, or a reader
+        // cannot tell a scan that saw no errors from one that never looked.
+        settings.icmp_evidence = false;
+        assert!(!ScanSettings::from(&SettingsRecord::from(&settings)).icmp_evidence);
 
         settings.icmp_evidence = true;
-        let rebuilt = ScanSettings::from(&SettingsRecord::from(&settings));
-
-        assert!(rebuilt.icmp_evidence);
+        assert!(ScanSettings::from(&SettingsRecord::from(&settings)).icmp_evidence);
     }
 
     #[test]
