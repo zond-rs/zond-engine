@@ -99,6 +99,11 @@ jobs:
   features:
     name: Feature matrix
     runs-on: ubuntu-latest
+    # A feature branch runs the fast gates above on every push and leaves the
+    # slow ones to the merge. This is the slowest job in the repository, so it is
+    # the one that most needs to sit out a feature branch's push and wait for the
+    # pull request into `main`.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
 
     steps:
       - name: Checkout repository
@@ -137,6 +142,10 @@ jobs:
   msrv:
     name: Minimum toolchain (1.93)
     runs-on: ubuntu-latest
+    # A merge gate, not a per-push one: the declared minimum can only break when
+    # the code or the dependency tree does, and the pull request into `main` is
+    # where that lands.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
 
     steps:
       - name: Checkout repository
@@ -174,6 +183,11 @@ jobs:
   public-api:
     name: Public API surface
     runs-on: ubuntu-latest
+    # A merge gate. It installs a nightly toolchain and `cargo-public-api` to
+    # regenerate the surface, minutes a feature branch should not spend on every
+    # push; the pull request into `main` is where a surface change has to be
+    # accounted for anyway.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
 
     steps:
       - name: Checkout repository
@@ -216,6 +230,10 @@ jobs:
   supply-chain:
     name: Dependency audit
     runs-on: ubuntu-latest
+    # A merge gate. The dependency tree changes with `Cargo.lock`, not with an
+    # ordinary source push, so the audit belongs on the way into `main` rather
+    # than on every feature-branch commit.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
 
     steps:
       - name: Checkout repository

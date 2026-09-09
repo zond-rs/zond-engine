@@ -103,6 +103,10 @@ jobs:
   privileged:
     name: Privileged tests (Linux)
     runs-on: ubuntu-latest
+    # A merge gate. It installs nmap and runs the suite under sudo, and the
+    # unprivileged matrix above already covers every feature-branch push; the
+    # kernel-and-a-real-document tier is cashed on the way into `main`.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
 
     steps:
       - name: Checkout repository
@@ -136,6 +140,9 @@ jobs:
   msrv:
     name: Minimum supported Rust version
     runs-on: ubuntu-latest
+    # A merge gate: the declared minimum only breaks when the code or the
+    # dependency tree does, which is what a pull request into `main` carries.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -161,6 +168,9 @@ jobs:
   package:
     name: Publishable
     runs-on: ubuntu-latest
+    # A merge gate. "Could this be published" is a question worth answering
+    # before `main` moves, not on every feature-branch commit.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
