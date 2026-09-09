@@ -444,10 +444,7 @@ mod tests {
 
     #[test]
     fn a_scoped_send_reaches_the_kernel_with_its_interface_on_it() {
-        // A real broadcast interface, lowest index first, so the pick is the same
-        // every run. A point-to-point link (a VPN tunnel) can carry a link-local
-        // the kernel will deliver to with no scope, which is not the segment this
-        // is about and made the negative below flake under load.
+        // A real broadcast interface, lowest index first, so the pick is stable.
         let mut links: Vec<_> = crate::system::interface::interfaces()
             .into_iter()
             .filter(|link| link.is_up() && !link.is_loopback() && !link.is_point_to_point())
@@ -465,20 +462,16 @@ mod tests {
             return;
         };
 
+        // Only the positive is asserted. Whether the kernel *rejects* a
+        // zero-scope send to a link-local is its own call and is not portable:
+        // a host with one such interface infers the scope and accepts it, as the
+        // GitHub Linux runners do.
         let socket = UdpSocket::bind("[::]:0").expect("an unprivileged socket");
         let sent = send_scoped(socket.as_raw_fd(), b"zond", address, DISCARD, zone);
-
         assert!(
             sent.is_ok(),
             "a scoped destination is deliverable: {}",
             sent.unwrap_err()
-        );
-
-        let unscoped = send_scoped(socket.as_raw_fd(), b"zond", address, DISCARD, 0);
-        assert!(
-            unscoped.is_err(),
-            "and a zero scope id names no segment, which is the whole reason \
-             the scope id is carried"
         );
     }
 }
