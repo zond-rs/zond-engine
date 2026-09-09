@@ -1,0 +1,21 @@
+[service]
+name = "jellyfin"
+default_ports = [8096, 8920]
+description = "Jellyfin Media Server"
+speaks = "http"
+
+# `/` is the web UI behind a generic Kestrel banner. The public system endpoint
+# answers before authentication and names the product and its version outright.
+[[probe]]
+name = "get_system_info_public"
+payload = 'GET /System/Info/Public HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+protocol = "tcp"
+
+[[match]]
+name = "jellyfin_public_info"
+pattern = '(?s)"Version"\s*:\s*"([\d.]+)".*?"ProductName"\s*:\s*"Jellyfin'
+version_group = 1
+vendor = "jellyfin"
+product = "jellyfin"
+example = '{"Version":"12.0.0","ProductName":"Jellyfin Server"}'
+metadata = { "service.cpe23" = "cpe:/a:jellyfin:jellyfin:{service.version}" }

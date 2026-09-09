@@ -1,0 +1,8 @@
+[service]
+name = "openvpn"
+default_ports = [1194]
+description = "OpenVPN"
+
+# No probe. A UDP peer answers only a correctly framed hard-reset with a session
+# id it will check, and the reply is unreadable until extract::from_datagram
+# learns the framing. Naming the port does not wait for that.

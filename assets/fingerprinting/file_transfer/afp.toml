@@ -1,0 +1,16 @@
+[service]
+name = "afp"
+default_ports = [548]
+description = "Apple Filing Protocol"
+
+# DSI GetStatus: request 0x00, command 0x03, then a zeroed header. The reply is a
+# server parameters block naming the machine and its AFP versions.
+[[probe]]
+name = "dsi_getstatus"
+payload = '\x00\x03\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+protocol = "tcp"
+
+[[match]]
+name = "dsi_reply"
+pattern = '^\x01\x03'
+product = "afp"

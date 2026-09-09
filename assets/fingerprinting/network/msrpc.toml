@@ -1,0 +1,9 @@
+[service]
+name = "msrpc"
+default_ports = [135, 593]
+description = "Microsoft RPC endpoint mapper"
+
+# No probe. A DCE/RPC bind is authored against a real endpoint mapper or not at
+# all, and nothing here has one to answer it. Claiming the number is what this
+# file is for: 135 keys windows-rpc-smb and is the second most common port on
+# any Windows host.

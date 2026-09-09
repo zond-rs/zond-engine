@@ -1,6 +1,7 @@
 [service]
 name = "vnc"
-default_ports = [5900, 5901]
+# 5800 and 5801 are the Java applet viewer, which is VNC over HTTP.
+default_ports = [5900, 5901, 5902, 5903, 5800, 5801]
 description = "Virtual Network Computing / RFB Protocol"
 
 # VNC servers send a version banner immediately.

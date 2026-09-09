@@ -1,0 +1,8 @@
+[service]
+name = "winbox"
+default_ports = [8291]
+description = "MikroTik Winbox and RouterOS API"
+
+# No probe. Winbox is a proprietary binary protocol and the corpus identifies
+# MikroTik from its SSH, FTP, telnet and SNMP banners already. The number is what
+# was missing: nothing named 8291.

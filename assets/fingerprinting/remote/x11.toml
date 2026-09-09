@@ -1,0 +1,16 @@
+[service]
+name = "x11"
+default_ports = [6000, 6001, 6002, 6003, 6004, 6005]
+description = "X Window System display server"
+
+# A connection setup with no authorisation. A server that requires one answers 0
+# and states the scheme it wanted; one that does not answers 1.
+[[probe]]
+name = "x11_setup"
+payload = 'l\x00\x0b\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+protocol = "tcp"
+
+[[match]]
+name = "x11_setup_reply"
+pattern = '^[\x00\x01\x02]\x00\x0b\x00'
+product = "x11"

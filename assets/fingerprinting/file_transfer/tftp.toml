@@ -1,0 +1,8 @@
+[service]
+name = "tftp"
+default_ports = [69]
+description = "Trivial File Transfer Protocol"
+
+# No probe yet. A read request for a file that does not exist draws an error
+# packet carrying the server's own message, which is worth having once
+# extract::from_datagram can read it.

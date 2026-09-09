@@ -1,0 +1,16 @@
+[service]
+name = "syncthing"
+default_ports = [8384]
+description = "Syncthing file synchronisation"
+speaks = "http"
+
+# The GUI stamps its own version and device id on every response, so the generic
+# request identifies it without a probe of its own.
+[[match]]
+name = "syncthing_version_header"
+pattern = '(?i)X-Syncthing-Version:\s*v?([\d.]+)'
+version_group = 1
+vendor = "syncthing"
+product = "syncthing"
+example = "X-Syncthing-Version: v2.1.5"
+metadata = { "service.cpe23" = "cpe:/a:syncthing:syncthing:{service.version}" }

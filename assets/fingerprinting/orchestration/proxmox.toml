@@ -1,0 +1,13 @@
+[service]
+name = "proxmox"
+default_ports = [8006, 8007]
+description = "Proxmox Virtual Environment"
+speaks = "http"
+
+[[match]]
+name = "pve_api_daemon"
+pattern = '(?i)Server:\s*pve-api-daemon'
+vendor = "proxmox"
+product = "proxmox_ve"
+context = "http_header.server"
+example = "Server: pve-api-daemon/3.0"

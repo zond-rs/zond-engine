@@ -5,12 +5,19 @@ default_ports = [3001, 3002]
 shared_ports  = [3000]
 description = "Aerospike Database"
 
+# The info protocol: a two-byte version and type, then a six-byte big-endian
+# length, then the request. A length that disagrees with what follows desyncs the
+# stream and the server closes on it.
 [[probe]]
-name = "info_statistics"
-payload = '\x02\x01\x00\x00\x00\x00\x00\x00\x0astatistics'
+name = "info_build"
+payload = '\x02\x01\x00\x00\x00\x00\x00\x06build\n'
 protocol = "tcp"
 
 [[match]]
-name = "aerospike_response"
-pattern = '^\x02\x02'
+name = "aerospike_build"
+pattern = 'build\t([\d.-]+)'
+version_group = 1
+vendor = "aerospike"
 product = "aerospike"
+example = "build\t8.1.2.4-4"
+metadata = { "service.cpe23" = "cpe:/a:aerospike:aerospike_server:{service.version}" }

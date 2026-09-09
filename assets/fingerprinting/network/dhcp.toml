@@ -1,0 +1,7 @@
+[service]
+name = "dhcp"
+default_ports = [67, 68]
+description = "DHCP"
+
+# No probe yet. protocols/dhcp.rs already builds and parses these, and the
+# imported dhcp_vendor_class rules are waiting on a reply to read.

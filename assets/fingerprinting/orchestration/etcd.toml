@@ -1,0 +1,21 @@
+[service]
+name = "etcd"
+default_ports = [2379, 2380]
+description = "etcd distributed key-value store"
+speaks = "http"
+
+# `/` is a 404 on etcd v3; `/version` is the one endpoint that answers before
+# authentication and it carries the server and cluster versions.
+[[probe]]
+name = "get_version"
+payload = 'GET /version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+protocol = "tcp"
+
+[[match]]
+name = "etcd_version_endpoint"
+pattern = '"etcdserver"\s*:\s*"([\d.]+)"'
+version_group = 1
+vendor = "etcd"
+product = "etcd"
+example = '{"etcdserver":"3.5.9","etcdcluster":"3.5.0"}'
+metadata = { "service.cpe23" = "cpe:/a:etcd:etcd:{service.version}" }

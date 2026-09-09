@@ -1,6 +1,7 @@
 [service]
 name = "ldap"
-default_ports = [389, 636]
+# 3268 and 3269 are the Active Directory global catalog.
+default_ports = [389, 636, 3268, 3269]
 description = "Lightweight Directory Access Protocol"
 
 # LDAP Bind Request (anonymous simple bind)

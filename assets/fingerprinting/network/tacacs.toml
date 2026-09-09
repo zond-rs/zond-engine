@@ -1,0 +1,8 @@
+[service]
+name = "tacacs"
+default_ports = [49]
+description = "TACACS+ authentication"
+
+# No probe. Every TACACS+ body past the twelve-byte header is obfuscated with a
+# shared secret, so a probe draws either nothing or an unreadable reply. The
+# number is the claim, and it is the half of AAA that had none.

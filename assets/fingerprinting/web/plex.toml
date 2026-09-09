@@ -1,0 +1,10 @@
+[service]
+name = "plex"
+default_ports = [32400]
+description = "Plex Media Server"
+speaks = "http"
+
+[[match]]
+name = "plex_protocol_header"
+pattern = '(?i)X-Plex-Protocol'
+product = "plex"

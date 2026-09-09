@@ -1,0 +1,5 @@
+[service]
+name = "cpanel"
+default_ports = [2082, 2083, 2086, 2087, 2095, 2096]
+description = "cPanel and WHM control panel"
+speaks = "http"

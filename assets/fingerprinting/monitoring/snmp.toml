@@ -1,6 +1,6 @@
 [service]
 name = "snmp"
-default_ports = [161]
+default_ports = [161, 162]
 description = "Simple Network Management Protocol"
 
 # An SNMPv1 GetRequest for sysDescr.0 with the default `public` community. SNMP

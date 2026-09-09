@@ -1,0 +1,10 @@
+[service]
+name = "winrm"
+default_ports = [5985, 5986, 47001]
+description = "Windows Remote Management"
+speaks = "http"
+
+# No probe. WinRM rides HTTP, so the generic request reaches it already, and
+# `Server: Microsoft-HTTPAPI` is stamped by every http.sys service rather than by
+# WinRM alone. What confirms WinRM is the 405 on /wsman, which
+# assets/detect/remote/winrm-exposed.toml asks for and reports.

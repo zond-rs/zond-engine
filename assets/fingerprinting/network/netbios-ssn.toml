@@ -1,0 +1,17 @@
+[service]
+name = "netbios-ssn"
+default_ports = [139]
+description = "NetBIOS session service"
+
+# A session request for the wildcard name `*SMBSERVER`, which is what a client
+# sends before SMB begins. The reply is one byte of type: 0x82 accepts, 0x83
+# refuses and states why.
+[[probe]]
+name = "session_request"
+payload = '\x81\x00\x00\x44\x20CKFDENECFDEFFCFGEFFCCACACACACACA\x00\x20CKFDENECFDEFFCFGEFFCCACACACACACA\x00'
+protocol = "tcp"
+
+[[match]]
+name = "netbios_session_reply"
+pattern = '^\x82|^\x83'
+product = "netbios-ssn"

@@ -1,0 +1,6 @@
+[service]
+name = "wireguard"
+default_ports = [51820]
+description = "WireGuard"
+
+# No probe yet: see openvpn.toml.

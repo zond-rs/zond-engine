@@ -1,0 +1,17 @@
+[service]
+name = "modbus"
+default_ports = [502]
+description = "Modbus TCP"
+
+# Read Device Identification, function 43 sub-function 14. A device that supports
+# it names its vendor, product and revision; one that does not answers with the
+# exception code, which still proves Modbus.
+[[probe]]
+name = "read_device_id"
+payload = '\x00\x01\x00\x00\x00\x05\x01\x2b\x0e\x01\x00'
+protocol = "tcp"
+
+[[match]]
+name = "modbus_reply"
+pattern = '^\x00\x01\x00\x00'
+product = "modbus"

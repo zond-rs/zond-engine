@@ -1,0 +1,8 @@
+[service]
+name = "iscsi"
+default_ports = [3260]
+description = "iSCSI target"
+
+# No probe. A login PDU carries an initiator name and a session identifier, which
+# is a session rather than a question, and nothing here has a target to author it
+# against. The number is the claim.

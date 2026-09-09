@@ -1,0 +1,15 @@
+[service]
+name = "ipp"
+default_ports = [631]
+description = "Internet Printing Protocol"
+speaks = "http"
+
+# 631 keys assets/detect/host/printer-host.toml, which reads it beside 9100 as a
+# network printer. CUPS states both protocol versions it serves in one header;
+# the IPP half is what makes the port IPP rather than a web server.
+[[match]]
+name = "ipp_server_header"
+pattern = '(?i)Server:[^\r\n]*\bIPP/[\d.]+'
+product = "ipp"
+context = "http_header.server"
+example = "Server: CUPS/2.4 IPP/2.1"

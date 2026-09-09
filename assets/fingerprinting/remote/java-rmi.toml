@@ -1,0 +1,16 @@
+[service]
+name = "java-rmi"
+default_ports = [1099]
+description = "Java RMI registry"
+
+# The JRMP handshake: "JRMI", protocol version 2, stream protocol 0x4b. A
+# registry answers 0x4e followed by the host it believes it is.
+[[probe]]
+name = "jrmp_handshake"
+payload = 'JRMI\x00\x02\x4b'
+protocol = "tcp"
+
+[[match]]
+name = "jrmp_ack"
+pattern = '^\x4e'
+product = "java-rmi"

@@ -1,6 +1,6 @@
 [service]
 name = "rabbitmq"
-default_ports = [5672, 5671]
+default_ports = [5672, 5671, 15672]
 description = "RabbitMQ / AMQP"
 
 [[probe]]
@@ -12,3 +12,13 @@ protocol = "tcp"
 name = "amqp_response"
 pattern = '^AMQP\x00'
 product = "rabbitmq"
+
+# The management plugin on 15672. It answers the generic request with its own
+# page title behind a generic Cowboy banner, so the title is what names it.
+[[match]]
+name = "rabbitmq_management_title"
+pattern = '<title>\s*RabbitMQ Management\s*</title>'
+vendor = "vmware"
+product = "rabbitmq"
+context = "html_title"
+example = "<title>RabbitMQ Management</title>"

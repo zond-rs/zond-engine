@@ -1,0 +1,6 @@
+[service]
+name = "bacnet"
+default_ports = [47808]
+description = "BACnet/IP building automation"
+
+# No probe yet: see openvpn.toml.

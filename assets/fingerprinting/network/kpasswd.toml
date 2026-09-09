@@ -1,0 +1,8 @@
+[service]
+name = "kpasswd"
+default_ports = [464]
+description = "Kerberos change/set password"
+
+# No probe. kpasswd is its own protocol rather than a second KDC port, so the
+# AS-REQ in kerberos.toml would draw nothing here. The number completes the
+# domain controller set that assets/detect/host/domain-controller.toml reads.
