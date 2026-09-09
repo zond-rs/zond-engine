@@ -1605,9 +1605,14 @@ mod tests {
 
     #[tokio::test]
     async fn analyze_identifies_a_long_tail_http_server_end_to_end() {
-        // gunicorn has no curated `Server:` regex, so the banner analyzer can
-        // only reach the generic `http` label. The structured HTTP analyzer must
-        // carry it through to product and version via the full pipeline.
+        // The structured HTTP analyzer must carry a `Server:` value through to
+        // product and version via the full pipeline.
+        //
+        // Two observations read this header and both are `Strong`: splitting it
+        // on the slash yields `gunicorn` and nothing else, and the corpus rule
+        // for the same value yields `Gunicorn`, the vendor, and the CPE. The
+        // curated reading takes the slot, which is the only reason a version
+        // here can reach a vulnerability catalogue at all.
         let responses = ResponseSet::from_banners(vec![
             "HTTP/1.1 200 OK\r\nServer: gunicorn/21.2.0\r\nContent-Type: text/html\r\n\r\n"
                 .to_string(),
@@ -1624,8 +1629,13 @@ mod tests {
         .expect("names a service");
 
         assert_eq!(verdict.service.as_deref(), Some("http"));
-        assert_eq!(verdict.product.as_deref(), Some("gunicorn"));
+        assert_eq!(verdict.product.as_deref(), Some("Gunicorn"));
         assert_eq!(verdict.version.as_deref(), Some("21.2.0"));
+        assert_eq!(
+            verdict.cpe.as_deref(),
+            Some("cpe:/a:gunicorn:gunicorn:21.2.0"),
+            "the reading that won the slot is the one the correlator can use"
+        );
     }
 
     #[tokio::test]

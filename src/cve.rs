@@ -168,6 +168,16 @@ pub enum CatalogueError {
 /// Correlates a finished host's services against the known-vulnerability dataset,
 /// recording a [`Finding`] on each port whose software an entry matches.
 ///
+/// The longest a catalogue entry's own title may be and still be used as a
+/// finding's summary.
+///
+/// A summary sits in a column beside a port and a severity, and the rows around
+/// it are phrases: `squid 6.13 has 7 known vulnerabilities`, `VNC offered the
+/// None security type`. Every hand-written entry in the shipped seed is under
+/// sixty characters. Anything longer is a description that was cut to fit rather
+/// than a title somebody wrote, and it belongs in the excerpt.
+const MAX_SUMMARY_BYTES: usize = 80;
+
 /// Reads each port's service CPE, matches vendor, product and version against the
 /// dataset, and hands each match back to the port it concerns. Idempotent: a
 /// finding deduplicates by claim, so a re-run corroborates rather than doubles.
@@ -530,11 +540,12 @@ impl Catalogue {
             .into_iter()
             .filter_map(|group| match group.as_slice() {
                 [] => None,
-                // One match is its own best description. This is the whole of
-                // what a hand-written catalogue or a converted KEV produces for
-                // most products, and it reads exactly as it did before
-                // summarising existed.
-                [only] => only.to_finding(cpe, self),
+                // One match is its own best description, where the entry has a
+                // description to be. This is the whole of what a hand-written
+                // catalogue or a converted KEV produces for most products, and
+                // it reads exactly as it did before summarising existed. See
+                // `to_finding` for the entries that have no title to use.
+                [only] => only.to_finding(cpe, &parsed, self),
                 many => self.summary_of(cpe, &parsed, many),
             })
             .collect()
@@ -723,7 +734,7 @@ impl Vulnerability<'_> {
 
     /// The finding this vulnerability produces for a matched `cpe`, or [`None`]
     /// if the entry is malformed: an unknown severity, a bad CVE identifier.
-    fn to_finding(&self, cpe: &str, catalogue: &Catalogue) -> Option<Finding> {
+    fn to_finding(&self, cpe: &str, parsed: &Cpe, catalogue: &Catalogue) -> Option<Finding> {
         let severity = wire::severity(self.severity)?;
         let detection = DetectionId::new(
             catalogue.id.clone(),
@@ -754,9 +765,36 @@ impl Vulnerability<'_> {
             ),
         };
 
+        // NVD publishes no title. `import::nvd` takes the first sentence of the
+        // description and stops at [`MAX_TITLE_BYTES`], and for almost every
+        // record that sentence is longer than the cap: of the seventy thousand
+        // entries the shipped catalogue holds, sixty-three thousand are over a
+        // hundred characters and the median is the cap itself. Putting one on
+        // the summary line prints a paragraph cut mid-word where every
+        // neighbouring row is a phrase.
+        //
+        // So a title is used as one only where it reads as one, which is what a
+        // hand-written entry and a KEV record both produce. Otherwise the line
+        // says what it says for a run of matches and the description moves to
+        // the excerpt, where a long one costs nothing and is the evidence
+        // anyway.
+        let (title, excerpt) = match self.title.len() <= MAX_SUMMARY_BYTES {
+            true => (self.title.to_string(), excerpt),
+            false => {
+                let software = match parsed.version.is_empty() {
+                    true => self.product.to_string(),
+                    false => format!("{} {}", self.product, parsed.version),
+                };
+                (
+                    format!("{software} has 1 known vulnerability"),
+                    format!("{excerpt}. {}", self.title),
+                )
+            }
+        };
+
         let mut finding = Finding::new(
             detection,
-            self.title,
+            title,
             severity,
             confidence,
             DetectionClass::Passive,
@@ -911,6 +949,61 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// A summary is a phrase, and an entry with no title of its own does not get
+    /// to put a paragraph on that line.
+    ///
+    /// NVD publishes no title, so `import::nvd` cuts the description to fit and
+    /// almost every one comes out at the cap. IIS 8.5 is the case that showed
+    /// it: one match, and the summary read `The IP Security feature in Microsoft
+    /// Internet Information Services (IIS) 8.0 and 8.5 does not properly process
+    /// wildcard allow and deny rules for domains within`, cut mid-sentence, in a
+    /// column whose other rows are six words.
+    #[test]
+    fn a_description_too_long_to_be_a_summary_becomes_one_and_moves_to_the_excerpt() {
+        let long = "The IP Security feature in Microsoft Internet Information Services (IIS) \
+                    8.0 and 8.5 does not properly process wildcard allow and deny rules for \
+                    domains within";
+        let document = format!(
+            "id = \"test:cve\"\nversion = \"1.0.0\"\n\n\
+             [[vulnerability]]\ncve = \"CVE-2014-4078\"\ntitle = \"{long}\"\n\
+             severity = \"medium\"\nvendor = \"microsoft\"\n\
+             product = \"internet_information_services\"\naffected = \"== 8.5\"\n"
+        );
+        let catalogue =
+            Catalogue::read(&mut document.as_bytes()).expect("a catalogue naming one entry");
+
+        let findings = catalogue.findings_for("cpe:/a:microsoft:internet_information_services:8.5");
+        let finding = findings.first().expect("the entry matches");
+
+        assert_eq!(
+            finding.title(),
+            "internet_information_services 8.5 has 1 known vulnerability"
+        );
+        let excerpt = finding.excerpt().as_str();
+        assert!(
+            excerpt.contains("IP Security feature"),
+            "the description is kept as evidence, not discarded: {excerpt}"
+        );
+    }
+
+    /// And an entry that does have a title keeps it. This is what the shipped
+    /// seed and a converted KEV record produce, and it was right already.
+    #[test]
+    fn a_title_short_enough_to_be_a_summary_is_used_as_one() {
+        let document = "id = \"test:cve\"\nversion = \"1.0.0\"\n\n\
+             [[vulnerability]]\ncve = \"CVE-2021-41773\"\n\
+             title = \"Apache HTTP Server path traversal and RCE\"\n\
+             severity = \"critical\"\nvendor = \"apache\"\nproduct = \"http_server\"\n\
+             affected = \"== 2.4.49\"\n";
+        let catalogue = Catalogue::read(&mut document.as_bytes()).expect("a catalogue");
+
+        let findings = catalogue.findings_for("cpe:/a:apache:http_server:2.4.49");
+        assert_eq!(
+            findings.first().expect("the entry matches").title(),
+            "Apache HTTP Server path traversal and RCE"
+        );
     }
 
     #[test]

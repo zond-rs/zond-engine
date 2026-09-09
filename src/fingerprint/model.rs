@@ -331,10 +331,42 @@ impl ServiceVerdict {
         // one thing an echo is good for, naming the port where no service was
         // identified at all, is already covered, because a product is only an
         // echo when there *is* a service for it to echo.
-        let named = evidence
+        let candidates: Vec<&Evidence> = evidence
             .iter()
             .filter(|ev| ev.product.is_some())
-            .find(|ev| ev.product.as_deref() != verdict.service.as_deref());
+            .filter(|ev| ev.product.as_deref() != verdict.service.as_deref())
+            .collect();
+
+        // Where the strongest candidates tie, the one that also states a
+        // platform identifier takes the slot. Two observations can read the same
+        // bytes and disagree about what to call the result: splitting
+        // `Microsoft-IIS/10.0` on its slash yields `Microsoft-IIS` and nothing
+        // else, while the corpus rule for the same value yields `IIS` and the
+        // CPE. Both carry a version, so both are `Strong`, and the tie used to
+        // be settled by the order the analyzers happened to push them.
+        //
+        // A rule that names a vendor, a product and a version is a stricter
+        // reading than a split on a separator, so this is the more specific
+        // answer winning rather than a preference for the field itself. The list
+        // is sorted strongest-first, so the equal-ranked candidates are the run
+        // at its head.
+        //
+        // The version is part of the condition because a versionless CPE is not
+        // the thing this is for. `cloudflare` matches a rule bearing
+        // `cpe:/a:cloudflare:load_balancing:-`, which no vulnerability entry can
+        // join to, and preferring it would bury the header's own word for the
+        // sake of an identifier that buys nothing.
+        let best = candidates.first().copied();
+        let named = best.map(|first| {
+            candidates
+                .iter()
+                .take_while(|ev| {
+                    (ev.confidence, ev.port_confirmed) == (first.confidence, first.port_confirmed)
+                })
+                .find(|ev| ev.cpe.is_some() && ev.version.is_some())
+                .copied()
+                .unwrap_or(first)
+        });
         verdict.product = named.and_then(|ev| ev.product.clone());
 
         // **The platform identifier comes from whichever observation named the
@@ -352,8 +384,28 @@ impl ServiceVerdict {
         //
         // Where nothing named a product there is nothing for a CPE to
         // contradict, so the strongest one stands on its own.
+        // Where the winner has none, one may still be taken from an observation
+        // that agrees with what is being reported: same product under another
+        // spelling, or a product echoing the service, which names the same
+        // software the service does. Elasticsearch is the case that needs it.
+        // Its body rule holds the CPE and names `elasticsearch` on service
+        // `elasticsearch`, so the echo rule above bars it from the slot, and a
+        // favicon hash naming `Search` and holding nothing took the identifier
+        // down with it.
+        //
+        // An observation that states no product at all is not agreement. It is
+        // the absence of a claim, and borrowing from it is how a verdict came to
+        // report `gunicorn 21.2.0` beside an Apache CPE.
         verdict.cpe = match named {
-            Some(ev) => ev.cpe.clone(),
+            Some(ev) if ev.cpe.is_some() => ev.cpe.clone(),
+            Some(ev) => evidence
+                .iter()
+                .filter(|other| other.cpe.is_some())
+                .find(|other| {
+                    let product = other.product.as_deref();
+                    product == ev.product.as_deref() || product == verdict.service.as_deref()
+                })
+                .and_then(|other| other.cpe.clone()),
             None => evidence.iter().find_map(|ev| ev.cpe.clone()),
         };
 
@@ -455,6 +507,83 @@ mod tests {
         let service = verdict.to_service().expect("names a service");
         let cpes: Vec<String> = service.cpes().iter().map(ToString::to_string).collect();
         assert_eq!(cpes.len(), 1, "the verdict's cpe reached the service");
+    }
+
+    /// Two observations read the same header and only one of them knows what
+    /// the software is. Measured on `Microsoft-IIS/10.0`, where splitting the
+    /// value on its slash yields the product `Microsoft-IIS` and no CPE, and the
+    /// corpus rule for the same value yields `IIS` and
+    /// `microsoft:internet_information_services`. Both carry a version, so both
+    /// are `Strong` and neither is port-confirmed: a tie, and the tie used to be
+    /// settled by the order the analyzer pushed them.
+    #[test]
+    fn a_tie_for_the_product_goes_to_the_observation_that_knows_the_platform() {
+        let mut split = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("Microsoft-IIS");
+        split.version = Some("10.0".to_string());
+        let mut rule = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("IIS")
+            .with_cpe("cpe:/a:microsoft:internet_information_services:10.0");
+        rule.version = Some("10.0".to_string());
+
+        let verdict = ServiceVerdict::resolve(vec![split, rule]);
+
+        assert_eq!(verdict.product.as_deref(), Some("IIS"));
+        assert_eq!(
+            verdict.cpe.as_deref(),
+            Some("cpe:/a:microsoft:internet_information_services:10.0")
+        );
+    }
+
+    /// A rule whose product echoes the service is not eligible for the product
+    /// slot, and its CPE used to go with it. Measured on Elasticsearch, where
+    /// the body rule names `elasticsearch` on service `elasticsearch` and holds
+    /// the CPE, while a favicon hash names `Search` and holds nothing. The
+    /// echo is still not surfaced as a product; what changes is that naming the
+    /// service is no longer a reason to discard the platform identifier.
+    #[test]
+    fn an_echoing_product_still_supplies_the_platform_identifier() {
+        let favicon = ev(Confidence::Strong)
+            .with_service("elasticsearch")
+            .with_product("Search");
+        let body = ev(Confidence::Strong)
+            .with_service("elasticsearch")
+            .with_product("elasticsearch")
+            .with_cpe("cpe:/a:elastic:elasticsearch:7.17.0");
+
+        let verdict = ServiceVerdict::resolve(vec![favicon, body]);
+
+        assert_eq!(verdict.product.as_deref(), Some("Search"));
+        assert_eq!(
+            verdict.cpe.as_deref(),
+            Some("cpe:/a:elastic:elasticsearch:7.17.0"),
+            "the echo names the same software the service does, so its CPE agrees"
+        );
+    }
+
+    /// And the case the coupling existed for. A reverse-proxied host states two
+    /// products and only one can have the slot; the CPE may not be taken from
+    /// the loser, because `cve` joins on it and the report would name one
+    /// product while being matched against another's vulnerabilities.
+    #[test]
+    fn a_cpe_naming_a_different_product_is_never_borrowed() {
+        let front = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("gunicorn");
+        let behind = ev(Confidence::Probable)
+            .with_service("http")
+            .with_product("Apache httpd")
+            .with_cpe("cpe:/a:apache:http_server:2.4.49");
+
+        let verdict = ServiceVerdict::resolve(vec![front, behind]);
+
+        assert_eq!(verdict.product.as_deref(), Some("gunicorn"));
+        assert_eq!(
+            verdict.cpe, None,
+            "an Apache CPE beside a gunicorn product is a false finding"
+        );
     }
 
     #[test]
