@@ -47,7 +47,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install libpcap
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -70,7 +70,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install libpcap
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -111,7 +111,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install libpcap
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -152,7 +152,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.93
 
       - name: Install libpcap
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -194,7 +194,7 @@ jobs:
           toolchain: nightly-2026-08-13
 
       - name: Install libpcap
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
