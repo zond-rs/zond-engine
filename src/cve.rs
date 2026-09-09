@@ -297,11 +297,11 @@ pub struct Catalogue {
     content_hash: String,
     /// Every distinct string the entries below are built from, written once.
     ///
-    /// A real feed repeats itself enormously: seventy-one thousand entries are
-    /// backed by seven thousand advisories, because NVD states one entry per
+    /// A real feed repeats itself enormously: seventy-two thousand entries are
+    /// backed by eight thousand advisories, because NVD states one entry per
     /// affected version rather than one per vulnerability, and every one of them
-    /// carries the same title. Six thousand distinct titles, a hundred and
-    /// forty-seven distinct products.
+    /// carries the same title. Six and a half thousand distinct titles, a
+    /// hundred and sixty-one distinct products.
     ///
     /// Stored flat with the entries holding indices, which is what makes the
     /// shipped catalogue two megabytes rather than sixteen. The saving is the
@@ -868,6 +868,10 @@ mod tests {
     /// Every product a scan can put a version to either has entries here or is
     /// listed below with the reason it does not.
     ///
+    /// Fourteen names were on this list until the catalogue was regenerated on
+    /// 2026-09-09 and are not any more, which is what the second test below is
+    /// for: a stale exemption is as quiet a defect as the gap it was recording.
+    ///
     /// The join is `vendor:product` and a mismatch is silent in both directions:
     /// a scan identifies the software, the catalogue holds records for it, and
     /// nothing correlates because the two spell it differently. That is how
@@ -878,39 +882,9 @@ mod tests {
     /// be removed from it, which is what turns a regeneration into a visible
     /// event rather than something nobody notices.
     const UNCOVERED: &[(&str, &str)] = &[
-        // The shipped catalogue was converted before these products were in the
-        // corpus, or before the corpus could put a version to them. NVD holds
-        // the record count named, read from its 2.0 API on 2026-09-09, and a
-        // regeneration is all that stands between them and a finding.
-        (
-            "aerospike:aerospike_server",
-            "stale catalogue: 1 record in NVD",
-        ),
-        (
-            "coturn_project:coturn",
-            "stale catalogue: 20 records in NVD",
-        ),
-        ("docker:docker", "stale catalogue: 53 records in NVD"),
-        (
-            "elastic:elasticsearch",
-            "stale catalogue: 74 records in NVD",
-        ),
-        ("etcd:etcd", "stale catalogue: 11 records in NVD"),
-        ("influxdata:influxdb", "stale catalogue: 3 records in NVD"),
-        ("jellyfin:jellyfin", "stale catalogue: 19 records in NVD"),
-        ("memcached:memcached", "stale catalogue: 21 records in NVD"),
-        ("redis:redis", "stale catalogue: 47 records in NVD"),
-        ("samba:rsync", "stale catalogue: 47 records in NVD"),
-        ("syncthing:syncthing", "stale catalogue: 3 records in NVD"),
-        (
-            "microsoft:internet_information_services",
-            "stale catalogue: 93 records in NVD",
-        ),
-        ("aiohttp:aiohttp", "stale catalogue: 46 records in NVD"),
-        ("mongrel:mongrel", "stale catalogue: 1 record in NVD"),
-        // Nothing has ever published a record against these names, under any
-        // spelling that could be found. The corpus identifies the software and
-        // there is no vulnerability data to join to.
+        // Nothing has published a record against these names, under any spelling
+        // that could be found. The corpus identifies the software and there is
+        // no vulnerability data to join to.
         ("avocent:dsview", "no records in NVD"),
         ("darkhttpd_project:darkhttpd", "no records in NVD"),
         ("mcafee:webshield", "no records in NVD"),
