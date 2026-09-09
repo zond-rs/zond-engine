@@ -335,7 +335,8 @@ impl SignatureDb {
             }
         }
 
-        // Primary name and reachable-service set per port, from ported defs.
+        // Primary name and reachable-service set per port. Both lists reach a
+        // port; only `default_ports` names it.
         let mut name_index: HashMap<u16, Arc<str>> = HashMap::new();
         let mut port_services: HashMap<u16, Vec<String>> = HashMap::new();
         for def in &defs {
@@ -343,6 +344,13 @@ impl SignatureDb {
                 name_index
                     .entry(port)
                     .or_insert_with(|| Arc::from(def.service.name.as_str()));
+            }
+            for &port in def
+                .service
+                .default_ports
+                .iter()
+                .chain(&def.service.shared_ports)
+            {
                 let names = port_services.entry(port).or_default();
                 if !names.contains(&def.service.name) {
                     names.push(def.service.name.clone());
@@ -925,6 +933,7 @@ mod tests {
     use super::*;
     use crate::fingerprint::signature::{DefinitionError, MatchRule, Probe, ServiceSignature};
     use crate::model::host::OsSource;
+    use std::collections::BTreeMap;
 
     fn def(name: &str, ports: Vec<u16>, patterns: &[&str]) -> ServiceDefinition {
         speaking(name, ports, patterns, None)
@@ -955,6 +964,7 @@ mod tests {
             service: ServiceSignature {
                 name: name.to_string(),
                 default_ports: ports,
+                shared_ports: Vec::new(),
                 description: None,
                 attribution: None,
                 speaks: speaks.map(str::to_owned),
@@ -1410,6 +1420,68 @@ mod tests {
         ] {
             let _ = SignatureDb::global().canonical_os_name(name);
         }
+    }
+
+    /// No port number is owned twice across the shipped corpus.
+    ///
+    /// The index keeps the first claim it is handed, in sorted-path order, so a
+    /// second claim loses silently: the build passes, the port is named, and the
+    /// name is somebody else's. Enumerated because that failure is invisible.
+    /// `shared_ports` is what every claimant but the owner declares, and this
+    /// permits any number of those.
+    #[test]
+    fn no_two_services_own_the_same_port() {
+        let definitions = SignatureDb::embedded_definitions();
+        let mut owners: BTreeMap<u16, BTreeSet<&str>> = BTreeMap::new();
+        for def in &definitions {
+            for &port in &def.service.default_ports {
+                owners
+                    .entry(port)
+                    .or_default()
+                    .insert(def.service.name.as_str());
+            }
+        }
+
+        let contested: Vec<String> = owners
+            .iter()
+            .filter(|(_, names)| names.len() > 1)
+            .map(|(port, names)| {
+                format!(
+                    "{port} claimed by {}",
+                    names.iter().copied().collect::<Vec<_>>().join(", ")
+                )
+            })
+            .collect();
+
+        assert!(
+            contested.is_empty(),
+            "a port may be owned by one service: {}. Move it to shared_ports in \
+             every definition that does not own the number.",
+            contested.join("; ")
+        );
+    }
+
+    /// A shared port reaches the service's rules and probes without taking its
+    /// name, which is the whole difference between the two lists.
+    #[test]
+    fn a_shared_port_is_matched_but_not_named() {
+        let db = SignatureDb::global();
+
+        assert_eq!(db.service_name(8080).as_deref(), Some("http"));
+        assert!(
+            db.signatures_for_port(8080).len()
+                > db.signatures_for_port(3128).len().saturating_sub(1),
+            "8080 carries Squid's rules as well as HTTP's"
+        );
+        assert!(
+            !db.tcp_probe_payloads(8080)
+                .iter()
+                .any(|p| p.starts_with(b"GET http://")),
+            "no probe asks a proxy to fetch a third-party URL"
+        );
+
+        assert_eq!(db.service_name(3000).as_deref(), None);
+        assert_eq!(db.tcp_probe_payloads(3000).len(), 2);
     }
 
     /// Everything the build compiled passes the check the build ran. Circular if

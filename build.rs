@@ -130,6 +130,7 @@ fn main() {
     }
 
     census_contexts(&services, &toml_files);
+    warn_contested_ports(&services, &toml_files);
 
     let encoded = bincode::serialize(&services).expect("failed to serialize fingerprint database");
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
@@ -895,6 +896,45 @@ fn compile_cve_catalogue(out_dir: &Path) {
 /// is reported instead — and only then. A corpus with nothing waiting prints
 /// nothing, so the line is an alarm and not a meter, and a build that has been
 /// quiet for months is still counting.
+/// Reports a port number two files both put in `default_ports`.
+///
+/// The index keeps whichever file sorts first, so the losing name disappears
+/// with nothing said. `shared_ports` is the fix this points at. A warning rather
+/// than a refusal: the resulting label is arbitrary, not wrong enough to stop a
+/// build over.
+fn warn_contested_ports(defs: &[ServiceDefinition], paths: &[PathBuf]) {
+    let mut owners: BTreeMap<u16, Vec<(&str, String)>> = BTreeMap::new();
+    for (def, path) in defs.iter().zip(paths) {
+        for &port in &def.service.default_ports {
+            owners
+                .entry(port)
+                .or_default()
+                .push((def.service.name.as_str(), path.display().to_string()));
+        }
+    }
+
+    for (port, claims) in owners {
+        // Several files of one service agree on the answer either way.
+        let distinct: BTreeSet<&str> = claims.iter().map(|(name, _)| *name).collect();
+        if distinct.len() < 2 {
+            continue;
+        }
+        let (winner, _) = claims[0];
+        let losers: Vec<String> = claims[1..]
+            .iter()
+            .map(|(name, file)| format!("'{name}' ({file})"))
+            .collect();
+        println!(
+            "cargo:warning=port {port} is claimed in default_ports by '{}' ({}) and {}; \
+             the name goes to '{winner}' because its file sorts first. Move {port} to \
+             shared_ports in every definition that does not own the number.",
+            claims[0].0,
+            claims[0].1,
+            losers.join(" and ")
+        );
+    }
+}
+
 fn census_contexts(defs: &[ServiceDefinition], paths: &[PathBuf]) {
     use context::Reach;
 

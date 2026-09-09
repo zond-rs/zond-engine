@@ -196,15 +196,29 @@ pub struct ServiceSignature {
     /// The service's canonical name, the one a report prints and every rule and
     /// probe in the file registers under.
     pub name: String,
-    /// The ports this service claims. Each one indexes the file's rules and
-    /// probes under that number in
-    /// [`SignatureDb`](crate::fingerprint::SignatureDb), and the first service
-    /// to claim a number is the one that gives it its primary name.
+    /// The ports this service owns. Each indexes the file's rules and probes
+    /// under that number in [`SignatureDb`](crate::fingerprint::SignatureDb),
+    /// and each takes the service's name as the label a scan prints before
+    /// anything has been asked.
+    ///
+    /// A number several services share belongs in
+    /// [`shared_ports`](Self::shared_ports) instead.
     ///
     /// An empty list is a finished definition rather than an omission: a file
     /// with no ports holds banner rules reached by global matching, where the
     /// text decides what the service is and the number never enters into it.
     pub default_ports: Vec<u16>,
+    /// Ports this service is probed and matched on without being named by them.
+    ///
+    /// Indexed exactly as [`default_ports`](Self::default_ports) for rules and
+    /// probes, and absent from the port-to-name index. A scan still asks the
+    /// number and still identifies the service from the reply; what it will not
+    /// do is print the name before asking.
+    ///
+    /// Where a number is contested, this is what every claimant but its owner
+    /// declares. 8080 is `http`'s to name and Squid's to match.
+    #[serde(default)]
+    pub shared_ports: Vec<u16>,
     /// A line of prose naming the service, for whoever reads the corpus.
     pub description: Option<String>,
     /// Where the definition came from, when it was not authored here. The

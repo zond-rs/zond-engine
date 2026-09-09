@@ -105,6 +105,7 @@ fn definition(name: &str, port: u16, pattern: &str) -> ServiceDefinition {
         service: ServiceSignature {
             name: name.to_string(),
             default_ports: vec![port],
+            shared_ports: Vec::new(),
             description: None,
             attribution: None,
             speaks: None,
