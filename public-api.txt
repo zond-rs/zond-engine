@@ -16675,6 +16675,7 @@ pub fn zond_engine::transport::probe::ProbeTransport::capture_counts(&self) -> c
 pub fn zond_engine::transport::probe::ProbeTransport::from_parts(alloc::boxed::Box<dyn zond_engine::transport::probe::ProbeSender>, zond_engine::transport::capture::CaptureStream) -> Self
 pub fn zond_engine::transport::probe::ProbeTransport::open(zond_engine::transport::probe::ProbeKind) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>
 pub fn zond_engine::transport::probe::ProbeTransport::open_ethernet(zond_engine::transport::probe::ProbeKind) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>
+pub fn zond_engine::transport::probe::ProbeTransport::open_link_first(zond_engine::transport::probe::ProbeKind) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>
 pub fn zond_engine::transport::probe::ProbeTransport::open_on(zond_engine::transport::probe::ProbeKind, &[zond_engine::model::ip::scoped::Zone]) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>
 pub fn zond_engine::transport::probe::ProbeTransport::open_receiver(zond_engine::transport::probe::ProbeKind) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>
 pub fn zond_engine::transport::probe::ProbeTransport::open_with(zond_engine::transport::probe::ProbeKind, zond_engine::transport::probe::SendMode) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>

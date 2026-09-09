@@ -691,6 +691,58 @@ impl ProbeSender for RawIpSender {
     }
 }
 
+/// A sender that builds its own frames and falls back to the raw socket for
+/// the destinations it cannot frame.
+///
+/// Exists because on macOS the raw socket loses packets, silently and in bulk.
+/// Measured against one host on a local segment: a 10 000-port SYN scan made
+/// 11 916 sends that `sendto` accepted and returned success for, and 9 081 of
+/// them reached the wire. The ports behind the missing quarter answered nothing
+/// because nothing was ever asked of them, and the scan reported a host with no
+/// service versions, no TLS and four findings. The same scan over
+/// [`EthernetSender`] sent every probe, found thirteen open ports with their
+/// versions and certificates, and produced twenty-three findings. Neither the
+/// rate nor the network is implicated: the same packets at the same rate
+/// through the kernel's own IP output path, and through link-layer injection,
+/// each lost under 0.2%.
+///
+/// So the frames go out at Layer 2 where that works, and through the socket
+/// where it does not. The fallback is what keeps the change from costing
+/// anything: [`EthernetSender`] has no NDP, so it cannot reach an on-link IPv6
+/// neighbour, and it has no route to loopback or through a tunnel. Those were
+/// the reasons the raw socket was the default, and they are still true - they
+/// are just no longer reasons to send *everything* that way.
+///
+/// An emission that only a self-built frame can carry is never retried: the
+/// socket would send it without the field that was asked for, which is a
+/// different probe reported as the one requested.
+struct LinkLayerFirst {
+    link: EthernetSender,
+    socket: RawIpSender,
+}
+
+impl ProbeSender for LinkLayerFirst {
+    fn send(
+        &self,
+        segment: &[u8],
+        src: IpAddr,
+        dst: IpAddr,
+        zone: Option<u32>,
+        emission: Emission,
+    ) -> Result<(), SendError> {
+        let framed = self.link.send(segment, src, dst, zone, emission);
+        if framed.is_ok() || emission.requires_link_layer() {
+            return framed;
+        }
+        // Whatever the frame path could not do with this destination, the
+        // socket may still manage: it has the host's own routing table, its own
+        // neighbour cache and NDP, and it reaches loopback and tunnels. Its
+        // answer is the one returned, because it is the one that decided the
+        // outcome.
+        self.socket.send(segment, src, dst, zone, emission)
+    }
+}
+
 /// A sender that refuses to send. Paired with a capture for receive-only
 /// transports (the DNS/mDNS resolver only listens), so no raw send socket is
 /// opened just to be thrown away - and a stray send attempt fails loudly
@@ -754,15 +806,21 @@ impl ProbeTransport {
         match mode {
             SendMode::Ethernet => Self::open_ethernet(kind),
             SendMode::RawSocket => Self::open_on(kind, &capturable_interfaces()),
-            // On Windows raw-socket TCP sends are blocked, so Layer-2 is the
-            // only path; everywhere else the raw socket is simplest and works
-            // through tunnels without ARP.
+            // Windows blocks raw-socket TCP sends outright, so Layer 2 is the
+            // only path there. macOS takes them and drops a quarter of them
+            // without saying so, which is worse than refusing: see
+            // [`LinkLayerFirst`] for the measurement. Everywhere else the raw
+            // socket is simplest and reaches everything without ARP.
             SendMode::Auto => {
                 #[cfg(windows)]
                 {
                     Self::open_ethernet(kind)
                 }
-                #[cfg(not(windows))]
+                #[cfg(target_os = "macos")]
+                {
+                    Self::open_link_first(kind)
+                }
+                #[cfg(not(any(windows, target_os = "macos")))]
                 {
                     Self::open_on(kind, &capturable_interfaces())
                 }
@@ -779,6 +837,32 @@ impl ProbeTransport {
         )?;
         let tx: Box<dyn ProbeSender> = Box::new(RawIpSender::open(kind)?);
         Ok(Self { tx, rx, capture })
+    }
+
+    /// Opens a transport that frames its own probes where it can and falls back
+    /// to the raw socket where it cannot ([`LinkLayerFirst`]).
+    ///
+    /// The default on macOS, where the raw socket discards sends it has already
+    /// accepted. A host with no Ethernet-capable interface has nothing to frame
+    /// onto, so it gets the raw-socket transport rather than a failure: the
+    /// fallback would be the whole of what it did anyway.
+    pub fn open_link_first(kind: ProbeKind) -> Result<Self, TransportError> {
+        let Some(link) = EthernetSender::from_system(kind.ip_protocols()) else {
+            return Self::open_on(kind, &capturable_interfaces());
+        };
+        let (rx, capture) = capture::segments(
+            &capturable_interfaces(),
+            &CaptureOptions::for_replies(kind.filter()),
+            REPLY_QUEUE_DEPTH,
+        )?;
+        Ok(Self {
+            tx: Box::new(LinkLayerFirst {
+                link,
+                socket: RawIpSender::open(kind)?,
+            }),
+            rx,
+            capture,
+        })
     }
 
     /// Opens a transport whose send half builds and emits Ethernet frames
@@ -941,6 +1025,83 @@ mod tests {
         );
         reply_tx.send(reply.clone()).await.unwrap();
         assert_eq!(transport.rx.recv().await, Some(reply));
+    }
+
+    /// The fallback is what keeps the macOS default from costing reach. The
+    /// frame path cannot resolve an on-link IPv6 neighbour and has no route to
+    /// loopback, and those destinations have to keep working: they were the
+    /// reason the raw socket was the default everywhere.
+    #[test]
+    fn a_destination_the_frame_path_cannot_reach_goes_through_the_socket() {
+        let refusing = RefusingSender(SendError::Unsupported("no NDP here"));
+        let socket = MockSender::default();
+        let sent = socket.sent.clone();
+
+        let result = send_through_fallback(&refusing, &socket, Emission::routed());
+
+        assert!(result.is_ok(), "the socket served it: {result:?}");
+        assert_eq!(sent.lock().unwrap().len(), 1);
+    }
+
+    /// A probe carrying a field only a self-built frame can express is not
+    /// retried through the socket. Sending it that way would put a different
+    /// probe on the wire and report it as the one that was asked for.
+    #[test]
+    fn a_probe_only_a_frame_can_carry_is_never_retried_through_the_socket() {
+        let refusing = RefusingSender(SendError::Refused("the link went down".to_string()));
+        let socket = MockSender::default();
+        let sent = socket.sent.clone();
+
+        let spoofed = Emission {
+            source_mac: Some(crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 1)),
+            ..Emission::routed()
+        };
+        assert!(spoofed.requires_link_layer(), "test premise");
+
+        let result = send_through_fallback(&refusing, &socket, spoofed);
+
+        assert!(result.is_err(), "the refusal stands");
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "and nothing went out the other way"
+        );
+    }
+
+    /// A sender that always fails the same way, for exercising the fallback.
+    struct RefusingSender(SendError);
+
+    impl ProbeSender for RefusingSender {
+        fn send(
+            &self,
+            _segment: &[u8],
+            _src: IpAddr,
+            _dst: IpAddr,
+            _zone: Option<u32>,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
+            Err(match &self.0 {
+                SendError::Unsupported(why) => SendError::Unsupported(why),
+                SendError::Refused(why) => SendError::Refused(why.clone()),
+                SendError::Unroutable(why) => SendError::Unroutable(why.clone()),
+            })
+        }
+    }
+
+    /// [`LinkLayerFirst::send`]'s rule, over two senders a test can drive.
+    /// The type itself holds concrete backends, and what is worth testing is
+    /// when it reaches for the second one.
+    fn send_through_fallback(
+        link: &dyn ProbeSender,
+        socket: &dyn ProbeSender,
+        emission: Emission,
+    ) -> Result<(), SendError> {
+        let src = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 9));
+        let framed = link.send(&[0xAA], src, dst, None, emission);
+        if framed.is_ok() || emission.requires_link_layer() {
+            return framed;
+        }
+        socket.send(&[0xAA], src, dst, None, emission)
     }
 
     /// A Layer-2 sender writes the IP header itself and has nothing but this to
