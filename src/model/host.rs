@@ -304,7 +304,11 @@ impl NetworkRole {
             Self::DhcpServer => "DHCP",
             Self::NtpServer => "NTP",
             Self::SnmpAgent => "SNMP",
-            Self::DomainController => "domain controller",
+            // One token, like every other label and like its own wire name: a
+            // role is drawn into a space-separated list, so a space here would
+            // read as two roles, and `domain controller` also drifted from the
+            // hyphenated `network_role_name` a reader greps a record by.
+            Self::DomainController => "domain-controller",
             Self::Switch => "switch",
             Self::Origin => "origin",
             Self::Tarpit => "tarpit",
