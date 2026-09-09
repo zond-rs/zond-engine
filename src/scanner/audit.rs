@@ -54,6 +54,12 @@ pub struct ProbeAudit {
     /// Of those, ones the sender refused. A non-zero count means the shortfall
     /// starts at home, before the network is implicated at all.
     pub(crate) sends_failed: u64,
+    /// Of those, ones seen leaving on the wire carrying their own token. The
+    /// counter that is evidence rather than testimony: a send the operating
+    /// system accepted and then discarded is counted above and not here, and
+    /// the gap between the two is the only way a scan can tell a port it never
+    /// asked from one that stayed quiet.
+    pub(crate) sends_witnessed: u64,
 
     /// Segments the capture handed up, before any of the scanner's own checks.
     /// Bounded above by what the kernel BPF filter admitted.
@@ -146,6 +152,7 @@ impl ProbeAudit {
             started: Instant::now(),
             sends_attempted: 0,
             sends_failed: 0,
+            sends_witnessed: 0,
             segments_seen: 0,
             segments_off_target: 0,
             replies_without_rtt: 0,
@@ -158,12 +165,34 @@ impl ProbeAudit {
         }
     }
 
-    /// Records one send attempt and whether it reached the wire.
+    /// Records one send attempt and whether the operating system took it.
     pub fn record_send(&mut self, sent: bool) {
         self.sends_attempted += 1;
         if !sent {
             self.sends_failed += 1;
         }
+    }
+
+    /// Records one probe seen leaving on the wire carrying its own token.
+    ///
+    /// The other half of [`record_send`](Self::record_send), and the half that
+    /// is evidence. That one says the operating system took the write; this one
+    /// says the packet was watched going out. They agree on a healthy host and
+    /// they are the whole diagnosis when they do not: macOS takes a raw-socket
+    /// write, returns success and discards the packet, and without this the
+    /// ports it swallowed are indistinguishable from ports that stayed quiet.
+    pub fn record_witnessed_send(&mut self) {
+        self.sends_witnessed += 1;
+    }
+
+    /// Whether this run has seen any of its own probes leave.
+    ///
+    /// Zero means no sighting was possible - a platform or a path where the
+    /// capture does not see egress - and nothing may read a probe's own count
+    /// as evidence of anything. It is the guard on every conclusion drawn from
+    /// [`record_witnessed_send`](Self::record_witnessed_send).
+    pub fn witnesses_its_sends(&self) -> bool {
+        self.sends_witnessed > 0
     }
 
     /// Records one segment lifted off the capture, before any filtering the
@@ -226,6 +255,11 @@ impl ProbeAudit {
     /// failures the module documentation sets out.
     pub fn sends_failed(&self) -> u64 {
         self.sends_failed
+    }
+
+    /// How many probes were seen leaving on the wire.
+    pub fn sends_witnessed(&self) -> u64 {
+        self.sends_witnessed
     }
 
     /// Segments the capture handed up, before any of this scanner's own checks.
@@ -298,6 +332,7 @@ impl ProbeAudit {
             elapsed: self.elapsed(),
             sends_attempted: self.sends_attempted,
             sends_failed: self.sends_failed,
+            sends_witnessed: self.sends_witnessed,
             segments_seen: self.segments_seen,
             segments_off_target: self.segments_off_target,
             replies_without_rtt: self.replies_without_rtt,

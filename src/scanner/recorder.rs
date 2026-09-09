@@ -329,6 +329,7 @@ mod tests {
             elapsed: Duration::from_millis(40),
             sends_attempted: 300,
             sends_failed: 0,
+            sends_witnessed: 0,
             segments_seen: 250,
             segments_off_target: 1,
             replies_without_rtt: 2,

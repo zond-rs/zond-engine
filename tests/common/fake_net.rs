@@ -1050,6 +1050,11 @@ impl FakeLink {
         Some(CapturedSegment {
             received_at: Instant::now(),
             source: target,
+            // The scanner's own address, because this is standing in for a
+            // packet that arrived. A reply with no destination is one a scan
+            // watching its own egress cannot place, and leaving it out here
+            // would exercise a receive stream no capture produces.
+            destination: Some(scanner),
             protocol: IpNextHeaderProtocols::Tcp,
             bytes: buffer,
             // A real reply arrives under an IP header, and this one says what a

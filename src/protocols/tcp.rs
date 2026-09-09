@@ -339,6 +339,20 @@ pub fn echoed_nonce(technique: TcpScanTechnique, reply: &Segment<'_>, padding: u
 /// own, for the arbitrary-flags evasion path. The span a reply's acknowledgement
 /// is advanced by is the sequence space the sent flags occupy, so it follows
 /// from the flags alone.
+/// The nonce a probe of `flags` went out carrying, read back off the probe
+/// itself.
+///
+/// The outbound counterpart of [`echoed_nonce_with_flags`], for a scan watching
+/// its own segments leave. The nonce rides in whichever field the technique
+/// puts it in, so reading the sequence number unconditionally would name the
+/// wrong value for an ACK-family probe and witness nothing.
+pub(crate) fn sent_nonce_with_flags(flags: u8, probe: &Segment<'_>) -> u32 {
+    match nonce_field(flags) {
+        NonceField::Sequence { .. } => probe.sequence(),
+        NonceField::Acknowledgement => probe.acknowledgement(),
+    }
+}
+
 pub(crate) fn echoed_nonce_with_flags(flags: u8, reply: &Segment<'_>, padding: u16) -> u32 {
     match nonce_field(flags) {
         NonceField::Sequence { span } => {

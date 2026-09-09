@@ -297,9 +297,17 @@ async fn detect_one(
             &port_context,
             &response_slices,
             |grant| {
+                // The permit first, then the capabilities. A struct's fields are
+                // built in the order they are written, and `LiveCapabilities`
+                // starts the flow's clock as it is built: the other order spends
+                // the whole wait for a socket out of the budget the flow was
+                // granted to speak with, so a module that queued behind a busy
+                // port refuses its first exchange having sent nothing. See
+                // [`Gate`], which the flow tier already reads this way.
+                let permit = gate.acquire();
                 Some(Box::new(Permitted {
                     inner: LiveCapabilities::new(addr, protocol, tunnel, &grant.budget),
-                    _permit: gate.acquire(),
+                    _permit: permit,
                 }) as Box<dyn Capabilities>)
             },
             |grant, tape| {

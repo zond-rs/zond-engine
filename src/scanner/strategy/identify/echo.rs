@@ -639,6 +639,7 @@ mod tests {
         CapturedSegment {
             received_at: Instant::now(),
             source: TARGET,
+            destination: None,
             protocol: IpNextHeaderProtocols::Icmp,
             observation: Some(IpObservation::V4(Ipv4Observation {
                 ttl: hops,
@@ -770,6 +771,7 @@ mod tests {
         let theirs = CapturedSegment {
             received_at: Instant::now(),
             source: TARGET,
+            destination: None,
             protocol: IpNextHeaderProtocols::Icmp,
             observation: Some(IpObservation::V4(Ipv4Observation {
                 ttl: 128,
@@ -844,6 +846,7 @@ mod tests {
         CapturedSegment {
             received_at: Instant::now(),
             source: TARGET,
+            destination: None,
             protocol: IpNextHeaderProtocols::Icmp,
             observation: None,
             source_mac: None,

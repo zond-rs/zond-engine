@@ -306,7 +306,15 @@ impl ProbeKind {
                 reply_port,
                 icmp_errors,
             } => {
-                let tcp = format!("tcp and dst port {reply_port}");
+                // Both directions, not only the replies. The outbound half is
+                // the scan watching its own probes leave, which is the only
+                // thing that distinguishes a port that stayed quiet from one
+                // whose probe the operating system took and threw away: macOS
+                // does exactly that to a raw-socket write under load, returns
+                // success, and leaves a scan reporting silence from a port it
+                // never asked. It costs one captured frame per probe, all of it
+                // this scan's own traffic.
+                let tcp = format!("tcp and port {reply_port}");
                 // An ICMP error names no ports of its own; the probe it refers
                 // to is quoted in its payload, so this half cannot be narrowed
                 // here and is matched in userspace.

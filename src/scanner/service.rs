@@ -72,17 +72,27 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::Service,
-        |fingerprinted: Option<(
-            ScopedIp,
-            Port,
-            crate::fingerprint::AboutTheHost,
-            Vec<String>,
-        )>,
-         _audit| {
-            if let Some((ip, port, about_the_host, banners)) = fingerprinted {
+        |attempt: Attempt, _audit| match attempt {
+            Attempt::Identified(found) => {
+                let Identified {
+                    ip,
+                    port,
+                    about_the_host,
+                    banners,
+                } = *found;
                 ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
                 write_back(ctx, ip, port, about_the_host);
             }
+            // A port the scan proved open that would not take a connection is a
+            // port this phase never got to ask. It keeps the discovery phase's
+            // name-only guess, and without this the report would present that
+            // guess as the answer rather than as what was left when the
+            // conversation failed.
+            Attempt::Unreachable { ip, number, reason } => ctx.record_failure(
+                ScannerKind::Service,
+                format!("{ip}:{number} could not be fingerprinted: {reason}"),
+            ),
+            Attempt::Quiet => {}
         },
     );
 
@@ -138,10 +148,46 @@ fn fingerprintable_ports(ctx: &ScanContext, over: Protocol) -> Vec<(ScopedIp, u1
     targets
 }
 
-/// Connects to one open port and fingerprints it, returning the upgraded [`Port`],
-/// whatever the service said about the machine behind it, and the responses it
-/// drew, or `None` if the connection could not be established (the port keeps
-/// whatever the discovery phase already recorded).
+/// What one port's fingerprint attempt produced.
+///
+/// Three outcomes and not two, because "nothing was learned" and "the port would
+/// not take a connection" are different facts about a scan and only the second
+/// is a shortfall. A silent UDP port taught the scan what it was going to teach
+/// it; an open TCP port that refused a connection is one this phase never got to
+/// ask, and a report that cannot tell them apart presents a name-only guess as
+/// though it were an identification.
+enum Attempt {
+    /// The port answered, and this is what it said. Boxed because it is an
+    /// order of magnitude larger than the other two, and every attempt would
+    /// otherwise be carried at its width.
+    Identified(Box<Identified>),
+    /// The connection could not be made, so the port keeps whatever the
+    /// discovery phase recorded and the scan covered less than it was asked to.
+    Unreachable {
+        /// The address the connection was aimed at.
+        ip: ScopedIp,
+        /// The port number, which the reason names alongside the address.
+        number: u16,
+        /// Why it failed, in the words the operating system used.
+        reason: String,
+    },
+    /// Nothing was learned and nothing went wrong.
+    Quiet,
+}
+
+/// What a port that answered said, for [`Attempt::Identified`].
+struct Identified {
+    /// The store key to write back under.
+    ip: ScopedIp,
+    /// The port as the fingerprint engine refined it.
+    port: Port,
+    /// What the service said about the machine behind it.
+    about_the_host: crate::fingerprint::AboutTheHost,
+    /// The responses it drew, kept for the detection phase to read.
+    banners: Vec<String>,
+}
+
+/// Connects to one open port and fingerprints it.
 ///
 /// A link-local address with no interface recorded against it yields no socket
 /// address at all, and is skipped with a word about why. Attempting the
@@ -152,18 +198,13 @@ async fn fingerprint_one(
     port_number: u16,
     protocol: Protocol,
     detection: ServiceDetection,
-) -> Option<(
-    ScopedIp,
-    Port,
-    crate::fingerprint::AboutTheHost,
-    Vec<String>,
-)> {
+) -> Attempt {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
             verbosity = 1,
             "cannot fingerprint {target}:{port_number}: no interface recorded for a link-local address"
         );
-        return None;
+        return Attempt::Quiet;
     };
 
     // Seed the same baseline the connect scanner uses, then let the engine
@@ -172,24 +213,51 @@ async fn fingerprint_one(
 
     let (port, about_the_host, banners) = match protocol {
         Protocol::Tcp => {
-            let stream = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr))
-                .await
-                .ok()?
-                .ok()?;
+            // Every way this can fail is written down. The connection is the
+            // whole of what this phase needs from the port, so one that does not
+            // open is the difference between an identified service and a guess,
+            // and a caller reading the report has no other way to tell which it
+            // is holding.
+            let stream = match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr)).await {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(e)) => {
+                    return Attempt::Unreachable {
+                        ip: target,
+                        number: port_number,
+                        reason: e.to_string(),
+                    };
+                }
+                Err(_) => {
+                    return Attempt::Unreachable {
+                        ip: target,
+                        number: port_number,
+                        reason: format!("no answer within {CONNECT_PROBE_TIMEOUT:?}"),
+                    };
+                }
+            };
             crate::fingerprint::fingerprint_tcp_detailed(stream, port, detection).await
         }
         // No connection to establish and no banner to wait for: one datagram
         // out, one back, and whatever text it carries. Silence leaves the port
-        // exactly as the scan recorded it.
-        Protocol::Udp => crate::fingerprint::fingerprint_udp_detailed(addr, port).await?,
+        // exactly as the scan recorded it, and is not a failure: a UDP port that
+        // says nothing has told the scan what it had to tell it.
+        Protocol::Udp => match crate::fingerprint::fingerprint_udp_detailed(addr, port).await {
+            Some(fingerprinted) => fingerprinted,
+            None => return Attempt::Quiet,
+        },
         // Nothing here speaks SCTP as a client, so an open SCTP port keeps the
         // name the scan gave it rather than being dialled for a banner.
-        Protocol::Sctp => return None,
+        Protocol::Sctp => return Attempt::Quiet,
     };
 
     // The key, not the address: this is what the finding is written back
     // under, and a link-local written back bare would fork the host's record.
-    Some((target, port, about_the_host, banners))
+    Attempt::Identified(Box::new(Identified {
+        ip: target,
+        port,
+        about_the_host,
+        banners,
+    }))
 }
 
 /// Folds a freshly fingerprinted port back into its host and announces the
@@ -311,5 +379,34 @@ mod tests {
         let port = host.ports().find(|p| p.number() == 9).unwrap();
         // Untouched: no service was attached by the phase.
         assert!(port.service().is_none());
+    }
+
+    /// An open port that will not take a connection is the one case where this
+    /// phase's answer is narrower than the scan asked for, and the port itself
+    /// cannot say so: it keeps the discovery phase's name-only guess, which
+    /// reads exactly like an identification that happened to find little.
+    #[tokio::test]
+    async fn a_port_that_refuses_a_connection_is_written_into_the_report() {
+        // A listener bound and immediately dropped, so the address is one
+        // nothing answers on but the host stack still refuses promptly.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (session, ctx) = ScanSession::new();
+        let ip = addr.ip();
+        let mut host = Host::new(ip);
+        host.add_port(Port::new(addr.port(), Protocol::Tcp, PortState::Open));
+        session.hosts().insert(ip, host);
+
+        detect(&ctx, ServiceDetection::default(), Protocol::Tcp).await;
+
+        let failures = ctx.take_failures();
+        assert_eq!(failures.len(), 1, "one unreachable port, one line about it");
+        assert!(
+            failures[0].reason().contains(&addr.port().to_string()),
+            "the failure names the port it is about: {}",
+            failures[0].reason()
+        );
     }
 }

@@ -1022,6 +1022,7 @@ mod tests {
             CapturedSegment {
                 received_at: Instant::now(),
                 source,
+                destination: None,
                 protocol,
                 bytes,
                 observation: Some(IpObservation::V4(Ipv4Observation {

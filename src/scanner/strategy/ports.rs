@@ -739,6 +739,25 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             );
         }
 
+        // The sends the operating system took and never emitted. Counted only
+        // where the scan could see its own egress at all, since otherwise every
+        // probe looks unsent; where it could, this is the whole difference
+        // between a port that stayed quiet and one that was never asked, and it
+        // is a shortfall of this machine rather than of the network.
+        let unseen = self
+            .audit
+            .sends_attempted
+            .saturating_sub(self.audit.sends_witnessed);
+        if unseen > 0 && self.audit.witnesses_its_sends() {
+            self.ctx.record_failure(
+                kind,
+                format!(
+                    "{unseen} of {} probes were accepted by this machine and never reached the                      wire, so their ports are recorded unasked rather than {silence_verdict}",
+                    self.audit.sends_attempted,
+                ),
+            );
+        }
+
         let capture = self.transport.capture_counts();
         self.audit.report(
             audit_tag,
@@ -1036,9 +1055,26 @@ pub trait RawPortScan: PortScanner {
                     key: (ip, port),
                     payload: position,
                     attempts,
+                    witnessed,
                 } => {
                     if attempts == 1 {
                         self.core_mut().judge_timeout(ip);
+                    }
+                    // A probe none of whose sends was ever seen leaving is a
+                    // port this scan did not ask, however many attempts it was
+                    // charged and whatever the operating system said when it
+                    // took the write. Silence from a question nobody heard is
+                    // evidence of nothing, so it is recorded as the unasked
+                    // port it is rather than borrowing the verdict earned by a
+                    // port that was probed and stayed quiet.
+                    //
+                    // Guarded on the run having witnessed something, because
+                    // otherwise it has no way to watch its own egress and every
+                    // probe would look unsent. See
+                    // [`ProbeAudit::witnesses_its_sends`].
+                    if witnessed == 0 && self.core().audit.witnesses_its_sends() {
+                        self.record_unasked_endpoint(ip, port);
+                        continue;
                     }
                     self.record_port(ip, port, silence, None);
                     // Earned: asked as many times as the policy allows.

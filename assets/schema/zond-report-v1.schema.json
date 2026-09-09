@@ -1070,6 +1070,7 @@
         "elapsed_us",
         "sends_attempted",
         "sends_failed",
+        "sends_witnessed",
         "segments_seen",
         "segments_off_target",
         "replies_without_rtt",
@@ -1113,6 +1114,10 @@
         },
         "sends_failed": {
           "description": "Probes the sender refused. Non-zero means the shortfall starts at home, before the network is implicated at all.",
+          "$ref": "#/$defs/count"
+        },
+        "sends_witnessed": {
+          "description": "Probes seen leaving on the wire. Below sends_attempted while above zero, the difference is probes the operating system accepted and discarded: the ports behind them were never asked, whatever the scan was told. Zero means this run could not watch its own egress and the comparison says nothing.",
           "$ref": "#/$defs/count"
         },
         "segments_seen": {

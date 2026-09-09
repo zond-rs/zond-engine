@@ -3614,6 +3614,7 @@ pub zond_engine::export::schema::ProbeStatsDto::segments_off_target: u64
 pub zond_engine::export::schema::ProbeStatsDto::segments_seen: u64
 pub zond_engine::export::schema::ProbeStatsDto::sends_attempted: u64
 pub zond_engine::export::schema::ProbeStatsDto::sends_failed: u64
+pub zond_engine::export::schema::ProbeStatsDto::sends_witnessed: u64
 pub zond_engine::export::schema::ProbeStatsDto::stop_reason: &'static str
 pub zond_engine::export::schema::ProbeStatsDto::targets: alloc::string::String
 pub zond_engine::export::schema::ProbeStatsDto::window: core::option::Option<zond_engine::export::schema::WindowDto>
@@ -5382,6 +5383,7 @@ pub zond_engine::fingerprint::ServiceSignature::attribution: core::option::Optio
 pub zond_engine::fingerprint::ServiceSignature::default_ports: alloc::vec::Vec<u16>
 pub zond_engine::fingerprint::ServiceSignature::description: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::ServiceSignature::name: alloc::string::String
+pub zond_engine::fingerprint::ServiceSignature::shared_ports: alloc::vec::Vec<u16>
 pub zond_engine::fingerprint::ServiceSignature::speaks: core::option::Option<alloc::string::String>
 impl core::clone::Clone for zond_engine::fingerprint::ServiceSignature
 pub fn zond_engine::fingerprint::ServiceSignature::clone(&self) -> zond_engine::fingerprint::ServiceSignature
@@ -12805,6 +12807,7 @@ pub zond_engine::record::ProbeStatsRecord::segments_off_target: u64
 pub zond_engine::record::ProbeStatsRecord::segments_seen: u64
 pub zond_engine::record::ProbeStatsRecord::sends_attempted: u64
 pub zond_engine::record::ProbeStatsRecord::sends_failed: u64
+pub zond_engine::record::ProbeStatsRecord::sends_witnessed: u64
 pub zond_engine::record::ProbeStatsRecord::stop_reason: alloc::string::String
 pub zond_engine::record::ProbeStatsRecord::targets: u128
 pub zond_engine::record::ProbeStatsRecord::window: core::option::Option<zond_engine::record::WindowRecord>
@@ -13489,6 +13492,7 @@ pub fn zond_engine::report::ProbeStats::segments_off_target(&self) -> u64
 pub fn zond_engine::report::ProbeStats::segments_seen(&self) -> u64
 pub fn zond_engine::report::ProbeStats::sends_attempted(&self) -> u64
 pub fn zond_engine::report::ProbeStats::sends_failed(&self) -> u64
+pub fn zond_engine::report::ProbeStats::sends_witnessed(&self) -> u64
 pub fn zond_engine::report::ProbeStats::stop_reason(&self) -> zond_engine::report::StopReason
 pub fn zond_engine::report::ProbeStats::targets(&self) -> u128
 pub fn zond_engine::report::ProbeStats::window(&self) -> core::option::Option<zond_engine::report::WindowSummary>
@@ -13528,6 +13532,7 @@ pub zond_engine::report::ProbeStatsParts::segments_off_target: u64
 pub zond_engine::report::ProbeStatsParts::segments_seen: u64
 pub zond_engine::report::ProbeStatsParts::sends_attempted: u64
 pub zond_engine::report::ProbeStatsParts::sends_failed: u64
+pub zond_engine::report::ProbeStatsParts::sends_witnessed: u64
 pub zond_engine::report::ProbeStatsParts::stop_reason: zond_engine::report::StopReason
 pub zond_engine::report::ProbeStatsParts::targets: u128
 pub zond_engine::report::ProbeStatsParts::window: core::option::Option<zond_engine::report::WindowSummary>
@@ -13921,11 +13926,14 @@ pub fn zond_engine::scanner::audit::ProbeAudit::record_off_target(&mut self)
 pub fn zond_engine::scanner::audit::ProbeAudit::record_reply_without_rtt(&mut self)
 pub fn zond_engine::scanner::audit::ProbeAudit::record_segment(&mut self)
 pub fn zond_engine::scanner::audit::ProbeAudit::record_send(&mut self, bool)
+pub fn zond_engine::scanner::audit::ProbeAudit::record_witnessed_send(&mut self)
 pub fn zond_engine::scanner::audit::ProbeAudit::replies_without_rtt(&self) -> u64
 pub fn zond_engine::scanner::audit::ProbeAudit::segments_off_target(&self) -> u64
 pub fn zond_engine::scanner::audit::ProbeAudit::segments_seen(&self) -> u64
 pub fn zond_engine::scanner::audit::ProbeAudit::sends_attempted(&self) -> u64
 pub fn zond_engine::scanner::audit::ProbeAudit::sends_failed(&self) -> u64
+pub fn zond_engine::scanner::audit::ProbeAudit::sends_witnessed(&self) -> u64
+pub fn zond_engine::scanner::audit::ProbeAudit::witnesses_its_sends(&self) -> bool
 impl core::default::Default for zond_engine::scanner::audit::ProbeAudit
 pub fn zond_engine::scanner::audit::ProbeAudit::default() -> Self
 impl core::marker::Freeze for zond_engine::scanner::audit::ProbeAudit
@@ -14127,6 +14135,7 @@ pub zond_engine::scanner::pacing::retry::Due::Exhausted
 pub zond_engine::scanner::pacing::retry::Due::Exhausted::attempts: u8
 pub zond_engine::scanner::pacing::retry::Due::Exhausted::key: K
 pub zond_engine::scanner::pacing::retry::Due::Exhausted::payload: P
+pub zond_engine::scanner::pacing::retry::Due::Exhausted::witnessed: u8
 pub zond_engine::scanner::pacing::retry::Due::Retry
 pub zond_engine::scanner::pacing::retry::Due::Retry::attempt: u8
 pub zond_engine::scanner::pacing::retry::Due::Retry::key: K
@@ -14162,6 +14171,7 @@ pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::rearm(&mut sel
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::resolve(&mut self, &K, core::option::Option<T>, std::time::Instant) -> core::option::Option<zond_engine::scanner::pacing::retry::Resolution<P>>
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::seed_host_rtt(&mut self, core::net::ip_addr::IpAddr, core::time::Duration)
 pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::seeded(zond_engine::scanner::pacing::retry::RetryPolicy, usize, u64) -> Self
+pub fn zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>::witness(&mut self, &K, &T) -> bool where T: core::cmp::PartialEq
 impl<K, T, P> core::marker::Freeze for zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P>
 impl<K, T, P> core::marker::Send for zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P> where K: core::marker::Send, P: core::marker::Send, T: core::marker::Send
 impl<K, T, P> core::marker::Sync for zond_engine::scanner::pacing::retry::ProbeLedger<K, T, P> where K: core::marker::Sync, P: core::marker::Sync, T: core::marker::Sync
@@ -16281,6 +16291,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::CapturedFrame
 pub struct zond_engine::transport::capture::CapturedSegment
 pub zond_engine::transport::capture::CapturedSegment::bytes: alloc::vec::Vec<u8>
+pub zond_engine::transport::capture::CapturedSegment::destination: core::option::Option<core::net::ip_addr::IpAddr>
 pub zond_engine::transport::capture::CapturedSegment::observation: core::option::Option<zond_engine::model::capture::IpObservation>
 pub zond_engine::transport::capture::CapturedSegment::protocol: pnet_packet::ip::IpNextHeaderProtocol
 pub zond_engine::transport::capture::CapturedSegment::received_at: std::time::Instant

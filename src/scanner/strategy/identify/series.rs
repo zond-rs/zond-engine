@@ -774,6 +774,7 @@ mod tests {
         CapturedSegment {
             received_at: Instant::now(),
             source: TARGET,
+            destination: None,
             protocol: IpNextHeaderProtocols::Tcp,
             observation: Some(IpObservation::V4(Ipv4Observation {
                 ttl: 64,

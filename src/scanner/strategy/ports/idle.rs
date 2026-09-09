@@ -659,6 +659,7 @@ mod tests {
         CapturedSegment {
             received_at: Instant::now(),
             source: ZOMBIE,
+            destination: None,
             protocol: IpNextHeaderProtocols::Tcp,
             observation: Some(IpObservation::V4(Ipv4Observation {
                 ttl: 64,

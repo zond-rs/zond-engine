@@ -1936,6 +1936,11 @@ pub struct ProbeStatsRecord {
     pub sends_attempted: u64,
     /// How many the host refused.
     pub sends_failed: u64,
+    /// How many were seen leaving on the wire. Defaulted, so a record written
+    /// before the count existed reads as a run that witnessed nothing, which is
+    /// what a reader must conclude from a run that could not watch its egress.
+    #[serde(default)]
+    pub sends_witnessed: u64,
     /// How many segments its capture handed it.
     pub segments_seen: u64,
     /// Where its congestion window ended up.
@@ -1975,6 +1980,7 @@ impl From<&ProbeStats> for ProbeStatsRecord {
             elapsed: stats.elapsed(),
             sends_attempted: stats.sends_attempted(),
             sends_failed: stats.sends_failed(),
+            sends_witnessed: stats.sends_witnessed(),
             segments_seen: stats.segments_seen(),
             window: stats.window().map(WindowRecord::from),
             segments_off_target: stats.segments_off_target(),
@@ -2013,6 +2019,7 @@ impl From<&ProbeStatsRecord> for ProbeStats {
             elapsed: record.elapsed,
             sends_attempted: record.sends_attempted,
             sends_failed: record.sends_failed,
+            sends_witnessed: record.sends_witnessed,
             segments_seen: record.segments_seen,
             window: record.window.as_ref().map(WindowSummary::from),
             segments_off_target: record.segments_off_target,

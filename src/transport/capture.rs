@@ -252,8 +252,19 @@ const QUEUE_FULL_PAUSE: Duration = Duration::from_millis(1);
 /// enough to tell apart after the fact (see [`frame::IpSegment`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedSegment {
-    /// The address the reply came from.
+    /// The address the segment came from.
     pub source: IpAddr,
+    /// The address it was going to, or `None` for a segment that did not come
+    /// off a wire.
+    ///
+    /// A capture that admits both directions has to be able to say which one a
+    /// segment is, and [`source`](Self::source) alone cannot: a scan's own
+    /// probe and the answer to it are both this scan's traffic between the same
+    /// two addresses. `None` for the same reason
+    /// [`observation`](Self::observation) is - a synthetic receive stream
+    /// composed its Layer-4 bytes and there was never an IP header to read a
+    /// destination out of.
+    pub destination: Option<IpAddr>,
     /// The protocol [`bytes`](Self::bytes) should be parsed as.
     pub protocol: IpNextHeaderProtocol,
     /// The Layer-4 segment, link and IP headers already stripped.
@@ -315,6 +326,7 @@ impl CapturedSegment {
     pub fn synthetic(source: IpAddr, protocol: IpNextHeaderProtocol, bytes: Vec<u8>) -> Self {
         Self {
             source,
+            destination: None,
             protocol,
             bytes,
             observation: None,
@@ -615,6 +627,7 @@ pub fn segments(
 
             let mut segment = CapturedSegment {
                 source: parsed.source,
+                destination: Some(parsed.destination),
                 protocol: parsed.protocol,
                 bytes: parsed.payload.to_vec(),
                 observation: Some(parsed.observation),

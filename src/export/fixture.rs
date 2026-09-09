@@ -231,6 +231,7 @@ fn probe_stats() -> ProbeStats {
         elapsed: Duration::from_millis(412),
         sends_attempted: 512,
         sends_failed: 0,
+        sends_witnessed: 0,
         segments_seen: 271,
         segments_off_target: 3,
         replies_without_rtt: 2,

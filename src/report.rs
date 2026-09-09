@@ -961,6 +961,7 @@ pub struct ProbeStats {
     pub(crate) elapsed: Duration,
     pub(crate) sends_attempted: u64,
     pub(crate) sends_failed: u64,
+    pub(crate) sends_witnessed: u64,
     pub(crate) segments_seen: u64,
     pub(crate) segments_off_target: u64,
     pub(crate) replies_without_rtt: u64,
@@ -1005,6 +1006,17 @@ impl ProbeStats {
     /// starts at home, before the network is implicated at all.
     pub fn sends_failed(&self) -> u64 {
         self.sends_failed
+    }
+
+    /// How many probes were watched leaving on the wire.
+    ///
+    /// Read against [`sends_attempted`](Self::sends_attempted), and only when
+    /// this is non-zero: a scanner whose capture cannot see its own egress
+    /// reports zero here and the comparison means nothing. When it can, the
+    /// difference is the probes the operating system took and discarded, and
+    /// the ports behind them were never asked whatever the scan was told.
+    pub fn sends_witnessed(&self) -> u64 {
+        self.sends_witnessed
     }
 
     /// Segments the capture handed up, before any of the scanner's own checks.
@@ -1289,6 +1301,8 @@ pub struct ProbeStatsParts {
     pub sends_attempted: u64,
     /// How many of those the host refused.
     pub sends_failed: u64,
+    /// How many of those were seen leaving on the wire.
+    pub sends_witnessed: u64,
     /// How many segments its capture handed it.
     pub segments_seen: u64,
     /// Where its congestion window ended up.
@@ -1324,6 +1338,7 @@ impl ProbeStats {
             elapsed: parts.elapsed,
             sends_attempted: parts.sends_attempted,
             sends_failed: parts.sends_failed,
+            sends_witnessed: parts.sends_witnessed,
             segments_seen: parts.segments_seen,
             window: parts.window,
             segments_off_target: parts.segments_off_target,

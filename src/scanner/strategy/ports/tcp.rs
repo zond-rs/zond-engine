@@ -276,6 +276,22 @@ impl TcpPortScanner {
             return;
         };
 
+        // This scan's own probe on its way out, admitted because the capture
+        // takes both directions. It is witnessed rather than read as a reply:
+        // seeing it leave is the one thing a successful `sendto` does not
+        // establish, and without it a probe the operating system accepted and
+        // discarded is indistinguishable from a port that stayed quiet.
+        //
+        // Tested before the reply check below, and requiring the destination to
+        // be some other port, so a scan whose source port collides with the
+        // port it is probing still reads that segment as the answer it is.
+        if tcp_packet.source_port() == self.core.src_port
+            && tcp_packet.destination_port() != self.core.src_port
+        {
+            self.witness_probe(captured, &tcp_packet);
+            return;
+        }
+
         // A segment addressed anywhere but this scan's own port answered
         // somebody else's conversation. The capture filter already narrows to
         // it, but that is a performance boundary rather than a guarantee - a
@@ -334,6 +350,28 @@ impl TcpPortScanner {
         );
 
         self.identify_stack(ip, state, captured);
+    }
+
+    /// Marks the probe this outbound segment carries as seen on the wire.
+    ///
+    /// Silent about anything it cannot match. A frame whose destination the
+    /// capture could not read, or one carrying a nonce no live probe was sent
+    /// with, proves nothing about a probe this scan is waiting on, and counting
+    /// it would put a sighting against work nobody did.
+    fn witness_probe(&mut self, captured: &CapturedSegment, probe: &tcp::Segment<'_>) {
+        let Some(destination) = captured.destination else {
+            return;
+        };
+        let token = TcpToken {
+            nonce: tcp::sent_nonce_with_flags(self.effective_flags(), probe),
+        };
+        if self
+            .core
+            .ledger
+            .witness(&(destination, probe.destination_port()), &token)
+        {
+            self.core.audit.record_witnessed_send();
+        }
     }
 
     /// Reads what the reply that just resolved a port says about the machine
@@ -1306,6 +1344,7 @@ mod tests {
         CapturedSegment {
             received_at: Instant::now(),
             source: TARGET,
+            destination: None,
             protocol: IpNextHeaderProtocols::Tcp,
             bytes,
             observation: Some(IpObservation::V4(crate::model::capture::Ipv4Observation {
@@ -1318,6 +1357,81 @@ mod tests {
             })),
             source_mac: None,
         }
+    }
+
+    /// One of this scan's own probes as the capture hands it back, which is
+    /// what a transport admitting both directions delivers.
+    fn own_probe_leaving(bytes: Vec<u8>) -> CapturedSegment {
+        CapturedSegment {
+            received_at: Instant::now(),
+            source: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
+            destination: Some(TARGET),
+            protocol: IpNextHeaderProtocols::Tcp,
+            bytes,
+            observation: None,
+            source_mac: None,
+        }
+    }
+
+    /// The bytes of the probe the recording sender was last handed.
+    fn last_sent(sent: &SentProbes) -> Vec<u8> {
+        sent.lock().unwrap().last().expect("a probe").0.clone()
+    }
+
+    /// A successful `sendto` says the operating system took the write, not that
+    /// the packet left. Seeing the probe on the wire is what says that, and it
+    /// is filed against the attempt it belongs to rather than resolving
+    /// anything: the port is still waiting for an answer.
+    #[test]
+    fn a_probe_seen_leaving_is_witnessed_against_its_own_attempt() {
+        let (mut scanner, _session, sent) = scanner_with_mock();
+        probe(&mut scanner, &sent, 80);
+        assert!(
+            !scanner.core.audit.witnesses_its_sends(),
+            "nothing has been seen yet"
+        );
+
+        scanner.handle_reply(&own_probe_leaving(last_sent(&sent)), Instant::now());
+
+        assert_eq!(scanner.core.audit.sends_witnessed(), 1);
+        assert!(
+            scanner.core.ledger.contains(&(TARGET, 80)),
+            "a sighting is not an answer, and must not settle the port"
+        );
+    }
+
+    /// The same frame captured on a bridge and again on the member underneath
+    /// it is one probe seen twice. Counting both would report more probes on
+    /// the wire than the scan ever handed over, and the comparison those two
+    /// numbers exist for would read backwards.
+    #[test]
+    fn the_same_probe_seen_twice_is_witnessed_once() {
+        let (mut scanner, _session, sent) = scanner_with_mock();
+        probe(&mut scanner, &sent, 80);
+        let frame = last_sent(&sent);
+
+        scanner.handle_reply(&own_probe_leaving(frame.clone()), Instant::now());
+        scanner.handle_reply(&own_probe_leaving(frame), Instant::now());
+
+        assert_eq!(scanner.core.audit.sends_witnessed(), 1);
+    }
+
+    /// A segment on this scan's port that is not one of its probes teaches it
+    /// nothing about what it sent. It is somebody else's traffic and is counted
+    /// where every other stranger is.
+    #[test]
+    fn a_stranger_on_the_scans_own_port_witnesses_nothing() {
+        let (mut scanner, _session, sent) = scanner_with_mock();
+        probe(&mut scanner, &sent, 80);
+
+        let mut frame = last_sent(&sent);
+        // A different nonce: the same shape of segment, from another probe.
+        frame[4] ^= 0xFF;
+
+        scanner.handle_reply(&own_probe_leaving(frame), Instant::now());
+
+        assert_eq!(scanner.core.audit.sends_witnessed(), 0);
+        assert_eq!(scanner.core.audit.segments_off_target, 0);
     }
 
     /// The evidence recorded against one of the target's ports.
@@ -1825,6 +1939,58 @@ mod tests {
         assert_eq!(sent.lock().unwrap().len(), 2, "the probe was not retried");
         assert!(scanner.core.ledger.contains(&(TARGET, 80)));
         assert_eq!(port_state(&session, 80), None, "no verdict has been earned");
+    }
+
+    /// A port whose probes the operating system took and never emitted is a
+    /// port this scan did not ask, and its silence is evidence of nothing. It
+    /// used to be reported filtered: measured against one host, a ten-thousand
+    /// port scan handed over 12 832 probes, 8 605 reached the target, and the
+    /// 1 415 ports behind the difference were given a verdict about a firewall
+    /// nobody had spoken to.
+    #[test]
+    fn a_port_whose_probes_were_never_seen_leaving_is_unasked_not_filtered() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+
+        // One port watched leaving, so the scan is one that can see its own
+        // egress; another that never appears on the wire.
+        probe(&mut scanner, &sent, 80);
+        scanner.handle_reply(&own_probe_leaving(last_sent(&sent)), Instant::now());
+        probe(&mut scanner, &sent, 443);
+
+        let mut now = Instant::now();
+        for _ in 0..PORT_RETRY_POLICY.max_attempts + 2 {
+            now += Duration::from_secs(4);
+            scanner.service_retries(now);
+        }
+
+        assert_eq!(
+            port_state(&session, 443),
+            Some(PortState::Unasked),
+            "silence from a probe nobody saw leave is not a verdict"
+        );
+        assert_eq!(
+            port_state(&session, 80),
+            Some(PortState::Filtered),
+            "and a probe that was watched leaving still earns one"
+        );
+    }
+
+    /// The guard on all of it. A scanner whose capture cannot see its own
+    /// egress witnesses nothing, and must go on reading silence exactly as it
+    /// did rather than reporting every port as one it never asked.
+    #[test]
+    fn a_scan_that_witnesses_nothing_reads_silence_as_it_always_did() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        probe(&mut scanner, &sent, 443);
+        assert!(!scanner.core.audit.witnesses_its_sends(), "test premise");
+
+        let mut now = Instant::now();
+        for _ in 0..PORT_RETRY_POLICY.max_attempts + 2 {
+            now += Duration::from_secs(4);
+            scanner.service_retries(now);
+        }
+
+        assert_eq!(port_state(&session, 443), Some(PortState::Filtered));
     }
 
     /// Filtered is what exhausting the budget means, and it takes the whole

@@ -386,6 +386,16 @@ impl RttEstimator {
 struct Attempt<T> {
     token: T,
     sent_at: Instant,
+    /// Whether this attempt was seen on the wire carrying its own token.
+    ///
+    /// A send the operating system accepted is not a send that was made. macOS
+    /// will take a raw-socket write, return success, and discard the packet
+    /// without saying so, and a scan that trusts the return value reports
+    /// silence from a port it never actually asked. A scanner watching its own
+    /// egress sets this, and the flag rather than a count is what makes it
+    /// idempotent: the same frame captured on a bridge and again on the member
+    /// underneath it is one attempt seen twice, not two.
+    witnessed: bool,
 }
 
 /// An outstanding probe.
@@ -403,6 +413,12 @@ struct Record<T, P> {
     /// How many sends this probe has had, which may exceed the number of
     /// tokens retained.
     sends: u8,
+    /// How many of this probe's attempts were seen leaving on the wire.
+    ///
+    /// Zero on a probe every one of whose sends the operating system accepted
+    /// and discarded, which is the one case a scanner cannot otherwise tell
+    /// from a target that stayed quiet. See [`Attempt::witnessed`].
+    witnessed: u8,
     /// How many sends actually reached the wire and were recorded here.
     ///
     /// Separate from [`sends`](Self::sends), which is charged when
@@ -430,6 +446,7 @@ impl<T: Copy, P> Record<T, P> {
             attempts: [None; MAX_TRACKED_ATTEMPTS],
             sends: 1,
             recorded: 0,
+            witnessed: 0,
             budget,
             generation,
         }
@@ -445,9 +462,15 @@ impl<T: Copy, P> Record<T, P> {
     fn record_attempt(&mut self, token: T, sent_at: Instant) {
         self.recorded = self.recorded.saturating_add(1);
 
+        let fresh = Attempt {
+            token,
+            sent_at,
+            witnessed: false,
+        };
+
         if self.attempts[MAX_TRACKED_ATTEMPTS - 1].is_some() {
             self.attempts.rotate_left(1);
-            self.attempts[MAX_TRACKED_ATTEMPTS - 1] = Some(Attempt { token, sent_at });
+            self.attempts[MAX_TRACKED_ATTEMPTS - 1] = Some(fresh);
             return;
         }
 
@@ -456,7 +479,33 @@ impl<T: Copy, P> Record<T, P> {
             .iter()
             .position(Option::is_none)
             .unwrap_or(MAX_TRACKED_ATTEMPTS - 1);
-        self.attempts[slot] = Some(Attempt { token, sent_at });
+        self.attempts[slot] = Some(fresh);
+    }
+
+    /// Marks the attempt carrying `token` as seen on the wire, answering
+    /// whether this was the first sighting of it.
+    ///
+    /// False for a token this record does not hold - an attempt already
+    /// forgotten, or a frame belonging to some other probe - and false for one
+    /// already witnessed, so a frame captured twice counts once.
+    fn witness(&mut self, token: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        let Some(attempt) = self
+            .attempts
+            .iter_mut()
+            .flatten()
+            .find(|attempt| attempt.token == *token)
+        else {
+            return false;
+        };
+        if attempt.witnessed {
+            return false;
+        }
+        attempt.witnessed = true;
+        self.witnessed = self.witnessed.saturating_add(1);
+        true
     }
 
     /// The attempt carrying `token`: which send it was, counting the first as
@@ -566,6 +615,13 @@ pub enum Due<K, P = ()> {
         /// the one that says something about the path, and with a budget of one
         /// attempt this event *is* that first timeout.
         attempts: u8,
+        /// How many of those sends were seen leaving, for a caller that watches
+        /// its own egress. Zero here with sightings elsewhere in the run is the
+        /// probe that was never asked, whatever the operating system said when
+        /// it took the write, and its silence is not a verdict about anything.
+        /// Always zero for a caller that does not witness its sends, so nothing
+        /// may read it without knowing whether any sighting was possible.
+        witnessed: u8,
     },
 }
 
@@ -776,6 +832,7 @@ where
             if record.sends >= record.budget {
                 let host = record.host;
                 let attempts = record.sends;
+                let witnessed = record.witnessed;
                 let payload = record.payload;
                 self.records.remove(&timer.key);
                 self.retire(host);
@@ -783,6 +840,7 @@ where
                     key: timer.key,
                     payload,
                     attempts,
+                    witnessed,
                 });
                 continue;
             }
@@ -844,6 +902,23 @@ where
     /// target, this is what tells its loop there is nothing left to wait for.
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+
+    /// Marks the attempt of `key` carrying `token` as seen on the wire,
+    /// answering whether that was the first sighting of it.
+    ///
+    /// The counterpart of [`arm`](Self::arm): that says a probe was handed to
+    /// the operating system, this says it was watched leaving. False for a
+    /// probe already resolved, for a token this ledger never issued, and for a
+    /// frame seen a second time, so a capture running on both a bridge and the
+    /// member underneath it counts each attempt once.
+    pub fn witness(&mut self, key: &K, token: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.records
+            .get_mut(key)
+            .is_some_and(|record| record.witness(token))
     }
 
     /// Whether `key` is currently outstanding.
@@ -1385,6 +1460,10 @@ mod tests {
                 // One, and the number matters to whoever reads it: with no
                 // retry, this event *is* the probe's first timeout.
                 attempts: 1,
+                // Nothing witnessed this probe leaving, and nothing in this
+                // test watches: a ledger with no sightings at all reports
+                // zero here and no caller may read it as evidence.
+                witnessed: 0,
             }]
         );
     }
@@ -2023,6 +2102,73 @@ mod tests {
         });
 
         assert_eq!(configured.max_attempts, 2);
+    }
+
+    /// A sighting names one attempt and counts once, however many times the
+    /// same frame is captured. A scan running on a bridge and on the member
+    /// underneath it sees each of its probes leave twice, and a count that
+    /// believed both would report more probes on the wire than it ever sent.
+    #[test]
+    fn one_attempt_seen_twice_is_witnessed_once() {
+        let mut ledger: ProbeLedger<(IpAddr, u16), u32> =
+            ProbeLedger::new(rate_limited_policy(), 8);
+        let t0 = Instant::now();
+        ledger.arm(HOST, (HOST, 80), 7, (), t0);
+
+        assert!(ledger.witness(&(HOST, 80), &7), "the first sighting counts");
+        assert!(
+            !ledger.witness(&(HOST, 80), &7),
+            "the second is the same one"
+        );
+    }
+
+    /// A token this ledger never issued belongs to somebody else's probe, and a
+    /// key it is no longer holding belongs to one already resolved. Neither is
+    /// evidence about work this ledger is waiting on.
+    #[test]
+    fn a_sighting_of_something_else_witnesses_nothing() {
+        let mut ledger: ProbeLedger<(IpAddr, u16), u32> =
+            ProbeLedger::new(rate_limited_policy(), 8);
+        let t0 = Instant::now();
+        ledger.arm(HOST, (HOST, 80), 7, (), t0);
+
+        assert!(!ledger.witness(&(HOST, 80), &9), "a nonce nobody sent");
+        assert!(
+            !ledger.witness(&(HOST, 81), &7),
+            "a port nothing is armed on"
+        );
+    }
+
+    /// The count reaches the caller on the event that decides the port's
+    /// verdict, because that is where it has to be read: a probe exhausting its
+    /// budget with no sighting was never asked, and its silence says nothing.
+    #[test]
+    fn an_exhausted_probe_reports_how_many_of_its_sends_were_seen() {
+        let mut ledger: ProbeLedger<(IpAddr, u16), u32> =
+            ProbeLedger::new(rate_limited_policy(), 8);
+        let t0 = Instant::now();
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
+        assert!(ledger.witness(&(HOST, 80), &1));
+
+        let mut seen = None;
+        for step in 1..20 {
+            let due = due_at(&mut ledger, t0 + Duration::from_secs(step));
+            for event in due {
+                match event {
+                    Due::Retry { key, attempt } => ledger.rearm(HOST, key, attempt.into(), t0),
+                    Due::Exhausted { witnessed, .. } => seen = Some(witnessed),
+                }
+            }
+            if seen.is_some() {
+                break;
+            }
+        }
+
+        assert_eq!(
+            seen,
+            Some(1),
+            "one send of several was watched leaving, and the caller is told so"
+        );
     }
 
     #[test]
