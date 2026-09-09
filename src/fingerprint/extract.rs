@@ -349,7 +349,9 @@ mod tests {
         /// all, since UDP offers no handshake to infer it from, so a probe here
         /// earns its place without a decoder. Each entry is a decoder somebody
         /// could write.
-        const PROBED_BUT_NOT_DECODED: &[u16] = &[137];
+        // 162 is the trap receiver. snmp.toml claims both numbers, so the probe
+        // reaches it, and a receiver does not answer a get.
+        const PROBED_BUT_NOT_DECODED: &[u16] = &[137, 162];
 
         let db = SignatureDb::global();
         let probed: Vec<u16> = (0..=u16::MAX)

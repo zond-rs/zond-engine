@@ -9,7 +9,7 @@ speaks = "http"
 # the IPP half is what makes the port IPP rather than a web server.
 [[match]]
 name = "ipp_server_header"
-pattern = '(?i)Server:[^\r\n]*\bIPP/[\d.]+'
+pattern = '(?i)\bIPP/[\d.]+'
 product = "ipp"
 context = "http_header.server"
-example = "Server: CUPS/2.4 IPP/2.1"
+example = "CUPS/2.4 IPP/2.1"

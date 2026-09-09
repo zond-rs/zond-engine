@@ -15,7 +15,6 @@ pattern = '(?i)Server:\s*squid/([\d.]+)'
 version_group = 1
 vendor = "squid-cache"
 product = "squid"
-context = "http_header.server"
 example = "Server: squid/6.13"
 metadata = { "service.cpe23" = "cpe:/a:squid-cache:squid:{service.version}" }
 

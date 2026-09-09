@@ -9,5 +9,4 @@ name = "transmission_server_header"
 pattern = '(?i)Server:\s*Transmission'
 vendor = "transmissionbt"
 product = "transmission"
-context = "http_header.server"
 example = "Server: Transmission"

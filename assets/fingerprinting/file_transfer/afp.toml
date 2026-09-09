@@ -5,6 +5,7 @@ description = "Apple Filing Protocol"
 
 # DSI GetStatus: request 0x00, command 0x03, then a zeroed header. The reply is a
 # server parameters block naming the machine and its AFP versions.
+# Unverified against a real daemon: the netatalk images are amd64 only.
 [[probe]]
 name = "dsi_getstatus"
 payload = '\x00\x03\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'

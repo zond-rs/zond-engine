@@ -17,8 +17,8 @@ product = "rabbitmq"
 # page title behind a generic Cowboy banner, so the title is what names it.
 [[match]]
 name = "rabbitmq_management_title"
-pattern = '<title>\s*RabbitMQ Management\s*</title>'
+pattern = '^RabbitMQ Management$'
 vendor = "vmware"
 product = "rabbitmq"
 context = "html_title"
-example = "<title>RabbitMQ Management</title>"
+example = "RabbitMQ Management"
