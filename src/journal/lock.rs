@@ -539,8 +539,24 @@ mod persistence {
         /// engagement's targets, so it is created the way every other journal
         /// file is. Under `sudo` it belongs to whoever invoked the scan, or they
         /// cannot release a journal they own the rest of.
+        ///
+        /// The staged name carries a counter as well as the pid, because a pid
+        /// is only unique between processes and this is a library. Two threads
+        /// of one caller taking the same journal shared the staged name, and
+        /// [`create_staged`](crate::journal::file::create_staged) removes a name
+        /// it finds occupied: one thread deleted the file the other was about to
+        /// link, which fails the link with `NotFound` and is read here as an
+        /// error rather than a lost race, or linked an empty file into place,
+        /// which [`inspect`] reads as `Free` and a third thread then breaks.
+        /// Both produced two holders of a lock whose whole purpose is that there
+        /// is one.
         fn create_exclusively(path: &Path, record: &LockRecord) -> std::io::Result<()> {
-            let staged = path.with_extension(format!("lock-{}", std::process::id()));
+            static STAGING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let staged = path.with_extension(format!(
+                "lock-{}-{}",
+                std::process::id(),
+                STAGING.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
 
             {
                 // Staged, not created: the name carries this process's id, and a
@@ -961,47 +977,67 @@ mod file_tests {
     /// record over the last one, and every racer returned a `Lock` it believed
     /// was exclusive. Going back through the exclusive create is what makes the
     /// question have one answer.
+    ///
+    /// # Why it runs the race more than once
+    ///
+    /// Racers here are threads, so they share a process and everything named
+    /// after it. That found a second defect years after the first: the staged
+    /// file `create_exclusively` links into place carried only the pid, so two
+    /// threads shared the name and each removed the other's, and the count came
+    /// out at two about one run in twenty. A test that fails one time in twenty
+    /// is one people re-run, so the racers now start on a barrier and the race
+    /// is run in rounds. Reverting either mechanism reddens this most times it
+    /// runs, which is the least a guard against a one-in-twenty defect can be.
     #[test]
     fn only_one_of_several_racers_breaks_a_crashed_lock() {
-        let dir = scratch("break-race");
-        let path = dir.join("LOCK");
+        for round in 0..16 {
+            let dir = scratch(&format!("break-race-{round}"));
+            let path = dir.join("LOCK");
 
-        // A lock from before a reboot, which is resumable whatever its pid is
-        // doing now. Written this way rather than with a dead pid because a test
-        // cannot name a number it is certain nothing holds.
-        let stale = LockRecord {
-            pid: std::process::id(),
-            boot: "a boot that is over".to_string(),
-            started_at: SystemTime::UNIX_EPOCH,
-            heartbeat: SystemTime::UNIX_EPOCH,
-        };
-        std::fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("writes");
-        assert!(matches!(inspect(&path), LockState::RebootedUnder { .. }));
+            // A lock from before a reboot, which is resumable whatever its pid is
+            // doing now. Written this way rather than with a dead pid because a test
+            // cannot name a number it is certain nothing holds.
+            let stale = LockRecord {
+                pid: std::process::id(),
+                boot: "a boot that is over".to_string(),
+                started_at: SystemTime::UNIX_EPOCH,
+                heartbeat: SystemTime::UNIX_EPOCH,
+            };
+            std::fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("writes");
+            assert!(matches!(inspect(&path), LockState::RebootedUnder { .. }));
 
-        let taken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                let path = path.clone();
-                let taken = std::sync::Arc::clone(&taken);
-                scope.spawn(move || {
-                    if let Ok(lock) = Lock::acquire(&path) {
-                        taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        // Held for the rest of the scope, so a racer that came
-                        // second is refused rather than finding it free again.
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                        std::mem::forget(lock);
-                    }
-                });
-            }
-        });
+            let taken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            // Every racer waits here, so they arrive together rather than in
+            // whatever order the scheduler happened to start them. Without it
+            // the first thread usually finished before the last began, and a
+            // race nobody ran is a race nobody tested.
+            let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    let path = path.clone();
+                    let taken = std::sync::Arc::clone(&taken);
+                    let start = std::sync::Arc::clone(&start);
+                    scope.spawn(move || {
+                        start.wait();
+                        if let Ok(lock) = Lock::acquire(&path) {
+                            taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            // Held for the rest of the scope, so a racer that came
+                            // second is refused rather than finding it free again.
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                            std::mem::forget(lock);
+                        }
+                    });
+                }
+            });
 
-        assert_eq!(
-            taken.load(std::sync::atomic::Ordering::Relaxed),
-            1,
-            "more than one racer believed it held the journal"
-        );
+            assert_eq!(
+                taken.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "round {round}: this many racers believed they held the journal"
+            );
 
-        std::fs::remove_dir_all(&dir).ok();
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     /// The heartbeat moves, and leaves no temporary file behind.
