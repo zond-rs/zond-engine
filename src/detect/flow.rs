@@ -44,9 +44,11 @@ pub(crate) mod validate;
 pub(crate) mod db;
 mod eval;
 mod interp;
+mod socket;
 pub(crate) mod stage;
 
 pub use interp::{FlowSeed, Probe, ProbeRefusal, run};
+pub use socket::SocketProbe;
 // Not public: the builder runs it over a caller's flow, the way the build runs its
 // own pattern check over the shipped corpus. `check` is the public structural pass.
 pub(crate) use interp::check_patterns;

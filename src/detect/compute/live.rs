@@ -19,10 +19,11 @@
 //!
 //! The byte and connection budgets are spent at this boundary, so a module cannot
 //! exceed them: an exchange the budget cannot pay for is refused before a packet
-//! leaves, and a reply is capped at the bytes still available. This mirrors the
-//! Tier-1 [socket probe](crate::scanner::detection) a flow speaks through, the
-//! difference is only the seam it satisfies, so a module's `speak` returns a
-//! typed [`CapError`] the module may catch rather than a bare absence.
+//! leaves, and a reply is capped at the bytes still available. The Tier-1
+//! [socket probe](crate::detect::flow::SocketProbe) a flow speaks through spends
+//! the same budgets over the same [exchange](crate::detect::exchange); what
+//! differs is the seam, so a module's `speak` returns a typed [`CapError`] it may
+//! catch where a flow's probe reports a bare absence.
 //!
 //! ## What it does not resolve
 //!
@@ -30,11 +31,10 @@
 //! so a socket-scoped module never reaches it. When one is, this is where a
 //! resolver is served, bounded the way `speak` is.
 
-use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
-use std::time::{Duration, Instant};
+use std::net::{IpAddr, SocketAddr};
+use std::time::Instant;
 
-use crate::config::limits::CONNECT_PROBE_TIMEOUT;
+use crate::detect::exchange::{self, ExchangeError};
 use crate::fingerprint::Tunnel;
 use crate::model::port::Protocol;
 
@@ -89,7 +89,7 @@ impl Capabilities for LiveCapabilities {
         if self.connections_left == 0 {
             return Err(CapError::ConnectionBudgetExhausted);
         }
-        if remaining(self.deadline).is_none() {
+        if exchange::remaining(self.deadline).is_none() {
             return Err(CapError::TimedOut);
         }
         let sent = bytes.len() as u64;
@@ -101,20 +101,23 @@ impl Capabilities for LiveCapabilities {
 
         // The reply may consume at most what the byte budget has left.
         let reply = match self.protocol {
-            Protocol::Tcp => tcp_exchange(
+            Protocol::Tcp => exchange::tcp(
                 self.addr,
                 self.tunnel,
                 bytes,
                 self.deadline,
                 self.bytes_left,
-            ),
-            Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
+            )
+            .map_err(CapError::from),
+            Protocol::Udp => exchange::udp(self.addr, bytes, self.deadline, self.bytes_left)
+                .map_err(CapError::from),
             Protocol::Sctp => Err(CapError::Denied(
                 "a detection cannot speak to an SCTP port: the engine scans SCTP without a client \
                  stack to hold an association open"
                     .to_string(),
             )),
-        }?;
+        }?
+        .bytes;
         self.bytes_left -= reply.len() as u64;
         Ok(reply)
     }
@@ -132,94 +135,17 @@ impl Capabilities for LiveCapabilities {
     }
 }
 
-/// The time left before `deadline`, or [`None`] if it has passed.
-fn remaining(deadline: Instant) -> Option<Duration> {
-    deadline
-        .checked_duration_since(Instant::now())
-        .filter(|left| !left.is_zero())
-}
-
-/// Which capability error an I/O failure surfaces as. The module may catch any of
-/// these and try another approach, the way a network client does.
-fn io_error(error: &std::io::Error) -> CapError {
-    match error.kind() {
-        ErrorKind::TimedOut | ErrorKind::WouldBlock => CapError::TimedOut,
-        ErrorKind::ConnectionRefused => CapError::ConnectionRefused,
-        _ => CapError::Reset,
-    }
-}
-
-/// Connects, sends `bytes`, and reads the reply until the port falls silent, the
-/// byte budget `cap` is spent, or the connection closes. A silent port is an
-/// empty reply, not an error. The module decides what that means.
+/// What an exchange's failure looks like at this seam.
 ///
-/// A `tunnel` wraps the connected socket in the transport the port answered
-/// inside before the probe is sent, so a module's `speak` reaches an `ssl/*`
-/// service through a handshake. A handshake that cannot even be set up is a
-/// reset the module may catch; one that fails to complete surfaces as the
-/// exchange erroring on its first read or write, like any other broken port.
-fn tcp_exchange(
-    addr: SocketAddr,
-    tunnel: Option<Tunnel>,
-    bytes: &[u8],
-    deadline: Instant,
-    cap: u64,
-) -> Result<Vec<u8>, CapError> {
-    let timeout = remaining(deadline).ok_or(CapError::TimedOut)?;
-    let tcp = TcpStream::connect_timeout(&addr, timeout.min(CONNECT_PROBE_TIMEOUT))
-        .map_err(|error| io_error(&error))?;
-    tcp.set_read_timeout(Some(remaining(deadline).ok_or(CapError::TimedOut)?))
-        .map_err(|error| io_error(&error))?;
-    let mut stream = crate::detect::tls::wrap(tcp, addr.ip(), tunnel).ok_or(CapError::Reset)?;
-    stream.write_all(bytes).map_err(|error| io_error(&error))?;
-
-    let mut reply = Vec::new();
-    let mut buffer = [0u8; 4096];
-    while (reply.len() as u64) < cap {
-        let want = ((cap - reply.len() as u64) as usize).min(buffer.len());
-        match stream.read(&mut buffer[..want]) {
-            Ok(0) => break,
-            Ok(read) => reply.extend_from_slice(&buffer[..read]),
-            // A read timeout is the ordinary end of a reply that does not close;
-            // any other error ends it too.
-            Err(_) => break,
+/// The distinctions are the same ones; only the vocabulary changes, since a
+/// module catches these the way a network client catches an I/O error.
+impl From<ExchangeError> for CapError {
+    fn from(error: ExchangeError) -> Self {
+        match error {
+            ExchangeError::TimedOut => CapError::TimedOut,
+            ExchangeError::ConnectionRefused => CapError::ConnectionRefused,
+            ExchangeError::Reset => CapError::Reset,
         }
-    }
-    Ok(reply)
-}
-
-/// Sends one datagram and reads one reply, capped at `cap` bytes.
-fn udp_exchange(
-    addr: SocketAddr,
-    bytes: &[u8],
-    deadline: Instant,
-    cap: u64,
-) -> Result<Vec<u8>, CapError> {
-    let bind = if addr.is_ipv6() {
-        "[::]:0"
-    } else {
-        "0.0.0.0:0"
-    };
-    let socket = UdpSocket::bind(bind).map_err(|error| io_error(&error))?;
-    socket.connect(addr).map_err(|error| io_error(&error))?;
-    socket
-        .set_read_timeout(Some(remaining(deadline).ok_or(CapError::TimedOut)?))
-        .map_err(|error| io_error(&error))?;
-    socket.send(bytes).map_err(|error| io_error(&error))?;
-
-    let mut buffer = vec![0u8; cap.min(65535) as usize];
-    match socket.recv(&mut buffer) {
-        Ok(read) => {
-            buffer.truncate(read);
-            Ok(buffer)
-        }
-        // Silence is an empty reply; a real failure is the error.
-        Err(error)
-            if error.kind() == ErrorKind::TimedOut || error.kind() == ErrorKind::WouldBlock =>
-        {
-            Ok(Vec::new())
-        }
-        Err(error) => Err(io_error(&error)),
     }
 }
 
@@ -229,8 +155,10 @@ mod tests {
     use crate::detect::compute::{Budget, ComputeRuntime, Grant, ModuleBody, RhaiRuntime};
     use crate::fingerprint::PortContext;
     use crate::model::finding::{DetectionClass, DetectionId, Severity, Version};
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::Duration;
 
     fn budget() -> Budget {
         Budget {

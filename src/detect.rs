@@ -73,11 +73,14 @@ pub mod manifest;
 pub(crate) mod host;
 
 mod convert;
+// One request and its reply over a socket to the scanned port, which is what both
+// detection tiers reach the network through. Private: the two seams above it are
+// the API, and an exchange with no budget behind it is not one.
+mod exchange;
 mod gate;
 mod source;
-// The synchronous TLS client both blocking probe seams speak through when a port
-// answered inside a tunnel. `pub(crate)` because the flow probe lives in the
-// scanner, a module away, not under `detect`.
-pub(crate) mod tls;
+// The synchronous TLS client an exchange speaks through when a port answered
+// inside a tunnel.
+mod tls;
 
 pub use corpus::{DetectionError, DetectionSummary, Detections, DetectionsBuilder, Gate};

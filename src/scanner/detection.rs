@@ -39,33 +39,36 @@
 //! conditional step sends only after an earlier one matched), so it does not fit
 //! the reactor's collect-then-analyse shape. It runs instead on the blocking pool
 //! ([`spawn_blocking`](tokio::task::spawn_blocking)), where a blocking
-//! `SocketProbe` serves its `speak`. The connection is to the scanned address, as
-//! [service detection](crate::scanner::service) makes it, in the clear or wrapped
-//! in TLS when the port answered inside a tunnel: the probe is bound to the one
-//! port it was built for, so a flow can reach nothing else.
+//! [`SocketProbe`] serves its `speak`. The connection is to the scanned address,
+//! as [service detection](crate::scanner::service) makes it, in the clear or
+//! wrapped in TLS when the port answered inside a tunnel: the probe is bound to
+//! the one port it was built for, so a flow can reach nothing else.
 //!
-//! ## The budget is enforced here
+//! ## What this module adds to the probe
 //!
-//! A flow's declared `max_bytes`, `max_millis`, and `max_connections` bound the
-//! `SocketProbe` that serves it: it refuses an exchange the budget cannot pay
-//! for, and caps a reply at the bytes left. A flow that declares none falls back
-//! to a default ceiling.
+//! The probe belongs to [`detect::flow`](crate::detect::flow) and is public, so a
+//! caller can run one detection against one port without a scan. What a scan
+//! needs on top is the socket count: `Pooled` wraps the probe with one of the
+//! phase's permits, held for the flow's whole run.
+//!
+//! The budget is the probe's own. A flow's declared `max_bytes`, `max_millis`
+//! and `max_connections` become the [`Budget`] it is built with, and one that
+//! declares none falls back to this runtime's default ceilings rather than to
+//! no ceiling.
 
 use std::collections::BTreeSet;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::config::DetectionEnvelope;
 use crate::config::ServiceDetection;
-use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
+use crate::config::limits::CONNECT_CONCURRENCY;
 use crate::detect::compute::stage as compute_stage;
 use crate::detect::compute::{
-    CapError, CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities, RunOutcome,
-    ScanInstant,
+    Budget, CapError, CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities,
+    RunOutcome, ScanInstant,
 };
-use crate::detect::flow::{Probe, ProbeRefusal, stage};
+use crate::detect::flow::{Probe, ProbeRefusal, SocketProbe, stage};
 use crate::detect::host::stage as host_stage;
 use crate::detect::manifest::{
     CapabilitySpec, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS,
@@ -264,13 +267,10 @@ async fn detect_one(
             number,
             protocol,
             |caps| {
-                Some(Box::new(SocketProbe::new(
-                    addr,
-                    protocol,
-                    tunnel,
-                    caps,
-                    gate.acquire(),
-                )) as Box<dyn Probe>)
+                Some(Box::new(Pooled {
+                    inner: SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps)),
+                    _permit: gate.acquire(),
+                }) as Box<dyn Probe>)
             },
         );
 
@@ -526,186 +526,47 @@ impl Capabilities for Permitted {
     }
 }
 
-/// A blocking [`Probe`] over a fresh connection to one scanned port, holding the
-/// flow's budget and debiting it as it goes. Each `speak` is one request and its
-/// reply, which is enough for the corpus's stateless exchanges; it is bound to
-/// the address it was built for and reaches nothing else.
+/// A [`SocketProbe`] holding one of the phase's sockets for as long as the flow
+/// it serves is running.
 ///
-/// The budget is enforced at this boundary, which is the point: a flow cannot
-/// spend more bytes, time, or connections than it declared, because the thing
-/// that would spend them refuses to. An undeclared budget falls back to a default
-/// ceiling rather than to no ceiling at all.
-struct SocketProbe {
-    addr: SocketAddr,
-    protocol: Protocol,
-    /// The tunnel the port answered inside, if any: a flow speaks TLS to an
-    /// `ssl/*` service and plaintext to the rest, over the same exchange.
-    tunnel: Option<Tunnel>,
-    /// Bytes still available across this flow's remaining sends and replies.
-    bytes_left: u64,
-    /// When the flow's time budget runs out.
-    deadline: Instant,
-    /// Connections still available to this flow.
-    connections_left: u32,
-    /// Why the last `speak` refused, if a budget did rather than the port going
-    /// silent. Read after the flow runs so a cut-short detection reaches the report.
-    last_refusal: Option<ProbeRefusal>,
-    /// Whether the last `speak` read its reply to a clean close, so a caching
-    /// layer can tell a complete reply from one a budget cut short.
-    last_complete: bool,
-    /// The phase's socket budget, held for this flow's run and given back when
-    /// the probe is dropped.
+/// The probe itself is [`detect::flow`](crate::detect::flow)'s and knows nothing
+/// about a scan's socket budget. This is the wrapper that adds it, so the count
+/// covers both tiers: [`Permitted`] does the same for a compute module.
+struct Pooled {
+    inner: SocketProbe,
     _permit: Permit,
 }
 
-impl SocketProbe {
-    fn new(
-        addr: SocketAddr,
-        protocol: Protocol,
-        tunnel: Option<Tunnel>,
-        caps: &CapabilitySpec,
-        permit: Permit,
-    ) -> Self {
-        let millis = caps.max_millis.map_or(DEFAULT_MAX_MILLIS, u64::from);
-        Self {
-            addr,
-            protocol,
-            tunnel,
-            bytes_left: caps.max_bytes.map_or(DEFAULT_MAX_BYTES, u64::from),
-            deadline: Instant::now() + Duration::from_millis(millis),
-            connections_left: caps
-                .max_connections
-                .map_or(DEFAULT_MAX_CONNECTIONS, u32::from),
-            last_refusal: None,
-            last_complete: false,
-            _permit: permit,
-        }
-    }
-}
-
-impl Probe for SocketProbe {
+impl Probe for Pooled {
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        // Refuse the exchange the budget cannot pay for, before any packet leaves,
-        // recording which budget so a silent port and a spent one stay distinct.
-        self.last_refusal = None;
-        if self.connections_left == 0 {
-            self.last_refusal = Some(ProbeRefusal::Connections);
-            return None;
-        }
-        if remaining(self.deadline).is_none() {
-            self.last_refusal = Some(ProbeRefusal::Deadline);
-            return None;
-        }
-        let sent = bytes.len() as u64;
-        if sent > self.bytes_left {
-            self.last_refusal = Some(ProbeRefusal::Bytes);
-            return None;
-        }
-        self.bytes_left -= sent;
-        self.connections_left -= 1;
-
-        // The reply may consume at most what the byte budget has left. A silent or
-        // unreachable port is not a refusal, so `last_refusal` stays clear.
-        let (reply, complete) = match self.protocol {
-            Protocol::Tcp => tcp_exchange(
-                self.addr,
-                self.tunnel,
-                bytes,
-                self.deadline,
-                self.bytes_left,
-            ),
-            // A datagram is one whole message, so a UDP reply is complete as read.
-            Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left)
-                .map(|reply| (reply, true)),
-            // An SCTP port is scanned without a client stack, so there is
-            // nothing here for a detection to hold a conversation over.
-            Protocol::Sctp => None,
-        }?;
-        self.bytes_left -= reply.len() as u64;
-        self.last_complete = complete;
-        Some(reply)
+        self.inner.speak(bytes)
     }
 
     fn last_refusal(&self) -> Option<ProbeRefusal> {
-        self.last_refusal
+        self.inner.last_refusal()
     }
 
     fn reply_complete(&self) -> bool {
-        self.last_complete
+        self.inner.reply_complete()
     }
 }
 
-/// The time left before `deadline`, or [`None`] if it has passed. Used for every
-/// socket timeout so no exchange outlives the flow's time budget.
-fn remaining(deadline: Instant) -> Option<Duration> {
-    deadline
-        .checked_duration_since(Instant::now())
-        .filter(|left| !left.is_zero())
-}
-
-/// Connects, sends `bytes`, and reads the reply until the port falls silent, the
-/// byte budget `cap` is spent, or the connection closes. [`None`] on any failure,
-/// an expired deadline, or an empty reply. The returned flag is true only when
-/// the peer closed the connection, so the reply is complete and safe to reuse
-/// for another flow that sends the same request.
+/// The budget a flow's probe is held to, filled from what the detection declared
+/// and from this runtime's ceilings for what it left open.
 ///
-/// A `tunnel` wraps the connected socket in the transport the port answered
-/// inside before a byte of the probe is sent, so an `ssl/*` service is spoken to
-/// through a handshake and every other port in the clear. A handshake that does
-/// not complete leaves the exchange unanswered, the same [`None`] a silent port
-/// returns.
-fn tcp_exchange(
-    addr: SocketAddr,
-    tunnel: Option<Tunnel>,
-    bytes: &[u8],
-    deadline: Instant,
-    cap: u64,
-) -> Option<(Vec<u8>, bool)> {
-    let tcp =
-        TcpStream::connect_timeout(&addr, remaining(deadline)?.min(CONNECT_PROBE_TIMEOUT)).ok()?;
-    tcp.set_read_timeout(Some(remaining(deadline)?)).ok()?;
-    let mut stream = crate::detect::tls::wrap(tcp, addr.ip(), tunnel)?;
-    stream.write_all(bytes).ok()?;
-
-    let mut reply = Vec::new();
-    let mut buffer = [0u8; 4096];
-    let mut closed = false;
-    while (reply.len() as u64) < cap {
-        let want = ((cap - reply.len() as u64) as usize).min(buffer.len());
-        match stream.read(&mut buffer[..want]) {
-            Ok(0) => {
-                closed = true;
-                break;
-            }
-            Ok(read) => reply.extend_from_slice(&buffer[..read]),
-            // A read timeout is the ordinary end of a reply that does not close
-            // the connection; any other error ends it too.
-            Err(_) => break,
-        }
-    }
-    // `closed` is true only when the peer shut the connection, so the reply is
-    // the whole of what the port had to say; a reply that filled the cap or
-    // ended on a timeout may have more behind it and is reported incomplete.
-    (!reply.is_empty()).then_some((reply, closed))
-}
-
-/// Sends one datagram and reads one reply, capped at `cap` bytes. [`None`] on
-/// failure, an expired deadline, or silence.
-fn udp_exchange(addr: SocketAddr, bytes: &[u8], deadline: Instant, cap: u64) -> Option<Vec<u8>> {
-    let bind = if addr.is_ipv6() {
-        "[::]:0"
-    } else {
-        "0.0.0.0:0"
-    };
-    let socket = UdpSocket::bind(bind).ok()?;
-    socket.connect(addr).ok()?;
-    socket.set_read_timeout(Some(remaining(deadline)?)).ok()?;
-    socket.send(bytes).ok()?;
-
-    let mut buffer = vec![0u8; cap.min(65535) as usize];
-    let read = socket.recv(&mut buffer).ok()?;
-    buffer.truncate(read);
-    (!buffer.is_empty()).then_some(buffer)
+/// A flow spends bytes, wall clock and connections; the two ceilings a [`Budget`]
+/// carries for a compute module's execution go unread. See
+/// [`SocketProbe::new`].
+fn flow_budget(caps: &CapabilitySpec) -> Budget {
+    Budget::new(
+        0,
+        Duration::from_millis(caps.max_millis.map_or(DEFAULT_MAX_MILLIS, u64::from)),
+    )
+    .with_max_bytes(caps.max_bytes.map_or(DEFAULT_MAX_BYTES, u64::from))
+    .with_max_connections(
+        caps.max_connections
+            .map_or(DEFAULT_MAX_CONNECTIONS, u32::from),
+    )
 }
 
 // ╔════════════════════════════════════════════╗
@@ -916,90 +777,31 @@ mod tests {
         detect(&ctx, ServiceDetection::Off, DetectionEnvelope::default()).await;
 
         assert!(
-            started.elapsed() < CONNECT_PROBE_TIMEOUT,
+            started.elapsed() < crate::config::limits::CONNECT_PROBE_TIMEOUT,
             "a detection turned off cannot have waited on a connection"
         );
         drop(session);
     }
 
+    /// The budget the probe is built with, which is this module's share of what
+    /// used to live inside the probe: a declared ceiling is taken and one left
+    /// open falls back to this runtime's default rather than to no ceiling.
+    ///
+    /// What the probe then does with it is tested where the probe lives, in
+    /// `detect::flow::socket`.
     #[test]
-    fn a_reply_is_capped_at_the_flows_byte_budget() {
-        use std::io::{Read as _, Write as _};
+    fn a_flow_budget_takes_what_was_declared_and_defaults_the_rest() {
+        let declared = flow_budget(&caps(Some(20), Some(500), Some(1)));
+        assert_eq!(declared.max_bytes, 20);
+        assert_eq!(declared.deadline, Duration::from_millis(500));
+        assert_eq!(declared.max_connections, 1);
 
-        // A loopback that floods the probe with far more than the budget allows.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        std::thread::spawn(move || {
-            if let Ok((mut sock, _)) = listener.accept() {
-                let _ = sock.read(&mut [0u8; 64]);
-                let _ = sock.write_all(&vec![b'A'; 4096]);
-            }
-        });
-
-        // 20-byte budget, one of which the `x` send spends: the reply gets 19.
-        let gate = Arc::new(Gate::new(1));
-        let mut probe = SocketProbe::new(
-            addr,
-            Protocol::Tcp,
-            None,
-            &caps(Some(20), None, None),
-            gate.acquire(),
+        let open = flow_budget(&caps(None, None, None));
+        assert_eq!(open.max_bytes, DEFAULT_MAX_BYTES);
+        assert_eq!(
+            open.deadline,
+            Duration::from_millis(DEFAULT_MAX_MILLIS)
         );
-        let reply = probe.speak(b"x").expect("a reply within budget");
-        assert!(
-            reply.len() <= 19,
-            "reply was not capped, got {}",
-            reply.len()
-        );
-    }
-
-    #[test]
-    fn a_flow_cannot_open_more_connections_than_its_budget() {
-        use std::io::Write as _;
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        std::thread::spawn(move || {
-            // Answer the one connection the budget permits, and no more.
-            if let Ok((mut sock, _)) = listener.accept() {
-                let _ = sock.write_all(b"ok");
-            }
-        });
-
-        let gate = Arc::new(Gate::new(1));
-        let mut probe = SocketProbe::new(
-            addr,
-            Protocol::Tcp,
-            None,
-            &caps(None, None, Some(1)),
-            gate.acquire(),
-        );
-        assert!(
-            probe.speak(b"a").is_some(),
-            "the one permitted exchange failed"
-        );
-        assert!(
-            probe.speak(b"b").is_none(),
-            "a second connection was opened past the budget"
-        );
-    }
-
-    #[test]
-    fn an_expired_time_budget_refuses_the_exchange() {
-        // A zero-millisecond budget is spent the instant it is granted, so no
-        // packet leaves; the unreachable address is never dialed.
-        let addr: SocketAddr = "192.0.2.1:9".parse().unwrap();
-        let gate = Arc::new(Gate::new(1));
-        let mut probe = SocketProbe::new(
-            addr,
-            Protocol::Tcp,
-            None,
-            &caps(None, Some(0), None),
-            gate.acquire(),
-        );
-        assert!(
-            probe.speak(b"x").is_none(),
-            "an exchange ran past the time budget"
-        );
+        assert_eq!(open.max_connections, DEFAULT_MAX_CONNECTIONS);
     }
 }

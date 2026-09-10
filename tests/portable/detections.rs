@@ -860,3 +860,85 @@ fn a_detection_speaks_through_tls_to_a_service_that_answered_inside_it() {
     assert_eq!(reply, b"PONG", "the reply came back decrypted");
     server.join().expect("the server thread finished cleanly");
 }
+
+/// The Tier-1 counterpart of the test above: a caller outside the crate running
+/// one flow against one port, without a scan.
+///
+/// [`flow::run`] takes a [`Probe`](zond_engine::detect::flow::Probe), and until
+/// [`SocketProbe`] was published the crate shipped no way to satisfy it against a
+/// real socket. This is the loop that made publishing it worth doing: write a
+/// detection, [`check`](zond_engine::detect::flow::check) it, run it, read what
+/// it found.
+#[test]
+fn a_caller_runs_one_flow_against_one_port_without_a_scan() {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::thread;
+    use zond_engine::detect::compute::Budget;
+    use zond_engine::detect::flow::schema::FlowDetection;
+    use zond_engine::detect::flow::{self, FlowSeed, SocketProbe};
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback listener");
+    let addr = listener.local_addr().expect("the listener's address");
+
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("an inbound connection");
+        let _ = socket.read(&mut [0u8; 64]);
+        socket
+            .write_all(b"# Server\r\nredis_version:7.2.4\r\n")
+            .expect("the reply is written");
+    });
+
+    // A detection written here rather than taken from the corpus, which is the
+    // case that matters: a caller's own, run the moment it was written.
+    let source = r#"
+        [detection]
+        id      = "redis-version"
+        version = "1.0.0"
+        title   = "Redis reports its version"
+
+        [detection.when]
+        service  = "redis"
+        protocol = "tcp"
+
+        [detection.capabilities]
+        class            = "active-benign"
+        speak            = "target"
+        max_bytes        = 4096
+        max_millis       = 2000
+        max_connections  = 1
+
+        [[step]]
+        send   = "INFO server\r\n"
+        expect = ["redis_version:[0-9.]+"]
+        bind   = { version = "redis_version:(?<version>[0-9.]+)" }
+          [[step.finding]]
+          when     = "matched"
+          severity = "info"
+          summary  = "Redis named its own version, {version}"
+          detail   = "The server answered INFO with a version string."
+    "#;
+
+    let detection: FlowDetection = toml::from_str(source).expect("the detection parses");
+    assert!(
+        flow::check(&detection).is_empty(),
+        "the detection is structurally valid"
+    );
+
+    let budget = Budget::new(0, Duration::from_secs(2))
+        .with_max_bytes(4096)
+        .with_max_connections(1);
+    let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget);
+
+    let seed = FlowSeed::new(addr.ip().to_string(), addr.port());
+    let findings = flow::run(&detection, "redis", &seed, &mut probe);
+
+    server.join().expect("the server thread finished cleanly");
+
+    assert_eq!(findings.len(), 1, "the flow matched the reply it drew");
+    assert!(
+        findings[0].title().contains("7.2.4"),
+        "the version the reply named reached the finding: {}",
+        findings[0].title()
+    );
+}

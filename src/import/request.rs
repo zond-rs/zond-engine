@@ -193,6 +193,11 @@ pub struct ScanRequest {
     /// ports. Replaces the set rather than adding to it.
     pub ip_protocols: Option<BTreeSet<u8>>,
 
+    /// The addresses to send every probe from, overriding what the routing table
+    /// would choose. At most one per family is used, and an empty list gives the
+    /// choice back to the host. Replaces the list rather than adding to it.
+    pub send_source: Option<Vec<IpAddr>>,
+
     /// How far to go establishing the operating system: `off`, `passive`,
     /// `active` or `aggressive`.
     #[serde(deserialize_with = "de_named")]
@@ -282,6 +287,9 @@ impl ScanRequest {
         }
         if let Some(protocols) = &self.ip_protocols {
             config.ip_protocols = protocols.clone();
+        }
+        if let Some(sources) = &self.send_source {
+            config.send_source = sources.clone();
         }
         if let Some(value) = self.os_detection {
             config.os_detection = value;
@@ -472,6 +480,7 @@ mod tests {
             os_detection: OsDetection::Aggressive,
             service_detection: ServiceDetection::Thorough,
             tcp_technique: TcpScanTechnique::Fin,
+            send_source: vec!["198.51.100.1".parse().expect("literal")],
             ..Default::default()
         }
     }
@@ -490,6 +499,7 @@ mod tests {
         assert_eq!(config.os_detection, OsDetection::Aggressive);
         assert_eq!(config.service_detection, ServiceDetection::Thorough);
         assert_eq!(config.tcp_technique, TcpScanTechnique::Fin);
+        assert_eq!(config.send_source, settled().send_source);
         assert!(config.idle_scan.is_none());
         assert!(!config.evasion.is_active());
     }
@@ -505,6 +515,7 @@ mod tests {
             characterise = false
             icmp_evidence = false
             ip_protocols = [1, 47, 50]
+            send_source = ["192.0.2.2"]
             os_detection = "passive"
             service_detection = "banner"
             detection = "exploit"
@@ -532,6 +543,10 @@ mod tests {
         assert!(!config.characterise);
         assert!(!config.icmp_evidence);
         assert_eq!(config.ip_protocols, BTreeSet::from([1, 47, 50]));
+        assert_eq!(
+            config.send_source,
+            vec!["192.0.2.2".parse::<IpAddr>().expect("literal")]
+        );
         assert_eq!(config.os_detection, OsDetection::Passive);
         assert_eq!(config.service_detection, ServiceDetection::Banner);
         assert_eq!(config.detection.ceiling(), Some(DetectionClass::Exploit));
