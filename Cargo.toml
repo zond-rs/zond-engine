@@ -166,6 +166,14 @@ import-all = ["import-csv", "import-json", "import-nmap", "import-request", "imp
 # each of the six decisions got wrong produces the same silence a filtered port
 # does.
 #
+# It also puts `protocols::craft` behind `serde`, so a packet is describable as a
+# document rather than only as a value. One story with the sending: a caller that
+# takes a packet from somewhere else needs both halves, and a caller that needs
+# neither should compile neither. The rule `import::settings` states, that a
+# derived form welds the file format to the struct layout, does not reach here:
+# `ttl`, `checksum` and `source_port` are named by RFCs 791 and 793, so the
+# layout is the wire format's and a rename is not a thing that happens.
+#
 # Adds no dependency. Off by default because it is the sharpest thing in the
 # crate: it puts caller-chosen bytes on the wire from a privileged socket, and a
 # default surface should not offer that to a consumer who came for a port scan.

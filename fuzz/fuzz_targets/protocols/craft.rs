@@ -50,6 +50,15 @@
 //! `Computed`. An `Exact` one is under no obligation to be true, which is the
 //! whole point of it.
 //!
+//! **A packet written as a document reads back as the same packet.** `craft`
+//! carries five hand-written `serde` adapters, for hex bytes, a fixed-length
+//! header remainder, a hardware address, a protocol number and an ethertype, and
+//! a hand-written pair for `Field` itself. A derive cannot drift from its struct
+//! and those can. The comparison is on the `Packet` rather than on its bytes,
+//! which is the sharper end of it: two builds of one recipe differ in the fields
+//! that are meant to, and a value that came back equal is equal in every field
+//! including the ones left `Computed`.
+//!
 //! **Options are refused rather than truncated.** Both IPv4 and TCP carry their
 //! option length in four bits of words above a five-word fixed header, so
 //! anything past forty bytes or not a multiple of four cannot be described. A
@@ -423,7 +432,24 @@ fuzz_target!(|recipe: Recipe| {
     }
 
     check_declared_lengths(&recipe, &bytes);
+    check_document_round_trip(&assemble(None));
 });
+
+/// Holds that a packet survives being written down and read back.
+///
+/// JSON rather than TOML because the fuzz crate already carries a JSON
+/// implementation, and because the format is not the subject: `craft` names
+/// none, and what is under test is the adapters between its types and `serde`.
+fn check_document_round_trip(packet: &Packet) {
+    let written = serde_json::to_string(packet).expect("a packet is a document");
+    let read: Packet = serde_json::from_str(&written)
+        .unwrap_or_else(|error| panic!("a packet this crate wrote is not one it reads: {error}"));
+
+    assert_eq!(
+        &read, packet,
+        "the packet that came back is not the packet that went in: {written}"
+    );
+}
 
 /// Whether the recipe leaves a field the builder draws at random.
 ///

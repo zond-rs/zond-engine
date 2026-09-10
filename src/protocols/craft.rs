@@ -165,12 +165,26 @@ impl<T> From<T> for Field<T> {
 
 /// An Ethernet II header.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Ethernet {
     /// The address the frame claims to come from.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::mac"))]
     pub source: MacAddr,
     /// The address it is aimed at.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::mac"))]
     pub destination: MacAddr,
     /// What the frame carries. Computed from the layer inside it.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed",
+            with = "document::ethertype"
+        )
+    )]
     pub ethertype: Field<EtherType>,
 }
 
@@ -206,6 +220,10 @@ impl Ethernet {
 /// matches what this engine's own probes send: don't-fragment set, a random
 /// identification, and a TTL of [`HOP_LIMIT_ROUTED`](super::ip::HOP_LIMIT_ROUTED).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Ipv4 {
     /// Where the packet claims to come from.
     pub source: Ipv4Addr,
@@ -216,6 +234,13 @@ pub struct Ipv4 {
     /// Explicit congestion notification, two bits.
     pub ecn: u8,
     /// The fragment identifier. Computed at random, which is what a stack does.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub identification: Field<u16>,
     /// The three-bit flags field. See [`ipv4_flags`].
     pub flags: u8,
@@ -225,10 +250,32 @@ pub struct Ipv4 {
     pub ttl: u8,
     /// What the packet carries. Computed from the layer pushed inside this one,
     /// and TCP where there is none: see [`header_bytes`](Self::header_bytes).
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed",
+            with = "document::protocol"
+        )
+    )]
     pub protocol: Field<IpNextHeaderProtocol>,
     /// Header and payload together. Computed from the packet being built.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub total_length: Field<u16>,
     /// The header checksum. Computed over the finished header.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub checksum: Field<u16>,
     /// Header options, at most forty bytes and a whole number of four-byte
     /// words.
@@ -238,6 +285,7 @@ pub struct Ipv4 {
     /// takes. [`Packet::build`] refuses a run that breaks either, because the
     /// field wraps rather than saturating and a header that misdescribes itself
     /// is read as something else by every receiver.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex"))]
     pub options: Vec<u8>,
 }
 
@@ -344,6 +392,10 @@ impl Ipv4 {
 
 /// An IPv6 header.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Ipv6 {
     /// Where the packet claims to come from.
     pub source: Ipv6Addr,
@@ -352,11 +404,33 @@ pub struct Ipv6 {
     /// Traffic class, eight bits.
     pub traffic_class: u8,
     /// The flow label, twenty bits. Computed at random.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub flow_label: Field<u32>,
     /// What follows this header. Computed from the layer pushed inside this one,
     /// and TCP where there is none: see [`header_bytes`](Self::header_bytes).
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed",
+            with = "document::protocol"
+        )
+    )]
     pub next_header: Field<IpNextHeaderProtocol>,
     /// Everything after this header. Computed from the packet being built.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub payload_length: Field<u16>,
     /// How many hops the packet may cross. See
     /// [`HOP_LIMIT_ON_LINK`](super::ip::HOP_LIMIT_ON_LINK) and its neighbours
@@ -410,6 +484,10 @@ impl Ipv6 {
 
 /// A TCP header and whatever it carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Tcp {
     /// The port the segment claims to come from.
     pub source_port: u16,
@@ -435,8 +513,22 @@ pub struct Tcp {
     /// The field a stack uses to find the payload, so an exact value smaller
     /// than the real header makes the receiver read option bytes as data, and a
     /// larger one makes it read data as options.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub data_offset: Field<u8>,
     /// The checksum, over the segment and an IP pseudo-header. Computed.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub checksum: Field<u16>,
     /// Header options, as raw bytes: at most forty, and a whole number of
     /// four-byte words.
@@ -444,8 +536,10 @@ pub struct Tcp {
     /// The data offset is the same shape of field as IPv4's header length and
     /// carries the same bounds; see [`Ipv4::options`]. [`Packet::build`] refuses
     /// a run that breaks either.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex"))]
     pub options: Vec<u8>,
     /// The segment's payload.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex"))]
     pub payload: Vec<u8>,
 }
 
@@ -564,20 +658,39 @@ impl Tcp {
 
 /// A UDP header and whatever it carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Udp {
     /// The port the datagram claims to come from.
     pub source_port: u16,
     /// The port it is aimed at.
     pub destination_port: u16,
     /// Header and payload together. Computed from the packet being built.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub length: Field<u16>,
     /// The checksum, over the datagram and an IP pseudo-header. Computed.
     ///
     /// Optional over IPv4 and mandatory over IPv6: RFC 8200 §8.1 requires a
     /// receiver to discard a zero-checksum datagram, so
     /// `Field::Exact(0)` over IPv6 builds something that never arrives.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub checksum: Field<u16>,
     /// The datagram's payload.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex"))]
     pub payload: Vec<u8>,
 }
 
@@ -632,6 +745,10 @@ impl Udp {
 /// only the common header and the one derived field worth getting wrong on
 /// purpose, the [`checksum`](Self::checksum).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Sctp {
     /// The port the packet claims to come from.
     pub source_port: u16,
@@ -642,8 +759,16 @@ pub struct Sctp {
     pub verification_tag: u32,
     /// The CRC32c over the whole packet. Computed, and written little-endian per
     /// RFC 4960 §6.8.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub checksum: Field<u32>,
     /// The chunks after the common header, already encoded.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex"))]
     pub chunks: Vec<u8>,
 }
 
@@ -696,6 +821,10 @@ impl Sctp {
 /// than named. [`echo_request`](Self::echo_request) fills them in for the one type
 /// a scan sends, and anything else is the caller's to lay out.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Icmpv4 {
     /// The message type. 8 is an echo request, 0 an echo reply, 3 destination
     /// unreachable.
@@ -706,11 +835,20 @@ pub struct Icmpv4 {
     ///
     /// Unlike its IPv6 counterpart this covers the ICMP message alone, with no
     /// pseudo-header, so it does not depend on the addresses around it.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub checksum: Field<u16>,
     /// The four type-specific bytes between the checksum and the payload. An
     /// echo carries its identifier and sequence here.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex_fixed"))]
     pub rest_of_header: [u8; 4],
     /// Whatever follows the header.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex"))]
     pub payload: Vec<u8>,
 }
 
@@ -805,6 +943,10 @@ impl Icmpv4 {
 /// checksum covers an IPv6 pseudo-header as well as the message, so it depends
 /// on the addresses of the header around it. See [`to_bytes`](Self::to_bytes).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Icmpv6 {
     /// The message type. 128 is an echo request, 129 an echo reply, 135 a
     /// neighbor solicitation.
@@ -812,10 +954,19 @@ pub struct Icmpv6 {
     /// The code, whose meaning depends on the type.
     pub code: u8,
     /// The checksum, over the message and an IPv6 pseudo-header. Computed.
+    #[cfg_attr(
+        feature = "packet-exchange",
+        serde(
+            default = "document::computed",
+            skip_serializing_if = "document::is_computed"
+        )
+    )]
     pub checksum: Field<u16>,
     /// The four type-specific bytes between the checksum and the payload.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex_fixed"))]
     pub rest_of_header: [u8; 4],
     /// Whatever follows the header.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex"))]
     pub payload: Vec<u8>,
 }
 
@@ -949,6 +1100,10 @@ const ECHO_REPLY_V6: u8 = 129;
 /// request claiming an address the sender does not hold, a hardware length that
 /// does not match the addresses beside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Arp {
     /// Request or reply. See [`arp_operations`].
     pub operation: u16,
@@ -957,11 +1112,13 @@ pub struct Arp {
     /// How long a protocol address is, in bytes. Four for IPv4.
     pub proto_addr_len: u8,
     /// The hardware address the sender claims.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::mac"))]
     pub sender_hw_addr: MacAddr,
     /// The protocol address the sender claims.
     pub sender_proto_addr: Ipv4Addr,
     /// The hardware address being asked about. Undefined in a request, which
     /// is why a request conventionally leaves it zero.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::mac"))]
     pub target_hw_addr: MacAddr,
     /// The protocol address being asked about.
     pub target_proto_addr: Ipv4Addr,
@@ -1055,6 +1212,11 @@ impl Arp {
 /// One header in a [`Packet`], outermost first.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "packet-exchange", serde(rename_all = "snake_case"))]
 pub enum Layer {
     /// An Ethernet II header.
     Ethernet(Ethernet),
@@ -1075,6 +1237,7 @@ pub enum Layer {
     /// An ARP packet.
     Arp(Arp),
     /// Bytes written exactly as given, for a protocol nothing here models yet.
+    #[cfg_attr(feature = "packet-exchange", serde(with = "document::hex"))]
     Raw(Vec<u8>),
 }
 
@@ -1132,6 +1295,10 @@ impl Layer {
 /// pushed in the order they appear on the wire, then [`build`](Self::build)
 /// assembles them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "packet-exchange",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Packet {
     layers: Vec<Layer>,
 }
@@ -1196,6 +1363,195 @@ impl Packet {
             Layer::Ipv6(h) => Some((IpAddr::V6(h.source), IpAddr::V6(h.destination))),
             _ => None,
         })
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// A packet as a document
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Reading and writing a packet as a document, behind `packet-exchange`.
+///
+/// A header's field names are fixed by the RFCs that define them: `ttl`,
+/// `checksum` and `source_port` are what RFC 791 and RFC 793 call those bytes,
+/// so a derived form and the struct layout cannot drift apart the way a settings
+/// file and a configuration can. That is why this is a derive where
+/// [`import::settings`](crate::import::settings) is hand-written.
+///
+/// ```toml
+/// [[layers]]
+/// [layers.ipv4]
+/// source = "192.0.2.1"
+/// destination = "192.0.2.9"
+/// ttl = 12
+/// total_length = 4        # the datagram claims to be shorter than it is
+///
+/// [[layers]]
+/// [layers.tcp]
+/// source_port = 50000
+/// destination_port = 80
+/// flags = 2
+/// payload = "48454c4c4f"
+/// ```
+///
+/// Three conventions, each following from what the values are:
+///
+/// - **A derived field appears only when it was pinned.** An absent key is
+///   [`Field::Computed`], which is the builder working the value out, and a
+///   present one is [`Field::Exact`], which is the caller overriding it. So a
+///   document says what it wants wrong and stays silent about the rest.
+/// - **Bytes are lowercase hex.** Options, payloads, chunks and a raw layer, in
+///   the encoding `data-encoding` already provides for the detection sandbox. An
+///   array of integers would be four times the size and no clearer.
+/// - **A hardware address is written the way one is read**, `aa:bb:cc:dd:ee:ff`.
+///   An ethertype and a next-header protocol are written as the numbers that go
+///   on the wire, since that is what a caller crafting a wrong one is choosing.
+#[cfg(feature = "packet-exchange")]
+mod document {
+    use super::{EtherType, Field, IpNextHeaderProtocol, MacAddr};
+    use data_encoding::HEXLOWER;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// What an absent key means: the builder works the value out.
+    ///
+    /// A function rather than [`Default`], whose derive on [`Field`] asks for a
+    /// `T: Default` that a protocol number does not have.
+    pub(super) fn computed<T>() -> Field<T> {
+        Field::Computed
+    }
+
+    /// Whether a field is left out of a document, which every derived field is
+    /// unless the caller pinned it.
+    pub(super) fn is_computed<T>(field: &Field<T>) -> bool {
+        !field.is_exact()
+    }
+
+    impl<T: Serialize> Serialize for Field<T> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            match self {
+                Field::Computed => serializer.serialize_none(),
+                Field::Exact(value) => serializer.serialize_some(value),
+            }
+        }
+    }
+
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for Field<T> {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            Ok(Option::<T>::deserialize(deserializer)?.map_or(Field::Computed, Field::Exact))
+        }
+    }
+
+    /// Bytes, as lowercase hex.
+    pub(super) mod hex {
+        use super::{Deserialize, Deserializer, HEXLOWER, Serializer};
+
+        pub(in super::super) fn serialize<S: Serializer>(
+            bytes: &[u8],
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str(&HEXLOWER.encode(bytes))
+        }
+
+        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Vec<u8>, D::Error> {
+            let written = String::deserialize(deserializer)?;
+            HEXLOWER
+                .decode(written.as_bytes())
+                .map_err(serde::de::Error::custom)
+        }
+    }
+
+    /// The four type-specific bytes of an ICMP header, as hex of exactly that
+    /// length.
+    pub(super) mod hex_fixed {
+        use super::{Deserializer, Serializer};
+
+        pub(in super::super) fn serialize<S: Serializer>(
+            bytes: &[u8; 4],
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            super::hex::serialize(bytes, serializer)
+        }
+
+        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<[u8; 4], D::Error> {
+            let bytes = super::hex::deserialize(deserializer)?;
+            <[u8; 4]>::try_from(bytes.as_slice()).map_err(|_| {
+                serde::de::Error::custom(format!(
+                    "the four type-specific bytes are 8 hex characters, not {}",
+                    bytes.len() * 2
+                ))
+            })
+        }
+    }
+
+    /// A hardware address, written the way one is read.
+    pub(super) mod mac {
+        use super::{Deserialize, Deserializer, MacAddr, Serializer};
+
+        pub(in super::super) fn serialize<S: Serializer>(
+            mac: &MacAddr,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(mac)
+        }
+
+        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<MacAddr, D::Error> {
+            let written = String::deserialize(deserializer)?;
+            written.parse().map_err(serde::de::Error::custom)
+        }
+    }
+
+    /// A next-header protocol number, which `pnet` types and this crate cannot
+    /// implement a trait for.
+    pub(super) mod protocol {
+        use super::{Deserialize, Deserializer, Field, IpNextHeaderProtocol, Serializer};
+
+        pub(in super::super) fn serialize<S: Serializer>(
+            field: &Field<IpNextHeaderProtocol>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            match field {
+                Field::Computed => serializer.serialize_none(),
+                Field::Exact(protocol) => serializer.serialize_some(&protocol.0),
+            }
+        }
+
+        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Field<IpNextHeaderProtocol>, D::Error> {
+            Ok(
+                Option::<u8>::deserialize(deserializer)?.map_or(Field::Computed, |raw| {
+                    Field::Exact(IpNextHeaderProtocol(raw))
+                }),
+            )
+        }
+    }
+
+    /// An ethertype, on the same footing as a protocol number.
+    pub(super) mod ethertype {
+        use super::{Deserialize, Deserializer, EtherType, Field, Serializer};
+
+        pub(in super::super) fn serialize<S: Serializer>(
+            field: &Field<EtherType>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            match field {
+                Field::Computed => serializer.serialize_none(),
+                Field::Exact(ethertype) => serializer.serialize_some(&ethertype.0),
+            }
+        }
+
+        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Field<EtherType>, D::Error> {
+            Ok(Option::<u16>::deserialize(deserializer)?
+                .map_or(Field::Computed, |raw| Field::Exact(EtherType(raw))))
+        }
     }
 }
 
@@ -1550,6 +1906,123 @@ pub(crate) fn crc32c(data: &[u8]) -> u32 {
 // ║    ██║   ███████╗███████║   ██║   ███████║ ║
 // ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
 // ╚════════════════════════════════════════════╝
+
+#[cfg(all(test, feature = "packet-exchange"))]
+mod document_tests {
+    use super::*;
+
+    /// Everything a packet can be made of, with a derived field pinned in each
+    /// header so both halves of [`Field`] cross the document.
+    fn everything() -> Packet {
+        Packet::new()
+            .push(Ethernet {
+                ethertype: Field::Exact(EtherType(0x88b5)),
+                ..Ethernet::new(
+                    MacAddr::new(2, 0, 0, 0, 0, 1),
+                    MacAddr::new(2, 0, 0, 0, 0, 2),
+                )
+            })
+            .push(Ipv4 {
+                ttl: 12,
+                // Pinned, or two builds of one packet draw two identifications
+                // and the comparison below is about the random number generator.
+                identification: Field::Exact(0x4242),
+                total_length: Field::Exact(4),
+                checksum: Field::Exact(0),
+                protocol: Field::Exact(IpNextHeaderProtocols::Tcp),
+                options: vec![1, 2, 3, 4],
+                ..Ipv4::new(Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(192, 0, 2, 9))
+            })
+            .push(Tcp {
+                data_offset: Field::Exact(15),
+                options: vec![0; 4],
+                payload: b"HELLO".to_vec(),
+                ..Tcp::new(50_000, 80).with_flags(tcp_flags::SYN)
+            })
+            .push(Layer::Raw(vec![0xde, 0xad, 0xbe, 0xef]))
+    }
+
+    /// The property a document format is for: what comes back builds the same
+    /// packet the original did.
+    ///
+    /// Asserted on the bytes rather than on the layers, because that is what a
+    /// caller gets and because it holds a field this test did not think to name.
+    #[test]
+    fn a_packet_written_as_a_document_reads_back_as_the_same_packet() {
+        let original = everything();
+        let written = toml::to_string(&original).expect("a packet is a document");
+        let read: Packet = toml::from_str(&written).expect("and reads back");
+
+        assert_eq!(
+            read.build().expect("the copy builds"),
+            original.build().expect("the original builds"),
+            "the packet that came back is not the packet that went in:\n{written}"
+        );
+    }
+
+    /// A derived field left to the builder is left out of the document, and a
+    /// pinned one is written down. That is the whole encoding of [`Field`], and
+    /// a document that wrote both would say a value was chosen when it was not.
+    #[test]
+    fn only_a_pinned_field_is_written_down() {
+        let pinned = Packet::new().push(Ipv4 {
+            checksum: Field::Exact(0),
+            ..Ipv4::new(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST)
+        });
+        let written = toml::to_string(&pinned).expect("a document");
+
+        assert!(written.contains("checksum"), "{written}");
+        assert!(
+            !written.contains("total_length"),
+            "a field left to the builder was written down as though it were chosen:\n{written}"
+        );
+
+        let read: Packet = toml::from_str(&written).expect("reads back");
+        let Some(Layer::Ipv4(header)) = read.layers().first() else {
+            panic!("the layer came back as something else");
+        };
+        assert_eq!(header.checksum, Field::Exact(0));
+        assert_eq!(header.total_length, Field::Computed);
+    }
+
+    /// Bytes are hex, which is the one convention here a reader has to be told.
+    #[test]
+    fn bytes_are_written_as_hex() {
+        let packet = Packet::new().push(Layer::Raw(vec![0xde, 0xad, 0xbe, 0xef]));
+        let written = toml::to_string(&packet).expect("a document");
+
+        assert!(written.contains("deadbeef"), "{written}");
+    }
+
+    /// Hex that is not four bytes is refused where it is read, naming what was
+    /// wrong, rather than being padded or truncated into the header.
+    #[test]
+    fn a_rest_of_header_that_is_not_four_bytes_is_refused() {
+        let error = toml::from_str::<Packet>(
+            "[[layers]]\n[layers.icmpv4]\nicmp_type = 8\ncode = 0\nrest_of_header = \"dead\"\npayload = \"\"\n",
+        )
+        .expect_err("two bytes are not the four an ICMP header has");
+
+        assert!(error.to_string().contains("8 hex characters"), "{error}");
+    }
+
+    /// A document is JSON as readily as TOML, since nothing here names a format.
+    ///
+    /// `serde_json` is here through this package's dev-dependency on itself,
+    /// which carries `export-all`, so a test build always has it whatever the
+    /// library was compiled with.
+    #[test]
+    fn the_same_packet_round_trips_through_json() {
+        let original = everything();
+        let written = serde_json::to_string(&original).expect("a packet is JSON too");
+        let read: Packet = serde_json::from_str(&written).expect("and reads back");
+
+        assert_eq!(
+            read.build().expect("the copy builds"),
+            original.build().expect("the original builds")
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -37,19 +37,22 @@ libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 # an ethertype, a next-header protocol, and a hardware address.
 pnet_packet = "0.35.0"
 pnet_base = "0.35.0"
-# Used by `export_report` alone, to say that what the JSON writers emit is JSON.
-# The library's own parser would be the wrong instrument: it reads the schema,
-# and the question here is the one below that.
+# Used by `export_report`, to say that what the JSON writers emit is JSON, and by
+# `protocols_craft`, as the format its round-trip oracle carries a packet
+# through. The library's own parser would be the wrong instrument for the first:
+# it reads the schema, and the question there is the one below that.
 serde_json = "1"
 
 # Every reader and every writer, because a target per surface needs the surface
 # compiled in. `journal-format` is named rather than left to the default set: the
 # journal targets do not compile without it, and a default is something a
-# consumer can turn off. `test-support` is deliberately absent: it swaps a real
-# transport for a synthetic one, and nothing here goes near a transport.
+# consumer can turn off. `packet-exchange` is what puts `craft` behind `serde`,
+# which `protocols_craft` round-trips a packet through; the sending half of that
+# feature is not reached from here. `test-support` is deliberately absent: it
+# swaps a real transport for a synthetic one, and nothing here goes near one.
 [dependencies.zond-engine]
 path = ".."
-features = ["import-all", "export-all", "journal-format"]
+features = ["import-all", "export-all", "journal-format", "packet-exchange"]
 
 # ---------------------------------------------------------------------------
 # Targets
