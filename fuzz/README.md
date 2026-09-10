@@ -48,6 +48,16 @@ A crash is never rendered. On the first sign of one it drops out of the way and
 passes the raw stream through, because a status screen that swallowed the report
 would be worse than the scroll it replaced.
 
+`--json <path>` writes the same numbers out instead of only drawing them, so
+something other than a terminal can read a run: the counters, the corpus, and
+both clocks, rewritten atomically every couple of seconds. The screen is skipped
+when stdout is not a terminal, which keeps the escape codes out of whatever is
+collecting the stream.
+
+```
+... 2>&1 | python3 fuzz/watch.py import_nmap --json import_nmap.json
+```
+
 AFL++ has the status screen this imitates, and `cargo-afl` brings it to Rust —
 but it is a different fuzzer with its own instrumentation, harness macro and
 corpus format, and macOS on ARM is its weakest platform. Worth it for what AFL++
@@ -285,15 +295,3 @@ distinction matters: `export_report` does a third of `format_timestamp`'s
 executions because each one drives ten writers, and it is still nowhere near
 exhausting forty times the code. A target left running overnight is the point of
 having one, and the seeds are what make those hours count.
-
-## In CI
-
-`.github/workflows/fuzz.yml` builds every target on a change under `fuzz/` or
-`src/`, which is what catches the common rot: a target that stops compiling
-because the API it drives moved. It does not fuzz on a pull request — a
-sixty-second run finds nothing a longer one would not, and it would make every
-pull request wait on a nightly toolchain.
-
-The weekly run is the one that does the work: each target from its seeds, long
-enough to be worth the machine, with a crashing input uploaded as an artifact so
-it can be reproduced from the repository rather than from a log.
