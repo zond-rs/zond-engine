@@ -19,19 +19,11 @@
 //! This is the least covered file in the crate at 18.3%, and it was not
 //! reachable before this tier existed.
 //!
-//! # Both of these are claims, and both fail
-//!
-//! Neither conclusion is drawn. What is established is narrower than a cause:
-//! the peer counts every segment arriving for the port, and against a dropped
-//! port the count is exactly the port scan's own SYN and its retries. The
-//! diagnostic probes never arrive at all, so nothing is being misread; they are
-//! not reaching the wire, or not reaching this address.
-//!
-//! `characterise` opens a `ProbeTransport` of its own rather than reusing the
-//! scan's, and this tier gives a namespace one link per segment, so the first
-//! place to look is which link and which source address that second transport
-//! chooses. Every rule here carries a `counter`, so `nft list ruleset` in the
-//! peer's namespace says what arrived.
+//! Both of these were written as claims that failed, and both were failing for
+//! the same reason: the diagnostic probes never left, because the engine could
+//! find no interface to send from. See `netns::mount_fresh_sysfs` for why.
+//! Every rule here carries a `counter`, so `nft list ruleset` in the peer's
+//! namespace says what arrived if one starts failing again.
 
 use crate::netns::{Segment, available};
 use crate::support::{run_scan, target_map, test_config};
@@ -43,7 +35,6 @@ const TRUSTED_SOURCE_PORT: u16 = 53;
 
 /// A filter that admits an ACK where it dropped a SYN is named stateful.
 #[tokio::test]
-#[ignore = "no conclusion is drawn: the diagnostic ACK never reaches the peer, which counts only the port scan's SYNs"]
 async fn a_filter_that_judges_by_connection_state_is_named_stateful() {
     if !available() {
         return;
@@ -73,7 +64,6 @@ async fn a_filter_that_judges_by_connection_state_is_named_stateful() {
 
 /// A filter that admits a SYN from one source port is named a port-trusting ACL.
 #[tokio::test]
-#[ignore = "no conclusion is drawn: the trusted-source-port SYN never reaches the peer"]
 async fn a_filter_that_judges_by_source_port_is_named_an_acl() {
     if !available() {
         return;

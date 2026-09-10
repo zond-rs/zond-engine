@@ -44,3 +44,4 @@ mod characterise;
 mod classification;
 mod degraded;
 mod segment;
+mod techniques;

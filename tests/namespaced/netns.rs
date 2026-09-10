@@ -70,8 +70,9 @@ extern "C" fn enter() {
     // `CLONE_NEWUSER` requires. `getuid` and `getgid` cannot fail.
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
 
-    // SAFETY: both flags are valid for `unshare`, which touches no memory.
-    if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) } != 0 {
+    // SAFETY: the flags are valid for `unshare`, which touches no memory. The
+    // mount namespace comes along because `/sys` has to be replaced; see below.
+    if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET | libc::CLONE_NEWNS) } != 0 {
         ENTERED.store(
             std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
             Ordering::SeqCst,
@@ -87,13 +88,61 @@ extern "C" fn enter() {
         .and_then(|()| fs::write("/proc/self/uid_map", format!("0 {uid} 1")))
         .and_then(|()| fs::write("/proc/self/gid_map", format!("0 {gid} 1")));
 
-    ENTERED.store(
-        match mapped {
-            Ok(()) => 0,
-            Err(e) => e.raw_os_error().unwrap_or(-1),
-        },
-        Ordering::SeqCst,
-    );
+    if let Err(e) = mapped {
+        ENTERED.store(e.raw_os_error().unwrap_or(-1), Ordering::SeqCst);
+        return;
+    }
+
+    ENTERED.store(mount_fresh_sysfs(), Ordering::SeqCst);
+}
+
+/// Replaces `/sys` with one belonging to this network namespace.
+///
+/// Without this the engine finds an empty network. `netdev` reads a link's
+/// RFC 2863 operational state from `/sys/class/net/<link>/operstate`, and `/sys`
+/// is inherited from the host, where a veth that exists only in here has no
+/// entry at all. So `is_oper_up` answers false for every link, and
+/// `Link::is_up` requires it alongside the `IFF_UP` flag that is set. A planner
+/// that can find no source address abandons the raw path, which is the one path
+/// this tier exists to exercise.
+///
+/// The mount is private first. A new mount namespace may inherit shared
+/// propagation from its parent, and a `/sys` mounted under that would appear on
+/// the machine outside the test.
+fn mount_fresh_sysfs() -> i32 {
+    let root = c"/";
+    let sys = c"/sys";
+    let sysfs = c"sysfs";
+
+    // SAFETY: every pointer is a literal C string with a static lifetime, and
+    // this runs before `main` on the only thread there is.
+    let rc = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            root.as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        return std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+    }
+
+    // SAFETY: as above.
+    let rc = unsafe {
+        libc::mount(
+            sysfs.as_ptr(),
+            sys.as_ptr(),
+            sysfs.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    match rc {
+        0 => 0,
+        _ => std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
+    }
 }
 
 #[used]
@@ -284,6 +333,12 @@ impl Segment {
     /// classifies a lone ACK as invalid rather than new, so it is not matched
     /// here and reaches the port, where an ordinary SYN does not.
     pub fn drop_new_connections_to(&self, port: u16) {
+        // Conntrack's loose mode, on by default, will open a NEW entry for a
+        // mid-stream ACK, which would put the diagnostic ACK in the same class
+        // as the SYN and leave nothing for the rule below to distinguish. With
+        // it off, a lone ACK is invalid, which is what "not a new connection"
+        // has to mean for this test to be about connection state at all.
+        self.there(&["sysctl", "-wq", "net.netfilter.nf_conntrack_tcp_loose=0"]);
         // Counts everything arriving for the port, so a test can tell a probe
         // that was refused from one that never came. No verdict, so evaluation
         // falls through to the rule below.
@@ -298,6 +353,25 @@ impl Segment {
             "counter",
             "drop",
         ]);
+    }
+
+    /// Counts segments arriving for this TCP port without changing their fate.
+    pub fn count_tcp(&self, port: u16) {
+        self.rule(&["tcp", "dport", &port.to_string(), "counter"]);
+    }
+
+    /// How many segments the peer has counted for this TCP port.
+    ///
+    /// Needs [`count_tcp`](Self::count_tcp) to have been called for it.
+    pub fn count_of(&self, port: u16) -> u64 {
+        let needle = format!("tcp dport {port} counter packets ");
+        self.ruleset()
+            .lines()
+            .find_map(|line| {
+                let rest = line.trim().strip_prefix(&needle)?;
+                rest.split_whitespace().next()?.parse().ok()
+            })
+            .unwrap_or(0)
     }
 
     /// Admits this TCP port only from one source port, dropping the rest.

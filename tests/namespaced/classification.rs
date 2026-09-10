@@ -19,23 +19,37 @@
 use crate::netns::{Segment, available};
 use crate::support::{is_privileged, run_scan, target_map, test_config};
 use zond_engine::model::port::PortState;
+use zond_engine::system::interface::SourceResolver;
 
-/// The tier sends raw packets, and says so.
+/// The tier really is on the raw path, by the planner's own test for it.
 ///
-/// A user namespace maps this process to uid 0 inside itself, which is what
-/// gives `scan` its raw socket path rather than the connect fallback Tier 1
-/// runs on. Without this the tier would still pass: a connect scan reports the
-/// same two verdicts, over a path that never builds an IP header. It would just
-/// have stopped testing anything the tiers above it do not.
+/// Privilege alone is not the question, and asking only that is how this tier
+/// spent its first two phases quietly scanning over `connect`: `PortScanPlan`
+/// takes the raw path only when the process may send raw *and* a source address
+/// can be resolved, and the second half was false because every link read as
+/// down. A connect scan reports the same two verdicts over a path that never
+/// builds an IP header, so the tier would have gone on passing while testing
+/// nothing the tiers above it do not.
+///
+/// Both halves are asserted here, which is the whole of `plan.rs`'s condition.
+/// A segment has to exist first: a namespace holding only its loopback has no
+/// source to offer, and Linux reports `lo`'s operational state as unknown
+/// rather than up in any case.
 #[test]
 fn the_engine_takes_its_raw_path_here() {
     if !available() {
         return;
     }
+    let _segment = Segment::new();
 
     assert!(
         is_privileged(),
         "the namespace should give this process the privilege a raw scan needs"
+    );
+    assert!(
+        SourceResolver::from_system().has_sources(),
+        "the planner needs a source address to choose the raw path, and finds \
+         none when a link reads as down"
     );
 }
 
@@ -146,22 +160,11 @@ async fn a_dropped_port_is_reported_filtered() {
 /// port as a closed one, which is a confident and wrong answer rather than a
 /// missing one.
 ///
-/// # This one is a claim, and it fails
-///
-/// The port comes back [`PortState::Unasked`]. The peer's counter shows one SYN
-/// arriving and being rejected, so the probe went out and was answered; Linux
-/// then delivers the ICMP error to the socket, the next send reports it, and
-/// that reads here as a probe the operating system refused to send. `Unasked`
-/// is documented to mean exactly that, so the mechanism is working as written.
-/// What is open is which evidence should win: an error the target actually sent
-/// is a definitive `Filtered`, and it is being discarded in favour of a local
-/// send failure that the error itself caused.
-///
-/// Tier 2 has no way to see this. It hands a scanner a synthesized ICMP reply
-/// and never runs a socket, so `admin_prohibited()` passes there and has
-/// always passed.
+/// This read `Unasked` for a while, and the engine was not at fault: with no
+/// usable interface the scan fell back to `connect`, where the kernel reports
+/// the prohibition as a failed send rather than handing the error to a capture.
+/// On the raw path the ICMP error is read as what it is.
 #[tokio::test]
-#[ignore = "reports Unasked: the ICMP error comes back on the socket and is read as a refused send"]
 async fn an_administratively_prohibited_port_is_filtered_rather_than_closed() {
     if !available() {
         return;

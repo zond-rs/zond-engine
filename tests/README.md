@@ -299,6 +299,22 @@ that exist only in that namespace. So `cargo test` runs this tier like any
 other, and it can gate a pull request rather than waiting on a privileged host
 somebody has to remember to use.
 
+### /sys has to be replaced, or the tier tests nothing
+
+The namespace also gets a mount namespace and a fresh `sysfs` over `/sys`, and
+without it this tier quietly stops being Tier 3. `netdev` reads a link's RFC
+2863 operational state from `/sys/class/net/<link>/operstate`; an inherited
+`/sys` is the host's, where a veth living only in here has no entry, so
+`is_oper_up` answers false for every link and `Link::is_up` requires it beside
+the `IFF_UP` flag that is set. `PortScanPlan` then finds no source address,
+abandons the raw path, and runs a `connect` scan instead.
+
+That is not a hypothetical. It is what this tier did for its first two phases,
+reporting the same verdicts over a path that never builds an IP header, while a
+guard asserting only privilege passed. `the_engine_takes_its_raw_path_here` now
+asserts the planner's whole condition, privilege and a resolvable source, which
+is what makes the tier's name true.
+
 ### How the process gets there
 
 `netns.rs` registers an `.init_array` entry, so the move happens before `main`
@@ -332,7 +348,15 @@ named in `/var/run/netns`, so a panicking test leaves nothing behind.
 `classification` for the verdicts a real answer produces, including the two a
 firewall gives and the two that need an ICMP error; `segment` for finding the
 right neighbour on the right link, over both address families; `degraded` for
-what survives loss and delay.
+what survives loss and delay; `techniques` for all seven TCP techniques against
+a kernel rather than a model of one; `characterise` for what kind of filter sits
+in front of a host.
+
+`techniques` and `characterise` are where this tier pays for itself. Tier 2
+covers the techniques more thoroughly than this ever will, and cannot disagree
+with whoever wrote its stacks; Linux can. `characterise` was the least covered
+file in the crate at 18.3%, because every conclusion it draws is about a
+firewall's behaviour and there was no firewall to put in front of it.
 
 A `Segment` can also firewall a port in the peer's namespace, with `drop` for
 silence and `reject` for an ICMP error, and shape the near end of the pair with
