@@ -267,6 +267,7 @@ pub mod config;
 pub mod cve;
 pub mod detect;
 pub mod diff;
+pub mod error;
 pub mod evasion;
 pub mod export;
 pub mod fingerprint;
@@ -298,6 +299,7 @@ pub(crate) mod logging;
 // costs is that each name is a commitment, which is why the crate's whole
 // vocabulary is not re-exported wholesale.
 pub use crate::config::{RetryConfig, ScanEffort, ZondConfig};
+pub use crate::error::Coded;
 pub use crate::evasion::EvasionProfile;
 pub use crate::model::exclusion::Exclusions;
 pub use crate::model::host::{Host, HostStatus};
