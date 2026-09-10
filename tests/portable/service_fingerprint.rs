@@ -21,8 +21,6 @@
 //! reading it off the socket, so a misleading one can be handed to the real
 //! engine over an ephemeral listener, with no root and no privileged bind.
 
-mod common;
-
 use std::net::Ipv4Addr;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -32,7 +30,7 @@ use zond_engine::config::ServiceDetection;
 use zond_engine::fingerprint::{baseline_port, fingerprint_tcp};
 use zond_engine::model::port::{PortState, Protocol};
 
-use common::*;
+use crate::support::*;
 
 /// An SSH server announcing an OpenSSH banner must be resolved all the way to
 /// service + product + version, not left at the port→name baseline.

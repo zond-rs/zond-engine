@@ -19,10 +19,8 @@
 //! guard for the one failure this feature can have that nobody would notice: a
 //! resumed scan skipping targets nobody ever probed, and reporting success.
 
-mod common;
-
-use common::fake_net::{FakeNet, Layer4, Policy};
-use common::*;
+use crate::support::fake_net::{FakeNet, Layer4, Policy};
+use crate::support::*;
 use zond_engine::detect::Detections;
 use zond_engine::journal::cursor::Checkpoint;
 use zond_engine::journal::settle::Outcome;

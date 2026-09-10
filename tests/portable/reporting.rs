@@ -14,12 +14,10 @@
 //! isolation but wired to the wrong scan, taken at the wrong moment, or filled
 //! from a store that was still being written.
 
-mod common;
-
 use std::time::Duration;
 
-use common::fake_net::unsendable_transport;
-use common::*;
+use crate::support::fake_net::unsendable_transport;
+use crate::support::*;
 use zond_engine::model::host::HostStatus;
 use zond_engine::model::port::{PortState, Protocol};
 use zond_engine::report::{ENGINE_VERSION, ScanKind};

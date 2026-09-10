@@ -40,8 +40,6 @@
 //! rather than a scan, because refusing a detection happens before a scan would
 //! ever reach it.
 
-mod common;
-
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -52,7 +50,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use common::*;
+use crate::support::*;
 use zond_engine::config::limits::CONNECT_CONCURRENCY;
 use zond_engine::config::{DetectionEnvelope, ServiceDetection, ZondConfig};
 use zond_engine::detect::Detections;

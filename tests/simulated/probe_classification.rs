@@ -21,12 +21,10 @@
 //! different from the identically numbered ICMPv4 one. Both are the kind of
 //! mistake that produces a confident, wrong answer.
 
-mod common;
-
 use std::time::Duration;
 
-use common::fake_net::{FakeNet, Layer4, Policy, Stack, Unreachable};
-use common::*;
+use crate::support::fake_net::{FakeNet, Layer4, Policy, Stack, Unreachable};
+use crate::support::*;
 use zond_engine::model::host::{HostStatus, StatusProtocol, StatusReason};
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::{SctpScanTechnique, TcpScanTechnique};

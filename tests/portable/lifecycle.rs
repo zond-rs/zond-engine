@@ -12,11 +12,9 @@
 //! These exercise the session/handle/event contract rather than any particular
 //! scan path, so they hold regardless of privilege and run everywhere.
 
-mod common;
-
 use std::time::Duration;
 
-use common::*;
+use crate::support::*;
 use zond_engine::report::StopReason;
 use zond_engine::scanner;
 use zond_engine::scanner::session::ScanEvent;

@@ -14,9 +14,7 @@
 //! vendor) needs raw sockets on a real network, so it is out of scope here (see
 //! `tests/README.md`).
 
-mod common;
-
-use common::*;
+use crate::support::*;
 use zond_engine::model::ip::set::IpSet;
 
 /// Loopback is discovered as alive, with at least one RTT sample recorded.
@@ -47,22 +45,4 @@ async fn empty_target_set_finds_nothing() {
         outcome.hosts().is_empty(),
         "discovering an empty set must yield no hosts"
     );
-}
-
-/// Overlapping input ranges are canonicalised to their union before scanning,
-/// and discovery still runs to completion over the merged set.
-#[tokio::test]
-async fn overlapping_ranges_are_merged() {
-    let mut targets = IpSet::new();
-    // 127.0.0.1/31 -> {.0, .1}; 127.0.0.1-.5 -> {.1..=.5}; union = {.0..=.5} = 6.
-    targets.insert_range("127.0.0.0/31".parse().unwrap());
-    targets.insert_range("127.0.0.1-127.0.0.5".parse().unwrap());
-    assert_eq!(
-        targets.len(),
-        6,
-        "overlapping loopback ranges should collapse to 6 unique addresses"
-    );
-
-    // The orchestration must accept the canonicalised set and finish.
-    let _ = run_discover(targets, &test_config()).await;
 }

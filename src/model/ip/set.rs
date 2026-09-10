@@ -48,7 +48,7 @@ use std::{
 /// as the caller wrote it, all of which a person reading a refused target wants.
 ///
 /// It is not available here. `parse` is built on `ip` and reaching the other way
-/// would put the two modules in a cycle, which `tests/architecture.rs` refuses
+/// would put the two modules in a cycle, which `tests/hygiene/architecture.rs` refuses
 /// and `lib.rs` sets out the order to avoid. So the richer reading belongs to
 /// the layer that has both, and a caller wanting it goes through
 /// [`to_set`](crate::model::parse::ip::to_set) rather than through this type's

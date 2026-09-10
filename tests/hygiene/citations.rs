@@ -135,7 +135,7 @@ fn every_cited_document_is_in_the_repository() {
         };
         // A citation resolves against the repository root, or against the
         // directory of the file doing the citing. `tests/README.md` naming
-        // `common/mod.rs` means the one beside it, and is not wrong for saying
+        // `tests/support/mod.rs` means the one beside it, and is not wrong for saying
         // so the way a reader of that file would.
         let beside = file.parent().unwrap_or(root);
         for citation in citations_in(file, &text) {

@@ -10,6 +10,23 @@ slow parts constantly or skipping the interesting parts entirely.
 So the suite is split into tiers. Each one answers a different question, and each
 one runs somewhere different.
 
+A tier is one test binary, and its directory is what it contains:
+
+```text
+tests/
+  support/       the shared harness: fixtures, fake_net, fake_lan
+  hygiene/       checks on the repository rather than on the engine
+  portable/      Tier 1, loopback and files
+  simulated/     Tier 2, fake_net and fake_lan
+  containers/    Tier 4, real software from pinned images
+  data/          manifests the tiers read
+```
+
+Each directory's `main.rs` carries the tier's doc header and its `mod`
+declarations, so what a tier is and what is in it are one file. `cargo test
+--test simulated` runs a whole tier, and `--test simulated probe_classification::`
+runs one module of it.
+
 ## Unit tests, inside the crate
 
 Anything that is a pure function of bytes lives next to the code it covers, in a
@@ -24,10 +41,9 @@ than in any of the tiers below.
 
 ## Tier 1: portable integration tests
 
-Files: `discovery.rs`, `lifecycle.rs`, `port_states.rs`, `service_fingerprint.rs`,
-`detections.rs`, `import.rs`, with shared helpers in `common/mod.rs`.
+Binary: `portable/`, with shared helpers in `tests/support/mod.rs`.
 
-`import.rs` is the odd one: it binds no socket at all, because the surface it
+`import` is the odd one: it binds no socket at all, because the surface it
 covers reads files. It sits here because it needs nothing but a temporary
 directory, which is the property this tier is defined by.
 
@@ -45,9 +61,9 @@ the fallback call `is_privileged()` and skip rather than flake.
 
 ## The wire parsers, against bytes nobody wrote
 
-File: `wire_parsers.rs`.
+Module: `portable/wire_parsers.rs`.
 
-Sits beside Tier 1 and needs even less: no socket, no temporary directory,
+Sits inside Tier 1's binary and needs even less: no socket, no temporary directory,
 nothing but the crate. It drives every public parser that reads bytes off a wire
 over `proptest`-generated input and asserts that each one returns.
 
@@ -71,12 +87,13 @@ first draft of the file was in exactly that state.
 
 ## Tier 2: the simulated network
 
-Harnesses: `common/fake_net.rs` simulates a Layer 4 network, `common/fake_lan.rs`
-simulates an Ethernet segment, and the fixtures at the bottom of `common/mod.rs`
-stand up the host they are probed from.
+Harnesses: `tests/support/fake_net.rs` simulates a Layer 4 network,
+`tests/support/fake_lan.rs` simulates an Ethernet segment, and the fixtures at
+the bottom of `tests/support/mod.rs` stand up the host they are probed from.
 
-Files: `probe_classification.rs`, `lan_discovery.rs`, `retransmission.rs`,
-`listening.rs`, `evasion.rs`, `comparison.rs`.
+Binary: `simulated/`, holding `probe_classification`, `lan_discovery`,
+`retransmission`, `listening`, `evasion`, `comparison`, `settlement` and
+`pacing`.
 
 This is where the behaviour that actually distinguishes a scanner gets tested:
 what it does when probes are lost, answered late, answered twice, answered by a
@@ -284,7 +301,7 @@ a precise assertion.
 
 ## Tier 4: real software, in containers
 
-Files: `containers.rs`, with its manifest in `containers.toml`.
+Binary: `containers/`, with its manifest in `tests/data/containers.toml`.
 
 Every tier above proves the engine is consistent with itself. A signature matches
 the example recorded beside it; a parser returns on any bytes; a simulated
@@ -307,9 +324,10 @@ a mistake in the data does not read as a defect in the engine.
 ## Running them
 
 ```sh
-cargo test              # unit tests, Tier 1 and Tier 2
-cargo test --lib        # unit tests only
-cargo test --test port_states
+cargo test                        # unit tests, hygiene, Tier 1 and Tier 2
+cargo test --lib                  # unit tests only
+cargo test --test portable        # one tier
+cargo test --test portable port_states::   # one module of one tier
 
 # Tier 4, one target at a time so a memory-hungry image is not run beside four others
 cargo test --test containers -- --ignored --test-threads=1

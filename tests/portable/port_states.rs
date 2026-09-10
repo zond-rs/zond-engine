@@ -13,12 +13,10 @@
 //! and closed. Both are recorded, so the port list a scan produces does not
 //! depend on whether the process had root. `Filtered` is a silent firewall drop and cannot be reproduced on
 //! loopback at all, so the privileged SYN path's full Open/Closed/Filtered
-//! logic belongs against the simulated network in `common::fake_net` instead
+//! logic belongs against the simulated network in `support::fake_net` instead
 //! (see `tests/README.md`).
 
-mod common;
-
-use common::*;
+use crate::support::*;
 use zond_engine::model::port::PortState;
 
 /// A live listener's port is reported Open.

@@ -17,11 +17,9 @@
 //! `192.0.2.1` is TEST-NET-1 (RFC 5737) and belongs to nobody, so it is the
 //! address that reliably answers nothing.
 
-mod common;
-
 use std::net::{IpAddr, Ipv4Addr};
 
-use common::*;
+use crate::support::*;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::PortSet;
 use zond_engine::model::target::{TargetMap, TargetSet};

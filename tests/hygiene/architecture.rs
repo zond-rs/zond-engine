@@ -245,7 +245,7 @@ fn no_module_depends_on_one_declared_after_it() {
     let mut violations = Vec::new();
     for (owner, imports) in &graph {
         let Some(&from) = rank.get(owner.as_str()) else {
-            panic!("module `{owner}` is missing from ORDER in tests/architecture.rs");
+            panic!("module `{owner}` is missing from ORDER in tests/hygiene/architecture.rs");
         };
         for imported in imports {
             let to = rank[imported.as_str()];

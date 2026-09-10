@@ -29,14 +29,15 @@
 //! each target yields, which is how an expectation is written and how a stale
 //! corpus digest is found.
 
-mod common;
+#[path = "../support/mod.rs"]
+mod support;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use common::*;
+use crate::support::*;
 use serde::Deserialize;
 use zond_engine::fingerprint::SignatureDb;
 use zond_engine::model::port::Protocol;
@@ -152,7 +153,7 @@ struct Expect {
 fn manifest() -> Manifest {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/containers.toml"
+        "/tests/data/containers.toml"
     ))
     .expect("the manifest is beside this file");
     toml::from_str(&text).expect("the manifest parses")

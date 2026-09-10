@@ -159,7 +159,7 @@
 //! below are the whole of it:
 //!
 //! The modules are layered, and the layering is a rule. Each depends only on
-//! those below it, and `tests/architecture.rs` reads every `crate::` path in the
+//! those below it, and `tests/hygiene/architecture.rs` reads every `crate::` path in the
 //! library, including the ones inside an expression, which is where three
 //! violations were hiding, and fails if that stops being true.
 //!

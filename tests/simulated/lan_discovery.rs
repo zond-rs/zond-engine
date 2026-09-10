@@ -18,13 +18,11 @@
 //! rather than mere presence: one host answering at several addresses must be
 //! recorded once, and a targeted run must not solicit the whole segment.
 
-mod common;
-
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
-use common::fake_lan::{FakeLan, LanHost, LanProbe};
-use common::*;
+use crate::support::fake_lan::{FakeLan, LanHost, LanProbe};
+use crate::support::*;
 use pnet_base::MacAddr;
 use zond_engine::config::ZondConfig;
 use zond_engine::model::exclusion::Exclusions;

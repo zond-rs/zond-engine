@@ -47,14 +47,12 @@
 //! The one number they do assume is the attempt count, kept in [`ATTEMPTS`]
 //! below. Change it in one place if the policy lands on a different budget.
 
-mod common;
-
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
-use common::fake_lan::{FakeLan, LanHost, LanProbe};
-use common::fake_net::{FakeNet, Layer4, Policy};
-use common::*;
+use crate::support::fake_lan::{FakeLan, LanHost, LanProbe};
+use crate::support::fake_net::{FakeNet, Layer4, Policy};
+use crate::support::*;
 use pnet_base::MacAddr;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::PortState;

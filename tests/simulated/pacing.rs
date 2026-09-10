@@ -24,12 +24,10 @@
 //! Each scan here is deliberately wider than the window starts, so admission
 //! control is exercised rather than skipped.
 
-mod common;
-
 use std::time::{Duration, Instant};
 
-use common::fake_net::{FakeNet, Layer4, Policy};
-use common::*;
+use crate::support::fake_net::{FakeNet, Layer4, Policy};
+use crate::support::*;
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner::session::ScanSession;

@@ -50,13 +50,11 @@
 //! built over a simulated transport. The step this does not cover is
 //! `new` itself reading `tuning.evasion`, which needs a real socket.
 
-mod common;
-
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Range;
 
-use common::fake_net::{FakeNet, Layer4, Policy, Probe};
-use common::*;
+use crate::support::fake_net::{FakeNet, Layer4, Policy, Probe};
+use crate::support::*;
 use pnet_packet::Packet;
 use pnet_packet::tcp::TcpPacket;
 use pnet_packet::udp::UdpPacket;
@@ -640,10 +638,10 @@ async fn a_scan_refuses_an_evasion_profile_it_could_never_honour() {
     use zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU;
     use zond_engine::{ScanError, discover, scan};
 
-    let mut cfg = common::test_config();
+    let mut cfg = crate::support::test_config();
     cfg.evasion = EvasionProfile::default().with_fragment(SMALLEST_FRAGMENT_MTU - 1);
 
-    let refused = discover(common::ip_set(common::LOOPBACK), &cfg)
+    let refused = discover(crate::support::ip_set(crate::support::LOOPBACK), &cfg)
         .await
         .err()
         .expect("the sweep is refused before it starts");
@@ -656,7 +654,7 @@ async fn a_scan_refuses_an_evasion_profile_it_could_never_honour() {
     );
 
     let refused = scan(
-        common::target_map(common::LOOPBACK, "80"),
+        crate::support::target_map(crate::support::LOOPBACK, "80"),
         &cfg,
         Detections::embedded(),
     )
@@ -674,7 +672,7 @@ async fn a_scan_refuses_an_evasion_profile_it_could_never_honour() {
     // And a profile that is merely unusual still runs.
     cfg.evasion = EvasionProfile::default().with_ttl(12).with_padding(8);
     assert!(
-        discover(common::ip_set(common::LOOPBACK), &cfg)
+        discover(crate::support::ip_set(crate::support::LOOPBACK), &cfg)
             .await
             .is_ok(),
         "a valid profile is not refused"

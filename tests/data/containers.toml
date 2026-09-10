@@ -1,6 +1,6 @@
 # Real software, and what this engine should make of it.
 #
-# `tests/containers.rs` starts each target from its pinned image, scans it
+# `tests/containers/main.rs` starts each target from its pinned image, scans it
 # through the public API, and holds the verdict to what is written here.
 #
 # To add one: leave `expect` out, run the report pass, read what it printed, and

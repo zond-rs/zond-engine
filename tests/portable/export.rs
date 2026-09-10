@@ -20,12 +20,10 @@
 //! survives a round trip through a file, and the numbers in it agree with the
 //! report it was made from.
 
-mod common;
-
 use std::io::Write;
 
+use crate::support::*;
 use boon::{Compiler, Schemas};
-use common::*;
 use serde_json::Value;
 use zond_engine::export::{
     CsvExporter, ExportFormat, ExportOptions, Exporter, HtmlExporter, JsonExporter,
@@ -35,8 +33,8 @@ use zond_engine::report::ScanReport;
 
 /// The schemas shipped in `assets/`, which are what a consumer validates
 /// against.
-const SCHEMA: &str = include_str!("../assets/schema/zond-report-v1.schema.json");
-const LINES_SCHEMA: &str = include_str!("../assets/schema/zond-lines-v1.schema.json");
+const SCHEMA: &str = include_str!("../../assets/schema/zond-report-v1.schema.json");
+const LINES_SCHEMA: &str = include_str!("../../assets/schema/zond-lines-v1.schema.json");
 
 /// The identifiers the schemas declare for themselves.
 const SCHEMA_URL: &str = "https://zond.rs/schema/zond-report-v1.schema.json";

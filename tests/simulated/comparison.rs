@@ -33,8 +33,6 @@
 //! around it stays the scan's: the phases, the scope they cover, and the clock
 //! each report is placed at, which is what those tests are asking about.
 
-mod common;
-
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -44,9 +42,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-use common::fake_lan::{FakeLan, LanHost};
-use common::fake_net::{FakeNet, Layer4, Policy};
-use common::*;
+use crate::support::fake_lan::{FakeLan, LanHost};
+use crate::support::fake_net::{FakeNet, Layer4, Policy};
+use crate::support::*;
 
 use zond_engine::diff::{
     CertificateChange, Coverage, DiffOptions, HostChange, HostDelta, HostIdentity, PortChange,
