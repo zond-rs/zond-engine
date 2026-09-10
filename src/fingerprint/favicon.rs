@@ -153,8 +153,8 @@ fn as_application(mut evidence: Evidence) -> Evidence {
 /// `None` covers a port serving no icon and a port that was never going to
 /// answer. Nothing here checks that the peer speaks HTTP, so an endpoint
 /// speaking something else is asked for a page and given
-/// [`FETCH_TIMEOUT`] to not answer. That budget is the same one
-/// [`Favicon::collect`] spends, which is what makes the sentence above true;
+/// `FETCH_TIMEOUT` to not answer. That budget is the same one
+/// `Favicon::collect` spends, which is what makes the sentence above true;
 /// without it a caller aimed at an LDAP port waits for as long as the directory
 /// is willing to hold the connection, which is indefinitely.
 ///
