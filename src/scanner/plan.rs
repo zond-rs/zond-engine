@@ -478,7 +478,10 @@ impl DiscoveryPlan {
     /// the only source the engine has for an IPv6 address nobody named.
     /// [`Scope::Targeted`] does neither: probing addresses nobody asked about is
     /// defensible for `lan` and surprising for `zond <address>`.
-    pub fn build(targets: IpSet, scope: Scope) -> Self {
+    ///
+    /// `forced` pins the source addresses off-link targets are probed from,
+    /// empty for a scan that let the routing table choose.
+    pub fn build(targets: IpSet, scope: Scope, forced: &[IpAddr]) -> Self {
         let mut steps = Vec::new();
         let mut refusals = Vec::new();
 
@@ -489,7 +492,7 @@ impl DiscoveryPlan {
             ours,
             ambiguous,
             unenumerable,
-        } = interface::map_ips_to_interfaces(targets);
+        } = interface::map_ips_to_interfaces_forced(targets, forced);
 
         // A link-local target naming no interface. Refused rather than guessed
         // at: every interface has an `fe80::/64`, so probing the first one that
@@ -725,20 +728,26 @@ impl PortScanStep {
     ) -> Result<Box<dyn PortScanner>, StrategyError> {
         match self {
             Self::RawTcp { technique } => Ok(Box::new(TcpPortScanner::new(
-                interface::SourceResolver::from_system().with_zones(zones),
+                interface::SourceResolver::from_system()
+                    .with_zones(zones)
+                    .with_forced(tuning.send_source.clone()),
                 ctx,
                 technique,
                 target_count,
                 tuning,
             )?)),
             Self::RawUdp => Ok(Box::new(UdpPortScanner::new(
-                interface::SourceResolver::from_system().with_zones(zones),
+                interface::SourceResolver::from_system()
+                    .with_zones(zones)
+                    .with_forced(tuning.send_source.clone()),
                 ctx,
                 target_count,
                 tuning,
             )?)),
             Self::RawSctp => Ok(Box::new(SctpPortScanner::new(
-                interface::SourceResolver::from_system().with_zones(zones),
+                interface::SourceResolver::from_system()
+                    .with_zones(zones)
+                    .with_forced(tuning.send_source.clone()),
                 ctx,
                 target_count,
                 tuning,

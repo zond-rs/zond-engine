@@ -886,6 +886,12 @@ pub struct ProbeTuning {
     /// Whether the capture admits ICMP errors for a technique that reaches its
     /// verdict without them. See [`ZondConfig::icmp_evidence`].
     pub icmp_evidence: bool,
+
+    /// Source addresses to send every probe from, overriding what the routing
+    /// table would choose. One per family at most is used. Empty means the host
+    /// decides. Set to send from a chosen interface when the default route is a
+    /// VPN the link-layer path cannot traverse.
+    pub send_source: Vec<IpAddr>,
 }
 
 /// A third party whose IP-ID counter an idle scan reads to learn a target's
@@ -1437,6 +1443,9 @@ pub struct ZondConfig {
     /// up. A caller on a link noisy with ICMP turns it off. The other TCP
     /// techniques read ICMP for their verdicts regardless.
     pub icmp_evidence: bool,
+
+    /// Source addresses to force, one per family. See [`ZondConfig::send_source`].
+    pub send_source: Vec<IpAddr>,
 }
 
 impl Default for ZondConfig {
@@ -1445,6 +1454,7 @@ impl Default for ZondConfig {
     fn default() -> Self {
         Self {
             icmp_evidence: true,
+            send_source: Vec::new(),
             no_dns: Default::default(),
             segment_sweep: Default::default(),
             assume_up: Default::default(),
@@ -1492,6 +1502,7 @@ impl ZondConfig {
             service_detection,
             evasion,
             icmp_evidence,
+            send_source,
 
             // Read elsewhere. Named so that adding a field forces this decision
             // rather than skipping it.
@@ -1532,6 +1543,7 @@ impl ZondConfig {
             service_detection: *service_detection,
             evasion: evasion.clone(),
             icmp_evidence: *icmp_evidence,
+            send_source: send_source.clone(),
         }
     }
 }

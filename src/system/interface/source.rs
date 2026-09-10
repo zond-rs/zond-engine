@@ -208,6 +208,9 @@ pub struct SourceResolver {
     /// scan that named none. A prefix match cannot answer for these, since every
     /// interface holds an `fe80::/64`.
     zones: ZoneMap,
+    /// Source addresses the caller forced, one per family at most. When set for
+    /// a target's family, this is the answer, ahead of the routing table.
+    forced: Vec<IpAddr>,
 }
 
 impl SourceResolver {
@@ -224,6 +227,7 @@ impl SourceResolver {
             cache: HashMap::new(),
             links: links.to_vec(),
             zones: ZoneMap::new(),
+            forced: Vec::new(),
         }
     }
 
@@ -236,6 +240,12 @@ impl SourceResolver {
     /// [`zone_of`](Self::zone_of) is the scope id the send needs alongside it.
     pub fn with_zones(mut self, zones: ZoneMap) -> Self {
         self.zones = zones;
+        self
+    }
+
+    /// Forces the source addresses, one per family, ahead of the routing table.
+    pub fn with_forced(mut self, forced: Vec<IpAddr>) -> Self {
+        self.forced = forced;
         self
     }
 
@@ -269,13 +279,24 @@ impl SourceResolver {
         !self.onlink.is_empty()
     }
 
+    /// The forced source matching `target`'s family, when one was set. This is
+    /// how [`with_forced`](Self::with_forced) overrides the routing table: a
+    /// scan pinned to an interface sends every global target from that
+    /// interface's address rather than the one the kernel would have picked.
+    fn forced_source(&self, target: IpAddr) -> Option<IpAddr> {
+        self.forced
+            .iter()
+            .copied()
+            .find(|source| source.is_ipv4() == target.is_ipv4())
+    }
+
     /// Returns the source address to send a probe to `target` from, or `None`
     /// if no address on this host could plausibly reach it.
     ///
-    /// Four answers in order of authority: the interface a link-local target
-    /// named, this host's own segments, the kernel's routing table, then
-    /// `plausible_source` for the case where the kernel refuses but the host
-    /// visibly holds an address of the right scope.
+    /// Five answers in order of authority: the interface a link-local target
+    /// named, a forced source, this host's own segments, the kernel's routing
+    /// table, then `plausible_source` for the case where the kernel refuses but
+    /// the host visibly holds an address of the right scope.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
         if let Some(cached) = self.cache.get(&target) {
             return *cached;
@@ -283,6 +304,7 @@ impl SourceResolver {
 
         let scoped = self.scoped_source(target);
         let source = scoped
+            .or_else(|| self.forced_source(target))
             .or_else(|| self.onlink.source_for(target))
             .or_else(|| probe_route_source(target, &mut self.sockets))
             .or_else(|| plausible_source(&self.links, target));
@@ -507,6 +529,21 @@ mod tests {
     fn empty_host_has_no_sources() {
         let resolver = SourceResolver::from_links(&[]);
         assert!(!resolver.has_sources());
+    }
+
+    /// A forced source answers a routed target ahead of the routing table, the
+    /// override a scan pinned to an interface needs. It picks by family, so the
+    /// IPv4 force answers the IPv4 target even listed behind the IPv6 one, and
+    /// the kernel is never consulted.
+    #[test]
+    fn a_forced_source_answers_a_routed_target_by_family() {
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
+        let v6 = IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1));
+        let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
+        let mut resolver = SourceResolver::from_links(&[intf]).with_forced(vec![v6, v4]);
+
+        let public = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        assert_eq!(resolver.resolve(public), Some(v4));
     }
 
     fn v6net(addr: Ipv6Addr, prefix: u8) -> LinkAddress {

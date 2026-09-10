@@ -85,7 +85,10 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
             }
             Attempt::Unreachable { ip, number, reason } => ctx.record_failure(
                 ScannerKind::Service,
-                format!("{ip}:{number} could not be fingerprinted: {reason}"),
+                format!(
+                    "{} could not be fingerprinted: {reason}",
+                    ip.endpoint(number)
+                ),
             ),
             Attempt::Quiet => {}
         },
@@ -191,7 +194,8 @@ async fn fingerprint_one(
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
             verbosity = 1,
-            "cannot fingerprint {target}:{port_number}: no interface recorded for a link-local address"
+            "cannot fingerprint {}: no interface recorded for a link-local address",
+            target.endpoint(port_number)
         );
         return Attempt::Quiet;
     };

@@ -780,6 +780,11 @@ impl From<&ZondConfig> for ScanSettings {
             exclusions: _,
             segment_sweep: _,
             assume_up: _,
+
+            // Not recorded: which local source a scan was pinned to is transport
+            // plumbing the findings do not turn on. Unlike `send_mode` it names
+            // host-specific addresses, so it waits for a reader that needs it.
+            send_source: _,
         } = cfg;
 
         Self {

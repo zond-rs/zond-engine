@@ -237,6 +237,17 @@ impl ScopedIp {
             (addr, _) => Some(SocketAddr::new(addr, port)),
         }
     }
+
+    /// This address and a port as an endpoint a reader can paste back. The IPv6
+    /// form is bracketed so its port is not read as one more hextet, with the
+    /// zone kept inside the brackets where a shell and a URL both take it.
+    pub fn endpoint(&self, port: u16) -> String {
+        if self.addr.is_ipv6() {
+            format!("[{self}]:{port}")
+        } else {
+            format!("{self}:{port}")
+        }
+    }
 }
 
 impl From<IpAddr> for ScopedIp {
@@ -664,5 +675,24 @@ mod tests {
             "not-an-address%en0".parse::<ScopedIp>(),
             Err(ScopedIpError::NotAnAddress(_))
         ));
+    }
+
+    /// The endpoint form a reader pastes back: an IPv6 address is bracketed so
+    /// its port cannot be read as one more hextet, the zone stays inside the
+    /// brackets, and an IPv4 address is left as it was.
+    #[test]
+    fn an_endpoint_brackets_ipv6_and_keeps_the_zone_inside() {
+        assert_eq!(
+            ScopedIp::unscoped(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 160))).endpoint(80),
+            "192.168.0.160:80"
+        );
+        assert_eq!(
+            ScopedIp::unscoped(global()).endpoint(80),
+            "[2001:db8::1]:80"
+        );
+        assert_eq!(
+            ScopedIp::scoped(link_local(), en0()).endpoint(80),
+            "[fe80::1%en0]:80"
+        );
     }
 }

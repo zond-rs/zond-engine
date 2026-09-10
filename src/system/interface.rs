@@ -50,4 +50,7 @@ pub use resolve::{resolve_keyword, resolve_zone};
 pub use routing::{
     MAX_ENUMERABLE_ADDRESSES, RoutedTarget, RoutedTargets, is_enumerable, map_ips_to_interfaces,
 };
+// Not published: the forced-source override a scan pinned to an interface needs,
+// which only the scanner passes. See `DiscoveryPlan::build`.
+pub(crate) use routing::map_ips_to_interfaces_forced;
 pub use source::SourceResolver;

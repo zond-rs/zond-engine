@@ -145,7 +145,14 @@ pub struct RoutedTargets {
 /// business and nobody else's; this used to name `pnet::datalink`,
 /// which stopped being the source, and then stopped being a dependency.
 pub fn map_ips_to_interfaces(ip_set: IpSet) -> RoutedTargets {
-    map_ips_to_interfaces_with(ip_set, viable_interfaces())
+    map_ips_to_interfaces_with(ip_set, viable_interfaces(), &[])
+}
+
+/// [`map_ips_to_interfaces`], with source addresses forced ahead of the routing
+/// table. A scan pinned to an interface routes every off-link target from that
+/// interface's address, the override for a host whose default route a VPN owns.
+pub(crate) fn map_ips_to_interfaces_forced(ip_set: IpSet, forced: &[IpAddr]) -> RoutedTargets {
+    map_ips_to_interfaces_with(ip_set, viable_interfaces(), forced)
 }
 
 /// Per-single classification carried out of the parallel pass, before the
@@ -166,7 +173,11 @@ enum Classification {
 /// interfaces that do not exist, so which bucket a target lands in can be
 /// exercised without depending on what the machine running the tests happens to
 /// have plugged in.
-pub(crate) fn map_ips_to_interfaces_with(ip_set: IpSet, interfaces: Vec<Link>) -> RoutedTargets {
+pub(crate) fn map_ips_to_interfaces_with(
+    ip_set: IpSet,
+    interfaces: Vec<Link>,
+    forced: &[IpAddr],
+) -> RoutedTargets {
     let owned_ips: HashSet<IpAddr> = interfaces
         .iter()
         .flat_map(|link| link.addresses().iter().map(|held| held.address()))
@@ -231,6 +242,18 @@ pub(crate) fn map_ips_to_interfaces_with(ip_set: IpSet, interfaces: Vec<Link>) -
         .map_init(ProbeSockets::default, |sockets, &target| {
             if let Some(idx) = find_local_index(&interfaces, target) {
                 return (target, Classification::Local(idx));
+            }
+
+            // A forced source outranks the routing table. On-link targets are
+            // already settled above and answer over their own segment; a routed
+            // target the kernel would send from the wrong interface is what the
+            // override exists for.
+            if let Some(source) = forced
+                .iter()
+                .copied()
+                .find(|s| s.is_ipv4() == target.is_ipv4())
+            {
+                return (target, Classification::Routed(source));
             }
 
             if let Some(source) = probe_route_source(target, sockets)
@@ -399,7 +422,7 @@ mod tests {
             .unwrap(),
         ));
 
-        let result = map_ips_to_interfaces_with(set, interfaces);
+        let result = map_ips_to_interfaces_with(set, interfaces, &[]);
 
         assert!(result.routed.is_empty());
         assert!(result.unmapped.is_empty());
@@ -448,7 +471,7 @@ mod tests {
             .unwrap(),
         ));
 
-        let result = map_ips_to_interfaces_with(set, interfaces);
+        let result = map_ips_to_interfaces_with(set, interfaces, &[]);
 
         assert_eq!(result.unenumerable.len(), 1, "the /64 is reported whole");
         assert!(result.routed.is_empty());
@@ -473,7 +496,7 @@ mod tests {
         let mut set = IpSet::new();
         set.insert(IpAddr::V6(link_local));
 
-        let result = map_ips_to_interfaces_with(set, interfaces);
+        let result = map_ips_to_interfaces_with(set, interfaces, &[]);
 
         assert_eq!(result.ambiguous.len(), 1);
         assert!(
@@ -506,7 +529,7 @@ mod tests {
             Ipv6Range::scoped(link_local, link_local, Some(9)).unwrap(),
         ));
 
-        let result = map_ips_to_interfaces_with(set, vec![first, second]);
+        let result = map_ips_to_interfaces_with(set, vec![first, second], &[]);
 
         assert!(result.ambiguous.is_empty());
         assert_eq!(result.local.len(), 1);
@@ -528,7 +551,7 @@ mod tests {
             .unwrap(),
         ));
 
-        let result = map_ips_to_interfaces_with(set, interfaces);
+        let result = map_ips_to_interfaces_with(set, interfaces, &[]);
 
         assert!(result.routed.is_empty());
         assert!(result.unmapped.is_empty());
@@ -549,7 +572,7 @@ mod tests {
         let mut targets = IpSet::new();
         targets.insert(own);
 
-        let routed = map_ips_to_interfaces_with(targets, interfaces);
+        let routed = map_ips_to_interfaces_with(targets, interfaces, &[]);
 
         assert!(routed.ours.contains(&own), "the address is this host's own");
         assert!(
@@ -569,13 +592,37 @@ mod tests {
         let mut targets = IpSet::new();
         targets.insert(neighbour);
 
-        let routed = map_ips_to_interfaces_with(targets, interfaces);
+        let routed = map_ips_to_interfaces_with(targets, interfaces, &[]);
 
         assert!(routed.ours.is_empty());
         assert_eq!(
             routed.local.values().next().map(IpSet::len),
             Some(1u128),
             "the neighbour is on-link"
+        );
+    }
+
+    /// The VPN case made deterministic: a routed target the kernel would send
+    /// from the tunnel is sent from the forced LAN source instead, and the
+    /// routing table is never asked - the source picks itself by family.
+    #[test]
+    fn a_forced_source_outranks_the_routing_table_for_a_routed_target() {
+        let lan: IpAddr = "192.168.0.160".parse().unwrap();
+        let public: IpAddr = "1.1.1.1".parse().unwrap();
+        let interfaces = vec![mock_interface(lan, 24)];
+
+        let mut targets = IpSet::new();
+        targets.insert(public);
+
+        let routed = map_ips_to_interfaces_with(targets, interfaces, &[lan]);
+
+        assert_eq!(
+            routed.routed,
+            vec![RoutedTarget {
+                target: public,
+                source: lan
+            }],
+            "the off-link target is probed from the forced source"
         );
     }
 }

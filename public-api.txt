@@ -249,6 +249,7 @@ pub zond_engine::config::ProbeTuning::os_detection: zond_engine::config::OsDetec
 pub zond_engine::config::ProbeTuning::retry: zond_engine::config::RetryConfig
 pub zond_engine::config::ProbeTuning::sctp_technique: zond_engine::model::technique::SctpScanTechnique
 pub zond_engine::config::ProbeTuning::send_mode: zond_engine::transport::probe::SendMode
+pub zond_engine::config::ProbeTuning::send_source: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::config::ProbeTuning::service_detection: zond_engine::config::ServiceDetection
 pub zond_engine::config::ProbeTuning::tcp_technique: zond_engine::model::technique::TcpScanTechnique
 impl core::clone::Clone for zond_engine::config::ProbeTuning
@@ -390,6 +391,7 @@ pub zond_engine::config::ZondConfig::scan_timeout: core::option::Option<core::ti
 pub zond_engine::config::ZondConfig::sctp_technique: zond_engine::model::technique::SctpScanTechnique
 pub zond_engine::config::ZondConfig::segment_sweep: bool
 pub zond_engine::config::ZondConfig::send_mode: zond_engine::transport::probe::SendMode
+pub zond_engine::config::ZondConfig::send_source: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::config::ZondConfig::service_detection: zond_engine::config::ServiceDetection
 pub zond_engine::config::ZondConfig::tcp_technique: zond_engine::model::technique::TcpScanTechnique
 pub zond_engine::config::ZondConfig::tls_enumeration: bool
@@ -8944,6 +8946,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::scoped::Sc
 pub struct zond_engine::model::ip::scoped::ScopedIp
 impl zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ScopedIp::addr(&self) -> core::net::ip_addr::IpAddr
+pub fn zond_engine::model::ip::scoped::ScopedIp::endpoint(&self, u16) -> alloc::string::String
 pub fn zond_engine::model::ip::scoped::ScopedIp::is_unusable(&self) -> bool
 pub fn zond_engine::model::ip::scoped::ScopedIp::needs_zone(&core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::ip::scoped::ScopedIp::scoped(core::net::ip_addr::IpAddr, zond_engine::model::ip::scoped::Zone) -> Self
@@ -9412,6 +9415,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::set::Posit
 pub struct zond_engine::model::ip::ScopedIp
 impl zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ScopedIp::addr(&self) -> core::net::ip_addr::IpAddr
+pub fn zond_engine::model::ip::scoped::ScopedIp::endpoint(&self, u16) -> alloc::string::String
 pub fn zond_engine::model::ip::scoped::ScopedIp::is_unusable(&self) -> bool
 pub fn zond_engine::model::ip::scoped::ScopedIp::needs_zone(&core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::ip::scoped::ScopedIp::scoped(core::net::ip_addr::IpAddr, zond_engine::model::ip::scoped::Zone) -> Self
@@ -14576,7 +14580,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::plan::PortSc
 pub struct zond_engine::scanner::plan::DiscoveryPlan
 impl zond_engine::scanner::plan::DiscoveryPlan
 pub fn zond_engine::scanner::plan::DiscoveryPlan::also_over_sctp(&mut self, u16)
-pub fn zond_engine::scanner::plan::DiscoveryPlan::build(zond_engine::model::ip::set::IpSet, zond_engine::scanner::strategy::local::Scope) -> Self
+pub fn zond_engine::scanner::plan::DiscoveryPlan::build(zond_engine::model::ip::set::IpSet, zond_engine::scanner::strategy::local::Scope, &[core::net::ip_addr::IpAddr]) -> Self
 pub fn zond_engine::scanner::plan::DiscoveryPlan::into_steps(self) -> alloc::vec::Vec<zond_engine::scanner::plan::DiscoveryStep>
 pub fn zond_engine::scanner::plan::DiscoveryPlan::ours(&self) -> &zond_engine::model::ip::set::IpSet
 pub fn zond_engine::scanner::plan::DiscoveryPlan::refusals(&self) -> &[zond_engine::scanner::plan::RefusedStep]
@@ -16326,6 +16330,7 @@ pub fn zond_engine::system::interface::SourceResolver::from_links(&[zond_engine:
 pub fn zond_engine::system::interface::SourceResolver::from_system() -> Self
 pub fn zond_engine::system::interface::SourceResolver::has_sources(&self) -> bool
 pub fn zond_engine::system::interface::SourceResolver::resolve(&mut self, core::net::ip_addr::IpAddr) -> core::option::Option<core::net::ip_addr::IpAddr>
+pub fn zond_engine::system::interface::SourceResolver::with_forced(self, alloc::vec::Vec<core::net::ip_addr::IpAddr>) -> Self
 pub fn zond_engine::system::interface::SourceResolver::with_zones(self, zond_engine::model::ip::scoped::ZoneMap) -> Self
 pub fn zond_engine::system::interface::SourceResolver::zone_of(&self, core::net::ip_addr::IpAddr) -> core::option::Option<u32>
 impl core::marker::Freeze for zond_engine::system::interface::SourceResolver
@@ -17833,6 +17838,7 @@ impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::ScanTask
 pub struct zond_engine::ScopedIp
 impl zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ScopedIp::addr(&self) -> core::net::ip_addr::IpAddr
+pub fn zond_engine::model::ip::scoped::ScopedIp::endpoint(&self, u16) -> alloc::string::String
 pub fn zond_engine::model::ip::scoped::ScopedIp::is_unusable(&self) -> bool
 pub fn zond_engine::model::ip::scoped::ScopedIp::needs_zone(&core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::ip::scoped::ScopedIp::scoped(core::net::ip_addr::IpAddr, zond_engine::model::ip::scoped::Zone) -> Self
@@ -18011,6 +18017,7 @@ pub zond_engine::ZondConfig::scan_timeout: core::option::Option<core::time::Dura
 pub zond_engine::ZondConfig::sctp_technique: zond_engine::model::technique::SctpScanTechnique
 pub zond_engine::ZondConfig::segment_sweep: bool
 pub zond_engine::ZondConfig::send_mode: zond_engine::transport::probe::SendMode
+pub zond_engine::ZondConfig::send_source: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::ZondConfig::service_detection: zond_engine::config::ServiceDetection
 pub zond_engine::ZondConfig::tcp_technique: zond_engine::model::technique::TcpScanTechnique
 pub zond_engine::ZondConfig::tls_enumeration: bool

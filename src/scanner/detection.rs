@@ -133,7 +133,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
                 for (id, reason) in &inconclusive {
                     ctx.record_failure(
                         ScannerKind::Detection,
-                        format!("detection '{id}' on {key}:{number} {reason}"),
+                        format!("detection '{id}' on {} {reason}", key.endpoint(number)),
                     );
                 }
                 record(ctx, key, number, protocol, findings);
