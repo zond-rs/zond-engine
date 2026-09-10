@@ -360,7 +360,31 @@ rounded a probability the wrong way.
 
 ## Tier 4: real software, in containers
 
-Binary: `containers/`, with its manifest in `tests/data/containers.toml`.
+Binary: `containers/`, with its manifest in `tests/data/containers.toml` and the
+runtime driver in `containers/runtime.rs`.
+
+### Which runtime, and what rootless costs
+
+Podman first, then Docker. The reason is not preference: Docker's socket is
+owned by the `docker` group, and membership in it is root on the machine, since
+anything that can reach the daemon can start a container with the host
+filesystem mounted. Asking whoever tests a security tool to grant themselves
+that in order to run one tier is a poor trade. Rootless podman needs no daemon
+and no group, and the two command lines are close enough that one driver serves
+both.
+
+What rootless costs is a host port below 1024, which
+`net.ipv4.ip_unprivileged_port_start` puts out of reach at its default of 1024.
+Only `openldap` needs one, and it needs it because the corpus keys the root DSE
+search on 389; published anywhere else the scan asks a directory for a web page
+and it says nothing. So either lower the floor,
+
+```sh
+sudo sysctl -w net.ipv4.ip_unprivileged_port_start=389
+```
+
+which is what this machine does, or install Docker and let the daemon bind it.
+The failure says so when it happens rather than leaving a reader to guess.
 
 Every tier above proves the engine is consistent with itself. A signature matches
 the example recorded beside it; a parser returns on any bytes; a simulated

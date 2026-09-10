@@ -18,7 +18,7 @@
 //! the public API is the point: reaching into the analyzers would test the parts
 //! and leave the wiring between them, which is where the defects live.
 //!
-//! Needs Docker and pulls images, so both passes are `#[ignore]`d.
+//! Needs a container runtime and pulls images, so both passes are `#[ignore]`d.
 //!
 //! ```text
 //! cargo test --test containers -- --ignored --test-threads=1
@@ -32,11 +32,13 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod runtime;
+
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
+use crate::runtime::Runtime;
 use crate::support::*;
 use serde::Deserialize;
 use zond_engine::fingerprint::SignatureDb;
@@ -84,7 +86,7 @@ impl Transport {
         }
     }
 
-    /// How `docker run -p` spells it.
+    /// How `-p` spells it on the runtime's command line.
     fn suffix(self) -> &'static str {
         match self {
             Transport::Tcp => "",
@@ -127,7 +129,7 @@ struct Target {
     /// random port is still asked something it can answer; UDP has no such
     /// fallback, and a datagram service on a port the corpus registers no probe
     /// for is sent nothing at all and reports as `open|filtered`. So a UDP
-    /// target is published on its own number, and a collision there is a docker
+    /// target is published on its own number, and a collision there is a runtime
     /// error the run prints rather than a silent identification failure.
     host_port: Option<u16>,
     /// What the engine should make of it. Absent means report-only, which is how
@@ -160,7 +162,7 @@ fn manifest() -> Manifest {
 }
 
 // ---------------------------------------------------------------------------
-// Docker
+// The runtime
 // ---------------------------------------------------------------------------
 
 /// A running container, removed when this is dropped.
@@ -175,16 +177,15 @@ struct Container {
 
 impl Drop for Container {
     fn drop(&mut self) {
-        let _ = Command::new("docker").args(["rm", "-f", &self.id]).output();
+        if let Some(runtime) = Runtime::detect() {
+            let _ = runtime.command().args(["rm", "-f", &self.id]).output();
+        }
     }
 }
 
-/// Whether Docker is present and answering.
-fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("info")
-        .output()
-        .is_ok_and(|out| out.status.success())
+/// Whether a container runtime is present and answering.
+fn runtime_available() -> bool {
+    Runtime::detect().is_some()
 }
 
 /// A port nothing is listening on, by asking the OS for one and letting it go.
@@ -216,7 +217,9 @@ fn publish_on(target: &Target) -> u16 {
 /// being reachable from the network while a test runs.
 fn start(target: &Target) -> Result<Container, String> {
     let host_port = publish_on(target);
-    let out = Command::new("docker")
+    let runtime = Runtime::detect().ok_or("no container runtime is available")?;
+    let out = runtime
+        .command()
         .args([
             "run",
             "-d",
@@ -227,10 +230,10 @@ fn start(target: &Target) -> Result<Container, String> {
                 target.port,
                 target.protocol.suffix()
             ),
-            &target.image,
+            &Runtime::qualify(&target.image),
         ])
         .output()
-        .map_err(|e| format!("docker run failed: {e}"))?;
+        .map_err(|e| format!("{} run failed: {e}", runtime.binary()))?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -242,10 +245,11 @@ fn start(target: &Target) -> Result<Container, String> {
                 "\n    {} must be published on {} itself, so this needs whatever holds                  that port stopped. Ports below 1024 are often taken on a developer                  machine; a UDP entry on a high port does not run into this.",
                 target.name, host_port
             ),
-            false => String::new(),
+            false => runtime.privileged_port_hint(host_port, &stderr),
         };
         return Err(format!(
-            "docker run {}: {}{hint}",
+            "{} run {}: {}{hint}",
+            runtime.binary(),
             target.image,
             stderr.trim()
         ));
@@ -401,6 +405,13 @@ impl Verdict {
         self.product.is_none() && self.vendor.is_none()
     }
 
+    /// Whether the scan named HTTP as what answers this port.
+    fn speaks_http(&self) -> bool {
+        self.service
+            .as_deref()
+            .is_some_and(|service| service == "http" || service == "https")
+    }
+
     /// A line for the report, and for a failure message.
     fn summary(&self) -> String {
         let mut parts = Vec::new();
@@ -492,10 +503,10 @@ fn disagreements(expect: &Expect, found: &Verdict) -> Vec<String> {
 /// One container at a time, because several of these are memory-hungry and a
 /// developer machine running five at once is measuring its own scheduler.
 #[tokio::test]
-#[ignore = "needs Docker and pulls images; run with --ignored"]
+#[ignore = "needs a container runtime and pulls images; run with --ignored"]
 async fn every_target_is_identified_as_its_manifest_says() {
-    if !docker_available() {
-        eprintln!("skipped: Docker is not available");
+    if !runtime_available() {
+        eprintln!("skipped: no container runtime is available");
         return;
     }
 
@@ -556,10 +567,10 @@ async fn every_target_is_identified_as_its_manifest_says() {
 /// scan computes, so a product that is not identified and whose digest is absent
 /// from the corpus is a rule waiting to be written rather than a defect.
 #[tokio::test]
-#[ignore = "needs Docker and pulls images; run with --ignored"]
+#[ignore = "needs a container runtime and pulls images; run with --ignored"]
 async fn report() {
-    if !docker_available() {
-        eprintln!("skipped: Docker is not available");
+    if !runtime_available() {
+        eprintln!("skipped: no container runtime is available");
         return;
     }
 
@@ -573,10 +584,14 @@ async fn report() {
         };
 
         let found = scan(container.addr, container.protocol).await;
-        // A favicon is fetched over HTTP, which a UDP target does not speak.
-        let digest = match container.protocol {
-            Transport::Tcp => zond_engine::fingerprint::favicon_digest(container.addr).await,
-            Transport::Udp => None,
+        // A favicon is fetched over HTTP, so it is worth asking for only where
+        // the scan just said HTTP is what answers. Transport is the wrong
+        // question: `openldap` is TCP and speaks a directory protocol, and
+        // asking it for a page costs the whole fetch budget to learn nothing.
+        // This is the same gate `Favicon::interested` applies.
+        let digest = match found.speaks_http() {
+            true => zond_engine::fingerprint::favicon_digest(container.addr).await,
+            false => None,
         };
 
         println!("{:<12} {}", target.name, found.summary());
@@ -591,7 +606,14 @@ async fn report() {
                     }
                 );
             }
-            None => println!("             icon    none served"),
+            None if found.speaks_http() => println!("             icon    none served"),
+            None => println!(
+                "             icon    not asked, {}",
+                match found.service.as_deref() {
+                    Some(service) => format!("service is {service}"),
+                    None => "no service was named".to_string(),
+                }
+            ),
         }
     }
 }
@@ -706,7 +728,11 @@ fn a_udp_target_is_published_and_scanned_over_udp() {
     assert_eq!(tcp.protocol, Transport::Tcp, "TCP unless stated");
     assert_eq!(udp.protocol, Transport::Udp);
 
-    assert_eq!(udp.protocol.suffix(), "/udp", "docker publishes it as UDP");
+    assert_eq!(
+        udp.protocol.suffix(),
+        "/udp",
+        "the runtime publishes it as UDP"
+    );
     assert_eq!(tcp.protocol.suffix(), "");
 
     assert_eq!(

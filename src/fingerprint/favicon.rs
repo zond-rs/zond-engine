@@ -150,10 +150,20 @@ fn as_application(mut evidence: Evidence) -> Evidence {
 /// measured differently from the scanner would produce hashes no scan can match:
 /// that is how the certificate work nearly shipped two hundred dead rules.
 ///
+/// `None` covers a port serving no icon and a port that was never going to
+/// answer. Nothing here checks that the peer speaks HTTP, so an endpoint
+/// speaking something else is asked for a page and given
+/// [`FETCH_TIMEOUT`] to not answer. That budget is the same one
+/// [`Favicon::collect`] spends, which is what makes the sentence above true;
+/// without it a caller aimed at an LDAP port waits for as long as the directory
+/// is willing to hold the connection, which is indefinitely.
+///
 /// Behind `test-support`, since nothing in a scan needs it.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn digest_of(addr: std::net::SocketAddr) -> Option<String> {
-    let icon = icon_of(addr, &ResponseSet::default()).await?;
+    let icon = timeout(FETCH_TIMEOUT, icon_of(addr, &ResponseSet::default()))
+        .await
+        .ok()??;
     Some(md5_hex(&icon))
 }
 
