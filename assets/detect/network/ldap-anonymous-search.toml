@@ -1,0 +1,39 @@
+# What an anonymous client can read once the bind in ldap-anonymous-bind.toml has
+# succeeded. The bind and a base-scope search of the root DSE are pipelined onto
+# one connection, asking only for namingContexts, which is the directory naming
+# the tree it serves. On Active Directory that is the domain.
+#
+# One read of one operational attribute. Nothing is written and no user object is
+# enumerated.
+
+[detection]
+id      = "ldap-anonymous-search"
+version = "1.0.0"
+title   = "LDAP directory searchable without credentials"
+
+[detection.when]
+service  = "ldap"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+# messageID 1 anonymous BindRequest, then messageID 2 SearchRequest: base "",
+# scope baseObject, filter (objectClass=*), attributes { namingContexts }.
+send   = '\x30\x0c\x02\x01\x01\x60\x07\x02\x01\x03\x04\x00\x80\x00\x30\x35\x02\x01\x02\x63\x30\x04\x00\x0a\x01\x00\x0a\x01\x00\x02\x01\x00\x02\x01\x00\x01\x01\x00\x87\x0bobjectClass\x30\x10\x04\x0enamingContexts'
+expect = '(?i)namingContexts'
+# The value is not length-delimited to a regex, and the byte after it is the
+# next BER tag: 0x30, which reads as the character '0' and would otherwise be
+# taken for part of the domain. The lookahead is that tag followed by its own
+# short length, which no domain component can be.
+bind   = { context = '(?i)(?<context>(?:dc|o|ou)=[A-Za-z0-9._-]+(?:,(?:dc|o|ou)=[A-Za-z0-9._-]+)*?)(?=\x30[\x00-\x1f])' }
+  [[step.finding]]
+  when         = "matched"
+  severity     = "medium"
+  summary      = "LDAP served its naming context to an anonymous client"
+  detail       = "A search of the root DSE after an anonymous bind returned namingContexts = {context}, so the directory names the tree it serves, and the objects under it, to clients that present no credentials."
+  references   = [{ cwe = 200 }]

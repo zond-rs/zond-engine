@@ -39,7 +39,7 @@ and exports, the journal, and the detection sandbox.
 
 The `zond` CLI is a separate repository with its own release, and reports about
 it belong there. Report it here if you are unsure which side of the line it falls
-on — a misrouted report is better than an unsent one.
+on. A misrouted report is better than an unsent one.
 
 Two things are worth naming as in scope, because they are the ones people ask
 about:

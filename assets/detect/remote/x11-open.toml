@@ -1,0 +1,31 @@
+# An X display that accepts a connection from anyone on the network. The setup
+# request states the byte order, the protocol version and two zero-length
+# authorisation fields; a server holding a MIT-MAGIC-COOKIE answers 0 and says
+# which scheme it wanted, and one with access control off answers 1 and hands
+# over the screen. Reading the reply is the whole exchange: nothing is drawn,
+# typed or captured.
+
+[detection]
+id      = "x11-open"
+version = "1.0.0"
+title   = "X11 display open to the network"
+
+[detection.when]
+service  = "x11"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 4096
+max_millis = 3000
+
+[[step]]
+send   = 'l\x00\x0b\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+expect = '^\x01\x00\x0b\x00'
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "X11 accepted a connection with no authorisation"
+  detail       = "The display answered a setup request carrying no authorisation with Success, so any host that can reach this port can read the screen, the clipboard and every keystroke going to it."
+  references   = [{ cwe = 306 }]

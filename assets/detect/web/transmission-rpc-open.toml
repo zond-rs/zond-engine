@@ -1,0 +1,33 @@
+# Transmission's RPC endpoint answering without credentials. An instance with a
+# password set answers 401; one without answers 409 and hands over the CSRF token
+# a client is expected to retry with, which is the shape below. The RPC sets
+# download-dir and adds torrents, so reaching it unauthenticated is a write to
+# the filesystem behind it.
+#
+# The 409 is read and the retry it invites is never made.
+
+[detection]
+id      = "transmission-rpc-open"
+version = "1.0.0"
+title   = "Transmission RPC reachable without credentials"
+
+[detection.when]
+service  = "transmission"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = "GET /transmission/rpc HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = ['HTTP/[0-9.]+ 409', '(?im)^X-Transmission-Session-Id:']
+bind   = { rpc = '(?im)^X-Transmission-Rpc-Version:\s*(?<rpc>[0-9.]+)' }
+  [[step.finding]]
+  when         = "matched"
+  severity     = "high"
+  summary      = "Transmission RPC answered without a password"
+  detail       = "The RPC endpoint answered 409 with a session id rather than 401, so no password is set on it. RPC version {rpc} can set the download directory and add torrents, which writes to the filesystem behind this host."
+  references   = [{ cwe = 306 }]

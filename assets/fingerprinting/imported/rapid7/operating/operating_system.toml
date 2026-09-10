@@ -244,7 +244,7 @@ name = "Linux catch-all"
 pattern = "(?i)^.{0,1000}Linux?\\s?(\\d+?(?:\\.\\d+?)*?)?$"
 context = "operating_system.name"
 example = "Linux 2.42.6"
-metadata = { "os.vendor" = "Linux", "os.family" = "Linux", "os.product" = "Linux", "os.certainty" = "0.5", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:linux:linux_kernel:{os.version}" }
+metadata = { "os.family" = "Linux", "os.product" = "Linux", "os.certainty" = "0.5", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:linux:linux_kernel:{os.version}" }
 
 [[match]]
 name = "Mac OS 9"
