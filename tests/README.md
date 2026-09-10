@@ -18,6 +18,7 @@ tests/
   hygiene/       checks on the repository rather than on the engine
   portable/      Tier 1, loopback and files
   simulated/     Tier 2, fake_net and fake_lan
+  namespaced/    Tier 3, a real kernel over a veth pair
   containers/    Tier 4, real software from pinned images
   data/          manifests the tiers read
 ```
@@ -149,11 +150,12 @@ drew: the connect path now keeps what its inline fingerprint read instead of
 discarding it. No live claim stands under the convention today.
 
 The three `#[ignore]`d tests in the crate are a different thing entirely. They
-are gated on an environment rather than on a missing feature, each says so in its
-attribute, and **Tier 3 below is the job that runs them**: two UDP scan tests
-need libpcap capture access, and one nmap importer test needs a document nmap
-itself wrote. They are not claims about unfinished work, and removing the
-attribute is not the definition of done for any of them.
+are gated on an environment rather than on a missing feature and each says so in
+its attribute: two UDP scan tests need libpcap capture access, and one nmap
+importer test needs a document nmap itself wrote. They are not claims about
+unfinished work, and removing the attribute is not the definition of done for
+any of them. Tier 3 is where the first two go, having the capture access they
+ask for; they are still `#[ignore]`d because nothing has moved them yet.
 
 There were four. `dump_for_external_validation` asserted nothing, printing a
 document for `xmllint` to judge, so it was never a test at all. It is
@@ -264,40 +266,69 @@ in `Cargo.toml`, which Cargo unifies with the library target. Nothing is
 compiled twice, and the feature stays off for every downstream consumer. A
 synthetic transport has no use in a shipped binary, so enable it for tests only.
 
-## Tier 3: privileged Linux tests
+## Tier 3: the namespace
 
-**The job exists; the namespace does not yet.**
+Binary: `namespaced/`, with the harness in `namespaced/netns.rs`.
 
-`test.yml`'s `privileged` job installs libpcap and nmap on a Linux runner, has
-nmap write a document against the runner's own loopback, and runs the crate's
-three `#[ignore]`d tests as root. That is what cashes them.
+Tier 2 simulates the network, which means it cannot catch a defect in the real
+path below the seam: a wrong BPF filter, a bad checksum, or a mistake in
+interface selection passes it happily and then fails in the field. This tier
+gives the engine a network instead of a simulation. Packets are built here, put
+on a wire by the kernel, answered by another kernel, and read back through
+libpcap.
 
-Before it they were reachable only through a `continue-on-error` step, and what
-that step reported is worth naming, because it is the failure mode a non-gating
-job has. It ran them without the environment any of them asks for, so it came
-back part green: on an unprivileged macOS runner one of the two capture tests
-passes anyway and the other two fail. A step that is always partly red and never
-blocks is one everybody learns to scroll past, which is the same place the four
-`#[ignore]`d tests were before this job existed.
+**It needs no root.** An unprivileged user namespace carries the full capability
+set inside itself, `CAP_NET_ADMIN` and `CAP_NET_RAW` among them, over devices
+that exist only in that namespace. So `cargo test` runs this tier like any
+other, and it can gate a pull request rather than waiting on a privileged host
+somebody has to remember to use.
 
-**The nmap document is generated on every run rather than committed**, and that
-is the point of the test reading it. Every other nmap test here parses a document
-somebody typed into a source file carrying their beliefs about nmap's output,
-which is the trap this project keeps finding; a committed fixture would be the
-same trap with a longer shelf life.
+### How the process gets there
 
-What is still missing is the network itself. Tier 2 simulates it, which means it
-cannot catch a bug in the real path below the seam: a wrong BPF filter, a bad
-checksum, or a mistake in interface selection passes Tier 2 happily and then
-fails in the field. The answer to that is a veth pair into a network namespace,
-with `netem` for loss and latency, `tbf` for congestion, a lowered MTU for
-fragmentation, and `nftables` for the difference between a silent drop and a
-reject. The job above is where it goes when it is written.
+`netns.rs` registers an `.init_array` entry, so the move happens before `main`
+and before any thread exists. Both halves of that matter. A network namespace is
+a property of a task, and the engine reads its interfaces through a rayon pool
+and reads frames on threads `transport::capture` spawns, so a process that moved
+late would send from one network and listen on another. `CLONE_NEWUSER` also
+refuses a process that is already threaded.
 
-It should stay small. A handful of end to end cases confirming that real packets
-survive a real degraded link is the point, and duplicating the Tier 2 matrix here
-would only produce flaky tests, since `netem` is statistical and will not honour
-a precise assertion.
+A machine with unprivileged user namespaces switched off reports the reason and
+skips, which is a policy this tier cannot argue with rather than a defect in it.
+
+### The segment
+
+```text
+  this process                      peer process
+  10.99.N.1  zvNa <=============> zvNb  10.99.N.2
+             (this netns)         (its own netns)
+```
+
+Both ends in one namespace would be short-circuited: traffic to a local address
+never reaches the wire and a capture sees nothing. So the far end is moved into a
+namespace of its own, held open by a parked child process, and the far side is
+configured through `nsenter`. Each `Segment` numbers its own links and subnet, so
+tests that build one at the same time do not collide, and dropping it kills the
+peer, which takes the namespace and both ends of the pair with it. Nothing is
+named in `/var/run/netns`, so a panicking test leaves nothing behind.
+
+### Testing the tier itself
+
+A scan that quietly fell back to the connect path would report the same two
+verdicts over a path that never builds an IP header, and the tier would go on
+passing while testing nothing the tiers above it do not.
+`the_engine_takes_its_raw_path_here` is the guard against that.
+
+It was also checked the other way, by severing the near end of the pair mid-test
+and confirming the open-port case fails. Worth repeating after any change to the
+harness: a green tier that has stopped reading the wire looks exactly like a
+green tier.
+
+### What belongs here
+
+Only what cannot be asked anywhere else. It should stay small. Tier 2 can
+describe a thousand answers a network might give and does; repeating that matrix
+against a real link would buy nothing and cost a flake every time `netem`
+rounded a probability the wrong way.
 
 ## Tier 4: real software, in containers
 
@@ -326,7 +357,7 @@ a mistake in the data does not read as a defect in the engine.
 ```sh
 cargo test                        # unit tests, hygiene, Tier 1 and Tier 2
 cargo test --lib                  # unit tests only
-cargo test --test portable        # one tier
+cargo test --test namespaced      # one tier
 cargo test --test portable port_states::   # one module of one tier
 
 # Tier 4, one target at a time so a memory-hungry image is not run beside four others
@@ -334,8 +365,7 @@ cargo test --test containers -- --ignored --test-threads=1
 cargo test --test containers -- --ignored --test-threads=1 --nocapture report
 ```
 
-Tiers 1 and 2 are what CI runs today, on Linux and macOS. Neither needs any
-special setup, so `cargo test` is the whole story. Tier 3 will need its own job,
-running as root on a Linux runner, once it exists. Tier 4 is deliberately not a
+Tiers 1 and 2 run on Linux and macOS; Tier 3 is Linux only and skips elsewhere.
+None of the three needs any setup, so `cargo test` is the whole story. Tier 4 is deliberately not a
 CI job: it pulls gigabytes and its failures are usually somebody else's release,
 which is a bad reason to redden a pull request.
