@@ -106,14 +106,27 @@ static ENTER_BEFORE_MAIN: extern "C" fn() = enter;
 /// environments that answer `false` are the ones where unprivileged user
 /// namespaces are switched off, which is a machine's policy rather than a
 /// defect in anything here.
+///
+/// # Skipping is not allowed everywhere
+///
+/// A tier that skips reports the same green as a tier that ran, and a job that
+/// is always green whatever it did is one nobody reads. So a caller that has
+/// arranged for the namespace to exist sets `ZOND_REQUIRE_NETNS`, and a skip
+/// becomes a failure. CI sets it; a workstation does not, because there the skip
+/// is the correct answer for a machine whose policy forbids this.
 pub fn available() -> bool {
     match ENTERED.load(Ordering::SeqCst) {
         0 => true,
         code => {
+            let why = std::io::Error::from_raw_os_error(code);
+            assert!(
+                std::env::var_os("ZOND_REQUIRE_NETNS").is_none(),
+                "ZOND_REQUIRE_NETNS is set, so this tier may not skip, \
+                 and no user namespace is available: {why}"
+            );
             eprintln!(
-                "SKIP: no user namespace available ({}). \
-                 Unprivileged user namespaces are disabled on this machine.",
-                std::io::Error::from_raw_os_error(code)
+                "SKIP: no user namespace available ({why}). \
+                 Unprivileged user namespaces are disabled on this machine."
             );
             false
         }

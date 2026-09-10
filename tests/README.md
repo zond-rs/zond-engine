@@ -407,7 +407,7 @@ a mistake in the data does not read as a defect in the engine.
 ## Running them
 
 ```sh
-cargo test                        # unit tests, hygiene, Tier 1 and Tier 2
+cargo test                        # unit tests, hygiene, Tier 1, Tier 2, Tier 3
 cargo test --lib                  # unit tests only
 cargo test --test namespaced      # one tier
 cargo test --test portable port_states::   # one module of one tier
@@ -417,7 +417,25 @@ cargo test --test containers -- --ignored --test-threads=1
 cargo test --test containers -- --ignored --test-threads=1 --nocapture report
 ```
 
-Tiers 1 and 2 run on Linux and macOS; Tier 3 is Linux only and skips elsewhere.
-None of the three needs any setup, so `cargo test` is the whole story. Tier 4 is deliberately not a
-CI job: it pulls gigabytes and its failures are usually somebody else's release,
-which is a bad reason to redden a pull request.
+Tiers 1 and 2 run on Linux and macOS. Tier 3 is Linux only and skips elsewhere,
+and skips on a Linux machine whose policy forbids unprivileged user namespaces.
+None of the three needs any setup, so `cargo test` is the whole story.
+
+## What CI runs
+
+`test.yml` runs the suite on both platforms, and gives Tier 3 a job of its own so
+the tier has a status in the checks list rather than a share of a broader green.
+That job lifts the AppArmor restriction Ubuntu ships, installs `nftables`, and
+sets `ZOND_REQUIRE_NETNS`, which turns a skip into a failure. The reason is that
+a skipped tier and a passing one report the same thing: run the binary with no
+namespace available and it says `11 passed` in no time at all.
+
+Tier 4 is deliberately not a CI job. It pulls gigabytes and its failures are
+usually somebody else's release, which is a bad reason to redden a pull request.
+
+One thing worth knowing about the other workflow, because it dominates the cost
+of verifying a change: `lint.yml` checks the feature surface in two pieces. Each
+feature on its own stays on the pull request path. Every pair of them, which is
+121 combinations and between forty minutes and two hours, runs nightly against
+`main` and on `workflow_dispatch`. Almost no pair in this crate can interact, so
+the pairs are worth running regularly and not worth waiting for.

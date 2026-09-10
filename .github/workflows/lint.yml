@@ -31,6 +31,12 @@ on:
       - "clippy.toml"
       - "public-api.txt"
       - ".github/workflows/lint.yml"
+  # For `feature-pairs`, which is too slow to sit on the pull request path.
+  # A scheduled run only ever fires on the default branch, which is the right
+  # place for a check on the whole feature surface.
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
 
 jobs:
   lint:
@@ -130,6 +136,40 @@ jobs:
       # else; run it alone on a workstation.
       - name: Every feature on its own
         run: cargo hack check --each-feature --no-dev-deps
+
+  # Every pair of features, which is where the interesting failures live and
+  # also where the time goes.
+  #
+  # 15 features besides `default` make 121 pairs, and one `cargo check` of this
+  # crate is about 21 seconds on a fast machine and twice that on a runner. That
+  # is between forty minutes and two hours, per pull request, and it was the
+  # largest single cost in verifying a change to this repository.
+  #
+  # Almost none of those pairs can interact: `export-csv` with `export-html` is
+  # two independent writers behind two independent `cfg`s. The pairs worth
+  # checking are found by running them all occasionally rather than by guessing
+  # which ones, so this runs nightly against `main` and on request, while the
+  # per-feature job above stays on the pull request path.
+  feature-pairs:
+    name: Every pair of features
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libpcap
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
 
       - name: Every pair of features
         run: cargo hack check --feature-powerset --depth 2 --no-dev-deps

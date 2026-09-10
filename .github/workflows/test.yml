@@ -68,6 +68,47 @@ jobs:
       # GitHub runners do not give reliably. They run off-CI on a privileged
       # Linux host; a CI job for them can come back once that is set up.
 
+  # Tier 3, which needs a Linux kernel and gets one here.
+  #
+  # It is its own job rather than a line in the matrix so that the tier has a
+  # status of its own in the checks list. A gate whose result is folded into a
+  # broader green is one nobody looks at, which is the whole argument for the
+  # `ZOND_REQUIRE_NETNS` step below.
+  namespaced:
+    name: Tier 3 (namespaced)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `nftables` is what a test firewalls a port with; the rest of the tier's
+      # tools (`ip`, `tc`, `unshare`, `nsenter`) are on the image already.
+      - name: Install libpcap and nftables
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev nftables
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # Ubuntu 24.04 and later ship an AppArmor profile that refuses
+      # unprivileged user namespaces to confined programs. The tier needs one,
+      # the runner has sudo, and `|| true` covers an image where the knob does
+      # not exist rather than failing the job over a missing sysctl.
+      - name: Permit unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # The tier skips rather than fails on a machine whose policy forbids a
+      # namespace, which is right for a workstation and wrong here: the skip
+      # and a real pass report the same green. This says the namespace has been
+      # arranged, so a skip is a failure.
+      - name: Run the tier
+        env:
+          ZOND_REQUIRE_NETNS: 1
+        run: cargo test --all-features --test namespaced
+
   msrv:
     name: Minimum supported Rust version
     runs-on: ubuntu-latest
