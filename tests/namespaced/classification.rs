@@ -108,3 +108,134 @@ async fn the_peer_is_found_alive() {
         "the peer should be discovered before its ports are scanned"
     );
 }
+
+/// A port a firewall silently discards is reported Filtered.
+///
+/// The verdict that motivates this whole tier. Loopback cannot produce it and
+/// Tier 2 can only describe it, because silence is not something a cooperating
+/// kernel will give you: it takes a real filter deciding not to answer, and a
+/// scanner that waits out its retry schedule before saying so.
+#[tokio::test]
+async fn a_dropped_port_is_reported_filtered() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let port = segment.closed_tcp_port();
+    segment.drop_tcp(port);
+
+    let outcome = run_scan(
+        target_map(segment.peer(), &port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.port_state(segment.peer(), port),
+        Some(PortState::Filtered),
+        "a port whose probes are dropped should read Filtered, not Closed"
+    );
+}
+
+/// An ICMP prohibition reads as Filtered rather than Closed.
+///
+/// The near miss worth a test of its own. Both this port and a closed one
+/// answer, and both answers are errors; only the reason differs. Reading an
+/// administrative prohibition as a port unreachable would report a firewalled
+/// port as a closed one, which is a confident and wrong answer rather than a
+/// missing one.
+///
+/// # This one is a claim, and it fails
+///
+/// The port comes back [`PortState::Unasked`]. The peer's counter shows one SYN
+/// arriving and being rejected, so the probe went out and was answered; Linux
+/// then delivers the ICMP error to the socket, the next send reports it, and
+/// that reads here as a probe the operating system refused to send. `Unasked`
+/// is documented to mean exactly that, so the mechanism is working as written.
+/// What is open is which evidence should win: an error the target actually sent
+/// is a definitive `Filtered`, and it is being discarded in favour of a local
+/// send failure that the error itself caused.
+///
+/// Tier 2 has no way to see this. It hands a scanner a synthesized ICMP reply
+/// and never runs a socket, so `admin_prohibited()` passes there and has
+/// always passed.
+#[tokio::test]
+#[ignore = "reports Unasked: the ICMP error comes back on the socket and is read as a refused send"]
+async fn an_administratively_prohibited_port_is_filtered_rather_than_closed() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let port = segment.closed_tcp_port();
+    segment.prohibit_tcp(port);
+
+    let outcome = run_scan(
+        target_map(segment.peer(), &port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.port_state(segment.peer(), port),
+        Some(PortState::Filtered),
+        "an admin-prohibited ICMP error should read Filtered"
+    );
+}
+
+/// A UDP port nothing is bound to is reported Closed.
+///
+/// The only thing that makes a UDP port positively closed is an ICMP port
+/// unreachable, and the only thing that produces one is a real kernel. The
+/// error has to be parsed, and the datagram quoted inside it matched back to
+/// the probe that caused it, before the verdict means anything.
+#[tokio::test]
+async fn a_udp_port_nothing_is_bound_to_is_reported_closed() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let port = segment.closed_udp_port();
+
+    let outcome = run_scan(
+        target_map(segment.peer(), &format!("U:{port}")),
+        &test_config(),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.port_state(segment.peer(), port),
+        Some(PortState::Closed),
+        "an ICMP port unreachable from the peer should read Closed"
+    );
+}
+
+/// A UDP reply reaches the scan and opens the port.
+///
+/// The other half of the same path, and the one that catches a capture filter
+/// which compiles but matches nothing: such a filter turns every open UDP port
+/// into `OpenFiltered`, so the scan keeps running and keeps reporting, just
+/// never positively. Only live traffic shows it.
+#[tokio::test]
+async fn a_udp_reply_reaches_the_scan_and_opens_the_port() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let port = segment.echo_udp();
+
+    let outcome = run_scan(
+        target_map(segment.peer(), &format!("U:{port}")),
+        &test_config(),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.port_state(segment.peer(), port),
+        Some(PortState::Open),
+        "a datagram answered by a real listener should read Open"
+    );
+}

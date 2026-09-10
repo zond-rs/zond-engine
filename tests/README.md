@@ -120,7 +120,7 @@ transport has already stripped, so it gets `FakeLan` and
 An `EthernetHandle` carries `CapturedFrame`s rather than bare bytes: each frame
 arrives with the link it came off, how it is framed, and when it was seen. A
 fixture building frames by hand wraps them the way `FakeLan::capture` does —
-which is also the reason a fixture and `common::scanner_interface` have to agree
+which is also the reason a fixture and `support::scanner_interface` have to agree
 on which interface they are pretending to be.
 
 `listening.rs` needs no harness at all, because a listener has no probes to
@@ -147,15 +147,31 @@ removing the attribute is the definition of done.
 have, and every test in it now runs. So does the one claim `detections.rs`
 carried, that a whole scan hands a passive detection the responses it already
 drew: the connect path now keeps what its inline fingerprint read instead of
-discarding it. No live claim stands under the convention today.
+discarding it.
 
-The three `#[ignore]`d tests in the crate are a different thing entirely. They
-are gated on an environment rather than on a missing feature and each says so in
-its attribute: two UDP scan tests need libpcap capture access, and one nmap
-importer test needs a document nmap itself wrote. They are not claims about
-unfinished work, and removing the attribute is not the definition of done for
-any of them. Tier 3 is where the first two go, having the capture access they
-ask for; they are still `#[ignore]`d because nothing has moved them yet.
+One live claim stands under the convention, and it is in Tier 3:
+`an_administratively_prohibited_port_is_filtered_rather_than_closed`. A real
+ICMP prohibition comes back as `Unasked` rather than `Filtered`, because Linux
+delivers the error to the socket and the next send reports it, which reads as a
+probe the operating system refused to send. `Unasked` is documented to mean
+exactly that, so nothing is behaving unexpectedly; what is open is which
+evidence should win, an error the target really sent or the local send failure
+that error caused. Removing the attribute is the definition of done.
+
+One `#[ignore]`d test in the crate is a different thing entirely. It is gated on
+an environment rather than on a missing feature and says so in its attribute:
+the nmap importer test needs a document nmap itself wrote. It is not a claim
+about unfinished work, and removing the attribute is not the definition of done
+for it.
+
+There were three. The other two drove a `libpcap` capture on loopback to prove
+that a real kernel's ICMP error names the probe that caused it, and that a real
+reply gets through the capture filter. Neither could run where it was, since the
+lib tests have no namespace to borrow capture access from, and Tier 3 now asks
+both questions of the whole scanner rather than of a hand-driven capture:
+`a_udp_port_nothing_is_bound_to_is_reported_closed` and
+`a_udp_reply_reaches_the_scan_and_opens_the_port`. The loop they closed is
+closed further out, so they were removed rather than left switched off.
 
 There were four. `dump_for_external_validation` asserted nothing, printing a
 document for `xmllint` to judge, so it was never a test at all. It is
@@ -310,6 +326,18 @@ configured through `nsenter`. Each `Segment` numbers its own links and subnet, s
 tests that build one at the same time do not collide, and dropping it kills the
 peer, which takes the namespace and both ends of the pair with it. Nothing is
 named in `/var/run/netns`, so a panicking test leaves nothing behind.
+
+### What is in it
+
+`classification` for the verdicts a real answer produces, including the two a
+firewall gives and the two that need an ICMP error; `segment` for finding the
+right neighbour on the right link, over both address families; `degraded` for
+what survives loss and delay.
+
+A `Segment` can also firewall a port in the peer's namespace, with `drop` for
+silence and `reject` for an ICMP error, and shape the near end of the pair with
+`tc netem`. The nft rules carry a `counter`, so a failing test can be asked how
+many probes actually arrived, which is usually the first thing worth knowing.
 
 ### Testing the tier itself
 

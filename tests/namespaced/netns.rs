@@ -45,8 +45,9 @@
 
 use std::fs;
 use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv4Addr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener, UdpSocket};
 use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
@@ -131,6 +132,7 @@ pub struct Segment {
     peer: Child,
     index: u32,
     listeners: Vec<Arc<AtomicBool>>,
+    firewalled: AtomicBool,
 }
 
 impl Segment {
@@ -139,12 +141,21 @@ impl Segment {
         let index = NEXT.fetch_add(1, Ordering::SeqCst);
         let (near, far) = (format!("zv{index}a"), format!("zv{index}b"));
 
-        let peer = Command::new("unshare")
+        let mut spawn = Command::new("unshare");
+        spawn
             .args(["--net", "sleep", "3600"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("unshare spawns a parked peer");
+            .stderr(Stdio::null());
+        // SAFETY: `prctl` is async-signal-safe and touches nothing this side of
+        // the fork. Without it a test killed outright leaves the peer parked
+        // forever, holding a namespace `Drop` never got to release.
+        unsafe {
+            spawn.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        let peer = spawn.spawn().expect("unshare spawns a parked peer");
         let pid = peer.id();
         wait_for_namespace(pid);
 
@@ -158,6 +169,14 @@ impl Segment {
             "dev",
             &near,
         ]);
+        ip(&[
+            "addr",
+            "add",
+            &format!("{}/64", scanner_v6(index)),
+            "dev",
+            &near,
+            "nodad",
+        ]);
         ip(&["link", "set", &near, "up"]);
 
         let there = ["nsenter", "--net", "--target"];
@@ -170,6 +189,14 @@ impl Segment {
                 &format!("{}/24", peer_v4(index)),
                 "dev",
                 &far,
+            ],
+            vec![
+                "addr",
+                "add",
+                &format!("{}/64", peer_v6(index)),
+                "dev",
+                &far,
+                "nodad",
             ],
             vec!["link", "set", &far, "up"],
         ] {
@@ -186,6 +213,7 @@ impl Segment {
             peer,
             index,
             listeners: Vec::new(),
+            firewalled: AtomicBool::new(false),
         }
     }
 
@@ -199,15 +227,67 @@ impl Segment {
         IpAddr::V4(peer_v4(self.index))
     }
 
-    /// Binds a TCP listener in the peer's namespace and returns its port.
+    /// The far side's IPv6 address, reached over NDP rather than ARP.
+    pub fn peer_v6(&self) -> IpAddr {
+        IpAddr::V6(peer_v6(self.index))
+    }
+
+    /// The name of the link this process sends from.
+    pub fn link(&self) -> String {
+        format!("zv{}a", self.index)
+    }
+
+    /// Silently discards anything arriving for this TCP port.
     ///
-    /// `setns` moves the calling thread alone, which is the whole reason this
-    /// runs on a thread of its own: the socket is created over there and stays
-    /// there, while everything else in the process goes on scanning from here.
-    pub fn listen_tcp(&mut self) -> u16 {
+    /// The verdict a firewall produces and loopback cannot: no answer at all,
+    /// which a scanner has to tell apart from a port that answered nothing
+    /// because the probe never arrived.
+    pub fn drop_tcp(&self, port: u16) {
+        self.rule(&["tcp", "dport", &port.to_string(), "drop"]);
+    }
+
+    /// Refuses this TCP port with an ICMP administrative prohibition.
+    ///
+    /// The near miss worth guarding: an ICMP error that is not a port
+    /// unreachable means a filter said no, which is `Filtered` rather than the
+    /// `Closed` a reset would mean.
+    pub fn prohibit_tcp(&self, port: u16) {
+        self.rule(&[
+            "tcp",
+            "dport",
+            &port.to_string(),
+            "counter",
+            "reject",
+            "with",
+            "icmp",
+            "type",
+            "admin-prohibited",
+        ]);
+    }
+
+    /// Shapes the near end of the pair, in `tc netem` terms.
+    ///
+    /// Assertions against this stay qualitative: `netem` draws from its own
+    /// generator and will not honour a precise count.
+    pub fn degrade(&self, netem: &[&str]) {
+        let link = self.link();
+        let mut args = vec!["qdisc", "add", "dev", link.as_str(), "root", "netem"];
+        args.extend_from_slice(netem);
+        tc(&args);
+    }
+
+    /// Runs a server on a thread inside the peer's namespace.
+    ///
+    /// `setns` moves the calling thread alone, which is what makes this work:
+    /// the socket is created over there and stays there, while everything else
+    /// in the process goes on scanning from here. The server reports the port
+    /// it bound and then runs until the flag it was handed is raised.
+    fn serve<F>(&mut self, server: F) -> u16
+    where
+        F: FnOnce(&AtomicBool, &mpsc::Sender<u16>) + Send + 'static,
+    {
         let ns = fs::File::open(format!("/proc/{}/ns/net", self.peer.id()))
             .expect("the peer's network namespace is readable");
-        let address = peer_v4(self.index);
         let stop = Arc::new(AtomicBool::new(false));
         let raised = Arc::clone(&stop);
         let (tx, rx) = mpsc::channel();
@@ -216,24 +296,30 @@ impl Segment {
             // SAFETY: `ns` is an open namespace file and stays open for the
             // duration of the call.
             if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNET) } != 0 {
-                drop(tx);
                 return;
             }
+            server(&raised, &tx);
+        });
+
+        self.listeners.push(stop);
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the peer namespace accepts a server")
+    }
+
+    /// Binds a TCP listener in the peer's namespace and returns its port.
+    pub fn listen_tcp(&mut self) -> u16 {
+        let address = peer_v4(self.index);
+        self.serve(move |stop, tx| {
             let Ok(listener) = TcpListener::bind((address, 0)) else {
-                drop(tx);
                 return;
             };
-            let port = listener
-                .local_addr()
-                .expect("a bound listener has an address")
-                .port();
-            listener
-                .set_nonblocking(true)
-                .expect("a listener accepts non-blocking mode");
-            if tx.send(port).is_err() {
+            let Ok(local) = listener.local_addr() else {
+                return;
+            };
+            if listener.set_nonblocking(true).is_err() || tx.send(local.port()).is_err() {
                 return;
             }
-            while !raised.load(Ordering::SeqCst) {
+            while !stop.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok(_) => {}
                     Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -242,11 +328,115 @@ impl Segment {
                     Err(_) => return,
                 }
             }
-        });
+        })
+    }
 
-        self.listeners.push(stop);
-        rx.recv_timeout(Duration::from_secs(5))
-            .expect("the peer namespace accepts a listener")
+    /// A TCP listener on the peer's IPv6 address.
+    pub fn listen_tcp_v6(&mut self) -> u16 {
+        let address = peer_v6(self.index);
+        self.serve(move |stop, tx| {
+            let Ok(listener) = TcpListener::bind((address, 0)) else {
+                return;
+            };
+            let Ok(local) = listener.local_addr() else {
+                return;
+            };
+            if listener.set_nonblocking(true).is_err() || tx.send(local.port()).is_err() {
+                return;
+            }
+            while !stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return,
+                }
+            }
+        })
+    }
+
+    /// Binds a UDP socket in the peer's namespace that answers what it is sent.
+    ///
+    /// A UDP port is only positively open when something replies, so a listener
+    /// that stayed silent would be indistinguishable from a filtered one and the
+    /// test would pass for the wrong reason.
+    pub fn echo_udp(&mut self) -> u16 {
+        let address = peer_v4(self.index);
+        self.serve(move |stop, tx| {
+            let Ok(socket) = UdpSocket::bind((address, 0)) else {
+                return;
+            };
+            let Ok(local) = socket.local_addr() else {
+                return;
+            };
+            if socket
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .is_err()
+                || tx.send(local.port()).is_err()
+            {
+                return;
+            }
+            let mut buf = [0u8; 2048];
+            while !stop.load(Ordering::SeqCst) {
+                match socket.recv_from(&mut buf) {
+                    Ok((_, from)) => {
+                        let _ = socket.send_to(b"zond-echo\r\n", from);
+                    }
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                    Err(_) => return,
+                }
+            }
+        })
+    }
+
+    /// A UDP port in the peer's namespace that nothing is bound to.
+    ///
+    /// The peer's kernel answers a datagram sent there with an ICMP port
+    /// unreachable, which is the only thing that makes a UDP port positively
+    /// closed rather than merely quiet.
+    pub fn closed_udp_port(&mut self) -> u16 {
+        let port = self.echo_udp();
+        self.release();
+        port
+    }
+
+    /// Stops the server started most recently and waits for it to let go.
+    fn release(&mut self) {
+        self.listeners
+            .pop()
+            .expect("a server was started")
+            .store(true, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(60));
+    }
+
+    /// Adds one rule to the peer's input chain, creating the table on first use.
+    fn rule(&self, rule: &[&str]) {
+        if !self.firewalled.swap(true, Ordering::SeqCst) {
+            self.there(&["nft", "add", "table", "inet", "zond"]);
+            self.there(&[
+                "nft",
+                "add",
+                "chain",
+                "inet",
+                "zond",
+                "input",
+                "{ type filter hook input priority 0; policy accept; }",
+            ]);
+        }
+        let mut args = vec!["nft", "add", "rule", "inet", "zond", "input"];
+        args.extend_from_slice(rule);
+        self.there(&args);
+    }
+
+    /// Runs a command inside the peer's namespace.
+    fn there(&self, args: &[&str]) {
+        let mut cmd = Command::new("nsenter");
+        cmd.args(["--net", "--target"])
+            .arg(self.peer.id().to_string())
+            .arg("--preserve-credentials")
+            .args(args);
+        run(cmd, &format!("nsenter {}", args.join(" ")));
     }
 
     /// A port in the peer's namespace that nothing is listening on.
@@ -255,13 +445,7 @@ impl Segment {
     /// has just confirmed is free and will answer for with a reset.
     pub fn closed_tcp_port(&mut self) -> u16 {
         let port = self.listen_tcp();
-        self.listeners
-            .pop()
-            .expect("listen_tcp registers its flag")
-            .store(true, Ordering::SeqCst);
-        // The accept loop wakes at most a tick later, and the port is free once
-        // it drops the listener.
-        thread::sleep(Duration::from_millis(50));
+        self.release();
         port
     }
 }
@@ -284,6 +468,14 @@ fn peer_v4(index: u32) -> Ipv4Addr {
     Ipv4Addr::new(10, 99, index as u8, 2)
 }
 
+fn scanner_v6(index: u32) -> Ipv6Addr {
+    Ipv6Addr::new(0xfd00, 0x99, 0, index as u16, 0, 0, 0, 1)
+}
+
+fn peer_v6(index: u32) -> Ipv6Addr {
+    Ipv6Addr::new(0xfd00, 0x99, 0, index as u16, 0, 0, 0, 2)
+}
+
 /// `unshare` creates the namespace and then execs, so for a moment the child is
 /// still in ours. Waiting for the link to differ is the only signal that does
 /// not race.
@@ -297,6 +489,12 @@ fn wait_for_namespace(pid: u32) {
         thread::sleep(Duration::from_millis(10));
     }
     panic!("the peer never entered a namespace of its own");
+}
+
+fn tc(args: &[&str]) {
+    let mut cmd = Command::new("tc");
+    cmd.args(args);
+    run(cmd, &format!("tc {}", args.join(" ")));
 }
 
 fn ip(args: &[&str]) {
