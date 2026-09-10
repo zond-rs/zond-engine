@@ -39,6 +39,25 @@ it: `zaphoyd:websocketpp` and `darkhttpd_project:darkhttpd`. A third,
 `treck:tcp%2fip`, carries a URL-encoded separator that is an import artifact; the
 product is the Ripple20 stack and nothing a scan meets runs it.
 
+### Linux named as its own vendor (2026-09-10, 1 rule)
+
+`Linux catch-all` in `operating/operating_system.toml` stated
+`os.vendor = "Linux"`. Linux has no vendor, and the pattern it is attached to,
+which matches any string ending in the word, cannot establish one.
+
+It is the canonical reading for the name `Linux`, so `canonicalise` filled that
+vendor into every reading whose product is `Linux`, which is nearly all of them.
+Measured on a Debian 13 host answering both an SSH banner and an SNMP agent: the
+banner stated `Debian`, the agent's reading was canonically filled with `Linux`,
+the two disagreed, and `resolve`'s `agreed` dropped the vendor entirely. `label`
+then fell back to the product and the host was reported as **`Linux 13`**, a
+release number no Linux has ever had, attached to the wrong noun. It is the same
+defect the comment on `label` records, arriving one stage earlier.
+
+The key is removed. Nothing else in the rule changes, and a host that really has
+nothing but the word `Linux` to go on still reports the family, the release the
+pattern captured, and the kernel CPE.
+
 ### A distribution read as an instruction set (2026-09-08, 1 rule)
 
 `Linux x86_64 Generic - hostname variant` took `os.arch` from its third capture,

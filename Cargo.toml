@@ -6,8 +6,9 @@ rust-version = "1.93"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/zond-rs/zond-engine"
 documentation = "https://docs.rs/zond-engine"
+homepage = "https://zond.rs"
 readme = "README.md"
-description = "A lightweight, fast, and highly concurrent networking backend for packet crafting, protocol fingerprinting, and host discovery."
+description = "The core networking library powering Zond. Raw packet injection, protocol parsing, service and OS fingerprinting, and asynchronous network scanning."
 keywords = ["network", "scanner", "portscan", "discovery", "security"]
 categories = ["network-programming", "asynchronous"]
 # What a published crate does not need to carry.

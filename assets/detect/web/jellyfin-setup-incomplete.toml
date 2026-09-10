@@ -1,0 +1,30 @@
+# A Jellyfin server whose setup wizard has never been completed. The public
+# system endpoint states it, unauthenticated and by design, so the whole exchange
+# is one GET of a page meant to be read. Whoever reaches it first can finish the
+# wizard and take the administrator account.
+
+[detection]
+id      = "jellyfin-setup-incomplete"
+version = "1.0.0"
+title   = "Jellyfin setup wizard never completed"
+
+[detection.when]
+service  = "jellyfin"
+protocol = "tcp"
+
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 3000
+
+[[step]]
+send   = "GET /System/Info/Public HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+expect = '(?i)"StartupWizardCompleted"\s*:\s*false'
+bind   = { version = '(?i)"Version"\s*:\s*"(?<version>[0-9.]+)"' }
+  [[step.finding]]
+  when         = "matched"
+  severity     = "critical"
+  summary      = "Jellyfin is waiting for its setup wizard"
+  detail       = "The server reports StartupWizardCompleted = false, so no administrator exists yet. Anyone who reaches this port can complete the wizard, create that account and own the library and everything the server can read."
+  references   = [{ cwe = 1188 }]

@@ -2,15 +2,15 @@
 
 Thanks for wanting to help. Zond Engine is the networking core behind Zond, and it
 is the kind of code where a subtle mistake shows up as a wrong answer about
-somebody's network rather than as a crash — so this guide is a little more
+somebody's network rather than as a crash, so this guide is a little more
 particular than most.
 
 ## Before you start
 
 For anything larger than a bug fix, **open an issue or a discussion first**. A
-scanner has a lot of load-bearing detail in it — timing, retransmission, privilege
-boundaries — and it is much cheaper to agree on an approach than to rework a
-finished pull request.
+scanner has a lot of load-bearing detail in it, timing, retransmission and
+privilege boundaries, and it is much cheaper to agree on an approach than to
+rework a finished pull request.
 
 ## License and the CLA
 
@@ -38,7 +38,7 @@ Zond commercially to organisations that cannot accept the AGPL, and to fix the
 license later if the AGPL turns out to be the wrong choice. In exchange, the CLA
 commits the project to always keeping a version available under an OSI-approved
 open source license. If you contribute code you wrote for an employer, check that
-they are happy for you to do so — clause 5 of the CLA covers this.
+they are happy for you to do so. Clause 5 of the CLA covers this.
 
 ## New license headers
 
@@ -54,7 +54,7 @@ Every source file carries this header. New files need it too:
 // SPDX-License-Identifier: AGPL-3.0-or-later
 ```
 
-Leave the copyright line as it is — "and Contributors" covers you, and the commit
+Leave the copyright line as it is. "and Contributors" covers you, and the commit
 history is the authoritative record of who wrote what.
 
 ## Third-party code
@@ -62,7 +62,7 @@ history is the authoritative record of who wrote what.
 Do not paste in code or data you did not write without saying so. If a fingerprint
 signature or an algorithm comes from somewhere else, say where in the pull request
 and name the license. Permissively licensed material (MIT, BSD, Apache-2.0, ISC)
-can generally be included with its attribution preserved — the Rapid7 Recog
+can generally be included with its attribution preserved: the Rapid7 Recog
 signatures under `assets/fingerprinting/imported/rapid7/` are an example of how
 that is recorded. Code under a copyleft license other than the AGPL usually cannot
 be included at all.
@@ -97,7 +97,7 @@ A few expectations specific to this codebase:
 
 ## Pull requests
 
-Keep them focused — one concern per pull request. Fill in the template, explain
+Keep them focused, one concern per pull request. Fill in the template, explain
 what you verified and how, and note anything you deliberately left out. If your
 change affects scan behaviour, say what you observed on a real network.
 
