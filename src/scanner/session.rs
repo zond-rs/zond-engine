@@ -131,6 +131,26 @@ pub enum Stage {
 }
 
 impl Stage {
+    /// Every stage this build knows, in the order a scan runs them.
+    ///
+    /// Here for the reason [`ScanKind::ALL`](crate::report::ScanKind::ALL)
+    /// gives: the enum is `#[non_exhaustive]`, so nothing outside this crate can
+    /// match it exhaustively, and a front end that maps stages onto a protocol
+    /// of its own has no other way to check that it covered them all. A variant
+    /// added without a place in that protocol is a value this engine reports and
+    /// no consumer can name.
+    pub const ALL: [Stage; 9] = [
+        Self::Discovery,
+        Self::Ports,
+        Self::Services,
+        Self::Detections,
+        Self::Tls,
+        Self::Os,
+        Self::Traceroute,
+        Self::Listening,
+        Self::Finishing,
+    ];
+
     /// Its place in the atomic the tracker keeps.
     const fn code(self) -> u8 {
         match self {
@@ -2307,6 +2327,34 @@ mod tests {
             }
         }
         assert_eq!(announced, 1, "one stage, announced once");
+    }
+
+    /// Every stage has a place in the list, and the list is in running order.
+    ///
+    /// The list is what a front end mapping stages onto a protocol of its own
+    /// checks itself against, so a variant missing from it is a stage that
+    /// front end never learns exists.
+    #[test]
+    fn the_list_of_stages_holds_every_one_of_them_in_running_order() {
+        let codes: Vec<u8> = Stage::ALL.iter().map(|stage| stage.code()).collect();
+        let mut sorted = codes.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+
+        assert_eq!(codes, sorted, "the stages are listed in the order they run");
+        assert_eq!(
+            codes.len(),
+            Stage::ALL.len(),
+            "a stage is listed once and no stage twice"
+        );
+
+        for stage in Stage::ALL {
+            assert_eq!(
+                Stage::from_code(stage.code()),
+                stage,
+                "{stage} does not survive its own code"
+            );
+        }
     }
 
     /// Moving to a stage announces it, naming the stage moved to.

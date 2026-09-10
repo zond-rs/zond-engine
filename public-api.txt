@@ -14854,6 +14854,8 @@ pub zond_engine::scanner::session::Stage::Ports
 pub zond_engine::scanner::session::Stage::Services
 pub zond_engine::scanner::session::Stage::Tls
 pub zond_engine::scanner::session::Stage::Traceroute
+impl zond_engine::scanner::session::Stage
+pub const zond_engine::scanner::session::Stage::ALL: [zond_engine::scanner::session::Stage; 9]
 impl core::clone::Clone for zond_engine::scanner::session::Stage
 pub fn zond_engine::scanner::session::Stage::clone(&self) -> zond_engine::scanner::session::Stage
 impl core::cmp::Eq for zond_engine::scanner::session::Stage
@@ -17412,6 +17414,8 @@ pub zond_engine::Stage::Ports
 pub zond_engine::Stage::Services
 pub zond_engine::Stage::Tls
 pub zond_engine::Stage::Traceroute
+impl zond_engine::scanner::session::Stage
+pub const zond_engine::scanner::session::Stage::ALL: [zond_engine::scanner::session::Stage; 9]
 impl core::clone::Clone for zond_engine::scanner::session::Stage
 pub fn zond_engine::scanner::session::Stage::clone(&self) -> zond_engine::scanner::session::Stage
 impl core::cmp::Eq for zond_engine::scanner::session::Stage
