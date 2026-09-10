@@ -11753,6 +11753,8 @@ pub fn zond_engine::protocols::error::PacketError::clone(&self) -> zond_engine::
 impl core::cmp::Eq for zond_engine::protocols::error::PacketError
 impl core::cmp::PartialEq for zond_engine::protocols::error::PacketError
 pub fn zond_engine::protocols::error::PacketError::eq(&self, &zond_engine::protocols::error::PacketError) -> bool
+impl core::convert::From<zond_engine::protocols::error::PacketError> for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::from(zond_engine::protocols::error::PacketError) -> Self
 impl core::error::Error for zond_engine::protocols::error::PacketError
 impl core::fmt::Debug for zond_engine::protocols::error::PacketError
 pub fn zond_engine::protocols::error::PacketError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -16572,6 +16574,47 @@ impl core::marker::UnsafeUnpin for zond_engine::transport::channel::EthernetHand
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::channel::EthernetHandle
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::channel::EthernetHandle
 pub fn zond_engine::transport::channel::start_capture(&zond_engine::system::interface::Link, &str) -> core::result::Result<zond_engine::transport::channel::EthernetHandle, zond_engine::transport::channel::ChannelError>
+pub mod zond_engine::transport::exchange
+#[non_exhaustive] pub enum zond_engine::transport::exchange::ExchangeError
+pub zond_engine::transport::exchange::ExchangeError::Build(zond_engine::protocols::error::PacketError)
+pub zond_engine::transport::exchange::ExchangeError::NoSource(core::net::ip_addr::IpAddr)
+pub zond_engine::transport::exchange::ExchangeError::Send(zond_engine::transport::probe::SendError)
+pub zond_engine::transport::exchange::ExchangeError::Transport(zond_engine::transport::probe::TransportError)
+impl core::convert::From<zond_engine::protocols::error::PacketError> for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::from(zond_engine::protocols::error::PacketError) -> Self
+impl core::convert::From<zond_engine::transport::probe::SendError> for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::from(zond_engine::transport::probe::SendError) -> Self
+impl core::convert::From<zond_engine::transport::probe::TransportError> for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::from(zond_engine::transport::probe::TransportError) -> Self
+impl core::error::Error for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::transport::exchange::ExchangeError
+impl core::marker::Send for zond_engine::transport::exchange::ExchangeError
+impl core::marker::Sync for zond_engine::transport::exchange::ExchangeError
+impl core::marker::Unpin for zond_engine::transport::exchange::ExchangeError
+impl core::marker::UnsafeUnpin for zond_engine::transport::exchange::ExchangeError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::exchange::ExchangeError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::exchange::ExchangeError
+pub struct zond_engine::transport::exchange::Exchange
+impl zond_engine::transport::exchange::Exchange
+pub fn zond_engine::transport::exchange::Exchange::capture_counts(&self) -> core::option::Option<zond_engine::model::capture::CaptureCounts>
+pub fn zond_engine::transport::exchange::Exchange::from_parts(zond_engine::transport::probe::ProbeTransport, zond_engine::system::interface::SourceResolver) -> Self
+pub fn zond_engine::transport::exchange::Exchange::open(zond_engine::transport::probe::ProbeKind) -> core::result::Result<Self, zond_engine::transport::exchange::ExchangeError>
+pub fn zond_engine::transport::exchange::Exchange::open_with(zond_engine::transport::probe::ProbeKind, zond_engine::transport::probe::SendMode) -> core::result::Result<Self, zond_engine::transport::exchange::ExchangeError>
+pub async fn zond_engine::transport::exchange::Exchange::send(&mut self, &zond_engine::protocols::craft::Packet, core::net::ip_addr::IpAddr, core::time::Duration) -> core::result::Result<alloc::vec::Vec<zond_engine::transport::capture::CapturedSegment>, zond_engine::transport::exchange::ExchangeError>
+pub fn zond_engine::transport::exchange::Exchange::with_emission(self, zond_engine::transport::probe::Emission) -> Self
+impl core::marker::Freeze for zond_engine::transport::exchange::Exchange
+impl core::marker::Send for zond_engine::transport::exchange::Exchange
+impl core::marker::Sync for zond_engine::transport::exchange::Exchange
+impl core::marker::Unpin for zond_engine::transport::exchange::Exchange
+impl core::marker::UnsafeUnpin for zond_engine::transport::exchange::Exchange
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::exchange::Exchange
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::exchange::Exchange
+pub const zond_engine::transport::exchange::MAX_REPLIES: usize
 pub mod zond_engine::transport::frame
 #[non_exhaustive] pub enum zond_engine::transport::frame::LinkType
 pub zond_engine::transport::frame::LinkType::Ethernet
@@ -16735,6 +16778,8 @@ pub zond_engine::transport::probe::SendError::Unroutable(alloc::string::String)
 pub zond_engine::transport::probe::SendError::Unsupported(&'static str)
 impl zond_engine::transport::probe::SendError
 pub fn zond_engine::transport::probe::SendError::is_unroutable(&self) -> bool
+impl core::convert::From<zond_engine::transport::probe::SendError> for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::from(zond_engine::transport::probe::SendError) -> Self
 impl core::error::Error for zond_engine::transport::probe::SendError
 impl core::fmt::Debug for zond_engine::transport::probe::SendError
 pub fn zond_engine::transport::probe::SendError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -16787,6 +16832,8 @@ impl core::convert::From<zond_engine::transport::probe::TransportError> for zond
 pub fn zond_engine::scanner::rdns::ResolverError::from(zond_engine::transport::probe::TransportError) -> Self
 impl core::convert::From<zond_engine::transport::probe::TransportError> for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::from(zond_engine::transport::probe::TransportError) -> Self
+impl core::convert::From<zond_engine::transport::probe::TransportError> for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::from(zond_engine::transport::probe::TransportError) -> Self
 impl core::error::Error for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::transport::probe::TransportError

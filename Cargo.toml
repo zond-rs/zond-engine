@@ -157,6 +157,19 @@ import-request = ["import-settings"]
 # named here: it needs nothing, and everybody needs it.
 import-all = ["import-csv", "import-json", "import-nmap", "import-request", "import-settings"]
 
+# One crafted segment out and whatever answers it, as a single call. The pieces
+# are all public already: `protocols::craft` builds the segment, `ProbeTransport`
+# carries it, `SourceResolver` says which address this host would send from, and
+# `ProbeKind` compiles the filter that decides what a reply may be. What this
+# adds is that they are assembled once here rather than at every call site, where
+# each of the six decisions got wrong produces the same silence a filtered port
+# does.
+#
+# Adds no dependency. Off by default because it is the sharpest thing in the
+# crate: it puts caller-chosen bytes on the wire from a privileged socket, and a
+# default surface should not offer that to a consumer who came for a port scan.
+packet-exchange = []
+
 # Exposes `ProbeTransport::from_parts`, `EthernetHandle::from_parts` and
 # `PassiveListener::from_parts`, which build a transport over a caller-supplied
 # sender and reply stream instead of a socket and a capture — or, for the

@@ -47,6 +47,9 @@
 
 pub mod capture;
 pub mod channel;
+
+#[cfg(feature = "packet-exchange")]
+pub mod exchange;
 pub mod frame;
 pub mod link;
 pub mod mac;

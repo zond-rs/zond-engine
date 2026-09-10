@@ -26,7 +26,17 @@ cargo-fuzz = true
 path = "src/lib.rs"
 
 [dependencies]
-libfuzzer-sys = "0.4"
+# `arbitrary` for the structured targets, which is every target whose subject
+# takes a description rather than a buffer. `protocols_craft` is the first:
+# handing a packet builder a `&[u8]` would spend the whole run on a hand-rolled
+# decoder rather than on the builder.
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+# Parsing an IP header back out of what the builder wrote is done by hand rather
+# than through these, so nothing here is a second opinion from the same library.
+# They are present for the three newtypes the builder's own fields are typed as:
+# an ethertype, a next-header protocol, and a hardware address.
+pnet_packet = "0.35.0"
+pnet_base = "0.35.0"
 # Used by `export_report` alone, to say that what the JSON writers emit is JSON.
 # The library's own parser would be the wrong instrument: it reads the schema,
 # and the question here is the one below that.
@@ -50,6 +60,14 @@ features = ["import-all", "export-all", "journal-format"]
 # `export_report` reaches the writers by way of a reader, and it is an export
 # target because a writer is what it is asserting about.
 # ---------------------------------------------------------------------------
+
+# The bytes this engine puts on the wire itself.
+[[bin]]
+name = "protocols_craft"
+path = "fuzz_targets/protocols/craft.rs"
+test = false
+doc = false
+bench = false
 
 # Bytes off the wire.
 [[bin]]

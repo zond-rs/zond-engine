@@ -798,10 +798,7 @@ mod tests {
 
         let open = flow_budget(&caps(None, None, None));
         assert_eq!(open.max_bytes, DEFAULT_MAX_BYTES);
-        assert_eq!(
-            open.deadline,
-            Duration::from_millis(DEFAULT_MAX_MILLIS)
-        );
+        assert_eq!(open.deadline, Duration::from_millis(DEFAULT_MAX_MILLIS));
         assert_eq!(open.max_connections, DEFAULT_MAX_CONNECTIONS);
     }
 }

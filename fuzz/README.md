@@ -2,7 +2,7 @@
 
 Coverage-guided fuzzing over the code that reads bytes somebody else wrote, the
 code that writes bytes somebody else opens, and the code that decides what a
-scan already found means. Fourteen targets, each an entry point a hostile
+scan already found means. Fifteen targets, each an entry point a hostile
 network, a hostile file or an edited state directory reaches directly.
 
 ```
@@ -63,9 +63,10 @@ src/lib.rs                            →  the oracles more than one target asks
 watch.py                              →  a libFuzzer run as a status screen
 ```
 
-Eight surfaces, because a target is defined by the boundary it attacks rather
-than by the module it happens to call: `wire` is bytes off a segment, `import` is
-a file an operator was handed, `export` is a document this engine produces,
+Nine surfaces, because a target is defined by the boundary it attacks rather
+than by the module it happens to call: `wire` is bytes off a segment,
+`protocols` is bytes this engine puts on one, `import` is a file an operator was
+handed, `export` is a document this engine produces,
 `format` is the contract the two directions share, `record` is where a type with
 invariants becomes something a file can hold, `journal` is what a scan writes
 down as it runs, and `diff` and `merge` are what two scans and several scans
@@ -83,7 +84,8 @@ of the instrument, and the input is a fuzzer's only way of reaching enough of
 them. The same is true of a merge that quietly drops a field.
 
 A new target goes in the directory for its surface, takes the matching name, and
-brings a seed. Nothing else is arranged around any of them.
+brings a seed unless its input has no shape a seed could carry. Nothing else is
+arranged around any of them.
 
 ## An oracle is worth more than an hour
 
@@ -140,7 +142,16 @@ splicing between corpus entries reproduces them without being told. The two rows
 added later reproduce the same shape: 111% and 59% from nothing, and -1% and 3%
 beside the seeds.
 
-Six of the fourteen have no dictionary. `journal_cursor` takes numbers rather
+Seven of the fifteen have no dictionary, and `protocols_craft` has no seeds
+either. Its input is `arbitrary`'s encoding of a recipe rather than a document,
+so there are no tokens to put in a dictionary and no file anybody would write by
+hand to put in a seed. It is also the case where the table above predicts seeds
+are worth least: what they buy is a header a fuzzer will not stumble into, and a
+recipe has none. Measured on the run that cleared P9, the first buildable packet
+appeared at execution 28 from an empty corpus. A minimized corpus would be 581
+files, which is the covering set rather than a seed set, and keeping it in the
+repository would trade a hundred kilobytes for a head start of a few
+milliseconds. `journal_cursor` takes numbers rather
 than a format, and `diff_reports` and `merge_reports` take whole documents whose
 tokens are already `import_report`'s — a dictionary of them would be the same
 file under another name, and the seeds carry every one.
@@ -156,12 +167,21 @@ moved, or OSS-Fuzz beginning with nothing — and that is when it earns its plac
 |---|---|---|
 | `wire_ethernet_frame` | `ethernet::parse` and every reader behind it | a listening phase reads whatever crosses the segment |
 | `wire_buffer` | TCP, SCTP, ICMP, DNS and mDNS from a bare buffer | reached without a frame in front of them |
+| `protocols_craft` | `craft`, the builder every probe goes through | the one target that writes rather than reads: a header whose declared length disagrees with the bytes behind it is dropped by the receiver, and the scan reads that as a firewall |
 | `import_targets` | the list, CSV, JSON, JSON Lines and nmap readers behind `ImportFormat`, and the sniff that picks between them | these decide what gets probed; a reader that mangles one produces a scan of something else |
 | `import_report` | this engine's own report, both JSON shapes | a document it wrote is still a document somebody can edit, and `diff` takes one from wherever it was kept |
 | `import_nmap` | nmap's XML, through the hand-rolled subset reader | `Cargo.toml` calls that reader defensible only because it refuses more than it accepts |
 | `import_settings` | `engine.toml`, and what applying one does to a `ZondConfig` | a file synced out of a team repository, which nobody reads before it takes effect |
 | `export_report` | every writer, over a report built by a reader | a device names itself, so every string a writer escapes is one the network chose |
 | `format_timestamp` | `parse_rfc3339` and `rfc3339` | the one parser both directions depend on, and the only one whose output is also its input |
+
+`protocols_craft` takes a recipe rather than a buffer, since a builder takes a
+description. Every derived field is an `Option`, which is `Field`'s own shape:
+absent is `Computed` and present is `Exact`, so the fuzzer chooses per field
+between the value the builder derives and one it must write untouched. It is
+also the only target here whose oracle asserts that something *changes*: a
+computed IPv4 identification has to differ between builds, because a predictable
+one is exactly what this engine's own idle scanner reads out of other stacks.
 
 `wire_ethernet_frame` also asserts the shape of what `parse` hands out: a frame
 lending a payload wider than the buffer it came from is a defect every reader
