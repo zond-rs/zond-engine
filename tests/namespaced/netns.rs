@@ -278,6 +278,47 @@ impl Segment {
         ]);
     }
 
+    /// Drops only the segments that open a connection to this TCP port.
+    ///
+    /// A stateful filter, in the sense `characterise` looks for: conntrack
+    /// classifies a lone ACK as invalid rather than new, so it is not matched
+    /// here and reaches the port, where an ordinary SYN does not.
+    pub fn drop_new_connections_to(&self, port: u16) {
+        // Counts everything arriving for the port, so a test can tell a probe
+        // that was refused from one that never came. No verdict, so evaluation
+        // falls through to the rule below.
+        self.rule(&["tcp", "dport", &port.to_string(), "counter"]);
+        self.rule(&[
+            "tcp",
+            "dport",
+            &port.to_string(),
+            "ct",
+            "state",
+            "new",
+            "counter",
+            "drop",
+        ]);
+    }
+
+    /// Admits this TCP port only from one source port, dropping the rest.
+    ///
+    /// An ACL that trusts where a segment claims to come from rather than what
+    /// it is. `trusted` is the number the engine tries, which is 53.
+    pub fn trust_source_port_to(&self, port: u16, trusted: u16) {
+        self.rule(&["tcp", "dport", &port.to_string(), "counter"]);
+        self.rule(&[
+            "tcp",
+            "dport",
+            &port.to_string(),
+            "tcp",
+            "sport",
+            "!=",
+            &trusted.to_string(),
+            "counter",
+            "drop",
+        ]);
+    }
+
     /// Shapes the near end of the pair, in `tc netem` terms.
     ///
     /// Assertions against this stay qualitative: `netem` draws from its own
@@ -440,6 +481,16 @@ impl Segment {
         let mut args = vec!["nft", "add", "rule", "inet", "zond", "input"];
         args.extend_from_slice(rule);
         self.there(&args);
+    }
+
+    /// The peer's firewall as it stands, counters included.
+    pub fn ruleset(&self) -> String {
+        let mut cmd = Command::new("nsenter");
+        cmd.args(["--net", "--target"])
+            .arg(self.peer.id().to_string())
+            .arg("--preserve-credentials")
+            .args(["nft", "list", "ruleset"]);
+        String::from_utf8_lossy(&cmd.output().expect("nft lists").stdout).into_owned()
     }
 
     /// Runs a command inside the peer's namespace.

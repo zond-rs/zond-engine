@@ -40,6 +40,7 @@ mod support;
 
 mod netns;
 
+mod characterise;
 mod classification;
 mod degraded;
 mod segment;
