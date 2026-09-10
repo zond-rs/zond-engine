@@ -353,7 +353,12 @@ a kernel rather than a model of one; `characterise` for what kind of filter sits
 in front of a host.
 
 `listening` for the watch entry point over a real capture, and `resolving` for
-a `.local` name a responder on the segment really answers. Both cover surfaces
+a `.local` name a responder on the segment really answers, including the scope
+that names one. The tests in `resolving` hold a mutex for their whole length and
+cannot be made to run beside each other: a responder lives in its own namespace,
+but the socket the engine queries from is in this process's, bound to 5353 with
+`SO_REUSEPORT`, and two of those means the kernel hands an arriving answer to
+whichever it likes. Both cover surfaces
 whose tests stopped at a seam: Tier 2 hands `PassiveListener::from_parts` frames
 a test built and never opens a link, and multicast cannot be faked on loopback,
 the query going to a group whose membership decides whether it arrives at all.

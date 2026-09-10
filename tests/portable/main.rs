@@ -37,4 +37,5 @@ mod liveness;
 mod port_states;
 mod reporting;
 mod service_fingerprint;
+mod targets;
 mod wire_parsers;
