@@ -115,6 +115,9 @@ pub(crate) mod xml;
 #[cfg(feature = "import-settings")]
 pub mod settings;
 
+#[cfg(feature = "import-request")]
+pub mod request;
+
 // Reading a document for what a scan found, rather than for what to scan next.
 // Each reader inside carries the feature of the format it reads and the module
 // carries their union, so a build that can read no report format is not left
@@ -143,6 +146,9 @@ pub use nmap::NmapXmlImporter;
 
 #[cfg(feature = "import-settings")]
 pub use settings::{Settings, SettingsDocument, SettingsError, SettingsWarning};
+
+#[cfg(feature = "import-request")]
+pub use request::{RequestError, Resolved, ScanRequest};
 
 /// Where in the input a token came from.
 ///

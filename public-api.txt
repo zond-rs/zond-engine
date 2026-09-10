@@ -5884,6 +5884,85 @@ impl zond_engine::import::report::ReportReader for zond_engine::import::report::
 pub fn zond_engine::import::report::json::JsonReportReader::read(&self, &mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::report::ScanReport, zond_engine::import::ImportError>
 impl zond_engine::import::report::ReportReader for zond_engine::import::report::nmap::NmapXmlReportReader
 pub fn zond_engine::import::report::nmap::NmapXmlReportReader::read(&self, &mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::report::ScanReport, zond_engine::import::ImportError>
+pub mod zond_engine::import::request
+#[non_exhaustive] pub enum zond_engine::import::request::RequestError
+pub zond_engine::import::request::RequestError::NoTargets
+pub zond_engine::import::request::RequestError::Ports
+pub zond_engine::import::request::RequestError::Ports::reason: alloc::string::String
+pub zond_engine::import::request::RequestError::Ports::spec: alloc::string::String
+pub zond_engine::import::request::RequestError::Targets(zond_engine::model::parse::target::TargetParseError)
+impl core::convert::From<zond_engine::model::parse::target::TargetParseError> for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::from(zond_engine::model::parse::target::TargetParseError) -> Self
+impl core::error::Error for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::import::request::RequestError
+impl core::marker::Send for zond_engine::import::request::RequestError
+impl core::marker::Sync for zond_engine::import::request::RequestError
+impl core::marker::Unpin for zond_engine::import::request::RequestError
+impl core::marker::UnsafeUnpin for zond_engine::import::request::RequestError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::request::RequestError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::request::RequestError
+#[non_exhaustive] pub struct zond_engine::import::request::Resolved
+impl zond_engine::import::request::Resolved
+pub fn zond_engine::import::request::Resolved::apply_to(&self, &mut zond_engine::config::ZondConfig)
+pub fn zond_engine::import::request::Resolved::exclusions(&self) -> &zond_engine::model::exclusion::Exclusions
+pub fn zond_engine::import::request::Resolved::into_ips(self) -> zond_engine::model::ip::set::IpSet
+pub fn zond_engine::import::request::Resolved::into_parts(self) -> (zond_engine::model::ip::set::IpSet, core::option::Option<zond_engine::model::port::set::PortSet>)
+pub fn zond_engine::import::request::Resolved::ips(&self) -> &zond_engine::model::ip::set::IpSet
+pub fn zond_engine::import::request::Resolved::ports(&self) -> core::option::Option<&zond_engine::model::port::set::PortSet>
+impl core::clone::Clone for zond_engine::import::request::Resolved
+pub fn zond_engine::import::request::Resolved::clone(&self) -> zond_engine::import::request::Resolved
+impl core::fmt::Debug for zond_engine::import::request::Resolved
+pub fn zond_engine::import::request::Resolved::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::import::request::Resolved
+impl core::marker::Send for zond_engine::import::request::Resolved
+impl core::marker::Sync for zond_engine::import::request::Resolved
+impl core::marker::Unpin for zond_engine::import::request::Resolved
+impl core::marker::UnsafeUnpin for zond_engine::import::request::Resolved
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::request::Resolved
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::request::Resolved
+#[non_exhaustive] pub struct zond_engine::import::request::ScanRequest
+pub zond_engine::import::request::ScanRequest::assume_up: core::option::Option<bool>
+pub zond_engine::import::request::ScanRequest::characterise: core::option::Option<bool>
+pub zond_engine::import::request::ScanRequest::detection: core::option::Option<zond_engine::config::envelope::DetectionEnvelope>
+pub zond_engine::import::request::ScanRequest::evasion: core::option::Option<zond_engine::evasion::EvasionProfile>
+pub zond_engine::import::request::ScanRequest::exclude: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::import::request::ScanRequest::icmp_evidence: core::option::Option<bool>
+pub zond_engine::import::request::ScanRequest::idle_scan: core::option::Option<zond_engine::config::IdleScan>
+pub zond_engine::import::request::ScanRequest::ip_protocols: core::option::Option<alloc::collections::btree::set::BTreeSet<u8>>
+pub zond_engine::import::request::ScanRequest::os_detection: core::option::Option<zond_engine::config::OsDetection>
+pub zond_engine::import::request::ScanRequest::ports: core::option::Option<alloc::string::String>
+pub zond_engine::import::request::ScanRequest::service_detection: core::option::Option<zond_engine::config::ServiceDetection>
+pub zond_engine::import::request::ScanRequest::settings: zond_engine::import::settings::Settings
+pub zond_engine::import::request::ScanRequest::targets: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::import::request::ScanRequest::traceroute: core::option::Option<bool>
+impl zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::apply_to(&self, &mut zond_engine::config::ZondConfig)
+pub fn zond_engine::import::request::ScanRequest::new() -> Self
+pub fn zond_engine::import::request::ScanRequest::ports(&self) -> core::option::Option<core::result::Result<zond_engine::model::port::set::PortSet, zond_engine::import::request::RequestError>>
+pub async fn zond_engine::import::request::ScanRequest::resolve(&self, core::option::Option<&zond_engine::resolve::Resolver>) -> core::result::Result<zond_engine::import::request::Resolved, zond_engine::import::request::RequestError>
+impl core::clone::Clone for zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::clone(&self) -> zond_engine::import::request::ScanRequest
+impl core::cmp::PartialEq for zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::eq(&self, &zond_engine::import::request::ScanRequest) -> bool
+impl core::default::Default for zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::default() -> zond_engine::import::request::ScanRequest
+impl core::fmt::Debug for zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::import::request::ScanRequest
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::import::request::ScanRequest where zond_engine::import::request::ScanRequest: core::default::Default
+pub fn zond_engine::import::request::ScanRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::import::request::ScanRequest
+impl core::marker::Send for zond_engine::import::request::ScanRequest
+impl core::marker::Sync for zond_engine::import::request::ScanRequest
+impl core::marker::Unpin for zond_engine::import::request::ScanRequest
+impl core::marker::UnsafeUnpin for zond_engine::import::request::ScanRequest
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::request::ScanRequest
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::request::ScanRequest
 pub mod zond_engine::import::settings
 pub mod zond_engine::import::settings::paths
 pub fn zond_engine::import::settings::paths::layered() -> alloc::vec::Vec<std::path::PathBuf>
@@ -6159,6 +6238,27 @@ impl core::marker::Unpin for zond_engine::import::OnRefusal
 impl core::marker::UnsafeUnpin for zond_engine::import::OnRefusal
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::OnRefusal
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::OnRefusal
+#[non_exhaustive] pub enum zond_engine::import::RequestError
+pub zond_engine::import::RequestError::NoTargets
+pub zond_engine::import::RequestError::Ports
+pub zond_engine::import::RequestError::Ports::reason: alloc::string::String
+pub zond_engine::import::RequestError::Ports::spec: alloc::string::String
+pub zond_engine::import::RequestError::Targets(zond_engine::model::parse::target::TargetParseError)
+impl core::convert::From<zond_engine::model::parse::target::TargetParseError> for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::from(zond_engine::model::parse::target::TargetParseError) -> Self
+impl core::error::Error for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::import::request::RequestError
+impl core::marker::Send for zond_engine::import::request::RequestError
+impl core::marker::Sync for zond_engine::import::request::RequestError
+impl core::marker::Unpin for zond_engine::import::request::RequestError
+impl core::marker::UnsafeUnpin for zond_engine::import::request::RequestError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::request::RequestError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::request::RequestError
 #[non_exhaustive] pub enum zond_engine::import::SettingsError
 pub zond_engine::import::SettingsError::Io
 pub zond_engine::import::SettingsError::Io::path: std::path::PathBuf
@@ -6391,6 +6491,63 @@ impl core::marker::Unpin for zond_engine::import::RejectedTarget
 impl core::marker::UnsafeUnpin for zond_engine::import::RejectedTarget
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::RejectedTarget
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::RejectedTarget
+#[non_exhaustive] pub struct zond_engine::import::Resolved
+impl zond_engine::import::request::Resolved
+pub fn zond_engine::import::request::Resolved::apply_to(&self, &mut zond_engine::config::ZondConfig)
+pub fn zond_engine::import::request::Resolved::exclusions(&self) -> &zond_engine::model::exclusion::Exclusions
+pub fn zond_engine::import::request::Resolved::into_ips(self) -> zond_engine::model::ip::set::IpSet
+pub fn zond_engine::import::request::Resolved::into_parts(self) -> (zond_engine::model::ip::set::IpSet, core::option::Option<zond_engine::model::port::set::PortSet>)
+pub fn zond_engine::import::request::Resolved::ips(&self) -> &zond_engine::model::ip::set::IpSet
+pub fn zond_engine::import::request::Resolved::ports(&self) -> core::option::Option<&zond_engine::model::port::set::PortSet>
+impl core::clone::Clone for zond_engine::import::request::Resolved
+pub fn zond_engine::import::request::Resolved::clone(&self) -> zond_engine::import::request::Resolved
+impl core::fmt::Debug for zond_engine::import::request::Resolved
+pub fn zond_engine::import::request::Resolved::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::import::request::Resolved
+impl core::marker::Send for zond_engine::import::request::Resolved
+impl core::marker::Sync for zond_engine::import::request::Resolved
+impl core::marker::Unpin for zond_engine::import::request::Resolved
+impl core::marker::UnsafeUnpin for zond_engine::import::request::Resolved
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::request::Resolved
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::request::Resolved
+#[non_exhaustive] pub struct zond_engine::import::ScanRequest
+pub zond_engine::import::ScanRequest::assume_up: core::option::Option<bool>
+pub zond_engine::import::ScanRequest::characterise: core::option::Option<bool>
+pub zond_engine::import::ScanRequest::detection: core::option::Option<zond_engine::config::envelope::DetectionEnvelope>
+pub zond_engine::import::ScanRequest::evasion: core::option::Option<zond_engine::evasion::EvasionProfile>
+pub zond_engine::import::ScanRequest::exclude: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::import::ScanRequest::icmp_evidence: core::option::Option<bool>
+pub zond_engine::import::ScanRequest::idle_scan: core::option::Option<zond_engine::config::IdleScan>
+pub zond_engine::import::ScanRequest::ip_protocols: core::option::Option<alloc::collections::btree::set::BTreeSet<u8>>
+pub zond_engine::import::ScanRequest::os_detection: core::option::Option<zond_engine::config::OsDetection>
+pub zond_engine::import::ScanRequest::ports: core::option::Option<alloc::string::String>
+pub zond_engine::import::ScanRequest::service_detection: core::option::Option<zond_engine::config::ServiceDetection>
+pub zond_engine::import::ScanRequest::settings: zond_engine::import::settings::Settings
+pub zond_engine::import::ScanRequest::targets: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::import::ScanRequest::traceroute: core::option::Option<bool>
+impl zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::apply_to(&self, &mut zond_engine::config::ZondConfig)
+pub fn zond_engine::import::request::ScanRequest::new() -> Self
+pub fn zond_engine::import::request::ScanRequest::ports(&self) -> core::option::Option<core::result::Result<zond_engine::model::port::set::PortSet, zond_engine::import::request::RequestError>>
+pub async fn zond_engine::import::request::ScanRequest::resolve(&self, core::option::Option<&zond_engine::resolve::Resolver>) -> core::result::Result<zond_engine::import::request::Resolved, zond_engine::import::request::RequestError>
+impl core::clone::Clone for zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::clone(&self) -> zond_engine::import::request::ScanRequest
+impl core::cmp::PartialEq for zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::eq(&self, &zond_engine::import::request::ScanRequest) -> bool
+impl core::default::Default for zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::default() -> zond_engine::import::request::ScanRequest
+impl core::fmt::Debug for zond_engine::import::request::ScanRequest
+pub fn zond_engine::import::request::ScanRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::import::request::ScanRequest
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::import::request::ScanRequest where zond_engine::import::request::ScanRequest: core::default::Default
+pub fn zond_engine::import::request::ScanRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::import::request::ScanRequest
+impl core::marker::Send for zond_engine::import::request::ScanRequest
+impl core::marker::Sync for zond_engine::import::request::ScanRequest
+impl core::marker::Unpin for zond_engine::import::request::ScanRequest
+impl core::marker::UnsafeUnpin for zond_engine::import::request::ScanRequest
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::request::ScanRequest
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::request::ScanRequest
 #[non_exhaustive] pub struct zond_engine::import::Settings
 pub zond_engine::import::Settings::dampen_silent_hosts: core::option::Option<bool>
 pub zond_engine::import::Settings::default_ports: core::option::Option<alloc::string::String>
@@ -9475,6 +9632,8 @@ pub fn zond_engine::model::parse::target::TargetParseError::clone(&self) -> zond
 impl core::cmp::Eq for zond_engine::model::parse::target::TargetParseError
 impl core::cmp::PartialEq for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::eq(&self, &zond_engine::model::parse::target::TargetParseError) -> bool
+impl core::convert::From<zond_engine::model::parse::target::TargetParseError> for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::from(zond_engine::model::parse::target::TargetParseError) -> Self
 impl core::error::Error for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::model::parse::target::TargetParseError
@@ -9630,6 +9789,8 @@ pub fn zond_engine::model::parse::target::TargetParseError::clone(&self) -> zond
 impl core::cmp::Eq for zond_engine::model::parse::target::TargetParseError
 impl core::cmp::PartialEq for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::eq(&self, &zond_engine::model::parse::target::TargetParseError) -> bool
+impl core::convert::From<zond_engine::model::parse::target::TargetParseError> for zond_engine::import::request::RequestError
+pub fn zond_engine::import::request::RequestError::from(zond_engine::model::parse::target::TargetParseError) -> Self
 impl core::error::Error for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::model::parse::target::TargetParseError

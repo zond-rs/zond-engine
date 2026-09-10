@@ -867,7 +867,7 @@ pub fn resolve(profile: Option<&str>) -> Result<(Settings, Vec<SettingsWarning>)
 /// these are not plain strings in the struct. A settings file that says
 /// `tcp_technique = "stealth"` should say so at load rather than scan with the
 /// wrong technique.
-fn de_named<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(super) fn de_named<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: std::str::FromStr,

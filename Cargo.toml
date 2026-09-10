@@ -142,9 +142,20 @@ import-settings = []
 # consumer of the reader compile it.
 import-nmap = []
 
+# One scan described as a document: what to probe, and the settings that change
+# from run to run rather than the ones a settings file keeps. It is the layer
+# `import-settings` leaves out, since a file written once may not name a target
+# or widen a scan, and it is what a front end reads when the scan it runs was
+# described to it rather than typed as flags.
+#
+# Adds no dependency: `serde` is unconditional and the document is whatever
+# format the caller deserializes from. It requires `import-settings`, because a
+# request carries a settings table rather than restating its keys.
+import-request = ["import-settings"]
+
 # Every format this crate can read. The list format is unconditional and is not
 # named here: it needs nothing, and everybody needs it.
-import-all = ["import-csv", "import-json", "import-nmap", "import-settings"]
+import-all = ["import-csv", "import-json", "import-nmap", "import-request", "import-settings"]
 
 # Exposes `ProbeTransport::from_parts`, `EthernetHandle::from_parts` and
 # `PassiveListener::from_parts`, which build a transport over a caller-supplied
