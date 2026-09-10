@@ -11259,6 +11259,8 @@ pub zond_engine::protocols::craft::Field::Exact(T)
 impl<T> zond_engine::protocols::craft::Field<T>
 pub fn zond_engine::protocols::craft::Field<T>::exact(self) -> core::option::Option<T>
 pub const fn zond_engine::protocols::craft::Field<T>::is_exact(&self) -> bool
+impl<'de, T: serde_core::de::Deserialize<'de>> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Field<T>
+pub fn zond_engine::protocols::craft::Field<T>::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl<T: core::clone::Clone> core::clone::Clone for zond_engine::protocols::craft::Field<T>
 pub fn zond_engine::protocols::craft::Field<T>::clone(&self) -> zond_engine::protocols::craft::Field<T>
 impl<T: core::cmp::Eq> core::cmp::Eq for zond_engine::protocols::craft::Field<T>
@@ -11270,6 +11272,8 @@ pub fn zond_engine::protocols::craft::Field<T>::fmt(&self, &mut core::fmt::Forma
 impl<T: core::hash::Hash> core::hash::Hash for zond_engine::protocols::craft::Field<T>
 pub fn zond_engine::protocols::craft::Field<T>::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl<T: core::marker::Copy> core::marker::Copy for zond_engine::protocols::craft::Field<T>
+impl<T: serde_core::ser::Serialize> serde_core::ser::Serialize for zond_engine::protocols::craft::Field<T>
+pub fn zond_engine::protocols::craft::Field<T>::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<T> core::convert::From<T> for zond_engine::protocols::craft::Field<T>
 pub fn zond_engine::protocols::craft::Field<T>::from(T) -> Self
 impl<T> core::default::Default for zond_engine::protocols::craft::Field<T>
@@ -11320,6 +11324,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Layer
 pub fn zond_engine::protocols::craft::Layer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Layer
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Layer
+pub fn zond_engine::protocols::craft::Layer::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Layer
+pub fn zond_engine::protocols::craft::Layer::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Layer
 impl core::marker::Send for zond_engine::protocols::craft::Layer
 impl core::marker::Sync for zond_engine::protocols::craft::Layer
@@ -11350,6 +11358,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Arp
 pub fn zond_engine::protocols::craft::Arp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Arp
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Arp
+pub fn zond_engine::protocols::craft::Arp::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Arp
+pub fn zond_engine::protocols::craft::Arp::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Arp
 impl core::marker::Send for zond_engine::protocols::craft::Arp
 impl core::marker::Sync for zond_engine::protocols::craft::Arp
@@ -11375,6 +11387,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Ethernet
 pub fn zond_engine::protocols::craft::Ethernet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Ethernet
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Ethernet
+pub fn zond_engine::protocols::craft::Ethernet::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Ethernet
+pub fn zond_engine::protocols::craft::Ethernet::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Ethernet
 impl core::marker::Send for zond_engine::protocols::craft::Ethernet
 impl core::marker::Sync for zond_engine::protocols::craft::Ethernet
@@ -11406,6 +11422,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Icmpv4
 pub fn zond_engine::protocols::craft::Icmpv4::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Icmpv4
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Icmpv4
+pub fn zond_engine::protocols::craft::Icmpv4::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Icmpv4
+pub fn zond_engine::protocols::craft::Icmpv4::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Icmpv4
 impl core::marker::Send for zond_engine::protocols::craft::Icmpv4
 impl core::marker::Sync for zond_engine::protocols::craft::Icmpv4
@@ -11436,6 +11456,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Icmpv6
 pub fn zond_engine::protocols::craft::Icmpv6::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Icmpv6
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Icmpv6
+pub fn zond_engine::protocols::craft::Icmpv6::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Icmpv6
+pub fn zond_engine::protocols::craft::Icmpv6::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Icmpv6
 impl core::marker::Send for zond_engine::protocols::craft::Icmpv6
 impl core::marker::Sync for zond_engine::protocols::craft::Icmpv6
@@ -11472,6 +11496,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Ipv4
 pub fn zond_engine::protocols::craft::Ipv4::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Ipv4
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Ipv4
+pub fn zond_engine::protocols::craft::Ipv4::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Ipv4
+pub fn zond_engine::protocols::craft::Ipv4::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Ipv4
 impl core::marker::Send for zond_engine::protocols::craft::Ipv4
 impl core::marker::Sync for zond_engine::protocols::craft::Ipv4
@@ -11502,6 +11530,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Ipv6
 pub fn zond_engine::protocols::craft::Ipv6::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Ipv6
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Ipv6
+pub fn zond_engine::protocols::craft::Ipv6::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Ipv6
+pub fn zond_engine::protocols::craft::Ipv6::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Ipv6
 impl core::marker::Send for zond_engine::protocols::craft::Ipv6
 impl core::marker::Sync for zond_engine::protocols::craft::Ipv6
@@ -11526,6 +11558,10 @@ pub fn zond_engine::protocols::craft::Packet::default() -> zond_engine::protocol
 impl core::fmt::Debug for zond_engine::protocols::craft::Packet
 pub fn zond_engine::protocols::craft::Packet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Packet
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Packet
+pub fn zond_engine::protocols::craft::Packet::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Packet
+pub fn zond_engine::protocols::craft::Packet::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Packet
 impl core::marker::Send for zond_engine::protocols::craft::Packet
 impl core::marker::Sync for zond_engine::protocols::craft::Packet
@@ -11555,6 +11591,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Sctp
 pub fn zond_engine::protocols::craft::Sctp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Sctp
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Sctp
+pub fn zond_engine::protocols::craft::Sctp::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Sctp
+pub fn zond_engine::protocols::craft::Sctp::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Sctp
 impl core::marker::Send for zond_engine::protocols::craft::Sctp
 impl core::marker::Sync for zond_engine::protocols::craft::Sctp
@@ -11594,6 +11634,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Tcp
 pub fn zond_engine::protocols::craft::Tcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Tcp
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Tcp
+pub fn zond_engine::protocols::craft::Tcp::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Tcp
+pub fn zond_engine::protocols::craft::Tcp::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Tcp
 impl core::marker::Send for zond_engine::protocols::craft::Tcp
 impl core::marker::Sync for zond_engine::protocols::craft::Tcp
@@ -11622,6 +11666,10 @@ pub fn zond_engine::protocols::craft::Layer::from(zond_engine::protocols::craft:
 impl core::fmt::Debug for zond_engine::protocols::craft::Udp
 pub fn zond_engine::protocols::craft::Udp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::craft::Udp
+impl serde_core::ser::Serialize for zond_engine::protocols::craft::Udp
+pub fn zond_engine::protocols::craft::Udp::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::protocols::craft::Udp
+pub fn zond_engine::protocols::craft::Udp::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 impl core::marker::Freeze for zond_engine::protocols::craft::Udp
 impl core::marker::Send for zond_engine::protocols::craft::Udp
 impl core::marker::Sync for zond_engine::protocols::craft::Udp

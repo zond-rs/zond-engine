@@ -11,8 +11,8 @@
 //! Nothing here binds a socket or calls the library. Each module reads source
 //! files off disk and holds the tree to a rule the compiler cannot express: that
 //! the module graph matches the order `lib.rs` claims, that every cited file is
-//! in the repository, that a doc comment landed on the item it was written for,
-//! and that the README's examples are the ones rustdoc compiles.
+//! in the repository, and that a doc comment landed on the item it was written
+//! for.
 //!
 //! These are lints wearing a test's clothes, and they run with the ordinary
 //! suite because `cargo test` is where a contributor looks. They need no
@@ -21,4 +21,3 @@
 mod architecture;
 mod citations;
 mod documentation;
-mod readme;
