@@ -115,7 +115,10 @@ use tokio::task::JoinHandle;
 use crate::config::ZondConfig;
 use crate::detect::Detections;
 use crate::journal::cursor::Checkpoint;
-use crate::model::{ip::set::IpSet, target::TargetMap};
+use crate::model::{
+    ip::set::{IpSet, Positions},
+    target::{TargetIndex, TargetMap},
+};
 #[cfg(feature = "journal-format")]
 use crate::report::ScanPhase;
 use crate::report::ScannerKind;
@@ -125,7 +128,7 @@ use crate::scanner::orchestrator::{
     target_ips,
 };
 use crate::scanner::recorder::PhaseRecorder;
-use crate::scanner::session::{ScanContext, ScanSession};
+use crate::scanner::session::{ScanContext, ScanSession, Stage};
 use crate::system::privilege::Privilege;
 use strategy::local::Scope;
 
@@ -412,11 +415,15 @@ pub async fn discover(
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
 
+    let planned = planned_addresses(&Positions::of(&targets));
+
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .planning(Stage::Discovery, planned)
+        .staging(discovery_stages(cfg))
         // Drawn here and kept nowhere, since nothing is recording this sweep.
         // A caller who wants the order back is journalling, and that is what
         // writes the seed down.
@@ -494,6 +501,8 @@ pub async fn discover_with_journal(
         resume_point.remaining_addresses(&positions)
     };
 
+    let planned = planned_addresses(&positions);
+
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
@@ -501,6 +510,8 @@ pub async fn discover_with_journal(
         .host_probe_interval(cfg.host_probe_interval)
         .resuming(&resume_point)
         .counting(positions)
+        .planning(Stage::Discovery, planned)
+        .staging(discovery_stages(cfg))
         .ordering(order_seed)
         .build();
 
@@ -511,6 +522,79 @@ pub async fn discover_with_journal(
     let handle = spawn_discovery(sweep, cfg, ctx);
 
     Ok((session, ScanTask::journalling(handle, ticker, earlier)))
+}
+
+/// How many addresses a sweep plans to ask about, or `None` where they cannot
+/// all be numbered.
+///
+/// The numbering is the same one a journal settles positions against, so a
+/// fraction built from this counts what [`Progress::settled`] counts. A range
+/// too wide to number leaves the plan uncountable, and a scan of one never
+/// finishes anyway.
+fn planned_addresses(positions: &Positions) -> Option<u64> {
+    positions.unnumbered().is_empty().then(|| positions.total())
+}
+
+/// The stages a sweep under `cfg` expects to run, in the order it runs them.
+fn discovery_stages(cfg: &ZondConfig) -> Vec<Stage> {
+    let mut stages = vec![Stage::Discovery];
+
+    if cfg.os_detection.is_active() {
+        stages.push(Stage::Os);
+    }
+    if cfg.traceroute {
+        stages.push(Stage::Traceroute);
+    }
+
+    stages
+}
+
+/// The stages a port scan under `cfg` expects to run, in the order it runs them.
+///
+/// A superset, and deliberately so. Whether service detection, the detection
+/// corpus and the TLS pass find anything to do depends on which ports turn out
+/// to be open, which is not knowable here, so each is listed whenever the
+/// settings permit it at all and stepped over if it comes to nothing.
+///
+/// [`Stage::Finishing`] is left out. It sends nothing and is over as soon as it
+/// begins, so a run that reached it has done all the work there was to measure.
+fn scan_stages(cfg: &ZondConfig) -> Vec<Stage> {
+    let mut stages = Vec::new();
+
+    if !cfg.assume_up {
+        stages.push(Stage::Discovery);
+    }
+    stages.push(Stage::Ports);
+
+    if cfg.service_detection.connects() {
+        stages.push(Stage::Services);
+    }
+    if cfg.service_detection != crate::config::ServiceDetection::Off
+        && cfg.detection.ceiling().is_some()
+    {
+        stages.push(Stage::Detections);
+    }
+    if cfg.tls_enumeration {
+        stages.push(Stage::Tls);
+    }
+    if cfg.os_detection.is_active() {
+        stages.push(Stage::Os);
+    }
+    if cfg.traceroute {
+        stages.push(Stage::Traceroute);
+    }
+
+    stages
+}
+
+/// How many address-and-port pairs a port scan plans to probe, or `None` where
+/// they cannot all be numbered.
+///
+/// [`TargetIndex`] stops numbering at the first unit it cannot count whole, so
+/// its total is the plan's only where it says the numbering is complete.
+fn planned_targets(map: &TargetMap) -> Option<u64> {
+    let index = TargetIndex::of(map);
+    index.is_complete().then(|| index.total())
 }
 
 /// Runs a discovery sweep against an existing context.
@@ -539,6 +623,7 @@ fn spawn_discovery(
     let cfg = cfg.clone();
 
     tokio::spawn(async move {
+        ctx.enter_stage(Stage::Discovery, None);
         // No SCTP sweep: `discover` is asked about addresses and never about
         // ports, so nothing has said which SCTP port would be worth asking.
         run_discovery(targets, reach, caps, &cfg, &ctx, None).await;
@@ -548,6 +633,7 @@ fn spawn_discovery(
         // A sweep knows no ports, so every trace here is made of echoes. A port
         // scan traces better, having somewhere to aim.
         orchestrator::run_traceroute(&ctx, &cfg).await;
+        ctx.enter_stage(Stage::Finishing, None);
         orchestrator::run_characterise(&ctx, &cfg).await;
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
         // Last, and after every strategy that could add an address: what this
@@ -749,6 +835,7 @@ pub async fn listen(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .staging(vec![Stage::Listening])
         .build();
     let handle = spawn_listen(scope, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
@@ -794,6 +881,7 @@ pub async fn listen_with_journal(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .staging(vec![Stage::Listening])
         .build();
 
     // Before the watch starts, so a caller reading the session sees every
@@ -824,6 +912,8 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         //
         // There is no fallback to record either way. Reading a link is the whole
         // capability here, where a scan can degrade to connect attempts.
+        ctx.enter_stage(Stage::Listening, None);
+
         let opened =
             strategy::passive::PassiveListener::open(&scope.links, scope.recording, ctx.clone());
 
@@ -902,12 +992,16 @@ pub async fn scan(
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
 
+    let planned = planned_targets(&target_map);
+
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
         .detections(detections)
+        .planning(Stage::Ports, planned)
+        .staging(scan_stages(cfg))
         // See `discover`: drawn here and kept nowhere, because nothing is
         // recording this scan.
         .ordering(Some(rand::random()))
@@ -957,6 +1051,8 @@ pub async fn scan_with_journal(
         .host_probe_interval(cfg.host_probe_interval)
         .resuming(journal.resume_point())
         .detections(detections)
+        .planning(Stage::Ports, planned_targets(&target_map))
+        .staging(scan_stages(cfg))
         // See `discover_with_journal`: the order is the job's rather than this
         // sitting's, so it comes back off the manifest.
         .ordering(journal.manifest().order_seed)
@@ -1014,6 +1110,7 @@ fn spawn_scan(
             // where the scan's ports named an SCTP one, since a host that
             // answers only SCTP would otherwise be called down and its ports
             // never probed.
+            ctx.enter_stage(Stage::Discovery, None);
             let sctp = orchestrator::sctp_discovery_port(&target_map);
             run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx, sctp).await;
 
@@ -1040,6 +1137,7 @@ fn spawn_scan(
         crate::model::exclusion::Exclusions::withhold_targets(&cfg.exclusions, &mut target_map);
         let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privilege, scope, &cfg);
 
+        ctx.enter_stage(Stage::Ports, None);
         run_port_phase(target_map, live, &ctx, caps, &cfg, settled).await;
 
         // Straight after the ports, because what it needs is the list of ports a
@@ -1059,6 +1157,7 @@ fn spawn_scan(
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
         // Last: the ports are what decide a trace's shape.
         orchestrator::run_traceroute(&ctx, &cfg).await;
+        ctx.enter_stage(Stage::Finishing, None);
         orchestrator::run_characterise(&ctx, &cfg).await;
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
         vantage::attribute(&ctx);

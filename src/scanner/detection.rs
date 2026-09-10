@@ -80,7 +80,7 @@ use crate::model::port::{PortState, Protocol};
 use crate::record::{DetectionIdRecord, wire};
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
-use crate::scanner::session::{ScanContext, Tapes};
+use crate::scanner::session::{ScanContext, Stage, Tapes};
 
 /// One port's detections as they travel off the blocking pool: the host key, the
 /// port and protocol, the findings drawn, and the detections that did not finish
@@ -117,6 +117,8 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         return;
     }
 
+    ctx.enter_stage(Stage::Detections, Some(targets.len() as u64));
+
     // One budget for the phase, shared by every port in the pool and every flow
     // inside each. See [`Gate`].
     let gate = Arc::new(Gate::new(CONNECT_CONCURRENCY));
@@ -126,6 +128,8 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         ctx.clone(),
         ScannerKind::Detection,
         |result: Option<PortResult>, _audit| {
+            ctx.stage_advanced();
+
             if let Some((key, number, protocol, findings, inconclusive)) = result {
                 // A detection that trapped on a budget, faulted, or ran its socket
                 // budget dry did not clear the port; record that it did not finish

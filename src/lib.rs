@@ -309,7 +309,7 @@ pub use crate::model::technique::TcpScanTechnique;
 pub use crate::report::{ScanReport, ScanSummary};
 pub use crate::resolve::{ResolveConfig, Resolver};
 pub use crate::scanner::handle::ScanHandle;
-pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
+pub use crate::scanner::session::{HostStore, Progress, ScanEvent, ScanEvents, ScanSession, Stage};
 pub use crate::scanner::strategy::StrategyError;
 pub use crate::scanner::{ListenScope, ScanError, ScanTask, Until, discover, listen, scan};
 #[cfg(feature = "journal-format")]

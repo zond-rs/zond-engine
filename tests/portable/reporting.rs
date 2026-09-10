@@ -60,7 +60,7 @@ async fn a_sweep_whose_probes_never_left_reports_why() {
 
     // Read from the live event stream, which is the channel a consumer watching
     // a scan in progress actually has.
-    let (_hosts, mut events, _handle) = session.into_parts();
+    let (_hosts, mut events, _handle, _progress) = session.into_parts();
     let mut reasons = Vec::new();
     while let Some(event) = events.try_recv() {
         if let ScanEvent::ScannerFailed { reason, .. } = event {

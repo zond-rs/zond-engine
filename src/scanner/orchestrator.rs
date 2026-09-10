@@ -58,7 +58,7 @@ use crate::model::{
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::rdns::HostnameResolver;
-use crate::scanner::session::ScanContext;
+use crate::scanner::session::{ScanContext, Stage};
 use crate::scanner::strategy::local::Scope;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::scanner::{plan, rdns, strategy};
@@ -599,6 +599,8 @@ pub(super) async fn run_active_os_series(
     if !os_detection.is_active() {
         return;
     }
+
+    ctx.enter_stage(Stage::Os, None);
     let thorough = matches!(os_detection, OsDetection::Aggressive);
 
     let targets: Vec<strategy::identify::series::SeriesTarget> = ctx
@@ -716,6 +718,8 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         return;
     }
 
+    ctx.enter_stage(Stage::Os, None);
+
     let targets: Vec<crate::model::ip::scoped::ScopedIp> = ctx
         .host_addresses()
         .into_iter()
@@ -794,6 +798,8 @@ pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetect
     if !os_detection.is_active() {
         return;
     }
+
+    ctx.enter_stage(Stage::Os, None);
 
     let targets: Vec<(crate::model::ip::scoped::ScopedIp, Option<String>)> = ctx
         .host_addresses()
@@ -954,6 +960,8 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
     if !cfg.traceroute {
         return;
     }
+
+    ctx.enter_stage(Stage::Traceroute, None);
 
     let mut alive: Vec<IpAddr> = ctx
         .host_addresses()
@@ -1164,6 +1172,8 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
         return;
     }
 
+    ctx.enter_stage(Stage::Tls, Some(targets.len() as u64));
+
     info!(
         "enumerating what {} accept",
         counted(targets.len() as u128, "TLS port", "TLS ports")
@@ -1290,6 +1300,8 @@ pub(super) async fn run_active_os_probe(
     if !os_detection.is_active() {
         return;
     }
+
+    ctx.enter_stage(Stage::Os, None);
 
     // A host worth pinging is one the scan found and could not name. Hosts the
     // scan never recorded were never asked about, and pinging addresses nobody

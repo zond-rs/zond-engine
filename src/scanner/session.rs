@@ -72,6 +72,7 @@
 
 use dashmap::DashMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -89,6 +90,191 @@ use crate::model::port::Protocol;
 use crate::report::ScannerKind;
 use crate::report::{Attachment, AttachmentSource, ProbeStats, Refusal, ScannerFailure};
 use crate::scanner::handle::ScanHandle;
+
+/// What a scan is working on.
+///
+/// A scan is not one uniform stretch of work. The sweep settles its plan, and
+/// then a tail of quite different jobs runs over what it found: identifying the
+/// services behind the open ports, running detections against those services,
+/// reading a stack for an operating system, tracing a path. The tail routinely
+/// takes several times as long as the sweep did, so a caller measuring the plan
+/// alone shows a finished bar for most of a run.
+///
+/// Each stage announces itself as it begins, through [`ScanEvent::StageChanged`],
+/// and [`Progress::stage`] answers which one is current. Some know their own
+/// size the moment they start, the set of ports they will work over having been
+/// decided before any of it was probed; the rest report only that they are
+/// running.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Stage {
+    /// Establishing which addresses are alive. Where every scan starts.
+    #[default]
+    Discovery,
+    /// Classifying the ports of the hosts that answered.
+    Ports,
+    /// Identifying what is listening behind each open port.
+    Services,
+    /// Running the detection corpus over the services just identified.
+    Detections,
+    /// Asking what each TLS port accepts.
+    Tls,
+    /// Reading a stack, and asking what a host says about itself.
+    Os,
+    /// Tracing the path to each host.
+    Traceroute,
+    /// Reading a link, which ends when the caller says so rather than when the
+    /// work runs out.
+    Listening,
+    /// The correlating and record keeping left once the probing is over.
+    Finishing,
+}
+
+impl Stage {
+    /// Its place in the atomic the tracker keeps.
+    const fn code(self) -> u8 {
+        match self {
+            Stage::Discovery => 0,
+            Stage::Ports => 1,
+            Stage::Services => 2,
+            Stage::Detections => 3,
+            Stage::Tls => 4,
+            Stage::Os => 5,
+            Stage::Traceroute => 6,
+            Stage::Listening => 7,
+            Stage::Finishing => 8,
+        }
+    }
+
+    /// The stage `code` stands for, and [`Discovery`](Stage::Discovery) for a
+    /// number no stage claims, which is where a scan begins.
+    const fn from_code(code: u8) -> Self {
+        match code {
+            1 => Stage::Ports,
+            2 => Stage::Services,
+            3 => Stage::Detections,
+            4 => Stage::Tls,
+            5 => Stage::Os,
+            6 => Stage::Traceroute,
+            7 => Stage::Listening,
+            8 => Stage::Finishing,
+            _ => Stage::Discovery,
+        }
+    }
+}
+
+impl std::fmt::Display for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Stage::Discovery => "discovery",
+            Stage::Ports => "ports",
+            Stage::Services => "services",
+            Stage::Detections => "detections",
+            Stage::Tls => "tls",
+            Stage::Os => "os",
+            Stage::Traceroute => "traceroute",
+            Stage::Listening => "listening",
+            Stage::Finishing => "finishing",
+        };
+
+        f.write_str(name)
+    }
+}
+
+/// Which stage a scan is in and how far through it.
+///
+/// Three atomics rather than one lock, because this is written from every
+/// probing task and read eight times a second by whatever is drawing. The three
+/// are not updated as a group, so a reader can catch a stage that has just
+/// changed against a count that has not caught up. That costs one frame of a
+/// progress line and is the reason this is not the thing a report is built from.
+#[derive(Debug, Default)]
+pub(crate) struct Stages {
+    current: AtomicU8,
+    done: AtomicU64,
+    total: AtomicU64,
+    /// The stages this scan expects to run, in the order it runs them.
+    planned: Vec<Stage>,
+    /// How many of those are behind it, which only ever grows.
+    reached: AtomicUsize,
+}
+
+impl Stages {
+    fn new(planned: Vec<Stage>) -> Self {
+        Self {
+            planned,
+            ..Self::default()
+        }
+    }
+
+    /// Where the scan stands across every stage it expects to run, as a
+    /// position over a total.
+    ///
+    /// `within` is how far through the current stage it is, and the pair comes
+    /// back scaled so both halves are whole numbers: a caller drawing a bar of a
+    /// fixed number of cells divides in integers and gets cells and a percentage
+    /// that agree.
+    fn overall(&self, within: Option<(u64, u64)>) -> Option<(u64, u64)> {
+        let stages = u64::try_from(self.planned.len()).ok().filter(|n| *n > 0)?;
+        let reached = u64::try_from(self.reached.load(Ordering::Relaxed)).unwrap_or(0);
+
+        // Past the last stage the scan expected: whatever it is doing now, the
+        // work it was counting is behind it.
+        let Some((done, total)) = within.filter(|_| self.planned.contains(&self.stage())) else {
+            return Some((reached.min(stages), stages));
+        };
+
+        Some((reached * total + done.min(total), stages * total))
+    }
+
+    /// Moves to `stage`, answering whether that was a change worth announcing.
+    ///
+    /// Entering the stage already current adds to its total instead of starting
+    /// it over, which is what service detection needs when it runs once per
+    /// protocol.
+    fn enter(&self, stage: Stage, total: Option<u64>) -> bool {
+        let total = total.unwrap_or(0);
+
+        // How many expected stages this one comes after, read from the order the
+        // variants are declared in, which is the order a scan runs them. A stage
+        // that was expected and had no work is stepped over rather than waited
+        // for.
+        let reached = self
+            .planned
+            .iter()
+            .filter(|planned| planned.code() < stage.code())
+            .count();
+        self.reached.fetch_max(reached, Ordering::Relaxed);
+
+        if self.current.swap(stage.code(), Ordering::Relaxed) == stage.code() {
+            self.total.fetch_add(total, Ordering::Relaxed);
+            return false;
+        }
+
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        true
+    }
+
+    fn advance(&self) {
+        self.done.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn stage(&self) -> Stage {
+        Stage::from_code(self.current.load(Ordering::Relaxed))
+    }
+
+    fn done(&self) -> u64 {
+        self.done.load(Ordering::Relaxed)
+    }
+
+    fn total(&self) -> Option<u64> {
+        match self.total.load(Ordering::Relaxed) {
+            0 => None,
+            total => Some(total),
+        }
+    }
+}
 
 /// Lightweight notifications for the status of an ongoing scan.
 #[derive(Debug, Clone)]
@@ -112,6 +298,18 @@ pub enum ScanEvent {
         scanner: ScannerKind,
         /// A human-readable description of the failure.
         reason: String,
+    },
+
+    /// The scan has moved on to another [`Stage`].
+    ///
+    /// A scan spends most of its time somewhere other than its plan, and this is
+    /// what says where. Read [`ScanSession::progress`] for how far through the
+    /// stage it is, on the same reasoning [`HostUpdated`](ScanEvent::HostUpdated)
+    /// carries only an address: the figure moves far faster than the
+    /// announcement does.
+    StageChanged {
+        /// What the scan is working on now.
+        stage: Stage,
     },
 
     /// The stream ran ahead of this consumer, and `count` events were dropped
@@ -297,6 +495,171 @@ impl ScanEvents {
     }
 }
 
+/// How far a scan has got through its plan.
+///
+/// A cheap, cloneable view of the counters the strategies settle their targets
+/// against, so one can sit in a rendering task and be read as often as it
+/// draws. A read is a pair of atomic loads and one short lock, never a walk of
+/// the findings.
+///
+/// The two halves come from different places. [`settled`](Self::settled) counts
+/// what the strategies have finished with, and it counts on every scan whether
+/// or not the scan is journalled. [`planned`](Self::planned) is the size of the
+/// plan, which a scan knows only where its targets can be numbered: an IPv6
+/// range of a `/64` or wider cannot be, and a [`listen`](crate::listen) session
+/// has no plan at all, having asked for nothing. Where the plan cannot be
+/// counted, [`fraction`](Self::fraction) answers `None`, and a front end has a
+/// running count to show in place of a bar.
+///
+/// A scan that runs to the end settles every target in its plan and the
+/// fraction reaches 1.0. One stopped early leaves it short, which is the
+/// accurate account of how much ground the run covered.
+///
+/// ```no_run
+/// # fn example(session: &zond_engine::ScanSession) {
+/// let progress = session.progress();
+/// match progress.planned() {
+///     Some(planned) => println!("{} of {planned} targets", progress.settled()),
+///     None => println!("{} targets settled", progress.settled()),
+/// }
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct Progress {
+    settlements: Arc<Settlements>,
+    planned: Option<u64>,
+    plan_stage: Stage,
+    stages: Arc<Stages>,
+}
+
+impl Progress {
+    fn new(
+        settlements: Arc<Settlements>,
+        planned: Option<u64>,
+        plan_stage: Stage,
+        stages: Arc<Stages>,
+    ) -> Self {
+        Self {
+            settlements,
+            planned,
+            plan_stage,
+            stages,
+        }
+    }
+
+    /// What the scan is working on right now.
+    pub fn stage(&self) -> Stage {
+        self.stages.stage()
+    }
+
+    /// How many units of the current stage are finished.
+    ///
+    /// The unit is the stage's own: ports for [`Stage::Services`], detection
+    /// runs for [`Stage::Detections`]. Zero for a stage that does not count
+    /// itself.
+    pub fn stage_done(&self) -> u64 {
+        self.stages.done()
+    }
+
+    /// How many units the current stage holds, for one that knew its size when
+    /// it began.
+    pub fn stage_total(&self) -> Option<u64> {
+        self.stages.total()
+    }
+
+    /// How many of the plan's targets the scan has finished with, counting
+    /// those an earlier sitting settled and this one resumed past.
+    ///
+    /// A target is settled once no further probing could change its verdict: it
+    /// answered, its retry budget was spent on silence, or its host was found
+    /// down and no probe was owed. A target the scan stopped before reaching is
+    /// not settled and is not counted here.
+    pub fn settled(&self) -> u64 {
+        self.settlements.settled_count()
+    }
+
+    /// How many targets the plan holds, or `None` for a plan whose targets
+    /// cannot all be numbered.
+    ///
+    /// Fixed for the life of the scan. A resumed sitting reports the size of the
+    /// whole job rather than what was left of it, so both halves of a fraction
+    /// describe the same plan.
+    pub const fn planned(&self) -> Option<u64> {
+        self.planned
+    }
+
+    /// How many targets are still to settle, or `None` where the plan cannot be
+    /// counted.
+    pub fn remaining(&self) -> Option<u64> {
+        self.planned
+            .map(|planned| planned.saturating_sub(self.settled()))
+    }
+
+    /// How far through the current stage the scan is, from 0.0 to 1.0.
+    ///
+    /// A stage that counted itself answers for itself. The one the scan's plan
+    /// was drawn for answers with what the plan has settled, which is what
+    /// carries a resumed sitting's earlier work into the figure. Any other stage
+    /// that never learned its size answers `None`, describing a stage running
+    /// with no end in sight rather than one that has not started.
+    ///
+    /// A port scan's liveness pass is the interesting `None`: its plan counts
+    /// address-and-port pairs and the pass settles none of them, so it reports
+    /// that it is running rather than reporting nought percent of the wrong
+    /// thing.
+    ///
+    /// An empty stage is complete, and one that somehow finishes more units than
+    /// it counted reports 1.0 rather than overshooting.
+    pub fn fraction(&self) -> Option<f64> {
+        let (done, total) = self.counted()?;
+
+        Some(ratio(done, total))
+    }
+
+    /// Where the scan stands across every stage it expects to run, as a position
+    /// over a total.
+    ///
+    /// One figure for a whole run rather than one per stage, so a bar drawn from
+    /// it fills once instead of refilling at every stage boundary. It only moves
+    /// forward: a stage that was expected and turned out to have nothing to do
+    /// is stepped over, which is why the figure can jump.
+    ///
+    /// The expected stages are a superset. Whether services, detections and TLS
+    /// have anything to do depends on what the ports turn out to be, and none of
+    /// that is knowable before the ports are read.
+    ///
+    /// `None` for a session that was never told which stages to expect. See
+    /// [`SessionBuilder::staging`].
+    pub fn overall(&self) -> Option<(u64, u64)> {
+        self.stages.overall(self.counted())
+    }
+
+    /// The same reckoning as [`fraction`](Self::fraction), as the two figures it
+    /// divides rather than the result.
+    ///
+    /// For a caller that would rather round the figures itself, or draw
+    /// something a fraction cannot express. A bar of a fixed number of cells is
+    /// the usual reason: dividing twice in integers keeps the cells and the
+    /// percentage agreeing, where taking both off one `f64` can round a bar full
+    /// beside a figure that reads 99%.
+    pub fn counted(&self) -> Option<(u64, u64)> {
+        match self.stage_total() {
+            Some(total) => Some((self.stage_done(), total)),
+            None if self.stage() == self.plan_stage => Some((self.settled(), self.planned?)),
+            None => None,
+        }
+    }
+}
+
+/// `done` out of `total`, held between 0.0 and 1.0. Nothing to do is done.
+fn ratio(done: u64, total: u64) -> f64 {
+    if total == 0 {
+        return 1.0;
+    }
+
+    (done as f64 / total as f64).min(1.0)
+}
+
 /// A handle to an active network scan: what it has found, what it is doing, and
 /// the means to stop it.
 ///
@@ -323,6 +686,7 @@ pub struct ScanSession {
     store: HostStore,
     events: ScanEvents,
     handle: ScanHandle,
+    progress: Progress,
 }
 
 impl ScanSession {
@@ -344,14 +708,22 @@ impl ScanSession {
         &self.handle
     }
 
+    /// How far the scan has got through its plan.
+    ///
+    /// Cloneable, so a caller rendering a scan elsewhere clones this rather than
+    /// holding the session still. See [`Progress`].
+    pub fn progress(&self) -> &Progress {
+        &self.progress
+    }
+
     /// Takes the session apart, for a caller that wants to watch the events from
     /// one task and read the hosts from another.
     ///
-    /// [`HostStore`] and [`ScanHandle`] are both cloneable and shareable, so
-    /// this is only needed to move the event stream, which is not, there being
-    /// exactly one of it.
-    pub fn into_parts(self) -> (HostStore, ScanEvents, ScanHandle) {
-        (self.store, self.events, self.handle)
+    /// [`HostStore`], [`ScanHandle`] and [`Progress`] are all cloneable and
+    /// shareable, so this is only needed to move the event stream, which is not,
+    /// there being exactly one of it.
+    pub fn into_parts(self) -> (HostStore, ScanEvents, ScanHandle, Progress) {
+        (self.store, self.events, self.handle, self.progress)
     }
 }
 
@@ -893,6 +1265,8 @@ pub struct ScanContext {
     ///
     /// Bounded by the number of distinct hosts, which the store holds anyway.
     pub(crate) changed: Arc<ChangedHosts>,
+    /// What the scan is working on, and how far through it.
+    pub(crate) stages: Arc<Stages>,
     /// What became of each target, for a resume that must not skip one.
     ///
     /// Separate from the verdict a target receives: the engine gives an
@@ -1334,6 +1708,29 @@ impl ScanContext {
         self.settlements.record(outcome);
     }
 
+    /// Announces the stage the scan has moved into, with how much work it holds
+    /// where that is known before any of it is done.
+    ///
+    /// Entering the stage that is already current adds to its total rather than
+    /// starting it over, so service detection running once per protocol reports
+    /// one stage the size of both runs rather than two stages that each restart
+    /// the count.
+    pub fn enter_stage(&self, stage: Stage, total: Option<u64>) {
+        if self.stages.enter(stage, total) {
+            let _ = self.events_tx.send(ScanEvent::StageChanged { stage });
+        }
+    }
+
+    /// Counts one unit of the current stage as finished.
+    ///
+    /// Called where the work completes rather than where it is handed out. A
+    /// stage that submits into a pool has given out all of its work long before
+    /// any of it is done, and counting the handing out would fill the bar while
+    /// the pool was still draining.
+    pub fn stage_advanced(&self) {
+        self.stages.advance();
+    }
+
     /// Records `count` targets ending the same way, for the outcomes that carry
     /// no position. See [`Settlements::record_many`].
     pub fn record_many_outcomes(&self, outcome: Outcome, count: u64) {
@@ -1491,6 +1888,9 @@ pub struct SessionBuilder {
     exclusions: Exclusions,
     settled: crate::journal::cursor::Checkpoint,
     positions: Positions,
+    planned: Option<u64>,
+    plan_stage: Stage,
+    staging: Vec<Stage>,
     detections: crate::detect::Detections,
     host_timeout: Option<Duration>,
     scan_timeout: Option<Duration>,
@@ -1555,6 +1955,46 @@ impl SessionBuilder {
         self
     }
 
+    /// How many targets the plan holds, and which [`Stage`] does that work.
+    ///
+    /// This is the denominator [`Progress::fraction`] divides into while that
+    /// stage is running, so it has to be counted in the same unit the stage
+    /// settles in: addresses for a sweep, address-and-port pairs for a port
+    /// scan. [`Positions::total`](crate::model::ip::set::Positions::total) and
+    /// [`TargetIndex::total`](crate::model::target::TargetIndex::total) are
+    /// those two counts, and each has a companion that says whether it covered
+    /// the whole plan.
+    ///
+    /// Naming the stage is what keeps the figure honest in a scan that has more
+    /// than one. A port scan runs a liveness pass first, and measuring that pass
+    /// against a plan of address-and-port pairs would report nought percent for
+    /// the whole of it.
+    ///
+    /// Leave it alone and a consumer reads a running count of what has settled
+    /// with nothing to measure it against, which is all a scan of an
+    /// uncountable plan can honestly offer.
+    pub fn planning(mut self, stage: Stage, total: Option<u64>) -> Self {
+        self.plan_stage = stage;
+        self.planned = total;
+        self
+    }
+
+    /// The stages this scan expects to run, in the order it will run them.
+    ///
+    /// What [`Progress::overall`] measures a whole run against. A superset is
+    /// the right thing to pass: a stage listed here and skipped moves the figure
+    /// forward over it, where a stage that runs without being listed leaves the
+    /// figure sitting still until the next one that was listed.
+    ///
+    /// [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan)
+    /// derive this from the settings they were handed. A caller orchestrating
+    /// their own scan lists the stages they mean to run, or leaves it alone and
+    /// reads progress one stage at a time.
+    pub fn staging(mut self, stages: Vec<Stage>) -> Self {
+        self.staging = stages;
+        self
+    }
+
     /// The corpus the detection phase runs, the shipped one unless set otherwise.
     ///
     /// [`scan`](crate::scanner::scan) sets the corpus it was given here; a caller
@@ -1608,11 +2048,19 @@ impl SessionBuilder {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::bounded(self.scan_timeout);
         let (events_tx, rx) = broadcast::channel(ScanEvents::CAPACITY);
+        let settlements = Arc::new(Settlements::resuming(&self.settled));
+        let stages = Arc::new(Stages::new(self.staging));
 
         let session = ScanSession {
             store: HostStore::new(store.clone()),
             events: ScanEvents { rx },
             handle: handle.clone(),
+            progress: Progress::new(
+                settlements.clone(),
+                self.planned,
+                self.plan_stage,
+                stages.clone(),
+            ),
         };
 
         let ctx = ScanContext {
@@ -1637,7 +2085,8 @@ impl SessionBuilder {
             attachments: Arc::new(Attachments::default()),
             exclusions: Arc::new(self.exclusions),
             changed: Arc::new(ChangedHosts::default()),
-            settlements: Arc::new(Settlements::resuming(&self.settled)),
+            stages,
+            settlements,
             positions: Arc::new(self.positions),
             order_seed: self.order_seed,
             responses: Arc::new(Responses::default()),
@@ -1687,6 +2136,325 @@ impl ScanSession {
 mod tests {
     use super::*;
     use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+
+    /// A whole run reads as one figure that only grows, rather than one per
+    /// stage that starts over each time.
+    #[test]
+    fn a_whole_run_reads_as_one_figure_rather_than_one_per_stage() {
+        let (session, ctx) = ScanSession::builder()
+            .planning(Stage::Ports, Some(4))
+            .staging(vec![Stage::Ports, Stage::Services, Stage::Detections])
+            .build();
+
+        ctx.enter_stage(Stage::Ports, None);
+        ctx.record_outcome(Outcome::Answered { position: 0 });
+        ctx.record_outcome(Outcome::Answered { position: 1 });
+
+        // Half of the first stage of three, which is a sixth of the run.
+        let (done, total) = session.progress().overall().expect("a staged run");
+        assert_eq!(
+            done * 6,
+            total,
+            "half of one stage in three: {done}/{total}"
+        );
+
+        ctx.enter_stage(Stage::Services, Some(2));
+        ctx.stage_advanced();
+
+        // One stage behind it and half way through the second, which is half the
+        // run. The figure grew across the boundary rather than starting again.
+        let (done, total) = session.progress().overall().expect("a staged run");
+        assert_eq!(done * 2, total, "half the run: {done}/{total}");
+    }
+
+    /// A stage that turned out to have nothing to do is stepped over.
+    ///
+    /// Whether services, detections and TLS have any work depends on which ports
+    /// are open, so the running order is a superset and some of it never
+    /// announces itself. Waiting for a stage that will never arrive would park
+    /// the figure for the rest of the run.
+    #[test]
+    fn a_stage_with_nothing_to_do_is_stepped_over_rather_than_waited_for() {
+        let (session, ctx) = ScanSession::builder()
+            .staging(vec![
+                Stage::Ports,
+                Stage::Services,
+                Stage::Detections,
+                Stage::Os,
+            ])
+            .build();
+
+        ctx.enter_stage(Stage::Ports, Some(1));
+        ctx.stage_advanced();
+
+        // Neither services nor detections found anything to do, so neither
+        // announced itself. The run is three stages further on all the same.
+        ctx.enter_stage(Stage::Os, None);
+
+        let (done, total) = session.progress().overall().expect("a staged run");
+        assert_eq!(done * 4, total * 3, "three stages of four: {done}/{total}");
+    }
+
+    /// A session nobody told a running order reports no whole-run figure, rather
+    /// than inventing one out of the stages it happens to see.
+    #[test]
+    fn a_session_with_no_running_order_reports_no_whole_run_figure() {
+        let (session, ctx) = ScanSession::new();
+
+        ctx.enter_stage(Stage::Services, Some(4));
+        ctx.stage_advanced();
+
+        let progress = session.progress();
+        assert_eq!(progress.overall(), None, "nothing said how many stages");
+        assert_eq!(
+            progress.counted(),
+            Some((1, 4)),
+            "the stage still answers for itself"
+        );
+    }
+
+    /// A stage that knows its own size answers for itself, and the plan is not
+    /// consulted.
+    ///
+    /// This is the whole point of stages. The plan of a port scan is settled
+    /// long before the scan is over, and measuring the detection stage against
+    /// it would report a finished run for as long as the detections took.
+    #[test]
+    fn a_stage_that_counted_itself_answers_for_itself() {
+        let (session, ctx) = ScanSession::builder()
+            .planning(Stage::Ports, Some(4))
+            .build();
+
+        // The plan, settled in full. Nothing left by its own reckoning.
+        ctx.enter_stage(Stage::Ports, None);
+        ctx.record_outcome(Outcome::Answered { position: 0 });
+        ctx.record_outcome(Outcome::Answered { position: 1 });
+        ctx.record_outcome(Outcome::Answered { position: 2 });
+        ctx.record_outcome(Outcome::Answered { position: 3 });
+        assert_eq!(
+            session.progress().fraction(),
+            Some(1.0),
+            "the ports are done"
+        );
+
+        ctx.enter_stage(Stage::Detections, Some(8));
+        ctx.stage_advanced();
+        ctx.stage_advanced();
+
+        let progress = session.progress();
+        assert_eq!(progress.stage(), Stage::Detections);
+        assert_eq!(progress.stage_done(), 2);
+        assert_eq!(progress.stage_total(), Some(8));
+        assert_eq!(
+            progress.fraction(),
+            Some(0.25),
+            "a quarter through the detections, not finished with the scan"
+        );
+        assert_eq!(progress.settled(), 4, "the plan is still settled in full");
+    }
+
+    /// A stage nobody could size reports that it is running, not that it is at
+    /// nought.
+    ///
+    /// A port scan's liveness pass is the case worth naming: the plan counts
+    /// address-and-port pairs, the pass settles none of them, and reporting the
+    /// plan's figure would show nought percent for the whole of it.
+    #[test]
+    fn an_unsized_stage_that_is_not_the_plans_own_reports_nothing() {
+        let (session, ctx) = ScanSession::builder()
+            .planning(Stage::Ports, Some(1_000))
+            .build();
+
+        ctx.enter_stage(Stage::Discovery, None);
+        let progress = session.progress();
+        assert_eq!(progress.stage(), Stage::Discovery);
+        assert_eq!(
+            progress.fraction(),
+            None,
+            "a liveness pass is not nought percent of a port plan"
+        );
+
+        ctx.enter_stage(Stage::Ports, None);
+        assert_eq!(
+            session.progress().fraction(),
+            Some(0.0),
+            "the stage the plan was drawn for reads from the plan"
+        );
+    }
+
+    /// Entering the stage that is already current adds to it.
+    ///
+    /// Service detection runs once per protocol, and two entries that each reset
+    /// the count would send the bar back to the start half way through one
+    /// stage.
+    #[test]
+    fn re_entering_a_stage_adds_to_it_rather_than_starting_it_over() {
+        let (mut session, ctx) = ScanSession::new();
+
+        ctx.enter_stage(Stage::Services, Some(3));
+        ctx.stage_advanced();
+        ctx.enter_stage(Stage::Services, Some(2));
+
+        let progress = session.progress().clone();
+        assert_eq!(progress.stage_total(), Some(5), "both runs' ports");
+        assert_eq!(progress.stage_done(), 1, "and the one already finished");
+
+        // One announcement, not two: the stage did not change the second time.
+        let mut announced = 0;
+        while let Some(event) = session.events().try_recv() {
+            if matches!(event, ScanEvent::StageChanged { .. }) {
+                announced += 1;
+            }
+        }
+        assert_eq!(announced, 1, "one stage, announced once");
+    }
+
+    /// Moving to a stage announces it, naming the stage moved to.
+    #[test]
+    fn a_stage_announces_itself_as_it_begins() {
+        let (mut session, ctx) = ScanSession::new();
+
+        ctx.enter_stage(Stage::Os, None);
+
+        let Some(ScanEvent::StageChanged { stage }) = session.events().try_recv() else {
+            panic!("entering a stage announces it");
+        };
+        assert_eq!(stage, Stage::Os);
+    }
+
+    /// A scan whose plan was never counted still counts what it settles.
+    ///
+    /// The two halves are independent, and this is the pairing a front end has
+    /// to handle: a running total with nothing to divide it into. It is what a
+    /// listener and a sweep of an IPv6 range too wide to number both look like.
+    #[test]
+    fn an_uncounted_plan_settles_targets_but_reports_no_fraction() {
+        let (session, ctx) = ScanSession::new();
+
+        ctx.record_outcome(Outcome::Answered { position: 0 });
+        ctx.record_outcome(Outcome::Exhausted { position: 1 });
+
+        let progress = session.progress();
+        assert_eq!(progress.settled(), 2, "both targets settled");
+        assert_eq!(
+            progress.planned(),
+            None,
+            "nothing said how big the plan was"
+        );
+        assert_eq!(
+            progress.fraction(),
+            None,
+            "so there is nothing to divide into"
+        );
+        assert_eq!(progress.remaining(), None);
+    }
+
+    /// The fraction is settled against the plan, and both move as the scan does.
+    #[test]
+    fn settling_targets_advances_the_fraction() {
+        let (session, ctx) = ScanSession::builder()
+            .planning(Stage::Discovery, Some(4))
+            .build();
+
+        assert_eq!(
+            session.progress().fraction(),
+            Some(0.0),
+            "nothing settled yet"
+        );
+
+        ctx.record_outcome(Outcome::Answered { position: 0 });
+        ctx.record_outcome(Outcome::Skipped { position: 1 });
+
+        let progress = session.progress();
+        assert_eq!(progress.settled(), 2);
+        assert_eq!(progress.remaining(), Some(2));
+        let fraction = progress.fraction().expect("a counted plan has a fraction");
+        assert!(
+            (fraction - 0.5).abs() < f64::EPSILON,
+            "two of four settled is half the plan, got {fraction}"
+        );
+    }
+
+    /// An outcome that settles nothing moves the scan no further through its
+    /// plan.
+    ///
+    /// `Unasked` is what a scan that stopped early leaves behind, and counting
+    /// it would draw a full bar over a run that did not finish. The short bar is
+    /// the accurate one.
+    #[test]
+    fn an_unsettled_outcome_does_not_advance_the_plan() {
+        let (session, ctx) = ScanSession::builder()
+            .planning(Stage::Discovery, Some(2))
+            .build();
+
+        ctx.record_outcome(Outcome::Answered { position: 0 });
+        ctx.record_many_outcomes(Outcome::Unasked, 1);
+
+        let progress = session.progress();
+        assert_eq!(progress.settled(), 1, "only the answered target settled");
+        assert_eq!(
+            progress.remaining(),
+            Some(1),
+            "the unasked one is still owed"
+        );
+    }
+
+    /// A resumed sitting measures against the whole job rather than its own
+    /// share of it.
+    ///
+    /// The numerator carries what earlier sittings settled, so the denominator
+    /// has to be the whole plan or the bar would restart at zero every time a
+    /// scan was continued.
+    #[test]
+    fn a_resumed_sitting_starts_part_way_through_the_plan() {
+        let earlier = crate::journal::cursor::Checkpoint::new(6, []);
+        let (session, ctx) = ScanSession::builder()
+            .resuming(&earlier)
+            .planning(Stage::Discovery, Some(8))
+            .build();
+
+        assert_eq!(
+            session.progress().settled(),
+            6,
+            "what the earlier sitting settled is already covered"
+        );
+
+        ctx.record_outcome(Outcome::Answered { position: 6 });
+
+        let fraction = session
+            .progress()
+            .fraction()
+            .expect("a counted plan has a fraction");
+        assert!(
+            (fraction - 0.875).abs() < f64::EPSILON,
+            "seven of eight, got {fraction}"
+        );
+    }
+
+    /// An empty plan has nothing left to do, and a plan cannot be overshot.
+    #[test]
+    fn a_fraction_saturates_rather_than_passing_one() {
+        let (empty, _ctx) = ScanSession::builder()
+            .planning(Stage::Discovery, Some(0))
+            .build();
+        assert_eq!(
+            empty.progress().fraction(),
+            Some(1.0),
+            "an empty plan is complete"
+        );
+
+        let (session, ctx) = ScanSession::builder()
+            .planning(Stage::Discovery, Some(1))
+            .build();
+        ctx.record_outcome(Outcome::Answered { position: 0 });
+        ctx.record_outcome(Outcome::Answered { position: 1 });
+        assert_eq!(
+            session.progress().fraction(),
+            Some(1.0),
+            "more settled than planned still reads as done"
+        );
+        assert_eq!(session.progress().remaining(), Some(0));
+    }
 
     /// The gate, at the one place every finding in the engine passes through.
     ///

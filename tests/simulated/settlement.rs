@@ -428,7 +428,7 @@ async fn a_journalled_scan_lets_a_watcher_finish() {
             .await
             .expect("the scan starts");
 
-    let (_hosts, mut events, _handle) = session.into_parts();
+    let (_hosts, mut events, _handle, _progress) = session.into_parts();
 
     // Exactly what a front end does: drain until the stream closes, then join.
     // Capped, because the failure this guards against is that it never does.

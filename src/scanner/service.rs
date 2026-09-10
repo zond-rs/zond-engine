@@ -39,7 +39,7 @@ use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::model::port::{Port, PortState, Protocol};
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
-use crate::scanner::session::ScanContext;
+use crate::scanner::session::{ScanContext, Stage};
 
 /// Fingerprints every open port currently in the store worth an exchange,
 /// upgrading each port's service in place.
@@ -68,29 +68,35 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
         return;
     }
 
+    ctx.enter_stage(Stage::Services, Some(targets.len() as u64));
+
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::Service,
-        |attempt: Attempt, _audit| match attempt {
-            Attempt::Identified(found) => {
-                let Identified {
-                    ip,
-                    port,
-                    about_the_host,
-                    banners,
-                } = *found;
-                ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
-                write_back(ctx, ip, port, about_the_host);
-            }
-            Attempt::Unreachable { ip, number, reason } => ctx.record_failure(
-                ScannerKind::Service,
-                format!(
-                    "{} could not be fingerprinted: {reason}",
-                    ip.endpoint(number)
+        |attempt: Attempt, _audit| {
+            ctx.stage_advanced();
+
+            match attempt {
+                Attempt::Identified(found) => {
+                    let Identified {
+                        ip,
+                        port,
+                        about_the_host,
+                        banners,
+                    } = *found;
+                    ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
+                    write_back(ctx, ip, port, about_the_host);
+                }
+                Attempt::Unreachable { ip, number, reason } => ctx.record_failure(
+                    ScannerKind::Service,
+                    format!(
+                        "{} could not be fingerprinted: {reason}",
+                        ip.endpoint(number)
+                    ),
                 ),
-            ),
-            Attempt::Quiet => {}
+                Attempt::Quiet => {}
+            }
         },
     );
 

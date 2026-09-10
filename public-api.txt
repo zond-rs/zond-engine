@@ -14762,6 +14762,8 @@ pub zond_engine::scanner::session::ScanEvent::HostUpdated(zond_engine::model::ip
 pub zond_engine::scanner::session::ScanEvent::ScannerFailed
 pub zond_engine::scanner::session::ScanEvent::ScannerFailed::reason: alloc::string::String
 pub zond_engine::scanner::session::ScanEvent::ScannerFailed::scanner: zond_engine::report::ScannerKind
+pub zond_engine::scanner::session::ScanEvent::StageChanged
+pub zond_engine::scanner::session::ScanEvent::StageChanged::stage: zond_engine::scanner::session::Stage
 impl core::clone::Clone for zond_engine::scanner::session::ScanEvent
 pub fn zond_engine::scanner::session::ScanEvent::clone(&self) -> zond_engine::scanner::session::ScanEvent
 impl core::fmt::Debug for zond_engine::scanner::session::ScanEvent
@@ -14773,6 +14775,38 @@ impl core::marker::Unpin for zond_engine::scanner::session::ScanEvent
 impl core::marker::UnsafeUnpin for zond_engine::scanner::session::ScanEvent
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::ScanEvent
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanEvent
+#[non_exhaustive] pub enum zond_engine::scanner::session::Stage
+pub zond_engine::scanner::session::Stage::Detections
+pub zond_engine::scanner::session::Stage::Discovery
+pub zond_engine::scanner::session::Stage::Finishing
+pub zond_engine::scanner::session::Stage::Listening
+pub zond_engine::scanner::session::Stage::Os
+pub zond_engine::scanner::session::Stage::Ports
+pub zond_engine::scanner::session::Stage::Services
+pub zond_engine::scanner::session::Stage::Tls
+pub zond_engine::scanner::session::Stage::Traceroute
+impl core::clone::Clone for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::clone(&self) -> zond_engine::scanner::session::Stage
+impl core::cmp::Eq for zond_engine::scanner::session::Stage
+impl core::cmp::PartialEq for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::eq(&self, &zond_engine::scanner::session::Stage) -> bool
+impl core::default::Default for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::default() -> zond_engine::scanner::session::Stage
+impl core::fmt::Debug for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::scanner::session::Stage
+impl core::marker::StructuralPartialEq for zond_engine::scanner::session::Stage
+impl core::marker::Freeze for zond_engine::scanner::session::Stage
+impl core::marker::Send for zond_engine::scanner::session::Stage
+impl core::marker::Sync for zond_engine::scanner::session::Stage
+impl core::marker::Unpin for zond_engine::scanner::session::Stage
+impl core::marker::UnsafeUnpin for zond_engine::scanner::session::Stage
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::Stage
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::Stage
 pub struct zond_engine::scanner::session::HostStore
 impl zond_engine::scanner::session::HostStore
 pub fn zond_engine::scanner::session::HostStore::contains(&self, impl core::convert::Into<zond_engine::model::ip::scoped::ScopedIp>) -> bool
@@ -14794,9 +14828,32 @@ impl core::marker::Unpin for zond_engine::scanner::session::HostStore
 impl core::marker::UnsafeUnpin for zond_engine::scanner::session::HostStore
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::HostStore
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::HostStore
+pub struct zond_engine::scanner::session::Progress
+impl zond_engine::scanner::session::Progress
+pub fn zond_engine::scanner::session::Progress::counted(&self) -> core::option::Option<(u64, u64)>
+pub fn zond_engine::scanner::session::Progress::fraction(&self) -> core::option::Option<f64>
+pub fn zond_engine::scanner::session::Progress::overall(&self) -> core::option::Option<(u64, u64)>
+pub const fn zond_engine::scanner::session::Progress::planned(&self) -> core::option::Option<u64>
+pub fn zond_engine::scanner::session::Progress::remaining(&self) -> core::option::Option<u64>
+pub fn zond_engine::scanner::session::Progress::settled(&self) -> u64
+pub fn zond_engine::scanner::session::Progress::stage(&self) -> zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Progress::stage_done(&self) -> u64
+pub fn zond_engine::scanner::session::Progress::stage_total(&self) -> core::option::Option<u64>
+impl core::clone::Clone for zond_engine::scanner::session::Progress
+pub fn zond_engine::scanner::session::Progress::clone(&self) -> zond_engine::scanner::session::Progress
+impl core::fmt::Debug for zond_engine::scanner::session::Progress
+pub fn zond_engine::scanner::session::Progress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::scanner::session::Progress
+impl core::marker::Send for zond_engine::scanner::session::Progress
+impl core::marker::Sync for zond_engine::scanner::session::Progress
+impl core::marker::Unpin for zond_engine::scanner::session::Progress
+impl core::marker::UnsafeUnpin for zond_engine::scanner::session::Progress
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::Progress
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::Progress
 pub struct zond_engine::scanner::session::ScanContext
 impl zond_engine::scanner::session::ScanContext
 pub fn zond_engine::scanner::session::ScanContext::contains_host(&self, &zond_engine::model::ip::scoped::ScopedIp) -> bool
+pub fn zond_engine::scanner::session::ScanContext::enter_stage(&self, zond_engine::scanner::session::Stage, core::option::Option<u64>)
 pub fn zond_engine::scanner::session::ScanContext::failures_snapshot(&self) -> alloc::vec::Vec<zond_engine::report::ScannerFailure>
 pub fn zond_engine::scanner::session::ScanContext::host_addresses(&self) -> alloc::vec::Vec<zond_engine::model::ip::scoped::ScopedIp>
 pub fn zond_engine::scanner::session::ScanContext::host_count(&self) -> usize
@@ -14819,6 +14876,7 @@ pub fn zond_engine::scanner::session::ScanContext::refusals_snapshot(&self) -> a
 pub fn zond_engine::scanner::session::ScanContext::restore_hosts(&self, &[zond_engine::model::host::Host])
 pub fn zond_engine::scanner::session::ScanContext::settle_address(&self, core::net::ip_addr::IpAddr, zond_engine::journal::settle::Settled)
 pub fn zond_engine::scanner::session::ScanContext::settlements(&self) -> &zond_engine::journal::settle::Settlements
+pub fn zond_engine::scanner::session::ScanContext::stage_advanced(&self)
 pub fn zond_engine::scanner::session::ScanContext::take_changed_hosts(&self) -> alloc::vec::Vec<zond_engine::model::host::Host>
 pub fn zond_engine::scanner::session::ScanContext::update_host(&self, impl core::convert::Into<zond_engine::model::ip::scoped::ScopedIp>, impl core::ops::function::FnOnce(&mut zond_engine::model::host::Host)) -> bool
 pub fn zond_engine::scanner::session::ScanContext::write_host(&self, impl core::convert::Into<zond_engine::model::ip::scoped::ScopedIp>, impl core::ops::function::FnOnce(&mut zond_engine::model::host::Host) -> bool) -> bool
@@ -14872,7 +14930,8 @@ impl zond_engine::scanner::session::ScanSession
 pub fn zond_engine::scanner::session::ScanSession::events(&mut self) -> &mut zond_engine::scanner::session::ScanEvents
 pub fn zond_engine::scanner::session::ScanSession::handle(&self) -> &zond_engine::scanner::handle::ScanHandle
 pub fn zond_engine::scanner::session::ScanSession::hosts(&self) -> &zond_engine::scanner::session::HostStore
-pub fn zond_engine::scanner::session::ScanSession::into_parts(self) -> (zond_engine::scanner::session::HostStore, zond_engine::scanner::session::ScanEvents, zond_engine::scanner::handle::ScanHandle)
+pub fn zond_engine::scanner::session::ScanSession::into_parts(self) -> (zond_engine::scanner::session::HostStore, zond_engine::scanner::session::ScanEvents, zond_engine::scanner::handle::ScanHandle, zond_engine::scanner::session::Progress)
+pub fn zond_engine::scanner::session::ScanSession::progress(&self) -> &zond_engine::scanner::session::Progress
 impl core::marker::Freeze for zond_engine::scanner::session::ScanSession
 impl core::marker::Send for zond_engine::scanner::session::ScanSession
 impl core::marker::Sync for zond_engine::scanner::session::ScanSession
@@ -14889,8 +14948,10 @@ pub fn zond_engine::scanner::session::SessionBuilder::excluding(self, zond_engin
 pub fn zond_engine::scanner::session::SessionBuilder::host_probe_interval(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::host_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::ordering(self, core::option::Option<u64>) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::planning(self, zond_engine::scanner::session::Stage, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::scan_timeout(self, core::option::Option<core::time::Duration>) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::staging(self, alloc::vec::Vec<zond_engine::scanner::session::Stage>) -> Self
 impl core::default::Default for zond_engine::scanner::session::SessionBuilder
 pub fn zond_engine::scanner::session::SessionBuilder::default() -> zond_engine::scanner::session::SessionBuilder
 impl core::fmt::Debug for zond_engine::scanner::session::SessionBuilder
@@ -17225,6 +17286,8 @@ pub zond_engine::ScanEvent::HostUpdated(zond_engine::model::ip::scoped::ScopedIp
 pub zond_engine::ScanEvent::ScannerFailed
 pub zond_engine::ScanEvent::ScannerFailed::reason: alloc::string::String
 pub zond_engine::ScanEvent::ScannerFailed::scanner: zond_engine::report::ScannerKind
+pub zond_engine::ScanEvent::StageChanged
+pub zond_engine::ScanEvent::StageChanged::stage: zond_engine::scanner::session::Stage
 impl core::clone::Clone for zond_engine::scanner::session::ScanEvent
 pub fn zond_engine::scanner::session::ScanEvent::clone(&self) -> zond_engine::scanner::session::ScanEvent
 impl core::fmt::Debug for zond_engine::scanner::session::ScanEvent
@@ -17266,6 +17329,38 @@ impl core::marker::Unpin for zond_engine::transport::probe::SendMode
 impl core::marker::UnsafeUnpin for zond_engine::transport::probe::SendMode
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::SendMode
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::SendMode
+#[non_exhaustive] pub enum zond_engine::Stage
+pub zond_engine::Stage::Detections
+pub zond_engine::Stage::Discovery
+pub zond_engine::Stage::Finishing
+pub zond_engine::Stage::Listening
+pub zond_engine::Stage::Os
+pub zond_engine::Stage::Ports
+pub zond_engine::Stage::Services
+pub zond_engine::Stage::Tls
+pub zond_engine::Stage::Traceroute
+impl core::clone::Clone for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::clone(&self) -> zond_engine::scanner::session::Stage
+impl core::cmp::Eq for zond_engine::scanner::session::Stage
+impl core::cmp::PartialEq for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::eq(&self, &zond_engine::scanner::session::Stage) -> bool
+impl core::default::Default for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::default() -> zond_engine::scanner::session::Stage
+impl core::fmt::Debug for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Stage::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::scanner::session::Stage
+impl core::marker::StructuralPartialEq for zond_engine::scanner::session::Stage
+impl core::marker::Freeze for zond_engine::scanner::session::Stage
+impl core::marker::Send for zond_engine::scanner::session::Stage
+impl core::marker::Sync for zond_engine::scanner::session::Stage
+impl core::marker::Unpin for zond_engine::scanner::session::Stage
+impl core::marker::UnsafeUnpin for zond_engine::scanner::session::Stage
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::Stage
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::Stage
 #[non_exhaustive] pub enum zond_engine::StrategyError
 pub zond_engine::StrategyError::Channel(zond_engine::transport::channel::ChannelError)
 pub zond_engine::StrategyError::Interface
@@ -17702,6 +17797,28 @@ impl core::marker::Unpin for zond_engine::model::port::set::PortSet
 impl core::marker::UnsafeUnpin for zond_engine::model::port::set::PortSet
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::set::PortSet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::set::PortSet
+pub struct zond_engine::Progress
+impl zond_engine::scanner::session::Progress
+pub fn zond_engine::scanner::session::Progress::counted(&self) -> core::option::Option<(u64, u64)>
+pub fn zond_engine::scanner::session::Progress::fraction(&self) -> core::option::Option<f64>
+pub fn zond_engine::scanner::session::Progress::overall(&self) -> core::option::Option<(u64, u64)>
+pub const fn zond_engine::scanner::session::Progress::planned(&self) -> core::option::Option<u64>
+pub fn zond_engine::scanner::session::Progress::remaining(&self) -> core::option::Option<u64>
+pub fn zond_engine::scanner::session::Progress::settled(&self) -> u64
+pub fn zond_engine::scanner::session::Progress::stage(&self) -> zond_engine::scanner::session::Stage
+pub fn zond_engine::scanner::session::Progress::stage_done(&self) -> u64
+pub fn zond_engine::scanner::session::Progress::stage_total(&self) -> core::option::Option<u64>
+impl core::clone::Clone for zond_engine::scanner::session::Progress
+pub fn zond_engine::scanner::session::Progress::clone(&self) -> zond_engine::scanner::session::Progress
+impl core::fmt::Debug for zond_engine::scanner::session::Progress
+pub fn zond_engine::scanner::session::Progress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::scanner::session::Progress
+impl core::marker::Send for zond_engine::scanner::session::Progress
+impl core::marker::Sync for zond_engine::scanner::session::Progress
+impl core::marker::Unpin for zond_engine::scanner::session::Progress
+impl core::marker::UnsafeUnpin for zond_engine::scanner::session::Progress
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::Progress
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::Progress
 #[non_exhaustive] pub struct zond_engine::ResolveConfig
 pub zond_engine::ResolveConfig::mdns: bool
 pub zond_engine::ResolveConfig::mdns_timeout: core::time::Duration
@@ -17835,7 +17952,8 @@ impl zond_engine::scanner::session::ScanSession
 pub fn zond_engine::scanner::session::ScanSession::events(&mut self) -> &mut zond_engine::scanner::session::ScanEvents
 pub fn zond_engine::scanner::session::ScanSession::handle(&self) -> &zond_engine::scanner::handle::ScanHandle
 pub fn zond_engine::scanner::session::ScanSession::hosts(&self) -> &zond_engine::scanner::session::HostStore
-pub fn zond_engine::scanner::session::ScanSession::into_parts(self) -> (zond_engine::scanner::session::HostStore, zond_engine::scanner::session::ScanEvents, zond_engine::scanner::handle::ScanHandle)
+pub fn zond_engine::scanner::session::ScanSession::into_parts(self) -> (zond_engine::scanner::session::HostStore, zond_engine::scanner::session::ScanEvents, zond_engine::scanner::handle::ScanHandle, zond_engine::scanner::session::Progress)
+pub fn zond_engine::scanner::session::ScanSession::progress(&self) -> &zond_engine::scanner::session::Progress
 impl core::marker::Freeze for zond_engine::scanner::session::ScanSession
 impl core::marker::Send for zond_engine::scanner::session::ScanSession
 impl core::marker::Sync for zond_engine::scanner::session::ScanSession
