@@ -6,6 +6,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Linux only: the tier moves into a network namespace and drives it through
+// `unshare`/`setns`, which exist nowhere else. An empty binary on other targets.
+#![cfg(target_os = "linux")]
+
 //! # Tier 3: a real kernel, on a network built for the test
 //!
 //! Every tier above this one stops at a seam. Tier 2 hands a scanner finished
