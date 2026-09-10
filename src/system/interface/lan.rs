@@ -243,9 +243,20 @@ fn select_best_lan_interface(links: Vec<Link>) -> Option<Link> {
         return Some(routed.clone());
     }
 
+    // The default route is not always on a viable link: a VPN tunnel owns it and
+    // is point-to-point, so it is filtered out before this runs. What is left of
+    // "the network this machine is on" is then the link with a router of its
+    // own. That is what tells a Wi-Fi `/24` with a gateway from the virtualisation
+    // bridge on the same host, which has a private address and no gateway and
+    // which the wired-first rule below would otherwise prefer.
     links
         .iter()
-        .find(|link| link.is_wired() && has_private_ipv4(link))
+        .find(|link| link.has_gateway() && has_private_ipv4(link))
+        .or_else(|| {
+            links
+                .iter()
+                .find(|link| link.is_wired() && has_private_ipv4(link))
+        })
         .or_else(|| links.iter().find(|link| has_private_ipv4(link)))
         .or_else(|| links.iter().find(|link| link.is_wired()))
         .or_else(|| links.first())
@@ -465,6 +476,32 @@ mod tests {
         let chosen = select_best_lan_interface(vec![bridge, wifi]).expect("one of them is the LAN");
 
         assert_eq!(chosen.name(), "test0");
+    }
+
+    /// A VPN owns the default route, so no viable link carries it, and the LAN
+    /// is the link with a gateway. On a Mac with a VPN up, the tunnel is
+    /// point-to-point and drops out of viability, leaving a Wi-Fi `/24` with a
+    /// router and the virtualisation bridge with none; the wired-first rule
+    /// would take the bridge, so the gateway is what has to decide.
+    #[test]
+    fn a_gateway_beats_a_wired_bridge_when_a_vpn_holds_the_default_route() {
+        let wifi = mock_interface(true, true, true, false, false, true)
+            .with_kind(LinkKind::Wireless)
+            .with_gateway(true);
+        let bridge = Link::new("bridge100", 20)
+            .with_link_up(true)
+            .with_physical(true)
+            .with_addressing(Addressing::Broadcast)
+            .with_kind(LinkKind::Wired)
+            .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 7))
+            .with_addresses(vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 64, 1)),
+                24,
+            )]);
+
+        let chosen = select_best_lan_interface(vec![bridge, wifi]).expect("one of them is the LAN");
+
+        assert_eq!(chosen.name(), "test0", "the link with a router is the LAN");
     }
 
     /// With no default route anywhere, a link that could be swept beats one that

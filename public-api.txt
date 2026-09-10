@@ -16032,6 +16032,7 @@ impl zond_engine::system::interface::Link
 pub fn zond_engine::system::interface::Link::addresses(&self) -> &[zond_engine::system::interface::LinkAddress]
 pub fn zond_engine::system::interface::Link::carries_default_route(&self) -> bool
 pub fn zond_engine::system::interface::Link::carries_frames(&self) -> bool
+pub fn zond_engine::system::interface::Link::has_gateway(&self) -> bool
 pub fn zond_engine::system::interface::Link::index(&self) -> u32
 pub fn zond_engine::system::interface::Link::ipv4(&self) -> impl core::iter::traits::iterator::Iterator<Item = (core::net::ip_addr::Ipv4Addr, u8)> + '_
 pub fn zond_engine::system::interface::Link::ipv6(&self) -> impl core::iter::traits::iterator::Iterator<Item = (core::net::ip_addr::Ipv6Addr, u8)> + '_
@@ -16049,6 +16050,7 @@ pub fn zond_engine::system::interface::Link::new(impl core::convert::Into<alloc:
 pub fn zond_engine::system::interface::Link::with_addresses(self, alloc::vec::Vec<zond_engine::system::interface::LinkAddress>) -> Self
 pub fn zond_engine::system::interface::Link::with_addressing(self, zond_engine::system::interface::Addressing) -> Self
 pub fn zond_engine::system::interface::Link::with_default_route(self, bool) -> Self
+pub fn zond_engine::system::interface::Link::with_gateway(self, bool) -> Self
 pub fn zond_engine::system::interface::Link::with_kind(self, zond_engine::system::interface::LinkKind) -> Self
 pub fn zond_engine::system::interface::Link::with_link_up(self, bool) -> Self
 pub fn zond_engine::system::interface::Link::with_mac(self, zond_engine::model::mac::MacAddr) -> Self

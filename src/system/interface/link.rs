@@ -139,6 +139,7 @@ pub struct Link {
     addressing: Addressing,
     physical: bool,
     default_route: bool,
+    gateway: bool,
 }
 
 impl Link {
@@ -159,6 +160,7 @@ impl Link {
             addressing: Addressing::Neither,
             physical: false,
             default_route: false,
+            gateway: false,
         }
     }
 
@@ -208,6 +210,14 @@ impl Link {
     #[must_use]
     pub fn with_default_route(mut self, carries: bool) -> Self {
         self.default_route = carries;
+        self
+    }
+
+    /// Whether it has a gateway of its own, meaning a router configured on the
+    /// link rather than just an address.
+    #[must_use]
+    pub fn with_gateway(mut self, has: bool) -> Self {
+        self.gateway = has;
         self
     }
 
@@ -313,6 +323,13 @@ impl Link {
     /// neither carries a route anywhere.
     pub fn carries_default_route(&self) -> bool {
         self.default_route
+    }
+
+    /// Whether a router is configured on this link. True of a real LAN, false of
+    /// a host-only virtualisation bridge, which is what tells them apart when a
+    /// VPN owns the global default route.
+    pub fn has_gateway(&self) -> bool {
+        self.gateway
     }
 
     /// Whether it is a physical link that is not wireless.
@@ -438,6 +455,10 @@ impl Link {
             addressing: Addressing::of(interface.is_broadcast(), interface.is_point_to_point()),
             physical: interface.is_physical(),
             default_route: interface.default,
+            gateway: interface
+                .gateway
+                .as_ref()
+                .is_some_and(|g| !g.ipv4.is_empty() || !g.ipv6.is_empty()),
             name: interface.name,
             index: interface.index,
         }
