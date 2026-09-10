@@ -43,5 +43,7 @@ mod netns;
 mod characterise;
 mod classification;
 mod degraded;
+mod listening;
+mod resolving;
 mod segment;
 mod techniques;

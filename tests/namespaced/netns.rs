@@ -355,6 +355,83 @@ impl Segment {
         ]);
     }
 
+    /// Answers one mDNS query for `hostname` with the peer's own address.
+    ///
+    /// The response is built by copying the query's own question section and
+    /// appending an answer that points back at it, which is both what RFC 6762
+    /// asks for and far less to get wrong than composing a name from scratch.
+    /// It replies to the querier directly rather than to the group: a unicast
+    /// answer is allowed, and it arrives on the same socket the query left from.
+    pub fn answers_mdns_for(&mut self, hostname: &str) -> Ipv4Addr {
+        let address = peer_v4(self.index);
+        let wanted = format!("{}.local", hostname.trim_end_matches(".local"));
+        self.serve(move |stop, tx| {
+            let Some(socket) = mdns_socket(address) else {
+                return;
+            };
+            if tx.send(5353).is_err() {
+                return;
+            }
+            let mut buf = [0u8; 2048];
+            while !stop.load(Ordering::SeqCst) {
+                let Ok((len, from)) = socket.recv_from(&mut buf) else {
+                    continue;
+                };
+                let query = &buf[..len];
+                let Some(end) = question_end(query) else {
+                    continue;
+                };
+                if !asks_for(query, &wanted) {
+                    continue;
+                }
+                let mut reply = Vec::with_capacity(end + 16);
+                reply.extend_from_slice(&query[..2]);
+                reply.extend_from_slice(&[0x84, 0x00]);
+                reply.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+                reply.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+                reply.extend_from_slice(&query[12..end]);
+                reply.extend_from_slice(&[0xc0, 0x0c]);
+                reply.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+                reply.extend_from_slice(&120u32.to_be_bytes());
+                reply.extend_from_slice(&4u16.to_be_bytes());
+                reply.extend_from_slice(&address.octets());
+                let _ = socket.send_to(&reply, from);
+            }
+        });
+        address
+    }
+
+    /// The `Zone` naming the near end of the pair, as the engine sees it.
+    ///
+    /// A listening scope is given links rather than addresses, so this is what
+    /// a test hands `ListenScope::on`.
+    pub fn zone(&self) -> zond_engine::model::ip::scoped::Zone {
+        let name = self.link();
+        zond_engine::system::interface::interfaces()
+            .into_iter()
+            .find(|link| link.name() == name)
+            .map(|link| link.zone())
+            .unwrap_or_else(|| panic!("the engine can see {name}"))
+    }
+
+    /// Makes the peer speak, so a listener has something to overhear.
+    ///
+    /// A ping is the cheapest way to put a machine's own frames on the wire:
+    /// it resolves the near end first, so the listener sees an ARP request and
+    /// an echo carrying the peer's hardware and network address alike.
+    pub fn peer_speaks(&self) {
+        self.there(&[
+            "ping",
+            "-c",
+            "3",
+            "-i",
+            "0.2",
+            "-W",
+            "1",
+            &scanner_v4(self.index).to_string(),
+        ]);
+    }
+
     /// Counts segments arriving for this TCP port without changing their fate.
     pub fn count_tcp(&self, port: u16) {
         self.rule(&["tcp", "dport", &port.to_string(), "counter"]);
@@ -596,6 +673,64 @@ impl Drop for Segment {
         let _ = self.peer.kill();
         let _ = self.peer.wait();
     }
+}
+
+/// A socket on the mDNS group, in whichever namespace the caller is in.
+fn mdns_socket(interface: Ipv4Addr) -> Option<UdpSocket> {
+    use std::net::{Ipv4Addr as V4, SocketAddrV4};
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .ok()?;
+    socket.set_reuse_address(true).ok()?;
+    socket.set_reuse_port(true).ok()?;
+    socket
+        .bind(&SocketAddrV4::new(V4::UNSPECIFIED, 5353).into())
+        .ok()?;
+    socket
+        .join_multicast_v4(&V4::new(224, 0, 0, 251), &interface)
+        .ok()?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .ok()?;
+    Some(socket.into())
+}
+
+/// Where a DNS message's single question ends, walking its labels.
+fn question_end(message: &[u8]) -> Option<usize> {
+    let mut at = 12;
+    loop {
+        let len = *message.get(at)? as usize;
+        at += 1;
+        if len == 0 {
+            return Some(at + 4).filter(|end| *end <= message.len());
+        }
+        if len & 0xc0 != 0 {
+            return None;
+        }
+        at += len;
+    }
+}
+
+/// Whether the message's question names `wanted`, case-insensitively.
+fn asks_for(message: &[u8], wanted: &str) -> bool {
+    let mut labels = Vec::new();
+    let mut at = 12;
+    while let Some(&len) = message.get(at) {
+        at += 1;
+        if len == 0 {
+            break;
+        }
+        let end = at + len as usize;
+        let Some(label) = message.get(at..end) else {
+            return false;
+        };
+        labels.push(String::from_utf8_lossy(label).to_lowercase());
+        at = end;
+    }
+    labels.join(".") == wanted.to_lowercase()
 }
 
 fn scanner_v4(index: u32) -> Ipv4Addr {

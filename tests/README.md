@@ -352,6 +352,12 @@ what survives loss and delay; `techniques` for all seven TCP techniques against
 a kernel rather than a model of one; `characterise` for what kind of filter sits
 in front of a host.
 
+`listening` for the watch entry point over a real capture, and `resolving` for
+a `.local` name a responder on the segment really answers. Both cover surfaces
+whose tests stopped at a seam: Tier 2 hands `PassiveListener::from_parts` frames
+a test built and never opens a link, and multicast cannot be faked on loopback,
+the query going to a group whose membership decides whether it arrives at all.
+
 `techniques` and `characterise` are where this tier pays for itself. Tier 2
 covers the techniques more thoroughly than this ever will, and cannot disagree
 with whoever wrote its stacks; Linux can. `characterise` was the least covered
