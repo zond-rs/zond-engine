@@ -145,7 +145,11 @@ use crate::model::target::{TargetMap, TargetSet};
 /// [`TargetParseError::UnknownHost`]. A resolver that distinguishes a lookup
 /// failure from a name that genuinely has no records should say so through its
 /// own channel; from here they are the same target, missing.
-pub type HostLookup<'a> = &'a dyn Fn(&str) -> Option<Vec<IpAddr>>;
+///
+/// `Sync`, for the reason [`ResolverFn`] is: a caller that resolves targets
+/// inside a spawned task needs the context it holds to be `Send`, and a `&` to
+/// a trait object is only `Send` where the object is `Sync`.
+pub type HostLookup<'a> = &'a (dyn Fn(&str) -> Option<Vec<IpAddr>> + Sync);
 
 /// The lookups a target expression may need, and none of which this module can
 /// perform for itself.
@@ -812,6 +816,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A context crosses a thread, which is what a caller resolving targets
+    /// inside a spawned task needs.
+    ///
+    /// The three hooks are borrowed trait objects, and a `&` to one is `Send`
+    /// only where the object is `Sync`. Without that, every future that resolves
+    /// a target is pinned to the thread that made it: no cost to a caller doing
+    /// one thing at a time, and the difference between working and not for a
+    /// front end serving more than one request at once.
+    #[test]
+    fn a_context_can_be_held_across_a_spawn() {
+        fn sent<T: Send + Sync>() {}
+
+        sent::<TargetContext<'static>>();
+    }
     use crate::model::parse::ip::Keyword;
     use crate::model::target::Target;
     use std::net::Ipv4Addr;

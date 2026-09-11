@@ -6421,8 +6421,8 @@ pub fn zond_engine::import::ImportOptions<'a>::clone(&self) -> zond_engine::impo
 impl<'a> core::fmt::Debug for zond_engine::import::ImportOptions<'a>
 pub fn zond_engine::import::ImportOptions<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Freeze for zond_engine::import::ImportOptions<'a>
-impl<'a> !core::marker::Send for zond_engine::import::ImportOptions<'a>
-impl<'a> !core::marker::Sync for zond_engine::import::ImportOptions<'a>
+impl<'a> core::marker::Send for zond_engine::import::ImportOptions<'a>
+impl<'a> core::marker::Sync for zond_engine::import::ImportOptions<'a>
 impl<'a> core::marker::Unpin for zond_engine::import::ImportOptions<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::import::ImportOptions<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::ImportOptions<'a>
@@ -6710,8 +6710,8 @@ pub fn zond_engine::import::TargetCollector<'_>::accept(&mut self, &str, zond_en
 impl<'a> core::fmt::Debug for zond_engine::import::TargetCollector<'a>
 pub fn zond_engine::import::TargetCollector<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Freeze for zond_engine::import::TargetCollector<'a>
-impl<'a> !core::marker::Send for zond_engine::import::TargetCollector<'a>
-impl<'a> !core::marker::Sync for zond_engine::import::TargetCollector<'a>
+impl<'a> core::marker::Send for zond_engine::import::TargetCollector<'a>
+impl<'a> core::marker::Sync for zond_engine::import::TargetCollector<'a>
 impl<'a> core::marker::Unpin for zond_engine::import::TargetCollector<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::import::TargetCollector<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::TargetCollector<'a>
@@ -9690,8 +9690,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::ip::Key
 pub fn zond_engine::model::parse::ip::insert_expression(&str, &mut zond_engine::model::ip::set::IpSet, core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>, core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'_>>) -> core::result::Result<(), zond_engine::model::parse::ip::IpParseError>
 pub fn zond_engine::model::parse::ip::names_keyword<S: core::convert::AsRef<str>>(&[S], zond_engine::model::parse::ip::Keyword) -> bool
 pub fn zond_engine::model::parse::ip::to_set<S>(&[S], core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>, core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'_>>) -> core::result::Result<zond_engine::model::ip::set::IpSet, zond_engine::model::parse::ip::IpParseError> where S: core::convert::AsRef<str>
-pub type zond_engine::model::parse::ip::ResolverFn<'a> = &'a dyn core::ops::function::Fn(zond_engine::model::parse::ip::Keyword, &mut zond_engine::model::ip::set::IpSet) -> core::result::Result<(), zond_engine::model::parse::ip::IpParseError>
-pub type zond_engine::model::parse::ip::ZoneResolverFn<'a> = &'a dyn core::ops::function::Fn(&str) -> core::option::Option<u32>
+pub type zond_engine::model::parse::ip::ResolverFn<'a> = &'a (dyn core::ops::function::Fn(zond_engine::model::parse::ip::Keyword, &mut zond_engine::model::ip::set::IpSet) -> core::result::Result<(), zond_engine::model::parse::ip::IpParseError> + core::marker::Sync)
+pub type zond_engine::model::parse::ip::ZoneResolverFn<'a> = &'a (dyn core::ops::function::Fn(&str) -> core::option::Option<u32> + core::marker::Sync)
 pub mod zond_engine::model::parse::target
 #[non_exhaustive] pub enum zond_engine::model::parse::target::TargetParseError
 pub zond_engine::model::parse::target::TargetParseError::Address
@@ -9750,8 +9750,8 @@ impl<'a> core::default::Default for zond_engine::model::parse::target::TargetCon
 pub fn zond_engine::model::parse::target::TargetContext<'a>::default() -> zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> core::marker::Copy for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> core::marker::Freeze for zond_engine::model::parse::target::TargetContext<'a>
-impl<'a> !core::marker::Send for zond_engine::model::parse::target::TargetContext<'a>
-impl<'a> !core::marker::Sync for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::marker::Send for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::marker::Sync for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> core::marker::Unpin for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetContext<'a>
@@ -9801,7 +9801,7 @@ impl core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetMapB
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetMapBuilder
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target::TargetMapBuilder
 pub fn zond_engine::model::parse::target::to_target_map<S>(&[S], zond_engine::model::port::set::PortSet, &zond_engine::model::parse::target::TargetContext<'_>) -> core::result::Result<zond_engine::model::target::TargetMap, zond_engine::model::parse::target::TargetParseError> where S: core::convert::AsRef<str>
-pub type zond_engine::model::parse::target::HostLookup<'a> = &'a dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::IpAddr>>
+pub type zond_engine::model::parse::target::HostLookup<'a> = &'a (dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::IpAddr>> + core::marker::Sync)
 #[non_exhaustive] pub enum zond_engine::model::parse::IpParseError
 pub zond_engine::model::parse::IpParseError::EmptySet
 pub zond_engine::model::parse::IpParseError::InvalidPrefix(u32)
@@ -9911,8 +9911,8 @@ impl<'a> core::default::Default for zond_engine::model::parse::target::TargetCon
 pub fn zond_engine::model::parse::target::TargetContext<'a>::default() -> zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> core::marker::Copy for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> core::marker::Freeze for zond_engine::model::parse::target::TargetContext<'a>
-impl<'a> !core::marker::Send for zond_engine::model::parse::target::TargetContext<'a>
-impl<'a> !core::marker::Sync for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::marker::Send for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::marker::Sync for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> core::marker::Unpin for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetContext<'a>
@@ -9964,7 +9964,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target:
 pub fn zond_engine::model::parse::names_keyword<S: core::convert::AsRef<str>>(&[S], zond_engine::model::parse::ip::Keyword) -> bool
 pub fn zond_engine::model::parse::to_set<S>(&[S], core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>, core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'_>>) -> core::result::Result<zond_engine::model::ip::set::IpSet, zond_engine::model::parse::ip::IpParseError> where S: core::convert::AsRef<str>
 pub fn zond_engine::model::parse::to_target_map(&[alloc::string::String], zond_engine::model::port::set::PortSet, core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>) -> core::result::Result<zond_engine::model::target::TargetMap, zond_engine::model::parse::target::TargetParseError>
-pub type zond_engine::model::parse::HostLookup<'a> = &'a dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::IpAddr>>
+pub type zond_engine::model::parse::HostLookup<'a> = &'a (dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::IpAddr>> + core::marker::Sync)
 pub mod zond_engine::model::port
 pub mod zond_engine::model::port::catalog
 pub const zond_engine::model::port::catalog::SCTP_BY_PREVALENCE: [u16; 25]

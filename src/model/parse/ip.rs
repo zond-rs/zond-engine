@@ -186,14 +186,21 @@ pub enum IpParseError {
 /// over what it needs, such as an interface table read once and reused, which a
 /// function pointer cannot. It stays `Copy`, so
 /// [`TargetContext`](super::target::TargetContext) does too.
-pub type ResolverFn<'a> = &'a dyn Fn(Keyword, &mut IpSet) -> Result<(), IpParseError>;
+///
+/// `Sync`, so that a `&` to one is `Send` and a caller resolving targets inside
+/// a spawned task can hold the context across an await. Without it the whole
+/// future is pinned to the thread that made it, which costs a single-tasked
+/// caller nothing and costs a front end serving more than one request at a time
+/// the ability to resolve at all.
+pub type ResolverFn<'a> = &'a (dyn Fn(Keyword, &mut IpSet) -> Result<(), IpParseError> + Sync);
 
 /// Looks up an interface by name and returns its scope id.
 ///
 /// Injected for the same reason [`ResolverFn`] is: resolving a name means
 /// reading the host's interface list, and this module knows nothing about the
-/// host it runs on. `None` for a name no interface answers to.
-pub type ZoneResolverFn<'a> = &'a dyn Fn(&str) -> Option<u32>;
+/// host it runs on. `None` for a name no interface answers to. `Sync` for the
+/// reason [`ResolverFn`] is.
+pub type ZoneResolverFn<'a> = &'a (dyn Fn(&str) -> Option<u32> + Sync);
 
 /// Resolves a list of address expressions into one [`IpSet`].
 ///
