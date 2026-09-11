@@ -67,11 +67,20 @@ async fn scan_emits_host_updated_events() {
         outcome.saw_host_update(LOOPBACK),
         "expected a HostUpdated event for the scanned host"
     );
-    // Sanity: the event stream only ever carries the documented variants.
-    assert!(outcome.events.iter().all(|e| matches!(
-        e,
-        ScanEvent::HostUpdated(_) | ScanEvent::ScannerFailed { .. }
-    )),);
+    // Sanity: the stream carries what a scan of one host has to say and nothing
+    // else. `EventsDropped` is deliberately not in the list — one loopback host
+    // cannot outrun a consumer, so a gap here would be a finding rather than a
+    // variant to add.
+    assert!(
+        outcome.events.iter().all(|e| matches!(
+            e,
+            ScanEvent::HostUpdated(_)
+                | ScanEvent::ScannerFailed { .. }
+                | ScanEvent::StageChanged { .. }
+        )),
+        "unexpected event in {:?}",
+        outcome.events
+    );
 }
 
 /// An empty port scan completes cleanly and records nothing — the task resolves
