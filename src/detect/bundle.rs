@@ -161,6 +161,15 @@ pub enum Tier {
     Host,
 }
 
+impl Tier {
+    /// Every tier this build knows.
+    ///
+    /// Here for the reason [`Class::ALL`](crate::detect::manifest::Class::ALL)
+    /// is: the enum is `#[non_exhaustive]`, and a front end describing the
+    /// corpus over its own protocol needs to know when it has missed one.
+    pub const ALL: [Tier; 3] = [Self::Flow, Self::Compute, Self::Host];
+}
+
 /// Why a bundle could not be verified.
 ///
 /// Every variant is a refusal to load, never a warning. A bundle that fails any
@@ -516,6 +525,31 @@ fn sha256_hex(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Every tier is listed, once each.
+    ///
+    /// `place` is exhaustive on purpose, for the reason
+    /// [`Class::ALL`](crate::detect::manifest::Class::ALL)'s own test gives: in
+    /// here `non_exhaustive` does not apply, so a tier added without a place
+    /// fails to compile rather than quietly going unlisted.
+    #[test]
+    fn the_list_of_tiers_holds_every_one_of_them_once() {
+        fn place(tier: super::Tier) -> usize {
+            match tier {
+                super::Tier::Flow => 0,
+                super::Tier::Compute => 1,
+                super::Tier::Host => 2,
+            }
+        }
+
+        let places: Vec<usize> = super::Tier::ALL.into_iter().map(place).collect();
+
+        assert_eq!(
+            places,
+            (0..super::Tier::ALL.len()).collect::<Vec<_>>(),
+            "every tier, once"
+        );
+    }
+
     use super::*;
     use crate::signature::{Signing, SigningKey};
     use std::io::Write;

@@ -204,6 +204,28 @@ pub enum Class {
 }
 
 impl Class {
+    /// Every class this build knows, cheapest to the target first.
+    ///
+    /// Here for the reason [`ScanKind::ALL`](crate::report::ScanKind::ALL)
+    /// gives: the enum is `#[non_exhaustive]`, so nothing outside this crate can
+    /// match it exhaustively, and a front end listing the detection corpus over
+    /// a protocol of its own has no other way to check it wrote a name for all
+    /// of them. A class with no name in that protocol is a detection the front
+    /// end can show but not describe.
+    ///
+    /// Ordered by what running one costs the target, which is the order the
+    /// variants are declared in and the order an envelope's ceiling reads.
+    pub const ALL: [Class; 6] = [
+        Self::Derived,
+        Self::Passive,
+        Self::ActiveBenign,
+        Self::ActiveMutating,
+        Self::Exploit,
+        Self::Dos,
+    ];
+}
+
+impl Class {
     /// The name a document spells this class with, which is also the name an
     /// [envelope](crate::config::envelope::DetectionEnvelope) is set to.
     ///
@@ -244,3 +266,50 @@ pub(crate) const DEFAULT_MAX_MILLIS: u64 = 2_000;
 /// The connection budget a detection that declares no `max_connections` runs
 /// under, the widest a single bounded loop can be.
 pub(crate) const DEFAULT_MAX_CONNECTIONS: u32 = 64;
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::Class;
+
+    /// Every class is listed, once each, cheapest to the target first.
+    ///
+    /// `place` is exhaustive on purpose. This module is inside the crate that
+    /// declares `Class`, so `non_exhaustive` does not apply here and the
+    /// compiler will not let a variant be added without a decision being made
+    /// about where it belongs. The assertion then holds [`Class::ALL`] to that
+    /// decision.
+    ///
+    /// The order is not decoration: an envelope permits everything up to its
+    /// ceiling, so a class out of place would have a ceiling permit something
+    /// dearer than the one it names.
+    #[test]
+    fn the_list_of_classes_holds_every_one_of_them_once_and_in_order() {
+        fn place(class: Class) -> usize {
+            match class {
+                Class::Derived => 0,
+                Class::Passive => 1,
+                Class::ActiveBenign => 2,
+                Class::ActiveMutating => 3,
+                Class::Exploit => 4,
+                Class::Dos => 5,
+            }
+        }
+
+        let places: Vec<usize> = Class::ALL.into_iter().map(place).collect();
+
+        assert_eq!(
+            places,
+            (0..Class::ALL.len()).collect::<Vec<_>>(),
+            "every class, once, cheapest to the target first"
+        );
+    }
+}

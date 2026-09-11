@@ -550,6 +550,8 @@ pub zond_engine::detect::bundle::Tier::Compute
 pub zond_engine::detect::bundle::Tier::Flow
 pub zond_engine::detect::bundle::Tier::Host
 impl zond_engine::detect::bundle::Tier
+pub const zond_engine::detect::bundle::Tier::ALL: [zond_engine::detect::bundle::Tier; 3]
+impl zond_engine::detect::bundle::Tier
 pub const fn zond_engine::detect::bundle::Tier::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::detect::bundle::Tier
 pub fn zond_engine::detect::bundle::Tier::clone(&self) -> zond_engine::detect::bundle::Tier
@@ -1554,6 +1556,8 @@ pub zond_engine::detect::manifest::Class::Derived
 pub zond_engine::detect::manifest::Class::Dos
 pub zond_engine::detect::manifest::Class::Exploit
 pub zond_engine::detect::manifest::Class::Passive
+impl zond_engine::detect::manifest::Class
+pub const zond_engine::detect::manifest::Class::ALL: [zond_engine::detect::manifest::Class; 6]
 impl zond_engine::detect::manifest::Class
 pub fn zond_engine::detect::manifest::Class::into_model(self) -> zond_engine::model::finding::DetectionClass
 impl zond_engine::detect::manifest::Class
