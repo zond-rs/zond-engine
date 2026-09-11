@@ -50,8 +50,8 @@ use pnet_packet::udp::UdpPacket;
 use tokio::sync::mpsc;
 
 use crate::config::{ProbeTuning, ServiceDetection};
-use crate::error;
 use crate::journal::settle::Outcome;
+use crate::logging::error;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};

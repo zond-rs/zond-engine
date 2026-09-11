@@ -24,10 +24,11 @@
 
 use tokio::task::JoinSet;
 
+use crate::counted;
+use crate::logging::error;
 use crate::report::ScannerKind;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::session::ScanContext;
-use crate::{counted, error};
 
 /// A bounded pool of in-flight probe tasks.
 ///

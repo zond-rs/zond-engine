@@ -38,7 +38,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
 use crate::config::RetryConfig;
+use crate::info;
 use crate::journal::settle::{Outcome, Settled};
+use crate::logging::error;
 use crate::model::host::telemetry::RttSource;
 use crate::model::host::{HostStatus, NetworkRole, StatusProtocol, StatusReason};
 use crate::model::ip::scoped::Zone;
@@ -58,7 +60,6 @@ use crate::transport::channel::{self, EthernetHandle};
 use crate::transport::frame::LinkType;
 use crate::transport::mac::IntoCoreMac;
 use crate::transport::mac::IntoPnetMac;
-use crate::{error, info};
 
 use crate::scanner::strategy::frames::{self, DiscoveryProtocol, ProtocolMatch, Reading};
 use ipv6::Ipv6Discovery;

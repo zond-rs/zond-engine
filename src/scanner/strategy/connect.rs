@@ -26,9 +26,9 @@
 
 use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
-use crate::error;
 use crate::evasion::EvasionProfile;
 use crate::journal::settle::{Outcome, Settled};
+use crate::logging::error;
 use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
 use crate::model::ip::scoped::ZoneMap;
 use crate::model::ip::set::IpSet;

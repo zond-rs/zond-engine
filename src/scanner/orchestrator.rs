@@ -47,6 +47,7 @@ use crate::config::{OsDetection, ProbeTuning, ServiceDetection, ZondConfig};
 use crate::evasion::EvasionProfile;
 use crate::fingerprint::os;
 use crate::journal::cursor::Checkpoint;
+use crate::logging::error;
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::{Zone, ZoneMap};
 use crate::model::{
@@ -63,7 +64,7 @@ use crate::scanner::strategy::local::Scope;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::scanner::{plan, rdns, strategy};
 use crate::system::interface;
-use crate::{counted, error, info, success, warn};
+use crate::{counted, info, success, warn};
 
 /// The targets an unprivileged sweep can actually walk, refusing the rest.
 ///

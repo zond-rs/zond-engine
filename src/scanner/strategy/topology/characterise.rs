@@ -39,6 +39,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+use crate::logging::error;
 use crate::model::host::Filtering;
 use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
@@ -47,7 +48,7 @@ use crate::scanner::session::ScanContext;
 use crate::system::interface::SourceResolver;
 use crate::transport::link::EthernetSender;
 use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
-use crate::{counted, error, info};
+use crate::{counted, info};
 
 /// How long to listen for replies once the last diagnostic probe has left. A
 /// filter answers as promptly as any host; this is the tail for a slow path, not

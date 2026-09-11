@@ -240,6 +240,9 @@
 //!   inside one, because its two callers point in opposite directions: an
 //!   [`export`] signs bytes on the way out, and [`detect`] checks a signature
 //!   over bytes on the way in before it compiles them.
+//! - [`error`](mod@crate::error): the stable code every error a public entry
+//!   point hands back carries, as one trait over all of them. Last, because it
+//!   names each module's own error type and none of them names it.
 //!
 //! # Platforms
 //!
@@ -321,4 +324,10 @@ pub use crate::transport::probe::SendMode;
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
 // from anywhere in the crate. They are not part of the public API;
 // see `logging` for what exporting them would cost a consumer.
-pub(crate) use crate::logging::{counted, error, info, success, warn};
+//
+// `error!` is not among them, and is imported from `logging` where it is used.
+// A macro here would share the root with the `error` module, and `use
+// crate::error;` would then bring in both without saying which the file wanted
+// — which a reader cannot tell apart and `tests/hygiene/architecture.rs` reads
+// as a dependency on the module. The public module keeps the plain name.
+pub(crate) use crate::logging::{counted, info, success, warn};

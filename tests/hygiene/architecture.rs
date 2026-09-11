@@ -57,6 +57,10 @@ const ORDER: &[&str] = &[
     "scanner",
     "export",
     "import",
+    // Last, and named by nothing above it. It is one trait over every error the
+    // modules above declare, so it reaches for all of them and none of them
+    // reaches back.
+    "error",
 ];
 
 /// Which top-level module a source file belongs to.

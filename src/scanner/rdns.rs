@@ -56,13 +56,14 @@ use std::{
     time::Duration,
 };
 
+use crate::logging::error;
 use crate::model::host::NetworkRole;
 use crate::protocols::{
     dns,
     mdns::{self, MdnsHost},
 };
 use crate::scanner::session::ScanContext;
-use crate::{counted, error, info, model::ip, warn};
+use crate::{counted, info, model::ip, warn};
 use pnet_packet::{Packet, udp::UdpPacket};
 use std::sync::Arc;
 use tokio::net::UdpSocket;

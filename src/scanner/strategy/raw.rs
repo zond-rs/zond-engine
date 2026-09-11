@@ -38,6 +38,7 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use crate::evasion::SegmentShaping;
+use crate::logging::error;
 use crate::model::technique::TcpScanTechnique;
 use crate::protocols as protocol;
 use crate::scanner::pacing::deadline::AdaptiveDeadlineConfig;
@@ -45,7 +46,7 @@ use crate::scanner::pacing::retry::{RetryPolicy, SilentHostPolicy};
 use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::payload;
 use crate::transport::probe::{Emission, ProbeSender, SendError};
-use crate::{error, info, success};
+use crate::{info, success};
 
 /// How long a routed sweep or port scan runs and how it adapts.
 ///

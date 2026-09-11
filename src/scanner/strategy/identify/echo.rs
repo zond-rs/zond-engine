@@ -49,8 +49,8 @@ use std::time::{Duration, Instant};
 use pnet_packet::ip::IpNextHeaderProtocols;
 
 use crate::config::ProbeTuning;
-use crate::error;
 use crate::fingerprint::os;
+use crate::logging::error;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::protocols::icmp;
 use crate::report::ScannerKind;

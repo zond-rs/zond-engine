@@ -113,6 +113,7 @@ use pnet_packet::ip::IpNextHeaderProtocols;
 
 use crate::config::ProbeTuning;
 use crate::fingerprint::os::{self, SeriesClasses, SeriesSample, StackObservation, StackReply};
+use crate::logging::error;
 use crate::model::capture::IpObservation;
 use crate::model::host::Host;
 use crate::model::ip::scoped::ScopedIp;
@@ -127,7 +128,7 @@ use crate::scanner::strategy::StrategyError;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
-use crate::{counted, error, info, success};
+use crate::{counted, info, success};
 
 /// How many times each host is asked, at [`OsDetection::Active`].
 ///

@@ -72,6 +72,7 @@ use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
 use crate::journal::settle::Outcome;
+use crate::logging::error;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
@@ -82,10 +83,10 @@ use crate::protocols::sctp;
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{PortScanner, StrategyError};
+use crate::success;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
-use crate::{error, success};
 
 use super::{AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
 use crate::scanner::strategy::icmp_error::{self, Unreachable};

@@ -43,12 +43,13 @@ use pnet_packet::ip::IpNextHeaderProtocol;
 use std::os::unix::io::AsRawFd;
 use tokio::sync::mpsc;
 
+use crate::logging::error;
 use crate::model::capture::{CaptureCounts, IpObservation};
 use crate::model::ip::scoped::Zone;
 use crate::protocols::ethernet::VLAN_TAG_LEN;
 use crate::protocols::sizes::{ETH_HDR_LEN, IP_V6_HDR_LEN};
 use crate::transport::frame::{self, LinkType};
-use crate::{counted, error, info, warn};
+use crate::{counted, info, warn};
 use pnet_base::MacAddr;
 
 /// Largest capture a scan's receive path ever needs: a reply is a bare TCP/UDP
