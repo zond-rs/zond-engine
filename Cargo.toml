@@ -260,7 +260,7 @@ rhai = { version = "1.26.0", features = ["sync"] }
 # build compiles either way, and it is one zero-dependency codec for both
 # alphabets rather than two crates or an encoder open in this repository.
 data-encoding = "2.10.0"
-rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 x509-parser = "0.18.1"
 # SHA-256 for certificate fingerprints, and nothing else. Declared rather than
