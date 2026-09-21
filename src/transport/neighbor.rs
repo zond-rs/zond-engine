@@ -105,7 +105,17 @@ impl NeighborResolver {
     /// Resolves the link-layer route to `dst`, consulting the on-link MAC
     /// cache. On-link routes come back with `next_hop_mac` set only if
     /// previously learned; off-link routes carry the gateway's MAC directly.
+    ///
+    /// A loopback destination has no such route and never had one. It is not
+    /// on-link on any Ethernet interface, so the off-link arm used to answer it
+    /// with the default gateway, and a SYN aimed at `127.0.0.1` went out a
+    /// physical interface for the gateway to drop. Nothing replied, which a
+    /// port scan reads as filtered: a wrong answer rather than a missing one,
+    /// and the reason it is worth refusing here rather than further out.
     pub fn resolve(&self, dst: IpAddr) -> Option<LinkRoute> {
+        if dst.is_loopback() {
+            return None;
+        }
         self.resolve_on_link(dst)
             .or_else(|| self.resolve_off_link(dst))
     }
@@ -291,6 +301,24 @@ mod tests {
         assert_eq!(route.src_ip, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
         assert_eq!(route.src_mac, IFACE_MAC);
         assert_eq!(route.next_hop_mac, None); // must be ARP-resolved
+    }
+
+    /// The off-link arm would otherwise answer for loopback with the default
+    /// gateway, and a probe framed to that gateway with `127.0.0.1` in its IP
+    /// header is one nothing ever replies to. A port scan reads that silence as
+    /// filtered, so the wrong answer here reaches the user as a wrong verdict.
+    #[test]
+    fn loopback_has_no_ethernet_route() {
+        let resolver = NeighborResolver::from_interfaces(vec![ethernet_iface()]);
+
+        assert!(resolver.resolve(IpAddr::V4(Ipv4Addr::LOCALHOST)).is_none());
+        assert!(resolver.resolve(IpAddr::V6(Ipv6Addr::LOCALHOST)).is_none());
+        assert!(
+            resolver
+                .resolve(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)))
+                .is_none(),
+            "the whole 127/8 block, not just the one address"
+        );
     }
 
     #[test]

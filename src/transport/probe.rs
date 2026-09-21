@@ -71,10 +71,13 @@ pub struct UnknownSendMode {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SendMode {
-    /// Pick per platform: a raw Layer-4 socket on Unix - which the kernel
+    /// Pick per platform. A raw Layer-4 socket on Linux, which the kernel
     /// routes, ARPs, and fragments for us, and which works through VPN
-    /// tunnels - and self-built Layer-2 Ethernet frames on Windows, where the
-    /// OS blocks raw-socket TCP sends outright.
+    /// tunnels. Self-built Layer-2 Ethernet frames on Windows, where the OS
+    /// blocks raw-socket TCP sends outright. Frames first with the socket
+    /// behind them on macOS, where a large scan's raw sends are accepted and a
+    /// quarter of them dropped before the wire, and where an unprivileged run
+    /// has no socket to fall back to.
     #[default]
     Auto,
     /// Force a raw Layer-4 socket regardless of platform.
@@ -701,7 +704,12 @@ impl ProbeSender for RawIpSender {
 /// would send a different probe than the one asked for.
 struct LinkLayerFirst {
     link: EthernetSender,
-    socket: RawIpSender,
+    /// [`None`] when this process may inject frames but not open a raw socket,
+    /// which is an unprivileged run on macOS with the BPF devices handed to a
+    /// group. The fallback is what goes missing, not the scan: a destination
+    /// with Ethernet in front of it is reached by the frame either way, and
+    /// only loopback and tunnel-only addresses needed the socket.
+    socket: Option<RawIpSender>,
 }
 
 impl ProbeSender for LinkLayerFirst {
@@ -717,7 +725,12 @@ impl ProbeSender for LinkLayerFirst {
         if framed.is_ok() || emission.requires_link_layer() {
             return framed;
         }
-        self.socket.send(segment, src, dst, zone, emission)
+        match &self.socket {
+            Some(socket) => socket.send(segment, src, dst, zone, emission),
+            // The frame's own error rather than one about a missing socket,
+            // because it is the reason this destination went unreached.
+            None => framed,
+        }
     }
 }
 
@@ -830,7 +843,11 @@ impl ProbeTransport {
         Ok(Self {
             tx: Box::new(LinkLayerFirst {
                 link,
-                socket: RawIpSender::open(kind)?,
+                // Not `?`: a process that may inject frames and not open a raw
+                // socket still scans everything with Ethernet in front of it,
+                // and refusing to open here would give that run connect
+                // scanning with the link-layer path sitting unused.
+                socket: RawIpSender::open(kind).ok(),
             }),
             rx,
             capture,

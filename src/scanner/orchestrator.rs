@@ -35,7 +35,7 @@
 //! scan but a silent one, since nothing would route its targets anywhere.
 
 use crate::model::host::OsEvidence;
-use crate::system::privilege::Privilege;
+use crate::system::privilege::{self, Privilege};
 use std::net::IpAddr;
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -137,7 +137,16 @@ impl ScanCapabilities {
     pub(super) fn resolve(cfg: &ZondConfig) -> Self {
         let privilege = Privilege::current();
         if privilege.is_raw() {
-            success!("raw sockets available: probing with ARP, ICMPv6 and SYN");
+            // Which of the two routes carried it, because on macOS the second
+            // one is what an unprivileged run gets and a reader who expected to
+            // need sudo should see why they did not.
+            if privilege::can_send_raw() {
+                success!("raw sockets available: probing with ARP, ICMPv6 and SYN");
+            } else {
+                success!(
+                    "link-layer access: probing with ARP, ICMPv6 and SYN as self-built frames"
+                );
+            }
         } else {
             warn!("no raw sockets: probing with TCP connect only");
         }

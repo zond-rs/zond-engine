@@ -15,10 +15,20 @@
 //!
 //! ## Two questions, and they are not the same question
 //!
-//! [`can_send_raw`] asks the operating system for a raw socket and reports
-//! whether it got one. [`Privilege`] is what that answer means for a scan, and
-//! it is the form the rest of the crate carries: a journal records it and
-//! refuses to continue a scan of one kind as a scan of the other.
+//! [`can_send_raw`] and [`can_inject_frames`] ask whether this process can put
+//! a packet of its own on the wire, by the two routes there are: a raw socket,
+//! or the link-layer handle libpcap opens. [`Privilege`] is what those answers
+//! mean for a scan, and it is the form the rest of the crate carries: a journal
+//! records it and refuses to continue a scan of one kind as a scan of the
+//! other.
+//!
+//! The two routes come apart on macOS. A raw socket there belongs to root and
+//! there is no capability to hand one out, while the BPF devices libpcap opens
+//! are routinely given to a group instead, which is what Wireshark's ChmodBPF
+//! installs. A process in that group can build and send every frame a scan
+//! needs and still cannot open a raw socket, so asking only the first question
+//! calls that run unprivileged and drops it to connect scanning with the whole
+//! link-layer path sitting unused beside it.
 //!
 //! [`is_elevated`] asks something narrower, whether this process is root or
 //! holds an elevated token, and it exists for the one caller that needs exactly
@@ -45,15 +55,17 @@
 /// answers, and a caller that matches on it has covered the whole of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Privilege {
-    /// Raw sockets were available, so the scan sent the packets it chose: ARP
-    /// and ICMPv6 on the local segment, raw TCP and UDP beyond it.
+    /// The scan sent the packets it chose: ARP and ICMPv6 on the local
+    /// segment, raw TCP and UDP beyond it. A raw socket or a link-layer handle
+    /// carried them, which a result does not distinguish because the packets
+    /// are the same either way.
     ///
     /// A result recorded under this is about the target. The scan set its own
     /// flags, so a port that answered and a port that did not are two different
     /// findings rather than two ways of failing to connect.
     Raw,
-    /// Raw sockets were not available, so the scan fell back to ordinary TCP
-    /// connect attempts.
+    /// Neither route was open, so the scan fell back to ordinary TCP connect
+    /// attempts.
     ///
     /// A result recorded under this saw less and was more visible to the
     /// target. Only a completed handshake proves anything, so the states a raw
@@ -63,14 +75,16 @@ pub enum Privilege {
 }
 
 impl Privilege {
-    /// What this process holds, as [`can_send_raw`] reports it.
+    /// What this process holds, as [`can_send_raw`] and [`can_inject_frames`]
+    /// report it.
     ///
     /// The one place the answer becomes the distinction, so the code choosing
     /// how to scan and the code reading the result back cannot disagree about
-    /// which answer is which.
+    /// which answer is which. Either route is enough, because what the rest of
+    /// the crate asks this is whether a scan may choose its own packets.
     #[must_use]
     pub fn current() -> Self {
-        if can_send_raw() {
+        if can_send_raw() || can_inject_frames() {
             Self::Raw
         } else {
             Self::Connect
@@ -113,6 +127,19 @@ pub fn can_send_raw() -> bool {
     imp::can_send_raw()
 }
 
+/// Whether this process can open a link-layer handle and inject frames.
+///
+/// The other half of [`can_send_raw`]: a scan that cannot open a raw socket can
+/// still build its own Ethernet frames and put them on the wire, which is the
+/// path macOS takes by preference and Windows takes by necessity.
+///
+/// What it cannot carry is a destination with no Ethernet in front of it, so
+/// loopback and tunnel-only addresses still want a raw socket.
+#[must_use]
+pub fn can_inject_frames() -> bool {
+    imp::can_inject_frames()
+}
+
 /// Whether this process is root, or holds an elevated token on Windows.
 ///
 /// Narrower than [`can_send_raw`] and not a substitute for it: this is the
@@ -129,6 +156,43 @@ mod imp {
         // SAFETY: `geteuid` takes no arguments, dereferences nothing, and is
         // specified as always succeeding.
         unsafe { libc::geteuid() == 0 }
+    }
+
+    /// How many `/dev/bpf` devices to try before giving up.
+    ///
+    /// They share an owner and a mode, so the first one that exists answers the
+    /// permission question for all of them. The range is here only because a
+    /// low-numbered device can be missing on a host that clones them on demand.
+    #[cfg(target_os = "macos")]
+    const BPF_DEVICES_TO_TRY: u8 = 4;
+
+    /// Asks the BPF devices the same question libpcap's open will.
+    ///
+    /// A busy device answers it as well as a free one: whoever holds it got
+    /// through the same permission check this process is being measured
+    /// against, so `EBUSY` means permitted and `EACCES` means not.
+    #[cfg(target_os = "macos")]
+    pub fn can_inject_frames() -> bool {
+        (0..BPF_DEVICES_TO_TRY).any(|n| {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(format!("/dev/bpf{n}"))
+            {
+                Ok(_) => true,
+                Err(error) => error.kind() == std::io::ErrorKind::ResourceBusy,
+            }
+        })
+    }
+
+    /// Everywhere else the two routes are one permission.
+    ///
+    /// The packet socket libpcap opens on Linux is gated on the `CAP_NET_RAW`
+    /// that gates the raw socket, so a process holding one holds the other and
+    /// a separate probe would only cost an open to learn what is already known.
+    #[cfg(not(target_os = "macos"))]
+    pub fn can_inject_frames() -> bool {
+        can_send_raw()
     }
 
     pub fn can_send_raw() -> bool {
@@ -191,6 +255,13 @@ mod imp {
     pub fn can_send_raw() -> bool {
         is_elevated()
     }
+
+    /// Npcap can be installed so that non-administrators may capture, but the
+    /// engine does not claim Windows support, so this follows elevation with
+    /// the rest.
+    pub fn can_inject_frames() -> bool {
+        is_elevated()
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -200,6 +271,10 @@ mod imp {
     }
 
     pub fn can_send_raw() -> bool {
+        false
+    }
+
+    pub fn can_inject_frames() -> bool {
         false
     }
 }
@@ -220,9 +295,27 @@ mod tests {
         } else {
             assert_eq!(
                 Privilege::current(),
-                Privilege::from_raw(can_send_raw()),
+                Privilege::from_raw(can_send_raw() || can_inject_frames()),
                 "the distinction is made in one place"
             );
+        }
+    }
+
+    /// A raw socket implies the link-layer handle everywhere the two are one
+    /// permission, and on macOS it implies it because root may open anything.
+    /// The converse does not hold, which is the whole reason both are asked.
+    #[test]
+    fn a_raw_socket_implies_frame_injection() {
+        if can_send_raw() {
+            assert!(can_inject_frames());
+        }
+    }
+
+    /// Either route answering yes is enough to scan with chosen packets.
+    #[test]
+    fn either_route_is_privilege_enough() {
+        if can_inject_frames() {
+            assert_eq!(Privilege::current(), Privilege::Raw);
         }
     }
 

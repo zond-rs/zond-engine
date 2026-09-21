@@ -16583,6 +16583,7 @@ impl core::marker::Unpin for zond_engine::system::privilege::Privilege
 impl core::marker::UnsafeUnpin for zond_engine::system::privilege::Privilege
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::privilege::Privilege
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::privilege::Privilege
+pub fn zond_engine::system::privilege::can_inject_frames() -> bool
 pub fn zond_engine::system::privilege::can_send_raw() -> bool
 pub fn zond_engine::system::privilege::is_elevated() -> bool
 pub mod zond_engine::transport
