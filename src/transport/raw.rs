@@ -310,7 +310,10 @@ fn send_scoped(
 /// id.
 #[cfg(not(unix))]
 fn send_scoped(
-    _fd: std::os::windows::io::RawSocket,
+    // `pnet`'s own socket rather than `std::os::windows::io::RawSocket`, which
+    // is the same handle typed as a `u64` where `pnet` types it as a `usize`.
+    // Nothing here reads it; it is named to match the call site.
+    _fd: usize,
     _bytes: &[u8],
     _destination: Ipv6Addr,
     _port: u16,
