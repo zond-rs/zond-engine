@@ -9,8 +9,8 @@
 //! # The exclusion policy's sending promise, as an invariant over a plan
 //!
 //! No probe is *addressed* to an excluded address: `withhold` and
-//! `withhold_targets` keep that before anything is opened. **SEC-010** broke it
-//! without going near either. `seed_from_neighbor_table` took candidates from
+//! `withhold_targets` keep that before anything is opened. A sweep once broke it
+//! without going near either: `seed_from_neighbor_table` took candidates from
 //! the host's own neighbour table into the target set *after* withholding, so a
 //! swept segment sent a unicast solicitation to an address somebody had been
 //! told would not be probed — and because the recording gate still dropped the
@@ -68,14 +68,15 @@ fn addresses_of(step: &DiscoveryStep) -> Vec<IpAddr> {
 /// put a synthetic one. That path is asserted where the table can be injected,
 /// in `plan.rs`'s own
 /// `a_swept_plan_does_not_take_an_excluded_neighbour_as_a_candidate`, which is
-/// the test SEC-010 fails.
+/// the test that fails if that filter goes.
 ///
-/// Saying so matters. Removing SEC-010's filter leaves this test passing, and a
-/// test that passes for a reason it does not name is the defect the audit filed
-/// twice — BUG-003 and BUG-010. The assertions below on the fixture itself are
-/// what stop this one joining them: if withholding stops removing anything, or
-/// the plan stops having steps, the test fails rather than quietly covering
-/// nothing.
+/// Saying so matters. Removing the neighbour-table filter leaves this test
+/// passing, and a test that passes for a reason it does not name is a defect
+/// this suite has had twice: a COOKIE-ECHO test that quoted an INIT, and
+/// escaping tests that never saw the most hostile strings. The assertions below
+/// on the fixture itself are what stop this one joining them: if withholding
+/// stops removing anything, or the plan stops having steps, the test fails
+/// rather than quietly covering nothing.
 #[test]
 fn no_plan_step_carries_an_excluded_address() {
     let forbidden =

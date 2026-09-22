@@ -19,14 +19,14 @@
 //! Both were broken, within two targets of each other, by paths added after the
 //! module was written and unknown to it:
 //!
-//! - **SEC-009.** `restore_hosts`, the resume path, wrote hosts into the store
-//!   through neither gate. A scan interrupted before an exclusion was added
-//!   brought the forbidden addresses back with it.
-//! - **SEC-010.** `seed_from_neighbor_table` took candidates from the host's own
-//!   neighbour table into the target set *after* withholding. A swept segment
-//!   sent a unicast solicitation to an address somebody had been told would not
-//!   be probed — and because the recording gate still dropped the finding, the
-//!   report stayed clean and the packet was invisible.
+//! - **The resume path.** `restore_hosts` wrote hosts into the store through
+//!   neither gate. A scan interrupted before an exclusion was added brought the
+//!   forbidden addresses back with it.
+//! - **The neighbour table.** `seed_from_neighbor_table` took candidates from
+//!   the host's own neighbour table into the target set *after* withholding. A
+//!   swept segment sent a unicast solicitation to an address somebody had been
+//!   told would not be probed — and because the recording gate still dropped
+//!   the finding, the report stayed clean and the packet was invisible.
 //!
 //! Before those fixes, `exclusions.excludes()` was called in **one** production
 //! place in the whole crate. The rule lived in one module and was kept by every
@@ -45,11 +45,11 @@
 //! new one fails the test until somebody writes that line. This module is that
 //! census.
 //!
-//! **The sending promise is not.** SEC-010 did not go near the store; it put an
-//! address into a target set, and there is no honest grep for "this address will
-//! be probed". So it gets the stronger thing instead: an invariant over what a
-//! plan actually contains, which has to build a plan through the library and so
-//! lives in `tests/portable/exclusions.rs`.
+//! **The sending promise is not.** The neighbour-table path did not go near the
+//! store; it put an address into a target set, and there is no honest grep for
+//! "this address will be probed". So it gets the stronger thing instead: an
+//! invariant over what a plan actually contains, which has to build a plan
+//! through the library and so lives in `tests/portable/exclusions.rs`.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -66,8 +66,8 @@ const STORE_WRITERS: &[(&str, &str)] = &[(
     "two writers, both gated. `write_host` is the gate itself: it refuses an \
      excluded address before the caller's edit runs, and every finding in the \
      engine goes through it. `restore_hosts` is the resume path and checks the \
-     same set before seeding what an earlier sitting found — it did not, which \
-     was SEC-009.",
+     same set before seeding what an earlier sitting found, since nothing it \
+     restores passes through `write_host`.",
 )];
 
 /// The methods that put a host into the store.
@@ -202,7 +202,7 @@ fn every_writer_into_the_host_store_has_said_how_it_is_gated() {
         "these write into the host store and are not in STORE_WRITERS: {unlisted:?}\n\n\
          `Exclusions` promises that no excluded address appears in the report, and keeps \
          that promise at `write_host`. A write that goes round it is a host the operator \
-         forbade, reported anyway — which is SEC-009, found exactly this way.\n\n\
+         forbade, reported anyway, which is how the resume path once did it.\n\n\
          Route the write through `ScanContext::write_host`, or check `exclusions` yourself \
          and add the file to STORE_WRITERS in tests/hygiene/exclusions.rs saying so."
     );
