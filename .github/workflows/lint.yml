@@ -64,6 +64,15 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # Again on the default features, which is what a bare `cargo test` builds
+      # and what `tests/README.md` tells a contributor to run. The run above
+      # turns every feature on, so a test reaching for one that the crate's
+      # dev-dependency on itself does not list compiles there and nowhere else.
+      # That is how the simulated tier came to need `packet-exchange` without a
+      # plain build noticing; this run is the one that fails instead.
+      - name: Run Clippy on the default features
+        run: cargo clippy --all-targets -- -D warnings
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest

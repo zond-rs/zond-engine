@@ -322,10 +322,14 @@ proptest = "1.6.0"
 # friction `fingerprint::tls` avoids.
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 # A dev-dependency on this crate itself, which is how the integration tests in
-# `tests/` get a build of the library with `test-support` turned on. Cargo
-# unifies it with the library target, so nothing is compiled twice and the
-# feature stays off for every downstream consumer.
-zond-engine = { path = ".", features = ["test-support", "export-all", "import-all"] }
+# `tests/` get a build of the library with every feature they reach for:
+# `test-support` for the synthetic transports, the export and import formats the
+# portable tier round-trips, and `packet-exchange` for the exchange the simulated
+# tier drives. No test is gated on a feature, so a feature a tier uses and this
+# list leaves out is a bare `cargo test` that does not compile. Cargo unifies it
+# with the library target, so nothing is compiled twice and the features stay
+# off for every downstream consumer.
+zond-engine = { path = ".", features = ["test-support", "export-all", "import-all", "packet-exchange"] }
 
 [build-dependencies]
 bincode = "1.3.3"
