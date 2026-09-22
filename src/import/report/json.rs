@@ -596,6 +596,7 @@ struct PhaseDto {
     probe_stats: Vec<ProbeStatsDto>,
     unroutable: Vec<String>,
     timed_out: Vec<String>,
+    reached_by_connect: Vec<RangeDto>,
     origin: Option<PhaseOriginDto>,
 }
 
@@ -641,6 +642,11 @@ impl PhaseDto {
                 .timed_out
                 .iter()
                 .map(|ip| address(ip))
+                .collect::<Result<_, _>>()?,
+            reached_by_connect: self
+                .reached_by_connect
+                .into_iter()
+                .map(RangeDto::record)
                 .collect::<Result<_, _>>()?,
             probe_stats: self
                 .probe_stats
@@ -2115,7 +2121,19 @@ mod tests {
             assert_eq!(after.settings(), before.settings());
             assert_eq!(after.failures().len(), before.failures().len());
             assert_eq!(after.probe_stats().len(), before.probe_stats().len());
+            assert_eq!(
+                after.reached_by_connect(),
+                before.reached_by_connect(),
+                "which of a raw phase's evidence is connect evidence is part of what it covered"
+            );
         }
+        assert!(
+            original
+                .phases()
+                .iter()
+                .any(|phase| !phase.reached_by_connect().is_empty()),
+            "the fixture reaches something by connect, or the check above proves nothing"
+        );
     }
 
     #[test]

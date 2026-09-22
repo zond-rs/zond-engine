@@ -100,6 +100,37 @@ impl SendMode {
             SendMode::Ethernet => "ethernet",
         }
     }
+
+    /// Whether a transport this process opens in this mode reaches what a
+    /// self-built frame cannot: loopback, this host's own addresses, a target
+    /// the kernel routes through a tunnel, and an IPv6 neighbour.
+    ///
+    /// A raw socket reaches all of it, since the kernel carries the packet, and
+    /// a frame reaches what has Ethernet in front of it. `Auto` is whichever
+    /// this platform opens: the socket on Linux, frames alone on Windows, and on
+    /// macOS frames with the socket behind them, which is there only for a
+    /// process that may open one. An unprivileged run there with the BPF devices
+    /// handed to its group has the frames and nothing behind them.
+    pub(crate) fn reaches_past_frames(self) -> bool {
+        match self {
+            SendMode::RawSocket => true,
+            SendMode::Ethernet => false,
+            SendMode::Auto => {
+                #[cfg(windows)]
+                {
+                    false
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    crate::system::privilege::can_send_raw()
+                }
+                #[cfg(not(any(windows, target_os = "macos")))]
+                {
+                    true
+                }
+            }
+        }
+    }
 }
 impl fmt::Display for SendMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -985,6 +1016,27 @@ impl ProbeSender for MockSender {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A raw socket reaches whatever the kernel carries and a frame what has
+    /// Ethernet in front of it, on every platform. What `Auto` reaches belongs
+    /// to the platform and, on macOS, to the process, so there it is checked
+    /// against the process's own answer rather than asserted.
+    #[test]
+    fn a_socket_reaches_past_frames_and_a_frame_does_not() {
+        assert!(SendMode::RawSocket.reaches_past_frames());
+        assert!(!SendMode::Ethernet.reaches_past_frames());
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            SendMode::Auto.reaches_past_frames(),
+            crate::system::privilege::can_send_raw(),
+            "frames first, and the socket behind them only for a process that may open one"
+        );
+        #[cfg(windows)]
+        assert!(!SendMode::Auto.reaches_past_frames(), "frames alone");
+        #[cfg(not(any(windows, target_os = "macos")))]
+        assert!(SendMode::Auto.reaches_past_frames(), "the socket alone");
+    }
 
     #[tokio::test]
     async fn transport_forwards_sends_and_delivers_replies() {

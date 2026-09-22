@@ -22,10 +22,14 @@
 //! is what let SCTP arrive as one more scanner rather than as a branch at every
 //! call site.
 
+use std::net::IpAddr;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::journal::settle::Outcome;
+use crate::model::ip::set::IpSet;
 use crate::model::port::Protocol;
 use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
@@ -41,9 +45,41 @@ use crate::{counted, info};
 /// a function of the protocol count rather than of the plan.
 const ROUTE_DEPTH: usize = 1024;
 
+/// Which addresses a scanner in a composite is handed.
+///
+/// Every scanner takes every address unless a scan says otherwise, and one says
+/// otherwise only when its raw strategies send frames alone: a frame reaches
+/// what has Ethernet in front of it, and the rest of the targets go to a connect
+/// scanner beside it. See
+/// [`beyond_frames`](crate::system::interface::beyond_frames).
+#[derive(Debug, Clone, Default)]
+pub(crate) enum Reach {
+    /// Every address.
+    #[default]
+    Any,
+    /// Only these.
+    Only(Arc<IpSet>),
+    /// Every address but these.
+    Except(Arc<IpSet>),
+}
+
+impl Reach {
+    /// Whether a scanner with this reach is handed `address`.
+    fn admits(&self, address: &IpAddr) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Only(set) => set.contains(address),
+            Self::Except(set) => !set.contains(address),
+        }
+    }
+}
+
 /// A port scanner that multiplexes targets by protocol.
 pub struct CompositePortScanner {
-    scanners: Vec<Box<dyn PortScanner>>,
+    /// Each scanner with the addresses it is handed. Every one is [`Reach::Any`]
+    /// unless the composite was built by
+    /// [`with_reach`](Self::with_reach).
+    scanners: Vec<(Box<dyn PortScanner>, Reach)>,
     /// Where targets that never reached a scanner are reported.
     ///
     /// The router is the one place in a scan that can drop work without any
@@ -55,6 +91,22 @@ pub struct CompositePortScanner {
 impl CompositePortScanner {
     /// Constructs a composite scanner from a collection of existing scanners.
     pub fn new(scanners: Vec<Box<dyn PortScanner>>, ctx: ScanContext) -> Self {
+        Self::with_reach(
+            scanners
+                .into_iter()
+                .map(|scanner| (scanner, Reach::Any))
+                .collect(),
+            ctx,
+        )
+    }
+
+    /// Constructs a composite that routes by address as well as by protocol: a
+    /// target goes to the first scanner that claims its protocol and whose
+    /// [`Reach`] admits its address.
+    pub(crate) fn with_reach(
+        scanners: Vec<(Box<dyn PortScanner>, Reach)>,
+        ctx: ScanContext,
+    ) -> Self {
         Self { scanners, ctx }
     }
 }
@@ -67,7 +119,7 @@ impl PortScanner for CompositePortScanner {
 
     fn supported_protocols(&self) -> Vec<Protocol> {
         let mut protocols = Vec::new();
-        for scanner in &self.scanners {
+        for (scanner, _) in &self.scanners {
             for proto in scanner.supported_protocols() {
                 if !protocols.contains(&proto) {
                     protocols.push(proto);
@@ -83,6 +135,7 @@ impl PortScanner for CompositePortScanner {
     ) -> Result<(), StrategyError> {
         struct Route {
             supported_protocols: Vec<Protocol>,
+            reach: Reach,
             tx: mpsc::Sender<PlannedTarget>,
         }
 
@@ -90,7 +143,7 @@ impl PortScanner for CompositePortScanner {
         let mut handles = Vec::new();
 
         // Spin up an independent task for every scanner we own.
-        for mut scanner in self.scanners.drain(..) {
+        for (mut scanner, reach) in self.scanners.drain(..) {
             let (tx, rx) = mpsc::channel(ROUTE_DEPTH);
             let supported_protocols = scanner.supported_protocols();
             let kind = scanner.kind();
@@ -100,9 +153,10 @@ impl PortScanner for CompositePortScanner {
                 (scanner, res)
             });
 
-            handles.push((kind, handle));
+            handles.push((kind, reach.clone(), handle));
             routes.push(Route {
                 supported_protocols,
+                reach,
                 tx,
             });
         }
@@ -117,10 +171,10 @@ impl PortScanner for CompositePortScanner {
         let mut undeliverable = 0usize;
 
         while let Some(target) = targets.recv().await {
-            match routes
-                .iter()
-                .find(|route| route.supported_protocols.contains(&target.protocol()))
-            {
+            match routes.iter().find(|route| {
+                route.supported_protocols.contains(&target.protocol())
+                    && route.reach.admits(&target.target.ip)
+            }) {
                 Some(route) => {
                     if route.tx.send(target).await.is_err() {
                         undeliverable += 1;
@@ -181,10 +235,10 @@ impl PortScanner for CompositePortScanner {
         // already moved on from.
         let mut failure: Option<StrategyError> = None;
 
-        for (kind, handle) in handles {
+        for (kind, reach, handle) in handles {
             match handle.await {
                 Ok((scanner, res)) => {
-                    self.scanners.push(scanner);
+                    self.scanners.push((scanner, reach));
                     if let Err(e) = res {
                         failure.get_or_insert(e);
                     }
@@ -208,7 +262,7 @@ impl PortScanner for CompositePortScanner {
     }
 
     async fn detect_services(&mut self, ctx: &ScanContext) {
-        for scanner in &mut self.scanners {
+        for (scanner, _) in &mut self.scanners {
             scanner.detect_services(ctx).await;
         }
     }
@@ -388,6 +442,60 @@ mod tests {
         let udp_received = udp_rx.lock().unwrap();
         assert_eq!(udp_received.len(), 1);
         assert_eq!(udp_received[0].protocol, Protocol::Udp);
+    }
+
+    /// A scan whose raw strategies send frames alone splits one protocol by
+    /// address: the raw scanner takes what a frame reaches and a connect
+    /// scanner the rest. Routed by protocol alone, every target went to the raw
+    /// one, and loopback came back unasked.
+    #[tokio::test]
+    async fn targets_are_routed_by_address_where_a_scanner_says_so() {
+        let (raw, raw_rx) = MockPortScanner::new(vec![Protocol::Tcp]);
+        let (connect, connect_rx) = MockPortScanner::new(vec![Protocol::Tcp]);
+
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 8));
+        let mut beyond = IpSet::new();
+        beyond.insert(loopback);
+        let beyond = Arc::new(beyond);
+
+        let (_session, ctx) = ScanSession::new();
+        let mut composite = CompositePortScanner::with_reach(
+            vec![
+                (Box::new(raw), Reach::Except(Arc::clone(&beyond))),
+                (Box::new(connect), Reach::Only(beyond)),
+            ],
+            ctx.clone(),
+        );
+
+        let (tx, rx) = mpsc::channel(4);
+        for (position, ip) in [loopback, neighbour].into_iter().enumerate() {
+            let target = Target {
+                ip,
+                port: 22,
+                protocol: Protocol::Tcp,
+            };
+            tx.send(PlannedTarget::new(position as u64, target))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+        composite.scan(rx).await.unwrap();
+
+        let ips = |received: &Arc<Mutex<Vec<Target>>>| {
+            received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|target| target.ip)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ips(&raw_rx), vec![neighbour]);
+        assert_eq!(ips(&connect_rx), vec![loopback]);
+        assert!(
+            ctx.failures_snapshot().is_empty(),
+            "every target found a route"
+        );
     }
 
     /// A scanner that fails must not take its siblings' results with it: every

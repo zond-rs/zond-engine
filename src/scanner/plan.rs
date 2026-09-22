@@ -79,7 +79,7 @@ use crate::system::interface::Link;
 use crate::system::interface::{self, RoutedTarget};
 use crate::system::neighbor_cache;
 use crate::system::privilege::Privilege;
-use crate::{info, warn};
+use crate::{counted, info, warn};
 
 /// Something the scan will not do, decided at planning time.
 ///
@@ -152,6 +152,56 @@ impl RefusedStep {
                      and sending one directly would put this host's address on the target - so \
                      no sctp port was probed"
                 .to_string(),
+        }
+    }
+
+    /// The TCP half left undone on the targets a frames-only run cannot reach.
+    ///
+    /// [`technique_needs_raw_sockets`](Self::technique_needs_raw_sockets) for
+    /// part of a scan: the process sends every other target the probe asked for,
+    /// and these, which only the kernel can carry, get no connect standing in
+    /// for a technique it does not express.
+    pub(crate) fn technique_beyond_frames(technique: TcpScanTechnique, targets: u128) -> Self {
+        Self {
+            scanner: ScannerKind::for_raw_tcp(technique),
+            reason: format!(
+                "this process can send self-built frames and holds no raw socket, and {} \
+                 out of a frame's reach; a connect scan answers a different question than \
+                 the {technique} technique asks - so no TCP port on them was probed",
+                counted(targets, "target is", "targets are")
+            ),
+        }
+    }
+
+    /// The SCTP ports on the targets a frames-only run cannot reach, for the
+    /// reason [`sctp_needs_raw_sockets`](Self::sctp_needs_raw_sockets) gives.
+    pub(crate) fn sctp_beyond_frames(targets: u128) -> Self {
+        Self {
+            scanner: ScannerKind::SctpPort,
+            reason: format!(
+                "this process can send self-built frames and holds no raw socket, and {} \
+                 out of a frame's reach; there is no unprivileged init probe - so no sctp \
+                 port on them was probed",
+                counted(targets, "target is", "targets are")
+            ),
+        }
+    }
+
+    /// A pass that sends its own segments to a host, left undone on the hosts a
+    /// frames-only run cannot reach.
+    ///
+    /// Nothing stands in for these passes: each reads something only a packet it
+    /// built can ask, which is what a connect cannot send. `pass` names the pass
+    /// the way a reader would.
+    pub(crate) fn pass_beyond_frames(scanner: ScannerKind, pass: &str, hosts: u128) -> Self {
+        Self {
+            scanner,
+            reason: format!(
+                "this process can send self-built frames and holds no raw socket, and {} \
+                 out of a frame's reach - so {pass} left {} alone",
+                counted(hosts, "host is", "hosts are"),
+                if hosts == 1 { "it" } else { "them" },
+            ),
         }
     }
 
@@ -386,6 +436,10 @@ pub enum DiscoveryStep {
     },
     /// Ordinary TCP connect attempts, for targets with no route and no segment:
     /// loopback, or anything the OS declined to resolve. Needs no privileges.
+    ///
+    /// For a process whose raw strategies send frames and nothing else, also
+    /// whatever a frame cannot reach, which the scan moves here from the steps
+    /// that would have framed it.
     Connect {
         /// The addresses to try.
         targets: IpSet,
@@ -607,6 +661,106 @@ impl DiscoveryPlan {
             })
             .collect();
         self.steps.extend(sctp);
+    }
+
+    /// Takes `targets` out of every step that sends its own packets, and returns
+    /// what was taken.
+    ///
+    /// For a process whose raw strategies put frames on the wire and hold
+    /// nothing behind them. A frame reaches what has Ethernet in front of it;
+    /// `targets` is the rest, as
+    /// [`beyond_frames`](crate::system::interface::beyond_frames) worked it out
+    /// for the segment sweep. Left in a routed step, a target the kernel routes
+    /// through a tunnel is sent a frame out of the wrong interface, and loopback
+    /// no frame at all.
+    ///
+    /// A step left with nothing to send is dropped, except a sweep's local step
+    /// on a link that carries frames: its most important probe is addressed to
+    /// nobody, and it still has a segment to send it on. The connect step is
+    /// left alone, since connect is not a frame.
+    pub(crate) fn withhold(&mut self, targets: &IpSet) -> IpSet {
+        let mut taken = IpSet::new();
+        if targets.is_empty() {
+            return taken;
+        }
+
+        for step in &mut self.steps {
+            match step {
+                DiscoveryStep::Local { targets: held, .. } => {
+                    let mut kept = held.clone();
+                    kept.subtract(targets);
+                    // What the subtraction removed, which is the part of this
+                    // step's targets the set named.
+                    let mut gone = held.clone();
+                    gone.subtract(&kept);
+                    for range in gone.v4() {
+                        taken.push_v4_range(*range);
+                    }
+                    for range in gone.v6() {
+                        taken.push_v6_range(*range);
+                    }
+                    *held = kept;
+                }
+                DiscoveryStep::Routed { targets: held }
+                | DiscoveryStep::RoutedSctp { targets: held, .. } => held.retain(|routed| {
+                    let out = targets.contains(&routed.target);
+                    if out {
+                        taken.insert(routed.target);
+                    }
+                    !out
+                }),
+                DiscoveryStep::Connect { .. } => {}
+            }
+        }
+
+        self.steps.retain(|step| match step {
+            DiscoveryStep::Local {
+                interface,
+                targets,
+                scope,
+            } => {
+                !targets.is_empty() || (matches!(scope, Scope::Sweep) && interface.carries_frames())
+            }
+            DiscoveryStep::Routed { targets } | DiscoveryStep::RoutedSctp { targets, .. } => {
+                !targets.is_empty()
+            }
+            DiscoveryStep::Connect { .. } => true,
+        });
+
+        taken.canonicalize();
+        taken
+    }
+
+    /// [`withhold`](Self::withhold)s `targets` and hands what was taken to the
+    /// connect step, adding one where the plan has none. Returns what moved.
+    ///
+    /// Connect is how an unprivileged sweep reaches a target, and so how a
+    /// frames-only one reaches what its frames cannot.
+    pub(crate) fn connect_instead(&mut self, targets: &IpSet) -> IpSet {
+        let moved = self.withhold(targets);
+        if moved.is_empty() {
+            return moved;
+        }
+
+        let existing = self.steps.iter_mut().find_map(|step| match step {
+            DiscoveryStep::Connect { targets } => Some(targets),
+            _ => None,
+        });
+        match existing {
+            Some(held) => {
+                for range in moved.v4() {
+                    held.push_v4_range(*range);
+                }
+                for range in moved.v6() {
+                    held.push_v6_range(*range);
+                }
+                held.canonicalize();
+            }
+            None => self.steps.push(DiscoveryStep::Connect {
+                targets: moved.clone(),
+            }),
+        }
+        moved
     }
 
     /// The strategies this plan would run.
@@ -1111,6 +1265,138 @@ mod tests {
             ip: v6(ip),
             mac: None,
             interface_index: index,
+        }
+    }
+
+    /// A link a frame can be put on, as against `interface_with`'s bare one.
+    fn framed(index: u32, name: &str, own: Vec<IpAddr>) -> Link {
+        interface_with(index, name, own)
+            .with_mac(crate::model::mac::MacAddr::new(0x02, 0, 0, 0, 0, 0x10))
+    }
+
+    fn set_of(addresses: &[&str]) -> IpSet {
+        let mut set = IpSet::new();
+        for address in addresses {
+            set.insert(v6(address));
+        }
+        set
+    }
+
+    /// What a frames-only sweep cannot reach leaves the steps that would have
+    /// framed it and joins the connect step, which is how an unprivileged
+    /// sweep reaches it. A local step left empty goes with it; one still
+    /// holding a neighbour a frame reaches stays.
+    #[test]
+    fn what_a_frame_cannot_reach_moves_to_the_connect_step() {
+        let mut plan = DiscoveryPlan {
+            ours: IpSet::new(),
+            steps: vec![
+                DiscoveryStep::Local {
+                    interface: Box::new(interface_with(20, "utun9", vec![v6("198.51.100.2")])),
+                    targets: set_of(&["198.51.100.7"]),
+                    scope: Scope::Targeted,
+                },
+                DiscoveryStep::Local {
+                    interface: Box::new(framed(4, "en0", vec![v6("192.0.2.10")])),
+                    targets: set_of(&["192.0.2.50"]),
+                    scope: Scope::Targeted,
+                },
+                DiscoveryStep::Routed {
+                    targets: vec![
+                        RoutedTarget {
+                            target: v6("203.0.113.23"),
+                            source: v6("198.51.100.2"),
+                        },
+                        RoutedTarget {
+                            target: v6("203.0.113.9"),
+                            source: v6("192.0.2.10"),
+                        },
+                    ],
+                },
+            ],
+            refusals: Vec::new(),
+        };
+
+        let moved = plan.connect_instead(&set_of(&["198.51.100.7", "203.0.113.23"]));
+
+        assert_eq!(moved.len(), 2);
+        let kinds: Vec<ScannerKind> = plan.steps().iter().map(DiscoveryStep::kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ScannerKind::Local,
+                ScannerKind::Routed,
+                ScannerKind::Connect
+            ],
+            "the tunnel's local step is gone and a connect step has arrived"
+        );
+        match &plan.steps()[1] {
+            DiscoveryStep::Routed { targets } => {
+                assert_eq!(targets.len(), 1);
+                assert_eq!(targets[0].target, v6("203.0.113.9"));
+            }
+            other => panic!("expected the routed step, found {other:?}"),
+        }
+        match &plan.steps()[2] {
+            DiscoveryStep::Connect { targets } => assert_eq!(*targets, moved),
+            other => panic!("expected the connect step, found {other:?}"),
+        }
+    }
+
+    /// A sweep's own link keeps its step with nothing left to address, since
+    /// its most important probe is addressed to nobody. A link that carries no
+    /// frames has no such probe to send, and goes.
+    #[test]
+    fn a_sweeps_step_stays_on_a_framed_link_and_goes_on_a_tunnel() {
+        let mut plan = DiscoveryPlan {
+            ours: IpSet::new(),
+            steps: vec![
+                DiscoveryStep::Local {
+                    interface: Box::new(framed(4, "en0", vec![v6("192.0.2.10")])),
+                    targets: set_of(&["192.0.2.50"]),
+                    scope: Scope::Sweep,
+                },
+                DiscoveryStep::Local {
+                    interface: Box::new(interface_with(20, "utun9", vec![v6("198.51.100.2")])),
+                    targets: set_of(&["198.51.100.7"]),
+                    scope: Scope::Sweep,
+                },
+            ],
+            refusals: Vec::new(),
+        };
+
+        plan.withhold(&set_of(&["192.0.2.50", "198.51.100.7"]));
+
+        assert_eq!(plan.steps().len(), 1);
+        match &plan.steps()[0] {
+            DiscoveryStep::Local {
+                interface, targets, ..
+            } => {
+                assert_eq!(interface.name(), "en0");
+                assert!(targets.is_empty());
+            }
+            other => panic!("expected the sweep's own step, found {other:?}"),
+        }
+    }
+
+    /// Withholding is about frames, and a connect step sends none: what it
+    /// already holds stays, and nothing new arrives in it.
+    #[test]
+    fn withholding_leaves_the_connect_step_as_it_was() {
+        let mut plan = DiscoveryPlan {
+            ours: IpSet::new(),
+            steps: vec![DiscoveryStep::Connect {
+                targets: set_of(&["127.0.0.1"]),
+            }],
+            refusals: Vec::new(),
+        };
+
+        let taken = plan.withhold(&set_of(&["127.0.0.1"]));
+
+        assert!(taken.is_empty(), "nothing was taken from a frame step");
+        match &plan.steps()[0] {
+            DiscoveryStep::Connect { targets } => assert_eq!(*targets, set_of(&["127.0.0.1"])),
+            other => panic!("expected the connect step, found {other:?}"),
         }
     }
 

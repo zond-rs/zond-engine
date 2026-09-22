@@ -3560,6 +3560,7 @@ pub zond_engine::export::schema::PhaseDto::kind: &'static str
 pub zond_engine::export::schema::PhaseDto::origin: core::option::Option<zond_engine::export::schema::PhaseOriginDto<'a>>
 pub zond_engine::export::schema::PhaseDto::privileged: core::option::Option<bool>
 pub zond_engine::export::schema::PhaseDto::probe_stats: alloc::vec::Vec<zond_engine::export::schema::ProbeStatsDto>
+pub zond_engine::export::schema::PhaseDto::reached_by_connect: alloc::vec::Vec<zond_engine::export::schema::RangeDto>
 pub zond_engine::export::schema::PhaseDto::refusals: alloc::vec::Vec<zond_engine::export::schema::RefusalDto<'a>>
 pub zond_engine::export::schema::PhaseDto::settings: zond_engine::export::schema::SettingsDto
 pub zond_engine::export::schema::PhaseDto::started_at: alloc::string::String
@@ -12987,6 +12988,7 @@ pub zond_engine::record::PhaseRecord::kind: alloc::string::String
 pub zond_engine::record::PhaseRecord::origin: core::option::Option<zond_engine::record::PhaseOriginRecord>
 pub zond_engine::record::PhaseRecord::privileged: core::option::Option<bool>
 pub zond_engine::record::PhaseRecord::probe_stats: alloc::vec::Vec<zond_engine::record::ProbeStatsRecord>
+pub zond_engine::record::PhaseRecord::reached_by_connect: alloc::vec::Vec<zond_engine::record::RangeRecord>
 pub zond_engine::record::PhaseRecord::refusals: alloc::vec::Vec<zond_engine::record::RefusalRecord>
 pub zond_engine::record::PhaseRecord::settings: zond_engine::record::SettingsRecord
 pub zond_engine::record::PhaseRecord::started_at: std::time::SystemTime
@@ -13768,6 +13770,7 @@ pub zond_engine::report::PhaseParts::kind: zond_engine::report::ScanKind
 pub zond_engine::report::PhaseParts::origin: core::option::Option<zond_engine::report::PhaseOrigin>
 pub zond_engine::report::PhaseParts::privilege: core::option::Option<zond_engine::system::privilege::Privilege>
 pub zond_engine::report::PhaseParts::probes: alloc::vec::Vec<zond_engine::report::ProbeStats>
+pub zond_engine::report::PhaseParts::reached_by_connect: alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
 pub zond_engine::report::PhaseParts::refusals: alloc::vec::Vec<zond_engine::report::Refusal>
 pub zond_engine::report::PhaseParts::settings: zond_engine::report::ScanSettings
 pub zond_engine::report::PhaseParts::started_at: std::time::SystemTime
@@ -13895,6 +13898,7 @@ pub fn zond_engine::report::ScanPhase::kind(&self) -> zond_engine::report::ScanK
 pub fn zond_engine::report::ScanPhase::origin(&self) -> core::option::Option<&zond_engine::report::PhaseOrigin>
 pub fn zond_engine::report::ScanPhase::privilege(&self) -> core::option::Option<zond_engine::system::privilege::Privilege>
 pub fn zond_engine::report::ScanPhase::probe_stats(&self) -> &[zond_engine::report::ProbeStats]
+pub fn zond_engine::report::ScanPhase::reached_by_connect(&self) -> &[zond_engine::model::ip::range::IpRange]
 pub fn zond_engine::report::ScanPhase::refusals(&self) -> &[zond_engine::report::Refusal]
 pub fn zond_engine::report::ScanPhase::settings(&self) -> &zond_engine::report::ScanSettings
 pub fn zond_engine::report::ScanPhase::started_at(&self) -> std::time::SystemTime
@@ -14946,6 +14950,7 @@ pub fn zond_engine::scanner::session::ScanContext::record_failure(&self, zond_en
 pub fn zond_engine::scanner::session::ScanContext::record_many_outcomes(&self, zond_engine::journal::settle::Outcome, u64)
 pub fn zond_engine::scanner::session::ScanContext::record_outcome(&self, zond_engine::journal::settle::Outcome)
 pub fn zond_engine::scanner::session::ScanContext::record_probe_stats(&self, zond_engine::report::ProbeStats)
+pub fn zond_engine::scanner::session::ScanContext::record_reached_by_connect(&self, &zond_engine::model::ip::set::IpSet)
 pub fn zond_engine::scanner::session::ScanContext::record_refusal(&self, zond_engine::report::Refusal)
 pub fn zond_engine::scanner::session::ScanContext::record_sweep(&self, zond_engine::model::ip::scoped::Zone)
 pub fn zond_engine::scanner::session::ScanContext::record_unroutable(&self, core::net::ip_addr::IpAddr)

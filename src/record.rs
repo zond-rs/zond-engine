@@ -1284,6 +1284,15 @@ pub struct PhaseRecord {
     /// and defaulted on the way in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timed_out: Vec<IpAddr>,
+    /// Addresses a raw sitting reached by TCP connect instead.
+    ///
+    /// Skipped when empty, which is most sittings, and defaulted on the way in.
+    /// A record written before this field existed reads back as a sitting that
+    /// reached nothing this way, which overstates it only where that sitting
+    /// swept loopback with raw privileges: the one case that was already
+    /// happening and not yet written down.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reached_by_connect: Vec<RangeRecord>,
     /// What each strategy recorded about its own run.
     #[serde(default)]
     pub probe_stats: Vec<ProbeStatsRecord>,
@@ -1419,6 +1428,11 @@ impl From<&ScanPhase> for PhaseRecord {
             refusals: phase.refusals().iter().map(RefusalRecord::from).collect(),
             unroutable: phase.unroutable().to_vec(),
             timed_out: phase.timed_out().to_vec(),
+            reached_by_connect: phase
+                .reached_by_connect()
+                .iter()
+                .map(RangeRecord::from)
+                .collect(),
             probe_stats: phase
                 .probe_stats()
                 .iter()
@@ -1452,6 +1466,14 @@ impl From<&PhaseRecord> for ScanPhase {
             refusals: record.refusals.iter().map(Refusal::from).collect(),
             unroutable: record.unroutable.clone(),
             timed_out: record.timed_out.clone(),
+            // A range whose ends do not describe one is dropped rather than
+            // guessed at, as `TargetScope` drops one. What remains still says
+            // which addresses the sitting reached this way.
+            reached_by_connect: record
+                .reached_by_connect
+                .iter()
+                .filter_map(RangeRecord::rebuild)
+                .collect(),
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(PhaseOrigin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),

@@ -567,6 +567,16 @@ pub struct PhaseDto<'a> {
     /// as a quiet machine rather than as a scan that ran out of time.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub timed_out: Vec<String>,
+    /// Addresses this phase reached by TCP connect although it held the
+    /// privilege its raw strategies need, ascending.
+    ///
+    /// Left out when empty, which is most phases. What the phase found at one
+    /// of these is connect evidence under a phase whose `privileged` reads as
+    /// true: loopback, an address nothing routes to, and, for a process that
+    /// can inject frames and holds no raw socket, whatever those frames cannot
+    /// reach.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reached_by_connect: Vec<RangeDto>,
     /// What each instrumented scanner observed about its own run. Empty where
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
@@ -655,6 +665,11 @@ impl<'a> PhaseDto<'a> {
                 .timed_out()
                 .iter()
                 .map(std::string::ToString::to_string)
+                .collect(),
+            reached_by_connect: phase
+                .reached_by_connect()
+                .iter()
+                .map(RangeDto::new)
                 .collect(),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
             origin: phase.origin().map(|origin| PhaseOriginDto {

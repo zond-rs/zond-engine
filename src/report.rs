@@ -1600,6 +1600,9 @@ pub struct PhaseParts {
     /// Addresses whose per-host budget ran out before the phase finished with
     /// them.
     pub timed_out: Vec<IpAddr>,
+    /// Addresses a raw phase reached by TCP connect. See
+    /// [`ScanPhase::reached_by_connect`].
+    pub reached_by_connect: Vec<IpRange>,
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
@@ -1627,6 +1630,7 @@ impl ScanPhase {
             refusals: parts.refusals,
             unroutable: parts.unroutable,
             timed_out: parts.timed_out,
+            reached_by_connect: parts.reached_by_connect,
             probes: parts.probes,
             origin: parts.origin,
             attachments: parts.attachments,
@@ -1676,6 +1680,13 @@ pub struct ScanPhase {
     /// looks the same whether the scan asked and heard nothing or ran out of
     /// time to ask.
     timed_out: Vec<IpAddr>,
+    /// Addresses this phase reached by TCP connect although it held the
+    /// privilege its raw strategies need.
+    ///
+    /// Beside `unroutable` for the same reason `timed_out` is: this is the
+    /// phase qualifying what it covered, not reporting that anything broke. See
+    /// [`reached_by_connect`](Self::reached_by_connect).
+    reached_by_connect: Vec<IpRange>,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<PhaseOrigin>,
@@ -1754,6 +1765,28 @@ impl ScanPhase {
     /// to ask about; what it does not carry is the rest of them.
     pub fn timed_out(&self) -> &[IpAddr] {
         &self.timed_out
+    }
+
+    /// Addresses this phase reached by TCP connect although it held the
+    /// privilege its raw strategies need, ascending.
+    ///
+    /// A raw probe goes where this process can put a packet of its own, and
+    /// some addresses are beyond that whatever the privilege: loopback, and an
+    /// address nothing routes to. A process that can inject frames and holds no
+    /// raw socket, which is an unprivileged run on macOS with the BPF devices
+    /// handed to its group, also cannot reach this host's own addresses,
+    /// anything the kernel routes through a tunnel, or, for its port probes, an
+    /// IPv6 neighbour. The phase probed those the way an unprivileged phase
+    /// would, and what it found there is connect evidence under a phase whose
+    /// [`privilege`](Self::privilege) reads as raw: a port that answered
+    /// nothing may have been told nothing by the local stack, and no port was
+    /// asked with the technique the settings name.
+    ///
+    /// Empty for most phases, and for every phase at
+    /// [`Privilege::Connect`], which reached everything this way and says so
+    /// once.
+    pub fn reached_by_connect(&self) -> &[IpRange] {
+        &self.reached_by_connect
     }
 
     /// The strategies in this phase that could not do their job.
@@ -2612,6 +2645,7 @@ mod tests {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
             probes: Vec::new(),
             origin: None,
         }

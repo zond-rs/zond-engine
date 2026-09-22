@@ -297,9 +297,15 @@ fn write_notices(
         .iter()
         .any(|phase| phase.settings.idle_scan.is_some());
     let evaded = phases.iter().any(|phase| phase.settings.evasion.is_some());
+    // A privileged phase that reached some of its targets by connect, which the
+    // count above does not see and which is the same caveat about those targets.
+    let connected = phases
+        .iter()
+        .any(|phase| !phase.reached_by_connect.is_empty());
 
     if !report.is_partial()
         && unprivileged == 0
+        && !connected
         && !idle
         && !evaded
         && !options.redaction.is_active()
@@ -340,6 +346,14 @@ fn write_notices(
             true,
             "unprivileged",
             "raw probes were unavailable; those targets were reached over plain connect attempts, which see less",
+        )?;
+    }
+    if connected {
+        write::notice(
+            out,
+            true,
+            "by connect",
+            "some targets were out of reach of this machine's raw probes and were reached over plain connect attempts, which see less; each phase lists them",
         )?;
     }
     if options.redaction.is_active() {
@@ -1220,6 +1234,29 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
                 "{}{}",
                 addresses.join(", "),
                 dim(&[esc("left part-scanned")])
+            ),
+        )?;
+    }
+
+    // Addresses a privileged phase reached the unprivileged way. Their results
+    // sit beside raw ones under a phase headed privileged, and this line is
+    // what tells the two apart.
+    if !phase.reached_by_connect.is_empty() {
+        let ranges: Vec<String> = phase
+            .reached_by_connect
+            .iter()
+            .map(|range| match range.start == range.end {
+                true => esc(&range.start),
+                false => format!("{}–{}", esc(&range.start), esc(&range.end)),
+            })
+            .collect();
+        fact(
+            out,
+            "by connect",
+            &format!(
+                "{}{}",
+                ranges.join(", "),
+                dim(&[esc("out of reach of raw probes")])
             ),
         )?;
     }

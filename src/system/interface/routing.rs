@@ -30,14 +30,23 @@
 //! is built on: a scan may report that it found nothing, and may never be quiet
 //! about ground it did not look at.
 //!
+//! ## What a frame reaches
+//!
+//! A second question is asked of the same classification, by a process whose
+//! raw strategies put self-built frames on the wire with nothing behind them:
+//! an unprivileged run on macOS holding the BPF devices, and a privileged one on
+//! Windows. A frame reaches what has Ethernet in front of it, and
+//! [`beyond_frames`] names the rest and why, so that a scan can reach those
+//! targets by connect instead of sending them nothing.
+//!
 //! ## What it costs
 //!
 //! One `connect` per off-link target on an unbound UDP socket, which performs a
 //! route lookup and sends nothing, parallelised across the target list. On-link
 //! targets cost a prefix comparison and no syscall at all.
 
-use crate::model::ip::range::IpRange::{V4, V6};
-use crate::model::ip::range::Ipv6Range;
+use crate::model::ip::range::IpRange::{self, V4, V6};
+use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::system::interface::Link;
 use crate::system::interface::source::{
@@ -104,8 +113,9 @@ pub struct RoutedTargets {
     /// Targets reached through a gateway, each already paired with the source
     /// address to probe it from. Handled by a single raw TCP SYN scanner.
     pub routed: Vec<RoutedTarget>,
-    /// Targets that are neither on-link nor have a resolvable route (e.g.
-    /// loopback), left to the unprivileged connect fallback.
+    /// Targets that are neither on-link nor have a resolvable route, left to
+    /// the unprivileged connect fallback. Loopback is always here, in both
+    /// families, whatever the routing table or a forced source says about it.
     pub unmapped: IpSet,
     /// Targets that are this host's own addresses.
     ///
@@ -240,6 +250,17 @@ pub(crate) fn map_ips_to_interfaces_with(
     let processed: Vec<(IpAddr, Classification)> = singles_to_route
         .par_iter()
         .map_init(ProbeSockets::default, |sockets, &target| {
+            // Loopback is this host, and nothing below may say otherwise. The
+            // kernel answers `::1` with `::1`, which no interface here holds, and
+            // the fallback after it would then pair the target with a global
+            // source as though it were a routed address behind a VPN; a forced
+            // source would do the same. `127.0.0.1` fell through to `Unmapped`
+            // only because that fallback declines IPv4, so the two loopbacks were
+            // planned differently for no reason either of them had.
+            if target.is_loopback() {
+                return (target, Classification::Unmapped);
+            }
+
             if let Some(idx) = find_local_index(&interfaces, target) {
                 return (target, Classification::Local(idx));
             }
@@ -322,6 +343,238 @@ pub(crate) fn map_ips_to_interfaces_with(
         ours,
         ambiguous,
         unenumerable,
+    }
+}
+
+/// Which of the engine's two frame builders a question about reach is asked for.
+///
+/// They differ in one respect, and it decides what they reach. The segment sweep
+/// resolves an IPv6 neighbour itself, by neighbour discovery over the link it
+/// holds open. The probe transport's frame sender has ARP and nothing else, so an
+/// IPv6 neighbour on the same segment is one it has no hardware address to send
+/// to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameSender {
+    /// ARP and ICMPv6 across a segment, which is discovery's local step.
+    Sweep,
+    /// The probe transport's frames: port probes, routed discovery, and every
+    /// later pass that sends its own segments to a host.
+    Probe,
+}
+
+/// Why a self-built frame cannot reach a target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unframed {
+    /// The target is loopback.
+    Loopback,
+    /// The target is an address this host holds. Its kernel answers it through
+    /// loopback, so a frame put on a link for it reaches nobody who replies.
+    Ours,
+    /// The route to the target leaves by the named link, which carries no
+    /// frames: a tunnel, a VPN, or anything else without a hardware address
+    /// and a segment.
+    Tunnel(String),
+    /// Nothing routes to the target at all.
+    NoRoute,
+    /// The target is an IPv6 neighbour on the named link, and the probe
+    /// transport's sender has no neighbour discovery to resolve it with.
+    Neighbour(String),
+}
+
+/// Written to follow "is" or "are", since a message names one target of a
+/// reason and counts the rest.
+impl std::fmt::Display for Unframed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Loopback => f.write_str("loopback"),
+            Self::Ours => f.write_str("held by this host"),
+            Self::Tunnel(link) => write!(f, "routed through {link}, which carries no frames"),
+            Self::NoRoute => f.write_str("not routed anywhere from this host"),
+            Self::Neighbour(link) => write!(
+                f,
+                "on {link} over IPv6, which the probe sender has no neighbour discovery for"
+            ),
+        }
+    }
+}
+
+/// The targets a self-built frame cannot reach from this host, and why.
+///
+/// Built by [`beyond_frames`]. What it serves is a process that may inject
+/// frames and holds nothing else, which is an unprivileged run on macOS with
+/// the BPF devices handed to a group, and every privileged run on Windows. The
+/// frames reach whatever has Ethernet in front of it; everything here needs the
+/// kernel to carry it, and so needs a strategy that asks the kernel.
+#[derive(Debug, Default)]
+pub(crate) struct BeyondFrames {
+    /// Every target no frame reaches.
+    pub(crate) targets: IpSet,
+    /// Each reason that applied and the targets it applied to, in a fixed
+    /// order, none of them empty.
+    reasons: Vec<(Unframed, IpSet)>,
+}
+
+impl BeyondFrames {
+    /// Whether every target is within a frame's reach.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    /// Each reason with the lowest address it applied to and how many it
+    /// covered, which is what a message about the set quotes.
+    pub(crate) fn summary(&self) -> Vec<(Unframed, IpAddr, u128)> {
+        self.reasons
+            .iter()
+            .filter_map(|(reason, targets)| {
+                let first = targets.iter().next()?;
+                Some((reason.clone(), first, targets.len()))
+            })
+            .collect()
+    }
+
+    /// The same, with every target `reason` covered left out.
+    ///
+    /// For a phase that does something else with one kind of target: a
+    /// discovery sweep records this host's own addresses up without sending
+    /// them anything, so they are not what it reaches by connect.
+    pub(crate) fn without(mut self, reason: &Unframed) -> Self {
+        self.reasons.retain(|(held, _)| held != reason);
+        let mut targets = IpSet::new();
+        for (_, held) in &self.reasons {
+            extend(&mut targets, held);
+        }
+        targets.canonicalize();
+        self.targets = targets;
+        self
+    }
+
+    /// One reason and the addresses it covers.
+    fn note(&mut self, reason: Unframed, mut targets: IpSet) {
+        targets.canonicalize();
+        if targets.is_empty() {
+            return;
+        }
+        extend(&mut self.targets, &targets);
+        self.reasons.push((reason, targets));
+    }
+}
+
+/// Adds every range of `from` to `into`, leaving the merge to whoever reads it.
+fn extend(into: &mut IpSet, from: &IpSet) {
+    for range in from.v4() {
+        into.push_v4_range(*range);
+    }
+    for range in from.v6() {
+        into.push_v6_range(*range);
+    }
+}
+
+/// Which of `ip_set` a frame built by `sender` cannot reach from this host.
+///
+/// Classified the way [`map_ips_to_interfaces_forced`] classifies, and so by the
+/// routing table: a routed target is out of reach when the source the kernel
+/// would send it from belongs to a link that carries no frames. That is the
+/// kernel's own statement of where the packet leaves, and a VPN that routes a
+/// target through its tunnel has made it here. The frame sender's own choice of
+/// egress is not consulted, because it is the thing whose reach is in question.
+pub(crate) fn beyond_frames(ip_set: IpSet, forced: &[IpAddr], sender: FrameSender) -> BeyondFrames {
+    beyond_frames_with(ip_set, viable_interfaces(), forced, sender)
+}
+
+/// [`beyond_frames`] against an interface table the caller supplies, the seam
+/// its decisions are tested through.
+pub(crate) fn beyond_frames_with(
+    ip_set: IpSet,
+    interfaces: Vec<Link>,
+    forced: &[IpAddr],
+    sender: FrameSender,
+) -> BeyondFrames {
+    let links = interfaces.clone();
+    let RoutedTargets {
+        local,
+        routed,
+        unmapped,
+        ours,
+        ..
+    } = map_ips_to_interfaces_with(ip_set, interfaces, forced);
+
+    // Grouped by reason before anything is counted, since one tunnel can hold
+    // targets on its own subnet and targets routed through it alike.
+    let mut groups: Vec<(Unframed, IpSet)> = Vec::new();
+    let mut add = |reason: Unframed, range: IpRange| match groups
+        .iter_mut()
+        .find(|(held, _)| *held == reason)
+    {
+        Some((_, targets)) => targets.insert_range(range),
+        None => {
+            let mut targets = IpSet::new();
+            targets.insert_range(range);
+            groups.push((reason, targets));
+        }
+    };
+
+    for address in unmapped.iter() {
+        let reason = if address.is_loopback() {
+            Unframed::Loopback
+        } else {
+            Unframed::NoRoute
+        };
+        add(reason, single(address));
+    }
+    for range in ours.v4() {
+        add(Unframed::Ours, V4(*range));
+    }
+    for range in ours.v6() {
+        add(Unframed::Ours, V6(*range));
+    }
+
+    // Sorted by name, so the order a message lists them in does not depend on a
+    // hash map's.
+    let mut local: Vec<(Link, IpSet)> = local.into_iter().collect();
+    local.sort_by(|(a, _), (b, _)| a.name().cmp(b.name()));
+    for (link, targets) in &local {
+        if !link.carries_frames() {
+            for range in targets.v4() {
+                add(Unframed::Tunnel(link.name().to_string()), V4(*range));
+            }
+            for range in targets.v6() {
+                add(Unframed::Tunnel(link.name().to_string()), V6(*range));
+            }
+        } else if sender == FrameSender::Probe {
+            for range in targets.v6() {
+                add(Unframed::Neighbour(link.name().to_string()), V6(*range));
+            }
+        }
+    }
+
+    for RoutedTarget { target, source } in routed {
+        // A source no link here holds is a forced one naming an address this
+        // host does not have. The frame sender builds that frame as asked, and
+        // a connect could not honour it, so it is left where it is.
+        let Some(owner) = links
+            .iter()
+            .find(|link| link.addresses().iter().any(|held| held.address() == source))
+        else {
+            continue;
+        };
+        if !owner.carries_frames() {
+            add(Unframed::Tunnel(owner.name().to_string()), single(target));
+        }
+    }
+
+    let mut beyond = BeyondFrames::default();
+    for (reason, targets) in groups {
+        beyond.note(reason, targets);
+    }
+    beyond.targets.canonicalize();
+    beyond
+}
+
+/// One address as a range of itself.
+fn single(address: IpAddr) -> IpRange {
+    match address {
+        IpAddr::V4(v4) => V4(Ipv4Range::single(v4)),
+        IpAddr::V6(v6) => V6(Ipv6Range::single(v6)),
     }
 }
 
@@ -599,6 +852,181 @@ mod tests {
             routed.local.values().next().map(IpSet::len),
             Some(1u128),
             "the neighbour is on-link"
+        );
+    }
+
+    /// A link a frame can be put on: a hardware address and a segment.
+    fn ethernet(addresses: &[(&str, u8)]) -> Link {
+        Link::new("en0", 4)
+            .with_mac(crate::model::mac::MacAddr::new(0x02, 0, 0, 0, 0, 0x10))
+            .with_kind(crate::system::interface::LinkKind::Wired)
+            .with_addressing(crate::system::interface::Addressing::Broadcast)
+            .with_link_up(true)
+            .with_addresses(held(addresses))
+    }
+
+    /// A VPN's tunnel, as macOS presents one: a peer rather than a segment, and
+    /// no hardware address.
+    fn tunnel(addresses: &[(&str, u8)]) -> Link {
+        Link::new("utun9", 20)
+            .with_addressing(crate::system::interface::Addressing::PointToPoint)
+            .with_link_up(true)
+            .with_addresses(held(addresses))
+    }
+
+    fn held(addresses: &[(&str, u8)]) -> Vec<crate::system::interface::LinkAddress> {
+        addresses
+            .iter()
+            .map(|(address, prefix)| {
+                crate::system::interface::LinkAddress::new(
+                    address.parse().expect("a literal"),
+                    *prefix,
+                )
+            })
+            .collect()
+    }
+
+    fn set_of(addresses: &[&str]) -> IpSet {
+        let mut set = IpSet::new();
+        for address in addresses {
+            set.insert(address.parse().expect("a literal"));
+        }
+        set
+    }
+
+    fn ip(literal: &str) -> IpAddr {
+        literal.parse().expect("a literal")
+    }
+
+    /// `::1` used to come out of the classifier as a routed target paired with
+    /// a global source, because the kernel answers it from `::1`, no viable
+    /// interface holds that, and the VPN fallback then offered the first global
+    /// address it found. `127.0.0.1` was spared only because that fallback
+    /// declines IPv4. A forced source did the same to both.
+    #[test]
+    fn loopback_is_unmapped_in_both_families_whatever_is_forced() {
+        let interfaces = vec![ethernet(&[("192.0.2.10", 24), ("2001:db8:1::10", 64)])];
+        let forced = [ip("192.0.2.10"), ip("2001:db8:1::10")];
+
+        for forced in [&forced[..], &[]] {
+            let routed = map_ips_to_interfaces_with(
+                set_of(&["127.0.0.1", "::1"]),
+                interfaces.clone(),
+                forced,
+            );
+
+            assert!(
+                routed.routed.is_empty(),
+                "loopback is not behind a gateway: {:?}",
+                routed.routed
+            );
+            assert!(routed.unmapped.contains(&ip("127.0.0.1")));
+            assert!(routed.unmapped.contains(&ip("::1")));
+        }
+    }
+
+    /// What a frame reaches, which has to keep working for the split to be worth
+    /// anything: a neighbour it can ARP for, and a routed target whose route
+    /// leaves by a link with Ethernet in front of it.
+    #[test]
+    fn a_frame_reaches_an_ipv4_neighbour_and_a_target_routed_over_ethernet() {
+        let beyond = beyond_frames_with(
+            set_of(&["192.0.2.50", "203.0.113.9"]),
+            vec![ethernet(&[("192.0.2.10", 24)])],
+            &[ip("192.0.2.10")],
+            FrameSender::Probe,
+        );
+
+        assert!(beyond.is_empty(), "nothing out of reach: {beyond:?}");
+    }
+
+    /// The case a VPN makes: the kernel sends the target from the tunnel's
+    /// address, so its route leaves by a link no frame can be put on, and the
+    /// frame sender's own guess at an egress is not what decides it.
+    #[test]
+    fn a_target_routed_through_a_tunnel_is_beyond_frames() {
+        let beyond = beyond_frames_with(
+            set_of(&["203.0.113.23"]),
+            vec![
+                ethernet(&[("192.0.2.10", 24)]),
+                tunnel(&[("198.51.100.2", 32)]),
+            ],
+            &[ip("198.51.100.2")],
+            FrameSender::Sweep,
+        );
+
+        assert!(beyond.targets.contains(&ip("203.0.113.23")));
+        assert_eq!(
+            beyond.summary(),
+            vec![(Unframed::Tunnel("utun9".into()), ip("203.0.113.23"), 1)]
+        );
+    }
+
+    /// A tunnel with a prefix of its own claims its subnet as on-link, and it is
+    /// no more a segment for that. Its own subnet and a target routed through it
+    /// are one reason, counted once.
+    #[test]
+    fn a_tunnels_own_subnet_is_beyond_frames_under_the_same_reason() {
+        let beyond = beyond_frames_with(
+            set_of(&["198.51.100.7", "203.0.113.23"]),
+            vec![tunnel(&[("198.51.100.2", 24)])],
+            &[ip("198.51.100.2")],
+            FrameSender::Sweep,
+        );
+
+        assert_eq!(beyond.targets.len(), 2);
+        assert_eq!(
+            beyond.summary(),
+            vec![(Unframed::Tunnel("utun9".into()), ip("198.51.100.7"), 2)]
+        );
+    }
+
+    /// The one place the two frame builders differ. The segment sweep resolves
+    /// an IPv6 neighbour itself; the probe sender has ARP and nothing else.
+    #[test]
+    fn an_ipv6_neighbour_is_within_the_sweep_and_beyond_the_probe_sender() {
+        let interfaces = vec![ethernet(&[("192.0.2.10", 24), ("2001:db8:1::10", 64)])];
+        let targets = set_of(&["2001:db8:1::20", "192.0.2.50"]);
+
+        let swept =
+            beyond_frames_with(targets.clone(), interfaces.clone(), &[], FrameSender::Sweep);
+        assert!(swept.is_empty(), "the sweep reaches both: {swept:?}");
+
+        let probed = beyond_frames_with(targets, interfaces, &[], FrameSender::Probe);
+        assert_eq!(
+            probed.summary(),
+            vec![(Unframed::Neighbour("en0".into()), ip("2001:db8:1::20"), 1)],
+            "and the probe sender only the IPv4 one"
+        );
+    }
+
+    /// The kernel answers these itself, so a frame for either reaches nobody who
+    /// replies. Two reasons, in the order a message names them.
+    #[test]
+    fn loopback_and_this_hosts_own_addresses_are_beyond_frames() {
+        let beyond = beyond_frames_with(
+            set_of(&["127.0.0.1", "::1", "192.0.2.10"]),
+            vec![ethernet(&[("192.0.2.10", 24)])],
+            &[],
+            FrameSender::Probe,
+        );
+
+        assert_eq!(
+            beyond.summary(),
+            vec![
+                (Unframed::Loopback, ip("127.0.0.1"), 2),
+                (Unframed::Ours, ip("192.0.2.10"), 1),
+            ]
+        );
+
+        let swept = beyond.without(&Unframed::Ours);
+        assert!(
+            !swept.targets.contains(&ip("192.0.2.10")),
+            "left out of the set as well as the reasons"
+        );
+        assert_eq!(
+            swept.summary(),
+            vec![(Unframed::Loopback, ip("127.0.0.1"), 2)]
         );
     }
 

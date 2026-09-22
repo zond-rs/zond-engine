@@ -142,6 +142,16 @@ impl PhaseRecorder {
             refusals: ctx.take_refusals(),
             unroutable: ctx.take_unroutable(),
             timed_out: ctx.take_timed_out(),
+            // Taken whatever the privilege, so a context reused for another
+            // phase starts empty, and kept only for a raw phase: one at
+            // `Connect` reached everything this way, and its privilege says so.
+            reached_by_connect: match self.privilege {
+                Privilege::Raw => ctx.take_reached_by_connect(),
+                Privilege::Connect => {
+                    let _ = ctx.take_reached_by_connect();
+                    Vec::new()
+                }
+            },
             probes: ctx.take_probe_stats(),
             origin: None,
             attachments: ctx.take_attachments(),
@@ -353,5 +363,54 @@ mod tests {
 
         // Draining is what stops a second phase inheriting the first's counters.
         assert!(ctx.take_probe_stats().is_empty());
+    }
+
+    /// A raw phase that reached some addresses by connect says which, merged,
+    /// and a connect phase says nothing more than its privilege already does.
+    /// Both drain the log, so a context reused for another phase starts empty.
+    #[test]
+    fn what_a_raw_phase_reached_by_connect_is_recorded_and_a_connect_phase_ignores_it() {
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+        let addresses = |list: &[&str]| {
+            let mut set = IpSet::new();
+            for address in list {
+                set.insert(address.parse().expect("a literal"));
+            }
+            set
+        };
+
+        let raw = PhaseRecorder::start(ScanKind::PortScan, Privilege::Raw, scope(), &cfg);
+        ctx.record_reached_by_connect(&addresses(&["127.0.0.1", "192.0.2.8"]));
+        // Reported again by a second strategy, and adjacent to one already in.
+        ctx.record_reached_by_connect(&addresses(&["127.0.0.1", "192.0.2.9"]));
+        let report = raw.finish(&ctx);
+
+        let reached: Vec<String> = report.phases()[0]
+            .reached_by_connect()
+            .iter()
+            .map(|range| format!("{}-{}", range.start_addr(), range.end_addr()))
+            .collect();
+        assert_eq!(
+            reached,
+            ["127.0.0.1-127.0.0.1", "192.0.2.8-192.0.2.9"],
+            "merged, ascending, and each address once"
+        );
+
+        let connect = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg);
+        ctx.record_reached_by_connect(&addresses(&["127.0.0.1"]));
+        let report = connect.finish(&ctx);
+        assert!(
+            report.phases()[0].reached_by_connect().is_empty(),
+            "a connect phase reached everything this way, and says so once"
+        );
+
+        let after = PhaseRecorder::start(ScanKind::PortScan, Privilege::Raw, scope(), &cfg);
+        assert!(
+            after.finish(&ctx).phases()[0]
+                .reached_by_connect()
+                .is_empty(),
+            "and what the connect phase was handed did not carry over"
+        );
     }
 }

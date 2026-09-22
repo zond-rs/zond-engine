@@ -37,6 +37,7 @@
 use crate::model::host::OsEvidence;
 use crate::system::privilege::{self, Privilege};
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -60,10 +61,12 @@ use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::rdns::HostnameResolver;
 use crate::scanner::session::{ScanContext, Stage};
+use crate::scanner::strategy::composite::Reach;
 use crate::scanner::strategy::local::Scope;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::scanner::{plan, rdns, strategy};
 use crate::system::interface;
+use crate::transport::probe::SendMode;
 use crate::{counted, info, success, warn};
 
 /// The targets an unprivileged sweep can actually walk, refusing the rest.
@@ -126,6 +129,21 @@ pub(super) struct ScanCapabilities {
     /// Which sockets every phase of this scan runs with. At
     /// [`Privilege::Connect`] each falls back to ordinary TCP connect attempts.
     pub(super) privilege: Privilege,
+    /// Whether this scan's raw strategies put frames on the wire with nothing
+    /// behind them, so that what a frame cannot reach needs another strategy.
+    ///
+    /// True for an unprivileged run on macOS holding the BPF devices, and for
+    /// every privileged run on Windows, whose default send mode is frames alone.
+    /// Such a run reaches loopback, this host's own addresses, anything routed
+    /// through a tunnel and, for its port probes, an IPv6 neighbour by connect,
+    /// the way an unprivileged run would, and reaches the rest with the packets
+    /// it chose. See [`interface::beyond_frames`].
+    ///
+    /// False where the caller chose the link layer, by naming the send mode or
+    /// by an evasion only a frame can carry. A connect honours neither choice,
+    /// so what the frames miss is left unanswered as the choice implies rather
+    /// than answered by a different probe than the one asked for.
+    pub(super) frames_only: bool,
     /// Whether hostname resolution is enabled, the inverse of `cfg.no_dns`.
     dns: bool,
 }
@@ -136,11 +154,20 @@ impl ScanCapabilities {
     /// code that later acts on them.
     pub(super) fn resolve(cfg: &ZondConfig) -> Self {
         let privilege = Privilege::current();
+        let mode = cfg.evasion.effective_send_mode(cfg.send_mode);
+        let frames_only =
+            privilege.is_raw() && mode == SendMode::Auto && !mode.reaches_past_frames();
+
         if privilege.is_raw() {
             // Which of the two routes carried it, because on macOS the second
             // one is what an unprivileged run gets and a reader who expected to
             // need sudo should see why they did not.
-            if privilege::can_send_raw() {
+            if frames_only {
+                success!(
+                    "link-layer access: probing with ARP, ICMPv6 and SYN as self-built frames, \
+                     and by TCP connect where a frame cannot reach"
+                );
+            } else if privilege::can_send_raw() {
                 success!("raw sockets available: probing with ARP, ICMPv6 and SYN");
             } else {
                 success!(
@@ -152,9 +179,89 @@ impl ScanCapabilities {
         }
         Self {
             privilege,
+            frames_only,
             dns: !cfg.no_dns,
         }
     }
+
+    /// Which of `targets` this scan cannot reach with the packets it chose.
+    ///
+    /// Empty unless the raw strategies send frames alone; see
+    /// [`frames_only`](Self::frames_only). `sender` is the frame builder the
+    /// question is asked for, since a segment sweep resolves an IPv6 neighbour
+    /// and the probe transport does not.
+    pub(super) fn beyond_frames(
+        self,
+        targets: &IpSet,
+        forced: &[IpAddr],
+        sender: interface::FrameSender,
+    ) -> interface::BeyondFrames {
+        if !self.frames_only || targets.is_empty() {
+            return interface::BeyondFrames::default();
+        }
+        interface::beyond_frames(targets.clone(), forced, sender)
+    }
+}
+
+/// The hosts a pass that builds its own segments can reach, having recorded
+/// once that it leaves the rest alone.
+///
+/// Every host, unless this scan's raw strategies send frames alone. Then a host
+/// a frame cannot reach is not probed some other way: what these passes read,
+/// a stack's answer to an unusual segment, the hops along a path, a middlebox's
+/// reply to a bad checksum, is what only a packet they built can ask. One
+/// refusal says how many were left and why, where a send per host would have
+/// failed once each and said nothing about the cause.
+fn within_frames<T>(
+    hosts: Vec<T>,
+    address: impl Fn(&T) -> IpAddr,
+    caps: ScanCapabilities,
+    forced: &[IpAddr],
+    ctx: &ScanContext,
+    scanner: ScannerKind,
+    pass: &str,
+) -> Vec<T> {
+    if !caps.frames_only || hosts.is_empty() {
+        return hosts;
+    }
+    let mut addresses = IpSet::new();
+    for host in &hosts {
+        addresses.insert(address(host));
+    }
+    let beyond = caps.beyond_frames(&addresses, forced, interface::FrameSender::Probe);
+    if beyond.is_empty() {
+        return hosts;
+    }
+    ctx.record_refusal(
+        plan::RefusedStep::pass_beyond_frames(scanner, pass, beyond.targets.len()).into(),
+    );
+    hosts
+        .into_iter()
+        .filter(|host| !beyond.targets.contains(&address(host)))
+        .collect()
+}
+
+/// Says once which targets a phase reaches by connect, and why each group is out
+/// of reach of the frames it would otherwise have been sent.
+///
+/// `who` is the phase, as the sentence names it.
+pub(super) fn announce_beyond_frames(beyond: &interface::BeyondFrames, who: &str) {
+    if beyond.is_empty() {
+        return;
+    }
+    let reasons: Vec<String> = beyond
+        .summary()
+        .into_iter()
+        .map(|(reason, first, count)| match count {
+            1 => format!("{first} is {reason}"),
+            more => format!("{first} and {} more are {reason}", more - 1),
+        })
+        .collect();
+    info!(
+        "{who} asks {} by connect, beyond what self-built frames reach: {}",
+        counted(beyond.targets.len(), "target", "targets"),
+        reasons.join("; ")
+    );
 }
 
 /// The privileged host-identification phase, shared by [`discover`] and
@@ -312,6 +419,44 @@ pub(super) async fn spawn_explorers(
         .collect()
 }
 
+/// What a port phase's raw strategies can reach.
+///
+/// Every target, unless they send frames alone; see
+/// [`ScanCapabilities::frames_only`].
+pub(super) enum RawReach {
+    /// Every target.
+    Everything,
+    /// Every target but these, which only the kernel can carry.
+    AllBut(IpSet),
+    /// No target: every one is out of a frame's reach. These are all of them.
+    Nothing(IpSet),
+}
+
+impl RawReach {
+    /// What a phase probing `probed` can reach with its raw strategies, when
+    /// `beyond` is what a frame cannot.
+    pub(super) fn of(probed: &IpSet, beyond: IpSet) -> Self {
+        if beyond.is_empty() {
+            return Self::Everything;
+        }
+        let mut within = probed.clone();
+        within.subtract(&beyond);
+        match within.is_empty() {
+            true => Self::Nothing(beyond),
+            false => Self::AllBut(beyond),
+        }
+    }
+
+    /// The targets the raw strategies cannot reach, empty for
+    /// [`Everything`](Self::Everything).
+    fn beyond(&self) -> IpSet {
+        match self {
+            Self::Everything => IpSet::new(),
+            Self::AllBut(beyond) | Self::Nothing(beyond) => beyond.clone(),
+        }
+    }
+}
+
 /// Turns a [`PortScanPlan`](plan::PortScanPlan) into the single strategy
 /// [`run_port_scan`] drives.
 ///
@@ -322,12 +467,17 @@ pub(super) async fn spawn_explorers(
 /// [`CompositePortScanner`](strategy::composite::CompositePortScanner), which
 /// routes each target to a strategy that covers its protocol. One scanner comes
 /// back either way, so the fork stays confined here.
+///
+/// `raw` is what the raw strategies can reach. Where that is every target but
+/// some, they are handed the rest and [`ensure_coverage`] finds those theirs;
+/// where it is no target at all, no raw strategy is opened.
 pub(super) fn build_port_scanner(
     plan: plan::PortScanPlan,
     ctx: &ScanContext,
     target_count: usize,
     tuning: ProbeTuning,
     zones: &ZoneMap,
+    raw: &RawReach,
 ) -> BuiltPortScan {
     for refusal in plan.refusals() {
         ctx.record_refusal(refusal.clone().into());
@@ -342,27 +492,40 @@ pub(super) fn build_port_scanner(
         .filter(|protocol| plan.covers(*protocol))
         .collect();
 
-    let mut scanners: Vec<Box<dyn PortScanner>> = Vec::new();
+    let beyond = Arc::new(raw.beyond());
+    let mut routes: Vec<(Box<dyn PortScanner>, Reach)> = Vec::new();
     let mut opened = Vec::new();
     for step in plan.into_steps() {
+        // Not opened rather than opened and starved: a raw strategy holds a
+        // capture on every interface for as long as the scan runs, and here it
+        // would be handed nothing. The protocol is left uncovered, which is what
+        // gives it its unprivileged strategy below, for every address.
+        if step.is_raw() && matches!(raw, RawReach::Nothing(_)) {
+            continue;
+        }
         match step.into_scanner(ctx.clone(), target_count, tuning.clone(), zones.clone()) {
             Ok(scanner) => {
+                let reach = match step.is_raw() && !beyond.is_empty() {
+                    true => Reach::Except(Arc::clone(&beyond)),
+                    false => Reach::Any,
+                };
                 opened.push(step);
-                scanners.push(scanner);
+                routes.push((scanner, reach));
             }
             Err(e) => ctx.record_failure(step.kind(), e.to_string()),
         }
     }
 
     BuiltPortScan {
-        scanner: Box::new(strategy::composite::CompositePortScanner::new(
+        scanner: Box::new(strategy::composite::CompositePortScanner::with_reach(
             ensure_coverage(
-                scanners,
+                routes,
                 ctx,
                 technique,
                 &intended,
                 tuning.service_detection,
                 &tuning.evasion,
+                &beyond,
             ),
             ctx.clone(),
         )),
@@ -398,43 +561,70 @@ pub(super) fn build_port_scanner(
 /// supplies, and saying it again puts one cause in the report twice. What is
 /// left for this function is the narrower case the plan could not foresee: a
 /// protocol it did intend, whose socket would not open.
+///
+/// ## The targets the raw strategies cannot reach
+///
+/// `beyond` is empty unless the raw strategies send frames alone, and then it
+/// is what a frame cannot reach: loopback, this host's own addresses, anything
+/// routed through a tunnel, and an IPv6 neighbour. The raw routes arrive already
+/// handed everything else, so the same question is asked a second time over
+/// these addresses, on the same terms: a protocol whose only strategies are raw
+/// gets its unprivileged one for them alone, or is refused for them alone. What
+/// is reached this way is recorded, since the phase's privilege reads as raw
+/// and the evidence at these addresses is not.
+///
+/// A protocol with no strategy at all is not asked about twice. Its fallback
+/// above reaches every address, these included, and its refusal already
+/// covers them.
 pub(super) fn ensure_coverage(
-    mut scanners: Vec<Box<dyn PortScanner>>,
+    mut routes: Vec<(Box<dyn PortScanner>, Reach)>,
     ctx: &ScanContext,
     technique: TcpScanTechnique,
     intended: &[Protocol],
     detection: ServiceDetection,
     evasion: &EvasionProfile,
-) -> Vec<Box<dyn PortScanner>> {
-    let covered: Vec<Protocol> = scanners
+    beyond: &Arc<IpSet>,
+) -> Vec<(Box<dyn PortScanner>, Reach)> {
+    let covered: Vec<Protocol> = routes
         .iter()
-        .flat_map(|scanner| scanner.supported_protocols())
+        .flat_map(|(scanner, _)| scanner.supported_protocols())
         .collect();
+    // Covered, and by nothing that is handed the addresses the raw routes are
+    // not. Asked before anything is added below, since a fallback reaching
+    // every address answers this question as well as the first one.
+    let beyond_uncovered: Vec<Protocol> = match beyond.is_empty() {
+        true => Vec::new(),
+        false => covered
+            .iter()
+            .copied()
+            .filter(|protocol| intended.contains(protocol))
+            .filter(|protocol| {
+                !routes.iter().any(|(scanner, reach)| {
+                    !matches!(reach, Reach::Except(_))
+                        && scanner.supported_protocols().contains(protocol)
+                })
+            })
+            .collect(),
+    };
 
     let missing = |protocol: Protocol| intended.contains(&protocol) && !covered.contains(&protocol);
 
+    // Whether anything below stands in for a raw strategy. A stand-in reaching
+    // every address reaches the ones a frame cannot as well.
+    let mut connected = false;
+
     if missing(Protocol::Tcp) {
         if technique.has_connect_fallback() {
-            scanners.push(Box::new(strategy::connect::ConnectPortScanner::new(
-                ctx.clone(),
-                crate::config::limits::CONNECT_CONCURRENCY,
-                detection,
-                evasion,
-            )));
+            routes.push((connect_tcp(ctx, detection, evasion), Reach::Any));
+            connected = true;
         } else {
             ctx.record_refusal(plan::RefusedStep::technique_needs_raw_sockets(technique).into());
         }
     }
 
     if missing(Protocol::Udp) {
-        scanners.push(Box::new(
-            strategy::connect::ConnectUdpPortScanner::with_detection(
-                ctx.clone(),
-                crate::config::limits::CONNECT_CONCURRENCY,
-                evasion,
-                detection,
-            ),
-        ));
+        routes.push((connect_udp(ctx, detection, evasion), Reach::Any));
+        connected = true;
     }
 
     // Nothing stands in for an INIT scan. A protocol whose only strategy failed
@@ -444,7 +634,64 @@ pub(super) fn ensure_coverage(
         ctx.record_refusal(plan::RefusedStep::sctp_needs_raw_sockets().into());
     }
 
-    scanners
+    let beyond_count = beyond.len();
+    for protocol in beyond_uncovered {
+        match protocol {
+            Protocol::Tcp if technique.has_connect_fallback() => {
+                routes.push((
+                    connect_tcp(ctx, detection, evasion),
+                    Reach::Only(Arc::clone(beyond)),
+                ));
+                connected = true;
+            }
+            Protocol::Tcp => ctx.record_refusal(
+                plan::RefusedStep::technique_beyond_frames(technique, beyond_count).into(),
+            ),
+            Protocol::Udp => {
+                routes.push((
+                    connect_udp(ctx, detection, evasion),
+                    Reach::Only(Arc::clone(beyond)),
+                ));
+                connected = true;
+            }
+            Protocol::Sctp => {
+                ctx.record_refusal(plan::RefusedStep::sctp_beyond_frames(beyond_count).into())
+            }
+        }
+    }
+    if connected && !beyond.is_empty() {
+        ctx.record_reached_by_connect(beyond);
+    }
+
+    routes
+}
+
+/// The unprivileged TCP strategy, as a stand-in for a raw one.
+fn connect_tcp(
+    ctx: &ScanContext,
+    detection: ServiceDetection,
+    evasion: &EvasionProfile,
+) -> Box<dyn PortScanner> {
+    Box::new(strategy::connect::ConnectPortScanner::new(
+        ctx.clone(),
+        crate::config::limits::CONNECT_CONCURRENCY,
+        detection,
+        evasion,
+    ))
+}
+
+/// The unprivileged UDP strategy, as a stand-in for a raw one.
+fn connect_udp(
+    ctx: &ScanContext,
+    detection: ServiceDetection,
+    evasion: &EvasionProfile,
+) -> Box<dyn PortScanner> {
+    Box::new(strategy::connect::ConnectUdpPortScanner::with_detection(
+        ctx.clone(),
+        crate::config::limits::CONNECT_CONCURRENCY,
+        evasion,
+        detection,
+    ))
 }
 
 /// A port-scan strategy, and which of the planned steps actually opened.
@@ -605,6 +852,7 @@ pub(super) async fn run_active_os_series(
     ctx: &ScanContext,
     os_detection: OsDetection,
     tuning: ProbeTuning,
+    caps: ScanCapabilities,
 ) {
     if !os_detection.is_active() {
         return;
@@ -636,6 +884,15 @@ pub(super) async fn run_active_os_series(
             .flatten()
         })
         .collect();
+    let targets = within_frames(
+        targets,
+        |target| target.address.addr(),
+        caps,
+        &tuning.send_source,
+        ctx,
+        ScannerKind::OsSeries,
+        "the OS series probe",
+    );
 
     if targets.is_empty() {
         return;
@@ -966,7 +1223,11 @@ async fn ask_for_kernel(
 /// measured backwards from its far end and the far end's distance comes out of
 /// a reply, so there is nothing to measure from; see
 /// [`traceroute`](crate::scanner::strategy::topology::traceroute).
-pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
+pub(super) async fn run_traceroute(
+    ctx: &ScanContext,
+    cfg: &crate::config::ZondConfig,
+    caps: ScanCapabilities,
+) {
     if !cfg.traceroute {
         return;
     }
@@ -984,6 +1245,15 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
         .collect();
     alive.sort_unstable();
     alive.dedup();
+    let alive = within_frames(
+        alive,
+        |ip| *ip,
+        caps,
+        &cfg.send_source,
+        ctx,
+        ScannerKind::Routed,
+        "the route trace",
+    );
 
     if alive.is_empty() {
         return;
@@ -1072,7 +1342,11 @@ pub(super) fn run_cert_posture(ctx: &ScanContext) {
 /// middlebox on those that answer one: a reply no conformant host could have
 /// sent. A host with no open TCP port is skipped: there is nowhere to aim a
 /// probe whose whole point is that a listener would answer it.
-pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
+pub(super) async fn run_characterise(
+    ctx: &ScanContext,
+    cfg: &crate::config::ZondConfig,
+    caps: ScanCapabilities,
+) {
     if !cfg.characterise {
         return;
     }
@@ -1109,6 +1383,16 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
             });
         }
     }
+
+    let subjects = within_frames(
+        subjects,
+        |subject| subject.host,
+        caps,
+        &cfg.send_source,
+        ctx,
+        ScannerKind::Routed,
+        "the filter characterisation",
+    );
 
     if subjects.is_empty() {
         return;
@@ -1306,6 +1590,7 @@ pub(super) async fn run_active_os_probe(
     ctx: &ScanContext,
     os_detection: crate::config::OsDetection,
     tuning: ProbeTuning,
+    caps: ScanCapabilities,
 ) {
     if !os_detection.is_active() {
         return;
@@ -1330,6 +1615,15 @@ pub(super) async fn run_active_os_probe(
         .collect();
     unnamed.sort_unstable();
     unnamed.dedup();
+    let unnamed = within_frames(
+        unnamed,
+        |ip| *ip,
+        caps,
+        &tuning.send_source,
+        ctx,
+        ScannerKind::OsEcho,
+        "the OS echo probe",
+    );
 
     if unnamed.is_empty() {
         return;
@@ -1526,18 +1820,39 @@ pub(super) async fn run_port_phase(
     if target_map.names(Protocol::Sctp) {
         plan.cover_sctp(caps.privilege);
     }
-    let built = build_port_scanner(plan, ctx, target_count, cfg.probe_tuning(), &zones);
+
+    // Over what this phase will probe, which is the hosts that answered where
+    // the liveness phase ran: an address it found down is sent nothing here,
+    // and was reached by nothing.
+    let mut probed = target_ips(&target_map);
+    if let Some(live) = &live {
+        probed = within(&probed, live);
+    }
+    let beyond = caps.beyond_frames(&probed, &cfg.send_source, interface::FrameSender::Probe);
+    announce_beyond_frames(&beyond, "the port scan");
+    let raw = RawReach::of(&probed, beyond.targets.clone());
+    let built = build_port_scanner(plan, ctx, target_count, cfg.probe_tuning(), &zones, &raw);
 
     // Only when nothing has enriched these hosts already. With the liveness
     // phase on, it has: the pass that established they are there is the same one
     // that reads their hardware addresses and names.
     let enrichment = if cfg.assume_up && built.opened_raw() {
-        let plan = super::plan::DiscoveryPlan::build(
-            target_ips(&target_map),
+        let addresses = target_ips(&target_map);
+        let unframed =
+            caps.beyond_frames(&addresses, &cfg.send_source, interface::FrameSender::Sweep);
+        let mut plan = super::plan::DiscoveryPlan::build(
+            addresses,
             Scope::Targeted,
             &cfg.exclusions,
             &cfg.send_source,
         );
+        plan.withhold(&unframed.targets);
+        // What enrichment is for is a hardware address and a round trip, and a
+        // connect step yields neither: it would ask a handful of ports on a
+        // host whose ports are being asked anyway, and ask them again on a
+        // resumed sitting that has nothing left to probe.
+        plan.steps_mut()
+            .retain(|step| !matches!(step, super::plan::DiscoveryStep::Connect { .. }));
         Some(Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await)
     } else {
         None
@@ -1677,6 +1992,18 @@ pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
 /// half of what was found.
 fn routable(key: crate::model::ip::scoped::ScopedIp) -> Option<IpAddr> {
     (!crate::model::ip::scoped::ScopedIp::needs_zone(&key.addr())).then(|| key.addr())
+}
+
+/// The addresses of `set` that `of` also holds.
+///
+/// Two subtractions, each linear in ranges rather than in addresses: what `set`
+/// has that `of` lacks, taken back out of `set`.
+fn within(set: &IpSet, of: &IpSet) -> IpSet {
+    let mut outside = set.clone();
+    outside.subtract(of);
+    let mut inside = set.clone();
+    inside.subtract(&outside);
+    inside
 }
 
 /// Pushes one address into `set` as a range of itself.
@@ -2010,16 +2337,44 @@ mod tests {
     fn covered(scanners: Vec<Box<dyn PortScanner>>) -> Vec<Protocol> {
         let (_session, ctx) = ScanSession::new();
         ensure_coverage(
-            scanners,
+            reaching_everything(scanners),
             &ctx,
             TcpScanTechnique::Syn,
             BOTH,
             ServiceDetection::default(),
             &EvasionProfile::default(),
+            &nothing_beyond(),
         )
         .iter()
-        .flat_map(|scanner| scanner.supported_protocols())
+        .flat_map(|(scanner, _)| scanner.supported_protocols())
         .collect()
+    }
+
+    /// Strategies as a scan whose raw routes reach every address hands them
+    /// over.
+    fn reaching_everything(
+        scanners: Vec<Box<dyn PortScanner>>,
+    ) -> Vec<(Box<dyn PortScanner>, Reach)> {
+        scanners
+            .into_iter()
+            .map(|scanner| (scanner, Reach::Any))
+            .collect()
+    }
+
+    /// No target out of the raw strategies' reach, which is every scan but one
+    /// whose raw strategies send frames alone.
+    fn nothing_beyond() -> Arc<IpSet> {
+        Arc::new(IpSet::new())
+    }
+
+    /// A scan whose raw strategies reach everything, stated rather than read
+    /// from the machine running the tests.
+    fn raw_everywhere() -> ScanCapabilities {
+        ScanCapabilities {
+            privilege: Privilege::Raw,
+            frames_only: false,
+            dns: false,
+        }
     }
 
     /// The plan refuses what it can foresee and `ensure_coverage` catches what
@@ -2044,6 +2399,7 @@ mod tests {
             0,
             cfg.probe_tuning(),
             &ZoneMap::new(),
+            &RawReach::Everything,
         );
 
         let refusals = ctx.take_refusals();
@@ -2055,6 +2411,57 @@ mod tests {
         );
         assert_eq!(refusals[0].scanner(), ScannerKind::TcpPort);
         assert!(refusals[0].reason().contains("fin"));
+    }
+
+    /// Which of the three a phase is, by what its frames cannot reach against
+    /// what it probes.
+    #[test]
+    fn raw_reach_is_everything_part_or_nothing() {
+        let probed = ip_set(&["127.0.0.1", "192.0.2.8"]);
+
+        assert!(matches!(
+            RawReach::of(&probed, IpSet::new()),
+            RawReach::Everything
+        ));
+        assert!(matches!(
+            RawReach::of(&probed, ip_set(&["127.0.0.1"])),
+            RawReach::AllBut(_)
+        ));
+        assert!(matches!(
+            RawReach::of(&probed, ip_set(&["127.0.0.1", "192.0.2.8"])),
+            RawReach::Nothing(_)
+        ));
+    }
+
+    /// A frames-only scan of nothing but loopback, or of one box behind a VPN,
+    /// has no target a raw strategy can reach. Opened anyway, each held a
+    /// capture on every interface and sent nothing: two audit lines of `0/0
+    /// hosts` on the machine this was measured on. Not opened, the connect
+    /// strategies take every target, nothing is reported as failing, and the
+    /// phase still says its evidence is connect evidence.
+    #[test]
+    fn nothing_within_a_frames_reach_opens_no_raw_strategy() {
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+
+        let built = build_port_scanner(
+            plan::PortScanPlan::build(&cfg, Privilege::Raw),
+            &ctx,
+            1,
+            cfg.probe_tuning(),
+            &ZoneMap::new(),
+            &RawReach::Nothing(ip_set(&["127.0.0.1"])),
+        );
+
+        assert!(!built.opened_raw(), "nothing raw was opened");
+        assert_eq!(
+            built.scanner.supported_protocols(),
+            vec![Protocol::Tcp, Protocol::Udp],
+            "and the connect strategies cover both protocols"
+        );
+        assert!(ctx.take_failures().is_empty(), "declining is not failing");
+        assert!(ctx.take_refusals().is_empty());
+        assert_eq!(ctx.take_reached_by_connect().len(), 1);
     }
 
     /// Host enrichment is keyed on whether a raw scan is happening, and a raw
@@ -2125,10 +2532,11 @@ mod tests {
             BOTH,
             ServiceDetection::default(),
             &EvasionProfile::default(),
+            &nothing_beyond(),
         );
         let protocols: Vec<Protocol> = scanners
             .iter()
-            .flat_map(|scanner| scanner.supported_protocols())
+            .flat_map(|(scanner, _)| scanner.supported_protocols())
             .collect();
 
         assert!(
@@ -2163,18 +2571,162 @@ mod tests {
     fn fully_covered_protocols_gain_no_fallback() {
         let (_session, ctx) = ScanSession::new();
         let scanners = ensure_coverage(
-            vec![
+            reaching_everything(vec![
                 Box::new(StubScanner(vec![Protocol::Tcp])),
                 Box::new(StubScanner(vec![Protocol::Udp])),
-            ],
+            ]),
             &ctx,
             TcpScanTechnique::Syn,
             BOTH,
             ServiceDetection::default(),
             &EvasionProfile::default(),
+            &nothing_beyond(),
         );
         // Two scanners in, two scanners out: nothing was added beside them.
         assert_eq!(scanners.len(), 2);
+    }
+
+    /// What a frames-only scan's raw routes cannot reach, as the port phase
+    /// hands it over: loopback.
+    fn loopback_beyond() -> Arc<IpSet> {
+        let mut set = IpSet::new();
+        set.insert(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        Arc::new(set)
+    }
+
+    /// Raw routes that are handed everything but `beyond`, as `build_port_scanner`
+    /// hands them over when the raw strategies send frames alone.
+    fn raw_routes(
+        beyond: &Arc<IpSet>,
+        protocols: &[Protocol],
+    ) -> Vec<(Box<dyn PortScanner>, Reach)> {
+        protocols
+            .iter()
+            .map(|protocol| {
+                let scanner: Box<dyn PortScanner> = Box::new(StubScanner(vec![*protocol]));
+                (scanner, Reach::Except(Arc::clone(beyond)))
+            })
+            .collect()
+    }
+
+    /// Which protocols are covered for the addresses the raw routes are not
+    /// handed.
+    fn covered_beyond(routes: &[(Box<dyn PortScanner>, Reach)]) -> Vec<Protocol> {
+        routes
+            .iter()
+            .filter(|(_, reach)| matches!(reach, Reach::Only(_)))
+            .flat_map(|(scanner, _)| scanner.supported_protocols())
+            .collect()
+    }
+
+    /// The defect this exists for: a frames-only scan's raw routes are handed
+    /// every address but the ones a frame cannot reach, so without a strategy
+    /// of their own those addresses reached no scanner at all and every port on
+    /// loopback came back unasked. Each protocol the raw routes cover gets its
+    /// connect strategy for them alone, and the phase records that it did.
+    #[test]
+    fn what_frames_cannot_reach_gets_the_connect_strategies_for_itself_alone() {
+        let (_session, ctx) = ScanSession::new();
+        let beyond = loopback_beyond();
+
+        let routes = ensure_coverage(
+            raw_routes(&beyond, BOTH),
+            &ctx,
+            TcpScanTechnique::Syn,
+            BOTH,
+            ServiceDetection::default(),
+            &EvasionProfile::default(),
+            &beyond,
+        );
+
+        assert_eq!(covered_beyond(&routes), vec![Protocol::Tcp, Protocol::Udp]);
+        assert_eq!(routes.len(), 4, "the raw routes are kept beside them");
+        assert!(ctx.take_refusals().is_empty());
+        assert_eq!(
+            ctx.take_reached_by_connect().len(),
+            1,
+            "the phase has to say its loopback evidence is connect evidence"
+        );
+    }
+
+    /// The same rule the whole-scan fallback keeps, applied to the part: a
+    /// connect scan cannot send a FIN, so the TCP ports on what a frame cannot
+    /// reach are refused rather than answered by a different question. UDP
+    /// still has its stand-in.
+    #[test]
+    fn a_technique_connect_cannot_express_is_refused_for_those_targets_alone() {
+        let (_session, ctx) = ScanSession::new();
+        let beyond = loopback_beyond();
+
+        let routes = ensure_coverage(
+            raw_routes(&beyond, BOTH),
+            &ctx,
+            TcpScanTechnique::Fin,
+            BOTH,
+            ServiceDetection::default(),
+            &EvasionProfile::default(),
+            &beyond,
+        );
+
+        assert_eq!(covered_beyond(&routes), vec![Protocol::Udp]);
+        let refusals = ctx.take_refusals();
+        assert_eq!(refusals.len(), 1);
+        assert_eq!(refusals[0].scanner(), ScannerKind::TcpPort);
+        assert!(
+            refusals[0].reason().contains("fin") && refusals[0].reason().contains("1 target"),
+            "the refusal names the technique and how much it left: {}",
+            refusals[0].reason()
+        );
+    }
+
+    /// Nothing stands in for an INIT, on part of a scan as on the whole of one.
+    /// Refused, and not recorded as reached by connect, since nothing was.
+    #[test]
+    fn sctp_on_what_frames_cannot_reach_is_refused_and_nothing_is_reached_by_connect() {
+        let (_session, ctx) = ScanSession::new();
+        let beyond = loopback_beyond();
+
+        let routes = ensure_coverage(
+            raw_routes(&beyond, &[Protocol::Sctp]),
+            &ctx,
+            TcpScanTechnique::Syn,
+            &[Protocol::Sctp],
+            ServiceDetection::default(),
+            &EvasionProfile::default(),
+            &beyond,
+        );
+
+        assert!(covered_beyond(&routes).is_empty());
+        let refusals = ctx.take_refusals();
+        assert_eq!(refusals.len(), 1);
+        assert_eq!(refusals[0].scanner(), ScannerKind::SctpPort);
+        assert!(ctx.take_reached_by_connect().is_empty());
+    }
+
+    /// A protocol whose raw strategy did not open at all is refused once, for
+    /// every address, and not a second time for the addresses a frame would
+    /// not have reached anyway.
+    #[test]
+    fn a_protocol_with_no_strategy_is_not_refused_twice_for_part_of_the_scan() {
+        let (_session, ctx) = ScanSession::new();
+
+        let _ = ensure_coverage(
+            Vec::new(),
+            &ctx,
+            TcpScanTechnique::Syn,
+            &[Protocol::Sctp],
+            ServiceDetection::default(),
+            &EvasionProfile::default(),
+            &loopback_beyond(),
+        );
+
+        let refusals = ctx.take_refusals();
+        assert_eq!(
+            refusals.len(),
+            1,
+            "one cause, one entry: {:?}",
+            refusals.iter().map(Refusal::reason).collect::<Vec<_>>()
+        );
     }
 
     /// The mirror of the double-record: a plan that never intended TCP gets no
@@ -2191,11 +2743,12 @@ mod tests {
             &[Protocol::Udp],
             ServiceDetection::default(),
             &EvasionProfile::default(),
+            &nothing_beyond(),
         );
 
         let protocols: Vec<Protocol> = scanners
             .iter()
-            .flat_map(|scanner| scanner.supported_protocols())
+            .flat_map(|(scanner, _)| scanner.supported_protocols())
             .collect();
         assert_eq!(protocols, vec![Protocol::Udp]);
         assert!(
@@ -2372,7 +2925,13 @@ mod tests {
             );
         });
 
-        run_active_os_series(&ctx, OsDetection::Active, ProbeTuning::default()).await;
+        run_active_os_series(
+            &ctx,
+            OsDetection::Active,
+            ProbeTuning::default(),
+            raw_everywhere(),
+        )
+        .await;
 
         assert!(
             ctx.take_failures().is_empty(),
@@ -2402,7 +2961,7 @@ mod tests {
                 host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
             });
 
-            run_active_os_series(&ctx, level, ProbeTuning::default()).await;
+            run_active_os_series(&ctx, level, ProbeTuning::default(), raw_everywhere()).await;
 
             assert!(
                 ctx.take_probe_stats().is_empty(),

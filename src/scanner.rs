@@ -134,6 +134,7 @@ use crate::scanner::orchestrator::{
 };
 use crate::scanner::recorder::PhaseRecorder;
 use crate::scanner::session::{ScanContext, ScanSession, Stage};
+use crate::system::interface;
 use crate::system::privilege::Privilege;
 use strategy::local::Scope;
 
@@ -634,12 +635,12 @@ fn spawn_discovery(
         run_discovery(targets, reach, caps, &cfg, &ctx, None).await;
         // Only the echo probe. The series probe reads a port whose state is
         // already known, and a sweep establishes none.
-        orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
+        orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
         // A sweep knows no ports, so every trace here is made of echoes. A port
         // scan traces better, having somewhere to aim.
-        orchestrator::run_traceroute(&ctx, &cfg).await;
+        orchestrator::run_traceroute(&ctx, &cfg, caps).await;
         ctx.enter_stage(Stage::Finishing, None);
-        orchestrator::run_characterise(&ctx, &cfg).await;
+        orchestrator::run_characterise(&ctx, &cfg, caps).await;
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
         // Last, and after every strategy that could add an address: what this
         // machine's own interfaces and routes say about what was found.
@@ -663,6 +664,11 @@ fn spawn_discovery(
 /// ports name SCTP. `None` for a run that never mentioned it, which is every
 /// other one: an SCTP sweep costs a second raw socket and a second capture, and
 /// asks a question nobody put.
+///
+/// A raw sweep still reaches some targets by connect: loopback and anything
+/// nothing routes to, whatever the privilege, and when frames are all it has,
+/// whatever a frame cannot reach. The phase records which, since its privilege
+/// reads as raw and the evidence at those addresses is not.
 async fn run_discovery(
     targets: IpSet,
     reach: Scope,
@@ -672,10 +678,22 @@ async fn run_discovery(
     sctp_port: Option<u16>,
 ) {
     if caps.privilege.is_raw() {
+        // This host's own addresses are recorded up without being sent
+        // anything, so they are not among what the sweep reaches by connect.
+        let unframed = caps
+            .beyond_frames(&targets, &cfg.send_source, interface::FrameSender::Sweep)
+            .without(&interface::Unframed::Ours);
         let mut plan =
             plan::DiscoveryPlan::build(targets, reach, &cfg.exclusions, &cfg.send_source);
+        plan.connect_instead(&unframed.targets);
+        orchestrator::announce_beyond_frames(&unframed, "discovery");
         if let Some(port) = sctp_port {
             plan.also_over_sctp(port);
+        }
+        for step in plan.steps() {
+            if let plan::DiscoveryStep::Connect { targets } = step {
+                ctx.record_reached_by_connect(targets);
+            }
         }
         let enrichment = Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await;
         finish_enrichment(Some(enrichment), caps, ctx).await;
@@ -1153,18 +1171,18 @@ fn spawn_scan(
         // Ordered by what each pass leaves the next. The series probe takes
         // every host with a TCP answer, so the echo probe is left with the
         // machines that answered nothing at all.
-        orchestrator::run_active_os_series(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
+        orchestrator::run_active_os_series(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
         orchestrator::run_active_os_snmp(&ctx, cfg.os_detection).await;
         // After the two that read a stack, because it asks only hosts that have
         // a name and answers a question neither of those can: macOS and iOS
         // share a kernel and are indistinguishable to a probe, while a
         // device-info record names the model outright.
         orchestrator::run_active_os_mdns(&ctx, cfg.os_detection).await;
-        orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
+        orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
         // Last: the ports are what decide a trace's shape.
-        orchestrator::run_traceroute(&ctx, &cfg).await;
+        orchestrator::run_traceroute(&ctx, &cfg, caps).await;
         ctx.enter_stage(Stage::Finishing, None);
-        orchestrator::run_characterise(&ctx, &cfg).await;
+        orchestrator::run_characterise(&ctx, &cfg, caps).await;
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
         vantage::attribute(&ctx);
         orchestrator::run_correlation(&ctx, cfg.service_detection);

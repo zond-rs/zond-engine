@@ -339,6 +339,15 @@ pub(crate) fn report() -> ScanReport {
         "the fixture's budget is spent before it is asked"
     );
 
+    // Loopback, which a raw sweep reaches by connect whatever its privilege, so
+    // the document carries the list a reader tells connect evidence from raw
+    // evidence by. A range as well as a single address, since a tunnel's own
+    // subnet arrives whole.
+    let mut connected = IpSet::new();
+    connected.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    connected.insert_range("198.51.100.0/30".parse().expect("a valid range"));
+    ctx.record_reached_by_connect(&connected);
+
     for host in [router(), filtered_host(), bare_host()] {
         ctx.store.insert(host.scoped_ip(), host);
     }
@@ -418,6 +427,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         refusals: Vec::new(),
         unroutable: Vec::new(),
         timed_out: Vec::new(),
+        reached_by_connect: Vec::new(),
         probes: Vec::new(),
         origin: None,
     });

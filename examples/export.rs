@@ -793,6 +793,9 @@ fn phase() -> ScanPhase {
         attachments: Vec::new(),
         unroutable: Vec::new(),
         timed_out: Vec::new(),
+        // Every target reached with the packets the scan chose. Left out of the
+        // document too, as `refusals` is.
+        reached_by_connect: Vec::new(),
     })
 }
 

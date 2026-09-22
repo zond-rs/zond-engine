@@ -84,8 +84,9 @@ use crate::info;
 use crate::journal::settle::{Outcome, Settled, Settlements};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::Host;
+use crate::model::ip::range::IpRange;
 use crate::model::ip::scoped::{ScopedIp, Zone, ZoneMap};
-use crate::model::ip::set::Positions;
+use crate::model::ip::set::{IpSet, Positions};
 use crate::model::port::Protocol;
 use crate::report::ScannerKind;
 use crate::report::{Attachment, AttachmentSource, ProbeStats, Refusal, ScannerFailure};
@@ -927,6 +928,37 @@ impl TimedOutLog {
     }
 }
 
+/// Addresses a raw phase reached by TCP connect, gathered across it.
+///
+/// Held as ranges rather than addresses, because what fills it is a whole group
+/// a strategy was handed, and a tunnel's own subnet can be a `/23`. Merged on
+/// the way out, so a range two strategies both reported is named once.
+#[derive(Debug, Default)]
+pub(crate) struct ConnectLog {
+    entries: Mutex<IpSet>,
+}
+
+impl ConnectLog {
+    fn extend(&self, targets: &IpSet) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        for range in targets.v4() {
+            entries.push_v4_range(*range);
+        }
+        for range in targets.v6() {
+            entries.push_v6_range(*range);
+        }
+    }
+
+    fn drain(&self) -> Vec<IpRange> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut taken = std::mem::take(&mut *entries);
+        taken.canonicalize();
+        let v4 = taken.v4().iter().copied().map(IpRange::V4);
+        let v6 = taken.v6().iter().copied().map(IpRange::V6);
+        v4.chain(v6).collect()
+    }
+}
+
 /// When each host's wall-clock budget started, for a scan given one.
 ///
 /// A host's clock starts on the first probe aimed at it rather than when the
@@ -1254,6 +1286,8 @@ pub struct ScanContext {
     pub(crate) unroutable: Arc<UnroutableLog>,
     /// Addresses the scan stopped working on because their budget ran out.
     pub(crate) timed_out: Arc<TimedOutLog>,
+    /// Addresses a raw phase reached by TCP connect instead.
+    pub(crate) reached_by_connect: Arc<ConnectLog>,
     /// When each host's budget started, for a scan that set one.
     pub(crate) clocks: Arc<HostClocks>,
     pub(crate) spacing: Arc<HostSpacing>,
@@ -1686,6 +1720,26 @@ impl ScanContext {
         self.timed_out.drain()
     }
 
+    /// Records that `targets` were reached by TCP connect in a phase that held
+    /// the privilege its raw strategies need.
+    ///
+    /// For a strategy that, inside a raw phase, reaches its targets the way an
+    /// unprivileged one would: loopback in any raw phase, and whatever a
+    /// process's self-built frames cannot reach when frames are all it has.
+    /// What such a strategy finds is connect evidence, and the phase's privilege
+    /// alone would present it as raw. Ignored by a phase recorded at
+    /// [`Privilege::Connect`](crate::system::privilege::Privilege::Connect),
+    /// which reached everything this way. See
+    /// [`ScanPhase::reached_by_connect`](crate::report::ScanPhase::reached_by_connect).
+    pub fn record_reached_by_connect(&self, targets: &IpSet) {
+        self.reached_by_connect.extend(targets);
+    }
+
+    /// The addresses reached by connect so far, merged and taken.
+    pub(crate) fn take_reached_by_connect(&self) -> Vec<IpRange> {
+        self.reached_by_connect.drain()
+    }
+
     /// Records that this phase swept a whole link, not merely the addresses on
     /// it that were named.
     ///
@@ -2116,6 +2170,7 @@ impl SessionBuilder {
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             timed_out: Arc::new(TimedOutLog::default()),
+            reached_by_connect: Arc::new(ConnectLog::default()),
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,
                 started: DashMap::new(),
