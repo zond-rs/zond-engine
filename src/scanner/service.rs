@@ -70,6 +70,9 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
 
     ctx.enter_stage(Stage::Services, Some(targets.len() as u64));
 
+    let asked = targets.len();
+    let mut quiet = QuietPorts::default();
+
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
         ctx.clone(),
@@ -88,13 +91,9 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
                     ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
                     write_back(ctx, ip, port, about_the_host);
                 }
-                Attempt::Unreachable { ip, number, reason } => ctx.record_failure(
-                    ScannerKind::Service,
-                    format!(
-                        "{} could not be fingerprinted: {reason}",
-                        ip.endpoint(number)
-                    ),
-                ),
+                Attempt::Unreachable { ip, number, reason } => {
+                    quiet.record(&ip, number, reason);
+                }
                 Attempt::Quiet => {}
             }
         },
@@ -116,6 +115,80 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     }
 
     pool.drain().await;
+    drop(pool);
+
+    quiet.report(ctx, asked);
+}
+
+/// How many silent ports it takes before silence is worth a word about the path.
+///
+/// A handful of open ports that volunteer nothing is ordinary: plenty of
+/// services wait to be spoken to first, and a firewall in front of one answers
+/// the same way. A host where every open port behaves that way is not ordinary,
+/// and the number is set where the first reading stops being plausible.
+const QUIET_PORTS_WORTH_A_WORD: usize = 10;
+
+/// Open ports that answered the port scan and then gave nothing back on a
+/// connection, gathered across the phase.
+///
+/// One report line each is one line per port. A scan whose path answers every
+/// SYN produces one of these for every port probed, and the eighty-three lines
+/// that follow bury the run they describe. The same shape and the same
+/// reasoning as [`SendFaults`](crate::scanner::strategy::raw), which collapses
+/// its own repeats for the same reason.
+#[derive(Debug, Default)]
+struct QuietPorts {
+    /// How many ports it happened to.
+    count: usize,
+    /// The first one, so the summary names somewhere to start looking.
+    first: Option<String>,
+    /// Why that one gave nothing back. The same reason for all of them wherever
+    /// something on the path is answering instead of a service.
+    reason: Option<String>,
+}
+
+impl QuietPorts {
+    /// Files one port that could not be fingerprinted.
+    fn record(&mut self, ip: &ScopedIp, number: u16, reason: String) {
+        self.count += 1;
+        if self.first.is_none() {
+            self.first = Some(ip.endpoint(number));
+            self.reason = Some(reason);
+        }
+    }
+
+    /// The one line the ports amount to, named from the first of them.
+    fn summary(first: &str, reason: &str, count: usize) -> String {
+        match count - 1 {
+            0 => format!("{first} could not be fingerprinted: {reason}"),
+            1 => format!("{first} and 1 other port could not be fingerprinted: {reason}"),
+            rest => format!("{first} and {rest} other ports could not be fingerprinted: {reason}"),
+        }
+    }
+
+    /// Says it once, against `asked` open ports the phase set out to identify.
+    fn report(&self, ctx: &ScanContext, asked: usize) {
+        let (Some(first), Some(reason)) = (&self.first, &self.reason) else {
+            return;
+        };
+
+        // Still a shortfall, and still the report's to carry: these ports were
+        // open and the scan did not learn what was behind them. One failure
+        // rather than one per port, because a count of eighty-three strategies
+        // that did not run describes a scan that broke, and this one did not.
+        ctx.record_failure(
+            ScannerKind::Service,
+            Self::summary(first, reason, self.count),
+        );
+
+        // A port answered for is a port that takes a SYN and then has nothing to
+        // say. Every one of them behaving that way is the path, not the host.
+        if self.count == asked && asked >= QUIET_PORTS_WORTH_A_WORD {
+            warn!(
+                "all {asked} open ports went silent on connect; likely a middlebox, not the host"
+            );
+        }
+    }
 }
 
 /// Every open `(address, port, protocol)` in the store worth fingerprinting,
@@ -292,6 +365,52 @@ fn write_back(
 mod tests {
     use super::*;
     use crate::model::host::Host;
+
+    /// Eighty-three ports used to be eighty-three report lines, and the count
+    /// of strategies that did not run went up by eighty-three with them.
+    #[test]
+    fn many_quiet_ports_collapse_into_one_line() {
+        let mut quiet = QuietPorts::default();
+        let ip: ScopedIp = "192.0.2.1".parse::<IpAddr>().expect("an address").into();
+        for port in 0..83u16 {
+            quiet.record(&ip, 1000 + port, "no answer within 1.5s".to_string());
+        }
+
+        let summary = QuietPorts::summary(
+            quiet.first.as_deref().expect("a first port"),
+            quiet.reason.as_deref().expect("a reason"),
+            quiet.count,
+        );
+        assert_eq!(
+            summary,
+            "192.0.2.1:1000 and 82 other ports could not be fingerprinted: no answer within 1.5s"
+        );
+    }
+
+    /// One of them reads as itself rather than as "and 0 other ports".
+    #[test]
+    fn one_quiet_port_is_named_alone() {
+        assert_eq!(
+            QuietPorts::summary("192.0.2.1:22", "connection refused", 1),
+            "192.0.2.1:22 could not be fingerprinted: connection refused"
+        );
+        assert_eq!(
+            QuietPorts::summary("192.0.2.1:22", "connection refused", 2),
+            "192.0.2.1:22 and 1 other port could not be fingerprinted: connection refused"
+        );
+    }
+
+    /// An IPv6 endpoint keeps its brackets, so the port is not read as another
+    /// group of the address.
+    #[test]
+    fn an_ipv6_endpoint_stays_bracketed() {
+        let mut quiet = QuietPorts::default();
+        let ip: ScopedIp = "2001:db8::1".parse::<IpAddr>().expect("an address").into();
+        quiet.record(&ip, 443, "no answer within 1.5s".to_string());
+
+        assert_eq!(quiet.first.as_deref(), Some("[2001:db8::1]:443"));
+    }
+
     use crate::scanner::session::ScanSession;
     use std::net::IpAddr;
     use tokio::io::AsyncWriteExt;
