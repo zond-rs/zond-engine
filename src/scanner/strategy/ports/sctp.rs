@@ -283,20 +283,53 @@ impl SctpPortScanner {
         }
 
         let key = (error.quoted.destination, quoted.destination);
-        let token = match self.technique {
+        let nonce = match self.technique {
             SctpScanTechnique::Init => sctp::quoted_init_tag(error.quoted.payload),
             // Already read, and always present: it is the common header's own
             // field. Zero would mean a quotation of something this scan did not
             // send, since every probe leaves with a non-zero tag.
             SctpScanTechnique::CookieEcho => Some(quoted.verification_tag).filter(|tag| *tag != 0),
-        }
-        .map(|tag| SctpToken { tag });
+        };
+
+        // **An error that cannot name the attempt does not retire it.**
+        //
+        // The two techniques differ in where the nonce sits, and only one of
+        // them survives a minimal quotation. A COOKIE-ECHO's is the common
+        // header's verification tag, inside the eight bytes RFC 792 guarantees.
+        // An INIT's Initiate Tag is sixteen bytes in, and the header field that
+        // *is* guaranteed must be zero for an INIT (RFC 4960 §8.5.1) — so a
+        // sender that quotes only the minimum names an INIT probe's ports and
+        // nothing that distinguishes one attempt, or one sender, from another.
+        //
+        // Resolving on that was resolving on the ports alone, which anybody who
+        // knows the scan's source port can supply. The source port is in every
+        // probe this scan sends, so the target of the scan has it for free and
+        // an off-path guesser has fourteen bits of it — once, for the whole run.
+        // A forged Port Unreachable then retired the probe as filtered, removed
+        // it from the ledger so no retransmission followed, and recorded
+        // `IcmpProhibited` against the target as the evidence.
+        //
+        // Refusing costs almost nothing, which is what makes this the right
+        // trade rather than a cautious one: an INIT scan already reads silence
+        // as filtered, so a probe left outstanding here reaches the *same*
+        // verdict by its own retry schedule. What is given up is an earlier
+        // resolution and an evidence label, and what is bought is that neither
+        // can be forged. `Unreachable::Host` is deliberately not gated the same
+        // way — it is the shared host-down path, and belongs with the other two
+        // scanners rather than here.
+        let Some(nonce) = nonce else {
+            self.core.audit.record_reply_without_rtt();
+            return;
+        };
+        let token = Some(SctpToken { tag: nonce });
 
         match error.reason {
             // Nobody could reach the address at all, so the message says nothing
             // about the port it happened to quote and the probe is left to
             // retire on its own schedule.
-            Unreachable::Host => self.core.record_host_down(key.0, reply.source),
+            Unreachable::Host => {
+                self.core.record_host_down(&key, token, reply.source);
+            }
             // Every other code is a refusal, and none of them is a closed port:
             // a closed SCTP port answers with an ABORT of its own, so an ICMP
             // error means the probe was stopped rather than served. Protocol
@@ -784,10 +817,29 @@ mod tests {
         CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Sctp, bytes)
     }
 
-    /// An ICMPv4 destination unreachable from `from`, quoting an SCTP probe this
+    /// An ICMPv4 destination unreachable from `from`, quoting an INIT probe this
     /// scan sent to `port`.
     fn icmp_error(from: IpAddr, code: IcmpCode, port: u16, tag: u32) -> CapturedSegment {
-        let probe = sctp::build_init_probe(SCAN_PORT, port, tag);
+        icmp_error_quoting(from, code, SctpScanTechnique::Init, port, tag)
+    }
+
+    /// The same, quoting the probe `technique` actually sends.
+    ///
+    /// The two techniques carry their nonce in different fields, so an error
+    /// quoting an INIT cannot exercise a COOKIE-ECHO scan's correlation: an
+    /// INIT's common-header verification tag is zero (RFC 4960 §8.5.1), and
+    /// that field is the whole of a COOKIE-ECHO's nonce. A cookie-echo test
+    /// handed an INIT quotation is therefore testing the path where the nonce
+    /// is *absent*, whatever its name says — which is how the unauthenticated
+    /// resolution this parameter exists to stop went unnoticed.
+    fn icmp_error_quoting(
+        from: IpAddr,
+        code: IcmpCode,
+        technique: SctpScanTechnique,
+        port: u16,
+        tag: u32,
+    ) -> CapturedSegment {
+        let probe = build(technique, SCAN_PORT, port, tag);
         let quoted_ip = crate::protocols::ip::build_ipv4_header(
             LOCAL,
             match TARGET {
@@ -1010,8 +1062,64 @@ mod tests {
     fn a_cookie_echo_resolves_an_icmp_error_by_the_attempt_it_quotes() {
         let (mut scanner, session, sent) = scanner_probing(SctpScanTechnique::CookieEcho);
         let tag = cookie_probe(&mut scanner, &sent, 3868);
-        scanner.handle_reply(&icmp_error(TARGET, IcmpCode(2), 3868, tag), Instant::now());
+        scanner.handle_reply(
+            &icmp_error_quoting(
+                TARGET,
+                IcmpCode(2),
+                SctpScanTechnique::CookieEcho,
+                3868,
+                tag,
+            ),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 3868), Some(PortState::Filtered));
+    }
+
+    /// **An ICMP error that cannot name the attempt retires nothing.**
+    ///
+    /// RFC 792 guarantees only eight quoted bytes, and an INIT keeps its
+    /// Initiate Tag sixteen bytes in behind a header field §8.5.1 requires to
+    /// be zero. So a minimal quotation names the ports and nothing else — and
+    /// the ports are in every probe the scan sends, which is to say they are
+    /// known to the host being scanned and are fourteen bits to anybody else.
+    #[test]
+    fn a_quotation_too_short_to_name_the_attempt_resolves_no_port() {
+        for keep in [8usize, 12, 16] {
+            let (mut scanner, session, sent) = scanner_with_mock();
+            let real = probe(&mut scanner, &sent, 4000);
+
+            let full = icmp_error(TARGET, IcmpCode(2), 4000, real ^ 0xFFFF_FFFF);
+            let mut bytes = full.bytes.clone();
+            // Eight bytes of ICMP header, twenty of quoted IPv4 header, then
+            // however much of the SCTP packet this sender bothered to include.
+            bytes.truncate(8 + 20 + keep);
+            let cut = CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Icmp, bytes);
+
+            scanner.handle_reply(&cut, Instant::now());
+            assert_eq!(
+                port_state(&session, 4000),
+                None,
+                "a quotation of {keep} SCTP bytes named no attempt and must retire none"
+            );
+        }
+    }
+
+    /// And one generous enough to carry the Initiate Tag still has to carry
+    /// *ours*.
+    #[test]
+    fn a_full_quotation_carrying_another_tag_resolves_no_port() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        let real = probe(&mut scanner, &sent, 4001);
+
+        scanner.handle_reply(
+            &icmp_error(TARGET, IcmpCode(2), 4001, real ^ 0xFFFF_FFFF),
+            Instant::now(),
+        );
+        assert_eq!(port_state(&session, 4001), None);
+
+        // The same error carrying the tag that really went out does resolve it.
+        scanner.handle_reply(&icmp_error(TARGET, IcmpCode(2), 4001, real), Instant::now());
+        assert_eq!(port_state(&session, 4001), Some(PortState::Filtered));
     }
 }

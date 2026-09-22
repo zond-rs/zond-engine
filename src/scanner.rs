@@ -65,7 +65,12 @@
 //!
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let cfg = ZondConfig::default();
-//! let plan = DiscoveryPlan::build(to_set(&["192.168.1.0/24"], None, None)?, Scope::Sweep, &[]);
+//! let plan = DiscoveryPlan::build(
+//!     to_set(&["192.168.1.0/24"], None, None)?,
+//!     Scope::Sweep,
+//!     &cfg.exclusions,
+//!     &cfg.send_source,
+//! );
 //!
 //! // What the sweep would do, before it does any of it.
 //! for step in plan.steps() {
@@ -667,7 +672,8 @@ async fn run_discovery(
     sctp_port: Option<u16>,
 ) {
     if caps.privilege.is_raw() {
-        let mut plan = plan::DiscoveryPlan::build(targets, reach, &cfg.send_source);
+        let mut plan =
+            plan::DiscoveryPlan::build(targets, reach, &cfg.exclusions, &cfg.send_source);
         if let Some(port) = sctp_port {
             plan.also_over_sctp(port);
         }

@@ -235,36 +235,46 @@ pub fn chunk(chunk_type: u8, flags: u8, value: &[u8]) -> Result<Vec<u8>> {
 /// A view over a received SCTP packet: the common header, and an iterator over
 /// the chunks after it.
 ///
-/// Borrows the bytes rather than copying them. Built by [`parse`], which is the
-/// only thing that guarantees the common header is really there.
+/// Borrows the bytes rather than copying them, and holds the header as an array
+/// rather than as a slice it trusts [`parse`] to have measured. The counterpart
+/// [`tcp::Segment`](super::tcp::Segment) still keeps the invariant by
+/// convention — "sound only because nothing else constructs one" — which is
+/// true of both and checkable by neither. Splitting the header off at
+/// construction makes it the compiler's problem instead: every accessor below
+/// indexes a `[u8; 12]`, so a future constructor cannot reintroduce a panic
+/// here by forgetting the minimum.
 #[derive(Debug, Clone, Copy)]
 pub struct Segment<'a> {
-    bytes: &'a [u8],
+    header: &'a [u8; SCTP_COMMON_HDR_LEN],
+    chunks: &'a [u8],
 }
 
 impl<'a> Segment<'a> {
     /// The port the packet came from.
     pub fn source_port(&self) -> u16 {
-        u16::from_be_bytes([self.bytes[0], self.bytes[1]])
+        u16::from_be_bytes([self.header[0], self.header[1]])
     }
 
     /// The port it was aimed at, which for a reply is the source port the scan
     /// sent from.
     pub fn destination_port(&self) -> u16 {
-        u16::from_be_bytes([self.bytes[2], self.bytes[3]])
+        u16::from_be_bytes([self.header[2], self.header[3]])
     }
 
     /// The verification tag. In a reply to an INIT this is the Initiate Tag the
     /// probe carried, echoed back; see [`echoed_nonce`].
     pub fn verification_tag(&self) -> u32 {
-        u32::from_be_bytes([self.bytes[4], self.bytes[5], self.bytes[6], self.bytes[7]])
+        u32::from_be_bytes([
+            self.header[4],
+            self.header[5],
+            self.header[6],
+            self.header[7],
+        ])
     }
 
     /// The chunks after the common header.
     pub fn chunks(&self) -> Chunks<'a> {
-        Chunks {
-            rest: &self.bytes[SCTP_COMMON_HDR_LEN..],
-        }
+        Chunks { rest: self.chunks }
     }
 }
 
@@ -281,6 +291,16 @@ pub struct Chunk<'a> {
     /// The chunk's flag bits, whose meaning depends on the type.
     pub flags: u8,
     /// The chunk's value, without the four-byte header or the trailing padding.
+    ///
+    /// **Cut to what arrived, which may be less than the length field claimed.**
+    /// A capture stopped at its snapshot length, or a sender that omitted the
+    /// padding on a last chunk, leaves fewer bytes here than the chunk declared,
+    /// and nothing in this type distinguishes that from a whole one. The walk
+    /// clamps rather than refuses on purpose — a chunk whose *type* arrived
+    /// still says what kind of answer this was, which is all
+    /// [`classify_probe_response`] needs — but a reader that wants a field out
+    /// of the value has to take it with `get` and not by index. An INIT-ACK cut
+    /// after its header yields a value of length zero.
     pub value: &'a [u8],
 }
 
@@ -339,14 +359,14 @@ impl<'a> Iterator for Chunks<'a> {
 /// verification tag, and a CRC32c only a captured packet could carry is not what
 /// establishes it is ours.
 pub fn parse(bytes: &'_ [u8]) -> Result<Segment<'_>> {
-    if bytes.len() < SCTP_COMMON_HDR_LEN {
+    let Some((header, chunks)) = bytes.split_first_chunk::<SCTP_COMMON_HDR_LEN>() else {
         return Err(PacketError::truncated(
             "an SCTP packet",
             SCTP_COMMON_HDR_LEN,
             bytes.len(),
         ));
-    }
-    Ok(Segment { bytes })
+    };
+    Ok(Segment { header, chunks })
 }
 
 /// Classifies a received packet as one of the two answers an SCTP port probe can
@@ -722,5 +742,98 @@ mod tests {
             parse(&[0u8; SCTP_COMMON_HDR_LEN - 1]),
             Err(PacketError::Truncated { .. })
         ));
+    }
+
+    /// **The walk terminates on every input**, which is the property a receive
+    /// path depends on and which no length off the wire may take away.
+    ///
+    /// Exhaustive over the pair that decides it: every value the sixteen-bit
+    /// length field can hold, against every buffer length that can hold a chunk
+    /// header. A step of zero would hang the capture thread rather than crash
+    /// it, so a bound on the count is the only way to assert this.
+    #[test]
+    fn the_chunk_walk_terminates_for_every_length_field() {
+        for rest_len in 0..24usize {
+            for declared in 0..=u16::MAX {
+                let mut bytes = vec![0u8; SCTP_COMMON_HDR_LEN];
+                bytes.resize(SCTP_COMMON_HDR_LEN + rest_len, 0xAA);
+                if rest_len >= SCTP_CHUNK_HDR_LEN {
+                    let at = SCTP_COMMON_HDR_LEN + 2;
+                    bytes[at..at + 2].copy_from_slice(&declared.to_be_bytes());
+                }
+                let segment = parse(&bytes).expect("the common header is present");
+
+                // Six is generous: a 24-byte tail cannot hold more than six
+                // four-byte chunks, so anything at the cap is a walk that
+                // stopped advancing.
+                assert!(
+                    segment.chunks().take(8).count() < 8,
+                    "the walk did not advance: rest_len={rest_len} declared={declared}"
+                );
+            }
+        }
+    }
+
+    /// **Reading more bytes only ever adds to what was read.** The property
+    /// `fuzz/wire/ethernet_frame` holds for the announcement readers, asserted
+    /// here for the chunk walk over a packet built from the RFC layout.
+    ///
+    /// It holds because a step clamped to what is present always empties the
+    /// remainder, so a truncated read stops rather than resuming at an offset
+    /// the whole packet never had. A clamp that wrapped instead would put a
+    /// shorter read at a different chunk boundary, and this is what would say
+    /// so.
+    #[test]
+    fn a_shorter_read_reports_a_prefix_of_the_longer_one() {
+        let mut packet = vec![0u8; SCTP_COMMON_HDR_LEN];
+        packet.extend_from_slice(&chunk(chunk_type::INIT_ACK, 0, &[0xAB; 16]).expect("a chunk"));
+        packet.extend_from_slice(&chunk(chunk_type::ABORT, 0, &[0xCD; 4]).expect("a chunk"));
+
+        let whole = parse(&packet).expect("the whole packet parses");
+        let full: Vec<Chunk<'_>> = whole.chunks().collect();
+        assert_eq!(full.len(), 2, "the fixture has to hold two chunks");
+
+        for cut in SCTP_COMMON_HDR_LEN..packet.len() {
+            let short = parse(&packet[..cut]).expect("still has a common header");
+            let near: Vec<Chunk<'_>> = short.chunks().collect();
+
+            assert!(
+                near.len() <= full.len(),
+                "a {cut}-byte read found more chunks than the whole packet"
+            );
+            for (near, far) in near.iter().zip(&full) {
+                assert_eq!(near.chunk_type, far.chunk_type, "at {cut} bytes");
+                assert!(
+                    far.value.starts_with(near.value),
+                    "a {cut}-byte read reported a value the whole packet contradicts"
+                );
+            }
+        }
+    }
+
+    /// A quotation short of the Initiate Tag names no attempt, and one that
+    /// reaches it names exactly the tag that was sent. The field an INIT scan's
+    /// ICMP correlation stands on; see the scanner's own tests for what happens
+    /// when it is absent.
+    #[test]
+    fn an_init_tag_is_named_only_by_a_quotation_that_reaches_it() {
+        let probe = build_init_probe(50_000, 132, 0x1234_5678);
+
+        for cut in 0..20 {
+            assert_eq!(
+                quoted_init_tag(&probe[..cut.min(probe.len())]),
+                None,
+                "{cut} bytes cannot name the tag, which sits at sixteen"
+            );
+        }
+        assert_eq!(quoted_init_tag(&probe[..20]), Some(0x1234_5678));
+
+        // And the common header's own tag, which is what a COOKIE-ECHO uses, is
+        // zero for an INIT — so it can never stand in for the Initiate Tag.
+        let quoted = quoted_probe(&probe).expect("eight bytes are there");
+        assert_eq!(
+            quoted.verification_tag, 0,
+            "RFC 4960 §8.5.1 requires an INIT to carry a zero verification tag"
+        );
     }
 }

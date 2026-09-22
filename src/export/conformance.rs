@@ -1073,3 +1073,178 @@ fn field_names(value: &Value) -> BTreeSet<String> {
     walk(value, &mut names);
     names
 }
+
+/// **Every string the schema declares is one the hostile fixture poisons.**
+///
+/// The escaping tests — `no_field_of_a_hostile_report_reaches_the_page_unescaped`
+/// and its siblings for XML and CSV — are only as wide as
+/// [`fixture::hostile`](crate::export::fixture::hostile). A field the fixture
+/// leaves clean is a field those tests walk straight past, and the report says
+/// nothing about it either way.
+///
+/// Fourteen were clean when this was written. Most were the engine's own —
+/// enum names, timestamps, addresses — but five were not: `device_name`,
+/// `device_mac` and `management_address` come from LLDP and CDP, which are
+/// unauthenticated by design and so are written by whoever is on the segment;
+/// `extrainfo` comes from a service banner and `kernel` from a fingerprint.
+/// The escaping turned out to cover them. Nothing had established that.
+///
+/// So this is the census that keeps the two in step: a string property added to
+/// the schema fails here until the fixture carries a hostile value in it.
+/// [`ENGINE_WRITTEN`] is the exemption list, and it is short on purpose.
+#[test]
+fn the_hostile_fixture_poisons_every_string_the_schema_declares() {
+    /// Properties no stranger's bytes can reach, for one of two reasons.
+    ///
+    /// Most are the engine's own: enum names, timestamps, versions, the
+    /// operator's settings. Nothing remote touches them.
+    ///
+    /// The rest are the more interesting kind — **stranger-chosen, but parsed
+    /// into a type before they are ever a string.** `device_mac` and
+    /// `management_address` arrive in an LLDP or CDP advertisement, which is to
+    /// say from whoever is on the segment, and are read into a `MacAddr` and an
+    /// `IpAddr` at the frame reader. What reaches a document is this crate
+    /// rendering that value back, so the type is the escaping and a hostile
+    /// string cannot survive the trip. Their neighbour `device_name` is a free
+    /// string and is *not* exempt.
+    const ENGINE_WRITTEN: &[&str] = &[
+        "algorithm",
+        "at",
+        "class",
+        "code",
+        "confidence",
+        "digest",
+        "device_mac",
+        "digest_algorithm",
+        "end",
+        "engine_version",
+        "family",
+        "first_seen",
+        "flags",
+        "generated_at",
+        "kind",
+        "label",
+        "last_seen",
+        "link",
+        "mac",
+        "macs",
+        "management_address",
+        "name",
+        "primary_ip",
+        "produced_by",
+        "protocol",
+        "public_key",
+        "reason",
+        "scanner",
+        "severity",
+        "signature",
+        "source_ip",
+        "spec",
+        "spoof_mac",
+        "start",
+        "started_at",
+        "state",
+        "status",
+        "stop_reason",
+        "targets",
+        "timestamp",
+        "validity_end",
+        "validity_start",
+        "version",
+        "withheld",
+        "zombie",
+        "zone",
+    ];
+
+    let mut bytes = Vec::new();
+    JsonExporter::new(ExportOptions::new())
+        .export(&fixture::hostile(), &mut bytes)
+        .expect("the hostile export succeeds");
+    let document: Value = serde_json::from_slice(&bytes).expect("it parses as JSON");
+
+    // Every string-valued property the schema declares, by name.
+    fn declared(value: &Value, out: &mut BTreeSet<String>) {
+        let Some(map) = value.as_object() else {
+            return;
+        };
+        if let Some(Value::Object(properties)) = map.get("properties") {
+            for (name, property) in properties {
+                let is_string = property.get("type").and_then(Value::as_str) == Some("string")
+                    || property
+                        .get("type")
+                        .and_then(Value::as_array)
+                        .is_some_and(|any| any.iter().any(|t| t.as_str() == Some("string")));
+                if is_string {
+                    out.insert(name.clone());
+                }
+                declared(property, out);
+            }
+        }
+        for key in ["items", "additionalProperties", "$defs", "definitions"] {
+            if let Some(sub) = map.get(key) {
+                declared(sub, out);
+            }
+        }
+        if let Some(Value::Object(defs)) = map.get("$defs") {
+            for sub in defs.values() {
+                declared(sub, out);
+            }
+        }
+        for key in ["oneOf", "anyOf", "allOf"] {
+            if let Some(Value::Array(items)) = map.get(key) {
+                for item in items {
+                    declared(item, out);
+                }
+            }
+        }
+    }
+
+    // Every property the hostile document carries a poisoned value in.
+    fn poisoned(value: &Value, out: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(map) => {
+                for (name, sub) in map {
+                    if sub
+                        .as_str()
+                        .is_some_and(|text| text.contains(fixture::HOSTILE))
+                    {
+                        out.insert(name.clone());
+                    }
+                    if let Value::Array(items) = sub
+                        && items
+                            .iter()
+                            .any(|i| i.as_str().is_some_and(|t| t.contains(fixture::HOSTILE)))
+                    {
+                        out.insert(name.clone());
+                    }
+                    poisoned(sub, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    poisoned(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let schema: Value = serde_json::from_str(SCHEMA).expect("the schema file is valid JSON");
+    let mut names = BTreeSet::new();
+    declared(&schema, &mut names);
+    let mut carried = BTreeSet::new();
+    poisoned(&document, &mut carried);
+
+    let clean: Vec<&String> = names
+        .iter()
+        .filter(|name| !carried.contains(*name) && !ENGINE_WRITTEN.contains(&name.as_str()))
+        .collect();
+
+    assert!(
+        clean.is_empty(),
+        "the schema declares these strings and the hostile fixture leaves them clean, so no \
+         escaping test covers them: {clean:?}\n\nEither give the field a hostile value in \
+         `fixture::hostile`, or — if no remote host can influence it — add it to \
+         ENGINE_WRITTEN with that reasoning."
+    );
+}

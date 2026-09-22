@@ -122,7 +122,33 @@ impl Exclusions {
     /// which is the case on most scans and is why this is affordable on the path
     /// every finding takes.
     pub fn excludes(&self, ip: &IpAddr) -> bool {
-        !self.set.is_empty() && self.set.contains(ip)
+        if self.set.is_empty() {
+            return false;
+        }
+        if self.set.contains(ip) {
+            return true;
+        }
+
+        // **One machine, two spellings.** `::ffff:192.0.2.1` is not an address
+        // in its own right: RFC 4291 §2.5.5.2 defines it as the way an IPv4
+        // address is written inside an IPv6 one, and the unprivileged connect
+        // path hands it to the operating system, which opens a connection to
+        // 192.0.2.1. An `IpSet` keeps the two apart, correctly — they are
+        // different values — so a policy naming the v4 form did not cover a
+        // target written the other way, and the packet went out.
+        //
+        // Checked here rather than normalised at the parser, and only in this
+        // direction: seeing through the mapping can only ever *widen* what is
+        // excluded, so it cannot cause a probe that was not going to happen. A
+        // caller who wants the two treated as one address everywhere else has a
+        // larger question, and this is the one place where getting it wrong
+        // sends a packet.
+        match ip {
+            IpAddr::V6(v6) => v6
+                .to_ipv4_mapped()
+                .is_some_and(|v4| self.set.contains(&IpAddr::V4(v4))),
+            IpAddr::V4(_) => false,
+        }
     }
 
     /// Every excluded range, ascending, IPv4 before IPv6.
@@ -329,5 +355,52 @@ mod tests {
 
         assert_eq!(policy.withhold(&mut scope), 1);
         assert!(scope.is_empty());
+    }
+
+    /// **A machine written the other way round is still the machine.**
+    ///
+    /// `::ffff:192.0.2.1` is not an address in its own right — RFC 4291
+    /// §2.5.5.2 makes it the way an IPv4 address is spelled inside an IPv6 one —
+    /// and the unprivileged connect path hands it to the operating system, which
+    /// opens a connection to `192.0.2.1`. So a policy naming the v4 form has to
+    /// cover a target written the other way, or the packet the policy forbade
+    /// goes out.
+    #[test]
+    fn an_excluded_address_is_excluded_in_either_spelling() {
+        let mut forbidden = IpSet::new();
+        forbidden.insert_range("192.0.2.0/24".parse().expect("a valid range"));
+        let exclusions = Exclusions::new(forbidden);
+
+        assert!(exclusions.excludes(&"192.0.2.1".parse().expect("literal")));
+        assert!(
+            exclusions.excludes(&"::ffff:192.0.2.1".parse().expect("literal")),
+            "the mapped spelling reaches the same machine and must be refused too"
+        );
+        assert!(
+            exclusions.excludes(&"::ffff:c000:201".parse().expect("literal")),
+            "including written in hextets, which is the same address again"
+        );
+    }
+
+    /// And seeing through the mapping only ever widens what is excluded.
+    ///
+    /// An IPv6 address that is not a mapped one is untouched, and a v4 policy
+    /// does not start refusing IPv6 traffic it was never asked about.
+    #[test]
+    fn seeing_through_the_mapping_refuses_nothing_it_was_not_asked_to() {
+        let mut forbidden = IpSet::new();
+        forbidden.insert_range("192.0.2.0/24".parse().expect("a valid range"));
+        let exclusions = Exclusions::new(forbidden);
+
+        for allowed in ["198.51.100.1", "2001:db8::1", "::ffff:198.51.100.1", "::1"] {
+            assert!(
+                !exclusions.excludes(&allowed.parse().expect("literal")),
+                "{allowed} is outside the policy and must stay outside it"
+            );
+        }
+
+        // And an empty policy still excludes nothing at all.
+        let none = Exclusions::none();
+        assert!(!none.excludes(&"::ffff:192.0.2.1".parse().expect("literal")));
     }
 }

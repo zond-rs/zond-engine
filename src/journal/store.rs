@@ -902,15 +902,24 @@ fn last_whole_line(file: &mut fs::File, length: u64) -> Result<u64, JournalError
     use std::io::{Read, Seek, SeekFrom};
 
     /// Comfortably more than a record, so the answer is almost always one read.
-    const WINDOW: usize = 8 * 1024;
+    ///
+    /// A `u64`, so the arithmetic below stays in the width the file's length is
+    /// measured in. It was a `usize` against `end as usize`, which truncates
+    /// wherever `usize` is narrower: a length that is an exact multiple of 4 GiB
+    /// has low bits of zero, so the window became empty, `start == end`, and the
+    /// loop stopped advancing — a hang holding the journal's lock, on a 32-bit
+    /// target, on the file this engine grows with a scan's duration.
+    const WINDOW: u64 = 8 * 1024;
 
     let mut end = length;
     while end > 0 {
-        let size = WINDOW.min(end as usize);
-        let start = end - size as u64;
+        let size = WINDOW.min(end);
+        let start = end - size;
 
         file.seek(SeekFrom::Start(start))?;
-        let mut window = vec![0u8; size];
+        // Lossless: `size` is bounded by `WINDOW`, so the one cast that remains
+        // cannot be the one that truncates.
+        let mut window = vec![0u8; size as usize];
         file.read_exact(&mut window)?;
 
         if let Some(at) = window.iter().rposition(|byte| *byte == b'\n') {

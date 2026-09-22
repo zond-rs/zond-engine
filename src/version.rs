@@ -114,9 +114,7 @@ fn components(a: &str, b: &str) -> Ordering {
     for index in 0..a.len().max(b.len()) {
         let x = a.get(index).copied().unwrap_or("0");
         let y = b.get(index).copied().unwrap_or("0");
-        let ordering = leading_number(x)
-            .cmp(&leading_number(y))
-            .then_with(|| x.cmp(y));
+        let ordering = component_cmp(x, y);
         if ordering != Ordering::Equal {
             return ordering;
         }
@@ -124,22 +122,73 @@ fn components(a: &str, b: &str) -> Ordering {
     Ordering::Equal
 }
 
-/// The value of the leading run of ASCII digits in `component`, or 0 where it
-/// does not start with one, so `6p1` reads as 6 and `p1` as 0.
+/// Compares one component, digit runs numerically and the rest lexically.
 ///
-/// A run too long for a `u64` saturates rather than reading as zero. Nothing
-/// emits a version component of eighteen quintillion, and a number that large
-/// sorting *below* every real one is the wrong way for it to be wrong.
-fn leading_number(component: &str) -> u64 {
-    let digits = component
-        .split(|c: char| !c.is_ascii_digit())
-        .next()
-        .unwrap_or("");
+/// It was the component's *leading* number and then the whole component
+/// lexically as a tie-break, which is wrong twice for one reason: a lexical
+/// comparison of text that is partly a number.
+///
+/// `1.02` and `1.2` are one version. Their leading numbers agree, so the tie
+/// break ran and `"02" < "2"` on the first character. That made them different
+/// versions, which loses an exact match and lets a `<` bound hold against the
+/// very release that fixed the thing. Date-shaped versions carry leading zeros
+/// constantly.
+///
+/// `rc10` follows `rc9`. Neither has a *leading* number, so both read as zero
+/// and the tie-break put `rc10` first on `'1' < '9'`. Inside a pre-release
+/// identifier the number is what counts and it sits at the end.
+///
+/// Walking the runs answers both: `02` and `2` are the same number, `rc` equals
+/// `rc` and then `10 > 9`. A component that runs out first is the smaller, which
+/// is what keeps `9.6` below `9.6p1` and `1.2.3` below `1.2.3a`.
+fn component_cmp(a: &str, b: &str) -> Ordering {
+    fn digits(s: &str) -> bool {
+        s.starts_with(|c: char| c.is_ascii_digit())
+    }
+    fn take(s: &str, want_digits: bool) -> (&str, &str) {
+        let end = s
+            .find(|c: char| c.is_ascii_digit() != want_digits)
+            .unwrap_or(s.len());
+        s.split_at(end)
+    }
 
-    match digits.parse() {
-        Ok(value) => value,
-        Err(_) if digits.is_empty() => 0,
-        Err(_) => u64::MAX,
+    let (mut a, mut b) = (a, b);
+    loop {
+        if a.is_empty() || b.is_empty() {
+            // The shorter is the smaller: a bare release precedes the same
+            // release carrying a suffix.
+            return a.len().cmp(&b.len());
+        }
+
+        let ordering = match (digits(a), digits(b)) {
+            (true, true) => {
+                let (x, rest_a) = take(a, true);
+                let (y, rest_b) = take(b, true);
+                (a, b) = (rest_a, rest_b);
+                // Parsed rather than compared as text, so a leading zero does
+                // not decide. Past `u64` the run is longer than any real
+                // version, and its length is then the honest comparison.
+                match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(x), Ok(y)) => x.cmp(&y),
+                    _ => x.len().cmp(&y.len()).then_with(|| x.cmp(y)),
+                }
+            }
+            (false, false) => {
+                let (x, rest_a) = take(a, false);
+                let (y, rest_b) = take(b, false);
+                (a, b) = (rest_a, rest_b);
+                x.cmp(y)
+            }
+            // Digits against letters at the same position: the digits are the
+            // version and the letters a suffix on an earlier one, so `9.6p1`
+            // sits above `9.6` and below `9.7` whichever way round it is asked.
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+        };
+
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
     }
 }
 
@@ -225,5 +274,90 @@ mod tests {
         // ties, so 9.6p1 < 9.8 but 9.8p1 > 9.8.
         assert_eq!(version_cmp("9.6p1", "9.8"), Ordering::Less);
         assert_eq!(version_cmp("9.8p1", "9.8"), Ordering::Greater);
+    }
+
+    /// **A leading zero is not a different version.**
+    ///
+    /// `1.02` and `1.2` are one release, and date-shaped versions carry zeros
+    /// like this constantly. Reading them apart costs an exact match, and worse:
+    /// a `<1.2` bound held against `1.02`, so the release that fixed a
+    /// vulnerability read as still carrying it.
+    #[test]
+    fn a_leading_zero_does_not_make_a_different_version() {
+        assert_eq!(version_cmp("1.02", "1.2"), Ordering::Equal);
+        assert_eq!(version_cmp("2024.01.15", "2024.1.15"), Ordering::Equal);
+        assert_eq!(version_cmp("1.0002.3", "1.2.3"), Ordering::Equal);
+
+        // And a zero that is doing real work still counts.
+        assert_eq!(version_cmp("1.20", "1.2"), Ordering::Greater);
+        assert_eq!(version_cmp("1.02", "1.3"), Ordering::Less);
+    }
+
+    /// **A number inside a pre-release identifier counts as a number.**
+    ///
+    /// `rc10` follows `rc9`. Neither carries a leading digit, so both read as
+    /// zero and the tie-break decided lexically on `'1' < '9'`.
+    #[test]
+    fn a_pre_release_counts_its_number_rather_than_spelling_it() {
+        assert_eq!(version_cmp("1.0.0-rc10", "1.0.0-rc9"), Ordering::Greater);
+        assert_eq!(version_cmp("1.0.0-rc2", "1.0.0-rc10"), Ordering::Less);
+        assert_eq!(version_cmp("1.0.0-beta2", "1.0.0-beta10"), Ordering::Less);
+
+        // The identifier still decides before its number.
+        assert_eq!(
+            version_cmp("2.0.0-beta1", "2.0.0-alpha9"),
+            Ordering::Greater
+        );
+        // And every pre-release still precedes its own release.
+        assert_eq!(version_cmp("1.0.0-rc10", "1.0.0"), Ordering::Less);
+    }
+
+    /// The suffix rules the earlier ordering got right, kept.
+    ///
+    /// A component that runs out first is the smaller, so a bare release sits
+    /// below the same release with something appended, and a digit at the same
+    /// position as a letter is the greater.
+    #[test]
+    fn a_suffix_still_breaks_a_tie_upward() {
+        assert_eq!(version_cmp("9.6p1", "9.6"), Ordering::Greater);
+        assert_eq!(version_cmp("9.6p1", "9.7"), Ordering::Less);
+        assert_eq!(version_cmp("1.2.3a", "1.2.3"), Ordering::Greater);
+        assert_eq!(version_cmp("9.6p2", "9.6p10"), Ordering::Less);
+    }
+
+    /// The order is a total order: whatever two versions are handed to it, the
+    /// answer one way is the reverse of the answer the other, and equality is
+    /// mutual. A comparison that is not gets a caller a bound that holds in one
+    /// direction and not the other.
+    #[test]
+    fn the_order_is_antisymmetric() {
+        let versions = [
+            "1.02",
+            "1.2",
+            "1.2.0",
+            "9.6",
+            "9.6p1",
+            "9.6p10",
+            "1.0.0-rc9",
+            "1.0.0-rc10",
+            "1.0.0",
+            "1.21.0-1ubuntu2",
+            "2024.01.15",
+            "",
+            "0",
+            "1.2.3a",
+            "1.2.3",
+            "10.0",
+            "9.9",
+        ];
+        for a in versions {
+            for b in versions {
+                assert_eq!(
+                    version_cmp(a, b),
+                    version_cmp(b, a).reverse(),
+                    "{a:?} against {b:?}"
+                );
+            }
+        }
     }
 }

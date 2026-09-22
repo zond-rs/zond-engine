@@ -21,10 +21,12 @@
 //! with each other by construction. Scoring them separately would triple-count
 //! one observation.
 //!
-//! So [`classify`](super::classify) already collapses a whole reply into
-//! one item. What arrives here is one item per genuinely distinct source,
-//! and independence is claimed only between those, a stack, a banner, a
-//! hardware address, where it is close enough to true to build on.
+//! So [`classify`](super::classify) already collapses a whole reply into one
+//! item. What arrives here does not hold to that by itself, because a host is
+//! asked for a banner once per port and files one item each time. [`resolve`]
+//! therefore counts each source once, and independence is claimed only between
+//! them, a stack, a banner, a hardware address, where it is close enough to true
+//! to build on.
 //!
 //! That is also why the arithmetic below is [noisy-OR] rather than a sum. Two
 //! sources agreeing raise confidence without either being trusted more than it
@@ -50,7 +52,7 @@
 //! the result is no answer, which is the honest outcome for a host two techniques
 //! disagree about.
 
-use crate::model::host::OsEvidence;
+use crate::model::host::{OsEvidence, OsSource};
 use std::collections::BTreeMap;
 
 use super::verdict::{MIN_REPORTABLE_ACCURACY, OsVerdict};
@@ -104,7 +106,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     let mut scored: Vec<(&str, f32, Vec<&OsEvidence>)> = by_family
         .into_iter()
         .map(|(family, items)| {
-            let score = combine(items.iter().map(|item| item.confidence));
+            let score = combine_sources(&items);
             (family, score, items)
         })
         .collect();
@@ -141,7 +143,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         .is_none_or(|(_, survived, ..)| percent(*survived) < MIN_REPORTABLE_ACCURACY)
         && !abstained.is_empty()
     {
-        let alone = combine(abstained.iter().map(|item| item.confidence));
+        let alone = combine_sources(&abstained);
         if answer
             .as_ref()
             .is_none_or(|(_, survived, ..)| alone > *survived)
@@ -232,8 +234,9 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         || cpe.is_some()
         || device.is_some();
     let detail_accuracy = refined.then(|| {
-        let stated = items
+        let stated: Vec<&OsEvidence> = items
             .iter()
+            .copied()
             .filter(|item| {
                 item.vendor.is_some()
                     || item.product.is_some()
@@ -243,9 +246,9 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
                     || item.cpe.is_some()
                     || item.device.is_some()
             })
-            .map(|item| item.confidence);
+            .collect();
 
-        percent(combine(stated) * (1.0 - against))
+        percent(combine_sources(&stated) * (1.0 - against))
     });
 
     Some(OsVerdict {
@@ -283,6 +286,31 @@ fn combine(confidences: impl Iterator<Item = f32>) -> f32 {
         .map(|confidence| 1.0 - confidence.clamp(0.0, 1.0))
         .product::<f32>();
     1.0 - doubt
+}
+
+/// The same arithmetic over evidence, counting each source once.
+///
+/// The module's independence claim is between sources, and the input does not
+/// arrive holding to it: a host is asked for a banner once per port, so a
+/// machine describing itself differently on three of them files three items
+/// under [`OsSource::ServiceBanner`]. Combined item by item those read as three
+/// witnesses agreeing, and the arithmetic rewarded exactly the host that
+/// contradicted itself: two services naming one Debian release are deduplicated
+/// to one claim and score 55, while the same two naming different releases score
+/// 80.
+///
+/// So only the strongest reading from each source enters the product. A host
+/// that answers ten times is worth what its best answer is worth, and reaching
+/// past that still takes a second source.
+fn combine_sources(items: &[&OsEvidence]) -> f32 {
+    let mut strongest: BTreeMap<OsSource, f32> = BTreeMap::new();
+    for item in items {
+        strongest
+            .entry(item.source)
+            .and_modify(|best| *best = best.max(item.confidence))
+            .or_insert(item.confidence);
+    }
+    combine(strongest.into_values())
 }
 
 // ╔════════════════════════════════════════════╗
@@ -353,20 +381,145 @@ mod tests {
     /// Agreement must not become certainty. Noisy-OR is chosen over anything that
     /// sums precisely because a stack of agreeing guesses has to stay a stack of
     /// guesses however many of them there are.
+    ///
+    /// Every source there is, which is as far as the arithmetic can be pushed
+    /// now that a source counts once. This once read twenty items and called
+    /// them twenty sources; they were one source twenty times, and the figure it
+    /// pinned was the double count rather than the ceiling.
     #[test]
     fn no_amount_of_agreement_reaches_certainty() {
-        let many: Vec<OsEvidence> = (0..20)
-            .map(|_| evidence("Linux", 0.6, OsSource::TcpStack))
+        let every = [
+            OsSource::TcpStack,
+            OsSource::HardwareVendor,
+            OsSource::ServiceBanner,
+            OsSource::SnmpAgent,
+            OsSource::Hostname,
+        ];
+        let many: Vec<OsEvidence> = every
+            .into_iter()
+            .map(|source| evidence("Linux", 0.6, source))
             .collect();
 
         let resolved = resolve(many).expect("named");
         assert_eq!(
             resolved.accuracy, MAX_FUSED_ACCURACY,
-            "twenty agreeing sources may be highly confident and must not be certain"
+            "five agreeing sources may be highly confident and must not be certain"
         );
         assert!(
             resolved.accuracy < 100,
             "certainty is reserved for a host that identified itself"
+        );
+    }
+
+    /// Every source's ceiling in one place, because no single place held them.
+    ///
+    /// The threshold a caller reads to decide whether to stop probing is 85, and
+    /// each source is priced below it on purpose: a banner because the software
+    /// is not always the host, a stack reading because one packet's fields are
+    /// one observation, a hostname because somebody typed it. What none of those
+    /// arguments said is that they have to hold *together*, and the price list
+    /// lives in four modules that do not read each other.
+    ///
+    /// So the rule is stated here: whatever one source says, however often it
+    /// says it, a second source is still needed to settle a host. The match is
+    /// exhaustive, so a new source cannot be added without pricing it against
+    /// this, and every price is read from where production sets it, so a
+    /// ceiling raised there is a ceiling tested here.
+    #[test]
+    fn no_single_source_settles_a_host() {
+        use super::super::MAX_STACK_ACCURACY;
+
+        let every = [
+            OsSource::TcpStack,
+            OsSource::HardwareVendor,
+            OsSource::ServiceBanner,
+            OsSource::SnmpAgent,
+            OsSource::MdnsResponder,
+            OsSource::Hostname,
+        ];
+
+        for source in every {
+            let ceiling = match source {
+                OsSource::TcpStack => f32::from(MAX_STACK_ACCURACY) / 100.0,
+                OsSource::HardwareVendor => super::super::hardware::CONFIDENCE,
+                // The three kinds of text a rule is matched against, priced by
+                // the one function every text match goes through.
+                OsSource::ServiceBanner | OsSource::SnmpAgent | OsSource::MdnsResponder => {
+                    super::super::ceiling(source)
+                }
+                OsSource::Hostname => super::super::hostname::CONFIDENCE,
+            };
+
+            // More claims than a host will retain, all from this one source and
+            // all naming the family they are counted for.
+            let many: Vec<OsEvidence> = (0..20)
+                .map(|nth| OsEvidence {
+                    version: Some(nth.to_string()),
+                    ..evidence("Linux", ceiling, source)
+                })
+                .collect();
+
+            // Two of them price themselves under the reporting floor and name
+            // nothing at all alone, which is the same answer more emphatically.
+            if let Some(resolved) = resolve(many) {
+                assert!(
+                    !resolved.to_fingerprint().is_highly_confident(),
+                    "{source:?} settled a host on its own at {}",
+                    resolved.accuracy
+                );
+            }
+        }
+    }
+
+    /// A host answering the same question many ways is one witness, whatever it
+    /// says. This is the property the ceilings rest on: a banner is held to
+    /// [`BANNER_CEILING`](super::super::BANNER_CEILING) and a stack reading to
+    /// [`MAX_STACK_ACCURACY`](super::super::MAX_STACK_ACCURACY) because neither
+    /// settles a host alone, and a source that could be counted twice would walk
+    /// past both.
+    ///
+    /// Measured on loopback before this held: three SSH banners naming Debian
+    /// 11, 12 and 13 resolved to Linux at 91, and eight of them to 95, the most
+    /// any combination of sources may claim.
+    #[test]
+    fn one_source_counts_once_however_many_claims_it_files() {
+        let alone = resolve(vec![evidence("Linux", 0.55, OsSource::ServiceBanner)])
+            .expect("a banner names a host");
+
+        // The same source, differing in the detail that keys them apart on the
+        // host: three releases no machine can be at once.
+        let contradicting: Vec<OsEvidence> = ["11", "12", "13"]
+            .into_iter()
+            .map(|release| OsEvidence {
+                version: Some(release.to_string()),
+                ..evidence("Linux", 0.55, OsSource::ServiceBanner)
+            })
+            .collect();
+
+        let resolved = resolve(contradicting).expect("still names the family");
+        assert_eq!(
+            resolved.accuracy, alone.accuracy,
+            "a host that contradicted itself twice is not better attested than one that spoke once"
+        );
+        assert!(
+            resolved.version.is_none(),
+            "and the release the three disagree about is not reported"
+        );
+    }
+
+    /// The other half, which the fix must not cost: two genuinely different
+    /// sources agreeing still beat either alone.
+    #[test]
+    fn distinct_sources_still_corroborate() {
+        let banner = evidence("Linux", 0.55, OsSource::ServiceBanner);
+        let stack = evidence("Linux", 0.65, OsSource::TcpStack);
+
+        let alone = resolve(vec![stack.clone()]).expect("one source names it");
+        let both = resolve(vec![banner, stack]).expect("two sources name it");
+
+        assert!(
+            both.accuracy > alone.accuracy,
+            "a banner agreeing with the wire is worth more than the wire alone"
         );
     }
 

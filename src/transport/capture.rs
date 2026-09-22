@@ -454,10 +454,30 @@ impl Drop for CaptureGuard {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
 
+        // Paired with their counters, which `spawn_captures` pushes in lockstep,
+        // so a thread that died can be said to have died on a particular link.
         let handles = std::mem::take(&mut self.handles);
+        let stats = self.stats.clone();
         let wait = move || {
-            for handle in handles {
-                let _ = handle.join();
+            for (handle, counters) in handles.into_iter().zip(stats) {
+                // **A reader that panicked is a link that went deaf, and the
+                // record has to say so.**
+                //
+                // `reader_loop` sets `stopped_early` itself when pcap ends the
+                // link, and the reasoning there covers this exactly: the thread
+                // is the only thing reading its interface, so every reply that
+                // would have arrived on it becomes silence a scanner cannot tell
+                // from a host that did not answer, and a log line is not the
+                // record. A panic reaches the same end by a different route and
+                // used to be discarded here — `let _ = handle.join()` — so the
+                // counters said the capture ran to the end of the scan.
+                if handle.join().is_err() {
+                    counters.stopped_early.store(true, Ordering::Relaxed);
+                    error!(
+                        "a capture thread panicked; replies arriving on its link \
+                         are lost from here on"
+                    );
+                }
             }
         };
 
@@ -1355,5 +1375,50 @@ mod tests {
                 stopped_early: 0,
             }
         );
+    }
+
+    /// **A capture thread that panicked is a link that went deaf, and the counts
+    /// say so.**
+    ///
+    /// `reader_loop` records `stopped_early` when pcap ends a link, and argues
+    /// why: the thread is the only thing reading that interface, so every reply
+    /// which would have arrived on it becomes silence a scanner cannot tell from
+    /// a host that did not answer — and a log line is not the record.
+    ///
+    /// A panic reaches the same end by another route. The guard used to join
+    /// with `let _ = handle.join()`, so the counters reported a capture that ran
+    /// to the end of the scan.
+    #[test]
+    fn a_capture_thread_that_panicked_is_recorded_as_one_that_stopped() {
+        let counters = Arc::new(CaptureStats::default());
+        let guard = CaptureGuard {
+            stop: Arc::new(AtomicBool::new(false)),
+            handles: vec![std::thread::spawn(|| {
+                panic!("a reader died the way a defect kills one")
+            })],
+            stats: vec![Arc::clone(&counters)],
+        };
+
+        assert!(!counters.stopped_early.load(Ordering::Relaxed));
+        drop(guard);
+        assert!(
+            counters.stopped_early.load(Ordering::Relaxed),
+            "a panicked reader has to reach the counts, not only stderr"
+        );
+    }
+
+    /// And a reader that ended cleanly is not reported as having stopped early,
+    /// or the count means nothing.
+    #[test]
+    fn a_capture_thread_that_finished_is_not_recorded_as_stopping_early() {
+        let counters = Arc::new(CaptureStats::default());
+        let guard = CaptureGuard {
+            stop: Arc::new(AtomicBool::new(false)),
+            handles: vec![std::thread::spawn(|| {})],
+            stats: vec![Arc::clone(&counters)],
+        };
+
+        drop(guard);
+        assert!(!counters.stopped_early.load(Ordering::Relaxed));
     }
 }

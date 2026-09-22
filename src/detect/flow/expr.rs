@@ -58,6 +58,14 @@ use std::fmt;
 /// catchable error. A real guard nests two or three deep; this leaves generous
 /// room under the depth at which the parser's own recursion runs a thread out of
 /// stack.
+///
+/// **Measured, since "generous" is otherwise a hope.** A guard at the deepest
+/// this allows parses inside 64 KiB of stack in a release build and 384 KiB in a
+/// debug one. Nothing here sets a stack size, so the thread running it has
+/// tokio's 2 MiB default: about thirty times the headroom where it matters and
+/// five times where the tests run. `a_guard_at_the_bound_parses_well_inside_a_
+/// worker_stack` holds the release figure, at a size chosen to pass in either
+/// profile.
 const MAX_GUARD_DEPTH: usize = 64;
 
 /// A parsed guard expression, the boolean a `when` clause denotes.
@@ -657,5 +665,44 @@ mod tests {
         // A guard nested the handful of levels a real one reaches still parses.
         let shallow = format!("{}matched{}", "(".repeat(4), ")".repeat(4));
         assert!(parse(&shallow).is_ok());
+    }
+
+    /// **The bound sits a long way under the cliff, not just under it.**
+    ///
+    /// [`MAX_GUARD_DEPTH`]'s documentation claims generous room, and a bound
+    /// whose margin nobody has measured is a bound nobody knows the size of. The
+    /// failure it prevents is an abort rather than an error, so the margin is
+    /// the whole of the safety.
+    ///
+    /// 512 KiB is chosen to pass in either profile: a debug build needs a little
+    /// under 384 KiB for this and a release build a little under 64 KiB, against
+    /// the 2 MiB a tokio worker gets by default.
+    #[test]
+    fn a_guard_at_the_bound_parses_well_inside_a_worker_stack() {
+        let parsed = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let levels = MAX_GUARD_DEPTH - 1;
+                let source = format!("{}matched{}", "(".repeat(levels), ")".repeat(levels));
+                parse(&source).is_ok()
+            })
+            .expect("the thread spawns")
+            .join()
+            .expect("it did not overflow");
+
+        assert!(
+            parsed,
+            "the deepest allowed guard has to parse inside a small stack, not merely not crash"
+        );
+    }
+
+    /// And nesting far past the bound is still an ordinary error rather than an
+    /// abort, however far past.
+    #[test]
+    fn nesting_far_past_the_bound_is_still_only_an_error() {
+        for levels in [1_000usize, 100_000] {
+            let source = format!("{}matched{}", "(".repeat(levels), ")".repeat(levels));
+            assert_eq!(parse(&source), Err(ParseError::TooDeep), "{levels} levels");
+        }
     }
 }

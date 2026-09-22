@@ -14,9 +14,11 @@
 //! kernel produces only open and closed, so lost probes, firewalls and injected
 //! latency belong to the `simulated` tier instead.
 //!
-//! `import` is the odd one, binding no socket at all, because the surface it
-//! covers reads documents. It sits here because it needs nothing but a
-//! temporary directory, which is the property this tier is defined by.
+//! `import` and `exclusions` are the odd ones, binding no socket at all:
+//! `import` covers a surface that reads documents, and `exclusions` builds a
+//! discovery plan from this host's interface table and opens nothing. They sit
+//! here because they need nothing beyond a temporary directory, which is the
+//! property this tier is defined by.
 //!
 //! No privileges and no network setup, so this tier runs identically on Linux
 //! and macOS. When the process happens to be root, a scan takes its raw-socket
@@ -28,6 +30,7 @@ mod support;
 
 mod detections;
 mod discovery;
+mod exclusions;
 mod export;
 mod fingerprint_embedding;
 mod hostname_resolution;

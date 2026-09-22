@@ -412,4 +412,99 @@ mod tests {
         reply[pdu] = 0xa0; // GetRequest
         assert_eq!(sys_descr(&reply), None);
     }
+
+    /// **Every way a length can lie, refused rather than believed.**
+    ///
+    /// The length encoding is where a hand-rolled BER reader goes wrong, and
+    /// this one is read from an unauthenticated peer on a port anyone can send
+    /// to. Each row is a shape that has broken a real ASN.1 parser somewhere:
+    /// the indefinite form, a long form claiming more bytes than a length needs,
+    /// a length past the end of the datagram, and a header cut off in the middle.
+    #[test]
+    fn no_length_encoding_reads_past_the_datagram() {
+        let cases: &[(&str, &[u8])] = &[
+            // 0x80 is the indefinite form, which BER allows and DER does not,
+            // and which a reader that treats it as a length of zero will loop on.
+            ("indefinite length", &[0x30, 0x80, 0x02, 0x01, 0x00]),
+            // The low seven bits count the length's own bytes; five is more than
+            // a length this side of a 32-bit datagram needs.
+            ("long form over four bytes", &[0x30, 0x85, 1, 1, 1, 1, 1]),
+            // Four bytes of 0xFF is a length of four gigabytes.
+            (
+                "long form naming four gigabytes",
+                &[0x30, 0x84, 0xFF, 0xFF, 0xFF, 0xFF],
+            ),
+            ("length past the buffer", &[0x30, 0x7F, 0x02]),
+            ("truncated after the tag", &[0x30]),
+            ("truncated inside the long form", &[0x30, 0x82, 0x01]),
+            ("empty", &[]),
+            ("zero length", &[0x30, 0x00]),
+        ];
+
+        for (name, datagram) in cases {
+            assert_eq!(sys_descr(datagram), None, "{name} was not refused");
+        }
+    }
+
+    /// Nesting costs bytes, so a datagram cannot nest its way to a stack
+    /// overflow — but the walk has to actually terminate on one that tries.
+    #[test]
+    fn a_deeply_nested_datagram_terminates() {
+        let mut datagram = Vec::new();
+        for _ in 0..512 {
+            datagram.push(0x30);
+            datagram.push(0x02);
+        }
+        assert_eq!(sys_descr(&datagram), None);
+    }
+
+    /// **Arbitrary bytes settle nothing and break nothing.**
+    ///
+    /// The port answers to anyone, so the reader's whole job is to come back
+    /// with `None` rather than a panic or a claim. Deterministic, so a failure
+    /// is reproducible from the seed rather than from a saved corpus — `snmp`
+    /// is reached through a `pub(crate)` entry and so cannot be driven from
+    /// `fuzz/`, which is why this lives here.
+    #[test]
+    fn arbitrary_datagrams_are_refused_rather_than_read() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for _ in 0..20_000 {
+            let len = (next() % 96) as usize;
+            let datagram: Vec<u8> = (0..len).map(|_| (next() & 0xFF) as u8).collect();
+            assert!(
+                sys_descr(&datagram).is_none(),
+                "random bytes were read as a system description: {datagram:02x?}"
+            );
+        }
+    }
+
+    /// And a message that is nearly a GetResponse stays safe under every
+    /// single-byte change, which is where a reader that trusts one field after
+    /// checking another comes apart.
+    #[test]
+    fn a_near_miss_response_survives_every_single_byte_mutation() {
+        let mut real: Vec<u8> = vec![0x30, 0x26, 0x02, 0x01, 0x00, 0x04, 0x06];
+        real.extend_from_slice(b"public");
+        real.extend_from_slice(&[
+            0xA2, 0x19, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00,
+        ]);
+        real.extend_from_slice(&[0x30, 0x0E, 0x30, 0x0C, 0x06, 0x08]);
+        real.extend_from_slice(&[0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00]);
+        real.extend_from_slice(&[0x04, 0x00]);
+
+        for at in 0..real.len() {
+            for value in [0x00u8, 0x01, 0x30, 0x7F, 0x80, 0x84, 0xA2, 0xFF] {
+                let mut datagram = real.clone();
+                datagram[at] = value;
+                let _ = sys_descr(&datagram);
+            }
+        }
+    }
 }

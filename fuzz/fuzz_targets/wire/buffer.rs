@@ -63,8 +63,49 @@ fuzz_target!(|data: &[u8]| {
             );
         }
         let _ = sctp::classify_probe_response(&segment);
+
+        // **Reading more bytes only ever adds to what was read**, the property
+        // `wire/ethernet_frame` holds for the announcement readers and which
+        // this target asserted for width alone. A chunk walk is the same shape:
+        // lengths come off the wire and a capture can stop mid-chunk, so a
+        // shorter read has to report a *prefix* of the longer one rather than a
+        // different answer. The walk clamps both the value and the step to what
+        // is present, which is what makes that true; asserting it is what would
+        // notice if a later change made the clamp a wrap.
+        for cut in sctp_cuts(data.len()) {
+            let Ok(short) = sctp::parse(&data[..cut]) else {
+                continue;
+            };
+            for (near, far) in short.chunks().zip(segment.chunks()) {
+                assert_eq!(
+                    near.chunk_type, far.chunk_type,
+                    "a shorter SCTP read named a different chunk"
+                );
+                assert!(
+                    far.value.starts_with(near.value),
+                    "a shorter SCTP read reported a value the longer one contradicts"
+                );
+            }
+            assert!(
+                short.chunks().count() <= segment.chunks().count(),
+                "a shorter SCTP read found more chunks than the whole packet"
+            );
+        }
     }
 
     let _ = tcp::quoted_probe(data);
     let _ = sctp::quoted_probe(data);
+    // The INIT scan's nonce, which lives past the eight bytes RFC 792
+    // guarantees and so is the field a short quotation does not reach.
+    let _ = sctp::quoted_init_tag(data);
 });
+
+/// The prefixes of a packet of `len` bytes worth re-reading.
+///
+/// Bounded, because the comparison is quadratic and a cut landing inside the
+/// common header reads nothing either way. The cuts that prove something are
+/// near the end, where a chunk is split rather than removed.
+fn sctp_cuts(len: usize) -> impl Iterator<Item = usize> {
+    const CUTS: usize = 16;
+    (1..=CUTS).filter_map(move |step| len.checked_sub(step)).filter(|cut| *cut >= 12)
+}

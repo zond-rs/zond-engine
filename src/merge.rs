@@ -56,6 +56,31 @@
 //! status is backed by a packet. So `Unknown` is silence wearing a variant, and
 //! a newer source's `Unknown` never overrides an older verdict.
 //!
+//! ### What a merge does not enforce, and a scan does
+//!
+//! [`Exclusions`](crate::model::exclusion::Exclusions) is not a parameter here,
+//! and that is worth saying rather than leaving to be discovered. The exclusion
+//! promise — no packet addressed to an excluded address, and no excluded address
+//! in the report — is enforced at the two points a *scan* has: before anything is
+//! opened, and at
+//! [`write_host`](crate::scanner::session::ScanContext::write_host) on every
+//! finding. A merge is not a scan. It probes nothing, so the first point does not
+//! apply, and it folds documents somebody else's scans produced, so the second
+//! has nothing to gate.
+//!
+//! So a source that walked an address this caller now excludes contributes that
+//! address, and the merged report carries it. That is the honest outcome — the
+//! document really does record what that scan found — and it is a caller's to
+//! act on: an engagement whose scope narrowed between one scan and the next has
+//! a policy question that no fold can answer for it.
+//!
+//! What the merged report does give them is the means to see it. Every source's
+//! phase is kept, each with the scope it walked and the ranges it withheld, so
+//! an address can be traced to the source that claimed it and checked against
+//! that source's own scope. The exclusion module's point that the promise is
+//! *checkable from the report* holds per phase, which is where a merged report
+//! keeps it.
+//!
 //! ### What a merge does not need, and a comparison does
 //!
 //! A comparison needs [`Coverage`](crate::diff::Coverage), because a host in one
@@ -120,7 +145,7 @@ use crate::diff::pairing;
 use crate::model::host::hardware::HardwareInfo;
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::{Host, HostStatus};
-use crate::model::port::{Port, Protocol, Security, Service};
+use crate::model::port::{Port, PortState, Protocol, Security, Service};
 use crate::report::{PhaseOrigin, ScanPhase, ScanReport};
 
 /// What a merge is allowed to assume.
@@ -513,11 +538,30 @@ fn fold_port(accounts: &[&Port]) -> Port {
         .last()
         .expect("an endpoint has at least one account");
 
-    // The newest account of this endpoint *is* the newest source that recorded
-    // a verdict for it, since a source that recorded none contributed nothing to
-    // the list. So the state is taken rather than promoted, which is what lets a
-    // merge record that a port closed.
-    let mut port = Port::new(newest.number(), newest.protocol(), newest.state());
+    // The newest account of this endpoint is *almost* the newest source that
+    // recorded a verdict for it, since a source that recorded none contributed
+    // nothing to the list. So the state is taken rather than promoted, which is
+    // what lets a merge record that a port closed.
+    //
+    // Almost, because of one state. That premise reads "recorded none" as "is
+    // absent from the list", and [`PortState::Unasked`] is the case where it is
+    // not: a scan that ran out of wall clock, or could not send, writes the port
+    // down as one nobody asked about. It is absence that made it into the list.
+    // Taking it would let a later, narrower scan erase what an earlier, wider
+    // one found — an open port becoming `Unasked` — which is the thing this
+    // module's own rule promises does not happen: *an endpoint nothing listed is
+    // not evidence the port closed*. It is the same carve-out
+    // [`HostStatus::Unknown`](crate::model::host::HostStatus::Unknown) already
+    // gets a few lines up, for the same reason, and it was missed because
+    // `Unasked` was added after this fold was written.
+    //
+    // So the state is the newest one that says anything, and `Unasked` only
+    // where nothing ever did.
+    let state = newest_claim_port(accounts, |account| {
+        (account.state() != PortState::Unasked).then_some(account.state())
+    })
+    .unwrap_or(newest.state());
+    let mut port = Port::new(newest.number(), newest.protocol(), state);
 
     // The evidence follows the verdict it explains, taken from the newest
     // account that reached the same verdict rather than the newest account.
@@ -530,7 +574,7 @@ fn fold_port(accounts: &[&Port]) -> Port {
     // discards the discovery of every zond scan an imported document is folded
     // with.
     if let Some(discovery) = newest_claim_port(accounts, |account| {
-        (account.state() == newest.state())
+        (account.state() == state)
             .then(|| account.discovery())
             .flatten()
     }) {
@@ -774,7 +818,6 @@ mod tests {
     use crate::model::host::{OsEvidence, OsSource};
     use crate::model::ip::scoped::Zone;
     use crate::model::ip::set::IpSet;
-    use crate::model::port::PortState;
     use crate::model::port::discovery::{Discovery, ScanResponse};
     use crate::report::{PhaseParts, ScanKind, ScanSettings, TargetScope};
 
@@ -1605,6 +1648,93 @@ mod tests {
             path.at(2),
             Some(ip(201)),
             "and not a second hop from a different route"
+        );
+    }
+
+    /// **A port nobody asked about does not erase one somebody found.**
+    ///
+    /// `Unasked` is what a scan writes down when it ran out of wall clock, or
+    /// could not send: the port is on the record so the count still adds up, and
+    /// nothing was established either way. Its own documentation says it "never
+    /// overrides anything", and `Port::merge` honours that with a `max`.
+    ///
+    /// This fold did not. It took the newest account's state outright, on the
+    /// reasoning that a source recording no verdict contributes nothing to the
+    /// list — true of every state but this one, which is absence that made it
+    /// into the list. So a later, narrower scan erased what an earlier, wider
+    /// one found, which is exactly what this module's rule promises does not
+    /// happen.
+    #[test]
+    fn a_later_scan_that_never_asked_does_not_erase_what_an_earlier_one_found() {
+        for found in [PortState::Open, PortState::Closed, PortState::Filtered] {
+            let wide = with_port(host(1), Port::new(3389, Protocol::Tcp, found));
+            let narrow = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Unasked));
+
+            let mut merge = Merge::new(MergeOptions::default());
+            merge.add(report("wide", day(1), vec![wide]));
+            merge.add(report("narrow", day(2), vec![narrow]));
+
+            let merged = merge.finish();
+            let state = merged
+                .hosts()
+                .next()
+                .and_then(|host| host.ports().find(|port| port.number() == 3389))
+                .map(|port| port.state());
+
+            assert_eq!(
+                state,
+                Some(found),
+                "a scan that ran out of budget erased a {found:?} port"
+            );
+        }
+    }
+
+    /// And a real verdict still wins, in both directions, which is what makes
+    /// the carve-out a carve-out rather than a promotion rule.
+    ///
+    /// `Port::merge` promotes, because it folds two readings of one live scan.
+    /// A merge is not that: it folds two scans, and the later one is entitled to
+    /// say a port closed. Only silence is not.
+    #[test]
+    fn a_later_scan_that_did_ask_still_overrides() {
+        let january = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Open));
+        let august = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Closed));
+
+        let mut merge = Merge::new(MergeOptions::default());
+        merge.add(report("january", day(1), vec![january]));
+        merge.add(report("august", day(2), vec![august]));
+
+        assert_eq!(
+            merge
+                .finish()
+                .hosts()
+                .next()
+                .and_then(|host| host.ports().find(|port| port.number() == 3389))
+                .map(|port| port.state()),
+            Some(PortState::Closed),
+            "a later scan that looked is allowed to close a port"
+        );
+    }
+
+    /// A port only ever recorded unasked stays unasked, rather than vanishing or
+    /// acquiring a verdict nothing established.
+    #[test]
+    fn a_port_nobody_ever_asked_about_stays_unasked() {
+        let first = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Unasked));
+        let second = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Unasked));
+
+        let mut merge = Merge::new(MergeOptions::default());
+        merge.add(report("first", day(1), vec![first]));
+        merge.add(report("second", day(2), vec![second]));
+
+        assert_eq!(
+            merge
+                .finish()
+                .hosts()
+                .next()
+                .and_then(|host| host.ports().find(|port| port.number() == 3389))
+                .map(|port| port.state()),
+            Some(PortState::Unasked)
         );
     }
 }

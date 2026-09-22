@@ -1535,6 +1535,7 @@ pub(super) async fn run_port_phase(
         let plan = super::plan::DiscoveryPlan::build(
             target_ips(&target_map),
             Scope::Targeted,
+            &cfg.exclusions,
             &cfg.send_source,
         );
         Some(Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await)

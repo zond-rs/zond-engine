@@ -31,8 +31,8 @@ use crate::model::finding::{
     DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
 };
 use crate::model::host::{
-    Filtering, Hop, Host, HostStatus, IpProtocolState, NetworkRole, OsFingerprint, StatusProtocol,
-    StatusReason,
+    Filtering, HardwareDescription, HardwareInfo, Hop, Host, HostStatus, IpProtocolState,
+    NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
 };
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
@@ -621,7 +621,7 @@ fn hostile_host() -> Host {
     host.set_hostname(Some(HOSTILE.to_string()));
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, HOSTILE));
-    host.record_mac(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x01));
+    host.set_hardware(hostile_hardware());
     // The one role anything assigns, so the corpus still exercises a non-empty
     // `roles` array through every exporter.
     host.add_network_role(NetworkRole::Tarpit);
@@ -630,6 +630,8 @@ fn hostile_host() -> Host {
         .with_family(HOSTILE)
         .with_device(HOSTILE)
         .with_generation(HOSTILE)
+        .with_kernel(HOSTILE)
+        .with_arch(HOSTILE)
         .with_evidence(HOSTILE);
     os.add_cpe(HOSTILE);
     host.set_os(os);
@@ -640,12 +642,38 @@ fn hostile_host() -> Host {
     host
 }
 
+/// A hardware record whose every describable string is hostile, beside the
+/// address it was seen under.
+///
+/// Every field is a service's to state, and a rule fills a `hw.cpe23` template
+/// from the banner's own captures, so none of them is safe to leave clean. All
+/// seven are set rather than the ones a name-based check notices: `vendor`,
+/// `product`, `family` and `version` share their names with a service's fields,
+/// so the conformance check would read them as covered either way.
+fn hostile_hardware() -> HardwareInfo {
+    let mut hardware = HardwareInfo::new(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x01));
+    hardware.merge(
+        HardwareInfo::described(HardwareDescription {
+            vendor: Some(HOSTILE),
+            product: Some(HOSTILE),
+            family: Some(HOSTILE),
+            cpe23: Some(HOSTILE),
+            model: Some(HOSTILE),
+            version: Some(HOSTILE),
+            serial_number: Some(HOSTILE),
+        })
+        .expect("a description naming every field names something"),
+    );
+    hardware
+}
+
 /// A port whose every describable string is hostile.
 fn hostile_port() -> Port {
     let service = Service::new(HOSTILE, 100)
         .with_product(HOSTILE)
         .with_vendor(HOSTILE)
         .with_version(HOSTILE)
+        .with_extrainfo(HOSTILE)
         .with_cpe(HOSTILE);
 
     let certificate = CertificateInfo::new(
@@ -691,6 +719,23 @@ pub(crate) fn hostile() -> ScanReport {
     );
 
     ctx.record_failure(ScannerKind::Local, HOSTILE.to_string());
+    // A neighbour's own account of itself, which is the most attacker-chosen
+    // data a report carries: LLDP and CDP are unauthenticated by design, so
+    // every string here was written by whoever is on the segment. It reaches
+    // the HTML page's own table and the nmap document, and until this line no
+    // escaping test had ever seen one.
+    ctx.record_attachment(
+        crate::report::Attachment::new(
+            crate::model::ip::scoped::Zone::new(1, HOSTILE),
+            crate::report::AttachmentSource::Lldp,
+            std::time::UNIX_EPOCH + Duration::from_secs(1_767_225_600),
+        )
+        .with_device_name(HOSTILE)
+        .with_device_mac(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x02))
+        .with_port(HOSTILE)
+        .with_native_vlan(42)
+        .with_management_address(ip(9)),
+    );
     ctx.record_probe_stats(probe_stats());
     ctx.store.insert(
         crate::model::ip::scoped::ScopedIp::unscoped(ip(3)),

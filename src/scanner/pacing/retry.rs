@@ -907,6 +907,31 @@ where
         self.records.contains_key(key)
     }
 
+    /// Whether `key` is outstanding and, where `token` is given, whether it
+    /// names one of that probe's live attempts.
+    ///
+    /// The non-destructive half of [`resolve`](Self::resolve), for a message
+    /// that reports on the *host* rather than on the port it happened to quote.
+    /// Such a message must not retire the probe — the port is still undecided
+    /// and keeps its remaining attempts — but it still has to be shown to be
+    /// about a probe this scan actually sent before anything is recorded on its
+    /// word. Without this there was nothing to show it with: an ICMP host
+    /// unreachable was believed on the strength of its quoted source port
+    /// alone.
+    ///
+    /// `None` for the token means the quotation was too short to carry one,
+    /// which leaves the key as the whole of the evidence. That is weaker and the
+    /// caller is expected to know it; what it is not is nothing.
+    pub fn names_attempt(&self, key: &K, token: Option<&T>) -> bool {
+        let Some(record) = self.records.get(key) else {
+            return false;
+        };
+        match token {
+            Some(token) => record.attempt_of(token).is_some(),
+            None => true,
+        }
+    }
+
     /// Whether anything has ever come back from `host`: a SYN+ACK, a reset, an
     /// ICMP error, any reply at all.
     ///

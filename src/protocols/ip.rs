@@ -1215,4 +1215,85 @@ mod tests {
             prop_assert_eq!(reassembled, payload);
         }
     }
+
+    /// **Every fragment fits its MTU, and the pieces put the datagram back
+    /// together**, for both families and whatever MTU is asked for.
+    ///
+    /// Fragmentation is arithmetic over a length field, an offset counted in
+    /// eight-byte units, and a header repeated per piece — three places an
+    /// off-by-one hides and none of them crashes. A test that only asserted "no
+    /// panic" would pass over all of them, so the oracle is reassembly: the
+    /// concatenated payloads have to equal what went in, exactly.
+    ///
+    /// 170 combinations, including every MTU too small to carry a fragment at
+    /// all, where the answer is a refusal rather than a piece nothing can send.
+    #[test]
+    fn every_fragment_fits_its_mtu_and_the_pieces_reassemble() {
+        let v4_header = craft::Ipv4::new(
+            "192.0.2.1".parse().expect("literal"),
+            "192.0.2.2".parse().expect("literal"),
+        );
+        let v6_header = craft::Ipv6::new(
+            "2001:db8::1".parse().expect("literal"),
+            "2001:db8::2".parse().expect("literal"),
+        );
+
+        // Around every boundary that decides something: the two header sizes,
+        // the fragment header, the eight-byte unit, and the smallest MTU each
+        // family will accept.
+        let mtus = [
+            0u16, 1, 7, 8, 20, 21, 27, 28, 39, 40, 47, 48, 55, 56, 64, 1280, 1500,
+        ];
+        let sizes = [0usize, 1, 7, 8, 9, 63, 64, 1000, 1500, 9000];
+
+        for mtu in mtus {
+            for size in sizes {
+                let payload: Vec<u8> = (0..size).map(|byte| (byte % 251) as u8).collect();
+
+                if let Ok(fragments) = fragment_ipv4(&v4_header, &payload, mtu) {
+                    let mut rebuilt = Vec::new();
+                    for fragment in &fragments {
+                        if fragments.len() > 1 {
+                            assert!(
+                                fragment.len() <= mtu as usize,
+                                "an IPv4 fragment of {} bytes does not fit an MTU of {mtu}",
+                                fragment.len()
+                            );
+                        }
+                        rebuilt.extend_from_slice(&fragment[IP_V4_HDR_LEN..]);
+                    }
+                    assert_eq!(
+                        rebuilt, payload,
+                        "IPv4 mtu={mtu} size={size} did not reassemble"
+                    );
+                }
+
+                if let Ok(fragments) = fragment_ipv6(&v6_header, &payload, mtu) {
+                    // One piece and no fragment header is the unfragmented case.
+                    let carries_header =
+                        fragments.len() > 1 || fragments[0].len() > IP_V6_HDR_LEN + size;
+                    let skip = match carries_header {
+                        true => IP_V6_HDR_LEN + FRAGMENT_HEADER_LEN,
+                        false => IP_V6_HDR_LEN,
+                    };
+
+                    let mut rebuilt = Vec::new();
+                    for fragment in &fragments {
+                        if fragments.len() > 1 {
+                            assert!(
+                                fragment.len() <= mtu as usize,
+                                "an IPv6 fragment of {} bytes does not fit an MTU of {mtu}",
+                                fragment.len()
+                            );
+                        }
+                        rebuilt.extend_from_slice(&fragment[skip..]);
+                    }
+                    assert_eq!(
+                        rebuilt, payload,
+                        "IPv6 mtu={mtu} size={size} did not reassemble"
+                    );
+                }
+            }
+        }
+    }
 }

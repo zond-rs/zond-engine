@@ -47,6 +47,32 @@
 //! Every field in the quotation was chosen by a remote host, so nothing here
 //! assumes: it is parsed with the same bounds-checked path as a captured packet
 //! ([`frame::parse_ip_segment`]), and eight bytes is all a caller may count on.
+//!
+//! ## What a caller owes, which is not optional
+//!
+//! **Parsing a quotation is not attributing one.** Everything above says how the
+//! bytes are read safely; none of it says the message is about a probe this scan
+//! sent, and this module cannot say that — it does not know what any scanner
+//! sent. So every caller owes a check of its own, and *what* satisfies it
+//! differs by protocol and by technique:
+//!
+//! - a nonce, where the technique put one inside the guaranteed eight bytes;
+//! - a drawn port or identifier, where it did not;
+//! - membership of a ledger of probes still outstanding;
+//! - and, where a probe carries nothing at all after its IP header, the source
+//!   address it left from, which is weaker and has to be admitted as weaker.
+//!
+//! Reading an error without one of those is reading a stranger's packet. Four
+//! findings across two audit iterations came from exactly that, in four
+//! different scanners, each written by somebody who had thought about it:
+//! an SCTP INIT believed on its ports, a host filed down on a quoted source
+//! port, three TCP techniques resolved on a quotation too short to carry their
+//! nonce, and an IP protocol settled on membership of the scan's own target
+//! list. The trace got it right first and nothing carried that across.
+//!
+//! `tests/hygiene/attribution.rs` is what carries it across now: a census of every file
+//! that reads an error, each with a line saying how it attributes one. A new
+//! caller fails that test until the line is written.
 
 use pnet_packet::icmp::destination_unreachable::{DestinationUnreachablePacket, IcmpCodes};
 use pnet_packet::icmp::{IcmpCode, IcmpPacket, IcmpTypes};
@@ -143,6 +169,12 @@ pub struct IcmpError<'a> {
     /// The probe the message is about, as the sender quoted it back. Its
     /// destination names the host and its payload the transport header, of
     /// which only the first eight bytes are guaranteed to be present.
+    ///
+    /// **The only thing tying this message to one of yours, and it does not do
+    /// that by itself.** Every byte here was chosen by whoever sent the error;
+    /// reading it establishes what they claim, not that the claim is about a
+    /// probe you sent. See the module documentation for what a caller owes, and
+    /// `tests/hygiene/attribution.rs` for who has paid it.
     pub quoted: IpSegment<'a>,
 }
 
