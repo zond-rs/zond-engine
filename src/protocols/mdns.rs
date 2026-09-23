@@ -98,19 +98,38 @@ pub struct MdnsHost {
     pub ips: BTreeSet<IpAddr>,
 }
 
-/// The name a host's device-info record is published under.
+/// The name a host's device-info record is published under, or `None` for a
+/// name no responder publishes one under.
 ///
 /// Bonjour hangs it off the hostname rather than advertising it as a service, so
 /// it does not appear in a `_services._dns-sd._udp` enumeration and cannot be
 /// asked for without knowing what the host calls itself. Measured against
 /// mDNSResponder: `_device-info._tcp.local` alone draws nothing, and
 /// `<host>._device-info._tcp.local` draws the record.
-pub fn device_info_name(hostname: &str) -> String {
-    let host = hostname
-        .trim_end_matches('.')
-        .strip_suffix(".local")
-        .unwrap_or(hostname);
-    format!("{host}._device-info._tcp.local")
+///
+/// # Which names have one
+///
+/// A name in `.local`, whose host part is what the record hangs off, and a bare
+/// label, which is how a device names itself in its DHCP request. A name in any
+/// other zone came from a unicast resolver: multicast DNS answers for `.local`
+/// and nothing else (RFC 6762 §3), so `x.fritz.box._device-info._tcp.local` is
+/// a question no responder answers, and the zone's own label for the device is
+/// whatever whoever runs the zone chose, which need not be what the device
+/// calls itself.
+///
+/// The trailing dot of a fully-qualified name is dropped first, and the zone
+/// is recognised whatever its case, as DNS compares names (RFC 4343), so
+/// `mac.`, `mac.local.` and `mac.LOCAL` all name the record under `mac`.
+pub fn device_info_name(hostname: &str) -> Option<String> {
+    let name = hostname.trim_end_matches('.');
+    let host = match name.rsplit_once('.') {
+        Some((host, zone)) if zone.eq_ignore_ascii_case("local") => host,
+        Some(_) => return None,
+        // The zone on its own, which names no host.
+        None if name.eq_ignore_ascii_case("local") => return None,
+        None => name,
+    };
+    (!host.is_empty()).then(|| format!("{host}._device-info._tcp.local"))
 }
 
 /// A query asking a host what it calls itself, by the reverse name of its
@@ -130,7 +149,8 @@ pub fn build_reverse_query(ip: IpAddr) -> Result<Vec<u8>> {
     )
 }
 
-/// A query for a host's device-info record, asked of that host directly.
+/// A query for a host's device-info record, asked of that host directly, or
+/// `None` where `hostname` has no record under it: see [`device_info_name`].
 ///
 /// Sent to the host directly rather than to the multicast group. A scan is asking
 /// one host about itself, so telling the whole segment would make the answer
@@ -140,12 +160,18 @@ pub fn build_reverse_query(ip: IpAddr) -> Result<Vec<u8>> {
 /// asking for a unicast reply, and it is not set here because it is not needed:
 /// measured against mDNSResponder, a query sent to a responder's own port is
 /// answered either way, and the bit exists for queries put on the group.
-pub fn build_device_info_query(hostname: &str) -> Result<Vec<u8>> {
-    dns::build_query(
+///
+/// # Errors
+///
+/// [`PacketError::UnwritableName`], inside the `Some`, for a name that has no
+/// wire form.
+pub fn build_device_info_query(hostname: &str) -> Option<Result<Vec<u8>>> {
+    let name = device_info_name(hostname)?;
+    Some(dns::build_query(
         MULTICAST_QUERY_ID,
         false,
-        &[(&device_info_name(hostname), dns::record_type::TXT)],
-    )
+        &[(&name, dns::record_type::TXT)],
+    ))
 }
 
 /// The strings a TXT record carries, one per character-string.
@@ -472,18 +498,57 @@ mod tests {
     /// The name the record hangs off, which is a hostname and not a service.
     #[test]
     fn the_query_name_is_built_from_the_host_rather_than_browsed_for() {
-        assert_eq!(device_info_name("mac"), "mac._device-info._tcp.local");
-        assert_eq!(device_info_name("mac.local"), "mac._device-info._tcp.local");
+        for name in ["mac", "mac.local", "mac.local."] {
+            assert_eq!(
+                device_info_name(name).as_deref(),
+                Some("mac._device-info._tcp.local"),
+                "{name}"
+            );
+        }
+    }
+
+    /// A trailing dot is dropped from a bare label as it is from a `.local`
+    /// name, and the zone is recognised whatever its case.
+    ///
+    /// Kept, the dot would be an empty label in the middle of the question,
+    /// `mac.._device-info._tcp.local`, which names nothing a responder
+    /// publishes.
+    #[test]
+    fn a_fully_qualified_or_capitalised_name_asks_the_same_question() {
         assert_eq!(
-            device_info_name("mac.local."),
-            "mac._device-info._tcp.local"
+            device_info_name("mac.").as_deref(),
+            Some("mac._device-info._tcp.local")
         );
+        assert_eq!(
+            device_info_name("Mac.LOCAL").as_deref(),
+            Some("Mac._device-info._tcp.local")
+        );
+    }
+
+    /// A name in any zone but `.local` asks no question, rather than one no
+    /// responder answers.
+    ///
+    /// Such a name came from a unicast resolver, and a query built from it is
+    /// a datagram spent on silence. Refusing it is what lets a caller ask the
+    /// host what it calls itself instead, which is the name the record is
+    /// published under.
+    #[test]
+    fn a_name_outside_local_asks_no_question() {
+        assert_eq!(device_info_name("x.fritz.box"), None);
+        assert!(build_device_info_query("x.fritz.box").is_none());
+
+        // Nor does a name with no host in it.
+        for empty in ["", ".", ".local", "local."] {
+            assert_eq!(device_info_name(empty), None, "{empty:?}");
+        }
     }
 
     /// The query a responder answered with the bytes above.
     #[test]
     fn the_query_asks_for_text_under_that_name() {
-        let query = build_device_info_query("mac").expect("a name that fits a label");
+        let query = build_device_info_query("mac")
+            .expect("a name with a record under it")
+            .expect("a name that fits a label");
         let packet = Packet::parse(&query).expect("a responder can parse it");
 
         let question = packet.questions.first().expect("one question");
@@ -493,7 +558,9 @@ mod tests {
 
     #[test]
     fn a_message_carrying_no_text_yields_nothing() {
-        let query = build_device_info_query("mac").expect("a query");
+        let query = build_device_info_query("mac")
+            .expect("a name with a record under it")
+            .expect("a query");
         assert!(
             text_records(&query)
                 .expect("a parseable message")

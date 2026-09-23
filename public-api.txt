@@ -12226,10 +12226,10 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::mdns::MdnsHost
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::mdns::MdnsHost
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::mdns::MdnsHost
 pub const zond_engine::protocols::mdns::PORT: u16
-pub fn zond_engine::protocols::mdns::build_device_info_query(&str) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::mdns::build_device_info_query(&str) -> core::option::Option<zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>>
 pub fn zond_engine::protocols::mdns::build_query(&str) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::mdns::build_reverse_query(core::net::ip_addr::IpAddr) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::mdns::device_info_name(&str) -> alloc::string::String
+pub fn zond_engine::protocols::mdns::device_info_name(&str) -> core::option::Option<alloc::string::String>
 pub fn zond_engine::protocols::mdns::extract_hosts(&[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<zond_engine::protocols::mdns::MdnsHost>>
 pub fn zond_engine::protocols::mdns::text_records(&[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub mod zond_engine::protocols::ndp

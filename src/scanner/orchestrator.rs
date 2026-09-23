@@ -1055,9 +1055,11 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
 /// # Who is asked
 ///
 /// Every host that is up. The record is published under the host's own name, and
-/// a host that has not been named otherwise is asked what it calls itself first,
-/// so the pass is not confined to the hosts something else happened to resolve.
-/// A host running no responder answers neither question and costs two datagrams.
+/// a host that has not been named otherwise, or was named in a zone other than
+/// `.local`, is asked what it calls itself first, so the pass is not confined to
+/// the hosts something else happened to resolve under the right name. A host
+/// running no responder leaves the first question unanswered and is asked
+/// nothing more, one datagram in all.
 pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetection) {
     if !os_detection.is_active() {
         return;
@@ -1149,15 +1151,16 @@ async fn ask_what_hardware(
 ) -> Option<(crate::model::ip::scoped::ScopedIp, Vec<OsEvidence>)> {
     let addr = target.to_socket_addr(MDNS_PORT)?;
 
-    // The name the record hangs off. Asked of the host itself where nothing else
-    // resolved one, which is the ordinary case for a machine the scan reached by
-    // address: a responder answers a reverse lookup about its own address.
-    let hostname = match hostname {
-        Some(name) => name,
-        None => own_name(addr, target.addr()).await?,
+    // The name the record hangs off. Asked of the host itself where nothing
+    // else resolved one, which is the ordinary case for a machine the scan
+    // reached by address, and where what did resolve one was a unicast
+    // resolver, whose zone publishes no record: a responder answers a reverse
+    // lookup about its own address with the name it publishes under.
+    let question = |name: &str| crate::protocols::mdns::build_device_info_query(name)?.ok();
+    let query = match hostname.as_deref().and_then(question) {
+        Some(query) => query,
+        None => question(&own_name(addr, target.addr()).await?)?,
     };
-
-    let query = crate::protocols::mdns::build_device_info_query(&hostname).ok()?;
 
     // Each `key=value` is its own claim: the model and the Darwin release are
     // two facts about one machine, and a rule reads one of them.
