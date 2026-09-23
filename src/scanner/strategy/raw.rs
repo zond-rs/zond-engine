@@ -207,6 +207,21 @@ pub struct SynToken {
     pub src_port: u16,
 }
 
+impl SynToken {
+    /// A token for a new attempt: a random sequence number, and `src_port`
+    /// where a caller pinned one or a fresh random high port where it did not.
+    ///
+    /// Fresh per attempt either way, which is what lets a reply name the
+    /// attempt it answers. A pinned port keeps the sequence number varying and
+    /// buys a port a filter is known to trust.
+    pub(super) fn fresh(src_port: Option<u16>) -> Self {
+        Self {
+            seq: rand::random_range(0..=u32::MAX),
+            src_port: src_port.unwrap_or_else(|| rand::random_range(50_000..u16::MAX)),
+        }
+    }
+}
+
 /// What a scan's evasion settings come to for one probe: how the packet reaches
 /// the wire, how its segment is shaped, and the decoys it travels among.
 ///
@@ -330,9 +345,14 @@ pub(super) fn send_init(
 }
 
 /// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port` through
-/// `sender` and logs the outcome. On success it returns the [`SynToken`] the
-/// packet went out carrying, so the caller can record it and recognize a later
-/// reply as answering this attempt.
+/// `sender`, carrying `token`'s sequence number and source port, and logs the
+/// outcome. Whether it reached the wire is what comes back.
+///
+/// The token is the caller's to draw, with [`SynToken::fresh`], rather than
+/// drawn here, because one attempt may be several packets: a sweep asking one
+/// address on several ports sends them all under one token, so whichever port
+/// answers names the same attempt and the ledger needs one entry per address
+/// rather than one per port.
 ///
 /// `reason` receives the failure when there is one, so a scan whose probes never
 /// reached the wire can say why in its report rather than only in a log line. A
@@ -345,20 +365,19 @@ pub(super) fn send_syn(
     dst_addr: IpAddr,
     dst_zone: Option<u32>,
     dst_port: u16,
-    src_port_override: Option<u16>,
+    token: SynToken,
     evasion: EvasionParts<'_>,
     faults: &mut SendFaults,
-) -> Option<SynToken> {
+) -> bool {
     let EvasionParts {
         emission,
         shaping,
         decoys,
     } = evasion;
-    // A caller who pinned a source port gets that port; otherwise a fresh
-    // random high port, which is this sweep's default and is what makes a
-    // retried probe measurable. see the field this override travels on.
-    let src_port: u16 = src_port_override.unwrap_or_else(|| rand::random_range(50_000..u16::MAX));
-    let seq_num: u32 = rand::random_range(0..=u32::MAX);
+    let SynToken {
+        seq: seq_num,
+        src_port,
+    } = token;
 
     let packet = match protocol::tcp::build_probe_shaped(
         TcpScanTechnique::Syn,
@@ -376,7 +395,7 @@ pub(super) fn send_syn(
                 verbosity = 2,
                 "failed to create SYN packet for {dst_addr}:{dst_port}: {e}"
             );
-            return None;
+            return false;
         }
     };
 
@@ -413,10 +432,7 @@ pub(super) fn send_syn(
     ) {
         Ok(_) => {
             success!(verbosity = 2, "sent SYN probe to {dst_addr}:{dst_port}");
-            Some(SynToken {
-                seq: seq_num,
-                src_port,
-            })
+            true
         }
         Err(e) => {
             // Which of the two this was decides how it is reported; see
@@ -450,7 +466,7 @@ pub(super) fn send_syn(
                 );
             }
             faults.record(dst_addr, &e);
-            None
+            false
         }
     }
 }

@@ -38,6 +38,7 @@ mod evasion;
 mod exchange;
 mod lan_discovery;
 mod listening;
+mod liveness;
 mod pacing;
 mod probe_classification;
 mod retransmission;

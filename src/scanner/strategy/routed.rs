@@ -9,9 +9,10 @@
 //! # Routed host discovery
 //!
 //! Finds hosts reached through a gateway, as against ones sitting on the local
-//! segment. One raw TCP SYN per target, and anything that comes back credits
-//! the host: the handshake is never completed, so an address answers whether or
-//! not the port it was asked about is open.
+//! segment. Raw TCP SYNs to a handful of ports per target, and anything that
+//! comes back credits the host: the handshake is never completed, so an address
+//! answers whether or not the port it was asked about is open, and it only has
+//! to answer on one of them. See [`SynPorts`] for which ports and why.
 //!
 //! The counterpart of [`local`](super::local), which reaches a segment at the
 //! link layer. Between them they are what a privileged discovery sweep is made
@@ -34,6 +35,8 @@ use crate::info;
 use crate::journal::settle::{Outcome, Settled};
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
+use crate::model::port::set::COMMON_DISCOVERY_PORTS;
+use crate::model::port::{PortSet, Protocol, TCP_BY_PREVALENCE};
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols as protocol;
 use crate::scanner::pacing::deadline::AdaptiveDeadline;
@@ -100,12 +103,140 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
         .is_some_and(|reply| !matches!(reply, TcpReply::ChallengeAck))
 }
 
-/// The port a SYN sweep asks about.
+/// The TCP ports a SYN sweep asks every address about, all of them on every
+/// attempt.
 ///
-/// Any port answers a discovery probe, since the handshake is never completed
-/// and both a SYN+ACK and a RST prove the host. 443 is chosen because a filter
-/// that passes anything usually passes it.
-const SYN_DISCOVERY_PORT: u16 = 443;
+/// One port is enough for a host that answers a SYN to a closed port with a
+/// reset, which is what an unfiltered stack does. It is not enough for the
+/// host that matters most: one behind a filter that drops a SYN to anything
+/// not listening, which is Windows Firewall's default and what an `iptables`
+/// `DROP` policy does. That host answers on the ports it serves and nowhere
+/// else, so a sweep that asks one port it does not serve reports it down, and
+/// a port scan then never asks about the port it does serve.
+///
+/// So the set is two lists:
+///
+/// - **The common five**, SSH, HTTP, HTTPS, SMB and RDP, from
+///   [`COMMON_DISCOVERY_PORTS`]. The unprivileged sweep asks exactly these, and
+///   a privileged sweep that asked less would find fewer hosts with more
+///   privilege.
+/// - **Up to [`SCAN_PORTS`](Self::SCAN_PORTS) of the scan's own ports**, for
+///   a port scan's liveness pass: those are the ports whose answers the scan
+///   exists to report, so a filtered host serving nothing else still has a
+///   port it answers on among the ones asked. The catalogue's order
+///   picks among them, so a scan of a thousand ports adds the few the engine
+///   thinks likeliest to be listening and a scan naming one port adds that
+///   port.
+///
+/// All of them go out on every attempt, under one sequence number and source
+/// port, so a reply on any of them names the attempt and retires the address.
+/// Spreading them across attempts instead would leave a lost SYN to the one
+/// port a filtered host serves with no retransmission behind it.
+///
+/// **What it costs** is a packet per port per unanswered attempt. A host that
+/// answers costs one attempt; an address with nothing on it costs the whole set
+/// on every attempt, so a silent range costs five to eight times the packets a
+/// single port would, and the sweep paces and sizes its deadline from that
+/// total rather than
+/// from its address count. That is the price of asking the question the scan
+/// depends on: a host missed here is not port-scanned at all, which no later
+/// phase recovers.
+///
+/// Not asked: an ICMP echo or a bare ACK. Both find hosts a SYN does not, an
+/// echo where nothing listens and pings pass, an ACK through a filter that
+/// keeps no state, and neither passes the stateful filters this set exists for.
+/// An echo also needs a second transport beside the TCP one the sweep holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SynPorts {
+    /// The ports, in the order they leave, valid up to `len`.
+    ports: [u16; Self::CAPACITY],
+    /// How many of `ports` are in the set.
+    len: u8,
+}
+
+impl SynPorts {
+    /// How many of a scan's own ports the set may add to the common five.
+    ///
+    /// Three covers a port scan naming a short list in full, which is the
+    /// usual shape of a scan about particular services. Past that the scan is
+    /// broad, and its likeliest ports are the common five already.
+    pub const SCAN_PORTS: usize = 3;
+
+    /// The most ports a set can hold.
+    pub const CAPACITY: usize = COMMON_DISCOVERY_PORTS.len() + Self::SCAN_PORTS;
+
+    /// The common five alone, for a sweep that was asked about no ports.
+    pub fn common() -> Self {
+        let mut set = Self {
+            ports: [0; Self::CAPACITY],
+            len: 0,
+        };
+        for &port in COMMON_DISCOVERY_PORTS {
+            set.push(port);
+        }
+        set
+    }
+
+    /// One port and nothing else, for a caller who knows which port every
+    /// target it sweeps answers on and wants a packet per address per attempt.
+    pub fn only(port: u16) -> Self {
+        let mut set = Self {
+            ports: [0; Self::CAPACITY],
+            len: 0,
+        };
+        set.push(port);
+        set
+    }
+
+    /// The common five and up to [`SCAN_PORTS`](Self::SCAN_PORTS) of the TCP
+    /// ports in `scan`, for a port scan's liveness pass.
+    ///
+    /// Ranked by the catalogue, [`TCP_BY_PREVALENCE`], and a port it has never
+    /// heard of after every one it has, lowest first, so the choice is the same
+    /// on every run of one scan.
+    pub fn for_scan(scan: &PortSet) -> Self {
+        let mut set = Self::common();
+        let common = set.len();
+        let ranked = TCP_BY_PREVALENCE
+            .iter()
+            .copied()
+            .filter(|&port| scan.has_tcp(port));
+        let unranked = scan
+            .ranges(Protocol::Tcp)
+            .iter()
+            .flat_map(|range| range.clone())
+            .filter(|port| !TCP_BY_PREVALENCE.contains(port));
+        for port in ranked.chain(unranked) {
+            if set.len() == common + Self::SCAN_PORTS {
+                break;
+            }
+            if !set.as_slice().contains(&port) {
+                set.push(port);
+            }
+        }
+        set
+    }
+
+    /// The ports, in the order they leave.
+    pub fn as_slice(&self) -> &[u16] {
+        &self.ports[..usize::from(self.len)]
+    }
+
+    /// How many ports an attempt asks, and so how many packets it is.
+    pub fn len(&self) -> usize {
+        usize::from(self.len)
+    }
+
+    /// Always false: every constructor puts at least one port in the set.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn push(&mut self, port: u16) {
+        self.ports[usize::from(self.len)] = port;
+        self.len += 1;
+    }
+}
 
 /// Which packet a routed sweep asks with.
 ///
@@ -126,16 +257,16 @@ const SYN_DISCOVERY_PORT: u16 = 443;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepProbe {
-    /// A TCP SYN, never completed.
+    /// TCP SYNs, never completed, one to each of a set of ports.
     Syn {
         /// The port every probe leaves from when a caller pinned one, or `None`
-        /// for a fresh high port per probe. A fresh port and a fresh sequence
+        /// for a fresh high port per attempt. A fresh port and a fresh sequence
         /// number together are what let a reply name the attempt it answers; a
         /// pinned one keeps the sequence number varying and buys a port a filter
         /// is known to trust.
         src_port: Option<u16>,
-        /// The port every probe is aimed at.
-        dst_port: u16,
+        /// The ports every attempt is aimed at, all of them each time.
+        dst_ports: SynPorts,
     },
     /// An SCTP INIT, for a scan that asked about SCTP.
     ///
@@ -155,15 +286,16 @@ pub enum SweepProbe {
 }
 
 impl SweepProbe {
-    /// A SYN sweep, asking the port a discovery probe asks by default.
-    ///
-    /// Any port serves, since the handshake is never completed and both answers
-    /// prove the host; 443 is picked because a filter that passes anything
-    /// usually passes it.
-    pub const fn syn(src_port: Option<u16>) -> Self {
+    /// A SYN sweep asking the common five ports; see [`SynPorts::common`].
+    pub fn syn(src_port: Option<u16>) -> Self {
+        Self::syn_to(src_port, SynPorts::common())
+    }
+
+    /// A SYN sweep asking `dst_ports`.
+    pub const fn syn_to(src_port: Option<u16>, dst_ports: SynPorts) -> Self {
         Self::Syn {
             src_port,
-            dst_port: SYN_DISCOVERY_PORT,
+            dst_ports,
         }
     }
 
@@ -179,6 +311,15 @@ impl SweepProbe {
             Self::Init { src_port, .. } => ProbeKind::Sctp {
                 reply_port: src_port,
             },
+        }
+    }
+
+    /// How many packets one attempt at one address puts on the wire, which is
+    /// what the sweep's pacing and deadline are counted in.
+    fn packets_per_attempt(self) -> u32 {
+        match self {
+            Self::Syn { dst_ports, .. } => dst_ports.len() as u32,
+            Self::Init { .. } => 1,
         }
     }
 
@@ -271,8 +412,8 @@ pub enum SweepToken {
     Init(u32),
 }
 
-/// Checks whether addresses behind a gateway are alive, putting one raw probe
-/// to each and crediting whatever comes back.
+/// Checks whether addresses behind a gateway are alive, putting raw probes to
+/// each and crediting whatever comes back.
 ///
 /// The handshake is never completed, so an address answers whether or not the
 /// port it was asked about is open, and every probe leaves from the source
@@ -451,8 +592,10 @@ impl HostScanner for RoutedScanner {
             self.ctx.record_unroutable(*address);
         }
 
+        // Addresses rather than failed sends, since an attempt at one address
+        // is a packet per port and each of them fails.
         if let Some((address, _)) = &self.faults.unroutable {
-            match self.faults.unroutable_count.saturating_sub(1) {
+            match self.faults.addresses.len().saturating_sub(1) {
                 0 => info!("no route to {address}"),
                 1 => info!("no route to {address} and 1 other address"),
                 more => info!("no route to {address} and {more} other addresses"),
@@ -477,7 +620,8 @@ impl HostScanner for RoutedScanner {
 
 impl RoutedScanner {
     /// A sweep of `targets`, each already paired with the source address to
-    /// probe it from, over a transport this constructor opens.
+    /// probe it from, over a transport this constructor opens, asking the
+    /// common five ports.
     ///
     /// Hosts land in `ctx`, which is also where an abort is read from, and
     /// every address found is posted to `dns_tx` for a reverse lookup; pass
@@ -493,8 +637,23 @@ impl RoutedScanner {
         dns_tx: Option<UnboundedSender<IpAddr>>,
         tuning: ProbeTuning,
     ) -> Result<Self, StrategyError> {
+        Self::over_tcp(targets, ctx, dns_tx, tuning, SynPorts::common())
+    }
+
+    /// [`new`](Self::new), asking `ports` rather than the common five.
+    ///
+    /// For a port scan's liveness pass, which takes
+    /// [`SynPorts::for_scan`] so that a host behind a filter is asked about
+    /// the ports the scan is about to ask it.
+    pub fn over_tcp(
+        targets: Vec<RoutedTarget>,
+        ctx: ScanContext,
+        dns_tx: Option<UnboundedSender<IpAddr>>,
+        tuning: ProbeTuning,
+        ports: SynPorts,
+    ) -> Result<Self, StrategyError> {
         Self::asking(
-            SweepProbe::syn(tuning.evasion.source_port),
+            SweepProbe::syn_to(tuning.evasion.source_port, ports),
             targets,
             ctx,
             dns_tx,
@@ -647,9 +806,15 @@ impl RoutedScanner {
         // second fails invisibly - an address never probed is indistinguishable
         // from one with nothing on it - which is why it is derived here rather
         // than left to a constant that has to be remembered.
-        let (send_tick, batch) = pacing_for(rate_per_sec);
+        //
+        // The rate is in packets, because a policer counts packets, and an
+        // attempt at one address is as many packets as the probe asks ports.
+        // The ticker releases addresses, so it runs at that fraction of it.
+        let addresses_per_sec = NonZeroU32::new(rate_per_sec.get() / probe.packets_per_attempt())
+            .unwrap_or(NonZeroU32::MIN);
+        let (send_tick, batch) = pacing_for(addresses_per_sec);
         let send_duration =
-            Duration::from_secs_f64(target_count as f64 / f64::from(rate_per_sec.get()));
+            Duration::from_secs_f64(target_count as f64 / f64::from(addresses_per_sec.get()));
         let deadline_config =
             DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime() + send_duration);
 
@@ -797,47 +962,61 @@ impl RoutedScanner {
         }
     }
 
-    /// Sends one SYN at `target` and records the attempt.
+    /// Puts one attempt at `target` on the wire and records it.
     ///
-    /// Used for the first attempt and every retry alike. A probe that cannot be
-    /// sent is not armed; the ledger has already charged the attempt by the time
-    /// a retry reaches here, so an unroutable target still runs out of attempts
-    /// on schedule.
+    /// Used for the first attempt and every retry alike. An attempt none of
+    /// whose packets could be sent is not armed; the ledger has already charged
+    /// the attempt by the time a retry reaches here, so an unroutable target
+    /// still runs out of attempts on schedule. One that reached the wire on any
+    /// port is armed, since any of them can draw the answer.
     fn probe(&mut self, target: IpAddr, now: Instant) {
         let Some(&source) = self.sources.get(&target) else {
             return;
         };
 
         let token = match self.probe {
-            SweepProbe::Syn { src_port, dst_port } => send_syn(
-                self.transport.tx.as_ref(),
-                source,
-                target,
-                None,
-                dst_port,
+            SweepProbe::Syn {
                 src_port,
-                EvasionParts {
-                    emission: self.emission,
-                    shaping: self.shaping,
-                    decoys: &self.decoys,
-                },
-                &mut self.faults,
-            )
-            .map(SweepToken::Syn),
-            SweepProbe::Init { src_port, dst_port } => send_init(
-                self.transport.tx.as_ref(),
-                source,
-                target,
-                None,
-                dst_port,
-                src_port,
-                &self.decoys,
-                self.emission,
-                &mut self.faults,
-            )
-            .map(SweepToken::Init),
+                dst_ports,
+            } => {
+                let token = SynToken::fresh(src_port);
+                let mut sent = false;
+                for &dst_port in dst_ports.as_slice() {
+                    let left = send_syn(
+                        self.transport.tx.as_ref(),
+                        source,
+                        target,
+                        None,
+                        dst_port,
+                        token,
+                        EvasionParts {
+                            emission: self.emission,
+                            shaping: self.shaping,
+                            decoys: &self.decoys,
+                        },
+                        &mut self.faults,
+                    );
+                    self.sweep.audit.record_send(left);
+                    sent |= left;
+                }
+                sent.then_some(SweepToken::Syn(token))
+            }
+            SweepProbe::Init { src_port, dst_port } => {
+                let tag = send_init(
+                    self.transport.tx.as_ref(),
+                    source,
+                    target,
+                    None,
+                    dst_port,
+                    src_port,
+                    &self.decoys,
+                    self.emission,
+                    &mut self.faults,
+                );
+                self.sweep.audit.record_send(tag.is_some());
+                tag.map(SweepToken::Init)
+            }
         };
-        self.sweep.audit.record_send(token.is_some());
 
         if let Some(token) = token {
             // Only for a probe that reached the wire, on the same reasoning
@@ -873,6 +1052,63 @@ mod tests {
     use crate::protocols::craft::{self, Field};
     use crate::scanner::session::ScanSession;
     use crate::transport::probe::MockSender;
+
+    /// The ports a scan of `spec` has its liveness pass ask.
+    fn asked_for(spec: &str) -> Vec<u16> {
+        SynPorts::for_scan(&PortSet::try_from(spec).expect("a port specification"))
+            .as_slice()
+            .to_vec()
+    }
+
+    /// A sweep asks at least what the unprivileged sweep asks, so privilege
+    /// never finds fewer hosts. Pinned against the list that sweep reads rather
+    /// than restated, since the two drifting apart is the failure.
+    #[test]
+    fn the_common_set_is_the_list_the_unprivileged_sweep_asks() {
+        assert_eq!(SynPorts::common().as_slice(), COMMON_DISCOVERY_PORTS);
+    }
+
+    /// A scan naming a few ports has every one of them asked, beside the
+    /// common five, so a host serving only one of them is found.
+    #[test]
+    fn a_scan_of_a_short_list_has_all_of_it_asked() {
+        assert_eq!(
+            asked_for("8443,3306"),
+            [COMMON_DISCOVERY_PORTS, &[8443, 3306]].concat(),
+            "the catalogue ranks 8443 ahead of 3306, so it leaves first"
+        );
+    }
+
+    /// A broad scan adds the ports the catalogue thinks likeliest, and no more
+    /// than the set holds, so the cost per address stays bounded whatever the
+    /// scan's size.
+    #[test]
+    fn a_broad_scan_adds_its_highest_ranked_ports_up_to_the_limit() {
+        let asked = asked_for("1-65535");
+        assert_eq!(asked.len(), SynPorts::CAPACITY);
+        assert_eq!(
+            asked[COMMON_DISCOVERY_PORTS.len()..],
+            TCP_BY_PREVALENCE[5..8],
+            "the three ranked straight after the common five"
+        );
+    }
+
+    /// A port the catalogue does not know is still asked, after every one it
+    /// does and lowest first, so the choice is the same on every run.
+    #[test]
+    fn a_port_the_catalogue_does_not_rank_comes_after_one_it_does() {
+        assert_eq!(
+            asked_for("40001,40000,8080")[COMMON_DISCOVERY_PORTS.len()..],
+            [8080, 40000, 40001]
+        );
+    }
+
+    /// A scan port already among the common five is not asked twice, and does
+    /// not spend one of the scan's places.
+    #[test]
+    fn a_scan_port_among_the_common_five_is_asked_once() {
+        assert_eq!(asked_for("22,443"), COMMON_DISCOVERY_PORTS);
+    }
 
     /// The address every probe leaves from.
     const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);

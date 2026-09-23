@@ -122,6 +122,7 @@ use crate::detect::Detections;
 use crate::journal::cursor::Checkpoint;
 use crate::model::{
     ip::set::{IpSet, Positions},
+    port::PortSet,
     target::{TargetIndex, TargetMap},
 };
 #[cfg(feature = "journal-format")]
@@ -136,6 +137,7 @@ use crate::scanner::session::{ScanContext, ScanSession, Stage};
 use crate::system::interface;
 use crate::system::privilege::Privilege;
 use strategy::local::Scope;
+use strategy::routed::SynPorts;
 
 // What running a scan produces: a `ScanSession` to watch it, a `ScanHandle` to
 // stop it, and a `ScanReport` once it is over.
@@ -634,9 +636,10 @@ fn spawn_discovery(
 
     tokio::spawn(async move {
         ctx.enter_stage(Stage::Discovery, None);
-        // No SCTP sweep: `discover` is asked about addresses and never about
-        // ports, so nothing has said which SCTP port would be worth asking.
-        run_discovery(targets, reach, caps, &cfg, &ctx, None).await;
+        // No SCTP sweep and no ports of its own: `discover` is asked about
+        // addresses and never about ports, so nothing has said which port
+        // would be worth asking beyond the ones every host is asked.
+        run_discovery(targets, reach, caps, &cfg, &ctx, SynPorts::common(), None).await;
         // Only the echo probe. The series probe reads a port whose state is
         // already known, and a sweep establishes none.
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
@@ -664,6 +667,11 @@ fn spawn_discovery(
 /// `reach` is the difference between the two: a sweep may go beyond the
 /// addresses it was given, and a port scan's liveness check never does.
 ///
+/// `syn_ports` is what a routed SYN sweep asks every address about: the common
+/// five for a sweep, and those with some of the scan's own ports for a port
+/// scan's liveness pass. See [`SynPorts`] for why a host behind a filter needs
+/// the second.
+///
 /// `sctp_port` adds an INIT sweep beside the SYN one, for a port scan whose
 /// ports name SCTP. `None` for a run that never mentioned it, which is every
 /// other one: an SCTP sweep costs a second raw socket and a second capture, and
@@ -679,6 +687,7 @@ async fn run_discovery(
     caps: ScanCapabilities,
     cfg: &ZondConfig,
     ctx: &ScanContext,
+    syn_ports: SynPorts,
     sctp_port: Option<u16>,
 ) {
     if caps.privilege.is_raw() {
@@ -687,6 +696,7 @@ async fn run_discovery(
         let mut plan =
             plan::DiscoveryPlan::build(targets, reach, &cfg.exclusions, &cfg.send_source);
         plan.connect_instead(&unframed.targets);
+        plan.asking_tcp(syn_ports);
         if let Some(port) = sctp_port {
             plan.also_over_sctp(port);
         }
@@ -706,6 +716,18 @@ async fn run_discovery(
     }
 
     orchestrator::run_passive_os_identification(ctx, cfg.os_detection);
+}
+
+/// Every TCP port any unit of `map` names, as one set.
+///
+/// One set for the whole liveness pass rather than one per unit, because one
+/// sweep asks every address the same ports: a unit's own ports are among
+/// those ranked for all of them, which is the same shape the SCTP sweep's
+/// port is chosen in.
+fn tcp_ports_of(map: &TargetMap) -> PortSet {
+    map.units
+        .iter()
+        .fold(PortSet::new(), |named, unit| named.union(unit.ports()))
 }
 
 /// What a listening phase reads, and for how long.
@@ -1135,13 +1157,16 @@ fn spawn_scan(
             let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg);
 
             // Targeted, never a sweep: a port scan was asked about addresses,
-            // not about the network around them. It asks over SCTP as well
-            // where the scan's ports named an SCTP one, since a host that
-            // answers only SCTP would otherwise be called down and its ports
-            // never probed.
+            // not about the network around them. It asks about some of the
+            // scan's own TCP ports beside the common five, since a host that
+            // drops a SYN to anything it does not serve answers on nothing
+            // else, and over SCTP as well where the scan's ports named an SCTP
+            // one, since a host that answers only SCTP would otherwise be
+            // called down and its ports never probed.
             ctx.enter_stage(Stage::Discovery, None);
+            let syn_ports = SynPorts::for_scan(&tcp_ports_of(&target_map));
             let sctp = orchestrator::sctp_discovery_port(&target_map);
-            run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx, sctp).await;
+            run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx, syn_ports, sctp).await;
 
             orchestrator::run_correlation(&ctx, cfg.service_detection);
             let report = recorder.finish(&ctx);

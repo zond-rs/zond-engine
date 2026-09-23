@@ -19,6 +19,7 @@ use std::net::IpAddr;
 
 use crate::netns::{Segment, available};
 use crate::support::{run_scan, target_map, test_config};
+use zond_engine::model::port::PortState;
 use zond_engine::report::ScanKind;
 
 /// An address nothing answers for gets a handful of liveness probes, not one
@@ -76,5 +77,31 @@ async fn assume_up_probes_a_silent_hosts_ports_without_asking_first() {
         outcome.report.summary().ports_total,
         2,
         "the ports were probed on trust"
+    );
+}
+
+/// A host that drops a SYN to anything but the one port it serves is asked
+/// about that port before the port scan, and so is port-scanned at all.
+///
+/// The listener's port is an ephemeral one none of the common five is, so the
+/// only probe that can find this host is the one to a port the scan names.
+#[tokio::test]
+async fn a_host_behind_a_drop_policy_is_found_on_the_port_the_scan_names() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let routed = segment.routed_peer();
+    let port = segment.listen_tcp_on(routed);
+    segment.drop_tcp_except(port);
+    let target = IpAddr::V4(routed);
+
+    let outcome = run_scan(target_map(target, &port.to_string()), &test_config()).await;
+
+    assert_eq!(
+        outcome.port_state(target, port),
+        Some(PortState::Open),
+        "the host's one open port was never scanned"
     );
 }

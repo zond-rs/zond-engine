@@ -490,6 +490,15 @@ impl Segment {
         self.rule(&["tcp", "dport", &port.to_string(), "drop"]);
     }
 
+    /// Silently discards anything arriving over TCP except for this port.
+    ///
+    /// A `DROP` policy with one service let through, which is the host a
+    /// liveness probe to any other port reports down: its kernel never sees a
+    /// SYN to a closed port, so it resets none.
+    pub fn drop_tcp_except(&self, port: u16) {
+        self.rule(&["tcp", "dport", "!=", &port.to_string(), "drop"]);
+    }
+
     /// Refuses this TCP port with an ICMP administrative prohibition.
     ///
     /// The near miss worth guarding: an ICMP error that is not a port

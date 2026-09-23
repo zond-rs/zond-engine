@@ -473,7 +473,13 @@ struct State {
     /// this file could not reproduce a whole class of defect: a second SYN on a
     /// connection already half-open is not a second connection attempt, and what
     /// comes back is not a second handshake.
-    half_open: HashMap<(IpAddr, u16), u32>,
+    ///
+    /// Keyed by the target's address and port and the scanner's port, because
+    /// a connection is its pair of sockets. A SYN from another source port is
+    /// another connection, which a listener accepts afresh; keyed by the target
+    /// alone, a sweep's SYN to an open port would make the port scan that
+    /// follows it from its own port read a challenge no real host would send.
+    half_open: HashMap<(IpAddr, u16, u16), u32>,
     log: Vec<Probe>,
 }
 
@@ -888,10 +894,11 @@ impl FakeLink {
             let expecting = probe.seq.wrapping_add(1);
             let held = {
                 let mut state = self.state.lock().expect("fake net state");
-                match state.half_open.get(&(target, probe.port)).copied() {
+                let connection = (target, probe.port, probe.reply_port);
+                match state.half_open.get(&connection).copied() {
                     Some(rcv_nxt) => Some(rcv_nxt),
                     None => {
-                        state.half_open.insert((target, probe.port), expecting);
+                        state.half_open.insert(connection, expecting);
                         None
                     }
                 }

@@ -47,7 +47,7 @@ fn addresses_of(step: &DiscoveryStep) -> Vec<IpAddr> {
         DiscoveryStep::Local { targets, .. } | DiscoveryStep::Connect { targets } => {
             targets.iter().collect()
         }
-        DiscoveryStep::Routed { targets } | DiscoveryStep::RoutedSctp { targets, .. } => {
+        DiscoveryStep::Routed { targets, .. } | DiscoveryStep::RoutedSctp { targets, .. } => {
             targets.iter().map(|routed| routed.target).collect()
         }
         // `DiscoveryStep` is `#[non_exhaustive]`, so a new kind of step lands

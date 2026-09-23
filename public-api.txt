@@ -14813,6 +14813,7 @@ pub zond_engine::scanner::plan::DiscoveryStep::Local::interface: alloc::boxed::B
 pub zond_engine::scanner::plan::DiscoveryStep::Local::scope: zond_engine::scanner::strategy::local::Scope
 pub zond_engine::scanner::plan::DiscoveryStep::Local::targets: zond_engine::model::ip::set::IpSet
 pub zond_engine::scanner::plan::DiscoveryStep::Routed
+pub zond_engine::scanner::plan::DiscoveryStep::Routed::ports: zond_engine::scanner::strategy::routed::SynPorts
 pub zond_engine::scanner::plan::DiscoveryStep::Routed::targets: alloc::vec::Vec<zond_engine::system::interface::RoutedTarget>
 pub zond_engine::scanner::plan::DiscoveryStep::RoutedSctp
 pub zond_engine::scanner::plan::DiscoveryStep::RoutedSctp::port: u16
@@ -14866,6 +14867,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::plan::PortSc
 pub struct zond_engine::scanner::plan::DiscoveryPlan
 impl zond_engine::scanner::plan::DiscoveryPlan
 pub fn zond_engine::scanner::plan::DiscoveryPlan::also_over_sctp(&mut self, u16)
+pub fn zond_engine::scanner::plan::DiscoveryPlan::asking_tcp(&mut self, zond_engine::scanner::strategy::routed::SynPorts)
 pub fn zond_engine::scanner::plan::DiscoveryPlan::build(zond_engine::model::ip::set::IpSet, zond_engine::scanner::strategy::local::Scope, &zond_engine::model::exclusion::Exclusions, &[core::net::ip_addr::IpAddr]) -> Self
 pub fn zond_engine::scanner::plan::DiscoveryPlan::into_steps(self) -> alloc::vec::Vec<zond_engine::scanner::plan::DiscoveryStep>
 pub fn zond_engine::scanner::plan::DiscoveryPlan::ours(&self) -> &zond_engine::model::ip::set::IpSet
@@ -16108,11 +16110,12 @@ pub zond_engine::scanner::strategy::routed::SweepProbe::Init
 pub zond_engine::scanner::strategy::routed::SweepProbe::Init::dst_port: u16
 pub zond_engine::scanner::strategy::routed::SweepProbe::Init::src_port: u16
 pub zond_engine::scanner::strategy::routed::SweepProbe::Syn
-pub zond_engine::scanner::strategy::routed::SweepProbe::Syn::dst_port: u16
+pub zond_engine::scanner::strategy::routed::SweepProbe::Syn::dst_ports: zond_engine::scanner::strategy::routed::SynPorts
 pub zond_engine::scanner::strategy::routed::SweepProbe::Syn::src_port: core::option::Option<u16>
 impl zond_engine::scanner::strategy::routed::SweepProbe
 pub const fn zond_engine::scanner::strategy::routed::SweepProbe::init(u16, u16) -> Self
-pub const fn zond_engine::scanner::strategy::routed::SweepProbe::syn(core::option::Option<u16>) -> Self
+pub fn zond_engine::scanner::strategy::routed::SweepProbe::syn(core::option::Option<u16>) -> Self
+pub const fn zond_engine::scanner::strategy::routed::SweepProbe::syn_to(core::option::Option<u16>, zond_engine::scanner::strategy::routed::SynPorts) -> Self
 impl core::clone::Clone for zond_engine::scanner::strategy::routed::SweepProbe
 pub fn zond_engine::scanner::strategy::routed::SweepProbe::clone(&self) -> zond_engine::scanner::strategy::routed::SweepProbe
 impl core::cmp::Eq for zond_engine::scanner::strategy::routed::SweepProbe
@@ -16152,6 +16155,7 @@ pub struct zond_engine::scanner::strategy::routed::RoutedScanner
 impl zond_engine::scanner::strategy::routed::RoutedScanner
 pub fn zond_engine::scanner::strategy::routed::RoutedScanner::new(alloc::vec::Vec<zond_engine::system::interface::RoutedTarget>, zond_engine::scanner::session::ScanContext, core::option::Option<tokio::sync::mpsc::unbounded::UnboundedSender<core::net::ip_addr::IpAddr>>, zond_engine::config::ProbeTuning) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
 pub fn zond_engine::scanner::strategy::routed::RoutedScanner::over_sctp(alloc::vec::Vec<zond_engine::system::interface::RoutedTarget>, zond_engine::scanner::session::ScanContext, core::option::Option<tokio::sync::mpsc::unbounded::UnboundedSender<core::net::ip_addr::IpAddr>>, zond_engine::config::ProbeTuning, u16) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
+pub fn zond_engine::scanner::strategy::routed::RoutedScanner::over_tcp(alloc::vec::Vec<zond_engine::system::interface::RoutedTarget>, zond_engine::scanner::session::ScanContext, core::option::Option<tokio::sync::mpsc::unbounded::UnboundedSender<core::net::ip_addr::IpAddr>>, zond_engine::config::ProbeTuning, zond_engine::scanner::strategy::routed::SynPorts) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
 pub fn zond_engine::scanner::strategy::routed::RoutedScanner::with_transport(alloc::vec::Vec<zond_engine::system::interface::RoutedTarget>, zond_engine::scanner::session::ScanContext, core::option::Option<tokio::sync::mpsc::unbounded::UnboundedSender<core::net::ip_addr::IpAddr>>, zond_engine::transport::probe::ProbeTransport) -> Self
 pub fn zond_engine::scanner::strategy::routed::RoutedScanner::with_transport_asking(alloc::vec::Vec<zond_engine::system::interface::RoutedTarget>, zond_engine::scanner::session::ScanContext, core::option::Option<tokio::sync::mpsc::unbounded::UnboundedSender<core::net::ip_addr::IpAddr>>, zond_engine::transport::probe::ProbeTransport, zond_engine::scanner::strategy::routed::SweepProbe) -> Self
 impl zond_engine::scanner::strategy::HostScanner for zond_engine::scanner::strategy::routed::RoutedScanner
@@ -16164,6 +16168,32 @@ impl core::marker::Unpin for zond_engine::scanner::strategy::routed::RoutedScann
 impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::routed::RoutedScanner
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::routed::RoutedScanner
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::routed::RoutedScanner
+pub struct zond_engine::scanner::strategy::routed::SynPorts
+impl zond_engine::scanner::strategy::routed::SynPorts
+pub const zond_engine::scanner::strategy::routed::SynPorts::CAPACITY: usize
+pub const zond_engine::scanner::strategy::routed::SynPorts::SCAN_PORTS: usize
+pub fn zond_engine::scanner::strategy::routed::SynPorts::as_slice(&self) -> &[u16]
+pub fn zond_engine::scanner::strategy::routed::SynPorts::common() -> Self
+pub fn zond_engine::scanner::strategy::routed::SynPorts::for_scan(&zond_engine::model::port::set::PortSet) -> Self
+pub fn zond_engine::scanner::strategy::routed::SynPorts::is_empty(&self) -> bool
+pub fn zond_engine::scanner::strategy::routed::SynPorts::len(&self) -> usize
+pub fn zond_engine::scanner::strategy::routed::SynPorts::only(u16) -> Self
+impl core::clone::Clone for zond_engine::scanner::strategy::routed::SynPorts
+pub fn zond_engine::scanner::strategy::routed::SynPorts::clone(&self) -> zond_engine::scanner::strategy::routed::SynPorts
+impl core::cmp::Eq for zond_engine::scanner::strategy::routed::SynPorts
+impl core::cmp::PartialEq for zond_engine::scanner::strategy::routed::SynPorts
+pub fn zond_engine::scanner::strategy::routed::SynPorts::eq(&self, &zond_engine::scanner::strategy::routed::SynPorts) -> bool
+impl core::fmt::Debug for zond_engine::scanner::strategy::routed::SynPorts
+pub fn zond_engine::scanner::strategy::routed::SynPorts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::scanner::strategy::routed::SynPorts
+impl core::marker::StructuralPartialEq for zond_engine::scanner::strategy::routed::SynPorts
+impl core::marker::Freeze for zond_engine::scanner::strategy::routed::SynPorts
+impl core::marker::Send for zond_engine::scanner::strategy::routed::SynPorts
+impl core::marker::Sync for zond_engine::scanner::strategy::routed::SynPorts
+impl core::marker::Unpin for zond_engine::scanner::strategy::routed::SynPorts
+impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::routed::SynPorts
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::routed::SynPorts
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::routed::SynPorts
 pub mod zond_engine::scanner::strategy::sweep
 pub struct zond_engine::scanner::strategy::sweep::HostSweep<T>
 pub zond_engine::scanner::strategy::sweep::HostSweep::audit: zond_engine::scanner::audit::ProbeAudit

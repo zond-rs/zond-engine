@@ -1302,13 +1302,16 @@ pub struct ZondConfig {
     ///
     /// ## What a gap counts
     ///
-    /// One probe, which is one packet everywhere but the identification pass.
-    /// That pass asks an IPv4 target for an echo and a timestamp back to back
-    /// and treats the pair as the probe, since deferring one half of a question
-    /// would leave the other half unanswerable. So a gap of 100 ms admits at
-    /// most two packets a tenth of a second at one IPv4 address while that pass
-    /// runs, and one everywhere else. The number is stated here rather than left
-    /// for somebody to find in a capture.
+    /// One probe, which is one packet everywhere but two places, each of which
+    /// treats a question put as several packets back to back as one probe,
+    /// since deferring part of it would leave the rest unanswerable or unretried.
+    /// The identification pass asks an IPv4 target for an echo and a timestamp,
+    /// so two packets. The routed sweep asks an address on each of its
+    /// [`SynPorts`](crate::scanner::strategy::routed::SynPorts), so five, or up
+    /// to eight in a port scan's liveness pass. So a gap of 100 ms admits that
+    /// many packets a tenth of a second at one address while those run, and one
+    /// everywhere else. The numbers are stated here rather than left for
+    /// somebody to find in a capture.
     pub host_probe_interval: Option<Duration>,
 
     /// The longest a scan will keep working on one host before leaving it with
