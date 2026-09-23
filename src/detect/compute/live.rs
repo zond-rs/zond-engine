@@ -257,21 +257,30 @@ mod tests {
     #[test]
     fn an_exhausted_connection_budget_refuses_before_dialing() {
         // One connection permitted; the second is refused with a typed cause and
-        // never dials the unreachable address.
-        let addr: SocketAddr = "192.0.2.1:9".parse().unwrap();
+        // never dials. The port is a closed one on loopback, bound and let go,
+        // so the one dial there is refused at once and nothing leaves the
+        // machine.
+        let addr: SocketAddr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
         let mut caps = LiveCapabilities::new(
             addr,
             Protocol::Tcp,
             None,
             &Budget {
                 max_connections: 1,
-                deadline: Duration::from_millis(50),
+                deadline: Duration::from_secs(5),
                 ..budget()
             },
         );
-        // The first exchange dials the unreachable host and fails on connect; that
+        // The first exchange dials the closed port and fails on connect; that
         // spends the one connection.
-        let _ = caps.speak(b"x");
+        assert_eq!(
+            caps.speak(b"x"),
+            Err(CapError::ConnectionRefused),
+            "the first exchange did not dial the closed port"
+        );
         assert_eq!(
             caps.speak(b"y"),
             Err(CapError::ConnectionBudgetExhausted),
