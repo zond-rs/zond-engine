@@ -17093,6 +17093,7 @@ pub fn zond_engine::transport::neighbor::NeighborResolver::from_system() -> Self
 pub fn zond_engine::transport::neighbor::NeighborResolver::has_ethernet(&self) -> bool
 pub fn zond_engine::transport::neighbor::NeighborResolver::remember(&mut self, &str, core::net::ip_addr::IpAddr, pnet_base::macaddr::MacAddr)
 pub fn zond_engine::transport::neighbor::NeighborResolver::resolve(&self, core::net::ip_addr::IpAddr) -> core::option::Option<zond_engine::transport::neighbor::LinkRoute>
+pub fn zond_engine::transport::neighbor::NeighborResolver::resolve_from(&self, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr) -> core::option::Option<zond_engine::transport::neighbor::LinkRoute>
 impl core::marker::Freeze for zond_engine::transport::neighbor::NeighborResolver
 impl core::marker::Send for zond_engine::transport::neighbor::NeighborResolver
 impl core::marker::Sync for zond_engine::transport::neighbor::NeighborResolver

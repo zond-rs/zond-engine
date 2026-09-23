@@ -30,8 +30,10 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::panic::{RefUnwindSafe, UnwindSafe};
 
 use crate::system::interface::LinkAddress;
+use crate::system::interface::{ProbeSockets, probe_route_source};
 use pnet_base::MacAddr;
 
 /// A resolved link-layer path to a destination.
@@ -68,12 +70,36 @@ struct InterfaceInfo {
     gateway_v6: Option<(Ipv6Addr, MacAddr)>,
 }
 
+/// Asks the routing table which local address a packet to a destination would
+/// be sent from, without sending one. The seam a test replaces.
+type KernelRoute = Box<dyn Fn(IpAddr) -> Option<IpAddr> + Send + Sync + UnwindSafe + RefUnwindSafe>;
+
 /// Resolves link-layer routes for destinations and remembers on-link MACs
 /// once the sender has learned them.
+///
+/// **The frame leaves by the interface the packet's source belongs to.** A
+/// segment reaches the Ethernet sender with its source address already chosen,
+/// and chosen from the routing table, or forced by the caller; the checksum is
+/// computed over it. The interface holding that address is the one the kernel
+/// would send it from, so it is the one whose gateway and hardware address the
+/// frame carries. Where no Ethernet interface holds it, because the kernel
+/// routes the destination through a tunnel, there is no Ethernet route: a
+/// frame put on a physical link instead would reach the LAN router with the
+/// tunnel's address in it, bypassing the tunnel for a target only the tunnel
+/// reaches.
+///
+/// A source no interface holds at all is spoofed on purpose, as the idle scan's
+/// is. There the kernel is asked how it would route the destination, and the
+/// frame leaves by that interface if it is Ethernet.
 pub struct NeighborResolver {
     interfaces: Vec<InterfaceInfo>,
     /// Learned on-link MACs, keyed by `(interface, next-hop IP)`.
     cache: HashMap<(String, IpAddr), MacAddr>,
+    /// Every address this host holds on an interface with no Ethernet in front
+    /// of it: tunnels and loopback. Read once, because the question it answers
+    /// is asked for every probe to a tunnel-routed target.
+    unframed: Vec<IpAddr>,
+    kernel: KernelRoute,
 }
 
 impl NeighborResolver {
@@ -81,17 +107,37 @@ impl NeighborResolver {
     /// interfaces, reading each one's addresses and default gateway (with the
     /// gateway's MAC) from `netdev`.
     pub fn from_system() -> Self {
-        let interfaces = netdev::get_interfaces()
-            .into_iter()
-            .filter_map(interface_info)
-            .collect();
-        Self::from_interfaces(interfaces)
+        let mut interfaces = Vec::new();
+        let mut unframed = Vec::new();
+        for iface in netdev::get_interfaces() {
+            let held: Vec<IpAddr> = iface
+                .ipv4
+                .iter()
+                .map(|net| IpAddr::V4(net.addr()))
+                .chain(iface.ipv6.iter().map(|net| IpAddr::V6(net.addr())))
+                .collect();
+            match interface_info(iface) {
+                Some(info) => interfaces.push(info),
+                None => unframed.extend(held),
+            }
+        }
+        Self::from_interfaces(
+            interfaces,
+            unframed,
+            Box::new(|dst| probe_route_source(dst, &mut ProbeSockets::default())),
+        )
     }
 
-    fn from_interfaces(interfaces: Vec<InterfaceInfo>) -> Self {
+    fn from_interfaces(
+        interfaces: Vec<InterfaceInfo>,
+        unframed: Vec<IpAddr>,
+        kernel: KernelRoute,
+    ) -> Self {
         Self {
             interfaces,
             cache: HashMap::new(),
+            unframed,
+            kernel,
         }
     }
 
@@ -102,9 +148,29 @@ impl NeighborResolver {
         !self.interfaces.is_empty()
     }
 
-    /// Resolves the link-layer route to `dst`, consulting the on-link MAC
-    /// cache. On-link routes come back with `next_hop_mac` set only if
-    /// previously learned; off-link routes carry the gateway's MAC directly.
+    /// Resolves the link-layer route to `dst` for a packet sent from the
+    /// address the routing table would choose for it.
+    ///
+    /// [`None`] where the routing table sends `dst` through an interface with
+    /// no Ethernet in front of it, such as a VPN's tunnel, and for loopback,
+    /// which no frame reaches. See [`resolve_from`](Self::resolve_from) for a
+    /// packet whose source is already chosen.
+    pub fn resolve(&self, dst: IpAddr) -> Option<LinkRoute> {
+        if dst.is_loopback() {
+            return None;
+        }
+        let chosen = (self.kernel)(dst)?;
+        let iface = self.holding(chosen)?;
+        self.route_via(iface, chosen, dst)
+    }
+
+    /// Resolves the link-layer route for a packet from `src` to `dst`: by the
+    /// Ethernet interface holding `src`, or, for a source no interface holds,
+    /// by the one the routing table would send `dst` through. See the type's
+    /// documentation.
+    ///
+    /// On-link routes come back with `next_hop_mac` set only if previously
+    /// learned; off-link routes carry the gateway's MAC directly.
     ///
     /// A loopback destination has no such route. It is not on-link on any
     /// Ethernet interface, so the off-link arm would answer it with the default
@@ -112,12 +178,24 @@ impl NeighborResolver {
     /// interface for the gateway to drop. Nothing would reply, which a port
     /// scan reads as filtered: a wrong answer rather than a missing one, and
     /// the reason it is worth refusing here rather than further out.
-    pub fn resolve(&self, dst: IpAddr) -> Option<LinkRoute> {
+    pub fn resolve_from(&self, src: IpAddr, dst: IpAddr) -> Option<LinkRoute> {
         if dst.is_loopback() {
             return None;
         }
-        self.resolve_on_link(dst)
-            .or_else(|| self.resolve_off_link(dst))
+        if let Some(iface) = self.holding(src) {
+            return self.route_via(iface, src, dst);
+        }
+        // One of this host's own addresses on a tunnel: the kernel sends from it
+        // through that tunnel, and no frame follows.
+        if src.is_loopback() || self.unframed.contains(&src) {
+            return None;
+        }
+        // Asked per probe, which only a spoofing scan pays: the idle scan sends
+        // one or two probes a port, and a lookup is a `connect` on a UDP socket
+        // that sends nothing.
+        let chosen = (self.kernel)(dst)?;
+        let iface = self.holding(chosen)?;
+        self.route_via(iface, chosen, dst)
     }
 
     /// Records a MAC learned for an on-link next hop, so the next probe to
@@ -126,89 +204,64 @@ impl NeighborResolver {
         self.cache.insert((interface.to_string(), next_hop), mac);
     }
 
-    fn resolve_on_link(&self, dst: IpAddr) -> Option<LinkRoute> {
-        for iface in &self.interfaces {
-            let src_ip = match dst {
-                IpAddr::V4(_) => iface
-                    .v4
-                    .iter()
-                    .find(|held| held.contains(&dst))
-                    .map(LinkAddress::address),
-                IpAddr::V6(_) => iface
-                    .v6
-                    .iter()
-                    .find(|held| held.contains(&dst))
-                    .map(LinkAddress::address),
-            };
+    /// The Ethernet interface holding `address`.
+    fn holding(&self, address: IpAddr) -> Option<&InterfaceInfo> {
+        self.interfaces.iter().find(|iface| {
+            iface
+                .v4
+                .iter()
+                .chain(&iface.v6)
+                .any(|held| held.address() == address)
+        })
+    }
 
-            if let Some(src_ip) = src_ip {
-                return Some(LinkRoute {
-                    interface: iface.name.clone(),
-                    src_ip,
-                    src_mac: iface.mac,
-                    next_hop: dst,
-                    next_hop_mac: self.cache.get(&(iface.name.clone(), dst)).copied(),
-                    on_link: true,
-                });
-            }
+    /// The route to `dst` over `iface`, for a packet from `anchor`, an address
+    /// `iface` holds: `dst` itself where it is on the interface's segment, the
+    /// interface's gateway otherwise.
+    fn route_via(&self, iface: &InterfaceInfo, anchor: IpAddr, dst: IpAddr) -> Option<LinkRoute> {
+        if anchor.is_ipv4() != dst.is_ipv4() {
+            return None;
         }
-        None
-    }
 
-    fn resolve_off_link(&self, dst: IpAddr) -> Option<LinkRoute> {
-        // The first interface with a default gateway of the right family and
-        // an address to source from wins. Interfaces without one (a
-        // gateway-less secondary NIC, say) are skipped, not treated as a dead
-        // end for the whole lookup.
-        self.interfaces.iter().find_map(|iface| {
-            let (next_hop, gw_mac, src_ip) = match dst {
-                IpAddr::V4(_) => {
-                    let (gw_ip, mac) = iface.gateway_v4?;
-                    let src = iface.v4.first()?.address();
-                    (IpAddr::V4(gw_ip), mac, src)
-                }
-                IpAddr::V6(_) => {
-                    let (gw_ip, mac) = iface.gateway_v6?;
-                    let src = routable_v6_source(iface)?;
-                    (IpAddr::V6(gw_ip), mac, IpAddr::V6(src))
-                }
-            };
-
-            Some(LinkRoute {
+        let on_link = match dst {
+            IpAddr::V4(_) => iface.v4.iter().any(|held| held.contains(&dst)),
+            IpAddr::V6(_) => iface.v6.iter().any(|held| held.contains(&dst)),
+        };
+        if on_link {
+            return Some(LinkRoute {
                 interface: iface.name.clone(),
-                src_ip,
+                src_ip: anchor,
                 src_mac: iface.mac,
-                next_hop,
-                next_hop_mac: Some(gw_mac),
-                on_link: false,
-            })
+                next_hop: dst,
+                next_hop_mac: self.cache.get(&(iface.name.clone(), dst)).copied(),
+                on_link: true,
+            });
+        }
+
+        let (next_hop, gw_mac) = match (dst, anchor) {
+            (IpAddr::V4(_), _) => {
+                let (gw_ip, mac) = iface.gateway_v4?;
+                (IpAddr::V4(gw_ip), mac)
+            }
+            // A link-local address is valid only on its own segment: a packet
+            // sourced from one and aimed past the router is discarded on the
+            // way, and a reply would have nowhere to go.
+            (IpAddr::V6(_), IpAddr::V6(from)) if from.is_unicast_link_local() => return None,
+            (IpAddr::V6(_), _) => {
+                let (gw_ip, mac) = iface.gateway_v6?;
+                (IpAddr::V6(gw_ip), mac)
+            }
+        };
+
+        Some(LinkRoute {
+            interface: iface.name.clone(),
+            src_ip: anchor,
+            src_mac: iface.mac,
+            next_hop,
+            next_hop_mac: Some(gw_mac),
+            on_link: false,
         })
     }
-}
-
-/// Picks the IPv6 address on `iface` a packet leaving the segment may be sent
-/// from.
-///
-/// Not simply the first one. An IPv6 interface normally holds several addresses
-/// at once, and they are not interchangeable: a link-local address is valid only
-/// on the segment it was configured for, so a packet aimed past the router and
-/// sourced from `fe80::` is discarded on the way, and the reply, if one were ever
-/// sent, would have nowhere to go. Interface order is whatever the
-/// operating system happened to report, so taking the first address is a coin
-/// flip on a host that has both, which is every host with working IPv6.
-///
-/// Unique local addresses are skipped for the same reason at a larger scale:
-/// they are not routed off site, so a probe sourced from one reaches nothing
-/// beyond it.
-fn routable_v6_source(iface: &InterfaceInfo) -> Option<Ipv6Addr> {
-    iface
-        .v6
-        .iter()
-        .filter_map(|held| match held.address() {
-            IpAddr::V6(v6) => Some(v6),
-            IpAddr::V4(_) => None,
-        })
-        .find(|addr| !addr.is_unicast_link_local() && !addr.is_unique_local())
 }
 
 /// Converts a `netdev` interface into an [`InterfaceInfo`], returning `None`
@@ -275,30 +328,63 @@ mod tests {
     const IFACE_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0x01);
     const GW_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0xFE);
 
+    /// en0's address, and what the tests' kernel sources from by default.
+    const EN0: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
+    /// An address only a tunnel holds.
+    const TUNNEL: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
+
     fn ethernet_iface() -> InterfaceInfo {
         InterfaceInfo {
             name: "en0".to_string(),
             mac: IFACE_MAC,
-            v4: vec![LinkAddress::new(
-                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)),
-                24,
-            )],
+            v4: vec![LinkAddress::new(EN0, 24)],
             v6: vec![],
             gateway_v4: Some((Ipv4Addr::new(192, 0, 2, 1), GW_MAC)),
             gateway_v6: None,
         }
     }
 
+    /// A second Ethernet interface, with a gateway of its own.
+    fn second_iface() -> InterfaceInfo {
+        InterfaceInfo {
+            name: "en1".to_string(),
+            mac: MacAddr(0x02, 0, 0, 0, 0, 0x02),
+            v4: vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 50)),
+                24,
+            )],
+            v6: vec![],
+            gateway_v4: Some((
+                Ipv4Addr::new(203, 0, 113, 1),
+                MacAddr(0x02, 0, 0, 0, 0, 0xFD),
+            )),
+            gateway_v6: None,
+        }
+    }
+
+    /// A resolver over `interfaces` and a tunnel holding [`TUNNEL`], whose
+    /// kernel sources every destination from `kernel`.
+    fn resolver_with(interfaces: Vec<InterfaceInfo>, kernel: Option<IpAddr>) -> NeighborResolver {
+        NeighborResolver::from_interfaces(interfaces, vec![TUNNEL], Box::new(move |_| kernel))
+    }
+
+    fn resolver(interfaces: Vec<InterfaceInfo>) -> NeighborResolver {
+        resolver_with(interfaces, Some(EN0))
+    }
+
+    fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
     #[test]
     fn on_link_target_routes_to_itself_and_needs_arp() {
-        let resolver = NeighborResolver::from_interfaces(vec![ethernet_iface()]);
-        let route = resolver
-            .resolve(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200)))
+        let route = resolver(vec![ethernet_iface()])
+            .resolve_from(EN0, v4(192, 0, 2, 200))
             .unwrap();
 
         assert!(route.on_link);
-        assert_eq!(route.next_hop, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200)));
-        assert_eq!(route.src_ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)));
+        assert_eq!(route.next_hop, v4(192, 0, 2, 200));
+        assert_eq!(route.src_ip, EN0);
         assert_eq!(route.src_mac, IFACE_MAC);
         assert_eq!(route.next_hop_mac, None); // must be ARP-resolved
     }
@@ -309,147 +395,191 @@ mod tests {
     /// filtered, so the wrong answer here reaches the user as a wrong verdict.
     #[test]
     fn loopback_has_no_ethernet_route() {
-        let resolver = NeighborResolver::from_interfaces(vec![ethernet_iface()]);
+        let resolver = resolver(vec![ethernet_iface()]);
 
         assert!(resolver.resolve(IpAddr::V4(Ipv4Addr::LOCALHOST)).is_none());
-        assert!(resolver.resolve(IpAddr::V6(Ipv6Addr::LOCALHOST)).is_none());
         assert!(
             resolver
-                .resolve(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)))
-                .is_none(),
+                .resolve_from(EN0, IpAddr::V4(Ipv4Addr::LOCALHOST))
+                .is_none()
+        );
+        assert!(resolver.resolve(IpAddr::V6(Ipv6Addr::LOCALHOST)).is_none());
+        assert!(
+            resolver.resolve_from(EN0, v4(127, 0, 0, 53)).is_none(),
             "the whole 127/8 block, not just the one address"
         );
     }
 
     #[test]
     fn off_link_target_routes_via_gateway_with_known_mac() {
-        let resolver = NeighborResolver::from_interfaces(vec![ethernet_iface()]);
-        let route = resolver
-            .resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+        let route = resolver(vec![ethernet_iface()])
+            .resolve_from(EN0, v4(1, 1, 1, 1))
             .unwrap();
 
         assert!(!route.on_link);
-        assert_eq!(route.next_hop, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        assert_eq!(route.next_hop, v4(192, 0, 2, 1));
         assert_eq!(route.next_hop_mac, Some(GW_MAC));
-        assert_eq!(route.src_ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)));
+        assert_eq!(route.src_ip, EN0);
     }
 
     #[test]
     fn cached_on_link_mac_is_returned() {
-        let mut resolver = NeighborResolver::from_interfaces(vec![ethernet_iface()]);
-        let target = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
+        let mut resolver = resolver(vec![ethernet_iface()]);
+        let target = v4(192, 0, 2, 200);
         let learned = MacAddr::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF);
 
-        assert_eq!(resolver.resolve(target).unwrap().next_hop_mac, None);
+        assert_eq!(
+            resolver.resolve_from(EN0, target).unwrap().next_hop_mac,
+            None
+        );
         resolver.remember("en0", target, learned);
         assert_eq!(
-            resolver.resolve(target).unwrap().next_hop_mac,
+            resolver.resolve_from(EN0, target).unwrap().next_hop_mac,
             Some(learned)
         );
     }
 
+    /// **The frame leaves by the interface the packet's source belongs to.**
+    ///
+    /// Two Ethernet interfaces with a gateway each, and the probe sourced from
+    /// the second: the kernel would send it out of the second, so the frame
+    /// does. Picking the first interface with a gateway instead puts the second
+    /// interface's address on the first one's wire, where the reply comes back
+    /// to an address that link does not hold.
     #[test]
-    fn off_link_skips_gatewayless_interface_for_a_later_one() {
-        // A secondary NIC with no gateway comes first; the real one second.
-        let gatewayless = InterfaceInfo {
-            name: "en1".to_string(),
-            mac: MacAddr(0x02, 0, 0, 0, 0, 0x02),
-            v4: vec![LinkAddress::new(
-                IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)),
-                24,
-            )],
-            v6: vec![],
-            gateway_v4: None,
-            gateway_v6: None,
-        };
-        let resolver = NeighborResolver::from_interfaces(vec![gatewayless, ethernet_iface()]);
+    fn a_probe_leaves_by_the_interface_holding_its_source() {
+        let resolver = resolver(vec![ethernet_iface(), second_iface()]);
 
         let route = resolver
-            .resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
-            .unwrap();
-        assert_eq!(route.interface, "en0");
-        assert_eq!(route.next_hop_mac, Some(GW_MAC));
+            .resolve_from(v4(203, 0, 113, 50), v4(1, 1, 1, 1))
+            .expect("en1 has a gateway");
+        assert_eq!(route.interface, "en1");
+        assert_eq!(route.next_hop, v4(203, 0, 113, 1));
+    }
+
+    /// **A probe the kernel sends through a tunnel has no Ethernet route.**
+    ///
+    /// Under a VPN the routing table sends a lab target, or everything, through
+    /// the tunnel, and the scan sources its probe from the tunnel's address.
+    /// Framed onto the physical link instead, the probe reaches the LAN router
+    /// with the tunnel's address in it: the target only the tunnel reaches is
+    /// never asked, and a full tunnel is bypassed without a word. Refused
+    /// here, the send falls back to the socket, and the kernel carries it
+    /// through the tunnel.
+    #[test]
+    fn a_probe_sourced_from_a_tunnel_has_no_ethernet_route() {
+        let resolver = resolver(vec![ethernet_iface()]);
+        assert!(resolver.resolve_from(TUNNEL, v4(10, 10, 11, 23)).is_none());
+    }
+
+    /// The same question without a source: where the routing table would send
+    /// the destination through the tunnel, there is no Ethernet route to it.
+    #[test]
+    fn a_destination_the_kernel_sends_through_a_tunnel_has_no_ethernet_route() {
+        let resolver = resolver_with(vec![ethernet_iface()], Some(TUNNEL));
+        assert!(resolver.resolve(v4(1, 1, 1, 1)).is_none());
+
+        let direct = resolver_with(vec![ethernet_iface()], Some(EN0));
+        assert_eq!(direct.resolve(v4(1, 1, 1, 1)).unwrap().interface, "en0");
+    }
+
+    /// A spoofed source, as the idle scan's zombie address is, belongs to no
+    /// interface. It leaves the way the kernel would route the destination, and
+    /// the route's own address, which an ARP request is sent from, is the
+    /// interface's rather than the spoofed one.
+    #[test]
+    fn a_spoofed_source_leaves_the_way_the_kernel_routes_the_target() {
+        let spoofed = v4(198, 51, 100, 77);
+
+        let kernel_says_en1 = resolver_with(
+            vec![ethernet_iface(), second_iface()],
+            Some(v4(203, 0, 113, 50)),
+        );
+        let route = kernel_says_en1
+            .resolve_from(spoofed, v4(1, 1, 1, 1))
+            .expect("the kernel routes it over en1");
+        assert_eq!(route.interface, "en1");
+        assert_eq!(route.src_ip, v4(203, 0, 113, 50));
+
+        let kernel_says_tunnel = resolver_with(vec![ethernet_iface()], Some(TUNNEL));
+        assert!(
+            kernel_says_tunnel
+                .resolve_from(spoofed, v4(1, 1, 1, 1))
+                .is_none()
+        );
     }
 
     #[test]
     fn off_link_without_gateway_is_unresolvable() {
         let mut iface = ethernet_iface();
         iface.gateway_v4 = None;
-        let resolver = NeighborResolver::from_interfaces(vec![iface]);
         assert!(
-            resolver
-                .resolve(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
+            resolver(vec![iface])
+                .resolve_from(EN0, v4(8, 8, 8, 8))
                 .is_none()
         );
     }
 
-    /// A host with working IPv6 has a link-local address *and* a global one, in
-    /// whatever order the OS reported them. Sourcing an off-link probe from the
-    /// link-local is a packet the first router drops, and picking by position
-    /// makes which of the two happens a matter of luck.
+    /// A link-local address is valid only on its own segment, so an off-link
+    /// probe sourced from one dies at the router; saying so is better than
+    /// sending it.
     #[test]
-    fn an_off_link_v6_probe_is_sourced_from_a_routable_address() {
-        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
-        let global = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0);
-        let unique_local = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
-
+    fn a_link_local_source_has_no_off_link_route() {
+        let link_local = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50));
         let iface = InterfaceInfo {
             name: "en0".to_string(),
             mac: IFACE_MAC,
             v4: vec![],
-            // Link-local first, as an interface commonly reports it.
+            v6: vec![LinkAddress::new(link_local, 64)],
+            gateway_v4: None,
+            gateway_v6: Some((Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), GW_MAC)),
+        };
+
+        assert!(
+            resolver(vec![iface])
+                .resolve_from(
+                    link_local,
+                    IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))
+                )
+                .is_none()
+        );
+    }
+
+    /// An off-link IPv6 route is taken from the global address the probe is
+    /// sourced from, through the interface's IPv6 gateway.
+    #[test]
+    fn an_off_link_v6_probe_routes_via_the_v6_gateway() {
+        let global = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0));
+        let gateway = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        let iface = InterfaceInfo {
+            name: "en0".to_string(),
+            mac: IFACE_MAC,
+            v4: vec![],
             v6: vec![
-                LinkAddress::new(IpAddr::V6(link_local), 64),
-                LinkAddress::new(IpAddr::V6(unique_local), 64),
-                LinkAddress::new(IpAddr::V6(global), 64),
+                LinkAddress::new(
+                    IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50)),
+                    64,
+                ),
+                LinkAddress::new(global, 64),
             ],
             gateway_v4: None,
-            gateway_v6: Some((Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), GW_MAC)),
+            gateway_v6: Some((gateway, GW_MAC)),
         };
-        let resolver = NeighborResolver::from_interfaces(vec![iface]);
 
-        let route = resolver
-            .resolve(IpAddr::V6(Ipv6Addr::new(
-                0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111,
-            )))
+        let route = resolver(vec![iface])
+            .resolve_from(
+                global,
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0xffff, 0, 0, 0, 0, 1)),
+            )
             .expect("a host with a v6 gateway has a route");
-
-        assert_eq!(route.src_ip, IpAddr::V6(global));
-    }
-
-    /// An interface with nothing but link-local IPv6 cannot source an off-link
-    /// probe at all, and saying so is better than sending one that dies at the
-    /// router.
-    #[test]
-    fn an_interface_with_only_link_local_v6_has_no_off_link_source() {
-        let iface = InterfaceInfo {
-            name: "en0".to_string(),
-            mac: IFACE_MAC,
-            v4: vec![],
-            v6: vec![LinkAddress::new(
-                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50)),
-                64,
-            )],
-            gateway_v4: None,
-            gateway_v6: Some((Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), GW_MAC)),
-        };
-        let resolver = NeighborResolver::from_interfaces(vec![iface]);
-
-        assert!(
-            resolver
-                .resolve(IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0, 0, 0, 0, 0, 1)))
-                .is_none()
-        );
+        assert_eq!(route.src_ip, global);
+        assert_eq!(route.next_hop, IpAddr::V6(gateway));
     }
 
     #[test]
     fn no_ethernet_interfaces_resolves_nothing() {
-        let resolver = NeighborResolver::from_interfaces(vec![]);
+        let resolver = resolver(vec![]);
         assert!(!resolver.has_ethernet());
-        assert!(
-            resolver
-                .resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
-                .is_none()
-        );
+        assert!(resolver.resolve(v4(1, 1, 1, 1)).is_none());
     }
 }

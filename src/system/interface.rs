@@ -58,3 +58,4 @@ pub(crate) use routing::map_ips_to_interfaces_forced;
 // this engine rather than a fact a consumer should build on.
 pub(crate) use routing::{BeyondFrames, FrameSender, beyond_frames};
 pub use source::SourceResolver;
+pub(crate) use source::{ProbeSockets, probe_route_source};

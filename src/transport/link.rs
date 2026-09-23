@@ -20,10 +20,12 @@
 //!   MAC included) sidesteps the local firewall and connection-tracking that
 //!   a raw-socket send still traverses.
 //!
-//! It leans on [`NeighborResolver`] to decide, per destination, which
-//! interface to send from and what the next-hop MAC is - reading the gateway
-//! straight from the OS for off-link targets, and resolving on-link targets'
-//! MACs with an active ARP exchange that it caches.
+//! It leans on [`NeighborResolver`] to decide, per packet, which interface to
+//! send from and what the next-hop MAC is: the interface holding the packet's
+//! source address, the gateway the OS names for it for off-link targets, and an
+//! active, cached ARP exchange for on-link ones. A packet whose source only a
+//! tunnel holds has no Ethernet route, and is refused rather than framed onto a
+//! physical link the tunnel was meant to carry it past.
 //!
 //! On portability: on-link IPv6 currently returns an error rather than performing
 //! NDP neighbor solicitation, while off-link IPv6 works since the gateway's MAC
@@ -206,8 +208,10 @@ impl ProbeSender for EthernetSender {
                 .resolver
                 .lock()
                 .map_err(|_| poisoned("route resolver"))?
-                .resolve(dst)
-                .ok_or_else(|| SendError::Unroutable(format!("no Ethernet route to {dst}")))?;
+                .resolve_from(src, dst)
+                .ok_or_else(|| {
+                    SendError::Unroutable(format!("no Ethernet route from {src} to {dst}"))
+                })?;
 
             let dst_mac = self.next_hop_mac(&route)?;
             let src_mac = spoofed_source_mac(route.src_mac, emission.source_mac);
