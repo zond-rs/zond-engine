@@ -321,6 +321,57 @@ impl Segment {
         address
     }
 
+    /// Joins the two ends with a tunnel carried over the segment, gives each
+    /// end an address in one `/24` on it, and returns the peer's.
+    ///
+    /// The shape a WireGuard peer or an OpenVPN server in subnet topology
+    /// has: the far end sits inside the prefix of an address this process
+    /// holds, on a link that has no hardware address and no segment, so the
+    /// prefix is a route through the tunnel and nothing behind it answers
+    /// ARP. An IP-in-IP tunnel stands in for WireGuard because it needs
+    /// nothing but `ip`, where WireGuard needs keys and a tool that reads them;
+    /// to the engine the two are the same kind of link, point-to-point,
+    /// without a MAC, in an operational state Linux reports as unknown.
+    pub fn tunnel(&self) -> Ipv4Addr {
+        let (near, far) = (format!("zt{}a", self.index), format!("zt{}b", self.index));
+        let (scanner, peer) = (scanner_v4(self.index), peer_v4(self.index));
+        let (ours, theirs) = (
+            Ipv4Addr::new(10, 97, self.index as u8, 1),
+            Ipv4Addr::new(10, 97, self.index as u8, 2),
+        );
+
+        ip(&[
+            "link",
+            "add",
+            &near,
+            "type",
+            "ipip",
+            "local",
+            &scanner.to_string(),
+            "remote",
+            &peer.to_string(),
+        ]);
+        ip(&["addr", "add", &format!("{ours}/24"), "dev", &near]);
+        ip(&["link", "set", &near, "up"]);
+
+        self.there(&[
+            "ip",
+            "link",
+            "add",
+            &far,
+            "type",
+            "ipip",
+            "local",
+            &peer.to_string(),
+            "remote",
+            &scanner.to_string(),
+        ]);
+        self.there(&["ip", "addr", "add", &format!("{theirs}/24"), "dev", &far]);
+        self.there(&["ip", "link", "set", &far, "up"]);
+
+        theirs
+    }
+
     /// The name of the link this process sends from.
     pub fn link(&self) -> String {
         format!("zv{}a", self.index)

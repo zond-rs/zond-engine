@@ -14,6 +14,12 @@
 //! whether it gets a link-layer sweep, a raw probe with a source address
 //! attached, or the unprivileged fallback.
 //!
+//! A segment is a link a frame can be put on. A tunnel's address carries a
+//! prefix too, and a WireGuard peer or an OpenVPN server in subnet topology
+//! sits inside it, but nothing on the far side of a tunnel answers ARP or
+//! neighbour discovery: the prefix is a route through the tunnel, and a target
+//! inside it is probed through the tunnel like any routed target.
+//!
 //! ## What it refuses, and why refusing is the work
 //!
 //! Two of the five buckets [`RoutedTargets`] hands back are refusals, and they
@@ -48,10 +54,10 @@
 use crate::model::ip::range::IpRange::{self, V4, V6};
 use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::set::IpSet;
-use crate::system::interface::Link;
 use crate::system::interface::source::{
     ProbeSockets, plausible_source, probe_route_source, viable_interfaces,
 };
+use crate::system::interface::{Link, LinkAddress};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -109,9 +115,14 @@ pub struct RoutedTargets {
     /// Targets that share an interface's Layer-2 segment, grouped by that
     /// interface. Reachable directly, so they get an ARP/NDP discovery
     /// strategy bound to the interface.
+    ///
+    /// Only a link that carries frames has a segment. The one exception is a
+    /// link-local target whose zone names a link that does not: the zone is
+    /// the user's own statement of where the target is, and it is kept.
     pub local: HashMap<Link, IpSet>,
-    /// Targets reached through a gateway, each already paired with the source
-    /// address to probe it from. Handled by a single raw TCP SYN scanner.
+    /// Targets reached through a gateway or a tunnel, each already paired with
+    /// the source address to probe it from. Handled by a single raw TCP SYN
+    /// scanner.
     pub routed: Vec<RoutedTarget>,
     /// Targets that are neither on-link nor have a resolvable route, left to
     /// the unprivileged connect fallback. Loopback is always here, in both
@@ -146,8 +157,8 @@ pub struct RoutedTargets {
 }
 
 /// Classifies target IPs by how this host reaches them: on-link (per
-/// interface), routed through a gateway (paired with a source address), or
-/// unreachable.
+/// interface), routed through a gateway or a tunnel (paired with a source
+/// address), or unreachable.
 ///
 /// Reads the host's interface table through
 /// [`interfaces`](super::interfaces), narrowed to the links that could carry a
@@ -171,6 +182,8 @@ enum Classification {
     Local(usize),
     /// Routed off-link, to be sent from this source address.
     Routed(IpAddr),
+    /// An address this host holds.
+    Ours,
     /// No route found.
     Unmapped,
 }
@@ -200,7 +213,7 @@ pub(crate) fn map_ips_to_interfaces_with(
     let mut ambiguous: Vec<Ipv6Range> = Vec::new();
     let mut singles_to_route: Vec<IpAddr> = Vec::new();
 
-    // A range wholly inside one interface's subnet is kept intact; anything
+    // A range wholly inside one segment's subnet is kept intact; anything
     // else is expanded to singles for per-target route resolution.
     for range in ip_set.v4() {
         let start = IpAddr::V4(range.start_addr());
@@ -269,15 +282,31 @@ pub(crate) fn map_ips_to_interfaces_with(
             if is_ipv4_mapped(target) {
                 return (target, Classification::Unmapped);
             }
-
-            if let Some(idx) = find_local_index(&interfaces, target) {
-                return (target, Classification::Local(idx));
+            // Before any prefix is consulted, because this host's address is
+            // inside its own link's prefix and the kernel answers it from
+            // loopback whatever that prefix says.
+            if owned_ips.contains(&target) {
+                return (target, Classification::Ours);
             }
 
-            // A forced source outranks the routing table. On-link targets are
-            // already settled above and answer over their own segment; a routed
-            // target the kernel would send from the wrong interface is what the
-            // override exists for.
+            // Inside a prefix this host holds, the link holding it is the one
+            // route to the target. A segment is swept; inside a tunnel's own
+            // prefix the target is reached through the tunnel from the
+            // tunnel's address. Read off the interface table rather than asked
+            // of the kernel: the table already says it, and a forced source
+            // must not move the target off the only link that reaches it.
+            if let Some((idx, held)) = holding_prefix(&interfaces, target) {
+                return if interfaces[idx].carries_frames() {
+                    (target, Classification::Local(idx))
+                } else {
+                    (target, Classification::Routed(held.address()))
+                };
+            }
+
+            // A forced source outranks the routing table. On-link and tunnel
+            // targets are already settled above and answer through their own
+            // link; a routed target the kernel would send from the wrong
+            // interface is what the override exists for.
             if let Some(source) = forced
                 .iter()
                 .copied()
@@ -309,14 +338,15 @@ pub(crate) fn map_ips_to_interfaces_with(
             Classification::Local(idx) => local.entry(idx).or_default().insert(target),
             Classification::Routed(source) => routed.push(RoutedTarget { target, source }),
             Classification::Unmapped => unmapped.insert(target),
+            Classification::Ours => ours.insert(target),
         }
     }
 
-    // Withheld from every strategy, after classification rather than before it.
-    // A range wholly inside an interface's subnet is kept intact and assigned to
-    // that link without ever reaching the per-address pass, so an address this
-    // host holds arrives here inside a set rather than on its own: both `zond
-    // <own address>` and a sweep of the subnet containing it end up in `local`.
+    // Withheld from every strategy. The per-address pass settles an address
+    // this host holds before anything else, but a range wholly inside a
+    // segment's subnet is kept intact and assigned to that link without ever
+    // reaching that pass, so an address it holds arrives here inside a set:
+    // a sweep of the subnet containing it ends up in `local` whole.
     //
     // Nothing can establish one. The kernel routes traffic for an address this
     // host holds through loopback, so an ARP request goes onto a link where
@@ -331,10 +361,6 @@ pub(crate) fn map_ips_to_interfaces_with(
                 targets.subtract(&one);
                 ours.insert(*address);
             }
-        }
-        if unmapped.contains(address) {
-            unmapped.subtract(&one);
-            ours.insert(*address);
         }
     }
     // A link whose only target was ours has nothing left to sweep.
@@ -535,6 +561,8 @@ pub(crate) fn beyond_frames_with(
     let mut local: Vec<(Link, IpSet)> = local.into_iter().collect();
     local.sort_by(|(a, _), (b, _)| a.name().cmp(b.name()));
     for (link, targets) in &local {
+        // Only a link-local target whose zone named a tunnel is in `local` on
+        // a link without frames; a tunnel's own subnet is routed through it.
         if !link.carries_frames() {
             for range in targets.v4() {
                 add(Unframed::Tunnel(link.name().to_string()), V4(*range));
@@ -591,24 +619,62 @@ pub fn is_enumerable(range: &Ipv6Range) -> bool {
     range.len() <= MAX_ENUMERABLE_ADDRESSES
 }
 
-/// Finds the first interface whose subnet fully contains the inclusive range
-/// `[start, end]`, meaning the whole range is on that interface's segment.
+/// The segment the whole inclusive range `[start, end]` is on, if it is on one.
+///
+/// A range is kept whole only where one link answers for every address in
+/// it: the segment's, with no narrower prefix on another link inside the range
+/// to take some of it elsewhere, a VPN's `/24` within the LAN's `/8` for one.
+/// Anything less is expanded and each address asks [`holding_prefix`] for
+/// itself.
+///
+/// A host prefix does not count. A `/32` or `/128` routes only the address it
+/// was assigned with, which is this host's own and is withheld as that, and
+/// Linux lists every DHCPv6 address as one: splitting an on-link `/64` around
+/// it would refuse the segment as too large to walk, where it is swept whole.
 fn owning_interface(links: &[Link], start: IpAddr, end: IpAddr) -> Option<usize> {
-    links.iter().position(|link| {
-        link.addresses()
-            .iter()
-            .any(|held| held.contains(&start) && held.contains(&end))
-    })
+    let (idx, owner) = holding_prefix(links, start)?;
+    let narrower_inside = links
+        .iter()
+        .enumerate()
+        .filter(|(other, _)| *other != idx)
+        .flat_map(|(_, link)| link.addresses())
+        .filter(|held| held.prefix() > owner.prefix())
+        .map(|held| held.network())
+        .filter(|network| network.len() > 1)
+        .any(|network| {
+            let (low, high) = (network.start_addr(), network.end_addr());
+            low.is_ipv4() == start.is_ipv4() && low <= end && start <= high
+        });
+
+    (links[idx].carries_frames() && owner.contains(&end) && !narrower_inside).then_some(idx)
 }
 
-/// Finds the first interface whose subnet contains `target`, matching only
-/// within the same address family.
-fn find_local_index(links: &[Link], target: IpAddr) -> Option<usize> {
-    // The family check `LinkAddress::contains` already makes: a range of one
-    // family never contains an address of the other.
-    links
-        .iter()
-        .position(|link| link.addresses().iter().any(|held| held.contains(&target)))
+/// The interface holding the most specific prefix that contains `target`,
+/// and the address it holds there.
+///
+/// Each prefix an address carries is a connected route, and the kernel sends
+/// by the most specific one, so this does too: a VPN's `/24` inside a LAN's
+/// `/8` takes the targets in the `/24`. On a tie the first interface listed
+/// wins. Matching is within one address family, the check
+/// `LinkAddress::contains` already makes.
+///
+/// What the prefix means depends on the link. On one that carries frames it is
+/// a segment, swept at the link layer. On a tunnel it is only a route: its
+/// peers sit inside it, a WireGuard peer on the tunnel's `/24` or an OpenVPN
+/// server in subnet topology, and a link-layer strategy handed one sends it
+/// nothing, since no frame can be put on the tunnel and nothing behind it
+/// answers ARP or neighbour discovery. Such a peer is probed through the
+/// tunnel from the tunnel's address.
+fn holding_prefix(links: &[Link], target: IpAddr) -> Option<(usize, LinkAddress)> {
+    let mut best: Option<(usize, LinkAddress)> = None;
+    for (idx, link) in links.iter().enumerate() {
+        for held in link.addresses() {
+            if held.contains(&target) && best.is_none_or(|(_, b)| held.prefix() > b.prefix()) {
+                best = Some((idx, *held));
+            }
+        }
+    }
+    best
 }
 
 // ╔════════════════════════════════════════════╗
@@ -624,42 +690,35 @@ fn find_local_index(links: &[Link], target: IpAddr) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
+    use crate::model::mac::MacAddr;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    /// An Ethernet interface holding one address, which is the segment the
+    /// on-link tests below are about.
     fn mock_named(name: &str, index: u32, ip: IpAddr, prefix: u8) -> Link {
         Link::new(name, index)
+            .with_mac(MacAddr::new(0x02, 0, 0, 0, 0, index as u8))
+            .with_addressing(crate::system::interface::Addressing::Broadcast)
             .with_addresses(vec![crate::system::interface::LinkAddress::new(ip, prefix)])
     }
 
     fn mock_interface(ip: IpAddr, prefix: u8) -> Link {
-        Link::new("test0", 0)
-            .with_addresses(vec![crate::system::interface::LinkAddress::new(ip, prefix)])
+        mock_named("test0", 0, ip, prefix)
     }
 
     #[test]
-    fn test_find_local_index() {
+    fn the_interface_holding_a_targets_prefix_is_found() {
         let interfaces = vec![
             mock_interface(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 100)), 24),
             mock_interface(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 5)), 24),
         ];
+        let holder = |target: [u8; 4]| {
+            holding_prefix(&interfaces, IpAddr::V4(Ipv4Addr::from(target))).map(|(idx, _)| idx)
+        };
 
-        // 192.0.2.50 is in 192.0.2.0/24 (index 0)
-        assert_eq!(
-            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50))),
-            Some(0)
-        );
-
-        // 198.51.100.200 is in 198.51.100.0/24 (index 1)
-        assert_eq!(
-            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 200))),
-            Some(1)
-        );
-
-        // 203.0.113.1 is unmapped
-        assert_eq!(
-            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
-            None
-        );
+        assert_eq!(holder([192, 0, 2, 50]), Some(0));
+        assert_eq!(holder([198, 51, 100, 200]), Some(1));
+        assert_eq!(holder([203, 0, 113, 1]), None, "held by neither");
     }
 
     #[test]
@@ -1014,6 +1073,152 @@ mod tests {
             beyond.summary(),
             vec![(Unframed::Tunnel("utun9".into()), ip("198.51.100.7"), 2)]
         );
+    }
+
+    /// A WireGuard peer, or an OpenVPN server in subnet topology, sits inside
+    /// the prefix the tunnel's own address carries. That prefix is a route
+    /// through the tunnel and not a segment, so the peer is probed through the
+    /// tunnel from the tunnel's address, the way the kernel would send to it.
+    #[test]
+    fn a_host_on_a_tunnels_own_subnet_is_routed_through_the_tunnel() {
+        let interfaces = vec![
+            ethernet(&[("192.0.2.10", 24)]),
+            tunnel(&[("198.51.100.2", 24), ("2001:db8:66::2", 64)]),
+        ];
+
+        let routed = map_ips_to_interfaces_with(
+            set_of(&["198.51.100.1", "2001:db8:66::1"]),
+            interfaces,
+            &[],
+        );
+
+        assert!(
+            routed.local.is_empty(),
+            "a tunnel has no segment to sweep: {:?}",
+            routed.local
+        );
+        assert_eq!(
+            routed.routed,
+            vec![
+                RoutedTarget {
+                    target: ip("198.51.100.1"),
+                    source: ip("198.51.100.2"),
+                },
+                RoutedTarget {
+                    target: ip("2001:db8:66::1"),
+                    source: ip("2001:db8:66::2"),
+                },
+            ]
+        );
+    }
+
+    /// A forced source is for a target the routing table would send through
+    /// the wrong interface. A peer on the tunnel's own subnet is reached through
+    /// that tunnel and nowhere else, so it keeps the tunnel's address as a
+    /// neighbour on a segment keeps the segment's.
+    #[test]
+    fn a_forced_source_does_not_take_a_host_off_its_tunnels_subnet() {
+        let routed = map_ips_to_interfaces_with(
+            set_of(&["198.51.100.1"]),
+            vec![
+                ethernet(&[("192.0.2.10", 24)]),
+                tunnel(&[("198.51.100.2", 24)]),
+            ],
+            &[ip("192.0.2.10")],
+        );
+
+        assert_eq!(
+            routed.routed,
+            vec![RoutedTarget {
+                target: ip("198.51.100.1"),
+                source: ip("198.51.100.2"),
+            }]
+        );
+    }
+
+    /// A sweep of the tunnel's whole subnet is a list of peers to probe through
+    /// it, less the tunnel's own address, which is this host's.
+    #[test]
+    fn a_tunnels_subnet_as_a_range_is_routed_address_by_address() {
+        let mut targets = IpSet::new();
+        targets.insert_range(V4(Ipv4Range::new(
+            "198.51.100.0".parse().unwrap(),
+            "198.51.100.3".parse().unwrap(),
+        )
+        .expect("an ordered range")));
+
+        let routed =
+            map_ips_to_interfaces_with(targets, vec![tunnel(&[("198.51.100.2", 24)])], &[]);
+
+        assert!(routed.local.is_empty(), "{:?}", routed.local);
+        let probed: Vec<IpAddr> = routed.routed.iter().map(|r| r.target).collect();
+        assert_eq!(
+            probed,
+            ["198.51.100.0", "198.51.100.1", "198.51.100.3"].map(ip)
+        );
+        assert!(routed.routed.iter().all(|r| r.source == ip("198.51.100.2")));
+        assert!(routed.ours.contains(&ip("198.51.100.2")));
+        assert_eq!(routed.ours.len(), 1);
+    }
+
+    /// Prefixes nest, and the most specific one is the route, as it is in the
+    /// kernel: a VPN's prefix inside the LAN's takes its own targets, and a
+    /// LAN inside a tunnel's wider prefix keeps its neighbours.
+    #[test]
+    fn the_most_specific_prefix_decides_between_a_segment_and_a_tunnel() {
+        let interfaces = vec![
+            ethernet(&[("198.51.100.10", 24), ("2001:db8:0:1::10", 64)]),
+            tunnel(&[("198.51.100.130", 25), ("2001:db8::2", 40)]),
+        ];
+
+        let routed = map_ips_to_interfaces_with(
+            set_of(&[
+                "198.51.100.7",
+                "198.51.100.200",
+                "2001:db8:0:1::20",
+                "2001:db8:5::1",
+            ]),
+            interfaces,
+            &[],
+        );
+
+        let swept: Vec<IpAddr> = routed.local.values().flat_map(IpSet::iter).collect();
+        assert_eq!(swept, ["198.51.100.7", "2001:db8:0:1::20"].map(ip));
+        assert_eq!(
+            routed.routed,
+            vec![
+                RoutedTarget {
+                    target: ip("198.51.100.200"),
+                    source: ip("198.51.100.130"),
+                },
+                RoutedTarget {
+                    target: ip("2001:db8:5::1"),
+                    source: ip("2001:db8::2"),
+                },
+            ]
+        );
+    }
+
+    /// A segment's range stays whole around a host prefix, on its own link or
+    /// on a tunnel. Each covers only an address this host holds, and splitting
+    /// an on-link `/64` around one would refuse it as too large to walk.
+    #[test]
+    fn a_host_prefix_inside_a_segments_range_leaves_the_range_whole() {
+        let mut lan = ethernet(&[("2001:db8:1::10", 64)]);
+        lan = lan.with_addresses(held(&[("2001:db8:1::10", 64), ("2001:db8:1::abcd", 128)]));
+        let interfaces = vec![lan, tunnel(&[("2001:db8:1::99", 128)])];
+
+        let mut targets = IpSet::new();
+        targets.insert_range(V6(Ipv6Range::new(
+            "2001:db8:1::".parse().unwrap(),
+            "2001:db8:1::ffff:ffff:ffff:ffff".parse().unwrap(),
+        )
+        .expect("an ordered range")));
+
+        let routed = map_ips_to_interfaces_with(targets, interfaces, &[]);
+
+        assert!(routed.unenumerable.is_empty(), "{:?}", routed.unenumerable);
+        assert_eq!(routed.local.len(), 1, "the /64 is swept on its segment");
     }
 
     /// The one place the two frame builders differ. The segment sweep resolves
