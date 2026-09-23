@@ -296,6 +296,9 @@ windows-sys = { version = "0.61.2", features = [
     # SYSTEMTIME, HANDLE, and the handle-closing this crate does after a token.
     "Win32_Foundation",
     "Win32_Networking_WinSock",
+    # `WSAIoctl`, which takes an `OVERLAPPED` and so sits behind this feature
+    # too: the connect probe sets its SYN retransmissions through it.
+    "Win32_System_IO",
     # Elevation, via the process token.
     "Win32_Security",
     "Win32_System_Threading",

@@ -54,6 +54,9 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+#[cfg(any(windows, test))]
+mod syn_retries;
+
 /// The evasion an unprivileged connect probe can honour: a source port to leave
 /// from and a hop limit to carry.
 ///
@@ -589,13 +592,13 @@ fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
 }
 
 /// Probes a single [`PlannedTarget`] over a full TCP connect handshake and
-/// classifies its port. Returns `Some(..)` for a non-closed port and `None` for
-/// a closed port or a target this strategy doesn't handle.
+/// classifies its port. Returns `None` only for a target this strategy doesn't
+/// handle.
 ///
 /// An accepted connection is `Open` and gets fingerprinted over the live stream,
-/// and a refusal is `Closed`. Anything else is `Filtered`, including a timeout,
-/// which is the usual signature of a firewall drop. Only TCP is supported, so UDP
-/// targets are skipped.
+/// a refusal is `Closed`, and a timeout is `Filtered`, the usual signature of a
+/// firewall drop. A connect that fails before anything leaves this machine is
+/// `Unasked`. Only TCP is supported, so UDP targets are skipped.
 async fn port_prober(
     planned: PlannedTarget,
     detection: ServiceDetection,
@@ -612,8 +615,11 @@ async fn port_prober(
 
     let position = planned.position;
 
-    match timeout(CONNECT_PROBE_TIMEOUT, connect_shaped(socket_addr, shaping)).await {
-        Ok(Ok(stream)) => {
+    match timeout(CONNECT_PROBE_TIMEOUT, connect_shaped(socket_addr, shaping))
+        .await
+        .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()))
+    {
+        Ok(stream) => {
             let port = settled(target.port, PortState::Open, Some(ScanResponse::TcpSynAck));
             // The detailed form, for the second and third values. This
             // handshake is the only conversation an unprivileged scan has with
@@ -634,7 +640,7 @@ async fn port_prober(
                 role: None,
             })
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             match e.kind() {
                 // A refusal is the clearest verdict this scanner ever gets, and
                 // it is filed as one. The RST the kernel translated into it
@@ -662,6 +668,25 @@ async fn port_prober(
                     outcome: Outcome::Answered { position },
                     role: None,
                 }),
+                // Silence: the probe was dropped, the classic firewall
+                // signature. Settled, because a connect gets one attempt and
+                // this was it. The budget running out and the stack giving up
+                // first are the same outcome, a SYN out and nothing back, and
+                // the second can come first on Windows, where a probe keeps a
+                // single retransmission.
+                ErrorKind::TimedOut => Some(Probed {
+                    ip: target.ip,
+                    port: Some(settled(
+                        target.port,
+                        PortState::Filtered,
+                        Some(ScanResponse::NoResponse),
+                    )),
+                    responses: Vec::new(),
+                    about_the_host: crate::fingerprint::AboutTheHost::default(),
+                    answered: false,
+                    outcome: Outcome::Exhausted { position },
+                    role: None,
+                }),
                 // Anything else failed without a segment leaving this machine -
                 // a local routing failure, an exhausted resource - so nothing
                 // was asked and the host has proved nothing. The next sitting
@@ -682,22 +707,6 @@ async fn port_prober(
                 }),
             }
         }
-        // Timeout: the probe was silently dropped, the classic firewall
-        // signature. Settled, because a connect gets one attempt and this was
-        // it: the whole budget, spent.
-        Err(_) => Some(Probed {
-            ip: target.ip,
-            port: Some(settled(
-                target.port,
-                PortState::Filtered,
-                Some(ScanResponse::NoResponse),
-            )),
-            responses: Vec::new(),
-            about_the_host: crate::fingerprint::AboutTheHost::default(),
-            answered: false,
-            outcome: Outcome::Exhausted { position },
-            role: None,
-        }),
     }
 }
 
@@ -751,17 +760,22 @@ fn configure_shaping(
     Ok(())
 }
 
-/// A TCP socket set up to honour `shaping`, ready to connect to a peer in
-/// `family`'s address family. Only reached when `shaping` is active.
-fn shaped_tcp_socket(family: IpAddr, shaping: ConnectShaping) -> std::io::Result<TcpSocket> {
-    let domain = match family {
+/// A TCP socket set up to honour `shaping`, ready to connect to `target`.
+///
+/// On Windows it also carries the SYN retransmission limit that lets a refusal
+/// arrive within the probe budget (see `syn_retries`), which is why every
+/// Windows probe is built here; elsewhere only an active `shaping` is.
+fn shaped_tcp_socket(target: IpAddr, shaping: ConnectShaping) -> std::io::Result<TcpSocket> {
+    let domain = match target {
         IpAddr::V4(_) => Domain::IPV4,
         IpAddr::V6(_) => Domain::IPV6,
     };
     let socket = Socket::new(domain, Type::STREAM, Some(socket2::Protocol::TCP))?;
-    configure_shaping(&socket, family, shaping)?;
+    configure_shaping(&socket, target, shaping)?;
+    #[cfg(windows)]
+    syn_retries::limit(&socket, target);
     if let Some(port) = shaping.source_port {
-        socket.bind(&source_bind(family, port).into())?;
+        socket.bind(&source_bind(target, port).into())?;
     }
     socket.set_nonblocking(true)?;
     Ok(TcpSocket::from_std_stream(std::net::TcpStream::from(
@@ -771,11 +785,12 @@ fn shaped_tcp_socket(family: IpAddr, shaping: ConnectShaping) -> std::io::Result
 
 /// Connects to `addr`, honouring `shaping`.
 ///
-/// With inert shaping this is exactly a plain [`TcpStream::connect`], so a scan
-/// that chose neither a source port nor a hop limit sends the SYN it always has,
-/// byte for byte.
+/// With inert shaping on Unix this is exactly a plain [`TcpStream::connect`],
+/// so a scan that chose neither a source port nor a hop limit sends the SYN it
+/// always has, byte for byte. Windows needs an option on every probe socket
+/// before it connects, so there the socket is always built.
 async fn connect_shaped(addr: SocketAddr, shaping: ConnectShaping) -> std::io::Result<TcpStream> {
-    if !shaping.is_active() {
+    if !shaping.is_active() && cfg!(not(windows)) {
         return TcpStream::connect(addr).await;
     }
     shaped_tcp_socket(addr.ip(), shaping)?.connect(addr).await
@@ -1130,28 +1145,26 @@ async fn prober(
             CONNECT_PROBE_TIMEOUT,
             connect_shaped(SocketAddr::new(ip, port), shaping),
         )
-        .await;
+        .await
+        .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()));
 
         match attempt {
             // A completed handshake means the host is alive.
-            Ok(Ok(_)) => return answered(ip, start),
-            // Only these TCP errors imply the host answered at the IP/TCP layer.
-            // Any other is a local failure, no route, permission denied, and
-            // the probe never reached the wire.
-            Ok(Err(e))
-                if matches!(
-                    e.kind(),
-                    ErrorKind::ConnectionRefused
-                        | ErrorKind::ConnectionReset
-                        | ErrorKind::ConnectionAborted
-                ) =>
-            {
-                return answered(ip, start);
-            }
-            Ok(Err(_)) => {}
-            // A timeout is the probe going out and nothing coming back, which is
-            // the address being asked and declining to answer.
-            Err(_elapsed) => asked = true,
+            Ok(_) => return answered(ip, start),
+            Err(e) => match e.kind() {
+                // Only these TCP errors imply the host answered at the IP/TCP
+                // layer.
+                ErrorKind::ConnectionRefused
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted => return answered(ip, start),
+                // A timeout, the budget's or the stack's, is the probe going
+                // out and nothing coming back, which is the address being
+                // asked and declining to answer.
+                ErrorKind::TimedOut => asked = true,
+                // Any other is a local failure, no route, permission denied,
+                // and the probe never reached the wire.
+                _ => {}
+            },
         }
     }
 
