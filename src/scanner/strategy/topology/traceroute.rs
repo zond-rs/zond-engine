@@ -336,11 +336,12 @@ impl Tracer {
                 true
             }
             Err(error) => {
-                // At the first level of detail, not the second. A probe that
-                // never reached the wire and a probe nobody answered look
-                // identical in an empty path, and only one of them is about the
-                // network: logging the difference any deeper would hide the
-                // answer to exactly the question a reader with an empty path is
+                // At verbosity 2, as a line per probe is. A probe that never
+                // reached the wire and a probe nobody answered look identical
+                // in an empty path, and only one of them is about the network,
+                // but that difference is not left to this line: the end of the
+                // trace counts the refusals and says aloud when no probe left
+                // at all, which is the question a reader with an empty path is
                 // asking.
                 warn!(
                     verbosity = 2,

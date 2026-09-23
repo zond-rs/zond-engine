@@ -163,15 +163,23 @@ three different things, and one of the files holding them is over two thousand
 lines long. Searching by hand is not realistic, so there is a query:
 
 ```
-cargo bench --no-run --bench os_rules
-target/release/deps/os_rules-<hash> windows
+cargo run --example corpus_index > index.json
+jq '[.entries[] | select(.facets | index("os-family:Windows")) | {kind, file, id}]' index.json
 ```
 
-It reads every corpus at once and reports what already names a match, grouped by
-which kind of rule it is and which file it is in. With no argument it lists every
-family the corpora know — 2239 rules across roughly forty families — which is the
-other question worth asking before deciding something is missing. No privileges
-and no network; it reads the asset tree.
+The example indexes every corpus at once, and each entry says which kind of rule
+it is (`os_rule` for a stack rule, `rule` for one in the imported corpus), which
+file it is in, and, as an `os-family:` facet, the family it names. So the query
+lists what already names Windows. Listing the facets themselves answers the other
+question worth asking before deciding something is missing, which families the
+corpora know:
+
+```
+jq '[.entries[].facets[] | select(startswith("os-family:"))] | unique' index.json
+```
+
+No privileges and no network; it reads the asset tree, so run it from the crate
+root.
 
 The three kinds, and why they are not one directory:
 

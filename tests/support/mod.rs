@@ -63,8 +63,16 @@ pub fn test_config() -> ZondConfig {
     cfg
 }
 
-/// True when the process would take the raw ARP/SYN scan paths rather than the
+/// True when a scan of a loopback target would take a raw path rather than the
 /// portable TCP-connect fallback.
+///
+/// Loopback is the case it decides, and the one the portable tests target.
+/// Loopback carries no Ethernet, so the only raw route to it is a raw socket,
+/// and whether one opens is what this asks. It does not decide for a target
+/// beyond loopback, which the raw path can reach by self-built frames without
+/// a raw socket: a macOS user in the `access_bpf` group may inject frames and
+/// may not open one, so this is false there while a scan of a LAN address
+/// goes raw.
 ///
 /// The connect-fallback assertions are only deterministic unprivileged, so they
 /// use this to skip cleanly instead of flaking under a privileged test run.
