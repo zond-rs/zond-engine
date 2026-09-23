@@ -505,6 +505,12 @@ impl ChangeDto {
     /// | `role_gained`, `role_lost` | one inferred role each |
     /// | `filtering_gained`, `filtering_lost` | one conclusion about the filter in front of it each |
     /// | `ip_protocol` | one IP protocol its stack takes delivery of, or no longer does |
+    /// | `finding_appeared`, `finding_resolved` | one finding each, as its severity and title |
+    /// | `finding_reassessed` | one claim both scans make, graded differently |
+    ///
+    /// Never `finding_unsettled`. The evidence a later scan can leave a claim
+    /// unsettled on, a TLS walk or a certificate, belongs to an endpoint, so
+    /// only [`of_port`](Self::of_port) emits it.
     ///
     /// Matched exhaustively and with no wildcard, so a variant added to
     /// [`HostChange`] stops this compiling until somebody decides what it is
@@ -644,6 +650,9 @@ impl ChangeDto {
     /// | `alpn_gained`, `alpn_lost` | one application protocol each |
     /// | `certificate_presented`, `certificate_withdrawn`, `certificate_rotated` | by SHA-256 fingerprint |
     /// | `certificate_expiring`, `certificate_expired` | a threshold crossed since the earlier scan; `after` is the validity end |
+    /// | `finding_appeared`, `finding_resolved` | one finding each, as its severity and title |
+    /// | `finding_unsettled` | one claim the earlier scan made that the later one neither makes nor settled |
+    /// | `finding_reassessed` | one claim both scans make, graded differently |
     ///
     /// `options` is not read, and the parameter stays. Nothing an endpoint change
     /// carries is what [`Redaction`](crate::export::Redaction) masks: a

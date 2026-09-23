@@ -56,9 +56,15 @@ produce two outcomes on loopback, open and closed, so that is all this tier can
 assert.
 
 They need no privileges and no network setup, so they run identically on Linux
-and macOS. When the process happens to be running as root, `scan` takes its raw
-socket path instead of the connect fallback, and the assertions that depend on
-the fallback call `is_privileged()` and skip rather than flake.
+and macOS. Every target is loopback, and loopback carries no Ethernet, so the
+only raw route to it is a raw socket: where the process can open one, as root
+or on Linux as a process holding `CAP_NET_RAW`, `scan` takes that route instead
+of the connect fallback. The assertions that depend on the fallback call
+`is_privileged()` and skip rather than flake. It asks the engine's own question,
+whether a raw socket opens, rather than whether the process is root, and it
+answers for loopback alone: a macOS user in the `access_bpf` group opens no raw
+socket and is not skipped here, while a scan of a LAN address from the same
+account injects its own frames and goes raw.
 
 ## The wire parsers, against bytes nobody wrote
 
