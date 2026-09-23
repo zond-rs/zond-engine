@@ -362,6 +362,46 @@ mod tests {
         }
     }
 
+    /// Every source this build knows, each at the most anything filing under it
+    /// may claim.
+    ///
+    /// The rows are the arms of one exhaustive match, and the list is built from
+    /// the same arms, so a source added to [`OsSource`] without a row stops the
+    /// build, and every source with a row is one the tests below run. A list
+    /// kept beside a match holds neither: the match forces an arm for a new
+    /// source, nothing forces the list to name it, and the source is priced and
+    /// never run.
+    ///
+    /// Every price is read from where production sets it, so a ceiling raised
+    /// there is a ceiling tested here. Where two producers file under one
+    /// source the row takes the higher, since a source counts only its
+    /// strongest claim.
+    fn every_source_at_its_ceiling() -> Vec<(OsSource, f32)> {
+        use super::super::{MAX_STACK_ACCURACY, ceiling, hardware, hostname};
+
+        macro_rules! rows {
+            ($($source:ident => $price:expr),+ $(,)?) => {{
+                let price = |source: OsSource| match source {
+                    $(OsSource::$source => $price),+
+                };
+                vec![$((OsSource::$source, price(OsSource::$source))),+]
+            }};
+        }
+
+        rows![
+            TcpStack => f32::from(MAX_STACK_ACCURACY) / 100.0,
+            HardwareVendor => hardware::CONFIDENCE,
+            // The kinds of text a rule is matched against, priced by the one
+            // function every text match goes through.
+            ServiceBanner => ceiling(OsSource::ServiceBanner),
+            SnmpAgent => ceiling(OsSource::SnmpAgent),
+            // A responder's device-info record, and the `.local` name it
+            // announced, which is filed as the responder's word too.
+            MdnsResponder => ceiling(OsSource::MdnsResponder).max(hostname::CONFIDENCE),
+            Hostname => hostname::CONFIDENCE,
+        ]
+    }
+
     /// The point of a second source. A stack reading alone is capped below the
     /// threshold that stops further probing, because one packet's fields are one
     /// observation; a second, genuinely independent source agreeing with it is
@@ -388,22 +428,15 @@ mod tests {
     /// pinned was the double count rather than the ceiling.
     #[test]
     fn no_amount_of_agreement_reaches_certainty() {
-        let every = [
-            OsSource::TcpStack,
-            OsSource::HardwareVendor,
-            OsSource::ServiceBanner,
-            OsSource::SnmpAgent,
-            OsSource::Hostname,
-        ];
-        let many: Vec<OsEvidence> = every
+        let many: Vec<OsEvidence> = every_source_at_its_ceiling()
             .into_iter()
-            .map(|source| evidence("Linux", 0.6, source))
+            .map(|(source, _)| evidence("Linux", 0.6, source))
             .collect();
 
         let resolved = resolve(many).expect("named");
         assert_eq!(
             resolved.accuracy, MAX_FUSED_ACCURACY,
-            "five agreeing sources may be highly confident and must not be certain"
+            "every source agreeing may be highly confident and must not be certain"
         );
         assert!(
             resolved.accuracy < 100,
@@ -421,52 +454,71 @@ mod tests {
     /// lives in four modules that do not read each other.
     ///
     /// So the rule is stated here: whatever one source says, however often it
-    /// says it, a second source is still needed to settle a host. The match is
-    /// exhaustive, so a new source cannot be added without pricing it against
-    /// this, and every price is read from where production sets it, so a
-    /// ceiling raised there is a ceiling tested here.
+    /// says it, a second source is still needed to settle a host. It is stated
+    /// for every source there is, which [`every_source_at_its_ceiling`] holds
+    /// to, and against the same predicate the scanner reads to decide whether
+    /// to probe further.
+    ///
+    /// And down both of the routes [`resolve`] takes. Claims naming a family
+    /// are voted on; claims naming only what the box is abstain, and where
+    /// nothing names a family they are the answer on their own, combined along
+    /// a path of their own that a census of family-naming claims never takes.
+    /// Each source is run naming a family, naming only a device class, and
+    /// mixing the two.
+    ///
+    /// # What it cannot see
+    ///
+    /// It prices sources, not the producers that file under them. One
+    /// observation filed under two sources arrives here as two witnesses, and
+    /// this passes it. A vendor a service described, read back as its
+    /// address's own, is that shape, and so is a Bonjour responder's name filed
+    /// apart from the record it serves under that name. The first kind, one
+    /// reply producing a second source, is swept across every shipped rule by
+    /// `one_reply_is_one_witness` in the fingerprint corpus tests. The second
+    /// is a join the scanner makes across two exchanges, which no sweep of
+    /// single replies reaches, and each such join is pinned where it is made,
+    /// as this one is in `identify`'s tests.
     #[test]
     fn no_single_source_settles_a_host() {
-        use super::super::MAX_STACK_ACCURACY;
-
-        let every = [
-            OsSource::TcpStack,
-            OsSource::HardwareVendor,
-            OsSource::ServiceBanner,
-            OsSource::SnmpAgent,
-            OsSource::MdnsResponder,
-            OsSource::Hostname,
-        ];
-
-        for source in every {
-            let ceiling = match source {
-                OsSource::TcpStack => f32::from(MAX_STACK_ACCURACY) / 100.0,
-                OsSource::HardwareVendor => super::super::hardware::CONFIDENCE,
-                // The three kinds of text a rule is matched against, priced by
-                // the one function every text match goes through.
-                OsSource::ServiceBanner | OsSource::SnmpAgent | OsSource::MdnsResponder => {
-                    super::super::ceiling(source)
-                }
-                OsSource::Hostname => super::super::hostname::CONFIDENCE,
+        for (source, ceiling) in every_source_at_its_ceiling() {
+            // More claims than a host will retain, all from this one source.
+            let naming = |nth: usize| OsEvidence {
+                version: Some(nth.to_string()),
+                ..evidence("Linux", ceiling, source)
             };
+            let abstaining = |nth: usize| OsEvidence {
+                family: None,
+                device: Some("Router".to_string()),
+                ..naming(nth)
+            };
+            let shapes: [(&str, Vec<OsEvidence>); 3] = [
+                ("naming a family", (0..20).map(naming).collect()),
+                ("naming only a device", (0..20).map(abstaining).collect()),
+                (
+                    "mixing the two",
+                    (0..20)
+                        .map(|nth| {
+                            if nth % 2 == 0 {
+                                naming(nth)
+                            } else {
+                                abstaining(nth)
+                            }
+                        })
+                        .collect(),
+                ),
+            ];
 
-            // More claims than a host will retain, all from this one source and
-            // all naming the family they are counted for.
-            let many: Vec<OsEvidence> = (0..20)
-                .map(|nth| OsEvidence {
-                    version: Some(nth.to_string()),
-                    ..evidence("Linux", ceiling, source)
-                })
-                .collect();
-
-            // Two of them price themselves under the reporting floor and name
-            // nothing at all alone, which is the same answer more emphatically.
-            if let Some(resolved) = resolve(many) {
-                assert!(
-                    !resolved.to_fingerprint().is_highly_confident(),
-                    "{source:?} settled a host on its own at {}",
-                    resolved.accuracy
-                );
+            for (shape, many) in shapes {
+                // Two sources price themselves under the reporting floor and
+                // name nothing at all alone, which is the same answer more
+                // emphatically.
+                if let Some(resolved) = resolve(many) {
+                    assert!(
+                        !resolved.to_fingerprint().is_highly_confident(),
+                        "{source:?}, {shape}, settled a host on its own at {}",
+                        resolved.accuracy
+                    );
+                }
             }
         }
     }

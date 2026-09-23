@@ -8,7 +8,7 @@
 
 //! # Fingerprinting corpus regression tests
 //!
-//! Locks matching behaviour against silent regression, in three layers:
+//! Locks matching behaviour against silent regression, in four layers:
 //!
 //! 1. **Self-consistency** ([`every_signature_matches_its_example`]): 95% of
 //!    signature rules ship a recorded `example` banner they are meant to match.
@@ -18,7 +18,11 @@
 //!    for every example that matches its pattern, the global-match prefilter
 //!    must select that signature as a candidate. This is what makes it safe to
 //!    narrow the global set instead of scanning all of it.
-//! 3. **Golden end-to-end** ([`golden_cases_resolve_end_to_end`],
+//! 3. **One reply, one witness** ([`one_reply_is_one_witness`]): whatever a
+//!    rule's example leaves on a host's record, it leaves under the source it
+//!    was read as, so the arithmetic that combines sources never counts one
+//!    reading as two witnesses.
+//! 4. **Golden end-to-end** ([`golden_cases_resolve_end_to_end`],
 //!    [`non_standard_port_is_identified_via_global_fallback`]): real banners
 //!    driven through the whole pipeline with the exact verdict pinned.
 //!
@@ -127,6 +131,74 @@ fn prefilter_never_drops_a_matching_signature() {
             "matching signature",
             "matching signatures"
         )
+    );
+}
+
+/// One reply is one witness, whatever the rule that read it says about the
+/// machine.
+///
+/// Every shipped rule's example, read as each kind of text a rule is matched
+/// against, and filed with a host the way a reply's reading is: what it implies
+/// about the system and the hardware it describes, together, on a host with no
+/// address behind it and no name. Whatever that leaves on record has to be
+/// filed under the source that was read. Filed under another, the reply stands
+/// in for a witness that said nothing, and beside its own reading it is counted
+/// twice, which the arithmetic that combines sources takes for two witnesses
+/// agreeing: a vendor a service described, read back as its address's own,
+/// carries a single SNMP description past the confidence at which the active
+/// OS probe is skipped.
+///
+/// What it sees is what one reply produces. A scanner joining two exchanges,
+/// such as a name one of them learned and a record the other fetched under
+/// that name, is outside any sweep of single replies, and each such join is
+/// pinned where it is made.
+#[test]
+fn one_reply_is_one_witness() {
+    use crate::model::host::{Host, OsSource};
+    use std::collections::BTreeSet;
+
+    let (signatures, examples) = signatures_with_examples();
+    let read_as = [
+        OsSource::ServiceBanner,
+        OsSource::SnmpAgent,
+        OsSource::MdnsResponder,
+    ];
+
+    let mut misfiled: Vec<String> = signatures
+        .par_iter()
+        .zip(examples.par_iter())
+        .filter_map(|(signature, example)| Some((signature, example.as_deref()?)))
+        .flat_map_iter(|(signature, example)| {
+            read_as.into_iter().filter_map(move |source| {
+                let matched = signature.identify(example, source)?;
+                let mut host = Host::new("192.0.2.1".parse().expect("a literal address"));
+                super::AboutTheHost {
+                    os: matched.os.into_iter().collect(),
+                    hardware: matched.hardware,
+                }
+                .apply(&mut host);
+
+                let filed: BTreeSet<OsSource> =
+                    host.os_evidence().map(|evidence| evidence.source).collect();
+                filed
+                    .iter()
+                    .any(|other| *other != source)
+                    .then(|| format!("{example:?} read as {source:?} left {filed:?}"))
+            })
+        })
+        .collect();
+    misfiled.sort();
+
+    assert!(
+        misfiled.is_empty(),
+        "{} left a reading under a source they were not read as:\n{}",
+        crate::logging::counted(misfiled.len() as u128, "example", "examples"),
+        misfiled
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }
 

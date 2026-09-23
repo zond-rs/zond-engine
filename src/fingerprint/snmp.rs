@@ -8,10 +8,11 @@
 
 //! # Reading what an SNMP agent says it is
 //!
-//! One value out of one reply: `sysDescr.0`, the string an agent returns when
-//! asked what it runs.
+//! Two values out of one reply: `sysDescr.0`, the string an agent returns when
+//! asked what it runs, and `sysObjectID.0`, the vendor's own identifier for
+//! the box, which the same request asks for beside it.
 //!
-//! ## Why this one field is worth a decoder
+//! ## Why the description is worth a decoder
 //!
 //! On a Unix host `sysDescr` is the output of `uname -a`:
 //!
@@ -33,10 +34,12 @@
 //! asked for. A reply that disagrees anywhere yields nothing.
 //!
 //! It parses **only the shape this engine's own probe draws**, an SNMPv1
-//! `GetResponse` carrying a single variable binding whose value is an octet
-//! string. That is a deliberate limit rather than an unfinished job: a general
-//! ASN.1 decoder is a large piece of attack surface for a scanner to carry, and
-//! every construct beyond this one is a construct the probe cannot elicit.
+//! `GetResponse` whose bindings answer the two questions the probe asks: a
+//! description carried as an octet string, and an identifier carried as an
+//! object identifier, in either order. That is a deliberate limit rather than
+//! an unfinished job: a general ASN.1 decoder is a large piece of attack
+//! surface for a scanner to carry, and every construct beyond this one is a
+//! construct the probe cannot elicit.
 //!
 //! ## The value is a field, not a response
 //!
@@ -270,13 +273,25 @@ mod tests {
         out
     }
 
-    /// The reply an agent sends to this engine's probe, assembled from RFC 1157
-    /// §4.1 rather than through anything in this module, so a misreading here
-    /// cannot write the fixture that confirms it.
+    /// A reply carrying one binding, which is all most of these need.
     fn get_response(oid: &[u8], value_tag: u8, value: &[u8]) -> Vec<u8> {
-        let mut binding = tlv(tag::OID, oid);
-        binding.extend(tlv(value_tag, value));
-        let bindings = tlv(tag::SEQUENCE, &tlv(tag::SEQUENCE, &binding));
+        response(&[(oid, value_tag, value)])
+    }
+
+    /// The reply an agent sends to this engine's probe, carrying `bindings` in
+    /// the order given, each a name, a value tag and a value. Assembled from
+    /// RFC 1157 §4.1 rather than through anything in this module, so a
+    /// misreading here cannot write the fixture that confirms it.
+    fn response(bindings: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
+        let list: Vec<u8> = bindings
+            .iter()
+            .flat_map(|(oid, value_tag, value)| {
+                let mut binding = tlv(tag::OID, oid);
+                binding.extend(tlv(*value_tag, value));
+                tlv(tag::SEQUENCE, &binding)
+            })
+            .collect();
+        let bindings = tlv(tag::SEQUENCE, &list);
 
         let mut pdu = tlv(0x02, b"zond"); // request identifier
         pdu.extend(tlv(0x02, &[0])); // error status
@@ -291,6 +306,37 @@ mod tests {
 
     fn sys_descr_reply(description: &str) -> Vec<u8> {
         get_response(SYS_DESCR_OID, tag::OCTET_STRING, description.as_bytes())
+    }
+
+    /// `1.3.6.1.4.1.8072.3.2.10`, Net-SNMP's identifier for an agent on Linux.
+    /// The 8072 arc takes two base-128 bytes, which is the case a renderer
+    /// reading bytes as arcs gets wrong.
+    const NET_SNMP_LINUX: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0xbf, 0x08, 0x03, 0x02, 0x0a];
+
+    /// What an agent answering both of the probe's questions sends back, in the
+    /// order it chose.
+    fn both_answers(identifier_first: bool) -> Vec<u8> {
+        let description = (
+            SYS_DESCR_OID,
+            tag::OCTET_STRING,
+            &b"Linux zond 6.1.0 x86_64"[..],
+        );
+        let identifier = (SYS_OBJECT_ID_OID, tag::OID, NET_SNMP_LINUX);
+        if identifier_first {
+            response(&[identifier, description])
+        } else {
+            response(&[description, identifier])
+        }
+    }
+
+    /// Whether `rendered` is what [`object_identifier`] promises: two or more
+    /// arcs of decimal digits, joined by dots.
+    fn is_dotted_decimal(rendered: &str) -> bool {
+        let arcs: Vec<&str> = rendered.split('.').collect();
+        arcs.len() >= 2
+            && arcs
+                .iter()
+                .all(|arc| !arc.is_empty() && arc.bytes().all(|b| b.is_ascii_digit()))
     }
 
     /// The whole reason this decoder exists: an agent's own account of its
@@ -320,6 +366,107 @@ mod tests {
     fn a_value_that_is_not_a_string_is_refused() {
         let reply = get_response(SYS_DESCR_OID, 0x02, &[0x01, 0x02]);
         assert_eq!(sys_descr(&reply), None);
+    }
+
+    /// The reply the probe draws answers two questions, in whatever order the
+    /// agent likes, and each reader finds its own answer in either.
+    #[test]
+    fn both_answers_are_read_in_either_order() {
+        for identifier_first in [false, true] {
+            let reply = both_answers(identifier_first);
+            assert_eq!(sys_descr(&reply), Some("Linux zond 6.1.0 x86_64"));
+            assert_eq!(
+                sys_object_id(&reply).as_deref(),
+                Some("1.3.6.1.4.1.8072.3.2.10")
+            );
+        }
+    }
+
+    /// The pin below, over the reply the probe actually draws and through both
+    /// readers.
+    ///
+    /// A second binding is a second walk through the list, and the identifier
+    /// has an encoding of its own to be parsed behind it. Neither may panic on
+    /// a mangled reply, and whatever either still hands back has the shape it
+    /// promises: a description within the defined bound, an identifier in
+    /// dotted decimal. `0x06` joins the corrupting bytes because it is the tag
+    /// an identifier is recognised by.
+    #[test]
+    fn nothing_a_peer_can_send_breaks_either_reader_of_the_probes_reply() {
+        for identifier_first in [false, true] {
+            let whole = both_answers(identifier_first);
+
+            let mut mangled: Vec<Vec<u8>> =
+                (0..whole.len()).map(|cut| whole[..cut].to_vec()).collect();
+            for offset in 0..whole.len() {
+                for byte in [0x00u8, 0x01, 0x06, 0x30, 0x7f, 0x80, 0x84, 0xa2, 0xff] {
+                    let mut mutated = whole.clone();
+                    mutated[offset] = byte;
+                    mangled.push(mutated);
+                }
+            }
+
+            for datagram in &mangled {
+                if let Some(description) = sys_descr(datagram) {
+                    assert!(description.len() <= MAX_SYS_DESCR);
+                }
+                if let Some(identifier) = sys_object_id(datagram) {
+                    assert!(
+                        is_dotted_decimal(&identifier),
+                        "{identifier:?} read out of {datagram:02x?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The renderer is handed whatever bytes a binding carried, so it is held
+    /// to what the walk around it is: any input renders as nothing or as dotted
+    /// decimal, and never panics. Deterministic, for the reason
+    /// `arbitrary_datagrams_are_refused_rather_than_read` gives.
+    #[test]
+    fn any_encoded_identifier_renders_as_nothing_or_as_dotted_decimal() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for _ in 0..20_000 {
+            let len = (next() % 24) as usize;
+            let encoded: Vec<u8> = (0..len).map(|_| (next() & 0xFF) as u8).collect();
+            if let Some(rendered) = object_identifier(&encoded) {
+                assert!(
+                    is_dotted_decimal(&rendered),
+                    "{rendered:?} rendered from {encoded:02x?}"
+                );
+            }
+        }
+    }
+
+    /// An arc ends at the first byte without the continuation bit, so an
+    /// identifier cut inside one is truncated and yields nothing, at every
+    /// place it can be cut. One longer than any arc anybody assigned is
+    /// refused rather than wrapped.
+    #[test]
+    fn an_identifier_cut_inside_an_arc_or_past_any_arc_yields_nothing() {
+        for cut in 1..NET_SNMP_LINUX.len() {
+            let prefix = &NET_SNMP_LINUX[..cut];
+            let inside_an_arc = prefix.last().is_some_and(|byte| byte & 0x80 != 0);
+            assert_eq!(
+                object_identifier(prefix).is_none(),
+                inside_an_arc,
+                "cut after {prefix:02x?}"
+            );
+        }
+
+        // Ten continuation bytes are seventy bits, past what an arc is held in.
+        let mut endless = vec![0x2b];
+        endless.extend([0xff; 10]);
+        endless.push(0x7f);
+        assert_eq!(object_identifier(&endless), None);
     }
 
     /// Every byte is chosen by an unauthenticated peer on a port anyone can
@@ -443,6 +590,7 @@ mod tests {
 
         for (name, datagram) in cases {
             assert_eq!(sys_descr(datagram), None, "{name} was not refused");
+            assert_eq!(sys_object_id(datagram), None, "{name} was not refused");
         }
     }
 
@@ -456,6 +604,7 @@ mod tests {
             datagram.push(0x02);
         }
         assert_eq!(sys_descr(&datagram), None);
+        assert_eq!(sys_object_id(&datagram), None);
     }
 
     /// **Arbitrary bytes settle nothing and break nothing.**
@@ -482,6 +631,10 @@ mod tests {
                 sys_descr(&datagram).is_none(),
                 "random bytes were read as a system description: {datagram:02x?}"
             );
+            assert!(
+                sys_object_id(&datagram).is_none(),
+                "random bytes were read as an object identifier: {datagram:02x?}"
+            );
         }
     }
 
@@ -504,6 +657,7 @@ mod tests {
                 let mut datagram = real.clone();
                 datagram[at] = value;
                 let _ = sys_descr(&datagram);
+                let _ = sys_object_id(&datagram);
             }
         }
     }

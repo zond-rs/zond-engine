@@ -872,7 +872,7 @@ pub(super) async fn run_active_os_series(
                 // packets at `Active`: nothing this probe can read would change
                 // the answer, and the level's whole premise is that its traffic
                 // was asked for.
-                let settled = host.os().is_some_and(|os| os.accuracy() >= 85);
+                let settled = host.os().is_some_and(|os| os.is_highly_confident());
                 if settled && !thorough {
                     return None;
                 }
@@ -1604,7 +1604,7 @@ pub(super) async fn run_active_os_probe(
         .filter(|key| !ctx.host_expired(key.addr()))
         .filter(|key| {
             ctx.read_host(key, |host| {
-                host.status().is_up() && host.os().is_none_or(|os| os.accuracy() < 85)
+                host.status().is_up() && host.os().is_none_or(|os| !os.is_highly_confident())
             })
             .unwrap_or(false)
         })
