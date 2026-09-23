@@ -106,6 +106,38 @@ async fn a_host_behind_a_drop_policy_is_found_on_the_port_the_scan_names() {
     );
 }
 
+/// `assume_up` sends the target its port probes and nothing else.
+///
+/// A caller who turned the liveness pass off asked for no question about
+/// whether the host is there, so no sweep asks it one beside the ports under
+/// any other name. Counted at the target on the port the routed sweep asks,
+/// which the scan itself names no probe for.
+#[tokio::test]
+async fn assume_up_sends_no_sweep_beside_the_port_probes() {
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    let target = segment.routed_peer();
+    segment.count_tcp(443);
+    let mut cfg = test_config();
+    cfg.assume_up = true;
+
+    let outcome = run_scan(target_map(IpAddr::V4(target), "1"), &cfg).await;
+
+    assert_eq!(
+        outcome.report.summary().ports_total,
+        1,
+        "the port was probed"
+    );
+    assert_eq!(
+        segment.count_of(443),
+        0,
+        "a liveness sweep reached the target although the caller turned it off"
+    );
+}
+
 /// An idle scan sends the target nothing from this host.
 ///
 /// The zombie is excluded, so the idle scan is refused and nothing is forged;

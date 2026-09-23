@@ -62,7 +62,6 @@ use crate::scanner::pool::ProbePool;
 use crate::scanner::rdns::HostnameResolver;
 use crate::scanner::session::{ScanContext, Stage};
 use crate::scanner::strategy::composite::Reach;
-use crate::scanner::strategy::local::Scope;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::scanner::{plan, rdns, strategy};
 use crate::system::interface;
@@ -527,7 +526,6 @@ pub(super) fn build_port_scanner(
 
     let beyond = Arc::new(raw.beyond());
     let mut routes: Vec<(Box<dyn PortScanner>, Reach)> = Vec::new();
-    let mut opened = Vec::new();
     for step in plan.into_steps() {
         // Not opened rather than opened and starved: a raw strategy holds a
         // capture on every interface for as long as the scan runs, and here it
@@ -542,7 +540,6 @@ pub(super) fn build_port_scanner(
                     true => Reach::Except(Arc::clone(&beyond)),
                     false => Reach::Any,
                 };
-                opened.push(step);
                 routes.push((scanner, reach));
             }
             Err(e) => ctx.record_failure(step.kind(), e.to_string()),
@@ -565,7 +562,6 @@ pub(super) fn build_port_scanner(
             strategy::composite::CompositePortScanner::with_reach(coverage.routes, ctx.clone())
                 .refusing(refused),
         ),
-        opened,
         reached_by_connect: coverage.reached_by_connect,
     }
 }
@@ -778,31 +774,13 @@ fn connect_udp(
     ))
 }
 
-/// A port-scan strategy, and which of the planned steps actually opened.
-///
-/// The second half is not decoration. Host enrichment is worth running only
-/// alongside a raw scan, it is the raw paths that yield a MAC and an RTT, and
-/// whether a raw scan is happening is answerable only after the sockets were
-/// asked for, not from the privilege the process holds.
-///
-/// The steps are kept rather than their [`ScannerKind`]s, because "did this
-/// need raw sockets" is the question being asked and a strategy's name is a
-/// different fact about it. Answered from the name, this would silently skip
-/// enriching every scan whose technique is not a SYN.
+/// A port-scan strategy, and what it says about the targets it reaches.
 pub(super) struct BuiltPortScan {
     pub(super) scanner: Box<dyn PortScanner>,
-    opened: Vec<plan::PortScanStep>,
     /// Whether a connect strategy stands in for a raw one on the targets a
     /// frame cannot reach, which is when the phase says it reached them by
     /// connect.
     reached_by_connect: bool,
-}
-
-impl BuiltPortScan {
-    /// Whether any raw-socket strategy is among what opened.
-    pub(super) fn opened_raw(&self) -> bool {
-        self.opened.iter().any(plan::PortScanStep::is_raw)
-    }
 }
 
 /// Drives one port-scan strategy to completion. It streams targets through the
@@ -841,10 +819,11 @@ pub(super) async fn run_port_scan(
 ///
 /// A privileged scan spawns passive DNS and mDNS resolution as part of its
 /// [`Enrichment`]; awaiting that here folds the collected hostnames and extra
-/// IPs into the store along with the rest of the enrichment strategies. An
-/// unprivileged scan has no enrichment, so it falls back to active reverse
-/// lookups when DNS is enabled and does nothing when it is not. This is the
-/// single place the "passive when privileged, active otherwise" policy lives.
+/// IPs into the store along with the rest of the enrichment strategies. A
+/// phase with no enrichment, which is every unprivileged one and every port
+/// phase, falls back to active reverse lookups when DNS is enabled and does
+/// nothing when it is not. This is the single place the "passive where a sweep
+/// ran, active otherwise" policy lives.
 pub(super) async fn finish_enrichment(
     enrichment: Option<Enrichment>,
     caps: ScanCapabilities,
@@ -1914,7 +1893,7 @@ fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) -> 
     zones
 }
 
-/// Probes `target_map`'s ports, enriching the hosts as it goes.
+/// Probes `target_map`'s ports, and nothing else of its hosts.
 ///
 /// Nothing is opened for an empty map. A liveness phase that found nothing is a
 /// finished answer, and raw sockets held to probe no targets are a failure this
@@ -1985,34 +1964,13 @@ pub(super) async fn run_port_phase(
         announce_beyond_frames(&beyond);
     }
 
-    // Only when nothing has enriched these hosts already. With the liveness
-    // phase on, it has: the pass that established they are there is the same one
-    // that reads their hardware addresses and names. And only over the hosts
-    // this sitting probes, since one whose every target an earlier sitting
-    // settled was enriched by that sitting, and a sitting with nothing left to
-    // probe has nothing to enrich.
-    let enrichment = if cfg.assume_up && built.opened_raw() && !probed.is_empty() {
-        let addresses = probed.clone();
-        let unframed =
-            caps.beyond_frames(&addresses, &cfg.send_source, interface::FrameSender::Sweep);
-        let mut plan = super::plan::DiscoveryPlan::build(
-            addresses,
-            Scope::Targeted,
-            &cfg.exclusions,
-            &cfg.send_source,
-        );
-        plan.withhold(&unframed.targets);
-        // What enrichment is for is a hardware address and a round trip, and a
-        // connect step yields neither: it would ask a handful of ports on a
-        // host whose ports are being asked anyway, and ask them again on a
-        // resumed sitting that has nothing left to probe.
-        plan.steps_mut()
-            .retain(|step| !matches!(step, super::plan::DiscoveryStep::Connect { .. }));
-        Some(Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await)
-    } else {
-        None
-    };
-
+    // No sweep beside the ports, whatever it would add. With the liveness pass
+    // on, it has run already: the pass that established these hosts are there
+    // is the one that reads their hardware addresses and names. With it off,
+    // the caller asked for the ports and nothing else, and a sweep is the
+    // liveness pass under another name. It would also yield nothing the pass
+    // would not: a host that answers the sweep is one the pass would have
+    // found, so a caller who wants what it reads runs the pass.
     // Numbered against the whole plan and filtered afterwards: to what an
     // earlier sitting did not settle, and to the hosts that answered. Both
     // filters run after the numbering, because both of them are properties of
@@ -2024,7 +1982,7 @@ pub(super) async fn run_port_phase(
     let rx = dispatcher.run(ctx);
 
     run_port_scan(built.scanner, rx, ctx, cfg.service_detection, cfg.detection).await;
-    finish_enrichment(enrichment, caps, ctx).await;
+    finish_enrichment(None, caps, ctx).await;
     // Passive first, then active: the echo probe is aimed at the hosts the
     // passive sources could not name, and it can only know which those are once
     // they have run.
@@ -2706,7 +2664,6 @@ mod tests {
             &RawReach::Nothing(ip_set(&["127.0.0.1"])),
         );
 
-        assert!(!built.opened_raw(), "nothing raw was opened");
         assert_eq!(
             built.scanner.supported_protocols(),
             vec![Protocol::Tcp, Protocol::Udp],
@@ -2895,36 +2852,6 @@ mod tests {
                 "and it counts the one target it names: {reason}"
             );
         }
-    }
-
-    /// Host enrichment is keyed on whether a raw scan is happening, and a raw
-    /// scan is one whatever segment its probes carry. Read off the strategy's
-    /// name instead, a FIN scan, not being called `syn_port`, would not count as
-    /// raw, and every non-SYN privileged scan would quietly lose its MAC
-    /// addresses and round trips.
-    #[test]
-    fn a_raw_scan_earns_enrichment_whichever_technique_it_carries() {
-        for technique in TcpScanTechnique::ALL {
-            let built = BuiltPortScan {
-                scanner: Box::new(StubScanner(vec![Protocol::Tcp])),
-                opened: vec![plan::PortScanStep::RawTcp { technique }],
-                reached_by_connect: false,
-            };
-            assert!(built.opened_raw(), "a raw {technique} scan is still raw");
-        }
-
-        let unprivileged = BuiltPortScan {
-            scanner: Box::new(StubScanner(vec![Protocol::Tcp])),
-            opened: vec![
-                plan::PortScanStep::ConnectTcp,
-                plan::PortScanStep::ConnectUdp,
-            ],
-            reached_by_connect: false,
-        };
-        assert!(
-            !unprivileged.opened_raw(),
-            "a connect scan has no MAC or round trip to offer"
-        );
     }
 
     /// With no privileged scanner at all, both connect fallbacks stand in.
