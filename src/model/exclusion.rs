@@ -28,7 +28,7 @@
 //!
 //! | Where | What it guarantees |
 //! |---|---|
-//! | [`withhold`](Exclusions::withhold) and [`withhold_targets`](Exclusions::withhold_targets), before anything is opened | No probe is *addressed* to an excluded address the caller named, and the scope the report states is the scope that was actually walked |
+//! | [`withhold`](Exclusions::withhold) and [`withhold_targets`](Exclusions::withhold_targets), before anything is opened, and [`PortScanPlan::build`](crate::scanner::plan::PortScanPlan::build) for the zombie an idle scan reads | No probe is *addressed* to an excluded address the caller named, and the scope the report states is the scope that was actually walked |
 //! | [`ScanContext::may_probe`](crate::scanner::session::ScanContext::may_probe), where a strategy turns an address it learned into a probe | No probe is addressed to an excluded address the scan found for itself, which the list never held |
 //! | [`ScanContext::write_host`](crate::scanner::session::ScanContext::write_host), on every finding | Nothing about an excluded address is recorded, whichever path it arrived by |
 //!

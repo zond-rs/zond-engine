@@ -205,6 +205,23 @@ impl RefusedStep {
         }
     }
 
+    /// An idle scan was asked for through a zombie the exclusions forbid.
+    ///
+    /// The scan reads the zombie's counter by probing it again and again, so
+    /// running it would send an excluded address the most traffic of anything
+    /// in the scan. There is no fallback, for the reason
+    /// [`idle_needs_privilege`](Self::idle_needs_privilege) gives.
+    pub(crate) fn idle_zombie_excluded(zombie: IpAddr) -> Self {
+        Self {
+            scanner: ScannerKind::Idle,
+            reason: format!(
+                "the idle scan's zombie {zombie} is excluded, and the scan reads its counter \
+                 by probing it again and again - and scanning the target under this host's \
+                 own address instead would betray the scan, so no TCP port was probed"
+            ),
+        }
+    }
+
     /// An idle scan was asked for without the privilege it needs.
     ///
     /// The forged source address of an idle scan's probe can only ride a
@@ -1003,7 +1020,13 @@ impl PortScanPlan {
         // one directly would announce the scanner the technique exists to hide,
         // so a UDP target is simply left unprobed, with no step to cover it.
         if let Some(idle) = &cfg.idle_scan {
-            if privilege.is_raw() {
+            // Asked first: a policy refusal holds whatever the privilege, and
+            // telling somebody to find root for a scan that would be refused
+            // anyway sends them the wrong way. The zombie is named in settings
+            // rather than in the target list, so nothing else withholds it.
+            if cfg.exclusions.excludes(&idle.zombie) {
+                refusals.push(RefusedStep::idle_zombie_excluded(idle.zombie));
+            } else if privilege.is_raw() {
                 steps.push(PortScanStep::Idle {
                     zombie: idle.zombie,
                     zombie_port: idle.zombie_port,
@@ -1488,6 +1511,50 @@ mod tests {
         assert!(
             refusal.reason.contains("idle"),
             "the reason names something other than the idle scan: {}",
+            refusal.reason
+        );
+    }
+
+    /// A zombie the operator excluded is not scanned through. The idle scan
+    /// reads its counter by sending it SYN+ACKs again and again, so naming it
+    /// in a scan's settings would otherwise probe an address somebody was told
+    /// would be left alone, and nothing in the target list could withhold it.
+    ///
+    /// Refused rather than replaced: probing the target directly instead would
+    /// put this host's own address on it, which an idle scan exists to avoid,
+    /// so no TCP port is planned at all.
+    #[test]
+    fn an_idle_scan_through_an_excluded_zombie_is_refused() {
+        let zombie = v6("192.0.2.9");
+        let mut forbidden = IpSet::new();
+        forbidden.insert(zombie);
+        let cfg = ZondConfig {
+            idle_scan: Some(crate::config::IdleScan::new(zombie)),
+            exclusions: Exclusions::new(forbidden),
+            ..ZondConfig::default()
+        };
+
+        let plan = PortScanPlan::build(&cfg, Privilege::Raw);
+
+        assert!(
+            !plan
+                .steps()
+                .iter()
+                .any(|step| matches!(step, PortScanStep::Idle { .. })),
+            "an idle step would probe the excluded zombie"
+        );
+        assert!(
+            !plan.covers(Protocol::Tcp),
+            "and nothing stands in for it by probing the target directly"
+        );
+        let refusal = plan
+            .refusals()
+            .iter()
+            .find(|refusal| refusal.scanner == ScannerKind::Idle)
+            .expect("the refused scan is accounted for");
+        assert!(
+            refusal.reason.contains("192.0.2.9") && refusal.reason.contains("excluded"),
+            "the reason names the zombie and the exclusion: {}",
             refusal.reason
         );
     }
