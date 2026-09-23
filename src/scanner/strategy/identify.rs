@@ -25,17 +25,16 @@
 //!
 //! ## Why neither is a `HostScanner`
 //!
-//! Both implemented [`HostScanner`](super::HostScanner) until September 2026,
-//! and that trait's summary says a strategy which finds which hosts are
-//! reachable. Neither does: every address they are handed came out of the store
-//! because something else already found it.
+//! [`HostScanner`](super::HostScanner)'s summary says a strategy which finds
+//! which hosts are reachable. Neither does: every address they are handed came
+//! out of the store because something else already found it.
 //!
-//! The impl bought a method name and the method name was untrue. Nothing ever
-//! dispatched either of them dynamically -- `Box<dyn HostScanner>` is built in
-//! one place, from the three strategies that really do discovery, and the
-//! `ScannerKind` these two report under is written at the call site rather than
-//! read from `kind()`. So the trait went and the entry point is `probe`, which
-//! is what the documentation here had been calling it all along.
+//! An impl would buy a method name, and the method name would be untrue.
+//! Nothing dispatches either of them dynamically -- `Box<dyn HostScanner>` is
+//! built in one place, from the three strategies that really do discovery, and
+//! the `ScannerKind` these two report under is written at the call site rather
+//! than read from `kind()`. So the entry point is `probe`, which says what each
+//! of them does.
 
 pub mod echo;
 pub mod series;

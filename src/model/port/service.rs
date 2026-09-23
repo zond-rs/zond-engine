@@ -31,9 +31,9 @@ use crate::model::host::os::MAX_CPES_PER_OS;
 /// service's identifiers are derived from a banner, which is text the target
 /// chose and can make as long and as varied as it likes.
 ///
-/// Read from there rather than written again. The two were both a literal 50
-/// under a paragraph asserting they were the same number, which is the one
-/// arrangement in which they can stop being it.
+/// Read from there rather than written again: two literals under a paragraph
+/// asserting they are the same number is the one arrangement in which they can
+/// stop being it.
 pub const MAX_CPES_PER_SERVICE: usize = MAX_CPES_PER_OS;
 
 /// A service identified on a port, and how sure the identification is.
@@ -205,9 +205,9 @@ impl Service {
     pub fn merge(&mut self, other: Service) {
         // Destructured rather than reached through `other.…`, so a field added
         // to this struct is a compile error here and not a value that quietly
-        // stops being folded. The doc above used to name three of the five
-        // details and the body moved all five, which is the same omission one
-        // step earlier.
+        // stops being folded. The doc above names all five details for the
+        // same reason: a doc naming fewer than the body moves is the same
+        // omission one step earlier.
         let Service {
             name,
             confidence,

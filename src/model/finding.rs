@@ -262,10 +262,10 @@ impl FromStr for Version {
     /// reading one from a file substitutes the earliest, least-trusted value
     /// rather than inventing a middle one, which `unwrap_or` says in one line.
     ///
-    /// A [`FromStr`] rather than the inherent `parse` this used to be, because
-    /// every other type in the model that reads itself from text is one, and an
-    /// inherent method of that name invites a reader to expect
-    /// `"1.2.3".parse::<Version>()` to work.
+    /// A [`FromStr`] rather than an inherent `parse`, because every other type
+    /// in the model that reads itself from text is one, and an inherent method
+    /// of that name invites a reader to expect `"1.2.3".parse::<Version>()` to
+    /// work.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         let fail = || VersionParseError {
             input: text.to_string(),
@@ -621,7 +621,7 @@ impl Finding {
     /// references none.
     ///
     /// The lowest rather than the first, and that distinction is load-bearing
-    /// now that references keep the order a detection stated them in. A
+    /// because references keep the order a detection stated them in. A
     /// correlation states its worst first, and which one is worst changes when
     /// the catalogue does — so a claim keyed on the first would rename itself
     /// after a data refresh, and a diff between two scans of an unchanged host
@@ -654,12 +654,12 @@ impl Finding {
     /// and class are what a detection concluded, and the [`DetectionId`] beside
     /// them is the record of which one concluded it. Taking the verdict from
     /// whichever account arrived second while taking the stamp only from a newer
-    /// one put the two out of step: folding a `1.0.0` reading of a claim into a
-    /// `2.0.0` one left a finding that read `2.0.0` and `Low` where `2.0.0` had
-    /// said `Critical`, which is the one thing a provenance stamp exists to make
-    /// impossible. Two reports written by two builds are enough to reach it, and
-    /// the direction that loses is the common one, since the record being folded
-    /// in is usually the older.
+    /// one would put the two out of step: folding a `1.0.0` reading of a claim
+    /// into a `2.0.0` one would leave a finding that read `2.0.0` and `Low` where
+    /// `2.0.0` had said `Critical`, which is the one thing a provenance stamp
+    /// exists to make impossible. Two reports written by two builds are enough
+    /// to reach it, and the direction that loses is the common one, since the
+    /// record being folded in is usually the older.
     ///
     /// So an account at a lower version supplies nothing but what is missing.
     ///
@@ -808,7 +808,8 @@ mod tests {
 
     #[test]
     fn an_empty_title_is_refused() {
-        // A finding that cannot say what it claims is the blob this replaces.
+        // A finding that cannot say what it claims is an opaque blob, which is
+        // what this type exists not to be.
         let err = Finding::new(
             detection(),
             "   ",
@@ -965,15 +966,15 @@ mod tests {
         assert!(refs.contains(&Reference::Cwe(306)));
     }
 
-    /// The direction nothing was checking, and the one a merge usually takes.
+    /// The direction a merge usually takes.
     ///
     /// A record being folded in is normally the older of the two: a journal read
-    /// back into a newer run, or a report written by an earlier build. The
-    /// verdict was taken from whichever account arrived second and the stamp
-    /// only from a newer one, so an older reading landed under a newer version's
-    /// name. The finding then said `2.0.0` produced a `Low`, where `2.0.0` had
-    /// said `Critical` and `1.0.0` had said `Low`, and nothing in the document
-    /// showed which had happened.
+    /// back into a newer run, or a report written by an earlier build. A fold
+    /// taking the verdict from whichever account arrived second and the stamp
+    /// only from a newer one would land an older reading under a newer version's
+    /// name. The finding would then say `2.0.0` produced a `Low`, where `2.0.0`
+    /// had said `Critical` and `1.0.0` had said `Low`, and nothing in the
+    /// document would show which had happened.
     #[test]
     fn an_older_account_does_not_supply_a_newer_versions_verdict() {
         let account = |version: Version, severity: Severity, title: &str| {

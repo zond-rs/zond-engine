@@ -6,13 +6,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The retransmission contract, written before the feature existed.
-//!
-//! Each test here was `#[ignore]`d until the path it covers retransmitted, and
-//! removing that attribute is what "retransmission is done" meant for that path.
-//! Every path now does: SYN port scanning, routed discovery, UDP, and ARP on the
-//! local segment. What is left is a regression suite - these are the cases that
-//! would silently stop being true if the retry policy were retuned carelessly.
+//! The retransmission contract, for every path that retransmits: SYN port
+//! scanning, routed discovery, UDP, and ARP on the local segment. These are the
+//! cases that would silently stop being true if the retry policy were retuned
+//! carelessly.
 //!
 //! # Why this matters more than it looks
 //!
@@ -369,9 +366,9 @@ async fn a_discovered_host_is_not_probed_again() {
 
 /// Every target of a paced sweep is probed, and none of them at once.
 ///
-/// Pacing turned the send loop inside out: probes used to be emitted in full
-/// before the scanner read a single reply, and are now released a batch at a
-/// time from inside the receive loop. Two things could go wrong silently there,
+/// Pacing puts the send loop inside out: probes are not emitted in full before
+/// the scanner reads a single reply, but released a batch at a time from
+/// inside the receive loop. Two things could go wrong silently there,
 /// and both look exactly like an empty network afterwards - the sweep deciding
 /// it is finished before it has sent anything, since the ledger is empty at the
 /// first iteration, and the sweep ending with targets still queued.
@@ -564,9 +561,9 @@ async fn an_empty_address_is_probed_a_bounded_number_of_times() {
 
 /// The all-nodes solicitation is the entire IPv6 half of a sweep: a neighbour
 /// with no address in the scanned IPv4 range is found through this probe and
-/// nothing else. Sending it once left that half of discovery with no redundancy
-/// at all, and it showed on a real segment - the IPv4 hosts came back
-/// identically on every run while the IPv6-only ones came and went.
+/// nothing else. Sent once, it leaves that half of discovery with no redundancy
+/// at all, and that shows on a real segment - the IPv4 hosts come back
+/// identically on every run while the IPv6-only ones come and go.
 #[tokio::test]
 async fn the_all_nodes_solicitation_is_repeated_and_spaced() {
     let lan = FakeLan::new();

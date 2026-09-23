@@ -244,7 +244,7 @@ fn no_example_matches_another_familys_rule() {
 /// A rule claiming to be **measured** must ship the observation it was measured
 /// from.
 ///
-/// This is where the honesty guarantee actually lives, now that the corpus
+/// This is where the honesty guarantee actually lives, since the corpus
 /// mixes two kinds of rule. A published rule is allowed to have no example,
 /// there is no local observation to record, which is precisely what `published`
 /// means, but a rule asserting somebody saw this on real hardware has to say
@@ -381,13 +381,14 @@ fn a_handshake_rule_is_never_satisfied_by_a_reset() {
 ///
 /// A series rule is matched only through `matches_with_series`; against the
 /// single-reply matcher it fails by the ordinary "the peer did not say" rule.
-/// So while `Example` had no series fields, such a rule could ship with an
-/// example that could only ever fail, and the two tests above would report it as
-/// a rule that had stopped matching. `linux.toml` records having reached exactly
-/// that point and declining to write the rule.
+/// So without series fields on `Example`, such a rule could ship only with an
+/// example that can only ever fail, and the two tests above would report it as
+/// a rule that had stopped matching. `linux.toml` notes a rule declined for
+/// exactly that reason.
 ///
-/// The rule here is synthetic because the shipped corpus holds no series rule
-/// yet. That is the point: this is what the first one will be checked by.
+/// The rule here is synthetic because the shipped corpus holds no series rule.
+/// That is the point: this is what a series rule is checked by before one
+/// ships.
 #[test]
 fn a_series_example_is_run_through_the_series_matcher() {
     use super::signature::{MatchRule, Predicate};

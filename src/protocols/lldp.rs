@@ -680,11 +680,11 @@ pub(crate) mod tests {
     /// Chassis and port identifiers are numbered by two different tables, and
     /// the same number means different things in each.
     ///
-    /// This was wrong when it was first written: one table was used for both, so
-    /// a port named `GigabitEthernet1/0/14`, subtype 5 and an interface name,
-    /// was read against the chassis table where 5 is a network address. It
-    /// produced no error and no value, which is how a reader loses the single
-    /// most useful field in the protocol without anybody noticing.
+    /// With one table used for both, a port named `GigabitEthernet1/0/14`,
+    /// subtype 5 and an interface name, would be read against the chassis table
+    /// where 5 is a network address. That produces no error and no value, which
+    /// is how a reader loses the single most useful field in the protocol
+    /// without anybody noticing.
     #[test]
     fn a_subtype_is_read_against_the_table_its_identifier_is_numbered_by() {
         let bytes = frame_of(&[chassis_mac(SWITCH_MAC), port_named("Gi1/0/14")]);
@@ -789,14 +789,13 @@ pub(crate) mod tests {
     /// A truncated capture ends mid-TLV, and what was read before the cut is
     /// kept rather than thrown away with it.
     ///
-    /// This test used to pass without running. Its only assertion sat inside
-    /// `if let Some(advertisement) = parse(&frame)`, and `parse` returned `None`
-    /// for every cut it generated, so the block never executed and the test
-    /// passed for a parser that declined unconditionally. Which is very nearly
-    /// what the parser did: `next_tlv(rest)?` discarded the whole advertisement
-    /// on a short tail, including the chassis and port identifiers the doc
-    /// promises to keep. The floor below is what stops that recurring, because
-    /// a version that declines cannot reach it.
+    /// An assertion inside `if let Some(advertisement) = parse(&frame)` proves
+    /// nothing: with `parse` returning `None` for every cut, the block would
+    /// never execute and the test would pass for a parser that declined
+    /// unconditionally. A walk ending in `next_tlv(rest)?` very nearly is one,
+    /// discarding the whole advertisement on a short tail, including the
+    /// chassis and port identifiers the doc promises to keep. The floor below is
+    /// what catches that, because a version that declines cannot reach it.
     #[test]
     fn a_truncated_advertisement_keeps_the_fields_that_arrived_whole() {
         let bytes = unterminated_frame_of(&[
@@ -923,7 +922,7 @@ pub(crate) mod tests {
     /// record of a kind a unit carries once must not erase the first.
     ///
     /// Assigning unconditionally, a switch that named itself and then repeated
-    /// the chassis TLV badly was reported as no switch at all.
+    /// the chassis TLV badly would be reported as no switch at all.
     #[test]
     fn a_second_unreadable_record_does_not_erase_the_first() {
         let good = chassis_mac(SWITCH_MAC);

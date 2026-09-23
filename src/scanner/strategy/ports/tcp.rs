@@ -84,7 +84,7 @@ use crate::scanner::strategy::icmp_error::{self, Unreachable};
 
 /// What identifies one attempt of a probe on the wire.
 ///
-/// The nonce alone, because the source port no longer varies between attempts -
+/// The nonce alone, because the source port does not vary between attempts -
 /// it identifies the *scan*, and is checked once against every reply rather than
 /// per attempt. A fresh nonce per attempt is what makes a retried probe
 /// measurable at all: TCP itself has to discard round-trip samples from
@@ -374,7 +374,7 @@ impl TcpPortScanner {
     ///
     /// Only a SYN+ACK is read. A reset carries no TCP options at all whatever the
     /// probe offered, and the corpus holds no rule that could be matched against
-    /// one: the single reset feature that looked promising was withdrawn after
+    /// one: the single reset feature that looks promising is not usable, since
     /// the same labelled devices answered two scanners on one segment with
     /// opposite values.
     fn identify_stack(&self, ip: IpAddr, state: PortState, captured: &CapturedSegment) {
@@ -537,8 +537,8 @@ impl TcpPortScanner {
 
     /// Which protocol a host verdict from this scan is credited to.
     ///
-    /// [`StatusProtocol::TcpSyn`] means what it has always meant, so a report
-    /// naming it still describes a half-open connection attempt. Every other
+    /// [`StatusProtocol::TcpSyn`] keeps its one meaning, so a report naming it
+    /// always describes a half-open connection attempt. Every other
     /// technique credits [`StatusProtocol::Tcp`], with the probe that drew the
     /// answer named in the reason's details.
     const fn status_protocol(&self) -> StatusProtocol {
@@ -721,7 +721,7 @@ impl TcpPortScanner {
 
         // The packet that settled it, written down rather than merely acted on.
         // The classification below already knows which reply arrived, it is
-        // what decides the verdict, and until this was recorded a reader had
+        // what decides the verdict, and without this record a reader would have
         // the word `filtered` and no way to learn whether a firewall said so or
         // nothing came back. The two are different findings.
         let port = match port_evidence(state, drawn_by, sender, ip) {
@@ -1235,10 +1235,10 @@ mod tests {
     /// The packet that settled a port is written down, with the hop counter the
     /// header carried.
     ///
-    /// The scanner always knew which reply arrived, it is what decides the
-    /// verdict, and for a long while acted on it and threw it away. A reader
-    /// then had the word `open` and no account of it, and no way at all to tell
-    /// a `filtered` a firewall produced from a `filtered` nothing answered.
+    /// The scanner knows which reply arrived, it is what decides the verdict,
+    /// and one that acted on it and threw it away would leave a reader the word
+    /// `open` and no account of it, and no way at all to tell a `filtered` a
+    /// firewall produced from a `filtered` nothing answered.
     #[test]
     fn an_answered_port_records_the_packet_that_settled_it() {
         let (mut scanner, session, sent) = scanner_with_mock();
@@ -1293,12 +1293,12 @@ mod tests {
     /// A probe this machine would not send leaves the port on the host saying
     /// nothing was established, rather than leaving it off.
     ///
-    /// It once left it off. A link that stops accepting sends refuses every probe
-    /// behind the one that noticed, and the ports went nowhere at all: not
-    /// filtered, not unknown, absent, while the audit counted thousands of failed
-    /// sends beside a host that looked cleanly scanned. That is the shortfall a
-    /// reader cannot see, and it is the same one `resolve_unasked` was written to
-    /// close for the targets still in the queue.
+    /// A link that stops accepting sends refuses every probe behind the one that
+    /// noticed, so ports left off would go nowhere at all: not filtered, not
+    /// unknown, absent, while the audit counted thousands of failed sends beside
+    /// a host that looked cleanly scanned. That is the shortfall a reader cannot
+    /// see, and it is the same one `resolve_unasked` closes for the targets
+    /// still in the queue.
     #[test]
     fn a_probe_the_sender_refused_leaves_the_port_unasked() {
         let (session, ctx) = ScanSession::new();
@@ -1329,8 +1329,9 @@ mod tests {
     }
 
     /// A port nothing answered records the silence, which is an answer of its
-    /// own. Leaving the evidence off gave a verdict no account of itself, and a
-    /// reader could not tell that from a report where the account was dropped.
+    /// own. Leaving the evidence off would give a verdict no account of itself,
+    /// and a reader could not tell that from a report where the account was
+    /// dropped.
     #[test]
     fn an_unanswered_port_records_the_silence() {
         let (mut scanner, session, sent) = scanner_with_mock();
@@ -2166,10 +2167,10 @@ mod tests {
 
     /// **An address this scan never probed is not a host this scan may report.**
     ///
-    /// `write_host` creates the record it is handed, so an unreachable naming a
-    /// destination of the sender's choosing invented a host and filed it down.
-    /// Nothing about the message established that the scan had ever addressed
-    /// that address at all.
+    /// `write_host` creates the record it is handed, so without this check an
+    /// unreachable naming a destination of the sender's choosing would invent a
+    /// host and file it down. Nothing about the message establishes that the
+    /// scan had ever addressed that address at all.
     #[test]
     fn an_unreachable_naming_an_unprobed_address_records_no_host() {
         let (mut scanner, session, _sent) = scanner_for(TcpScanTechnique::Fin);

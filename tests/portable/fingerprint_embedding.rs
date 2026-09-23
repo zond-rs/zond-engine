@@ -9,14 +9,14 @@
 //! What the fingerprinting engine offers somebody embedding it.
 //!
 //! Every test here compiles against the published surface and nothing else,
-//! which is the point: the module documents three extension seams and for a long
-//! while none of them was connected. An analyzer could be written and not
-//! registered, signatures could be authored and not loaded, and rules could be
-//! loaded without any of the checks the build makes. Each of those was invisible
-//! from inside the crate, because the crate's own consumer is the CLI and the
-//! CLI needs none of it.
+//! which is the point: the module documents three extension seams, and any of
+//! them can come apart without the crate noticing. An analyzer written and not
+//! registrable, signatures authored and not loadable, rules loaded without any
+//! of the checks the build makes: each of those is invisible from inside the
+//! crate, because the crate's own consumer is the CLI and the CLI needs none of
+//! it.
 //!
-//! These are here so the next thing that breaks one of them breaks a test.
+//! These are here so anything that breaks one of them breaks a test.
 
 use async_trait::async_trait;
 use zond_engine::fingerprint::os::{
@@ -68,9 +68,9 @@ static HOUSE: &HouseAnalyzer = &HouseAnalyzer;
 
 /// **An analyzer written outside the crate can be run.**
 ///
-/// The trait was published and the registry was a private `static`, so an
-/// embedder could implement the documented extension point and had nowhere to
-/// put the result. Running one beside the built-in set is the whole claim.
+/// A published trait beside a private registry would let an embedder implement
+/// the documented extension point and leave them nowhere to put the result.
+/// Running one beside the built-in set is the whole claim.
 #[tokio::test]
 async fn an_analyzer_of_ones_own_runs_beside_the_built_in_set() {
     let mut set: Vec<&'static dyn Analyzer> = analyzers().to_vec();
@@ -126,10 +126,9 @@ fn definition(name: &str, port: u16, pattern: &str) -> ServiceDefinition {
 
 /// **Signatures authored outside the crate can be loaded and matched.**
 ///
-/// The authoring schema was exported so a consumer would be held to the same
-/// bounds as the shipped corpus, and the constructor that would have taken what
-/// they authored was private, so the export bought the types and not the thing
-/// the types are for.
+/// The authoring schema is exported so a consumer is held to the same bounds as
+/// the shipped corpus, and without a public constructor to take what they
+/// author, the export would buy the types and not the thing the types are for.
 #[test]
 fn signatures_of_ones_own_can_be_loaded_and_matched() {
     let db = SignatureDb::try_from_definitions(vec![definition(
@@ -210,7 +209,7 @@ fn rules_of_ones_own_are_checked_the_way_the_build_checks_them() {
 }
 
 /// A probe over a transport nothing speaks is refused rather than silently
-/// dropped, which is the failure mode the loader used to have.
+/// dropped, which is the failure mode this guards against.
 #[test]
 fn a_probe_over_an_unknown_transport_is_refused_rather_than_dropped() {
     let mut def = definition("odd", 9002, "^X");

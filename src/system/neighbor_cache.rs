@@ -56,9 +56,8 @@ pub struct Neighbor {
     /// one belonging to whichever library read the table, on the reasoning
     /// [`Link`](crate::system::interface::Link) gives: a consumer should not
     /// have to know which crate this came from, any more than they have to know
-    /// which syscall did. This field published `pnet_base::MacAddr` until
-    /// September 2026, which put a pre-1.0 foreign type in the public API of the
-    /// module making that argument.
+    /// which syscall did. A library's own type here would put a pre-1.0 foreign
+    /// type in the public API of the module making that argument.
     ///
     /// `None` for an entry the operating system created but has not completed:
     /// an address it is currently asking about. Those are still worth having:
@@ -376,8 +375,8 @@ mod platform {
         /// **A message shorter than the header it is read through ends the
         /// walk.**
         ///
-        /// It used to panic: the guard refused a length of zero and a length
-        /// past the end of the buffer, and the slice handed to `entry` ran from
+        /// A guard refusing only a length of zero and a length past the end of
+        /// the buffer panics here: the slice handed to `entry` runs from
         /// `offset + size_of::<rt_msghdr>()` to `offset + message_len`, which is
         /// backwards for every length between the two. `rtm_msglen` is the
         /// kernel's and the struct size is the binding's, so they can disagree

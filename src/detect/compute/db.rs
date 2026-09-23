@@ -43,9 +43,9 @@ use super::stage::{self, LoadedDetection};
 
 /// Why a recorded detection run could not be replayed, or how the replay ended.
 ///
-/// Replay used to collapse every one of these into an empty result, so a caller
-/// could not tell a detection that faulted on replay from one that ran clean and
-/// found nothing. Each is now its own answer.
+/// Each is its own answer. Collapsing them into an empty result would leave a
+/// caller unable to tell a detection that faulted on replay from one that ran
+/// clean and found nothing.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ReplayError {

@@ -130,7 +130,7 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 /// tail latency on a scan that is already the slowest thing the engine does. A
 /// probe therefore lives about 3.75 s against an unmeasured host and almost
 /// exactly 3 s against a measured one, in exchange for every port getting a
-/// second chance where it previously got one.
+/// second chance rather than a single one.
 const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     2,
     Duration::from_millis(1_500),
@@ -315,9 +315,9 @@ impl UdpPortScanner {
 /// `tftpd-hpa`, which replied from 54154, 43519 and 34965 on three consecutive
 /// probes; no request form draws a reply from 69 at all.
 ///
-/// Identifying it wants a second way to correlate, not another signature. A
-/// corpus rule for TFTP was written and then removed, because the reply it read
-/// could not reach the matcher.
+/// Identifying it wants a second way to correlate, not another signature: a
+/// corpus rule for TFTP could never fire, because the reply it reads cannot
+/// reach the matcher.
 ///
 /// The capture filter already narrows the UDP half to `src_port`, but that is a
 /// performance boundary rather than a guarantee: a transport can be built with
@@ -475,7 +475,7 @@ impl RawPortScan for UdpPortScanner {
             Some((target, Verdict::Host)) => {
                 // No token: a UDP quotation carries the eight bytes RFC 792
                 // guarantees and a UDP header has no nonce field in them, so the
-                // probe's identity is the key. It now has to name a live one.
+                // probe's identity is the key, and it has to name a live one.
                 self.core.record_host_down(&target, None, reply.source);
             }
             None => {}
@@ -696,8 +696,8 @@ impl PortScanner for UdpPortScanner {
     /// discovered, which is what stops an open TCP port being fingerprinted once
     /// per member.
     ///
-    /// This used to be the trait's no-op, on the grounds that identifying a UDP
-    /// service needs a UDP conversation and the engine had none. It has one now.
+    /// Not the trait's no-op: identifying a UDP service needs a UDP
+    /// conversation, and the engine has one.
     async fn detect_services(&mut self, ctx: &ScanContext) {
         crate::scanner::service::detect(ctx, self.service_detection, Protocol::Udp).await;
     }
@@ -1037,9 +1037,8 @@ mod tests {
         assert!(scanner.core.ledger.is_empty());
     }
 
-    /// The regression guard for the classification bug this scanner shipped
-    /// with: an unreachable message names one port in its quoted datagram, and
-    /// must retire that probe alone. Every other probe to the same host is
+    /// An unreachable message names one port in its quoted datagram, and must
+    /// retire that probe alone. Every other probe to the same host is
     /// still outstanding and must stay that way.
     #[test]
     fn icmp_unreachable_closes_only_the_port_it_quotes() {
@@ -1089,9 +1088,8 @@ mod tests {
     }
 
     /// Host unreachable reports on the address, not on the port that happened to
-    /// be quoted. Recording it as a port verdict - which is what this scanner
-    /// did before liveness had anywhere to go - invents a fact about a port
-    /// nothing ever answered for.
+    /// be quoted. Recording it as a port verdict would invent a fact about a
+    /// port nothing ever answered for.
     #[test]
     fn host_unreachable_is_a_host_verdict_and_not_a_port_one() {
         let (mut scanner, session) = scanner_with_mock();

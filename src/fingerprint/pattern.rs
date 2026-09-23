@@ -300,7 +300,8 @@ mod tests {
     #[test]
     fn backreference_pattern_falls_back_to_the_fancy_engine() {
         // A backreference is unsupported by the linear engine, so this exercises
-        // the fallback path that build.rs used to reject outright.
+        // the fallback path, which build.rs accepts rather than rejecting the
+        // pattern outright.
         let compiled = compile(r"^(\w+)\s+\1$", LIMIT).expect("compiles via fancy");
         assert!(matches!(compiled, CompiledPattern::Fancy(_)));
 

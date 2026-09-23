@@ -298,10 +298,10 @@ impl OnLink {
 /// is a rule about what may reach the store, and that is the *only* control
 /// there is, since unlike every other strategy it cannot narrow what it asks.
 ///
-/// This is the distinction `network roles` §4.4 arrived at from the other
-/// direction: what makes a targeted run targeted is what it may **record**, not
-/// what it may ask. For a listener there is no asking at all, so recording is
-/// where the whole of the scope lives.
+/// This is the distinction a local sweep draws from the other direction: what
+/// makes a targeted run targeted is what it may **record**, not what it may
+/// ask. For a listener there is no asking at all, so recording is where the
+/// whole of the scope lives.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub enum Recording {
@@ -343,7 +343,7 @@ pub enum Recording {
 /// port places untagged traffic in, and an address the device is managed at,
 /// and a listener does exactly the same thing with all four answers. Reading
 /// both into one shape here is what keeps [`read_announcement`] from being one
-/// routine written twice, which is what it was.
+/// routine written twice.
 ///
 /// [`read_announcement`]: PassiveListener::read_announcement
 struct Announced<'a> {
@@ -908,9 +908,9 @@ impl PassiveListener {
     ///
     /// It is also the only such proof available on an IPv4-only segment. ARP has
     /// no equivalent of a neighbour advertisement's R flag and none of a router
-    /// advertisement, which left this engine reading its own routing table:
-    /// finding this machine's own gateway and missing the second router on the
-    /// same wire.
+    /// advertisement, which without this would leave the engine only its own
+    /// routing table to read: finding this machine's own gateway and missing the
+    /// second router on the same wire.
     ///
     /// # It names a MAC, not an address
     ///
@@ -1193,10 +1193,9 @@ impl PassiveListener {
         // **The record is keyed by the machine, not by the address.** A device
         // answers at every address it holds, a v4 address, a global v6 address
         // or three, a link-local, and each arrives on its own frame. Keyed by
-        // whichever address that frame carried, one machine becomes four
-        // records, which is the failure `Host` is shaped to avoid and which
-        // this had until the first run against a real segment showed a laptop
-        // reported as four hosts and a router as two.
+        // whichever address that frame carried, one machine would become four
+        // records, which is the failure `Host` is shaped to avoid: on a real
+        // segment, a laptop reported as four hosts and a router as two.
         //
         // The first address the machine was seen at keys it, and every later
         // one joins that record through [`Host::merge`], which ranks the
@@ -1459,7 +1458,7 @@ mod tests {
 
     /// The only control a listener has. It cannot narrow what it hears, so a
     /// caller who wants a bounded record gets it at the point findings are
-    /// written, which is where `network roles` §4.4 put the same rule.
+    /// written, which is where a local sweep enforces the same rule.
     #[test]
     fn a_recording_filter_keeps_out_what_the_link_carries_anyway() {
         let mut wanted = IpSet::new();
@@ -1630,9 +1629,9 @@ mod tests {
     /// shows that machine putting a packet on the segment it did not originate.
     /// It is the only proof of the role available on an IPv4-only segment: ARP
     /// has no equivalent of a neighbour advertisement's R flag and none of a
-    /// router advertisement, which left the engine reading its own routing table:
-    /// finding this machine's own gateway and missing the second router on the
-    /// same wire.
+    /// router advertisement, which without this would leave the engine only its
+    /// own routing table to read: finding this machine's own gateway and
+    /// missing the second router on the same wire.
     #[test]
     fn a_machine_that_forwards_somebody_elses_packet_is_a_router() {
         use crate::protocols::tcp::flags;
@@ -1872,11 +1871,10 @@ mod tests {
 
     /// A device answering at four addresses is one device.
     ///
-    /// Found on the first run against a real segment: this laptop was reported
-    /// as four hosts and the router as two, because each address arrived on its
-    /// own frame and each frame made its own record. `discover` has always keyed
-    /// by the machine; this had been keying by whichever address the frame in
-    /// hand happened to carry.
+    /// Keyed by whichever address the frame in hand happens to carry, a laptop
+    /// on a real segment would be reported as four hosts and its router as two,
+    /// because each address arrives on its own frame and each frame would make
+    /// its own record. `discover` keys by the machine, and so does this.
     #[test]
     fn one_machine_answering_at_several_addresses_is_one_host() {
         use crate::protocols::tcp::flags;
@@ -1888,7 +1886,7 @@ mod tests {
 
         // The same machine answering at two of its addresses, on two frames,
         // which is the only way a listener ever sees it, and the shape that
-        // used to produce two records.
+        // keying by address would turn into two records.
         let first = Ipv4Addr::new(198, 51, 100, 5);
         let second = Ipv4Addr::new(198, 51, 100, 6);
 

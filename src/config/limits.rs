@@ -71,9 +71,9 @@ pub const CONNECT_CONCURRENCY: usize = 50;
 /// It does not raise what a scan opens at once. [`CONNECT_CONCURRENCY`] is still
 /// the ceiling on sockets in flight, held by the gate the detection phase
 /// acquires a probe through, so this changes how that budget is spent rather
-/// than how large it is: a scan of one host with four web ports stops queueing
-/// its work one deep, and a scan of two hundred does the same total work it did
-/// before.
+/// than how large it is: it keeps a scan of one host with four web ports from
+/// queueing its work one deep, and leaves a scan of two hundred doing the same
+/// total work it would one flow at a time.
 pub const DETECTION_FLOW_CONCURRENCY: usize = 8;
 
 /// How many connect probes the unprivileged discovery sweep keeps in flight.

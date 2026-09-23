@@ -540,13 +540,13 @@ fn compile_regex(pattern: &str) -> Option<::regex::Regex> {
 /// contracts cannot survive.
 ///
 /// `Engine::new` ships a standard library the capability model does not account
-/// for: `sleep` parks the thread doing no work, so it spends no fuel and, until
-/// the deadline callback lands, escaped the wall-clock bound too; `timestamp`
-/// reads the real clock, which the injected [`now`](Capabilities::now) exists to
-/// keep a module away from so a run replays identically; and `eval` re-parses a
-/// string at run, turning response text a module interpolates into executed
-/// source. None is a capability verb, so a module loses nothing it was meant to
-/// hold.
+/// for: `sleep` parks the thread doing no work, so it spends no fuel and holds
+/// the thread past the wall-clock bound, which is checked only between
+/// operations; `timestamp` reads the real clock, which the injected
+/// [`now`](Capabilities::now) exists to keep a module away from so a run
+/// replays identically; and `eval` re-parses a string at run, turning response
+/// text a module interpolates into executed source. None is a capability verb,
+/// so a module loses nothing it was meant to hold.
 ///
 /// `eval` is a keyword, so disabling the symbol refuses a module that names it at
 /// compile. `sleep` and `timestamp` are ordinary library functions, which the
@@ -564,14 +564,14 @@ fn compile_regex(pattern: &str) -> Option<::regex::Regex> {
 /// by a path the host injected nothing for, which is the one thing the capability
 /// argument in [`detect`](crate::detect) says cannot happen.
 ///
-/// It was previously believed the stock resolver was rhai's
-/// `DummyModuleResolver`, on the evidence that `import "secrets" as s` failed
-/// with `Module not found`. It does, because no `./secrets.rhai` exists, which
-/// is what `FileModuleResolver` says about a path it cannot open. A probe
-/// naming a file that *does* exist loads and runs it, under a `passive` grant
-/// holding no verbs at all. `a_module_cannot_import_a_file_that_exists` is that
-/// probe, and it names a real file for exactly this reason: one naming an
-/// absent path passes either way and proves nothing.
+/// The stock resolver is easy to mistake for rhai's `DummyModuleResolver`:
+/// `import "secrets" as s` fails with `Module not found`, but only because no
+/// `./secrets.rhai` exists, which is what `FileModuleResolver` says about a
+/// path it cannot open. A probe naming a file that *does* exist loads and runs
+/// it, under a `passive` grant holding no verbs at all.
+/// `a_module_cannot_import_a_file_that_exists` is that probe, and it names a
+/// real file for exactly this reason: one naming an absent path passes either
+/// way and proves nothing.
 ///
 /// So the resolver is replaced rather than configured. `DummyModuleResolver`
 /// refuses every import, which is right for a module body: a detection is one
@@ -1264,14 +1264,13 @@ mod tests {
     ///
     /// An import of an absent path fails whichever resolver is installed, so a
     /// test written that way passes against `FileModuleResolver` and proves
-    /// nothing, which is how the stock resolver was read as inert for as long
-    /// as it was. This one writes a module to disk first and imports it by
-    /// absolute path, so the only thing that can refuse it is the resolver
-    /// [`harden`] installs.
+    /// nothing, which makes the stock resolver look inert. This one writes a
+    /// module to disk first and imports it by absolute path, so the only thing
+    /// that can refuse it is the resolver [`harden`] installs.
     ///
     /// The grant is `passive` with no verbs: the class whose whole security
-    /// property is that the network verb is absent rather than refused. It read
-    /// and ran a file anyway, before this was fixed.
+    /// property is that the network verb is absent rather than refused. Under
+    /// the stock resolver it reads and runs the file anyway.
     #[test]
     fn a_module_cannot_import_a_file_that_exists() {
         let dir = std::env::temp_dir().join(format!("zond-rhai-import-{}", std::process::id()));
@@ -1353,11 +1352,11 @@ mod tests {
     /// A run installed on one thread is not reachable from another.
     ///
     /// The property the erased lifetime rests on across a thread boundary, and
-    /// the one the SAFETY note used to leave implicit: `Capabilities` is `Send`,
-    /// so the borrow *could* travel, and what stops the pointer being observed
-    /// elsewhere is that `ACTIVE_CAPS` is a `thread_local!` rather than a
-    /// static. A spawned thread sees no run, and installs its own without being
-    /// refused — correctly, since it had to produce its own borrow to get here.
+    /// the first `ActiveRun::new` names: `Capabilities` is `Send`, so the borrow
+    /// *could* travel, and what stops the pointer being observed elsewhere is
+    /// that `ACTIVE_CAPS` is a `thread_local!` rather than a static. A spawned
+    /// thread sees no run, and installs its own without being refused —
+    /// correctly, since it had to produce its own borrow to get here.
     #[test]
     fn a_run_is_not_reachable_from_another_thread() {
         let mut caps = RecordedCaps::new(Vec::new());

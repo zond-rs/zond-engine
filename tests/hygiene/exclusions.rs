@@ -16,21 +16,21 @@
 //! | no probe is *addressed* to an excluded address | `withhold` / `withhold_targets`, before anything is opened; `ScanContext::may_probe`, for an address a strategy learns while it runs |
 //! | no excluded address appears in the report | `ScanContext::write_host`, on every finding |
 //!
-//! Both were broken, within two targets of each other, by paths added after the
-//! module was written and unknown to it:
+//! Either is broken by a path added after the module was written and unknown
+//! to it, and two such paths show how:
 //!
-//! - **The resume path.** `restore_hosts` wrote hosts into the store through
-//!   neither gate. A scan interrupted before an exclusion was added brought the
-//!   forbidden addresses back with it.
-//! - **The neighbour table.** `seed_from_neighbor_table` took candidates from
-//!   the host's own neighbour table into the target set *after* withholding. A
-//!   swept segment sent a unicast solicitation to an address somebody had been
-//!   told would not be probed — and because the recording gate still dropped
-//!   the finding, the report stayed clean and the packet was invisible.
+//! - **The resume path.** `restore_hosts` writes hosts into the store. Through
+//!   neither gate, a scan interrupted before an exclusion was added would bring
+//!   the forbidden addresses back with it.
+//! - **The neighbour table.** `seed_from_neighbor_table` takes candidates from
+//!   the host's own neighbour table into the target set. Taken in *after*
+//!   withholding, a swept segment would send a unicast solicitation to an
+//!   address somebody had been told would not be probed — and because the
+//!   recording gate still drops the finding, the report would stay clean and
+//!   the packet invisible.
 //!
-//! Before those fixes, `exclusions.excludes()` was called in **one** production
-//! place in the whole crate. The rule lived in one module and was kept by every
-//! caller remembering it.
+//! Left to itself, the rule lives in one module and is kept by every caller
+//! remembering it.
 //!
 //! ## Why a census here, and an invariant in the portable tier
 //!
@@ -45,8 +45,8 @@
 //! new one fails the test until somebody writes that line. This module is that
 //! census.
 //!
-//! **The sending promise is not.** The neighbour-table path did not go near the
-//! store; it put an address into a target set, and there is no honest grep for
+//! **The sending promise is not.** The neighbour-table path does not go near the
+//! store; it puts an address into a target set, and there is no honest grep for
 //! "this address will be probed". So it gets the stronger thing instead: an
 //! invariant over what a plan actually contains, which has to build a plan
 //! through the library and so lives in `tests/portable/exclusions.rs`.

@@ -110,10 +110,10 @@ pub(super) const NDP_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 ///
 /// It is one packet standing in for the entire IPv6 half of a sweep: every
 /// neighbour that has no address in the scanned IPv4 range is found through this
-/// and nothing else. Sending it once made IPv6 discovery the only part of the
-/// engine with no retransmission at all, and it showed - the IPv4 hosts of a
-/// segment came back identically on every run while the IPv6-only ones came and
-/// went.
+/// and nothing else. Sent once, it would make IPv6 discovery the only part of
+/// the engine with no retransmission at all, and that shows: measured with a
+/// single solicitation, the IPv4 hosts of a segment came back identically on
+/// every run while the IPv6-only ones came and went.
 pub(super) const SOLICITATION_ATTEMPTS: u8 = 3;
 
 /// How long to leave between solicitations.
@@ -128,11 +128,11 @@ pub(super) const SOLICITATION_INTERVAL: Duration = Duration::from_millis(600);
 /// 0.9 and 1.9 seconds after the request, varying by a second between runs for
 /// the same host.
 ///
-/// That figure was taken while the sweep was still broadcasting at full rate,
-/// so part of it is congestion rather than the neighbour. It stands until the
-/// echo's own timing says otherwise, which is now recorded rather than
-/// guessed at, since a reply names the request it answers. Erring long costs
-/// the tail of a sweep; erring short discards a host that did answer.
+/// That figure was taken with the sweep broadcasting at full rate, so part of
+/// it may be congestion rather than the neighbour. The echo's own timing is
+/// recorded rather than guessed at, since a reply names the request it
+/// answers, and it is what would confirm or correct the figure. Erring long
+/// costs the tail of a sweep; erring short discards a host that did answer.
 pub(super) const SOLICITATION_WINDOW: Duration = Duration::from_millis(1_500);
 
 /// The all-nodes solicitation's schedule: which requests have gone out and
@@ -279,17 +279,18 @@ pub(super) struct Ipv6Discovery {
     /// up on an address nobody has answered for. A confirmation asks a different
     /// question: the host is already known to be there, so the only thing at
     /// stake is the measurement, and a retry destroys exactly that. Measured on a
-    /// live segment, that is what happened to every neighbour on wifi: the retry
-    /// timer, sized from ARP replies arriving in single-digit milliseconds, fired
-    /// long before a sleeping device got round to answering.
+    /// live segment, that is what a retry does to every neighbour on wifi: the
+    /// retry timer, sized from ARP replies arriving in single-digit
+    /// milliseconds, fires long before a sleeping device gets round to
+    /// answering.
     confirmed_at: HashMap<IpAddr, Instant>,
     /// When each address was *first* asked about.
     ///
     /// Diagnostic only, and kept because the number it yields is the one thing
     /// that cannot be reasoned out from the outside: how long a neighbour
     /// actually takes to answer. Everything about pacing solicitation depends on
-    /// it, and three rounds of inference from host counts got it wrong before a
-    /// packet capture settled it.
+    /// it, and inference from host counts is no substitute: only a direct
+    /// measurement, such as a packet capture, settles it.
     first_asked_at: HashMap<IpAddr, Instant>,
 }
 

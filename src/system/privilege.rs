@@ -286,7 +286,7 @@ mod tests {
     /// The two questions are asked separately because they have different
     /// answers, and root is the case where they agree. A run that is root must
     /// see both `true`; a run that is not may still hold the capability, which
-    /// is the whole reason `current` no longer asks about the uid.
+    /// is the whole reason `current` does not ask about the uid.
     #[test]
     fn being_root_answers_both_questions_the_same_way() {
         if is_elevated() {

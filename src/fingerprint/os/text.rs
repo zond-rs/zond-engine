@@ -22,7 +22,7 @@
 //! source sits below a stack reading, which is the machine answering for itself,
 //! and why the two agreeing is worth more than either.
 //!
-//! ## Where it is joined up, and where it is not yet
+//! ## Where it is joined up
 //!
 //! A rule matches the text it was written against, and that is not always the
 //! whole banner. The imported SSH rules match a version string as it arrives, so
@@ -32,20 +32,20 @@
 //! extracted header rather than the banner.
 //!
 //! Extraction is [`HttpHeadersAnalyzer`](crate::fingerprint::HttpHeadersAnalyzer)'s
-//! job and it already does it for service identification; running the extracted
-//! value back through the signature set for *operating-system* metadata is not
-//! wired up. So this source reaches SSH and the other line-oriented protocols
-//! today, and the largest single family of OS-bearing rules in the corpus, the
-//! web servers, is still on the other side of that seam.
+//! job, and it runs the extracted value back through the signature set for
+//! *operating-system* metadata as well as for service identification. So SSH
+//! and the other line-oriented protocols reach this source directly, and the
+//! largest single family of OS-bearing rules in the corpus, the web servers,
+//! reaches it through that analyzer.
 //!
 //! ## It costs nothing, which is the point
 //!
 //! Over half the shipped signature corpus, 2442 of 4732 rules, already carries
 //! `os.*` metadata, matched against text the service pipeline already collects
 //! from ports it has already opened. No probe here is new. The work is entirely
-//! in *not throwing the metadata away*, which is what the runtime did before this
-//! module existed: [`Signature`](crate::fingerprinting) kept a rule's service,
-//! product, vendor and version, and dropped everything else on the floor.
+//! in *not throwing the metadata away*: a [`Signature`](crate::fingerprinting)
+//! keeping only a rule's service, product, vendor and version would drop
+//! everything else on the floor.
 //!
 //! ## Templates
 //!
@@ -102,9 +102,9 @@ pub struct OsMetadata {
     /// Not a finer [`version`](Self::version), and not a competitor to it. A
     /// distribution release and the kernel it ships are two facts about one
     /// machine: Debian 12 runs kernel 6.1, and neither number is a better answer
-    /// than the other. Filing the kernel as a version made an SSH banner naming
-    /// `12` and an SNMP agent naming `6.1.0` look like a contradiction, and a
-    /// host that had told this engine both was reported as neither.
+    /// than the other. Filing the kernel as a version would make an SSH banner
+    /// naming `12` and an SNMP agent naming `6.1.0` look like a contradiction,
+    /// and a host that told this engine both would be reported as neither.
     ///
     /// Read from the `os.kernel` key, which is this engine's own: the imported
     /// corpus has no notion of it and puts a kernel in `os.version` where it
@@ -117,8 +117,8 @@ pub struct OsMetadata {
     /// A fact about the machine rather than a finer
     /// [`version`](Self::version), and one an SNMP agent hands over for nothing:
     /// `sysDescr` on a Unix host is `uname -a`, which ends with the machine
-    /// type. A hundred and seventy shipped rules that fire today carried one and
-    /// nothing read it until this field existed.
+    /// type. A hundred and seventy shipped rules that fire carry one, and
+    /// without this field nothing reads it.
     pub arch: Option<String>,
     /// What kind of box the rule says this is: `Printer`, `Switch`, `Router`.
     ///
@@ -252,10 +252,9 @@ fn fill_siblings(template: &str, siblings: &[(&str, Option<&str>)]) -> Option<St
 /// Read from the same metadata map [`OsMetadata::from_map`] reads, and kept
 /// apart from it because the two answer different questions about one machine: a
 /// NETGEAR ReadyNAS runs Linux, and neither half is the other. Five hundred and
-/// thirty-six shipped rules that match today name hardware and no operating
-/// system, and every one of them produced nothing at all until this existed,
-/// because a metadata map naming neither an OS family nor an OS product is
-/// dropped whole.
+/// thirty-six shipped rules that match name hardware and no operating system,
+/// and without this every one of them produces nothing at all, because a
+/// metadata map naming neither an OS family nor an OS product is dropped whole.
 ///
 /// Templates resolve against what the pattern captured, exactly as the operating
 /// system's do, so a rule reading a model out of its own match works here too.
@@ -336,8 +335,8 @@ pub fn hardware_from(
 /// it as a family puts `NC-8700w` on the ballot [`resolve`](super::resolve)
 /// settles by vote, where it can only run against real families. Measured, on a
 /// Brother print server: `NC-8700w` at 0.385 against `Network device` at 0.4
-/// left 25%, under the floor, and a host that had answered three separate
-/// probes was reported as unidentified. Those 389 rules state no family, keep
+/// leaves 25%, under the floor, and a host that answered three separate probes
+/// would be reported as unidentified. Those 389 rules state no family, keep
 /// their model in `product` and their class in `device`, and abstain.
 pub fn evidence_from(
     metadata: &OsMetadata,
@@ -721,7 +720,7 @@ mod tests {
     }
 
     /// Except where a device class says the product is a model number. 389 rules
-    /// are written that way, and reading `NC-8700w` as a family is what set a
+    /// are written that way, and reading `NC-8700w` as a family would set a
     /// printer's model against the class of box a hop counter had established.
     #[test]
     fn a_model_number_never_stands_in_for_a_family() {
@@ -887,11 +886,11 @@ mod against_the_shipped_corpus {
     /// A banner naming a release must yield that release.
     ///
     /// Both of these are strings read off a real host on 2026-08-21, exactly as
-    /// they arrive on the wire. The first is the case that was broken: the
-    /// corpus held a rule mapping it to Debian 12 with a CPE and the engine
-    /// reported `Linux`, since the corpus anchors its patterns on the SSH
-    /// software identifier while the whole identification line was being matched
-    /// instead, so only a loose family rule could fire.
+    /// they arrive on the wire. The first is the case that depends on matching
+    /// the right text: the corpus holds a rule mapping it to Debian 12 with a
+    /// CPE, and anchors its patterns on the SSH software identifier, so matching
+    /// the whole identification line instead lets only a loose family rule fire,
+    /// and the engine would report `Linux`.
     ///
     /// The second names no release yet, and that is the corpus being short
     /// rather than the matcher being broken: it holds no OpenSSH 10 rule. It is
@@ -994,8 +993,8 @@ mod against_the_shipped_corpus {
 
     /// The instruction set a `uname`-derived `sysDescr` ends with.
     ///
-    /// 255 shipped rules carry `os.arch` and every one of them dropped it before
-    /// the field existed. It is a third axis beside what a machine runs and what
+    /// 255 shipped rules carry `os.arch`, and without the field every one of
+    /// them drops it. It is a third axis beside what a machine runs and what
     /// it is: a FreeBSD release and `amd64` are two facts, and an exploit that
     /// needs a payload built for the target cares about the second.
     #[test]
@@ -1024,10 +1023,10 @@ mod against_the_shipped_corpus {
     /// agent answered. The rule for it carries a vendor, a model, a firmware and
     /// a device class, and no family, since the box never said what it runs.
     ///
-    /// Every field here was on the wire and none of it reached a report: the
-    /// model was read as the *family*, put on the ballot against the `Network
-    /// device` a hop counter of 255 had already established, and the two
-    /// annihilated. What this asserts is that the reading survives to be
+    /// Every field here is on the wire, and none of it would reach a report
+    /// with the model read as the *family*: put on the ballot against the
+    /// `Network device` a hop counter of 255 has already established, the two
+    /// annihilate. What this asserts is that the reading survives to be
     /// reported, with the model under `product` where it belongs and the class
     /// on its own axis.
     #[test]
@@ -1147,9 +1146,9 @@ mod against_the_shipped_corpus {
     /// database, produce an operating system.
     ///
     /// Each of these is a string a host genuinely sends. If the imported
-    /// metadata stopped reaching the matcher, which is the state this module was
-    /// written to end, every one would come back naming nothing and no other test
-    /// in the tree would notice.
+    /// metadata stopped reaching the matcher, which is the state this module
+    /// exists to prevent, every one would come back naming nothing and no other
+    /// test in the tree would notice.
     #[test]
     fn real_banners_name_an_operating_system_through_the_shipped_signatures() {
         let db = SignatureDb::global();
@@ -1157,16 +1156,16 @@ mod against_the_shipped_corpus {
         // not always the whole banner: the imported HTTP rules match a `Server`
         // header *value* (`^Microsoft-IIS/...$`, anchored both ends), so feeding
         // them a full response can never match. Extracting that value is
-        // `HttpHeadersAnalyzer`'s job and is where this evidence has to be joined
-        // up for HTTP; see the note in the module docs.
+        // `HttpHeadersAnalyzer`'s job and is where this evidence is joined up
+        // for HTTP; see the note in the module docs.
         let cases = [
             (22u16, "SSH-2.0-OpenSSH_9.6p1 Debian-3"),
             (80, "Microsoft-IIS/4.0"),
         ];
         // Matched the way the analyzer matches them, which for a structured
         // banner is against the field the corpus anchors on as well as the whole
-        // line. Feeding only the line is what this test used to do, and it is
-        // why it passed while every release-naming SSH rule was unreachable.
+        // line. Feeding only the line would let this test pass while every
+        // release-naming SSH rule is unreachable.
 
         let mut named = 0usize;
         for (port, banner) in cases {

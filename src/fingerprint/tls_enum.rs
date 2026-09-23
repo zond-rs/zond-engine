@@ -66,8 +66,8 @@
 //! within one exchange of it, keeps what was found, and is *named in the report
 //! as having been left early*, which a walk stopped by a count is not.
 //! [`MAX_OFFERS_PER_VERSION`] is set at the registry's own size and so bounds
-//! only a defect in the loop; see its documentation for the ceiling that used
-//! to sit below the registry and what that cost.
+//! only a defect in the loop; see its documentation for what any ceiling below
+//! the registry would cost.
 
 use std::net::SocketAddr;
 use std::sync::OnceLock;
@@ -92,16 +92,16 @@ use crate::{info, warn};
 /// questions than the version had suites to begin with. This is that number,
 /// for the version carrying the most of them.
 ///
-/// **It was 24, and 24 was too low to be a safety net.** The figure was
-/// described as "well past any configuration anyone has chosen on purpose", but
-/// TLS 1.2 offers 80 suites and a stock OpenSSL `DEFAULT` list accepts far more
-/// than 24 of them. So the ceiling was reached by ordinary servers rather than
-/// pathological ones, and reaching it ended the walk silently: the report then
-/// named the suites found before the cut and said nothing about the ones never
-/// asked for. Because the walk removes each suite as the *server* selects it,
-/// what the cut dropped was the tail of the server's own preference order,
-/// which is where a legacy configuration keeps RC4, the export ciphers and the
-/// anonymous key exchanges — the findings the enumeration exists to produce.
+/// **A ceiling below the registry is not a safety net.** One that sounds
+/// generous, two dozen say, is reached by ordinary servers rather than
+/// pathological ones: TLS 1.2 offers 80 suites and a stock OpenSSL `DEFAULT`
+/// list accepts far more than 24 of them. Reaching it ends the walk silently:
+/// the report names the suites found before the cut and says nothing about the
+/// ones never asked for. Because the walk removes each suite as the *server*
+/// selects it, what a cut drops is the tail of the server's own preference
+/// order, which is where a legacy configuration keeps RC4, the export ciphers
+/// and the anonymous key exchanges — the findings the enumeration exists to
+/// produce.
 ///
 /// A ceiling at the registry's own size cannot do that. It bounds the walk
 /// against a defect in the loop below and against nothing else, since a peer
@@ -844,8 +844,8 @@ mod tests {
     }
 
     /// A deprecated version is found and named, which is the whole point: this
-    /// is the configuration rustls cannot ask about, so before this pass it was
-    /// invisible.
+    /// is the configuration rustls cannot ask about, so without this pass it
+    /// would be invisible.
     #[tokio::test]
     async fn a_server_still_speaking_tls_10_is_reported_as_such() {
         let (addr, _) = FakeTlsServer::new(0x0301, [0x002F, 0x000A]).spawn().await;
@@ -944,14 +944,14 @@ mod tests {
         assert_eq!(support.suites().len(), 1);
     }
 
-    /// **The defect a ceiling of 24 hid.**
+    /// **The defect a ceiling below the registry hides.**
     ///
     /// A server accepting every suite its version can express is enumerated
-    /// completely. Before this, the walk stopped after 24 offers and the report
-    /// named 24 of the 80 suites without saying it had stopped — and because
-    /// the walk removes each suite as the *server* picks it, the 56 it never
-    /// asked about were the tail of that server's own preference order, which
-    /// is where RC4, the export ciphers and the anonymous exchanges live.
+    /// completely. A walk stopped after 24 offers would name 24 of the 80
+    /// suites without saying it had stopped — and because the walk removes each
+    /// suite as the *server* picks it, the 56 it never asked about would be the
+    /// tail of that server's own preference order, which is where RC4, the
+    /// export ciphers and the anonymous exchanges live.
     #[tokio::test]
     async fn a_server_accepting_everything_is_enumerated_to_the_end() {
         let every: Vec<u16> = CipherSuite::offered_under(TlsVersion::Tls12)
@@ -1098,7 +1098,7 @@ mod tests {
     /// The ceiling may never sit below the registry it bounds.
     ///
     /// The whole of the defect above in one assertion: a suite added to
-    /// `CipherSuite::ALL` must not silently reintroduce a truncating walk.
+    /// `CipherSuite::ALL` must not silently leave the walk truncating.
     #[test]
     fn the_offer_ceiling_is_never_below_what_a_version_can_offer() {
         for version in TlsVersion::ALL {
@@ -1156,11 +1156,11 @@ mod tests {
         }
     }
 
-    /// The same defect from the scan's side: a peer that hangs up part way
-    /// through its ServerHello hands `first_record` a partial buffer, whose
-    /// comment already assumed "the parser refuses anything short of one". It
-    /// does now. Before, a truncated 1.3 hello was read as a 1.2 one, and an
-    /// endpoint speaking only 1.3 was reported as accepting nothing at all.
+    /// A hello cut short, from the scan's side: a peer that hangs up part way
+    /// through its ServerHello hands `first_record` a partial buffer, and the
+    /// parser refuses anything short of a whole hello. Read as it stands, a
+    /// truncated 1.3 hello would pass for a 1.2 one, and an endpoint speaking
+    /// only 1.3 would be reported as accepting nothing at all.
     #[tokio::test]
     async fn a_peer_that_hangs_up_mid_hello_settles_nothing() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");

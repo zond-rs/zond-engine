@@ -126,9 +126,9 @@ impl RttWindow {
     /// own bounds: it is the one of the two imposed rather than chosen, and a
     /// pair that has been configured into disagreeing should still describe a
     /// real range. `Duration::clamp` asserts instead, and this is public API
-    /// taking two adjacent arguments of one type, so the mistake reached a live
-    /// scan and took the caller's process with it on the first host that
-    /// answered.
+    /// taking two adjacent arguments of one type, so an assertion would let the
+    /// mistake reach a live scan and take the caller's process with it on the
+    /// first host that answered.
     pub fn suggest_timeout(&self, multiplier: f64, floor: Duration, ceiling: Duration) -> Duration {
         let Some(mean) = self.mean() else {
             return floor;
@@ -216,10 +216,10 @@ mod tests {
     }
 
     /// `floor` and `ceiling` are adjacent arguments of one type, so a caller
-    /// can cross them and the compiler cannot say. `Duration::clamp` asserted
-    /// `min <= max`, which made that mistake a panic in the caller's process,
-    /// and one that waited for the first sample: a scan opened its sockets,
-    /// sent its probes and died on the first host that answered.
+    /// can cross them and the compiler cannot say. `Duration::clamp` asserts
+    /// `min <= max`, which would make that mistake a panic in the caller's
+    /// process, and one that waits for the first sample: a scan would open its
+    /// sockets, send its probes and die on the first host that answered.
     #[test]
     fn a_ceiling_below_the_floor_yields_the_floor_rather_than_panicking() {
         let mut window = RttWindow::new(5);
@@ -236,8 +236,9 @@ mod tests {
         );
     }
 
-    /// The empty window took the early return and never reached the clamp,
-    /// which is exactly why the panic was invisible until a scan was underway.
+    /// The empty window takes the early return and never reaches the clamp,
+    /// which is exactly why a panic in the clamp would stay invisible until a
+    /// scan was underway.
     #[test]
     fn crossed_bounds_are_survivable_before_any_sample_too() {
         let window = RttWindow::new(5);

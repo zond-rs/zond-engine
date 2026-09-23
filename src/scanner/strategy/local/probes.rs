@@ -147,8 +147,7 @@ impl Iterator for Interleave {
 /// is built from it, so an unbounded expansion is not reachable through the
 /// scan path. That happens in two places, because a range reaches this function
 /// by two routes: `map_ips_to_interfaces` refuses an off-link one, and
-/// `DiscoveryPlan::build` withholds an on-link one. The second used not to
-/// exist, and this comment claimed it did.
+/// `DiscoveryPlan::build` withholds an on-link one.
 fn build_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> PacketIter {
     let local_mac = *local_mac;
     let src_addr = *src_addr;

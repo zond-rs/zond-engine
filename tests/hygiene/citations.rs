@@ -9,24 +9,24 @@
 //! # Every cited file exists
 //!
 //! This crate's commenting style rests on a reader being able to find the
-//! reasoning. A citation is a promise that the reasoning is somewhere, and by
-//! 2026-08 twenty of them pointed at four files that were not in the repository:
-//! two deleted with the references left behind, two never tracked at all.
+//! reasoning. A citation is a promise that the reasoning is somewhere, and a
+//! citation of a file that is not in the repository, deleted with the
+//! references left behind or never tracked at all, reads exactly like one that
+//! is.
 //!
 //! An unkeepable citation is worse than none, because a reader spends time
-//! looking. This is the check that stops the next one.
+//! looking. This is the check that stops one being kept.
 //!
 //! ## What counts
 //!
 //! A backticked path carrying a directory and ending in `.md` or `.rs`. That
-//! covers both kinds this repository has lost: documents deleted with the
+//! covers both kinds a citation goes stale as: documents deleted with the
 //! references left behind, and source files cited as the evidence for a number.
 //!
-//! The second kind arrived on 2026-08-30, when `benches/` was removed and
-//! thirteen doc comments went on pointing at the instruments that had measured
-//! their constants. The numbers were kept and the pointers dropped, which is the
-//! right trade, and this check is what makes the next one fail loudly rather
-//! than rot quietly.
+//! The second kind appears whenever an instrument that measured a constant is
+//! removed and the doc comment goes on pointing at it. Keeping the number and
+//! dropping the pointer is the right trade, and this check is what makes a
+//! pointer left behind fail loudly rather than rot quietly.
 //!
 //! Two things are deliberately out of scope. A URL is somebody else's promise
 //! and cannot be checked from here. A path inside a fenced code block or a

@@ -151,10 +151,9 @@ impl fmt::Display for Zone {
 
 /// An IP address, carrying the interface it is valid on when it needs one.
 ///
-/// No [`Default`]. There is no address that means "no address", and the one
-/// this used to answer with was `::`, which is a perfectly good key for a host
-/// record and names nothing. It had no caller anywhere in the crate, its tests
-/// or its examples; what it had was a way to be wrong quietly.
+/// No [`Default`]. There is no address that means "no address": the obvious
+/// candidate, `::`, is a perfectly good key for a host record and names
+/// nothing, so a default would offer nothing but a way to be wrong quietly.
 ///
 /// Constructed through [`ScopedIp::scoped`], which drops a zone the address has
 /// no use for. That is what keeps equality honest: a global address is the same
@@ -573,11 +572,12 @@ mod tests {
     /// A scope id of zero is a lookup that failed, and it has to read as one.
     ///
     /// Zero is not an interface: it is what `if_nametoindex` returns to say
-    /// there is no such name. Taken at face value it produced a *resolved* zone
-    /// whose index cannot open a socket, so `is_unusable` answered false and
-    /// `to_socket_addr` handed back `[fe80::1]:22` with a zero scope id, which
-    /// is the exact address the first paragraph of this module says the kernel
-    /// refuses. A journal or a report naming index zero is enough to get one.
+    /// there is no such name. Taken at face value it would produce a *resolved*
+    /// zone whose index cannot open a socket, so `is_unusable` would answer
+    /// false and `to_socket_addr` would hand back `[fe80::1]:22` with a zero
+    /// scope id, which is the exact address the first paragraph of this module
+    /// says the kernel refuses. A journal or a report naming index zero is
+    /// enough to get one.
     #[test]
     fn a_zone_whose_index_is_zero_is_a_zone_nothing_found() {
         let failed = ScopedIp::scoped(link_local(), Zone::new(0, "en0"));

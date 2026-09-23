@@ -676,13 +676,13 @@ mod tests {
         );
     }
 
-    /// The shapes that parsed and should not have.
+    /// The shapes a naive parse accepts and should not.
     ///
-    /// Each of these once came back as an ordinary moment on the wrong day.
-    /// Every field went through an integer parse with only an upper bound
-    /// checked, so `-5` was an hour five hours before midnight and `2026-02-31`
-    /// was the third of March. Nothing failed, and the caller is the reader that
-    /// rebuilds a report out of somebody else's file, where a wrong
+    /// Each of these comes back as an ordinary moment on the wrong day from a
+    /// parse that puts every field through an integer parse with only an upper
+    /// bound checked: `-5` is an hour five hours before midnight and
+    /// `2026-02-31` is the third of March. Nothing fails, and the caller is the
+    /// reader that rebuilds a report out of somebody else's file, where a wrong
     /// `cert_not_after` is an expiry alert on the wrong date.
     #[test]
     fn a_timestamp_that_is_not_one_is_refused_rather_than_reinterpreted() {

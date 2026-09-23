@@ -48,12 +48,12 @@ EVENT = re.compile(r"^#\d+\s+(\w+)")
 
 # What libFuzzer says when it is no longer fuzzing.
 #
-# **Anchored, and case-sensitive.** The loose version of this matched `ERROR`
-# anywhere in a line, which is a word that turns up in ordinary output: libFuzzer
-# prints `NEW_FUNC[1/1]: 0x... in <mangled symbol>` whenever it reaches a new
-# function, and a Rust symbol for anything touching `serde_json::error::Error`
-# carries it. Every import target hit one within seconds of starting and the
-# screen was never drawn again.
+# **Anchored, and case-sensitive.** A loose pattern matching `ERROR` anywhere in
+# a line would match a word that turns up in ordinary output: libFuzzer prints
+# `NEW_FUNC[1/1]: 0x... in <mangled symbol>` whenever it reaches a new function,
+# and a Rust symbol for anything touching `serde_json::error::Error` carries it.
+# Every import target would hit one within seconds of starting and the screen
+# would never be drawn again.
 #
 # The banners below all begin a line, so anchoring is what separates them from a
 # symbol name. `panicked at` needs no anchor: a mangled symbol has no spaces in

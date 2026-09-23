@@ -84,8 +84,8 @@ pub const MAX_FUSED_ACCURACY: u8 = 95;
 /// against it, which is the difference between a second opinion and a second
 /// question. A hop counter of 255 says *network device*; an SNMP agent saying
 /// `Brother NC-8700w` says which one. Scored as rival families those two
-/// readings annihilated each other and the host was reported as nothing, on
-/// real hardware, with both answers sitting in the record.
+/// readings annihilate each other and the host is reported as nothing, as
+/// measured on real hardware, with both answers sitting in the record.
 ///
 /// Where nobody names a family the abstentions are the whole answer, and it is
 /// reported without one.
@@ -205,11 +205,10 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     // the most a hop counter of 255 can support and is worth reporting about a
     // host nothing else describes.
     //
-    // This guard used to exclude a device class, on the reading that a source
-    // knowing only what kind of box this is has identified no software. That was
-    // true while a class could only arrive beside a product, from a text rule.
-    // It stopped being true when the rules that read a hop counter began stating
-    // a class instead of writing one into the family field.
+    // A device class counts here although it identifies no software. A text
+    // rule states one beside a product, but the rules that read a hop counter
+    // state a class and nothing else, so a guard that wanted more than a class
+    // would discard the whole of what those sources establish.
     if family.is_none() && device.is_none() && vendor.is_none() && product.is_none() {
         return None;
     }
@@ -422,10 +421,10 @@ mod tests {
     /// sums precisely because a stack of agreeing guesses has to stay a stack of
     /// guesses however many of them there are.
     ///
-    /// Every source there is, which is as far as the arithmetic can be pushed
-    /// now that a source counts once. This once read twenty items and called
-    /// them twenty sources; they were one source twenty times, and the figure it
-    /// pinned was the double count rather than the ceiling.
+    /// Every source there is, which is as far as the arithmetic can be pushed,
+    /// since a source counts once. Twenty items from one source are one source
+    /// twenty times, and a test built on them would pin the double count rather
+    /// than the ceiling.
     #[test]
     fn no_amount_of_agreement_reaches_certainty() {
         let many: Vec<OsEvidence> = every_source_at_its_ceiling()
@@ -530,9 +529,9 @@ mod tests {
     /// settles a host alone, and a source that could be counted twice would walk
     /// past both.
     ///
-    /// Measured on loopback before this held: three SSH banners naming Debian
-    /// 11, 12 and 13 resolved to Linux at 91, and eight of them to 95, the most
-    /// any combination of sources may claim.
+    /// Measured on loopback without it: three SSH banners naming Debian 11, 12
+    /// and 13 resolve to Linux at 91, and eight of them to 95, the most any
+    /// combination of sources may claim.
     #[test]
     fn one_source_counts_once_however_many_claims_it_files() {
         let alone = resolve(vec![evidence("Linux", 0.55, OsSource::ServiceBanner)])
@@ -559,8 +558,8 @@ mod tests {
         );
     }
 
-    /// The other half, which the fix must not cost: two genuinely different
-    /// sources agreeing still beat either alone.
+    /// The other half, which counting a source once must not cost: two
+    /// genuinely different sources agreeing still beat either alone.
     #[test]
     fn distinct_sources_still_corroborate() {
         let banner = evidence("Linux", 0.55, OsSource::ServiceBanner);
@@ -676,13 +675,13 @@ mod tests {
         assert!(resolve(Vec::new()).is_none());
     }
 
-    /// The finding this file was rewritten for.
+    /// The finding this file is built around.
     ///
     /// A hop counter of 255 says *network device*; an SNMP agent says *Brother
     /// NC-8700w*. Those are answers to two questions and the second is by far
-    /// the better one, but scored as rival families they cancelled: 0.4 reduced
-    /// by 0.385 left 25, under the floor, and a printer that had answered ARP,
-    /// ICMP, TCP and SNMP was reported as unidentified.
+    /// the better one, but scored as rival families they cancel: 0.4 reduced by
+    /// 0.385 leaves 25, under the floor, and a printer that answered ARP, ICMP,
+    /// TCP and SNMP would be reported as unidentified.
     #[test]
     fn a_source_that_names_no_family_does_not_argue_with_one_that_does() {
         let stack = evidence("Network device", 0.4, OsSource::TcpStack);
@@ -729,15 +728,12 @@ mod tests {
         assert_eq!(resolved.product.as_deref(), Some("NC-8700w"));
     }
 
-    /// A class of box on its own **is** a verdict, and this test reverses an
-    /// earlier reading that said otherwise.
+    /// A class of box on its own **is** a verdict, although something knowing
+    /// only what the hardware is has identified no software.
     ///
-    /// The old rule was that something knowing only what the hardware is has
-    /// identified no software, so a class alone was refused. That held while a
-    /// class could only arrive beside a product, from a rule reading text. It
-    /// stopped holding when the rules that read a hop counter of 255 began
-    /// stating a class instead of writing one into the family field: "this host
-    /// is infrastructure" is then the whole of what a real observation
+    /// A rule reading text states a class beside a product, but the rules that
+    /// read a hop counter of 255 state a class and nothing else: "this host is
+    /// infrastructure" is then the whole of what a real observation
     /// established, and it is the only thing anything will ever say about a
     /// switch with no port open and no name.
     #[test]

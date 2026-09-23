@@ -202,10 +202,10 @@ impl Accumulator {
 /// 20 ms, 1 000×1 000 is 67 KB and 47 ms, 2 000×2 000 is 134 KB and 158 ms, so
 /// bytes double and time quadruples.
 ///
-/// Nothing bounded the product before this. `max_tokens` bounds the addresses,
-/// `MAX_ELEMENTS` bounds the ports, and neither sees the multiplication, so the
-/// ceiling was the two of them multiplied together, which is to say there was
-/// none.
+/// Nothing else bounds the product. `max_tokens` bounds the addresses,
+/// `MAX_ELEMENTS` bounds the ports, and neither sees the multiplication, so
+/// without this the ceiling is the two of them multiplied together, which is to
+/// say there is none.
 ///
 /// 2^20 is past anything a real document can mean. A host has a handful of
 /// addresses, a MAC is skipped, so it is the IPv4 and IPv6 ones, and every port

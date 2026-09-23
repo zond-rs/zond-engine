@@ -98,10 +98,10 @@ const RESERVED_PREFIX: &str = "zond:";
 
 /// The shipped catalogue's version, carried on every finding it produces.
 ///
-/// Moved to `0.2.0` when the catalogue stopped being five hand-picked entries
-/// and became the converted feed beside them. A report from before the change
-/// and one from after are distinguishable by it, which is the whole reason a
-/// dataset carries a version.
+/// `0.2.0` marks the catalogue that is the converted feed beside five
+/// hand-picked entries, rather than those five alone. A report drawn from
+/// either is distinguishable by it, which is the whole reason a dataset carries
+/// a version.
 const SEED_VERSION: Version = Version::new(0, 2, 0);
 
 /// The catalogue compiled from `assets/cve/` by `build.rs`: a string pool and
@@ -906,14 +906,14 @@ mod tests {
     /// Every product a scan can put a version to either has entries here or is
     /// listed below with the reason it does not.
     ///
-    /// Fourteen names were on this list until the catalogue was regenerated on
-    /// 2026-09-09 and are not any more, which is what the second test below is
-    /// for: a stale exemption is as quiet a defect as the gap it was recording.
+    /// Regenerating the catalogue can give rows to names listed here, which is
+    /// what the second test below is for: a stale exemption is as quiet a
+    /// defect as the gap it records.
     ///
     /// The join is `vendor:product` and a mismatch is silent in both directions:
     /// a scan identifies the software, the catalogue holds records for it, and
-    /// nothing correlates because the two spell it differently. That is how
-    /// `microsoft:iis` shipped, emitted by twenty-seven rules and matching a
+    /// nothing correlates because the two spell it differently. A rule emitting
+    /// `microsoft:iis` is such a mismatch, since that spelling belongs to a
     /// vocabulary NVD has never used.
     ///
     /// The list is checked in both directions. An entry that gains rows has to
@@ -989,7 +989,7 @@ mod tests {
     }
 
     /// And an entry that does have a title keeps it. This is what the shipped
-    /// seed and a converted KEV record produce, and it was right already.
+    /// seed and a converted KEV record produce.
     #[test]
     fn a_title_short_enough_to_be_a_summary_is_used_as_one() {
         let document = "id = \"test:cve\"\nversion = \"1.0.0\"\n\n\
@@ -1290,8 +1290,8 @@ affected = "*"
 
         // 2.4.51 carries the fix for that one. It is not a clean build — a real
         // catalogue knows plenty about it — so the claim is the narrow one the
-        // version range actually makes, and asserting emptiness here would only
-        // hold while the catalogue was five entries long.
+        // version range actually makes, and asserting emptiness here would hold
+        // only for a catalogue of a few hand-picked entries.
         assert!(
             !embedded_cves("cpe:/a:apache:http_server:2.4.51")
                 .contains(&"CVE-2021-41773".to_string()),

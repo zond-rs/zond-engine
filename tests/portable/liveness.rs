@@ -100,7 +100,7 @@ async fn assume_up_probes_the_ports_without_asking_first() {
     );
 }
 
-/// A host that is there is scanned exactly as it always was.
+/// A host that is there is scanned exactly as it would be with no gate.
 #[tokio::test]
 async fn a_live_host_is_still_port_scanned() {
     if is_privileged() {

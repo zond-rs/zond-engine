@@ -851,10 +851,10 @@ pub(crate) mod tests {
     /// A device that NUL-terminates its hostname and pads past the terminator
     /// still names itself, and the padding does not reach the host record.
     ///
-    /// The reader here trimmed one NUL, so an eleven-byte field carrying a
-    /// seven-character name reported `"printer\0\0\0"`, which nobody can
-    /// search for. `lldp` and `cdp` had the same six lines and the same defect;
-    /// all three now read through `protocols::text`.
+    /// A reader that trimmed one NUL would report an eleven-byte field carrying
+    /// a seven-character name as `"printer\0\0\0"`, which nobody can search
+    /// for. `lldp` and `cdp` read the same kind of field, so all three read
+    /// through `protocols::text`.
     #[test]
     fn a_nul_padded_hostname_arrives_without_its_padding() {
         let frame_bytes = renewal_frame(src_addr(), "printer\0\0\0\0");

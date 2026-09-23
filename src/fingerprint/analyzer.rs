@@ -188,8 +188,7 @@ pub trait Analyzer: Send + Sync {
 }
 
 /// Identifies services by matching regex signatures against banner and
-/// active-probe responses. The port-out of the previous engine, now one
-/// analyzer among the eventual many.
+/// active-probe responses. One analyzer among several.
 ///
 /// Matching is tiered: each response is checked first against the signatures
 /// linked to its port, and only if none match is it checked against the global
@@ -198,8 +197,8 @@ pub trait Analyzer: Send + Sync {
 /// lazily; most responses match on their port and never trigger it.
 ///
 /// Within a tier the analyzer picks the **most specific** match, not the first
-/// one to fire (see `best_match`): a generic `HTTP/1.1` signature no longer
-/// shadows the `Server: nginx/1.25.3` signature that names a product and
+/// one to fire (see `best_match`), so a generic `HTTP/1.1` signature does not
+/// shadow the `Server: nginx/1.25.3` signature that names a product and
 /// version.
 pub struct BannerRegexAnalyzer;
 

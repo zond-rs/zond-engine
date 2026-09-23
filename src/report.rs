@@ -1897,12 +1897,12 @@ pub struct ScanReport {
     /// [`ScopedIp::scoped`] drops the zone from every address that does not need
     /// one, so this is the ordinary bare address for every host but that case,
     /// and the map still orders by address: the zone only breaks ties between
-    /// identically-numbered link-locals. Iteration order is unchanged for every
-    /// report that does not contain one.
+    /// identically-numbered link-locals. Iteration order is plain address order
+    /// for every report that does not contain one.
     ///
     /// This is the same distinction [`pairing`](crate::diff::pairing) draws when
     /// it decides which records are one host, so a fold that correctly separates
-    /// two link-locals now has somewhere to put them both.
+    /// two link-locals has somewhere to put them both.
     hosts: BTreeMap<ScopedIp, Host>,
 }
 
@@ -2472,7 +2472,7 @@ pub enum ScannerKind {
     /// consumer reads without opting in. A checkpoint that could not be written
     /// costs nothing a scan found and everything a *resume* would have skipped,
     /// so it is a fact about the disk rather than about the network, and
-    /// filing it as a scanning strategy told a caller that ports had gone
+    /// filing it as a scanning strategy would tell a caller that ports had gone
     /// unprobed when none had.
     Journal,
 }
@@ -2654,16 +2654,16 @@ mod tests {
     /// A duration no clock can add to is a phase to place at its start, not a
     /// process to end.
     ///
-    /// This crashed. `finished_at` added a phase's `elapsed` to its start
-    /// with `+`, which panics on overflow, and a phase's `elapsed` is not always
+    /// `finished_at` cannot add a phase's `elapsed` to its start with `+`,
+    /// which panics on overflow, because a phase's `elapsed` is not always
     /// something this engine measured: a report read out of nmap's XML carries
     /// whatever `<finished elapsed="...">` claimed, and that is a decimal number
     /// of seconds with no bound on it. A `Duration` holds five hundred billion
     /// years and a `SystemTime` does not.
     ///
-    /// It took the process down from inside `ScanDiff::between`, which is what
-    /// a nightly comparison calls on every report it reads. Found by the
-    /// `import_nmap` fuzz target on `elapsed="1222222222…"`.
+    /// The panic would take the process down from inside `ScanDiff::between`,
+    /// which is what a nightly comparison calls on every report it reads, and
+    /// `elapsed="1222222222…"` is enough to cause it.
     #[test]
     fn a_phase_claiming_more_time_than_a_clock_holds_does_not_end_the_process() {
         let mut absurd = phase(ScanKind::PortScan);
@@ -2729,10 +2729,10 @@ mod tests {
     /// different.
     ///
     /// The other half of this, that a run differing only in how it was
-    /// *displayed* records the same settings, used to be asserted here against
-    /// `no_banner`, `quiet` and `disable_input`. Those fields no longer exist on
-    /// [`ZondConfig`]: presentation is the front end's, so there is nothing left
-    /// that could leak into a report and nothing left for a test to catch.
+    /// *displayed* records the same settings, holds by construction:
+    /// presentation is the front end's and no field of [`ZondConfig`] is about
+    /// it, so there is nothing that could leak into a report and nothing for a
+    /// test to catch.
     #[test]
     fn settings_record_what_changed_the_scan() {
         let scanning = ZondConfig {

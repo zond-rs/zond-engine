@@ -37,13 +37,12 @@
 //!
 //! ## Why this is not part of the vocabulary
 //!
-//! It used to be, and it was the wrong place. [`crate::model`] holds what more
-//! than one module has to agree on, a host, a port, an address set, and every
-//! one of these was agreed on by exactly one: the scanner. A `ProbeLedger` is not
-//! something a scan *talks about*, it is how a scan is *run*, and nothing
-//! outside this module has ever needed to name one.
+//! [`crate::model`] holds what more than one module has to agree on, a host, a
+//! port, an address set, and every one of these is agreed on by exactly one: the
+//! scanner. A `ProbeLedger` is not something a scan *talks about*, it is how a
+//! scan is *run*, and nothing outside this module needs to name one.
 //!
-//! The knobs a caller actually sets are the exception and stayed behind:
+//! The knobs a caller actually sets are the exception:
 //! [`ScanEffort`](crate::config::ScanEffort) and
 //! [`RetryConfig`](crate::config::RetryConfig) live in [`crate::config`],
 //! because a person chooses those and a report records them. What they scale is

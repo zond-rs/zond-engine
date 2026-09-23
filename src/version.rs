@@ -33,13 +33,12 @@
 //! pre-release identifier does not, which is the rule both ecosystems follow
 //! and the only thing available to separate them. See [`split_pre_release`].
 //!
-//! It is still a lax order, enough to rank the version strings
-//! services actually emit rather than a full semver grammar. What it is not is
-//! *inverted*: until September 2026 a hyphen was read as a dot throughout, so
-//! every pre-release sorted after its own release, and a host running
-//! `1.0.0-rc1` against a vulnerability fixed in `1.0.0` was reported not
-//! affected. A missing vulnerability is the wrong direction for a scanner to be
-//! wrong in, because nobody argues with it.
+//! It is a lax order, enough to rank the version strings services actually
+//! emit rather than a full semver grammar. What it is not is *inverted*:
+//! reading a hyphen as a dot throughout would sort every pre-release after its
+//! own release, and a host running `1.0.0-rc1` against a vulnerability fixed in
+//! `1.0.0` would be reported not affected. A missing vulnerability is the wrong
+//! direction for a scanner to be wrong in, because nobody argues with it.
 
 use std::cmp::Ordering;
 
@@ -82,12 +81,11 @@ pub(crate) fn version_cmp(a: &str, b: &str) -> Ordering {
 /// is the rule both ecosystems already follow and the only thing available to
 /// separate them here.
 ///
-/// This split did not exist until September 2026: `-` was treated as `.`
-/// throughout, so a non-numeric component sorted after a numeric one and every
-/// pre-release read as *later* than its own release. The
-/// [CVE correlator](crate::cve) reads this ordering directly, so a host running
-/// `1.0.0-rc1` against a vulnerability fixed in `1.0.0` was reported not
-/// affected.
+/// Without this split `-` is treated as `.` throughout, so a non-numeric
+/// component sorts after a numeric one and every pre-release reads as *later*
+/// than its own release. The [CVE correlator](crate::cve) reads this ordering
+/// directly, so a host running `1.0.0-rc1` against a vulnerability fixed in
+/// `1.0.0` would be reported not affected.
 fn split_pre_release(version: &str) -> (&str, Option<&str>) {
     let mut from = 0;
     while let Some(at) = version[from..].find('-') {
@@ -124,19 +122,19 @@ fn components(a: &str, b: &str) -> Ordering {
 
 /// Compares one component, digit runs numerically and the rest lexically.
 ///
-/// It was the component's *leading* number and then the whole component
+/// Not the component's *leading* number and then the whole component
 /// lexically as a tie-break, which is wrong twice for one reason: a lexical
 /// comparison of text that is partly a number.
 ///
-/// `1.02` and `1.2` are one version. Their leading numbers agree, so the tie
-/// break ran and `"02" < "2"` on the first character. That made them different
-/// versions, which loses an exact match and lets a `<` bound hold against the
-/// very release that fixed the thing. Date-shaped versions carry leading zeros
-/// constantly.
+/// `1.02` and `1.2` are one version. Their leading numbers agree, so such a tie
+/// break would run and put `"02" < "2"` on the first character. That makes them
+/// different versions, which loses an exact match and lets a `<` bound hold
+/// against the very release that fixed the thing. Date-shaped versions carry
+/// leading zeros constantly.
 ///
-/// `rc10` follows `rc9`. Neither has a *leading* number, so both read as zero
-/// and the tie-break put `rc10` first on `'1' < '9'`. Inside a pre-release
-/// identifier the number is what counts and it sits at the end.
+/// `rc10` follows `rc9`. Neither has a *leading* number, so both would read as
+/// zero and the tie-break would put `rc10` first on `'1' < '9'`. Inside a
+/// pre-release identifier the number is what counts and it sits at the end.
 ///
 /// Walking the runs answers both: `02` and `2` are the same number, `rc` equals
 /// `rc` and then `10 > 9`. A component that runs out first is the smaller, which
@@ -235,9 +233,9 @@ mod tests {
         assert_eq!(version_cmp("1.0.0-alpha", "1.0.1"), Ordering::Less);
     }
 
-    /// What the inversion cost, stated as the thing that reads it: the
+    /// What an inversion costs, stated as the thing that reads it: the
     /// [CVE correlator](crate::cve) asks whether a version satisfies `<bound`,
-    /// so a pre-release sorting after its own release reported a vulnerable
+    /// so a pre-release sorting after its own release would report a vulnerable
     /// host as not affected.
     #[test]
     fn a_pre_release_satisfies_a_bound_its_release_does_not() {
@@ -254,7 +252,7 @@ mod tests {
     }
 
     /// A component too long for a `u64` reads as larger than every real one
-    /// rather than as zero, which is what a failed parse used to give it.
+    /// rather than as zero, which is what a failed parse would give it.
     #[test]
     fn an_absurd_component_sorts_above_a_real_one_rather_than_below() {
         assert_eq!(version_cmp("18446744073709551616", "2"), Ordering::Greater);
@@ -280,8 +278,8 @@ mod tests {
     ///
     /// `1.02` and `1.2` are one release, and date-shaped versions carry zeros
     /// like this constantly. Reading them apart costs an exact match, and worse:
-    /// a `<1.2` bound held against `1.02`, so the release that fixed a
-    /// vulnerability read as still carrying it.
+    /// a `<1.2` bound holds against `1.02`, so the release that fixed a
+    /// vulnerability reads as still carrying it.
     #[test]
     fn a_leading_zero_does_not_make_a_different_version() {
         assert_eq!(version_cmp("1.02", "1.2"), Ordering::Equal);
@@ -295,8 +293,9 @@ mod tests {
 
     /// **A number inside a pre-release identifier counts as a number.**
     ///
-    /// `rc10` follows `rc9`. Neither carries a leading digit, so both read as
-    /// zero and the tie-break decided lexically on `'1' < '9'`.
+    /// `rc10` follows `rc9`. Neither carries a leading digit, so a comparison
+    /// on leading numbers reads both as zero and a lexical tie-break decides on
+    /// `'1' < '9'`.
     #[test]
     fn a_pre_release_counts_its_number_rather_than_spelling_it() {
         assert_eq!(version_cmp("1.0.0-rc10", "1.0.0-rc9"), Ordering::Greater);
@@ -312,7 +311,7 @@ mod tests {
         assert_eq!(version_cmp("1.0.0-rc10", "1.0.0"), Ordering::Less);
     }
 
-    /// The suffix rules the earlier ordering got right, kept.
+    /// The suffix rules, which comparing digit runs must not disturb.
     ///
     /// A component that runs out first is the smaller, so a bare release sits
     /// below the same release with something appended, and a digit at the same

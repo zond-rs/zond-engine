@@ -159,9 +159,9 @@
 //! below are the whole of it:
 //!
 //! The modules are layered, and the layering is a rule. Each depends only on
-//! those below it, and `tests/hygiene/architecture.rs` reads every `crate::` path in the
-//! library, including the ones inside an expression, which is where three
-//! violations were hiding, and fails if that stops being true.
+//! those below it, and `tests/hygiene/architecture.rs` reads every `crate::`
+//! path in the library, including the ones inside an expression, which is where
+//! a violation is easiest to miss, and fails if that stops being true.
 //!
 //! The list below is ordered for somebody meeting the crate rather than for the
 //! rule: it opens with the vocabulary and ends with the file formats, where the

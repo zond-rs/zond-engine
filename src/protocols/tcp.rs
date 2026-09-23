@@ -379,9 +379,9 @@ pub(crate) fn echoed_nonce_with_flags(flags: u8, reply: &Segment<'_>, padding: u
 /// implementations commonly quote more, and the acknowledgement field is
 /// reported when they do.
 ///
-/// `#[non_exhaustive]`: [`acknowledgement`](Self::acknowledgement) was added when
-/// it turned out senders quote more than the guaranteed eight bytes, and the
-/// next field past twelve arrives the same way. Built by [`quoted_probe`].
+/// `#[non_exhaustive]`: [`acknowledgement`](Self::acknowledgement) is here
+/// because senders quote more than the guaranteed eight bytes, and the next
+/// field past twelve would arrive the same way. Built by [`quoted_probe`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotedProbe {
@@ -453,9 +453,9 @@ pub(crate) fn quoted_nonce_with_flags(flags: u8, quoted: &QuotedProbe) -> Option
 /// constructs one.
 ///
 /// The counterpart of [`sctp::Segment`](super::sctp::Segment), and this crate's
-/// own type for the same reason: `parse` used to hand back a
-/// `pnet_packet::TcpPacket`, which put a pre-1.0 dependency's type in a public
-/// signature. A consumer reading a reply then had to name that crate, at that
+/// own type for the same reason: a `pnet_packet::TcpPacket` handed back by
+/// `parse` would put a pre-1.0 dependency's type in a public signature. A
+/// consumer reading a reply would then have to name that crate, at that
 /// version, to say what it had, and this crate could not take a `pnet` upgrade
 /// without it being a breaking change for them.
 ///
@@ -1036,13 +1036,12 @@ mod tests {
     /// ACK*: a stack saying the segment does not fit a connection it already
     /// holds (RFC 793 §3.9, and RFC 5961 §4 for a SYN specifically). Only a host
     /// with a half-open connection sends one, and only a listener has one, so
-    /// this is positive evidence about a port rather than the noise it was read
-    /// as before.
+    /// this is positive evidence about a port rather than noise.
     ///
     /// It is the reply a *retransmitted* SYN draws when the first SYN+ACK was
-    /// lost, which is why discarding it lost open ports on exactly the paths
-    /// retransmission exists for. That is the defect this test was written
-    /// against, and the reason it is worth keeping.
+    /// lost, so discarding it would lose open ports on exactly the paths
+    /// retransmission exists for. That is the defect this test guards against,
+    /// and the reason it is worth keeping.
     #[test]
     fn classifies_a_bare_ack_as_a_challenge() {
         let bytes = packet_with_flags(flags::ACK);

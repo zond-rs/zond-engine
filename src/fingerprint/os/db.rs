@@ -33,14 +33,13 @@
 //! translating a public corpus would bring, it is 18 seconds of CPU across a
 //! `/16`, which is real but not disqualifying.
 //!
-//! Getting there took one fix worth naming, because it is the mistake this shape
-//! invites. Rendering the option layout allocates, and doing it inside the
-//! per-rule test cost 3.2 ms per host at ten thousand rules, or 210 seconds
-//! across a `/16`, essentially all of it spent building the same short string
-//! ten thousand times over. [`rules::matching`](super::rules) now works the
-//! derived values out once for the whole set and orders the cheap integer
-//! comparisons ahead of the string one, which is 11.5x at ten thousand rules and
-//! 1.7x at two.
+//! One mistake is worth naming, because it is the one this shape invites.
+//! Rendering the option layout allocates, and doing it inside the per-rule test
+//! costs 3.2 ms per host at ten thousand rules, or 210 seconds across a `/16`,
+//! essentially all of it spent building the same short string ten thousand
+//! times over. [`rules::matching`](super::rules) works the derived values out
+//! once for the whole set and orders the cheap integer comparisons ahead of the
+//! string one, which is 11.5x faster at ten thousand rules and 1.7x at two.
 //!
 //! ## Where the index goes, when it is needed
 //!
@@ -251,9 +250,10 @@ mod tests {
     ///
     /// `build.rs` refuses a rule that states no predicates and calls it the one
     /// defect worse than a build failure, because it matches every reply of its
-    /// kind and names every host that ever answers. The public constructor used
-    /// to accept exactly that: measured, a rule naming `Windows 3.1` and testing
-    /// nothing was loaded and returned accuracy 70 for any SYN+ACK on earth.
+    /// kind and names every host that ever answers. A public constructor that
+    /// accepted exactly that would load it: measured, a rule naming
+    /// `Windows 3.1` and testing nothing returns accuracy 70 for any SYN+ACK on
+    /// earth.
     #[test]
     fn a_rule_that_tests_nothing_is_refused() {
         let refused = RuleDb::try_from_rules(vec![rule("Windows 3.1", MatchRule::default())])
@@ -441,8 +441,9 @@ mod tests {
         }
     }
 
-    /// The unchecked door still exists and still says so in its name, which is
-    /// the whole difference between it and the one that was there before.
+    /// The unchecked door exists and says so in its name, which is the whole
+    /// difference between it and a public constructor that skips the checks
+    /// without saying so.
     #[test]
     fn the_unchecked_constructor_is_the_one_that_skips_the_checks() {
         let db = RuleDb::from_rules_unchecked(vec![rule("Windows 3.1", MatchRule::default())]);

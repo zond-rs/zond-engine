@@ -10,10 +10,10 @@
 //!
 //! `#![warn(missing_docs)]` covers the public surface and CI denies it, so a
 //! `pub` item without a doc comment fails the build already. Nothing covers the
-//! rest, and in August 2026 an audit of `src/scanner/` found six doc blocks
-//! that had been spliced onto a neighbouring item, leaving six items bare:
+//! rest, and a doc block spliced onto a neighbouring item leaves an item bare.
+//! Six shapes that takes, each seen in `src/scanner/`:
 //!
-//! | item | where its documentation had gone |
+//! | item | where its documentation went |
 //! |---|---|
 //! | `spawn_discovery` | its own summary line, repeated three times on one line |
 //! | `FailureLog` | prepended to `UnroutableLog` |
@@ -22,11 +22,11 @@
 //! | `push_single` | prepended to `routable` |
 //! | `probe_distance` | two stale summaries, neither its own |
 //!
-//! Every one was private, `pub(crate)` or `pub(super)`, so `missing_docs` could
-//! not see any of them, and every one was syntactically valid, so `cargo doc`
-//! rendered them without complaint. They arrived in different commits, which is
-//! what makes this a gate rather than a one-off repair: it is something that
-//! happens during ordinary editing.
+//! Every one is private, `pub(crate)` or `pub(super)`, so `missing_docs` cannot
+//! see any of them, and every one is syntactically valid, so `cargo doc`
+//! renders them without complaint. Each arises on its own, in an unrelated
+//! change, which is what makes this a gate rather than a one-off repair: it is
+//! something that happens during ordinary editing.
 //!
 //! ## What is checked, and what deliberately is not
 //!
@@ -47,15 +47,11 @@
 //! out.
 //!
 //! Five of the six above are caught without it, each confirmed by planting the
-//! corruption back and watching this fail. The sixth, `probe_distance`, is an
+//! corruption and watching this fail. The sixth, `probe_distance`, is an
 //! inherent method and is the price of that exclusion.
 //!
-//! Scoped to the whole of `src`, which it was not until the September 2026 health
-//! audit: it grew one module at a time as each was read, and `system/` alone had
-//! four private modules with no module documentation at all, `routing.rs` among
-//! them, which is the file every strategy a scan runs follows from. [`SCOPE`]
-//! carries the two reasons it stopped short of `src` for as long as it did, and
-//! what answered each.
+//! Scoped to the whole of `src`. [`SCOPE`] carries the two reasons for stopping
+//! short of it, and what answers each.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -63,23 +59,19 @@ use std::path::{Path, PathBuf};
 /// What this standard is enforced over: a directory covers itself and
 /// everything under it, a file covers itself.
 ///
-/// **The whole library.** It was not always: this was grown one audit at a time
-/// as each module was brought up to the standard, and the note here used to give
-/// two reasons for stopping short of `src`. Both are answered.
+/// **The whole library.** Two reasons argue for stopping short of `src`, and
+/// both are answered.
 ///
-/// The first was that pointing it at `src` reported ninety items in modules
-/// nobody had read, and documenting those means writing prose for code sight
-/// unseen — the register `CONTRIBUTING.md` is dialling back. That was true and is
-/// no longer: the September 2026 health audit read them and the sixty-eight real
-/// ones now carry documentation. The largest run was the twenty-four `…Dto`
-/// structs in `src/import/report/json.rs`, which are the read side of the
-/// exported JSON contract and were the least documented thing in the crate.
+/// The first is that a gate over modules nobody has read demands prose for code
+/// sight unseen — the register `CONTRIBUTING.md` is dialling back. Every item
+/// under `src` is documented, so what this reports there is an item just added,
+/// which its author can document from knowledge.
 ///
-/// The second was that it would be measuring the wrong thing, because several of
-/// the ninety were `#[test]` functions in files gated at their `mod` declaration
-/// rather than by an inner `mod tests`, which [`production`] cannot see from
-/// inside the file. That one was a real defect in this gate and is fixed:
-/// [`is_test_only`] reads the declaration.
+/// The second is that it would be measuring the wrong thing, because `#[test]`
+/// functions in files gated at their `mod` declaration rather than by an inner
+/// `mod tests` look like production items to [`production`], which cannot see
+/// the gate from inside the file. [`is_test_only`] reads the declaration, so
+/// they are not counted.
 const SCOPE: &[&str] = &["src"];
 
 /// Whether `path` is a module the crate declares under `#[cfg(test)]`.
@@ -87,7 +79,7 @@ const SCOPE: &[&str] = &["src"];
 /// A file gated at its `mod` line — `#[cfg(test)] mod corpus;` — is test code
 /// from its first byte, and nothing inside it says so. [`production`] strips an
 /// inner `#[cfg(test)] mod tests`, which is the other convention, and cannot see
-/// this one; before this, eleven test functions in five such files were reported
+/// this one; without this, the test functions in such files would be reported
 /// as undocumented production items, and *a rule that flags test code as
 /// undocumented production code is a rule people learn to silence.*
 ///
@@ -182,8 +174,9 @@ fn covered_item(line: &str) -> bool {
     // Stripped one prefix at a time and in order, because a chain of
     // `strip_prefix(..).or_else(..).map_or(..)` reads as though it does this and
     // does not: the `map_or` fallback hands back the string as it was before the
-    // *previous* strip, so `pub(super) async fn` kept its `async ` and the item
-    // went unchecked. Which is the class of thing this file exists to catch.
+    // *previous* strip, so `pub(super) async fn` would keep its `async ` and the
+    // item would go unchecked. Which is the class of thing this file exists to
+    // catch.
     let mut rest = trimmed;
     for prefix in ["pub(crate)", "pub(super)", "pub"] {
         if let Some(stripped) = rest.strip_prefix(prefix) {
@@ -234,10 +227,10 @@ fn no_doc_line_carries_a_second_doc_marker() {
     );
 }
 
-/// The gate the six corruptions would have tripped. An item whose documentation
-/// was taken away by a neighbour is an item with no documentation, and that is
-/// the thing to look for: the merged block itself is prose, and no rule about
-/// prose is worth the false positives.
+/// The gate the corruptions in the module table trip. An item whose
+/// documentation was taken away by a neighbour is an item with no
+/// documentation, and that is the thing to look for: the merged block itself is
+/// prose, and no rule about prose is worth the false positives.
 #[test]
 fn every_item_the_standard_covers_is_documented() {
     let mut bare = Vec::new();
@@ -272,8 +265,8 @@ fn every_item_the_standard_covers_is_documented() {
             //
             // **An attribute is not always one line.** `thiserror`'s `#[error(…)]`
             // routinely spans three or four, and a walk that only recognised a
-            // line *starting* `#[` stopped at the closing `)]` and reported the
-            // item as bare. `UnknownTechnique` is documented and was reported
+            // line *starting* `#[` would stop at the closing `)]` and report the
+            // item as bare. `UnknownTechnique` is documented and would be reported
             // anyway, which is a gate crying wolf — the failure mode that gets a
             // gate switched off. So the step counts brackets: a line that closes
             // more than it opens is the tail of an attribute, and the walk

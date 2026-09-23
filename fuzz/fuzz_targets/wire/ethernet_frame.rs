@@ -17,17 +17,17 @@
 //! it inherits, and on its own it does not crash.
 //!
 //! **Reading more bytes only ever adds to what was read.** The property this
-//! target exists for, and the one it did not have. Both announcement readers
+//! target exists for. Both announcement readers
 //! walk a run of records whose lengths came off the wire, and both meet a run
 //! that stops mid-record: a capture cut at its snapshot length, or equipment
 //! that miscounted. What was already read has to survive that.
 //!
-//! `lldp::parse` did not survive it. A short tail discarded the whole
-//! advertisement, chassis identifier and port identifier included, and this
-//! target could not see it, because it called the reader and threw the result
-//! away. `fuzz/README.md` names that exact failure: *a target that only calls
-//! and discards finds a panic and nothing else.* It was written about the next
-//! target and was already true of this one.
+//! A reader can fail it without failing anything else: an `lldp::parse` that
+//! discards the whole advertisement on a short tail, chassis identifier and
+//! port identifier included, never panics, and a target that calls the reader
+//! and throws the result away cannot see it. `fuzz/README.md` names that exact
+//! failure: *a target that only calls and discards finds a panic and nothing
+//! else.*
 //!
 //! Growth, not equality. A shorter run reports a *subset*: a field it never
 //! reached is absent, and asserting the two agree outright would stop the run on

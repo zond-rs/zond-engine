@@ -11,8 +11,8 @@
 //! One reusable driver for the pattern every fan-out scan shares: spawn a probe
 //! task per target, cap how many run at once, and fold each result as it
 //! finishes. The connect port scan, the connect discovery sweep, and the
-//! service-detection pass all need exactly this. Each used to repeat the same
-//! fiddly [`JoinSet`] bookkeeping inline: make room before admitting a probe,
+//! service-detection pass all need exactly this. Each would otherwise repeat the
+//! same fiddly [`JoinSet`] bookkeeping inline: make room before admitting a probe,
 //! drain the stragglers at the end, and drop a panicked task rather than let it
 //! abort the sweep.
 //!
@@ -173,11 +173,11 @@ mod tests {
     use super::*;
     use crate::scanner::session::ScanSession;
 
-    /// A limit of zero spun the admission loop on an empty set forever, and
-    /// because the loop never awaited anything it never returned to the
-    /// runtime: on a current-thread runtime the scan hung with no diagnostic,
-    /// and a `timeout` around it could not fire. This test runs on exactly such
-    /// a runtime, so it would not have completed at all before the fix.
+    /// A limit of zero taken as given would spin the admission loop on an empty
+    /// set forever, and because the loop awaits nothing it would never return
+    /// to the runtime: on a current-thread runtime the scan would hang with no
+    /// diagnostic, and a `timeout` around it could not fire. This test runs on
+    /// exactly such a runtime, so it cannot complete at all if that happens.
     #[tokio::test]
     async fn a_zero_limit_admits_one_probe_rather_than_spinning() {
         let (_session, ctx) = ScanSession::new();

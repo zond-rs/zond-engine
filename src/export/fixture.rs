@@ -748,8 +748,8 @@ pub(crate) fn hostile() -> ScanReport {
     // A neighbour's own account of itself, which is the most attacker-chosen
     // data a report carries: LLDP and CDP are unauthenticated by design, so
     // every string here was written by whoever is on the segment. It reaches
-    // the HTML page's own table and the nmap document, and until this line no
-    // escaping test had ever seen one.
+    // the HTML page's own table and the nmap document, and without this line no
+    // escaping test would see one.
     ctx.record_attachment(
         crate::report::Attachment::new(
             crate::model::ip::scoped::Zone::new(1, HOSTILE),

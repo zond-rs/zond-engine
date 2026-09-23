@@ -490,10 +490,10 @@ impl std::fmt::Display for OsFingerprint {
 #[cfg(test)]
 mod tests {
 
-    /// The defect this exists to prevent, and it was a live one. The active
-    /// series probe corroborates the passive reading exactly, so the two tie, and
-    /// keeping only the first threw away the only line that says what the host's
-    /// counters do, which is the whole reason the probe was sent.
+    /// The defect this exists to prevent. The active series probe corroborates
+    /// the passive reading exactly, so the two tie, and keeping only the first
+    /// would throw away the only line that says what the host's counters do,
+    /// which is the whole reason the probe was sent.
     #[test]
     fn two_readings_of_one_system_are_both_kept() {
         let mut passive = OsFingerprint::new("Linux", 65)

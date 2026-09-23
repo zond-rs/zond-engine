@@ -366,8 +366,9 @@ mod tests {
     use super::*;
     use crate::model::host::Host;
 
-    /// Eighty-three ports used to be eighty-three report lines, and the count
-    /// of strategies that did not run went up by eighty-three with them.
+    /// Eighty-three ports reported one by one would be eighty-three report
+    /// lines, and the count of strategies that did not run would go up by
+    /// eighty-three with them.
     #[test]
     fn many_quiet_ports_collapse_into_one_line() {
         let mut quiet = QuietPorts::default();

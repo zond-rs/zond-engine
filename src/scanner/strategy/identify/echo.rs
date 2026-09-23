@@ -507,12 +507,10 @@ impl OsEchoScanner {
     /// of the stack behind it.
     ///
     /// Not `discover_hosts`, and not a [`HostScanner`](super::super::HostScanner).
-    /// It used to be both, because `HostScanner` was the trait to hand when this
-    /// was written as a submodule of the routed sweep -- but the trait says a
-    /// strategy that finds which hosts are reachable, and every address here
-    /// came out of the store because something else already found it. Nothing
-    /// ever dispatched this dynamically, so the impl bought a method name and
-    /// the method name was untrue.
+    /// The trait says a strategy that finds which hosts are reachable, and every
+    /// address here came out of the store because something else already found
+    /// it. Nothing dispatches this dynamically, so an impl would buy a method
+    /// name and the method name would be untrue.
     ///
     /// `Ok` once the run reached its end, including an end forced by
     /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort), and

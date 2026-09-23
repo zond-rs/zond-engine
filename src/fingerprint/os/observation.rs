@@ -183,11 +183,11 @@ pub struct Quirks {
     /// layout is the first twenty options of it and not the whole.
     ///
     /// Reachable: forty single-byte no-ops fill the header's option space and
-    /// are forty options. Without this the observation reported a twenty-option
-    /// layout for them and flagged nothing, which is the one parse defect in
-    /// this walk that used to be invisible, and a rule keyed on
-    /// [`option_layout`](StackObservation::option_layout) would have compared
-    /// against a truncated string.
+    /// are forty options. Without this the observation would report a
+    /// twenty-option layout for them and flag nothing, the one parse defect in
+    /// this walk nothing else makes visible, and a rule keyed on
+    /// [`option_layout`](StackObservation::option_layout) would compare against
+    /// a truncated string.
     pub options_truncated: bool,
 }
 

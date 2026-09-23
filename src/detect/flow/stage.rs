@@ -19,8 +19,8 @@
 //!
 //! A flow runs for a port when its `when` fits the port's service, number and
 //! protocol, and its class is one the default policy enables, `passive` and
-//! `active-benign` for now, the intrusive classes staying off until an operator
-//! opts them in through an envelope. The [`Probe`] each flow
+//! `active-benign`, the intrusive classes staying off until an operator opts
+//! them in through an envelope. The [`Probe`] each flow
 //! speaks through is supplied per port by the caller: that is the seam the live
 //! transport plugs into, and it keeps this stage testable with a canned socket
 //! and free of any transport of its own. A caller that cannot reach a port

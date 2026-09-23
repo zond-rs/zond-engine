@@ -160,8 +160,8 @@ fn category_of(slug: &str) -> String {
 ///
 /// Delegates to the register in `fingerprint::context`, which is the same
 /// declaration `build.rs` refuses an unclassified field against, so the index
-/// and the build can never disagree about which rules can fire. This used to be
-/// a table of its own here and was wrong the moment a decoder landed.
+/// and the build can never disagree about which rules can fire. A table of its
+/// own here would be wrong the moment a decoder landed.
 fn reachability_of(context: Option<&str>) -> &'static str {
     reach_of(context)
         .unwrap_or_else(|| {

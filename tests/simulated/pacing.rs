@@ -129,15 +129,16 @@ async fn a_host_that_answers_nothing_is_still_finished_and_still_filtered() {
     );
 }
 
-/// The case the controller was rebuilt for, and the one it used to be blind to:
-/// a host that answers most of what it is asked and drops the rest, where the
-/// drops are never recovered because the retries are lost too.
+/// The case the controller exists for, and the one a controller reading only
+/// silence is blind to: a host that answers most of what it is asked and drops
+/// the rest, where the drops are never recovered because the retries are lost
+/// too.
 ///
-/// Measured against a Raspberry Pi, that produced two hundred and forty
-/// `filtered` verdicts per run on a host with no firewall at all, a different
-/// two hundred and forty each time. What the scanner can see is that the host is
-/// plainly talking to it and plainly dropping things, and that combination is
-/// the only warning it gets.
+/// Measured against a Raspberry Pi, a scan that does not recognise it produces
+/// two hundred and forty `filtered` verdicts per run on a host with no firewall
+/// at all, a different two hundred and forty each time. What the scanner can
+/// see is that the host is plainly talking to it and plainly dropping things,
+/// and that combination is the only warning it gets.
 #[tokio::test]
 async fn a_host_that_talks_and_drops_is_recognised_as_being_outrun() {
     // One port in eight answers; the rest are dropped outright, retries and all.

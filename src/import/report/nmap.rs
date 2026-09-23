@@ -553,8 +553,8 @@ fn services(spec: &str, protocol: Protocol) -> Option<PortSet> {
 /// `None` for a count no clock can name. A `u64` of seconds reaches five
 /// hundred billion years and a [`SystemTime`] does not, so the addition is
 /// checked: `+` panics on the difference, and a panic belongs to the process
-/// that embedded this engine rather than to the file it was handed. Found by
-/// `import_nmap` on `start="16847805878974283974"`.
+/// that embedded this engine rather than to the file it was handed.
+/// `start="16847805878974283974"` is such a count.
 fn epoch(seconds: &str) -> Option<SystemTime> {
     let seconds = seconds.parse::<u64>().ok()?;
     SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
@@ -1258,11 +1258,10 @@ mod tests {
 
     /// A timestamp no clock can name is a field to drop, not a process to end.
     ///
-    /// This once crashed. `SystemTime + Duration` panics on overflow and a `u64`
-    /// of seconds reaches far past what a `SystemTime` holds, so a document
-    /// carrying twenty digits in `start` took down whatever had embedded the
-    /// engine. Found by the `import_nmap` fuzz target within thirty seconds of
-    /// being pointed at the seeds.
+    /// `SystemTime + Duration` panics on overflow and a `u64` of seconds reaches
+    /// far past what a `SystemTime` holds, so unchecked, a document carrying
+    /// twenty digits in `start` would take down whatever had embedded the
+    /// engine.
     #[test]
     fn a_time_past_what_a_clock_can_hold_is_dropped_rather_than_fatal() {
         for seconds in ["16847805878974283974", "18446744073709551615"] {

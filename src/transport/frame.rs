@@ -114,9 +114,9 @@ const IPV4_MORE_FRAGMENTS: u8 = 0b001;
 /// rides an unsupported link type.
 ///
 /// Both link types that carry a protocol label are held to it. The Ethernet arm
-/// reads the EtherType and the tunnel arm reads the address-family word, which
-/// it used to skip: a `DLT_NULL` frame carrying something else was handed on as
-/// an IP packet and refused only if its first nibble happened not to be 4 or 6.
+/// reads the EtherType and the tunnel arm reads the address-family word. Skipped,
+/// the word would let a `DLT_NULL` frame carrying something else through as an
+/// IP packet, refused only if its first nibble happened not to be 4 or 6.
 pub fn strip_to_ip(link: LinkType, frame: &[u8]) -> Option<&[u8]> {
     match link {
         LinkType::Ethernet => strip_ethernet(frame),
@@ -272,11 +272,11 @@ pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
             // Layer-4 header a caller is looking for. In any other, what follows
             // the IP header is the middle of somebody's payload, and handing it
             // out is handing out a header full of plausible nonsense.
-            // `walk_ipv6_headers` refuses the same thing on the other family and
-            // has since it was written; this arm read the flags and never the
-            // offset, so a non-initial fragment came through as a segment and
-            // its `IpObservation` answered `is_fragment()` with the More
-            // Fragments bit, which the *last* fragment does not set.
+            // `walk_ipv6_headers` refuses the same thing on the other family.
+            // Reading the flags and never the offset would let a non-initial
+            // fragment through as a segment, with an `IpObservation` answering
+            // `is_fragment()` from the More Fragments bit, which the *last*
+            // fragment does not set.
             if packet.get_fragment_offset() != 0 {
                 return None;
             }
@@ -548,10 +548,10 @@ mod tests {
 
     /// A tunnel link labels what it carries, and the label is read.
     ///
-    /// The arm used to skip the four bytes without looking at them, so a frame
-    /// carrying something other than IP was handed on as an IP packet and
-    /// refused only where its first nibble happened not to be 4 or 6. The
-    /// Ethernet arm beside it has always read its EtherType.
+    /// An arm skipping the four bytes without looking at them would hand a
+    /// frame carrying something other than IP on as an IP packet, refused only
+    /// where its first nibble happened not to be 4 or 6. The Ethernet arm
+    /// beside it reads its EtherType the same way.
     #[test]
     fn a_tunnel_frame_is_held_to_the_family_it_names() {
         let packet = [

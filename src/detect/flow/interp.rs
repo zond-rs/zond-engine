@@ -213,8 +213,8 @@ fn run_step(
         return Flow::Continue;
     }
 
-    // The probe exchange. A step with no `send` reads nothing new, for now it
-    // has no reply to match against.
+    // The probe exchange. A step with no `send` reads nothing new, so it has
+    // no reply to match against.
     let response = match &step.send {
         Some(send) => match interpolate(send, env) {
             // Decoded byte-for-byte, so a binary pattern such as `\xa2` matches

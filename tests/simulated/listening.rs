@@ -239,8 +239,8 @@ async fn a_watch_resumed_from_its_record_is_one_watch() {
 ///
 /// This is not a corner either. Capturing without root is how most people
 /// capture: `access_bpf` on macOS, `cap_net_raw` on Linux. A first sitting under
-/// one and a second under `sudo` is an ordinary week, and it used to be refused
-/// with a message about recorded positions a watch does not have.
+/// one and a second under `sudo` is an ordinary week, and refusing it would
+/// answer with a message about recorded positions a watch does not have.
 #[tokio::test]
 async fn a_watch_resumes_across_a_change_of_privilege() {
     let root = scratch("privilege");

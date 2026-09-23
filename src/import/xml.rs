@@ -791,13 +791,12 @@ impl<'a> Parser<'a> {
     /// text when text is being kept.
     ///
     /// For CDATA, which is character data and not a construct. A section inside
-    /// an element whose content was asked for used to be skipped like a
-    /// comment, so `<cpe><![CDATA[cpe:/a:openbsd:openssh:8.9]]></cpe>` read
-    /// back as no CPE at all, a legal document yielding a report with a field
-    /// missing, and nothing saying so. Nmap does not write CDATA, so this
-    /// changed no document anyone has; a reader that drops legal content
-    /// silently is the defect whether or not the writer in front of it happens
-    /// to produce it.
+    /// an element whose content was asked for, skipped like a comment, would
+    /// read `<cpe><![CDATA[cpe:/a:openbsd:openssh:8.9]]></cpe>` back as no CPE
+    /// at all, a legal document yielding a report with a field missing, and
+    /// nothing saying so. Nmap does not write CDATA, but a reader that drops
+    /// legal content silently is the defect whether or not the writer in front
+    /// of it happens to produce it.
     ///
     /// Bounded by [`keep_text`](Self::keep_text) like every other route into the
     /// text buffer, so a section megabytes wide is refused at the same 512 bytes
@@ -967,7 +966,8 @@ mod tests {
         }
     }
 
-    /// And the ordinary shapes still terminate where they always did.
+    /// And the ordinary shapes, whose terminator does not overlap, end the
+    /// section as well.
     #[test]
     fn a_terminator_that_does_not_overlap_still_ends_the_section() {
         for document in [
@@ -1054,10 +1054,11 @@ mod tests {
     /// CDATA is character data, and a reader that drops it loses a field without
     /// saying so.
     ///
-    /// `<cpe><![CDATA[…]]></cpe>` is legal, and used to read back as no CPE at
-    /// all: the section was dispatched to `declaration` and skipped like a
-    /// comment. An empty CPE qualifies nothing, so the document parsed, the
-    /// report came out a field short, and nothing anywhere reported a problem.
+    /// `<cpe><![CDATA[…]]></cpe>` is legal, and a section dispatched to
+    /// `declaration` and skipped like a comment would read back as no CPE at
+    /// all. An empty CPE qualifies nothing, so the document would parse, the
+    /// report would come out a field short, and nothing anywhere would report a
+    /// problem.
     #[test]
     fn cdata_inside_kept_text_is_read_rather_than_skipped() {
         let document = r#"<a><![CDATA[cpe:/a:openbsd:openssh:8.9]]></a>"#;

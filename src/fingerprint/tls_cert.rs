@@ -33,8 +33,8 @@
 //!   rendering is this module's own.
 //!
 //! Host attribution (subject CN / SAN hostnames) is intentionally *not* produced
-//! here: it describes the host, not the service, and has no home on [`Evidence`]
-//! yet. It is a separate follow-up.
+//! here: it describes the host, not the service, and has no home on
+//! [`Evidence`].
 //!
 //! [`Analyzer`]: super::analyzer::Analyzer
 //! [`Probable`]: super::model::Confidence::Probable

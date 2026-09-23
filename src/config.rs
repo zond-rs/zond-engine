@@ -108,10 +108,11 @@ fn parse_level<T: Copy>(
 /// The `expected one of` half of every parse error in this module, built from
 /// the levels themselves.
 ///
-/// The three messages used to spell their own lists. A variant added to an enum
-/// and to its `ALL` left the message naming the levels that existed when it was
-/// written, and nothing here would have said so: both spellings still parse, and
-/// only the sentence a caller reads is wrong.
+/// Built rather than spelled out in each message, because a spelled-out list
+/// goes stale: a variant added to an enum and to its `ALL` would leave the
+/// message naming the levels that existed when it was written, and nothing here
+/// would say so: both spellings still parse, and only the sentence a caller
+/// reads is wrong.
 fn expected_levels<T: Copy>(
     all: &[T],
     name: fn(T) -> &'static str,
@@ -285,20 +286,20 @@ impl std::str::FromStr for ScanEffort {
 ///
 /// # Why the higher levels are not
 ///
-/// From [`Active`](Self::Active) upward this costs packets. Not, today, unusual
-/// ones: what it sends is a SYN and a ping, and the SYN is byte-for-byte the
+/// From [`Active`](Self::Active) upward this costs packets. Not unusual ones:
+/// what it sends is a SYN and a ping, and the SYN is byte-for-byte the
 /// segment a port scan already sends. What it is, is extra. A host is asked
 /// several more times than classifying its ports required, and it is asked at
 /// addresses a caller may only have meant to enumerate. Traffic sent for a
 /// second purpose has to be asked for even when its shape gives nothing away,
 /// which is the whole reason this is a dial and not a default.
 ///
-/// It also becomes true in the older sense as the tiers fill in.
+/// The top tier is where it would also be true in the older sense.
 /// [`Aggressive`](Self::Aggressive) is where a deliberately malformed probe
-/// would live, traffic identified by how a stack mishandles it and so by
-/// construction what an intrusion-detection system was written to notice. None
-/// is sent yet; the level is documented for what it does rather than for what it
-/// is named after.
+/// belongs, traffic identified by how a stack mishandles it and so by
+/// construction what an intrusion-detection system was written to notice. No
+/// level sends one; the level is documented for what it does rather than for
+/// what it is named after.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OsDetection {
@@ -715,9 +716,9 @@ impl FromStr for ServiceDetection {
 /// Positive and finite, and a type rather than an `f64` because the values that
 /// are neither cannot be honoured. A scale of zero asks for no patience at all,
 /// a negative one asks for less than none, and a NaN compares false against
-/// every bound a policy has. Each used to be accepted here, discarded without a
-/// word where the policy is built, and then written into the report as though it
-/// had applied.
+/// every bound a policy has. Each, if accepted here, would be discarded without
+/// a word where the policy is built, and then written into the report as though
+/// it had applied.
 ///
 /// That last part is what makes this a type. [`ZondConfig`] is the record of how
 /// a scan was run as well as the instruction for running it, and a field that
@@ -773,8 +774,9 @@ pub struct RetryConfig {
     /// Replaces the attempt budget outright, whatever `effort` implies. One
     /// attempt disables retransmission.
     ///
-    /// Non-zero because a probe that is never sent is not a scan setting. Zero
-    /// used to be accepted here and raised to one where the policy is built.
+    /// Non-zero because a probe that is never sent is not a scan setting. A zero
+    /// accepted here could only be raised to one, silently, where the policy is
+    /// built.
     pub max_attempts: Option<NonZeroU8>,
     /// Multiplies how long the scan is willing to wait.
     ///
@@ -831,8 +833,8 @@ pub struct ProbeTuning {
     /// each one arrives at on its own.
     ///
     /// Non-zero because a ceiling of zero probes per second is not a slower
-    /// scan, it is no scan. Zero used to be accepted and then read as `None` at
-    /// three separate call sites.
+    /// scan, it is no scan. A zero accepted here would have to be read as `None`
+    /// separately at every call site that reads the rate.
     pub max_probe_rate: Option<NonZeroU32>,
 
     /// The fewest probes per second a strategy should emit, or `None` for
@@ -1289,8 +1291,8 @@ pub struct ZondConfig {
     /// that checks it. The privileged paths check and then record, in that
     /// order, because a send the kernel refuses must not spend the slot; a
     /// connect scan runs its probes as concurrent tasks, so two aimed at one
-    /// address would both find it ready and both proceed. Until that primitive
-    /// exists, a caller who needs the gap enforced needs the privileged path.
+    /// address would both find it ready and both proceed. Without that
+    /// primitive, a caller who needs the gap enforced needs the privileged path.
     ///
     /// ## What a gap counts
     ///
@@ -1429,9 +1431,9 @@ pub struct ZondConfig {
     ///
     /// Defaults to an inert profile, so a scan that set nothing here is
     /// indistinguishable from one run before the option existed. Carried into
-    /// [`probe_tuning`](Self::probe_tuning) for the strategies to read, and (once
-    /// the provenance surface lands) into the report, so a scan that evaded
-    /// something says so. See [`EvasionProfile`].
+    /// [`probe_tuning`](Self::probe_tuning) for the strategies to read, and into
+    /// the report, so a scan that evaded something says so. See
+    /// [`EvasionProfile`].
     pub evasion: EvasionProfile,
 
     /// Whether to capture ICMP errors for a technique whose verdict does not
@@ -1623,10 +1625,10 @@ mod tests {
         );
     }
 
-    /// Both spellings are one setting for every scale, including the one that
-    /// used to accept only the word while the module documentation said
-    /// otherwise. A front end reading `2` from a flag and `balanced` from a
-    /// settings file must not get two different scans.
+    /// Both spellings are one setting for every scale, as the module
+    /// documentation says, and no scale accepts only the word. A front end
+    /// reading `2` from a flag and `balanced` from a settings file must not get
+    /// two different scans.
     #[test]
     fn every_scale_parses_the_same_by_name_and_by_number() {
         for effort in ScanEffort::ALL {
@@ -1650,9 +1652,9 @@ mod tests {
     /// The message a front end prints is built from the levels themselves, so a
     /// level added to a scale is a level the message names.
     ///
-    /// The three messages used to spell their own lists, and nothing compared
-    /// them against `ALL`: both spellings would still parse and only the
-    /// sentence a caller reads would be wrong.
+    /// A message that spelled out its own list would have nothing comparing it
+    /// against `ALL`: both spellings would still parse and only the sentence a
+    /// caller reads would be wrong.
     #[test]
     fn a_parse_error_names_every_level_that_would_have_worked() {
         let effort = "maximum".parse::<ScanEffort>().unwrap_err().to_string();
@@ -1678,7 +1680,7 @@ mod tests {
 
     /// A scale no schedule can be built from is refused where it is set.
     ///
-    /// It used to be accepted here, discarded without a word where the policy is
+    /// Accepted here, it would be discarded without a word where the policy is
     /// built, and then written into the report as though it had applied. That
     /// last part is why this is a type: `ZondConfig` is the record of how a scan
     /// ran as well as the instruction for running it.
@@ -1707,11 +1709,10 @@ mod tests {
 
     /// The knobs a strategy reads arrive intact.
     ///
-    /// `probe_tuning` enumerated seven fields by hand, had eight call sites and
-    /// no test: a knob added to both structs and forgotten here would reach no
-    /// strategy, silently, which is the defect `Host::merge` had. It
-    /// destructures `self` now, so the omission is a compile error; this is the
-    /// half that catches a field wired to the wrong place.
+    /// A knob added to both structs and forgotten in `probe_tuning` would reach
+    /// no strategy, silently. It destructures `self`, so the omission is a
+    /// compile error; this is the half that catches a field wired to the wrong
+    /// place.
     #[test]
     fn every_probe_level_knob_reaches_the_strategies() {
         let cfg = ZondConfig {

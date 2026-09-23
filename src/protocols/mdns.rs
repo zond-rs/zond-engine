@@ -371,12 +371,12 @@ mod tests {
 
     /// A name with no wire form comes back as an error.
     ///
-    /// This used to abort the process. `name` is whatever a caller was asked
-    /// to resolve, and the builder underneath asserted the label bound rather
-    /// than reporting it, so a 63-character hostname panicked inside a
-    /// dependency. It reached `Resolver::resolve` through two layers written to
-    /// turn every failure into an empty vector, so nothing between here and the
-    /// caller could have caught it.
+    /// Not a panic that aborts the process. `name` is whatever a caller was
+    /// asked to resolve, and a builder that asserted the label bound rather
+    /// than reporting it would panic inside a dependency on a label past 63
+    /// octets. The panic would reach `Resolver::resolve` through two layers
+    /// written to turn every failure into an empty vector, so nothing between
+    /// here and the caller could catch it.
     #[test]
     fn a_name_with_no_wire_form_is_refused_rather_than_fatal() {
         let long_label = format!("{}.local", "a".repeat(64));

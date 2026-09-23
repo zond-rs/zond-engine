@@ -402,9 +402,9 @@ impl PortScanner for ConnectUdpPortScanner {
         }
 
         // Anything still queued was never sent, and carries no position to
-        // settle. The TCP scan above has always done this; leaving it out here
-        // both lost the ports and left the sitting's settlement counts short of
-        // the targets it was handed.
+        // settle. The TCP scan above does the same; leaving it out here would
+        // both lose the ports and leave the sitting's settlement counts short
+        // of the targets it was handed.
         while let Ok(target) = rx.try_recv() {
             record_unasked(&self.ctx, &target);
         }
@@ -644,9 +644,9 @@ async fn port_prober(
                 // Recorded rather than dropped because a port list that changes
                 // with the caller's privilege level is not a smaller answer, it
                 // is a different one. The raw path files `Closed` here, so
-                // omitting it left an unprivileged report with no `Closed` entry
-                // in its `ports_by_state` however many refusals it collected -
-                // a summary that was structurally wrong rather than merely
+                // omitting it would leave an unprivileged report with no
+                // `Closed` entry in its `ports_by_state` however many refusals
+                // it collected - a summary structurally wrong rather than merely
                 // incomplete, and exactly the kind of difference somebody
                 // diffing two scans would read as a change in the network.
                 ErrorKind::ConnectionRefused => Some(Probed {
@@ -668,9 +668,9 @@ async fn port_prober(
                 // may well get further.
                 //
                 // No evidence recorded, since there is no packet to name, and
-                // no verdict either: this used to file `Filtered`, which credits
-                // the target with a silence it was never asked for in the one
-                // field a reader takes for a finding.
+                // no verdict either: filing `Filtered` would credit the target
+                // with a silence it was never asked for in the one field a
+                // reader takes for a finding.
                 _ => Some(Probed {
                     ip: target.ip,
                     port: Some(settled(target.port, PortState::Unasked, None)),
@@ -959,15 +959,15 @@ fn finish(
 ///
 /// One task per address, not per port. Its ports are tried in turn and the
 /// first TCP-layer answer ends the address, so a host that answers on SSH costs
-/// one connect rather than five. A silent address costs all five, which is what
-/// it took before as well: the same socket budget, spent on fewer addresses at a
+/// one connect rather than five. A silent address costs all five, as it would
+/// with a task per port: the same socket budget, spent on fewer addresses at a
 /// time rather than on more ports of each.
 ///
 /// That shape is also what lets a sweep be continued. An address is the unit a
 /// journal counts, so its verdict has to be earned as a whole: answered, or
 /// every port asked once and none of them answering. Interleaving the ports of
-/// many addresses gave neither, because nothing knew when an address was
-/// finished with.
+/// many addresses would give neither, because nothing would know when an
+/// address was finished with.
 ///
 /// Addresses are drawn from
 /// [`dispatch_addresses`] to
@@ -1100,7 +1100,7 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
 /// finish, so the next port is tried.
 ///
 /// The stop signal is checked between ports, not only between addresses.
-/// One task now covers up to five connects, and a sweep that only looked once
+/// One task covers up to five connects, and a sweep that only looked once
 /// per address would take five timeouts to wind down rather than one. What has
 /// been asked so far decides how the address is filed: cut off part way through
 /// is not the same as asked and silent, and only the second is a verdict.
@@ -1224,9 +1224,9 @@ mod tests {
         assert!(wildcard_for(IpAddr::V6(Ipv6Addr::LOCALHOST)).is_ipv6());
     }
 
-    /// The regression guard for the IPv4-only bind: a v6 target used to fail at
-    /// `connect` and vanish without a record or a log. Loopback only, and no
-    /// privileges required, so this runs everywhere the suite does.
+    /// A socket bound IPv4-only would make a v6 target fail at `connect` and
+    /// vanish without a record or a log. Loopback only, and no privileges
+    /// required, so this runs everywhere the suite does.
     #[tokio::test]
     async fn closed_ipv6_port_is_classified_not_dropped() {
         let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);

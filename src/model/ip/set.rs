@@ -175,9 +175,10 @@ impl IpSet {
     /// disagreeing on zone both survive the merge, leaving a vector a binary
     /// search steps straight past.
     ///
-    /// Grouping also merges strictly more than address-first ordering did: two
-    /// ranges sharing a zone are now always adjacent, where before a
-    /// differently-zoned range between them left both in place.
+    /// Grouping also merges strictly more than address-first ordering would:
+    /// two ranges sharing a zone are always adjacent, where under address-first
+    /// ordering a differently-zoned range between them would leave both in
+    /// place.
     fn merge_v6(&mut self) {
         self.v6.sort_by_key(|r| (r.zone(), r.start_addr()));
         let mut merged: Vec<Ipv6Range> = Vec::with_capacity(self.v6.len());
@@ -297,7 +298,7 @@ impl IpSet {
     /// when it is not. The slow path allocates nothing, because a membership
     /// test is not a reason to merge a set the caller has not finished building.
     ///
-    /// Per family, because the merge is. Asking about both put every IPv6
+    /// Per family, because the merge is. Asking about both would put every IPv6
     /// lookup on the linear path for as long as one unmerged IPv4 range sat
     /// beside it, which is the path a received reply takes.
     pub fn contains(&self, ip: &IpAddr) -> bool {
@@ -416,14 +417,15 @@ impl IpSet {
     /// path, and it is per family because the merge is. A set that has just
     /// gained an IPv4 range holds an IPv6 half as canonical as it was a moment
     /// earlier, and a binary search over that half is as valid as it ever was;
-    /// [`canonicalize`](Self::canonicalize) has always known this and merged
-    /// only the family that needed it.
+    /// [`canonicalize`](Self::canonicalize) merges only the family that needs
+    /// it for the same reason.
     ///
-    /// Asking `!v4_dirty && !v6_dirty` instead put every IPv6 membership test on
-    /// a linear scan for as long as one unmerged IPv4 range sat beside it, which
-    /// is the path a received reply takes. Over a thousand merged IPv6 ranges
-    /// with one IPv4 address pushed after canonicalizing, twenty thousand
-    /// lookups took 276 ms where the merged set took 6.5 ms.
+    /// Asking `!v4_dirty && !v6_dirty` instead would put every IPv6 membership
+    /// test on a linear scan for as long as one unmerged IPv4 range sat beside
+    /// it, which is the path a received reply takes. Measured over a thousand
+    /// merged IPv6 ranges with one IPv4 address pushed after canonicalizing:
+    /// twenty thousand lookups take 276 ms on the linear path and 6.5 ms on the
+    /// merged one.
     fn is_merged(&self, ip: &IpAddr) -> bool {
         match ip {
             IpAddr::V4(_) => !self.v4_dirty,
@@ -521,9 +523,10 @@ impl IpSet {
 impl PartialEq for IpSet {
     /// Whether the two sets hold the same addresses.
     ///
-    /// Written by hand rather than derived because the derive compared the
+    /// Written by hand rather than derived because a derive would compare the
     /// range vectors as written and the dirty flags beside them, so one address
-    /// inserted twice and the same address inserted once were different sets.
+    /// inserted twice and the same address inserted once would be different
+    /// sets.
     /// What a caller means by `==` here is the addresses.
     ///
     /// Merged ranges are the only comparable form, so a set that is not in one is
@@ -1073,8 +1076,8 @@ impl Extend<IpAddr> for IpSet {
     /// nothing must not undo a `canonicalize` that has already run.
     ///
     /// Marking the family is half of that; the other half is that every read
-    /// asks about the family it is reading, which is
-    /// [`IpSet::contains`]'s to do and was the half that was missing.
+    /// asks about the family it is reading, which is [`IpSet::contains`]'s to
+    /// do.
     fn extend<T: IntoIterator<Item = IpAddr>>(&mut self, iter: T) {
         for ip in iter {
             match ip {
@@ -1188,7 +1191,7 @@ mod tests {
         assert_eq!(set.v4.len(), 2);
         assert!(set.v4_dirty);
 
-        // Explicitly canonicalize since queries are now immutable
+        // Explicitly canonicalize, since a query never merges the set it reads
         set.canonicalize();
         assert_eq!(set.len(), 2);
         assert!(!set.v4_dirty);
@@ -1262,15 +1265,14 @@ mod tests {
     }
 
     /// A set is merged per family, so work on one must not undo the other's
-    /// canonical state. Marking both put IPv6 membership back on its linear
-    /// path every time an IPv4 address arrived.
+    /// canonical state. Marking both would put IPv6 membership back on its
+    /// linear path every time an IPv4 address arrived.
     ///
-    /// The flags are half of it and were the half that already worked. The
-    /// assertion that matters is the last one: that a read of the untouched
-    /// family still takes its fast path. Marking the family and then asking
-    /// about both is the same linear scan by a longer route, and it is what
-    /// this test used to allow, because it checked the bookkeeping and never
-    /// the thing the bookkeeping is for.
+    /// The flags are half of it. The assertion that matters is the last one:
+    /// that a read of the untouched family still takes its fast path. Marking
+    /// the family and then asking about both is the same linear scan by a
+    /// longer route, and a test that checked the bookkeeping and never the
+    /// thing the bookkeeping is for would allow it.
     #[test]
     fn extending_one_family_leaves_the_other_canonical() {
         let mut set = IpSet::from_iter(vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]);
@@ -1398,9 +1400,10 @@ mod tests {
     }
 
     /// Equality is about the addresses a set holds, not about whether it has
-    /// been merged yet. Derived, it compared the dirty flags and the range
-    /// vectors as written, so one address inserted two ways compared unequal and
-    /// `assert_eq!` on two sets answered a question about bookkeeping.
+    /// been merged yet. Derived, it would compare the dirty flags and the range
+    /// vectors as written, so one address inserted two ways would compare
+    /// unequal and `assert_eq!` on two sets would answer a question about
+    /// bookkeeping.
     #[test]
     fn two_sets_holding_the_same_addresses_are_equal_however_they_were_built() {
         let canonical = IpSet::try_from("198.51.100.1-198.51.100.2, ::1").expect("parses");

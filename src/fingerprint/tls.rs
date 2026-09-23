@@ -190,8 +190,8 @@ pub async fn speculative_handshake(
 /// operator's, and a growing number of hosts refuse a no-SNI handshake
 /// outright, which reads, from a scan, as a port that does not speak TLS.
 ///
-/// This used to say the engine scans by IP, as though that settled it. It does
-/// not: [`resolve`](crate::resolve) turns names into addresses before a scan and
+/// That the engine scans by IP does not settle it:
+/// [`resolve`](crate::resolve) turns names into addresses before a scan and
 /// [`rdns`](crate::scanner::rdns) attaches names to hosts after one. The real
 /// obstacle is that neither has produced a name **by the time this runs**. A
 /// forward-resolved target does not record the name it came from, and reverse
@@ -270,10 +270,10 @@ const LEGACY_CLIENT_HELLO: &[u8] = &[
 ///
 /// rustls implements TLS 1.2 and 1.3 and implements neither 1.0
 /// nor 1.1, so a server offering only the older versions fails
-/// [`handshake`] and is reported as a port that answered nothing at all. For a
-/// security scanner that is the wrong way round: "this host still negotiates TLS
-/// 1.0" is among the most actionable single facts a scan can report, and it was
-/// the one configuration this engine could not see.
+/// [`handshake`] and, without this, is reported as a port that answered nothing
+/// at all. For a security scanner that is the wrong way round: "this host still
+/// negotiates TLS 1.0" is among the most actionable single facts a scan can
+/// report, and it is the one configuration the modern handshake cannot see.
 ///
 /// One ClientHello and the version out of the answer. No tunnel comes back and
 /// none is wanted, the finding *is* the version, and nothing is worth carrying
@@ -396,8 +396,8 @@ mod tests {
     /// A server that speaks only TLS 1.0 is a finding, not a silence.
     ///
     /// rustls implements 1.2 and 1.3 and implements neither 1.0
-    /// nor 1.1, so such a server fails the modern handshake. Before this probe
-    /// it was reported as a port that answered nothing, which loses the
+    /// nor 1.1, so such a server fails the modern handshake. Without this probe
+    /// it would be reported as a port that answered nothing, which loses the
     /// identification and the finding together, and "this host still negotiates
     /// TLS 1.0" is among the most actionable things a scan can say.
     #[test]

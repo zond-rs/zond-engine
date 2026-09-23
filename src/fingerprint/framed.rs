@@ -457,10 +457,10 @@ pub(super) fn ipmi_auth_capabilities(datagram: &[u8]) -> Option<String> {
 /// version="ntpd 4.2.8p15@1.3728-o Wed May 12", processor="x86_64", system="Linux/6.1.0"
 /// ```
 ///
-/// This is what the corpus's largest block of unreachable rules was written
-/// against. The ordinary client probe on this port draws a packet of timestamps
-/// with nothing in it to read, which is why they sat unreached: the field was
-/// never a decoding problem, it was the wrong question.
+/// This is what the corpus's largest block of otherwise unreachable rules is
+/// written against. The ordinary client probe on this port draws a packet of
+/// timestamps with nothing in it to read, which leaves them unreached: the
+/// field is not a decoding problem, the client probe asks the wrong question.
 ///
 /// Line breaks are folded to spaces and nothing else is touched. A daemon wraps
 /// this text for a terminal, and the imported rules match across the wrap with
@@ -860,8 +860,8 @@ pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
 /// ends of one field: `^Windows 6.1$` matches the first of those and nothing
 /// that contains it.
 ///
-/// This is what eighty-five imported rules were written against and none of
-/// them had ever read. The corpus probe stopped at a protocol negotiate, and a
+/// This is what eighty-five imported rules are written against. A probe that
+/// stops at a protocol negotiate leaves every one of them unread, since a
 /// negotiate response carries none of these: they arrive only in answer to a
 /// session setup, which is a second message on the same connection.
 ///
@@ -1429,8 +1429,8 @@ mod tests {
         );
     }
 
-    /// The ordinary client reply on this port, which is what the corpus probe
-    /// used to draw: forty-eight bytes of timestamps and nothing to read.
+    /// The ordinary client reply on this port, which is what a client-mode probe
+    /// draws: forty-eight bytes of timestamps and nothing to read.
     #[test]
     fn a_client_mode_reply_is_not_a_control_response() {
         let mut client = vec![0x24];
@@ -1547,8 +1547,8 @@ mod tests {
     /// A concentrator sends one for a repeat of a tunnel request it has already
     /// seen, and a scan sends the same probe twice: once to establish the port
     /// is open, once to identify it. Reading these twelve bytes as a service
-    /// named L2TP from a datagram that says nothing, which is what shipped
-    /// until a scan of xl2tpd showed the port coming back with no product.
+    /// would name L2TP from a datagram that says nothing, and a scan of xl2tpd
+    /// would report the port with no product.
     #[test]
     fn a_zero_length_body_is_an_acknowledgement_and_not_an_answer() {
         let zlb = [0xC8u8, 0x02, 0x00, 0x0C, 0x7A, 0x6F, 0, 0, 0, 0, 0, 1];

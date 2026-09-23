@@ -150,10 +150,11 @@ pub enum PortState {
     ///
     /// Such a port stays on the record rather than being left off the host,
     /// because a truncated port list and a complete one look identical and the
-    /// count agrees with itself either way. Before this state existed the only
-    /// way to keep it was to file it under whatever the scan read silence as,
-    /// which put a port nobody looked at beside ports that were probed and
-    /// stayed quiet. A comparison then read the pair as a port that had changed.
+    /// count agrees with itself either way. Without this state the only way to
+    /// keep it would be to file it under whatever the scan reads silence as,
+    /// which puts a port nobody looked at beside ports that were probed and
+    /// stayed quiet, and a comparison would read the pair as a port that had
+    /// changed.
     ///
     /// Being the bottom of the ordering, it never overrides anything:
     /// [`Port::merge`] folding a probed record onto an unasked one keeps the
@@ -206,11 +207,10 @@ impl PortState {
     /// Here for the reason [`Protocol::ALL`] gives, and read by the gate holding
     /// the exported schema to what this build can write.
     ///
-    /// It was written in neither the declaration's order nor any other, with
-    /// `Filtered` before `ClosedFiltered` and `Closed` before `Unfiltered`. The
-    /// gate compares names as a set and did not care, so nothing said so; a
-    /// caller rendering a legend from it would have got them in an order the
-    /// type says is wrong. `model`'s own test now holds every `ALL` to its
+    /// The order matters although the gate does not see it: the gate compares
+    /// names as a set, and a caller rendering a legend from this list gets the
+    /// states in whatever order it holds, so any order but the declaration's is
+    /// one the type says is wrong. `model`'s own test holds every `ALL` to its
     /// enum's declaration order.
     pub const ALL: [PortState; 7] = [
         Self::Unasked,

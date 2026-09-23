@@ -321,25 +321,25 @@ mod imp {
     /// Empty, deliberately, and both arms of this module are stubs that refuse.
     ///
     /// Windows is not a supported scanning host, so nothing here is exercised.
-    /// What it must not do is appear to work. It was `GetTickCount64` subtracted
-    /// from the wall clock, described as constant within a boot, and it is not:
-    /// the two are read at different instants, the tick counter has a resolution
-    /// of about fifteen milliseconds, and it does not advance across some suspend
-    /// states. The value moved within one boot, every lock read as
+    /// What it must not do is appear to work. `GetTickCount64` subtracted from
+    /// the wall clock looks constant within a boot, and it is not: the two are
+    /// read at different instants, the tick counter has a resolution of about
+    /// fifteen milliseconds, and it does not advance across some suspend
+    /// states. A value that moves within one boot reads every lock as
     /// `RebootedUnder`, and `RebootedUnder` is resumable.
     ///
-    /// That mattered because [`classify`](super::classify) reads the boot
+    /// That matters because [`classify`](super::classify) reads the boot
     /// identity first: a differing one returns before `pid_is_alive` is
-    /// reached, so the stub below could never deliver the refusal its own
-    /// comment promised. Returning the same value every time is what lets it.
-    /// Two empty identities compare equal, the pid decides, and the pid always
-    /// says a scan may be running.
+    /// reached, so the stub below could never deliver its refusal. Returning
+    /// the same value every time is what lets it. Two empty identities compare
+    /// equal, the pid decides, and the pid always says a scan may be running.
     pub fn boot_identity() -> String {
         String::new()
     }
 
     /// Always alive, which refuses a resume rather than permitting a second
-    /// writer. The safe direction for a stub, and now reachable.
+    /// writer. The safe direction for a stub, and reachable because the boot
+    /// identity above never differs.
     pub fn pid_is_alive(_pid: u32) -> bool {
         true
     }
@@ -450,12 +450,12 @@ mod persistence {
                 // The exclusion this file rests on is `create_new`: two processes
                 // racing for a *free* journal cannot both succeed. Breaking one
                 // needs the opposite and does not get it for free. Replacing a
-                // dead lock by rename stepped outside the create entirely, and
+                // dead lock by rename steps outside the create entirely, and
                 // removing it first is no better on its own: every racer removes
                 // whatever is at the name, including the lock the last winner
-                // created a microsecond ago. Eight processes put on one crashed
-                // journal produced two to four holders that way, each having
-                // deleted the previous winner's brand-new lock.
+                // created a microsecond ago. Measured with eight processes put on
+                // one crashed journal, that yields two to four holders, each
+                // having deleted the previous winner's brand-new lock.
                 //
                 // So the inspect, the removal and the create are held together
                 // under an advisory lock on a sibling file, released the moment
@@ -529,11 +529,11 @@ mod persistence {
         /// then writing it is two steps, and a racer reading between them finds a
         /// lock it cannot parse, which [`inspect`] reports as `Free` because that
         /// is what a writer killed mid-write leaves. It is also what a writer
-        /// mid-create leaves, and reading it that way let a second process delete
-        /// a lock the first had taken a microsecond earlier. So the record is
-        /// written to a file of its own and that file is linked into place:
-        /// `link` refuses a name that exists, the same exclusion `create_new`
-        /// gives, over a file that already has its contents.
+        /// mid-create leaves, and reading it that way would let a second
+        /// process delete a lock the first had taken a microsecond earlier. So
+        /// the record is written to a file of its own and that file is linked
+        /// into place: `link` refuses a name that exists, the same exclusion
+        /// `create_new` gives, over a file that already has its contents.
         ///
         /// The lock names a pid and a scan, in a directory holding an
         /// engagement's targets, so it is created the way every other journal
@@ -541,15 +541,15 @@ mod persistence {
         /// cannot release a journal they own the rest of.
         ///
         /// The staged name carries a counter as well as the pid, because a pid
-        /// is only unique between processes and this is a library. Two threads
-        /// of one caller taking the same journal shared the staged name, and
+        /// is only unique between processes and this is a library. With the pid
+        /// alone, two threads of one caller taking the same journal would share
+        /// the staged name, and
         /// [`create_staged`](crate::journal::file::create_staged) removes a name
-        /// it finds occupied: one thread deleted the file the other was about to
-        /// link, which fails the link with `NotFound` and is read here as an
-        /// error rather than a lost race, or linked an empty file into place,
-        /// which [`inspect`] reads as `Free` and a third thread then breaks.
-        /// Both produced two holders of a lock whose whole purpose is that there
-        /// is one.
+        /// it finds occupied: one thread would delete the file the other was
+        /// about to link, which fails the link with `NotFound` and is read here
+        /// as an error rather than a lost race, or link an empty file into place,
+        /// which [`inspect`] reads as `Free` and a third thread then breaks. Both
+        /// produce two holders of a lock whose whole purpose is that there is one.
         fn create_exclusively(path: &Path, record: &LockRecord) -> std::io::Result<()> {
             static STAGING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let staged = path.with_extension(format!(
@@ -972,22 +972,21 @@ mod file_tests {
 
     /// Several processes finding the same crashed journal: exactly one takes it.
     ///
-    /// The case the break path used to get wrong. `inspect` then rename is two
-    /// operations, so every racer read `Crashed`, every racer wrote its own
-    /// record over the last one, and every racer returned a `Lock` it believed
-    /// was exclusive. Going back through the exclusive create is what makes the
-    /// question have one answer.
+    /// `inspect` then rename is two operations, so a break path built on them
+    /// would have every racer read `Crashed`, write its own record over the
+    /// last one, and return a `Lock` it believed was exclusive. Going back
+    /// through the exclusive create is what makes the question have one answer.
     ///
     /// # Why it runs the race more than once
     ///
     /// Racers here are threads, so they share a process and everything named
-    /// after it. That found a second defect years after the first: the staged
-    /// file `create_exclusively` links into place carried only the pid, so two
-    /// threads shared the name and each removed the other's, and the count came
-    /// out at two about one run in twenty. A test that fails one time in twenty
-    /// is one people re-run, so the racers now start on a barrier and the race
-    /// is run in rounds. Reverting either mechanism reddens this most times it
-    /// runs, which is the least a guard against a one-in-twenty defect can be.
+    /// after it. A staged file for `create_exclusively` to link into place that
+    /// carried only the pid would be shared by two threads, each would remove
+    /// the other's, and the count would come out at two about one run in
+    /// twenty. A test that fails one time in twenty is one people re-run, so the
+    /// racers start on a barrier and the race is run in rounds. Removing either
+    /// mechanism reddens this most times it runs, which is the least a guard
+    /// against a one-in-twenty defect can be.
     #[test]
     fn only_one_of_several_racers_breaks_a_crashed_lock() {
         for round in 0..16 {

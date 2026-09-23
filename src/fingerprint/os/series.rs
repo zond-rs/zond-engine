@@ -15,9 +15,9 @@
 //! a rate or is offset randomly per connection. One reply is a number, several
 //! are an algorithm.
 //!
-//! The classifiers here are the measurement half. They were written and tested
-//! against real hosts first, and moved here once rules needed to predicate on
-//! what they read, the same graduation the recorded option layouts took into
+//! The classifiers here are the measurement half, tested against real hosts,
+//! and they live beside the rules because rules predicate on what they read,
+//! just as the recorded option layouts live in
 //! [`StackObservation`](super::StackObservation). A rule that wants to say
 //! "Linux 5.x has a hashed ISN generator" needs this vocabulary to say it with.
 //!
@@ -693,8 +693,9 @@ mod tests {
     /// The quotient is an infinity where the clock moved and a NaN where it did
     /// not, and a NaN compares false against every bound the rate is checked
     /// against: not above the ceiling, not outside the spread, not below one
-    /// hertz. It reached the end and cast to zero, so a series that measured
-    /// nothing was reported as ticking, at "NaN Hz" in the line a person reads.
+    /// hertz. Unchecked, it reaches the end and casts to zero, so a series that
+    /// measured nothing would be reported as ticking, at "NaN Hz" in the line a
+    /// person reads.
     #[test]
     fn an_interval_of_no_length_yields_no_rate() {
         let t0 = Instant::now();
@@ -724,7 +725,7 @@ mod tests {
         assert_eq!(ordinary.class, ClockClass::Hertz(1000), "{}", ordinary.line);
     }
 
-    /// The regression the fastest-interval reading exists for.
+    /// The failure the fastest-interval reading exists for.
     ///
     /// A counter never jumps, so one step implying an implausible rate settles
     /// it. Reading the *slowest* interval instead asks whether any step looks
@@ -759,7 +760,7 @@ mod tests {
         );
 
         // A random series that happens to contain one near-neighbour pair, which
-        // is what the slowest-interval reading was fooled by.
+        // is what a slowest-interval reading is fooled by.
         let random = vec![
             sample(0, 51_234),
             sample(100, 8_123),
@@ -832,12 +833,12 @@ mod tests {
     /// the three fields each reply held. Absent slices mean the field was not
     /// present in those replies, which is a different thing from a zero.
     ///
-    /// The base instant is read **once**. Reading it per sample made the
-    /// offsets approximate rather than exact, each call advances by however
+    /// The base instant is read **once**. Reading it per sample would make the
+    /// offsets approximate rather than exact, each call advancing by however
     /// long the loop took, and every reading here divides a counter's movement
     /// by the interval between samples, so a machine under load could push a
     /// rate across a bucket boundary and fail a test about arithmetic for
-    /// reasons that had nothing to do with it.
+    /// reasons that have nothing to do with it.
     fn series(
         offsets: &[Duration],
         identifiers: &[u16],
@@ -1004,8 +1005,8 @@ mod tests {
     }
 
     /// RFC 7323 §5.4: a per-connection random offset makes every sample a
-    /// different clock, and the first run against real hardware produced
-    /// exactly this and had it reported as a clock running at 1.9 GHz.
+    /// different clock. Real hardware produces exactly this, and read as one
+    /// clock it measured as a clock running at 1.9 GHz.
     #[test]
     fn a_per_connection_random_offset_is_not_a_clock() {
         let randomised = series(
@@ -1024,10 +1025,9 @@ mod tests {
         assert_eq!(read_clock(&randomised).class, ClockClass::Randomised);
     }
 
-    /// The case that decides whether checking every interval was worth it. The
-    /// endpoints are five hundred ticks apart across half a second, so an
-    /// endpoint-only reading reports a tidy 1000 Hz while every step in between
-    /// is nonsense.
+    /// The case that makes checking every interval worth it. The endpoints are
+    /// five hundred ticks apart across half a second, so an endpoint-only
+    /// reading reports a tidy 1000 Hz while every step in between is nonsense.
     #[test]
     fn endpoints_that_agree_do_not_make_the_middle_a_clock() {
         let plausible = series(
@@ -1063,9 +1063,9 @@ mod tests {
         // Both intervals sit inside `MAX_INTERVAL_FOR_CLOCK`, which is the
         // point: this test is about the *naming* being coarse, and a sample
         // spaced beyond that ceiling is refused a rate before any naming
-        // happens. The pair used to straddle it, 500 ms and 502 ms, so both
-        // readings came back refused and the assertion compared one rejection
-        // against another, agreeing for a reason that had nothing to do with
+        // happens. A pair straddling it, 500 ms and 502 ms, would have both
+        // readings refused, and the assertion would compare one rejection
+        // against another, agreeing for a reason that has nothing to do with
         // clocks.
         let jittered = series(
             &[Duration::ZERO, Duration::from_millis(251)],

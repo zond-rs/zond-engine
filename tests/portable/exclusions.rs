@@ -9,12 +9,13 @@
 //! # The exclusion policy's sending promise, as an invariant over a plan
 //!
 //! No probe is *addressed* to an excluded address: `withhold` and
-//! `withhold_targets` keep that before anything is opened. A sweep once broke it
-//! without going near either: `seed_from_neighbor_table` took candidates from
-//! the host's own neighbour table into the target set *after* withholding, so a
-//! swept segment sent a unicast solicitation to an address somebody had been
-//! told would not be probed — and because the recording gate still dropped the
-//! finding, the report stayed clean and the packet was invisible.
+//! `withhold_targets` keep that before anything is opened. A sweep can break it
+//! without going near either: `seed_from_neighbor_table` takes candidates from
+//! the host's own neighbour table into the target set, and taken in *after*
+//! withholding, a swept segment would send a unicast solicitation to an address
+//! somebody had been told would not be probed — and because the recording gate
+//! still drops the finding, the report would stay clean and the packet
+//! invisible.
 //!
 //! The recording promise, that no excluded address appears in the report, is
 //! lexical and gets a census in the hygiene tier, `tests/hygiene/exclusions.rs`.
@@ -22,7 +23,7 @@
 //! So it gets the stronger thing instead: an invariant over what a plan actually
 //! contains. Whatever a sweep discovers, and however it discovers it, no step it
 //! produces may carry an excluded address. That catches a path nobody thought to
-//! add to a list, which is the kind of path exclusion defects have come through.
+//! add to a list, which is the kind of path an exclusion defect comes through.
 //!
 //! A plan cannot hold everything a scan sends. A sweep takes leads off the wire
 //! while it runs, from mDNS records and unsolicited advertisements, and asks each
@@ -76,12 +77,12 @@ fn addresses_of(step: &DiscoveryStep) -> Vec<IpAddr> {
 /// the test that fails if that filter goes.
 ///
 /// Saying so matters. Removing the neighbour-table filter leaves this test
-/// passing, and a test that passes for a reason it does not name is a defect
-/// this suite has had twice: a COOKIE-ECHO test that quoted an INIT, and
-/// escaping tests that never saw the most hostile strings. The assertions below
-/// on the fixture itself are what stop this one joining them: if withholding
-/// stops removing anything, or the plan stops having steps, the test fails
-/// rather than quietly covering nothing.
+/// passing, and a test that passes for a reason it does not name is a defect,
+/// the kind a COOKIE-ECHO test that quotes an INIT is, or an escaping test that
+/// never sees the most hostile strings. The assertions below on the fixture
+/// itself are what stop this one being one: if withholding stops removing
+/// anything, or the plan stops having steps, the test fails rather than quietly
+/// covering nothing.
 #[test]
 fn no_plan_step_carries_an_excluded_address() {
     let forbidden =

@@ -551,7 +551,7 @@ mod tests {
         assert_ne!(icmp.get_checksum(), 0, "checksummed over the pseudo-header");
     }
 
-    /// IPv4 had no echo at all, so a scan could not ping. The frame has to be a
+    /// Without an IPv4 echo a scan cannot ping at all. The frame has to be a
     /// real one: right ethertype, right protocol number, a checksummed header
     /// and a checksummed message.
     #[test]
@@ -1049,10 +1049,10 @@ mod tests {
     /// the RFC's flag does not catch it: the flag is the top bit, so everything
     /// from a day up to two billion clears it.
     ///
-    /// Found by the property test below rather than by reading the RFC, and it
-    /// mattered: the fold onto the half-day would have turned a number meaning
-    /// nothing into a plausible offset of a few hours, which a report would then
-    /// have stated as a fact about the host's clock.
+    /// Reading the RFC does not show it, and the property test below does. It
+    /// matters: the fold onto the half-day would turn a number meaning nothing
+    /// into a plausible offset of a few hours, which a report would then state
+    /// as a fact about the host's clock.
     #[test]
     fn a_reading_that_is_not_a_time_of_day_yields_no_offset() {
         let absurd = TimestampReply {

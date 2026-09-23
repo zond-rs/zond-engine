@@ -67,11 +67,10 @@
 //!
 //! Tier 2 is where the modern self-hosted stack sits, and it goes stale fastest:
 //! a media server, a subtitle fetcher, a photo library, a local model runner.
-//! Nineteen of them were missing from the first draft of
-//! this list, two being the ports every machine with a GPU now listens on, and
-//! they went in at the cost of nineteen registrations from the eighties that
-//! nothing has spoken this century. That trade is the maintenance this file
-//! wants: not more ports, the *current* ones.
+//! Nineteen of its ports, two of them ones every machine with a GPU now listens
+//! on, hold places that would otherwise go to registrations from the eighties
+//! that nothing has spoken this century. That trade is the maintenance this
+//! file wants: not more ports, the *current* ones.
 //!
 //! Tier 3 is the one that differs most from convention, and it is deliberate. In
 //! 2026 a web service with no assigned port lands somewhere in `8000-8100` or
@@ -95,7 +94,7 @@
 /// for how the order was arrived at and how much of it to believe.
 ///
 /// A `const` like [`TCP_TIER_BOUNDS`] and [`COMMON_DISCOVERY_PORTS`](super::set::COMMON_DISCOVERY_PORTS)
-/// beside it, rather than the `static` it was. Nothing wants its address.
+/// beside it, rather than a `static`, since nothing wants its address.
 pub const TCP_BY_PREVALENCE: [u16; 1000] = [
     // ── Tier 1 (ranks 1–100): hand-ranked against each other ────────────────
     443, 80, 22, 445, 3389, 8080, 139, 135, 21, 25, 8443, 53, 23, 110, 143, 993, 995, 3306, 5432,
@@ -377,9 +376,9 @@ mod tests {
         }
     }
 
-    /// The ports the user's own report was missing, and the reason this module
-    /// exists: all three are outside `1-1024`, all three were running services,
-    /// and a scan of the well-known range reported none of them.
+    /// Three ports real services listen on, and the reason this module exists:
+    /// all three are outside `1-1024`, so a scan of the well-known range
+    /// reports none of them.
     #[test]
     fn the_ports_the_well_known_range_misses_are_covered() {
         let all: HashSet<u16> = TCP_BY_PREVALENCE.iter().copied().collect();
@@ -392,12 +391,12 @@ mod tests {
     /// the default one missed, and the ports a 2026 catalogue has no business
     /// omitting.
     ///
-    /// Bazarr came from exactly the feedback loop this list should have: a
-    /// `-p-` run found it on a machine already known to be running its three
-    /// sibling applications, all of which were in the catalogue. The two model
-    /// runners are the harder lesson: nothing found them because nothing was
-    /// looking, and a list that misses what every machine with a GPU listens on
-    /// is out of date rather than incomplete.
+    /// Bazarr is the feedback loop this list should have: a full-range scan
+    /// finds it on a machine already known to be running its three sibling
+    /// applications, all of which are in the catalogue. The two model runners
+    /// are the harder lesson: nothing finds them unless something is looking,
+    /// and a list that misses what every machine with a GPU listens on is out
+    /// of date rather than incomplete.
     #[test]
     fn the_modern_self_hosted_stack_is_covered() {
         let all: HashSet<u16> = TCP_BY_PREVALENCE.iter().copied().collect();

@@ -454,9 +454,9 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
 #[cfg(test)]
 pub(crate) mod tests {
 
-    /// A segment produced an advertisement naming `fe80::`, and the host that
-    /// sent it was then credited with an address nothing can hold, which read
-    /// as an address it had *gained* when the segment was swept again.
+    /// Real segments carry advertisements naming `fe80::`, and the host that
+    /// sent one would be credited with an address nothing can hold, which reads
+    /// as an address it has *gained* when the segment is swept again.
     #[test]
     fn an_advertisement_naming_an_address_nothing_can_hold_is_left_alone() {
         use std::net::Ipv6Addr;
@@ -628,8 +628,8 @@ pub(crate) mod tests {
         ));
     }
 
-    /// The regression guard for a scanner crediting its echo probe with finding
-    /// a host that never answered it.
+    /// A scanner must not credit its echo probe with finding a host that never
+    /// answered it.
     ///
     /// A promiscuous capture on a live segment sees a great deal of IPv6 between
     /// other hosts, and a bare header with no ICMPv6 message behind it is not an

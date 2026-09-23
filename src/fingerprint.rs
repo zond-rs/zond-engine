@@ -151,9 +151,9 @@ const MAX_RESPONSE_BYTES: usize = 4096;
 ///
 /// A product name, a version and a supplementary technology are all short by
 /// nature. What a bound stops is a hostile response putting a kilobyte into
-/// each: measured before this existed, one reply produced a 1500-byte `product`
-/// and a 1500-byte `extrainfo`, and both travelled into the store, the journal,
-/// the JSON, the CSV, the HTML and the nmap XML.
+/// each: measured without it, one reply yields a 1500-byte `product` and a
+/// 1500-byte `extrainfo`, and both travel into the store, the journal, the
+/// JSON, the CSV, the HTML and the nmap XML.
 ///
 /// Refused rather than truncated, which is the argument
 /// the SNMP reader already makes about `sysDescr`: half a value matched
@@ -871,10 +871,10 @@ enum GenericReply {
 /// first. So writing first cannot lose a banner, and it saves the timeout that
 /// waiting for a banner nobody is going to send would cost.
 ///
-/// That saving is the whole point. The old path waited half a second for a
-/// greeting, sent nothing, concluded the port was silent, and then spent up to
-/// another second and a half guessing that the silence was TLS. Measured against
-/// one ordinary home server that was two seconds per unidentified port, on seven
+/// That saving is the whole point. Waiting half a second for a greeting, sending
+/// nothing, concluding the port is silent, and then spending up to another
+/// second and a half guessing that the silence is TLS costs two seconds per
+/// unidentified port. Measured against one ordinary home server, that was seven
 /// of its eleven open ports, to learn nothing about any of them. An HTTP request
 /// answers in a round trip and names most of them.
 async fn ask_generically(stream: &mut TcpStream, socket: Option<SocketAddr>) -> GenericReply {
@@ -1410,7 +1410,7 @@ mod tests {
 
     /// A port number nothing is registered under yields no service at all.
     ///
-    /// The alternative was a placeholder, and a placeholder is a service name as
+    /// The alternative is a placeholder, and a placeholder is a service name as
     /// far as every consumer is concerned. The exported JSON, the CSV, the HTML
     /// page and the nmap XML another tool ingests would each say the port is
     /// running something called `???`.
@@ -1440,7 +1440,7 @@ mod tests {
     ///
     /// Nothing here fingerprints an SCTP service: naming one needs a completed
     /// association, and the scan opens none. A port reported with no label at
-    /// all was the alternative, and `2905/sctp open` tells a reader less than
+    /// all is the alternative, and `2905/sctp open` tells a reader less than
     /// their own notes would.
     #[test]
     fn an_sctp_port_is_named_by_the_service_that_claims_its_number() {
@@ -1703,10 +1703,10 @@ mod tests {
 
     #[tokio::test]
     async fn analyze_resolves_a_versionless_server_to_its_name_not_generic_http() {
-        // Regression: a versionless `Server` is Probable, the same as the HTTP
-        // analyzer's baseline. If the baseline names a product, the stable sort
-        // keeps it first and the real server ("cloudflare") is buried under a
-        // generic "http". This must resolve to the server name.
+        // A versionless `Server` is Probable, the same as the HTTP analyzer's
+        // baseline. If the baseline names a product, the stable sort keeps it
+        // first and the real server ("cloudflare") is buried under a generic
+        // "http". This must resolve to the server name.
         let responses = ResponseSet::from_banners(vec![
             "HTTP/1.1 403 Forbidden\r\nServer: cloudflare\r\n\r\n".to_string(),
         ]);
@@ -1794,8 +1794,9 @@ mod tests {
     ///
     /// rustls implements TLS 1.2 and 1.3 and implements neither 1.0
     /// nor 1.1, so a server offering only the older versions fails the modern
-    /// handshake. It used to be reported as a port that answered nothing at all,
-    /// which loses the identification and the finding together.
+    /// handshake. Without the legacy probe it would be reported as a port that
+    /// answered nothing at all, which loses the identification and the finding
+    /// together.
     ///
     /// The mock answers a ClientHello with a TLS 1.0 ServerHello and nothing
     /// else, which is enough: the finding is the version.
@@ -1853,13 +1854,14 @@ mod tests {
     /// A port that trickles cannot hold a scan.
     ///
     /// One byte every forty milliseconds sits permanently inside
-    /// [`CONTINUATION_GRACE`], so before [`MAX_CONTINUATION`] existed this read
-    /// ran until the four-kilobyte cap was reached: measured at ninety-seven
+    /// [`CONTINUATION_GRACE`], so without [`MAX_CONTINUATION`] this read would
+    /// run until the four-kilobyte cap was reached: measured at ninety-seven
     /// seconds for one socket, with nothing above it to cut the exchange short.
     ///
     /// The assertion is on the clock rather than on the bytes because the clock
     /// is the property. A generous ceiling keeps this from failing on a loaded
-    /// machine while still being an order of magnitude below the old behaviour.
+    /// machine while still being an order of magnitude below those ninety-seven
+    /// seconds.
     #[tokio::test]
     async fn a_trickling_port_cannot_hold_the_reader() {
         use tokio::net::{TcpListener, TcpStream};

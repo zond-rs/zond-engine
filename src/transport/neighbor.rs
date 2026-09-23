@@ -106,12 +106,12 @@ impl NeighborResolver {
     /// cache. On-link routes come back with `next_hop_mac` set only if
     /// previously learned; off-link routes carry the gateway's MAC directly.
     ///
-    /// A loopback destination has no such route and never had one. It is not
-    /// on-link on any Ethernet interface, so the off-link arm used to answer it
-    /// with the default gateway, and a SYN aimed at `127.0.0.1` went out a
-    /// physical interface for the gateway to drop. Nothing replied, which a
-    /// port scan reads as filtered: a wrong answer rather than a missing one,
-    /// and the reason it is worth refusing here rather than further out.
+    /// A loopback destination has no such route. It is not on-link on any
+    /// Ethernet interface, so the off-link arm would answer it with the default
+    /// gateway, and a SYN aimed at `127.0.0.1` would go out a physical
+    /// interface for the gateway to drop. Nothing would reply, which a port
+    /// scan reads as filtered: a wrong answer rather than a missing one, and
+    /// the reason it is worth refusing here rather than further out.
     pub fn resolve(&self, dst: IpAddr) -> Option<LinkRoute> {
         if dst.is_loopback() {
             return None;

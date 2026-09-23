@@ -1580,8 +1580,8 @@ mod tests {
 
     /// A host found on a swept link is covered whatever address it is keyed by.
     ///
-    /// The case a real segment produced, and the one an earlier version of this
-    /// got wrong by asking whether the *address* was link-local. A neighbour
+    /// A case real segments produce, and one a check asking whether the
+    /// *address* is link-local would get wrong. A neighbour
     /// that answers an all-nodes solicitation is routinely keyed under a global
     /// address, because this engine prefers a routable one when both are known.
     /// The sweep still reached it, on the link.

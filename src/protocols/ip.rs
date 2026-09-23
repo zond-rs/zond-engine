@@ -601,13 +601,13 @@ mod tests {
     /// one it cannot.
     ///
     /// The field counts the header as well, so it runs out twenty bytes before
-    /// the payload does. Past that the addition used to wrap: in release a
-    /// payload of 65 516 produced a header claiming a total length of zero, and
-    /// 65 535 one claiming nineteen, which is shorter than the header itself.
-    /// A receiver drops both, and the scan reads that as a firewall.
+    /// the payload does. Past that an unchecked addition wraps: in release a
+    /// payload of 65 516 would produce a header claiming a total length of zero,
+    /// and 65 535 one claiming nineteen, which is shorter than the header
+    /// itself. A receiver drops both, and the scan reads that as a firewall.
     ///
-    /// In debug the same addition panicked instead, so the two build profiles
-    /// disagreed about whether this was a crash or a wrong answer.
+    /// In debug the same addition panics instead, so the two build profiles
+    /// would disagree about whether this is a crash or a wrong answer.
     #[test]
     fn a_payload_too_large_for_the_length_field_is_refused_rather_than_wrapped() {
         let largest = u16::MAX as usize - IP_V4_HDR_LEN;
@@ -642,8 +642,7 @@ mod tests {
 
     // ── The readers ──────────────────────────────────────────────────────────
     //
-    // This module had no test for any of its six readers, which is why the two
-    // findings below were found by reading. Everything here is the reading half.
+    // Everything here is the reading half, covering the module's six readers.
 
     /// Reads bytes that are known to be a frame, since every one below is built
     /// by `frame_of` two lines down.
@@ -698,9 +697,9 @@ mod tests {
     /// later one still says protocol 17, and reading it hands the middle of
     /// somebody's payload to a caller expecting a datagram.
     ///
-    /// The module documentation has always said a frame that cannot be read
-    /// plainly is declined rather than guessed at; this is the input that was
-    /// guessed at. `local.rs` passes what comes back straight to
+    /// The module documentation says a frame that cannot be read plainly is
+    /// declined rather than guessed at; this is the input a reader is most
+    /// tempted to guess at. `local.rs` passes what comes back straight to
     /// `mdns::extract_hosts`.
     #[test]
     fn a_fragment_carries_no_datagram_and_is_declined() {
@@ -757,10 +756,10 @@ mod tests {
     /// A frame that arrived under another ethertype is not an IPv6 packet
     /// however its bytes read.
     ///
-    /// `icmpv6_type` and `icmpv6_echo_token` used to start at the payload
-    /// without asking, so an ARP frame padded to look like an IPv6 header
-    /// reported an ICMPv6 type. `ndp`'s own walk has always checked; the three
-    /// now share it.
+    /// Starting at the payload without asking, `icmpv6_type` and
+    /// `icmpv6_echo_token` would report an ICMPv6 type for an ARP frame padded
+    /// to look like an IPv6 header. Both read through the walk `ndp` checks
+    /// with, so all three share the check.
     #[test]
     fn a_frame_of_another_ethertype_carries_no_icmpv6() {
         let mut packet = vec![0u8; IP_V6_HDR_LEN];

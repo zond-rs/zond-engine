@@ -34,12 +34,12 @@
 //! the same sequence of calls, reads back the same value at each one. A recorded
 //! reply carries its error too, so a module that branches on a timeout or a refusal
 //! takes the same branch on replay. The bytes a `speak` sent are kept for
-//! provenance and for a future strict replay that checks them; positional replay
-//! does not match on them yet.
+//! provenance, and are what a strict replay would check against; positional
+//! replay does not match on them.
 //!
-//! The tape lives in memory for now. Writing it into the journal, so a whole scan's
-//! detections replay from a saved run, is the next step; the wire form the journal
-//! needs will live beside the model's other recorded types.
+//! The tape itself lives in memory and carries no wire form. A journal holds it
+//! through the sibling `record` module, the compute tier's parallel to the model's
+//! record layer, so a whole scan's detections replay from a saved run.
 
 use std::net::IpAddr;
 
@@ -151,9 +151,9 @@ impl<C: Capabilities> Capabilities for RecordingCapabilities<C> {
 /// budget produced live, so replay reproduces them rather than deriving them again.
 ///
 /// A call past the end of a queue means the run diverged from the one recorded,
-/// which a faithful same-module replay never does. For now that returns a benign
-/// default (an empty reply, a zero tick) rather than an error; surfacing divergence
-/// is a later refinement.
+/// which a faithful same-module replay never does. That call returns a benign
+/// default (an empty reply, a zero tick) rather than an error, and the divergence
+/// is surfaced afterwards through `diverged`.
 pub struct RecordedCapabilities {
     tape: CapTape,
     speak_cursor: usize,

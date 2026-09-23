@@ -17,8 +17,8 @@
 //!
 //! [`record`](crate::record) is already the model as data that can be written
 //! down and read back, and every one of its types rebuilds a model value through
-//! the model's own constructors, so a rebuilt host passed the same checks a
-//! scanned one did. Repeating that here would be a second place that knows how to
+//! the model's own constructors, so a rebuilt host passes the same checks a
+//! scanned one does. Repeating that here would be a second place that knows how to
 //! assemble a [`Host`].
 //!
 //! So this module maps the exported shape onto the recorded shape and stops. The
@@ -364,9 +364,9 @@ impl Document {
             .map_err(|message| refuse(format, message))?;
 
         // `produced_by` where the document has one. A document written before
-        // that field existed put the same value in `engine.version`, which back
-        // then was the attribution, which is the thing this release
-        // stopped it from being.
+        // that field existed puts the same value in `engine.version`, which in
+        // such a document is the attribution rather than the build that wrote
+        // it.
         let produced_by = self.produced_by.unwrap_or(self.engine.version);
 
         Ok(ScanReport::recorded(produced_by, phases, self.hosts))
@@ -806,7 +806,7 @@ struct SettingsDto {
     /// What the scan changed about its packets, absent when it changed nothing.
     /// Deserialized into the journal's own record, then checked by
     /// [`checked_evasion`]: four of its fields are named vocabularies or
-    /// addresses, not the plain scalars this comment used to claim.
+    /// addresses, not plain scalars.
     evasion: Option<EvasionSettingsRecord>,
     /// The zombie a TCP port scan ran through, absent for an ordinary scan.
     /// Checked the same way, by [`checked_idle_scan`].
@@ -822,14 +822,14 @@ struct SettingsDto {
 /// Four of its fields are not plain scalars. `flags` is a named vocabulary,
 /// `spoof_mac` is a hardware address, `decoys` is a list of addresses, and the
 /// record layer reads every one of them *downward*: an unrecognised flag name
-/// contributed nothing, an unparseable address was filtered out of the list, and
-/// a bad `spoof_mac` became `None`. A document claiming something this build
-/// cannot express therefore read back as a document claiming less, silently, and
-/// against this reader's own rule that an unknown named value is an error naming
-/// it rather than a field to skip.
+/// contributes nothing, an unparseable address is filtered out of the list, and
+/// a bad `spoof_mac` becomes `None`. Unchecked, a document claiming something
+/// this build cannot express would read back as a document claiming less,
+/// silently, and against this reader's own rule that an unknown named value is
+/// an error naming it rather than a field to skip.
 ///
-/// `"syn|nonsense"` was the sharpest case: it read back as `syn`, which is not
-/// what the document said and not nothing either.
+/// `"syn|nonsense"` is the sharpest case: it would read back as `syn`, which is
+/// not what the document said and not nothing either.
 fn checked_evasion(evasion: &EvasionSettingsRecord) -> Result<(), String> {
     if let Some(flags) = &evasion.flags {
         known(wire::tcp_flags_checked(flags), "a TCP flag set", flags)?;
@@ -844,9 +844,9 @@ fn checked_evasion(evasion: &EvasionSettingsRecord) -> Result<(), String> {
 }
 
 /// [`checked_evasion`] for the idle-scan record, whose `zombie` is an address the
-/// record layer parsed downward: an unparseable one took the whole marker with
-/// it, so a document that said a scan ran through a zombie read back as one that
-/// said it did not.
+/// record layer parses downward: an unparseable one takes the whole marker with
+/// it, so unchecked, a document that said a scan ran through a zombie would read
+/// back as one that said it did not.
 fn checked_idle_scan(idle: &IdleScanRecord) -> Result<(), String> {
     known(
         idle.zombie.parse::<IpAddr>().ok(),
@@ -1791,9 +1791,9 @@ mod tests {
 
     /// Compact, and asked for rather than inherited. Several tests below reach
     /// into the document for a value by its exact spelling, `"state":"open"`,
-    /// which the indented writer separates with a space. They once got compact
-    /// output from `JsonExporter::default()` by accident, and a `Default` that
-    /// agrees with `new` turned each of those searches into a silent no-op.
+    /// which the indented writer separates with a space. The default exporter
+    /// agrees with `new` and indents, so inheriting it would turn each of those
+    /// searches into a silent no-op.
     fn write(report: &ScanReport) -> String {
         let mut out = Vec::new();
         JsonExporter::new(crate::export::ExportOptions::new())
@@ -1882,9 +1882,9 @@ mod tests {
         }
     }
 
-    /// The ceiling a phase ran under is a name like any other, and was the one
-    /// this reader let through. Reading it down to the default understates a
-    /// document that was claiming more.
+    /// The ceiling a phase ran under is a name like any other, and is refused
+    /// like one when this build cannot place it. Reading it down to the default
+    /// would understate a document that was claiming more.
     #[test]
     fn a_phase_naming_a_detection_ceiling_this_build_cannot_place_is_refused() {
         let document = exported();
@@ -1898,15 +1898,14 @@ mod tests {
         assert!(matches!(read(&broken), Err(ImportError::Malformed { .. })));
     }
 
-    /// The evasion and idle-scan records are named values too, and were the one
-    /// pair this reader passed through to a record layer documented to read them
-    /// downward.
+    /// The evasion and idle-scan records are named values too, and the record
+    /// layer behind this reader is documented to read them downward.
     ///
-    /// Each shape below used to be accepted and quietly diminished:
-    /// `"nonsense"` became no flags at all, `"syn|nonsense"` became `syn`, a
-    /// claim the document did not make, a bad `spoof_mac` or decoy vanished,
-    /// and an unparseable `zombie` took the whole idle-scan marker with it. All
-    /// four now refuse, naming the value.
+    /// Unchecked, each shape below would be accepted and quietly diminished:
+    /// `"nonsense"` would become no flags at all, `"syn|nonsense"` would become
+    /// `syn`, a claim the document did not make, a bad `spoof_mac` or decoy
+    /// would vanish, and an unparseable `zombie` would take the whole idle-scan
+    /// marker with it. All four refuse, naming the value.
     #[test]
     fn an_evasion_setting_this_build_cannot_place_refuses_the_document() {
         let document = exported();
@@ -1950,10 +1949,9 @@ mod tests {
 
     /// A record-per-line export read back as the report it was written from.
     ///
-    /// The reader this exercises once did not exist. `export-jsonl` wrote a
-    /// complete report and nothing read one back, so the format's argument for
-    /// existing, that a scan cut short still leaves a readable file, stopped at
-    /// the file.
+    /// `export-jsonl` writes a complete report, and without a reader for it the
+    /// format's argument for existing, that a scan cut short still leaves a
+    /// readable file, would stop at the file.
     #[test]
     fn a_record_per_line_export_reads_back_as_the_scan_it_records() {
         use crate::export::JsonLinesExporter;
@@ -2253,11 +2251,11 @@ mod tests {
     /// A foreign scanner's attribution survives the round trip, and does not
     /// land on this engine's name on the way.
     ///
-    /// `engine.version` once carried the attribution, so a report read out of
-    /// nmap's XML exported as `engine: {name: zond-engine, version: nmap 7.94}`.
+    /// Carried in `engine.version`, the attribution would make a report read out
+    /// of nmap's XML export as `engine: {name: zond-engine, version: nmap 7.94}`.
     /// Through the nmap writer, whose `scanner="zond"` is fixed the same way, the
-    /// pair collapsed further and `zond 0.13.0` came back as the version of the
-    /// next document exported from it.
+    /// pair would collapse further, and this engine's name and version would
+    /// come back as the version of the next document exported from it.
     #[test]
     fn what_produced_the_findings_round_trips_apart_from_who_wrote_the_file() {
         let foreign = ScanReport::recorded(
@@ -2270,9 +2268,9 @@ mod tests {
         assert_eq!(restored.engine_version(), "nmap 7.94");
     }
 
-    /// A document written before `produced_by` existed still reads. Back then
-    /// `engine.version` was the attribution, which is what the fallback takes it
-    /// for.
+    /// A document written before `produced_by` existed still reads. In such a
+    /// document `engine.version` is the attribution, which is what the fallback
+    /// takes it for.
     #[test]
     fn a_document_written_before_produced_by_falls_back_to_the_engine_version() {
         let document = write(&crate::export::fixture::report());
@@ -2388,8 +2386,8 @@ mod tests {
     /// found on.
     ///
     /// Counted rather than compared through [`ScanDiff`], because a diff does
-    /// not look at findings: this exact loss went unnoticed while the
-    /// diff-based round-trip test above passed.
+    /// not look at findings: this loss would go unnoticed while the diff-based
+    /// round-trip test above passed.
     #[test]
     fn every_finding_survives_the_round_trip() {
         let (original, restored) = round_trip();

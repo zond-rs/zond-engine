@@ -62,17 +62,16 @@
 //! - and, where a probe carries nothing at all after its IP header, the source
 //!   address it left from, which is weaker and has to be admitted as weaker.
 //!
-//! Reading an error without one of those is reading a stranger's packet. Four
-//! findings across two audit iterations came from exactly that, in four
-//! different scanners, each written by somebody who had thought about it:
-//! an SCTP INIT believed on its ports, a host filed down on a quoted source
-//! port, three TCP techniques resolved on a quotation too short to carry their
-//! nonce, and an IP protocol settled on membership of the scan's own target
-//! list. The trace got it right first and nothing carried that across.
+//! Reading an error without one of those is reading a stranger's packet, and
+//! the mistake is easy to make in any scanner that reads errors, however
+//! carefully it is written: an SCTP INIT believed on its ports, a host filed
+//! down on a quoted source port, a TCP technique resolved on a quotation too
+//! short to carry its nonce, an IP protocol settled on membership of the scan's
+//! own target list.
 //!
-//! `tests/hygiene/attribution.rs` is what carries it across now: a census of every file
-//! that reads an error, each with a line saying how it attributes one. A new
-//! caller fails that test until the line is written.
+//! `tests/hygiene/attribution.rs` is what holds every reader to this: a census of
+//! every file that reads an error, each with a line saying how it attributes
+//! one. A new caller fails that test until the line is written.
 
 use pnet_packet::icmp::destination_unreachable::{DestinationUnreachablePacket, IcmpCodes};
 use pnet_packet::icmp::{IcmpCode, IcmpPacket, IcmpTypes};
@@ -140,8 +139,8 @@ pub enum Unreachable {
     /// The host's own stack does not implement the IP protocol the probe was
     /// sent under.
     ///
-    /// Told apart from [`Prohibited`](Self::Prohibited), which it used to be
-    /// folded into, because they are opposite claims: a prohibition is the path
+    /// Told apart from [`Prohibited`](Self::Prohibited) rather than folded into
+    /// it, because they are opposite claims: a prohibition is the path
     /// speaking for the host and this is the host speaking for itself, which
     /// also proves it is there. A probe's own protocol is the one thing a
     /// scanner picks rather than discovers, so for a transport scan the message
@@ -512,8 +511,8 @@ mod tests {
         parse(reply).expect("the message parses").reason
     }
 
-    /// A host refusing a protocol is not the path refusing delivery, and the two
-    /// were one answer until there was a scan that cared which.
+    /// A host refusing a protocol is not the path refusing delivery, and a scan
+    /// that asks which protocols a host speaks needs the two kept apart.
     ///
     /// A prohibition says the probe never arrived. This says it arrived and the
     /// stack had nothing to hand it to, which also proves the host is there.

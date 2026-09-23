@@ -102,13 +102,13 @@ pub const DEFAULT_PROTOCOLS: [u8; 13] = [1, 2, 4, 6, 17, 41, 47, 50, 51, 89, 103
 ///
 /// Drawn afresh for each pass, and correlated on.
 ///
-/// It was fixed, on the reasoning that "nothing here correlates on it: an answer
-/// is matched by the probe an ICMP message quotes, which names the destination
-/// and the protocol, and those two are the whole key". Both halves of that key
-/// are the scan's own target list, which is exactly what somebody being scanned
-/// knows — so a forged unreachable naming a probed host and an asked protocol
-/// settled a verdict, in either direction. This is the part of a probe a
-/// quotation carries back that a stranger has to guess.
+/// Fixing it would rest on the reasoning that nothing correlates on it: an
+/// answer is matched by the probe an ICMP message quotes, which names the
+/// destination and the protocol, and those two would be the whole key. Both
+/// halves of that key are the scan's own target list, which is exactly what
+/// somebody being scanned knows — so a forged unreachable naming a probed host
+/// and an asked protocol would settle a verdict, in either direction. This is
+/// the part of a probe a quotation carries back that a stranger has to guess.
 ///
 /// It bounds nothing on its own for the protocols this crate cannot build a
 /// header for; see [`Correlation::admits`].
@@ -153,7 +153,7 @@ impl Correlation {
     /// and, per RFC 792, at least the first eight bytes after it:
     ///
     /// - Every protocol: the quoted *source* address has to be one this pass
-    ///   sent from. Cheap, and it was not checked at all.
+    ///   sent from. Cheap, and the one check every tier shares.
     /// - The four this crate builds a header for: the eight guaranteed bytes
     ///   reach the ports, or the echo identifier, so those are checked too. That
     ///   is the drawn [`source_port`](Self::source_port) and so ~16 bits a
@@ -834,12 +834,13 @@ mod tests {
 
     /// **A refusal quoting a datagram this pass did not send settles nothing.**
     ///
-    /// Membership of the probed hosts and the asked protocols was the whole key,
-    /// and both are the scan's own target list — which is precisely what the
-    /// host being scanned knows about itself. A forged unreachable naming a
-    /// probed host and an asked protocol therefore settled a verdict, and a
-    /// *port* unreachable settles the positive one: the report asserting that a
-    /// stack takes delivery of a protocol, on a packet nothing authenticated.
+    /// Were membership of the probed hosts and the asked protocols the whole
+    /// key, both would be the scan's own target list — which is precisely what
+    /// the host being scanned knows about itself. A forged unreachable naming a
+    /// probed host and an asked protocol would therefore settle a verdict, and
+    /// a *port* unreachable would settle the positive one: the report asserting
+    /// that a stack takes delivery of a protocol, on a packet nothing
+    /// authenticated.
     #[test]
     fn a_refusal_quoting_a_datagram_this_pass_did_not_send_settles_nothing() {
         // The quoted datagram claims to have come from somewhere this pass never
@@ -864,8 +865,8 @@ mod tests {
     /// to carry the port that header went out with.
     ///
     /// The source port is drawn per pass, so it is the ~16 bits a stranger has
-    /// to guess on top of knowing what is being scanned. It used to be the fixed
-    /// constant 55555.
+    /// to guess on top of knowing what is being scanned. A fixed constant would
+    /// leave nothing to guess.
     #[test]
     fn a_refusal_quoting_another_ports_datagram_settles_nothing() {
         for number in [6u8, 17, 132] {

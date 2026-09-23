@@ -475,13 +475,14 @@ fn encode_hex(bytes: &[u8]) -> String {
 /// lowercase hex digits.
 ///
 /// Exactly `[0-9a-f]`, which is narrower than it looks like it needs to be and
-/// is the point. This went through `u8::from_str_radix(_, 16)`, which accepts a
-/// leading `+`: `"+f"` decoded to `0x0f`, so `public_key`, `digest` and
-/// `signature` each had many valid spellings and a re-spelled document verified.
+/// is the point. `u8::from_str_radix(_, 16)` accepts a leading `+`: `"+f"`
+/// decodes to `0x0f`, so decoding through it would give `public_key`, `digest`
+/// and `signature` each many valid spellings, and a re-spelled document would
+/// verify.
 ///
-/// That was not a bypass — every decision in [`Signature::verify`] is made on
-/// decoded bytes against a key the caller supplied, and the length is preserved
-/// either way — but it made the document non-canonical, and
+/// That would not be a bypass — every decision in [`Signature::verify`] is made
+/// on decoded bytes against a key the caller supplied, and the length is
+/// preserved either way — but it would make the document non-canonical, and
 /// [`Signature::public_key`] is documented as the field a recipient uses to tell
 /// *which* key to go and look up. A key that verifies while printing a string
 /// nobody's keyring matches is the wrong kind of correct. Accepting only what
@@ -589,8 +590,8 @@ mod tests {
         ));
     }
 
-    /// The attack domain separation exists to stop, now that there are two
-    /// domains to separate.
+    /// The attack domain separation exists to stop, across the two domains
+    /// there are to separate.
     ///
     /// A publisher who signs reports for a client and detection bundles for the
     /// same client, with one key, must not have a signature over one presented as
@@ -888,7 +889,7 @@ mod tests {
         assert_eq!(decode_hex(&encode_hex(&all)), Some(all));
     }
 
-    /// A re-spelled public key no longer verifies, because it no longer decodes.
+    /// A re-spelled public key does not verify, because it does not decode.
     #[test]
     fn a_respelled_key_is_refused_rather_than_accepted() {
         let document = b"a signed report";

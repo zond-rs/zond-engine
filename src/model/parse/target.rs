@@ -109,16 +109,16 @@
 //! distinct specification on every line groups nothing and pays the index
 //! anyway, and that file is not a contrivance: it is what reading a report back
 //! produces, one specification per host because each host was found on its own
-//! ports. Left alone the builder took 22.0 ms on that shape against the direct
-//! path's 12.7 ms for the same 65 536 units, so the optimisation inverted on
-//! the very input the import formats feed it.
+//! ports. Measured over 65 536 units of that shape, a builder that keeps its
+//! index takes 22.0 ms against the direct path's 12.7 ms, so the optimisation
+//! inverts on the very input the import formats feed it.
 //!
 //! So the builder watches its own input and gives the index up when it is
 //! earning nothing: see `MIN_REGROUPED_SHARE`. Past that point every
-//! expression becomes a unit of its own, which is what the direct path did, and
-//! the shape costs 13.4 ms instead of 22.0. Against the direct path it went
-//! from 0.61x to 1.05x, the median of nine paired runs. Every shape that does
-//! group keeps its index and its speedup.
+//! expression becomes a unit of its own, which is what the direct path does,
+//! and the shape costs 13.4 ms instead of 22.0: 1.05x the direct path rather
+//! than 0.61x, the median of nine paired runs. Every shape that does group
+//! keeps its index and its speedup.
 //!
 //! The one thing given up is that two expressions naming the same ports no
 //! longer share a unit once the index is gone. Both are still scanned, on the
@@ -305,10 +305,10 @@ pub enum TargetParseError {
     /// no expression in it, and from [`UnknownHost`](Self::UnknownHost), which
     /// is a name nothing answered to.
     ///
-    /// Reported as `Empty` this said "a target expression cannot be empty" about
-    /// `lan`, which is neither empty nor the problem. The engine's own resolver
-    /// always inserts on success, so it took a caller supplying their own to
-    /// reach, which is every consumer of this crate that is not the CLI.
+    /// Reported as `Empty` this would say "a target expression cannot be empty"
+    /// about `lan`, which is neither empty nor the problem. The engine's own
+    /// resolver always inserts on success, so it takes a caller supplying their
+    /// own to reach, which is every consumer of this crate that is not the CLI.
     #[error("'{0}': this named no addresses to scan")]
     ResolvedToNothing(String),
 }
@@ -727,10 +727,9 @@ impl TargetMapBuilder {
     /// Finishes the map.
     ///
     /// Every group becomes a unit. There is no empty one to skip, for the reason
-    /// [`is_empty`](Self::is_empty) gives; this used to test for them and drop
-    /// them, with a paragraph about a caller that collects errors and carries
-    /// on, which `push` had already made unreachable by refusing the expression
-    /// that would have produced one.
+    /// [`is_empty`](Self::is_empty) gives: `push` refuses the expression that
+    /// would produce one, even for a caller that collects errors and carries
+    /// on.
     pub fn build(self) -> TargetMap {
         let mut map = TargetMap::new();
         for (ports, ips) in self.groups {
@@ -750,9 +749,9 @@ impl TargetMapBuilder {
 /// Both passes ask this, which is the point of it being a function. The
 /// synchronous build asks before it consults the lookup, and
 /// `resolve::targets`'s collection pass asks before it puts a name on the
-/// network. Written out once each, the two disagreed: the collector took
-/// `Malformed` as the whole answer, so a mistyped address became a query to a
-/// resolver somebody else operates, and the builder then refused it without ever
+/// network. Written out once each, the two would disagree: a collector taking
+/// `Malformed` as the whole answer turns a mistyped address into a query to a
+/// resolver somebody else operates, which the builder then refuses without ever
 /// looking it up.
 pub(crate) fn host_name(token: &str) -> HostName {
     // A token with a colon in it is not a name. Sending it to a host lookup
@@ -1067,11 +1066,11 @@ mod tests {
     /// A keyword that resolved to nothing is not an empty expression.
     ///
     /// A [`ResolverFn`] belongs to the caller, and one that returns without
-    /// inserting is the honest answer for `lan` on a host with no LAN. It was
-    /// reported as [`TargetParseError::Empty`], whose message is "a target
+    /// inserting is the honest answer for `lan` on a host with no LAN. Reported
+    /// as [`TargetParseError::Empty`], it would carry the message "a target
     /// expression cannot be empty", said about the word `lan`. The engine's own
     /// resolver always inserts on success, so only a consumer supplying its own
-    /// could meet it, which is every consumer that is not the CLI.
+    /// can meet it, which is every consumer that is not the CLI.
     #[test]
     fn a_keyword_that_resolves_to_nothing_says_what_went_wrong() {
         fn resolves_to_nothing(_: Keyword, _: &mut IpSet) -> Result<(), IpParseError> {

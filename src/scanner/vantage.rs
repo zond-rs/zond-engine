@@ -221,7 +221,7 @@ pub(super) fn attribute(ctx: &ScanContext) {
 ///
 /// Read out of the paths already in the store rather than probed for: a
 /// traceroute is run to answer "how do I reach this host", and the same replies
-/// say "these machines route", which nothing was reading. Empty unless a trace
+/// say "these machines route", which nothing else reads. Empty unless a trace
 /// ran, which is off by default, so this costs one walk of the store on a scan
 /// that measured no paths at all.
 ///

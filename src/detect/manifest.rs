@@ -243,8 +243,8 @@ impl Class {
     }
 }
 
-/// What a detection may `speak` to. One value for now; the enum is the room to
-/// grow.
+/// What a detection may `speak` to. A single value, held in an enum so the set
+/// has room to grow.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]

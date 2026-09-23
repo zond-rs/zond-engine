@@ -28,7 +28,7 @@ impl IntoCoreMac for PnetMacAddr {
 
 /// The reverse: a model address as the packet builders want one.
 ///
-/// Needed because the two vocabularies meet in both directions now. An address
+/// Needed because the two vocabularies meet in both directions. An address
 /// read off an interface arrives as the model's, and every frame this crate
 /// emits is built by `pnet::packet`, which wants its own. Written as a trait
 /// rather than a `From` impl for the same reason [`IntoCoreMac`] is one: neither

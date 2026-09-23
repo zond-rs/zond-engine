@@ -671,14 +671,14 @@ fn step_iterations(step: &schema::Step) -> u64 {
 /// Soft issues that do not fail the build but an author should see: a malformed
 /// CVE identifier that a finding would silently drop.
 ///
-/// A class that ships inert used to warn here too. It said nothing the author
-/// had not just written, since `class = "exploit"` is the declaration and this
-/// repeated it back, and a build script only ever reads this crate's own
-/// reviewed corpus, so the line survived review and then printed on every build
-/// of the engine and of anything depending on it. What it was guarding is worth
-/// guarding, though, so it is now `flow::db`'s `the_corpus_ships_the_classes_it_
-/// is_known_to_ship`, which fails when a shipped detection changes what it may
-/// do rather than mentioning it forever.
+/// A class that ships inert does not warn here. Such a warning says nothing the
+/// author has not just written, since `class = "exploit"` is the declaration and
+/// the warning would repeat it back, and a build script only ever reads this
+/// crate's own reviewed corpus, so the line would survive review and then print
+/// on every build of the engine and of anything depending on it. What it would
+/// guard is worth guarding, though, so `flow::db`'s
+/// `the_corpus_ships_the_classes_it_is_known_to_ship` guards it, failing when a
+/// shipped detection changes what it may do rather than mentioning it forever.
 fn warn_flow_soft(flow: &schema::FlowDetection, path: &Path) {
     let file = path.display();
     let id = &flow.detection.id;
@@ -1077,9 +1077,10 @@ fn validate(def: &ServiceDefinition, path: &Path) {
             validate_udp_payload(&unescape(&probe.payload), def, i, path);
         }
         // Rarity is a 0..=9 intensity band (see `Probe::rarity`). A larger value
-        // is almost certainly an authoring typo — it would silently keep the
-        // probe from ever being sent once an intensity cap is wired in. Warn
-        // rather than fail: it degrades nothing that ships today.
+        // is almost certainly an authoring typo — it silently keeps the probe
+        // from every port its service did not register, since no scan
+        // intensity reaches past 9. Warn rather than fail: the probe still goes
+        // to the ports its own service registered.
         if probe.rarity > 9 {
             println!(
                 "cargo:warning={file}: service '{service}' probe #{i} has rarity {} outside the \
@@ -1946,9 +1947,9 @@ fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
 /// schemas: service signatures match a regex against text, and the rules in
 /// `os/` match predicates against a typed feature vector. A walk that collected
 /// both would hand each file to the wrong parser, and the build would fail
-/// somewhere confusing — as it did, once, with a TOML error about a map where a
-/// sequence was expected. Naming the exclusion here keeps that a one-line fact
-/// rather than a rediscovery.
+/// somewhere confusing, with a TOML error about a map where a sequence was
+/// expected. Naming the exclusion here keeps that a one-line fact rather than a
+/// rediscovery.
 fn collect_toml_files_except(dir: &Path, skip: &[&str], files: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;

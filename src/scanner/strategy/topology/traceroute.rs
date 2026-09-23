@@ -399,8 +399,7 @@ impl Tracer {
         // those stragglers clears the outstanding entry for a distance it says
         // nothing about, and that distance is then recorded as silent. It is
         // the same discipline `attribute` applies to an error, for the same
-        // reason, and a first run against a real host is what showed both were
-        // needed.
+        // reason, and a run against a real host needs both.
         let answered = self.answered_distance(segment)?;
         self.in_flight.remove(&Sent {
             target: segment.source,
@@ -521,8 +520,8 @@ fn attribute(probe: TraceProbe, marker: u16, quoted: &IpSegment<'_>) -> Option<S
 /// What a probe at one distance found there.
 ///
 /// Three outcomes and not two: a distance where nothing answered is not the
-/// same as one where the target did, and collapsing them is what let a trace
-/// stop short of its own target.
+/// same as one where the target did, and collapsing them would let a trace stop
+/// short of its own target.
 enum Landing {
     /// A router discarded the probe and named itself.
     Router(IpAddr, Option<Duration>),
@@ -670,14 +669,13 @@ impl Tracer {
         // like a network with no routers in it. It is the difference between
         // "nothing answered" and "nothing was heard", and only one of those is
         // about the network: a scan whose capture or send path is wrong looks
-        // exactly like a quiet internet, which is how the first version of this
-        // shipped silently broken.
+        // exactly like a quiet internet, and would pass for one silently.
         // Three ways a trace comes back with nothing, and they call for
         // completely different responses: probes that would not leave this host,
         // probes that left and drew no answer, and a network with nothing to
         // say. Reported apart, because collapsed into one empty path they are
-        // indistinguishable, which is how the first version of this shipped
-        // broken and looked like a quiet internet.
+        // indistinguishable, and a broken trace would look like a quiet
+        // internet.
         if self.sent == 0 && self.failed > 0 {
             warn!(
                 "traceroute could not put any of its {} probes on the wire; no path was measured",
@@ -706,11 +704,11 @@ impl Tracer {
     /// one, and the distance falls straight out of it, so for a host the port
     /// scan reached, this costs no probe, no round trip and no waiting.
     ///
-    /// That is not only cheaper, it is sturdier. The first version of this sent
-    /// a probe purely to be answered, which made every trace depend on a second
-    /// exchange succeeding after the first already had; when that exchange
-    /// produced nothing the whole trace silently produced nothing, and no part
-    /// of the output said why.
+    /// That is not only cheaper, it is sturdier. Sending a probe purely to be
+    /// answered would make every trace depend on a second exchange succeeding
+    /// after the first already had; were that exchange to produce nothing, the
+    /// whole trace would silently produce nothing, and no part of the output
+    /// would say why.
     ///
     /// A host with no recorded counter still gets the probe. That is the honest
     /// fallback rather than the normal path, and a host that answers neither is
@@ -1019,7 +1017,7 @@ mod tests {
         /// so the number a trace estimates its starting point from routinely
         /// disagrees with the number of routers it then has to walk. A fake
         /// where the two always agreed would never exercise the correction, and
-        /// that is exactly the case a real host found first.
+        /// that disagreement is exactly the case real hosts present.
         reply_ttl: u8,
         /// Distances whose router refuses to identify itself.
         silent: Vec<u8>,
@@ -1173,17 +1171,17 @@ mod tests {
     /// quotation is read correctly and that a cache splices correctly, and a
     /// trace can still record nothing at all with both of those working. What
     /// this asserts is that the probes, the replies and the attribution fit
-    /// together, which is exactly what a first run against a real host found
-    /// they did not.
+    /// together, which is what a run against a real host depends on and the
+    /// unit tests cannot show.
     ///
-    /// It has already earned its place twice. It caught the straggler defect:
-    /// several probes go out per distance and the trace moves on when the first
-    /// is answered, so the rest are still in the air during the next distance,
-    /// and matched on sender alone, one of them cleared the outstanding entry
-    /// for a distance it said nothing about, which was then recorded as silent.
-    /// The silent router at distance two is in the fixture for that reason: it
-    /// is the case where the loop has to wait rather than being handed an
-    /// answer, and it is where a straggler lands.
+    /// It also covers stragglers: several probes go out per distance and the
+    /// trace moves on when the first is answered, so the rest are still in the
+    /// air during the next distance, and matched on sender alone, one of them
+    /// would clear the outstanding entry for a distance it says nothing about,
+    /// which would then be recorded as silent. The silent router at distance
+    /// two is in the fixture for that reason: it is the case where the loop has
+    /// to wait rather than being handed an answer, and it is where a straggler
+    /// lands.
     #[tokio::test(flavor = "current_thread")]
     async fn a_trace_records_every_router_between_here_and_the_target() {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
@@ -1292,12 +1290,12 @@ mod tests {
 
     /// The estimate reads short, and the trace walks out past it.
     ///
-    /// The defect a real host found. A reply's hop counter measures the path
-    /// back from the host, and traceroute measures the path out to it; an
-    /// anycast address answers from nearer than it can be reached. Trusted as
-    /// the answer, the estimate reported the target two routers closer than it
-    /// was and dropped both hops beyond it: a confidently wrong path, which is
-    /// worse than a short one because nothing in it looks wrong.
+    /// A reply's hop counter measures the path back from the host, and
+    /// traceroute measures the path out to it; an anycast address answers from
+    /// nearer than it can be reached. Trusted as the answer, the estimate puts
+    /// such a target closer than it is, two routers closer for one real host,
+    /// and drops the hops beyond it: a confidently wrong path, which is worse
+    /// than a short one because nothing in it looks wrong.
     #[tokio::test(flavor = "current_thread")]
     async fn a_target_further_out_than_its_replies_suggest_is_still_reached() {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
@@ -1355,16 +1353,15 @@ mod tests {
 
     /// A path whose routers all stay quiet still reports its own length.
     ///
-    /// The shape that broke against a real host, and the reason the distance on
-    /// an answer is checked. Where every router answers, a straggler read
-    /// as "the target is here" is overwritten by the genuine expiry arriving in
-    /// the same round, and the defect stays hidden. Where none of them answer,
-    /// which is ordinary, since large networks rate-limit these errors to
-    /// nothing, a straggler is the *only* reply a round sees, so the far end
-    /// walked one hop nearer per round until it reached the first, and the
-    /// filter that drops hops beyond the far end then discarded the entire
-    /// path. What came back was a single line claiming the target was one hop
-    /// away.
+    /// The reason the distance on an answer is checked. Where every router
+    /// answers, a straggler read as "the target is here" is overwritten by the
+    /// genuine expiry arriving in the same round, and the mistake stays hidden.
+    /// Where none of them answer, which is ordinary, since large networks
+    /// rate-limit these errors to nothing, a straggler is the *only* reply a
+    /// round sees, so unchecked the far end would walk one hop nearer per round
+    /// until it reached the first, and the filter that drops hops beyond the far
+    /// end would then discard the entire path, leaving a single line claiming
+    /// the target is one hop away.
     #[tokio::test(flavor = "current_thread")]
     async fn a_path_of_silent_routers_keeps_its_length() {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));

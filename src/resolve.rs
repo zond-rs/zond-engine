@@ -131,8 +131,8 @@ pub struct ResolveConfig {
     ///
     /// A window shorter than the half second the RFC permits is raised to it.
     /// Below that the lookup cannot hear a correct responder at all, so it is a
-    /// preference the protocol overrules rather than a value to refuse: zero was
-    /// accepted here and produced a listener that closed before it opened.
+    /// preference the protocol overrules rather than a value to refuse: zero,
+    /// taken as written, would produce a listener that closes before it opens.
     pub mdns_timeout: Duration,
 }
 
@@ -311,8 +311,8 @@ mod tests {
     /// can, rather than producing a lookup that closes before it opens.
     ///
     /// RFC 6762 §6.3 lets a responder defer a reply half a second to aggregate
-    /// answers, so half a second is the floor the protocol sets. Zero used to be
-    /// accepted here and reached the listener as written.
+    /// answers, so half a second is the floor the protocol sets. Zero, taken as
+    /// written, would reach the listener that way.
     ///
     /// Raised rather than refused, unlike the overrides in
     /// [`RetryConfig`](crate::config::RetryConfig): nothing in a

@@ -8,22 +8,22 @@
 
 //! # Attributing a system to a host
 //!
-//! One function, and the reason it exists is that it was previously four.
+//! One function, and the reason it exists is that the alternative is four.
 //!
 //! Every source that concludes something about a host's operating system has to
 //! do the same three things afterwards: fold its own reading together with what
 //! the host *already* implies, resolve the combination into one verdict, and
 //! merge that verdict into whatever the host is already carrying. The raw TCP
-//! port scanner did it, the echo prober did it, the service pass did it, and
-//! each did it in its own copy of the same eighteen lines.
+//! port scanner does it, the echo prober does it, the service pass does it, and
+//! left to itself each would do it in its own copy of the same eighteen lines.
 //!
 //! That is a bad place for a copy. The rule those lines encode, **a host's own
 //! hardware and name are evidence, and are consulted whatever else was seen**,
 //! is a statement about how identification works, not about how a port scanner
 //! works. Written once, adding a fifth source is a call; written four times, it
-//! was four edits and three chances to forget one. It had already been
-//! forgotten once: host discovery concluded nothing at all, on hosts whose
-//! hostname and hardware vendor were sitting in the store the whole time.
+//! is four edits and three chances to forget one. Host discovery forgetting it
+//! concludes nothing at all, on hosts whose hostname and hardware vendor are
+//! sitting in the store the whole time.
 //!
 //! ## The passive sources are free
 //!
@@ -56,13 +56,12 @@ use crate::model::host::OsEvidence;
 /// verdicts being ranked against each other.
 ///
 /// That distinction is the difference between two sources corroborating and two
-/// sources competing, and it was worth a real finding. A service banner naming
+/// sources competing, and it is worth a real finding. A service banner naming
 /// `Debian 12` scores 0.55 alone, under the 0.65 a stack reading scores;
-/// ranked, it lost outright and the release it alone could name went with it.
+/// ranked, it loses outright and the release it alone can name goes with it.
 /// Resolved *together* the two agree on Linux, combine to well above either,
-/// and the release survives because nothing contradicted it, which is exactly
-/// what [`resolve`] was built to do and what it had never been given the chance
-/// to.
+/// and the release survives because nothing contradicts it, which is exactly
+/// what [`resolve`] was built to do.
 ///
 /// So a weak source cannot displace a strong one, a strong one cannot silence a
 /// weak one, and the order sources run in does not decide the answer. One item
@@ -103,10 +102,10 @@ pub fn identify(host: &mut Host, observed: impl IntoIterator<Item = OsEvidence>)
         // it. Evidence only accumulates, so the answer can move either way as
         // it does, a second source may contradict the first hard enough to
         // leave nothing reportable, and leaving the earlier verdict standing
-        // reported a conclusion nothing on record reached. Measured, on one
-        // device answering over two addresses: identical evidence sets, and the
-        // one that had been named first kept a stale answer the other correctly
-        // declined to give.
+        // would report a conclusion nothing on record reached. Measured, on one
+        // device answering over two addresses: identical evidence sets, and
+        // without this the one named first keeps a stale answer the other
+        // correctly declines to give.
         //
         // Only where this host has evidence at all. A fingerprint carried in
         // from a report or a merge rests on somebody else's, and `resolve`
@@ -246,9 +245,9 @@ mod tests {
     /// Evidence only accumulates, so an answer can move either way as it does,
     /// and when it moves to *nothing*, the answer on record has to go with it.
     ///
-    /// Found on one device answering over two addresses: identical evidence,
-    /// and the address that had been named first kept a verdict the other
-    /// correctly declined to give, so one printer contradicted itself inside one
+    /// Measured on one device answering over two addresses: identical evidence,
+    /// and without this the address named first keeps a verdict the other
+    /// correctly declines to give, so one printer contradicts itself inside one
     /// report.
     #[test]
     fn a_verdict_the_evidence_no_longer_supports_is_withdrawn() {
@@ -321,12 +320,12 @@ mod tests {
     /// A banner naming a release, arriving after a stack reading, must
     /// corroborate it rather than lose to it.
     ///
-    /// The defect this replaced, measured end to end on a real host: the stack
-    /// said `Linux` at 0.65, the SSH banner said `Debian 12.0` at 0.55, the
-    /// banner's verdict was ranked against the stack's, lost on the number, and
-    /// was discarded whole, so a scan that had read the release off the wire
-    /// reported a bare family. The two agree; agreement is worth more than
-    /// either, and only the banner could speak to the release.
+    /// The defect this prevents, measured end to end on a real host: the stack
+    /// says `Linux` at 0.65, the SSH banner says `Debian 12.0` at 0.55, and a
+    /// banner verdict ranked against the stack's loses on the number and is
+    /// discarded whole, so a scan that read the release off the wire reports a
+    /// bare family. The two agree; agreement is worth more than either, and
+    /// only the banner can speak to the release.
     #[test]
     fn a_banner_arriving_after_a_stack_reading_adds_its_release() {
         let banner = OsEvidence {
@@ -367,9 +366,9 @@ mod tests {
     /// different questions, and two answers to two questions are not a
     /// disagreement.
     ///
-    /// Measured, on a Raspberry Pi running Debian: the address block said
-    /// `Raspberry Pi Trading Ltd`, the SSH banner said `Debian`, both were
-    /// filed as the operating system's vendor, and the resolver kept neither,
+    /// Measured, on a Raspberry Pi running Debian: the address block says
+    /// `Raspberry Pi Trading Ltd` and the SSH banner says `Debian`. With both
+    /// filed as the operating system's vendor, the resolver keeps neither,
     /// leaving a release with no name to attach to and reporting `Linux 12.0`,
     /// a version no Linux has ever had.
     ///
@@ -413,13 +412,13 @@ mod tests {
 
     /// A stack read twice by two routes keeps the richer reading.
     ///
-    /// The regression this replaced: the port scan reads a stack off one reply
+    /// The failure this prevents: the port scan reads a stack off one reply
     /// and the series probe reads the *same stack* off twelve, concluding the
-    /// identical thing: same source, same family, nothing finer from either. So
-    /// the second was rejected as a claim already on record, and the readings
-    /// only it could produce, the ones that cost twenty-four probes, went with
-    /// it. A scan reported `syn-ack hops>=64 …` where it had measured
-    /// `id=`, `isn=` and `ts=` as well.
+    /// identical thing: same source, same family, nothing finer from either.
+    /// Rejecting the second as a claim already on record would discard the
+    /// readings only it can produce, the ones that cost twenty-four probes, and
+    /// a scan would report `syn-ack hops>=64 …` where it had measured `id=`,
+    /// `isn=` and `ts=` as well.
     ///
     /// The claim is not new; the working behind it is.
     #[test]

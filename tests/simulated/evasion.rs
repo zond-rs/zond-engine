@@ -8,8 +8,8 @@
 
 //! What an [`EvasionProfile`] actually puts on the wire, read off the wire.
 //!
-//! Every knob on a profile exists to change a packet, and until this file
-//! nothing outside the crate checked that any of them arrived. The unit tests
+//! Every knob on a profile exists to change a packet, and this file is what
+//! checks, from outside the crate, that each of them arrives. The unit tests
 //! beside `evasion.rs` cover the profile's own arithmetic: that `with_padding`
 //! reaches `segment_shaping`, that a framing technique forces the link layer.
 //! They stop at the value. This runs a real scanner over [`FakeNet`] and reads

@@ -43,9 +43,9 @@
 //!
 //! An IPv6 link-local is the exception, and it is why the key exists.
 //! `fe80::1` names a different machine on every segment, so a host watching two
-//! of them finds two neighbours under one number. Keyed by the bare address the
-//! second write landed on the first's entry, and one machine's hardware address,
-//! roles and round trips were folded into another machine's record.
+//! of them finds two neighbours under one number. Keyed by the bare address, the
+//! second write would land on the first's entry, and one machine's hardware
+//! address, roles and round trips would be folded into another machine's record.
 //!
 //! Three rules follow, and between them they are the whole of it:
 //!
@@ -1131,8 +1131,8 @@ impl Attachments {
 ///
 /// A free function rather than a method, because both halves of the session
 /// need it and neither owns the other. `ScanContext` writes and `ScanProgress`
-/// is the narrow view a journal gets, and the three readings they had in common
-/// were three copies before this.
+/// is the narrow view a journal gets, and the three readings they have in
+/// common would otherwise be three copies.
 fn snapshot_of(store: &DashMap<ScopedIp, Host>) -> Vec<Host> {
     let mut hosts: Vec<Host> = store.iter().map(|entry| entry.value().clone()).collect();
     hosts.sort_by_cached_key(Host::scoped_ip);
@@ -1199,8 +1199,8 @@ impl ScanProgress {
     /// Logged under the strategy that is failing, as
     /// [`ScanContext::record_failure`] logs it, rather than under a fixed word:
     /// the checkpoint task is not the only thing that reaches the report this
-    /// way any more, and a line saying `journal` for all of them told a reader
-    /// less than the name it already had.
+    /// way, and a line saying `journal` for all of them would tell a reader less
+    /// than the name it already has.
     pub fn record_failure(&self, scanner: ScannerKind, reason: String) {
         error!("{scanner:?} failed: {reason}");
         self.failures.push(ScannerFailure::new(scanner, reason));
@@ -1515,13 +1515,13 @@ impl ScanContext {
         // answered, and a journal that missed that would give back a quieter
         // host than the scan found.
         //
-        // **These are two questions, and they were one for a while.** What a
-        // watcher is told is about novelty: a host already announced does not
+        // **These are two questions, and one boolean cannot answer both.** What
+        // a watcher is told is about novelty: a host already announced does not
         // need announcing again, which is why the echo probe answers `false`
         // for a host that was already up. What a journal writes is about state,
-        // and that probe had just added an `icmp_echo` reason and a round trip
-        // to it. Sharing the boolean silently dropped both from every recorded
-        // scan.
+        // and that probe has just added an `icmp_echo` reason and a round trip
+        // to it. Sharing the boolean would silently drop both from every
+        // recorded scan.
         self.changed.insert(key.clone());
 
         if announce || is_new {
@@ -2020,12 +2020,11 @@ impl ScanContext {
 /// write into.
 ///
 /// Six things a session can be given, five of which most callers leave alone.
-/// They used to be four constructors chaining into each other, which put the
-/// widest of them under the narrowest name: a caller who wanted exclusions
-/// *and* a resume point *and* an address numbering had to call `sweeping`, and
-/// one who wanted the numbering without the resume had to know that
-/// `Checkpoint::default()` was the neutral value. Here each is named once and
-/// there is one neutral state rather than three.
+/// A builder rather than constructors chaining into each other, because such a
+/// chain puts the widest of them under the narrowest name, and a caller who
+/// wants one setting without another has to know each one's neutral value,
+/// such as `Checkpoint::default()` for no resume point. Here each is named once
+/// and there is one neutral state.
 ///
 /// ```no_run
 /// use zond_engine::scanner::session::ScanSession;
@@ -2685,9 +2684,9 @@ mod tests {
     /// one. `fe80::1` names a different machine on every segment, so a host
     /// watching two of them finds two neighbours under one number.
     ///
-    /// Keyed by the bare address the second write landed on the first's entry,
-    /// and one machine's hardware address, roles and round trips were folded
-    /// into another machine's record: under the wrong interface, since
+    /// Keyed by the bare address, the second write would land on the first's
+    /// entry, and one machine's hardware address, roles and round trips would be
+    /// folded into another machine's record: under the wrong interface, since
     /// `Host::set_zone` keeps the first zone it is given.
     #[test]
     fn two_link_locals_on_different_segments_are_two_hosts() {
@@ -2721,8 +2720,8 @@ mod tests {
     /// to the host the sweep found on the interface the scan named, not to a
     /// second record beside it.
     ///
-    /// The defect: a scoped link-local target came back as two hosts, one
-    /// carrying the hardware address and the NDP round trip, the other the
+    /// Filed apart, a scoped link-local target would come back as two hosts,
+    /// one carrying the hardware address and the NDP round trip, the other the
     /// ports.
     #[test]
     fn a_port_verdict_on_a_bare_link_local_lands_on_the_host_the_scan_named() {
@@ -3114,11 +3113,11 @@ mod tests {
     /// **A resume does not restore what this sitting is forbidden to report.**
     ///
     /// `Exclusions` promises that no excluded address appears in the report, and
-    /// names the two places it is enforced. `restore_hosts` was a third way into
-    /// the store and went through neither, so a scan interrupted before an
-    /// exclusion was added brought the forbidden addresses back with it — under
-    /// the operator's *current* configuration, in the engine's own continuation
-    /// of its own scan.
+    /// names the two places it is enforced. `restore_hosts` is a third way into
+    /// the store, and one going through neither would let a scan interrupted
+    /// before an exclusion was added bring the forbidden addresses back with it
+    /// — under the operator's *current* configuration, in the engine's own
+    /// continuation of its own scan.
     #[test]
     fn a_resume_leaves_out_an_address_this_sitting_may_not_report() {
         let excluded: IpAddr = "10.0.5.7".parse().expect("literal");
@@ -3193,8 +3192,8 @@ mod tests {
     /// An excluded address never leads a host, which is the half that matters
     /// most: the address a host leads with is the one the service, SNMP, TLS
     /// and detection passes connect to. A global IPv6 address outranks a
-    /// link-local, so one attached to a neighbour found at its link-local took
-    /// the lead from it.
+    /// link-local, so one attached to a neighbour found at its link-local would
+    /// take the lead from it.
     #[test]
     fn an_excluded_address_does_not_become_the_one_a_host_is_reached_at() {
         let key: IpAddr = "fe80::10".parse().expect("literal");

@@ -251,11 +251,11 @@ fn exported_lines(report: &ScanReport) -> String {
 /// A record-per-line export read back as the scan it records, off the disk and
 /// through the public dispatch.
 ///
-/// The path this closes: `jsonl` named no report format, so `resolve` fell
-/// through to sniffing, sniffing saw a leading brace and answered `Json`, and
-/// the single-document reader parsed the first line and stopped. What came back
-/// was a report with the right attribution and no hosts at all, which a
-/// comparison reads as a network that emptied out overnight.
+/// The path this holds: were `jsonl` to name no report format, `resolve` would
+/// fall through to sniffing, sniffing would see a leading brace and answer
+/// `Json`, and the single-document reader would parse the first line and stop.
+/// What came back would be a report with the right attribution and no hosts at
+/// all, which a comparison reads as a network that emptied out overnight.
 #[test]
 fn a_record_per_line_report_on_disk_reads_back_as_the_scan_it_records() {
     let report = hand_built_report();

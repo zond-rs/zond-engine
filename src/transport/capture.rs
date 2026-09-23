@@ -97,10 +97,10 @@ const _: () = assert!(
 ///
 /// # Why a value rather than three arguments
 ///
-/// Two of these were once fixed and one was never chosen at all: a constant for
-/// the snapshot length, `libpcap`'s own default for the buffer, and promiscuity
-/// left wherever the library happened to leave it. That was
-/// defensible while one caller existed with one set of needs.
+/// Fixing two of these and leaving the third unchosen, a constant for the
+/// snapshot length, `libpcap`'s own default for the buffer, and promiscuity
+/// wherever the library happens to leave it, is defensible only while one
+/// caller exists with one set of needs.
 ///
 /// It stops being defensible with a second, because the settings are not
 /// independent. A wide filter with a generous snapshot length and a default
@@ -1118,11 +1118,11 @@ fn wait_readable(fd: std::os::unix::io::RawFd) {
 
 /// A handle for putting whole frames on a link.
 ///
-/// The send half of the same library the receive half already uses. It was
-/// `pnet_datalink`'s, which meant two libraries open on one interface for one
-/// scan: a `pnet` channel whose receiver was discarded, and a `pcap` capture
-/// that replaced it. The discarded receiver was a kernel buffer nothing drained,
-/// and the comment saying so was in the code for as long as the arrangement was.
+/// The send half of the same library the receive half already uses. Sending
+/// through another library would put two open on one interface for one scan:
+/// a `pnet` channel, say, whose receiver is discarded beside the `pcap`
+/// capture that reads, and a discarded receiver is a kernel buffer nothing
+/// drains.
 ///
 /// A separate handle from the reading one, because a capture cannot be read and
 /// written through the same borrow while a reader thread is parked in
@@ -1136,8 +1136,8 @@ impl FrameSender {
     ///
     /// The filter is one that cannot match. This handle exists to write, and a
     /// capture with no filter at all would fill a kernel buffer nobody reads,
-    /// which is the defect the arrangement this replaces was documented as
-    /// having. `less 0` asks for frames shorter than nothing.
+    /// the defect a discarded receiver has. `less 0` asks for frames shorter
+    /// than nothing.
     pub fn open(link: &str) -> Result<Self, CaptureError> {
         let mut capture = Capture::from_device(device(link))
             .and_then(|inactive| inactive.snaplen(1).timeout(1).open())
@@ -1389,12 +1389,12 @@ mod tests {
     /// A capture that stopped is counted, and counted in captures rather than
     /// frames, so a scan across several interfaces says how many went deaf.
     ///
-    /// This was a log line and nothing else. The counters are what a report
-    /// carries, and a capture that ended is the most total form of the loss they
-    /// exist to make visible: an interface that hears nothing more, whose
-    /// silence a scanner cannot tell from hosts that did not answer. A run could
-    /// report a healthy receive path with one of eight links dead since the
-    /// first second.
+    /// A log line is not enough. The counters are what a report carries, and a
+    /// capture that ended is the most total form of the loss they exist to make
+    /// visible: an interface that hears nothing more, whose silence a scanner
+    /// cannot tell from hosts that did not answer. Logged and not counted, a run
+    /// could report a healthy receive path with one of eight links dead since
+    /// the first second.
     #[test]
     fn a_capture_that_stopped_early_is_counted_as_one() {
         let lasted = stats_of(100, 0, 0);

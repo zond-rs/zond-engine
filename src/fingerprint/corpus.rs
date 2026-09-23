@@ -32,8 +32,8 @@
 //! mismatches (`"MIPS"` against `mips`, `"FTP server"` against `FTP Server`)
 //! from imported rapid7/recog signatures whose per-pattern case flag was dropped
 //! on import.
-//! Restoring it (a re-import that preserves `flags`, not a blanket case-fold) is
-//! tracked in the RFC; until then the baseline is pinned so it cannot grow.
+//! Restoring it takes a re-import that preserves `flags`, not a blanket
+//! case-fold; the baseline is pinned so it cannot grow.
 
 use proptest::prelude::*;
 use rayon::prelude::*;
@@ -398,8 +398,8 @@ fn tls_cert_identifies_self_signed_appliance() {
     // The tunnel's own `ssl` verdict is not re-prefixed into `ssl/ssl`, even
     // under a TLS context.
     assert_eq!(service.name(), "ssl");
-    // The vendor reaches the projected Service. It was once extracted here and
-    // dropped by `to_service`, which had no vendor field.
+    // The vendor reaches the projected Service, rather than being extracted
+    // here and dropped by `to_service`.
     assert_eq!(service.vendor(), Some("Zond Appliance"));
 }
 

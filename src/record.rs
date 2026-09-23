@@ -870,10 +870,10 @@ pub struct FindingRecord {
     ///
     /// Omitted when absent, as the report's own field is. The two documents
     /// describe the same finding and `export::conformance` holds them to
-    /// spelling it the same way; a journal that wrote `null` where the report
-    /// wrote nothing was a difference nobody had noticed because every entry in
-    /// the shipped catalogue used to carry advice. A converted feed carries
-    /// none, and the asymmetry surfaced the moment one was shipped.
+    /// spelling it the same way, so a journal writing `null` where the report
+    /// writes nothing is a difference between them. Absence is the ordinary
+    /// case rather than an edge: a finding from a converted feed carries no
+    /// advice at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
 }
@@ -2882,10 +2882,10 @@ mod tests {
     /// A capture that stopped early survives the journal, and an older journal
     /// that never recorded one still opens.
     ///
-    /// The count existed only as a log line until this crossed the wire. A log
-    /// line is not the record: a resumed scan, or a report read a week later,
-    /// had no way to know part of the receive path was missing for part of the
-    /// run, and the counts beside it looked like a complete measurement.
+    /// A log line is not the record: were the count only logged, a resumed
+    /// scan, or a report read a week later, would have no way to know part of
+    /// the receive path was missing for part of the run, and the counts beside
+    /// it would look like a complete measurement.
     #[test]
     fn a_capture_that_stopped_early_survives_the_journal() {
         let counts = CaptureCounts {
@@ -2915,12 +2915,11 @@ mod tests {
     /// Privilege is a `Privilege` in the model and a boolean on the wire, and
     /// this is where the two meet.
     ///
-    /// The journal's format and the published report schema both promised a
-    /// boolean before the type existed and go on promising one, so the
-    /// conversion has to be exact in both directions and cannot drift with the
-    /// enum. A flipped polarity here would report every unprivileged scan as
-    /// privileged in an archived report, which is a claim about what a result is
-    /// worth rather than a cosmetic error.
+    /// The journal's format and the published report schema both promise a
+    /// boolean, so the conversion has to be exact in both directions and cannot
+    /// drift with the enum. A flipped polarity here would report every
+    /// unprivileged scan as privileged in an archived report, which is a claim
+    /// about what a result is worth rather than a cosmetic error.
     ///
     /// Driven off a real phase with only this field varied, so it stays true as
     /// `PhaseParts` grows.

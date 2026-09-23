@@ -14,19 +14,18 @@
 //! the quotation has to name something this scan actually sent, and *what* names
 //! it differs by protocol and by technique.
 //!
-//! That obligation was written down nowhere and honoured unevenly. Four separate
-//! findings, in four scanners, over two audit iterations:
+//! Nothing else states that obligation in one place, and each scanner has a way
+//! of its own to get it wrong:
 //!
-//! | scanner | what it believed on |
+//! | scanner | what it would believe on, unchecked |
 //! |---|---|
 //! | SCTP port scan | the ports alone, for an INIT, whose nonce is never inside the guaranteed eight bytes |
 //! | every port scan | the quoted source port alone, for a host-unreachable, which files a host down |
 //! | TCP port scan | the ports alone, for the three techniques whose nonce needs twelve quoted bytes |
 //! | IP protocol scan | membership of the scan's own target list, which is what the scanned host knows about itself |
 //!
-//! Each was found separately, fixed separately, and reasoned about separately by
-//! somebody who had thought about it. The trace got it right from the start and
-//! nothing carried that across.
+//! Each is reasoned about separately, in its own scanner, and a scanner that
+//! gets it right carries nothing across to the next.
 //!
 //! **This test is the thing that carries it across.** It is a census, in the
 //! shape of [`architecture.rs`](architecture.rs)'s module `ORDER`: every file
@@ -43,12 +42,12 @@
 //! Reading an error without attributing it is one way to get ICMP wrong. The
 //! other is never reading it as ICMP at all. A capture that admits ICMP hands
 //! it to whatever the strategy parses, and a Layer-4 header does not say what
-//! it is: the SCTP discovery sweep read ICMP errors as SCTP chunks, and the
-//! census above could not see it, because it called no reader to be counted
-//! by. So there is a second list, [`LISTENING`], of every file that opens a
-//! capture admitting ICMP, each with a line saying where the protocol is
-//! checked before a byte is parsed. The echo trace taking its own requests for
-//! answers was the same question, asked of the ICMP type rather than the
+//! it is: an SCTP discovery sweep can read ICMP errors as SCTP chunks, and the
+//! census above cannot see that, because such a sweep calls no reader to be
+//! counted by. So there is a second list, [`LISTENING`], of every file that
+//! opens a capture admitting ICMP, each with a line saying where the protocol
+//! is checked before a byte is parsed. An echo trace taking its own requests
+//! for answers is the same question, asked of the ICMP type rather than the
 //! protocol.
 //!
 //! ## How a file is found

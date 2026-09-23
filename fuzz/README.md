@@ -149,8 +149,8 @@ From nothing a dictionary is worth 6% to 150%, and it is worth most exactly wher
 a seed is: a format with a header a fuzzer will not stumble into. Beside the
 seeds it is worth 0% to 5%, and for `import_report` it measured slightly
 negative — noise, which is the point. The seeds already contain every token, and
-splicing between corpus entries reproduces them without being told. The two rows
-added later reproduce the same shape: 111% and 59% from nothing, and -1% and 3%
+splicing between corpus entries reproduces them without being told. The two
+starred rows reproduce the same shape: 111% and 59% from nothing, and -1% and 3%
 beside the seeds.
 
 Ten of the eighteen have no dictionary, and `protocols_craft` has no seeds
@@ -158,14 +158,14 @@ either. Its input is `arbitrary`'s encoding of a recipe rather than a document,
 so there are no tokens to put in a dictionary and no file anybody would write by
 hand to put in a seed. It is also the case where the table above predicts seeds
 are worth least: what they buy is a header a fuzzer will not stumble into, and a
-recipe has none. Measured on the run that cleared P9, the first buildable packet
-appeared at execution 28 from an empty corpus. A minimized corpus would be 581
-files, which is the covering set rather than a seed set, and keeping it in the
-repository would trade a hundred kilobytes for a head start of a few
-milliseconds. `journal_cursor` takes numbers rather
-than a format, and `diff_reports` and `merge_reports` take whole documents whose
-tokens are already `import_report`'s — a dictionary of them would be the same
-file under another name, and the seeds carry every one.
+recipe has none. Measured from an empty corpus, the first buildable packet
+appears at execution 28. A minimized corpus would be 581 files, which is the
+covering set rather than a seed set, and keeping it in the repository would
+trade a hundred kilobytes for a head start of a few milliseconds.
+`journal_cursor` takes numbers rather than a format, and `diff_reports` and
+`merge_reports` take whole documents whose tokens are already `import_report`'s
+— a dictionary of them would be the same file under another name, and the seeds
+carry every one.
 
 So: pass the dictionary, because it costs nothing and the tail of a long run is
 not what sixty seconds measures. But do not expect it to be the lever. **It is

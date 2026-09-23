@@ -130,7 +130,7 @@ async fn a_real_discovery_sweep_exports_a_document_the_schema_accepts() {
 /// A merged report is what a caller exports after sweeping and then scanning
 /// what the sweep found, and its two phases must both survive.
 ///
-/// The scan is asked with `assume_up`, which is what that workflow now means: a
+/// The scan is asked with `assume_up`, which is what that workflow means: a
 /// caller holding a sweep's results already knows these hosts answer, and
 /// letting the scan establish it a second time would spend the probes twice.
 #[tokio::test]

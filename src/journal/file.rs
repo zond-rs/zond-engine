@@ -19,11 +19,11 @@
 //! home; this is the other half of that answer, without which it goes to their
 //! home and stays unreadable to them.
 //!
-//! They live together because separating them cost exactly that. The cursor had
-//! its own copy of the mode and none of the ownership, so a sweep run with `sudo`
-//! left `cursor.json` owned by root beside a manifest and findings owned by the
-//! user. An unprivileged listing could read the plan and not the progress, and
-//! reported every scan as untouched.
+//! They live together because separating them costs exactly that. A cursor
+//! writer with its own copy of the mode and none of the ownership would leave
+//! `cursor.json` owned by root after a sweep run with `sudo`, beside a manifest
+//! and findings owned by the user. An unprivileged listing would read the plan
+//! and not the progress, and report every scan as untouched.
 //!
 //! ## Why nothing here takes a path twice
 //!
@@ -51,13 +51,13 @@ use std::path::Path;
 /// moment where what a scan is recording can be read by anyone else. The
 /// directory is `0700` as well, which would cover it either way.
 ///
-/// Create-only, which is what every caller means. This used to create *or
-/// truncate*, and the difference is a root process truncating and then chowning
-/// whatever the directory's owner had put at the name. `O_NOFOLLOW` already
-/// refuses a symlink there, so the residual case was a planted regular file:
-/// narrow, since the directory is `0700` and the planter would be its owner, but
-/// narrow is not the same as closed. `create_new` closes it: a name that already
-/// exists is refused rather than emptied.
+/// Create-only, which is what every caller means. Create *or truncate* would
+/// mean a root process truncating and then chowning whatever the directory's
+/// owner had put at the name. `O_NOFOLLOW` already refuses a symlink there, so
+/// the residual case is a planted regular file: narrow, since the directory is
+/// `0700` and the planter would be its owner, but narrow is not the same as
+/// closed. `create_new` closes it: a name that already exists is refused rather
+/// than emptied.
 ///
 /// The two callers that stage through a temporary want a name that may be left
 /// over from an interrupted run; they use [`create_staged`], which is this with
@@ -79,10 +79,10 @@ pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
 /// writes atomically: `cursor.json.tmp` on every checkpoint, `hosts.jsonl-tmp`
 /// on every compaction. Both are renamed away on success, so a leftover means a
 /// previous run died between the create and the rename, and refusing forever
-/// after that would wedge the journal, which is the failure `create_new` was
-/// adopted to avoid trading into.
+/// after that would wedge the journal, trading the defect `create_new` closes
+/// for a failure of its own.
 ///
-/// The removal is safe in the way the truncation was not. `remove_file` unlinks
+/// The removal is safe in the way truncation is not. `remove_file` unlinks
 /// the name, so a symlink planted there loses the link rather than the target,
 /// and the retry is still `create_new` under `O_NOFOLLOW`: if something wins the
 /// race and plants a file between the two calls, this fails rather than opening
@@ -294,8 +294,9 @@ mod tests {
     }
 
     /// `O_NOFOLLOW` covers a link planted at a journal's name; it says nothing
-    /// about an ordinary file planted there. That one used to be truncated and
-    /// then chowned to the invoking user by a process that is usually root.
+    /// about an ordinary file planted there. Opened with truncation, that one
+    /// would be emptied and then chowned to the invoking user by a process that
+    /// is usually root.
     #[test]
     fn a_file_already_at_a_journal_name_is_refused_rather_than_emptied() {
         let dir = scratch("create-only");

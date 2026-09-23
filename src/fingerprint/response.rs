@@ -9,10 +9,9 @@
 //! # Collected responses
 //!
 //! [`ResponseSet`] is everything the transport gathered from a port, handed to
-//! the analyzers as one value. It replaces the bare `Vec<String>` the engine
-//! started with so that non-banner evidence, a TLS certificate now, raw binary
-//! protocol frames later, has a typed home instead of being squeezed through a
-//! lossy `String`.
+//! the analyzers as one value. It is a struct rather than a bare `Vec<String>`
+//! so that non-banner evidence, such as a TLS certificate, has a typed home
+//! instead of being squeezed through a lossy `String`.
 //!
 //! The transport owns collection (I/O); analyzers own interpretation (CPU). So
 //! the TLS certificate lives here as **raw DER bytes**, not a parsed structure:
@@ -133,11 +132,10 @@ impl ResponseSet {
 /// [`ResponseSet`].
 ///
 /// Bytes, not text: an active analyzer speaks a specific protocol (a JARM
-/// ClientHello sweep, an SSH `KEXINIT`, a Modbus request, and the future
-/// nerva-derived binary handlers) and parses the reply byte-for-byte, so there
-/// is no lossy `String` in the way. A passive analyzer, one that reads only the
-/// shared [`ResponseSet`], never overrides `collect`, so its `Collected` is
-/// simply empty.
+/// ClientHello sweep, an SSH `KEXINIT`, a Modbus request) and parses the reply
+/// byte-for-byte, so there is no lossy `String` in the way. A passive analyzer,
+/// one that reads only the shared [`ResponseSet`], never overrides `collect`,
+/// so its `Collected` is simply empty.
 ///
 /// [`Analyzer`]: super::analyzer::Analyzer
 #[non_exhaustive]

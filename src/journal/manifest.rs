@@ -365,12 +365,12 @@ impl PlanFingerprint {
 /// The plan digest: FNV-1a over bytes this file chooses, and nothing borrowed
 /// from a `Hash` implementation.
 ///
-/// A fingerprint that is written down cannot be built out of `Hash`. This used
-/// `DefaultHasher`, which the standard library declines to keep stable across
-/// releases, so upgrading the compiler moved the value, every journal on disk
-/// stopped matching, and the refusal said the plan had changed. The same caveat
-/// covers the `Hash` implementations of the types fed to it, so the bytes are
-/// chosen here instead.
+/// A fingerprint that is written down cannot be built out of `Hash`.
+/// `DefaultHasher` is not kept stable across releases of the standard library,
+/// so upgrading the compiler would move the value, every journal on disk would
+/// stop matching, and the refusal would say the plan had changed. The same
+/// caveat covers the `Hash` implementations of the types fed to it, so the
+/// bytes are chosen here instead.
 ///
 /// Non-cryptographic on purpose. Nothing here is defending against a chosen
 /// collision: anyone who can edit a manifest can edit the fingerprint beside it.
@@ -788,11 +788,11 @@ mod tests {
     /// The derivation is pinned to a value, not merely to itself.
     ///
     /// Every other test here asks whether two fingerprints agree, and every one
-    /// of them passed while the derivation was `DefaultHasher`, whose output the
-    /// standard library declines to keep stable across compiler releases. The
-    /// value moved when the toolchain did and every journal on disk was refused
-    /// as a plan that had changed. A test comparing two fingerprints taken in one
-    /// process cannot see that. This one can.
+    /// of them would pass with a derivation built on `DefaultHasher`, whose
+    /// output the standard library declines to keep stable across compiler
+    /// releases. Its value moves when the toolchain does, and every journal on
+    /// disk would be refused as a plan that had changed. A test comparing two
+    /// fingerprints taken in one process cannot see that. This one can.
     ///
     /// A failure here means the derivation moved. That is allowed, and it is a
     /// [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) bump: every journal

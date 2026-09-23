@@ -279,8 +279,8 @@ impl EvasionProfile {
     /// network. The fourth is refused nowhere else at all: a probe with a hop
     /// limit of zero builds and sends and is discarded by the first router, so
     /// the scan reports that silent network without anything having gone wrong
-    /// anywhere it could be seen. It was the one field of the four this function
-    /// did not check.
+    /// anywhere it could be seen, so this function is the only place it can be
+    /// caught.
     ///
     /// It is not a check that a scan will work. Whether the
     /// link-layer path can reach these targets, whether decoys survive egress

@@ -906,11 +906,11 @@ fn de_effort<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ScanEffort
 
 /// Reads `max_probe_rate`, refusing a ceiling of zero.
 ///
-/// The three numeric readers below all exist for one reason: the engine used to
-/// take these values, find them unusable where the schedule is built, discard
-/// them without a word, and then write them into the report as though they had
-/// applied. A document is exactly where that is worth catching, since nobody is
-/// watching the file being read.
+/// The three numeric readers below all exist for one reason: without them the
+/// engine would take these values, find them unusable where the schedule is
+/// built, discard them without a word, and then write them into the report as
+/// though they had applied. A document is exactly where that is worth catching,
+/// since nobody is watching the file being read.
 fn de_probe_rate<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<NonZeroU32>, D::Error> {
     let Some(rate) = Option::<u32>::deserialize(d)? else {
         return Ok(None);

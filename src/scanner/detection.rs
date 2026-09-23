@@ -9,8 +9,8 @@
 //! # Detection phase
 //!
 //! Named apart from [`crate::detect`], which is the corpus itself. One is what
-//! a detection *is*, the other is when it runs, and the two modules used to
-//! have the same name.
+//! a detection *is*, the other is when it runs, and one name for both would
+//! leave a reader unable to tell which of the two is meant.
 //!
 //! Runs the authored detection corpus, the Tier-1 [flows](crate::detect::flow)
 //! and the Tier-2 [compute modules](crate::detect::compute), against the open
@@ -440,13 +440,14 @@ fn detect_hosts(ctx: &ScanContext) {
 
 /// The socket budget the whole detection phase spends through.
 ///
-/// A port's flows run several at a time now, and every port in the pool does the
+/// A port's flows run several at a time, and every port in the pool does the
 /// same, so the two multiply: without a shared count a busy scan would open
 /// [`CONNECT_CONCURRENCY`] ports times [`DETECTION_FLOW_CONCURRENCY`] flows at
 /// once, hundreds of sockets against a ceiling written for fifty. This holds that
 /// ceiling for the phase as a whole, so the concurrency is spent where the work
 /// is: a host with four web ports gets most of the budget on those four, and a
-/// scan with fifty ports in flight is bounded exactly as it was before.
+/// scan with fifty ports in flight holds no more sockets than one flow per port
+/// would.
 ///
 /// A permit is taken when a flow's probe is built and given back when the probe
 /// is dropped, which is the flow's whole run. Nothing here waits on a permit while
@@ -787,8 +788,8 @@ mod tests {
         drop(session);
     }
 
-    /// The budget the probe is built with, which is this module's share of what
-    /// used to live inside the probe: a declared ceiling is taken and one left
+    /// The budget the probe is built with, which is the part of the probe's
+    /// limits this module decides: a declared ceiling is taken and one left
     /// open falls back to this runtime's default rather than to no ceiling.
     ///
     /// What the probe then does with it is tested where the probe lives, in

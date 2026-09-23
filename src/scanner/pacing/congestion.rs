@@ -69,11 +69,12 @@
 //! but it arrives late, and it arrives *not at all* when the retries are lost as
 //! well as the first attempt.
 //!
-//! ## What the narrower rule cost, measured
+//! ## What cutting only on recoveries costs, measured
 //!
-//! The first version of this file cut only on recoveries, on the reasoning that
-//! a timeout might be a firewall. Against a Raspberry Pi on a home network it
-//! never cut once, and three consecutive scans of the same host reported this:
+//! The obvious alternative cuts only on recoveries, on the reasoning that a
+//! timeout might be a firewall. Measured against a Raspberry Pi on a home
+//! network, a controller built that way never cut once, and three consecutive
+//! scans of the same host reported this:
 //!
 //! - eleven ports were open across the three runs; **each run found exactly
 //!   seven**, and only one port was found by all three;
@@ -81,10 +82,9 @@
 //!   set was reshuffled every run: port 53 filtered once and open twice, port 22
 //!   open twice and filtered once.
 //!
-//! Nothing on that host was filtered. Every one of those verdicts was this
+//! Nothing on that host was filtered. Every one of those verdicts was the
 //! scanner's own send rate, reported as somebody's firewall, which is precisely
-//! the failure the module was written to prevent, arrived at by a different
-//! route.
+//! the failure this module exists to prevent, arrived at by a different route.
 //!
 //! The arithmetic says why the recovery signal never fired. At a quarter of
 //! probes lost and three *independent* attempts, an open port is missed one time
@@ -282,7 +282,8 @@ impl CongestionWindow {
     /// [`ProbeLedger`](super::retry::ProbeLedger) give. A crossed pair then
     /// describes a range with nothing in it, so the window is stationary and
     /// reports itself as such through [`WindowSummary::adaptive`]. `u32::clamp`
-    /// asserted instead, and took the scan down before that logic could run.
+    /// asserts instead, and would take the scan down before that logic could
+    /// run.
     pub fn new(limits: WindowLimits) -> Self {
         let window = f64::from(
             limits
@@ -426,8 +427,8 @@ impl CongestionWindow {
 mod tests {
 
     /// `floor` and `ceiling` are adjacent `u32`s on a public constructor, so a
-    /// caller can cross them. `u32::clamp` asserted, which turned that into a
-    /// panic in the caller's process, two lines before the `adaptive` check
+    /// caller can cross them. `u32::clamp` asserts, which would turn that into
+    /// a panic in the caller's process, two lines before the `adaptive` check
     /// that already handles a range with nothing in it.
     #[test]
     fn crossed_bounds_freeze_the_window_rather_than_panicking() {

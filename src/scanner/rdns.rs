@@ -437,8 +437,8 @@ impl HostnameResolver {
     /// Nothing here is reported as a failure. Everything the capture yields is
     /// unsolicited third-party traffic - the host's own browsing, other
     /// machines' service discovery - so a segment that will not parse, or that
-    /// concerns no address, is simply not ours. Logging each one turned ordinary
-    /// background traffic into a wall of scan errors.
+    /// concerns no address, is simply not ours. Logging each one would turn
+    /// ordinary background traffic into a wall of scan errors.
     fn absorb_sniffed(&mut self, segment: &[u8], source: IpAddr) {
         let Some(udp_packet) = UdpPacket::new(segment) else {
             return;
@@ -561,8 +561,8 @@ impl HostnameResolver {
     ///
     /// Written through [`ScanContext::write_host`] like every other finding, so
     /// a name reaches the event stream as well as the store. Applied by
-    /// iterating the map directly it did not, and a consumer watching a scan
-    /// saw its hosts arrive unnamed and never heard they had been named.
+    /// iterating the map directly it would not, and a consumer watching a scan
+    /// would see its hosts arrive unnamed and never hear they had been named.
     ///
     /// The addresses are collected before any of them is written. `write_host`
     /// takes the store's own lock, and taking it while iterating the map would
@@ -919,8 +919,7 @@ fn address_written_as_a_label(name: &str) -> Option<IpAddr> {
 ///
 /// IPv6 addresses are queried only when they are global unicast, since link-local
 /// and other special-purpose addresses will not resolve. Every IPv4 address is
-/// queried for now; narrowing that to skip private ranges and localhost is left
-/// for later.
+/// queried, private ranges and localhost included.
 fn is_queryable(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V6(ipv6_addr) => ip::is_global_unicast(ipv6_addr),
@@ -1128,8 +1127,8 @@ mod tests {
     ///
     /// On a local segment this is the *usual* way: the machine a scan asks for
     /// names is generally the router it is scanning, and the answer is proof in
-    /// DNS's own protocol. Without this, a scan came back with every hostname
-    /// resolved and no idea what had resolved them.
+    /// DNS's own protocol. Without this, a scan would come back with every
+    /// hostname resolved and no idea what had resolved them.
     ///
     /// The second half is the trap on exactly those segments. mDNS shares DNS's
     /// framing and answers on 5353, and nearly every laptop and printer speaks
@@ -1324,10 +1323,10 @@ mod tests {
     }
 
     /// A hostname is a finding like any other, so attaching one has to announce
-    /// itself. Writing straight into the map bypassed
+    /// itself. Writing straight into the map would bypass
     /// [`ScanContext::write_host`], which owns the lock-then-announce ordering,
-    /// so a consumer watching the event stream saw a host appear without a name
-    /// and never heard that it had gained one.
+    /// so a consumer watching the event stream would see a host appear without
+    /// a name and never hear that it had gained one.
     #[tokio::test]
     async fn attaching_a_hostname_announces_it_like_any_other_finding() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
@@ -1400,8 +1399,9 @@ mod tests {
     ///
     /// The sniffed path is unauthenticated by design and says so. What it may
     /// not do is outrank the path that checked the source, the transaction ID
-    /// and the question - which it did, in either order, and without a word,
-    /// because `insert` reports only the absence it replaced.
+    /// and the question - which a plain `insert` would let it do, in either
+    /// order and without a word, because `insert` reports only the absence it
+    /// replaced.
     #[tokio::test]
     async fn an_overheard_name_does_not_displace_a_resolved_one() {
         let ip = v4(192, 168, 0, 40);

@@ -33,8 +33,8 @@
 //! machine is infrastructure and says nothing about what is on it.
 //!
 //! Written as a family, `Network device` runs against `Linux` on the ballot
-//! [`resolve`](super::resolve) settles by vote, and a router that had correctly
-//! named itself `Debian 12` over SSH was reported as nothing at all once the scan
+//! [`resolve`](super::resolve) settles by vote, and a router that correctly names
+//! itself `Debian 12` over SSH would be reported as nothing at all once the scan
 //! looked up its address. Those vendors state a device class and abstain from the
 //! family, which is what [`OsEvidence::device`] exists for.
 //!
@@ -102,11 +102,11 @@ const VENDOR_FAMILIES: &[(&str, &str)] = &[
 /// as a family, `Network device` runs against `Linux` on the ballot
 /// [`resolve`](super::resolve) settles by vote and both lose.
 ///
-/// That is measured rather than argued. A Linux-based router announcing
-/// `Debian 12` resolved to `Linux 55, version 12` on its banner alone, and to
-/// nothing at all once the same scan looked up the address it answered from.
-/// Adding a true observation removed the answer, for eight of the ten vendors
-/// this module knows.
+/// That is measured rather than argued. With the class read as a family, a
+/// Linux-based router announcing `Debian 12` resolves to `Linux 55, version 12`
+/// on its banner alone, and to nothing at all once the same scan looks up the
+/// address it answered from. Adding a true observation removes the answer, for
+/// eight of the ten vendors this module knows.
 ///
 /// So these abstain from the family and state what they actually establish,
 /// which is that the box is infrastructure. Both answers then survive: a
@@ -166,18 +166,18 @@ pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
         source: OsSource::HardwareVendor,
         family,
         device,
-        // **Not the registered company**, though that is exactly what this field
-        // used to carry and it reads like the obvious value for it.
+        // **Not the registered company**, though it reads like the obvious
+        // value for this field.
         //
         // `vendor` here means whoever publishes the *operating system*, and an
         // address block establishes whoever built the *hardware*. Those
         // coincide for Apple and come apart the moment they do not: a Raspberry
-        // Pi runs Debian, so the address said `Raspberry Pi Trading Ltd`, the
-        // SSH banner said `Debian`, and the resolver, correctly, given what it
-        // was told, treated two answers to two different questions as a
-        // contradiction and kept neither. The host was reported as `Linux
-        // 12.0`: a version number no Linux has, because the name that belonged
-        // with it had been thrown away.
+        // Pi runs Debian, so the address says `Raspberry Pi Trading Ltd`, the
+        // SSH banner says `Debian`, and a resolver handed both would, correctly,
+        // given what it was told, treat two answers to two different questions
+        // as a contradiction and keep neither. The host would be reported as
+        // `Linux 12.0`: a version number no Linux has, because the name that
+        // belonged with it had been thrown away.
         //
         // What an address block genuinely supports is one broad claim, which is
         // what this evidence makes and all it makes: a family for a vendor who
@@ -217,7 +217,8 @@ mod tests {
     }
 
     /// A banner from a Linux-based appliance, worth enough to name a host on its
-    /// own. It is the thing every entry in the device table used to destroy.
+    /// own. It is the thing every entry in the device table would destroy if
+    /// read as a family.
     fn a_debian_banner() -> OsEvidence {
         OsEvidence {
             source: OsSource::ServiceBanner,
@@ -234,13 +235,13 @@ mod tests {
         }
     }
 
-    /// The regression this split exists for.
+    /// The failure this split exists for.
     ///
     /// A Linux-based router, switch or access point announces `Debian 12` over
     /// SSH and answers from a registered infrastructure block. Both observations
-    /// are true. Read as rival families they annihilated: the banner alone
-    /// resolved the host and the banner plus its own hardware address resolved to
-    /// nothing, so looking up the address destroyed the answer.
+    /// are true. Read as rival families they annihilate: the banner alone
+    /// resolves the host and the banner plus its own hardware address resolves
+    /// to nothing, so looking up the address destroys the answer.
     #[test]
     fn an_infrastructure_vendor_does_not_destroy_what_the_banner_established() {
         for mac in [

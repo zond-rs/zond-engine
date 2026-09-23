@@ -17,12 +17,11 @@
 //!
 //! ## Why it is a module rather than part of a scanner
 //!
-//! It used to live in `routed`, beside the SYN sweep, because the sweep was the
-//! first thing to need it. Everything raw that arrived afterwards, four port
-//! scanners and two operating-system probes and a trace and a filter probe, was
-//! then written as a submodule of the sweep, which is not what any of them is. The
-//! contents did not change; what changed is that `routed` no longer means both
-//! "reached through a gateway" and "opens a raw socket".
+//! Kept in `routed`, beside the SYN sweep, it would make every other raw
+//! strategy, four port scanners and two operating-system probes and a trace and
+//! a filter probe, a submodule of the sweep, which is not what any of them is,
+//! and `routed` would mean both "reached through a gateway" and "opens a raw
+//! socket".
 //!
 //! ## What is shared and what is not
 //!
@@ -64,8 +63,8 @@ use crate::{info, success};
 ///   trips; the per-target term covers the send burst and the spread of
 ///   arrivals behind it. The ceiling bounds a scan whose pace nobody derived:
 ///   it is *not* what bounds the port scanners, which tell it their size and
-///   their pacing floor and so cannot be clamped by it. It used to be, and it
-///   truncated a 65 535-port scan at 60 seconds of the 104 it had earned.
+///   their pacing floor and so cannot be clamped by it. Clamped, a 65 535-port
+///   scan would be truncated at 60 seconds of the 104 it had earned.
 ///
 /// The minimum runtime exists so silence is never the reason a scan stops
 /// before an answer could plausibly have arrived at all.
@@ -716,8 +715,8 @@ mod tests {
     /// strategy that did not run and reaches the report as a failure; an
     /// address with no route is said once and changes nothing about the scan's
     /// standing. Collapsed into one counter, a dual-stack name on an IPv4-only
-    /// network made every scan of it report itself partial, which teaches a
-    /// reader to ignore the warning that matters.
+    /// network would make every scan of it report itself partial, which teaches
+    /// a reader to ignore the warning that matters.
     #[test]
     fn a_missing_route_is_counted_apart_from_a_broken_send_path() {
         let unreachable = |address: &str| {
@@ -807,13 +806,12 @@ mod tests {
 
     /// A rate of zero is a caller error, not an instruction to stall forever.
     ///
-    /// It can no longer be asked at any level. `pacing_for` takes a
-    /// [`NonZeroU32`] and so does the configuration above it, so the fallback
-    /// this holds is now only the one a caller means: no ceiling at all.
+    /// It cannot be asked at any level. `pacing_for` takes a [`NonZeroU32`] and
+    /// so does the configuration above it, so the fallback this holds is only
+    /// the one a caller means: no ceiling at all.
     ///
-    /// Zero used to arrive here as `Some(0)` and resolve to the engine's own
-    /// rate, at three call sites of which only this one went through the
-    /// resolver, while the report recorded the ceiling the caller believed they
+    /// Were zero to arrive here as `Some(0)`, it would resolve to the engine's
+    /// own rate while the report recorded the ceiling the caller believed they
     /// had set.
     #[test]
     fn an_unset_rate_falls_back_to_the_default_and_a_set_one_is_obeyed() {

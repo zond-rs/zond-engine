@@ -100,8 +100,9 @@ async fn unknown_banner_still_yields_an_open_port() {
 ///
 /// `SSH-2.0-OpenSSH_9.6p1 Debian-3` names an operating system as plainly as it
 /// names a product, and both come out of the one handshake this scanner makes.
-/// The connect prober drew that evidence and dropped it, so a scan without root
-/// disagreed with a scan with root about what it had just been told.
+/// A connect prober that drew that evidence and dropped it would leave a scan
+/// without root disagreeing with a scan with root about what it had just been
+/// told.
 #[tokio::test]
 async fn a_banner_naming_an_operating_system_reaches_the_host_record() {
     if is_privileged() {
@@ -134,13 +135,13 @@ async fn a_banner_naming_an_operating_system_reaches_the_host_record() {
 /// The banner is the most freely chosen thing a host emits, and a scan reads one
 /// per port, so this is the shape a machine can arrange for itself: three SSH
 /// banners naming three Debian releases it cannot all be running. Combined item
-/// by item they read as three witnesses agreeing on Linux and resolved to 91,
-/// eight of them to 95, past the point a caller treats an answer as settled.
+/// by item they would read as three witnesses agreeing on Linux and resolve to
+/// 91, eight of them to 95, past the point a caller treats an answer as settled.
 ///
 /// Written here rather than beside `resolve`'s own tests because the evidence
 /// has to arrive the way a scan delivers it. `identify` is called once per port
 /// by the service pass, which is what files three items under one source, and
-/// hand-built evidence is what let this stand.
+/// hand-built evidence would let this stand.
 #[tokio::test]
 async fn a_host_contradicting_itself_gains_no_confidence() {
     if is_privileged() {
@@ -197,11 +198,11 @@ async fn a_host_contradicting_itself_gains_no_confidence() {
 /// which is the one arrangement that cannot catch a scanner reading the number
 /// instead of the wire.
 ///
-/// One did get through: OpenSSH on 443 came out as `http` for as long as an
-/// implicit-TLS number sent the collection to a handshake and ended it there
-/// when the handshake failed. This is written against the shape of that rather
-/// than the instance, so the next number that acquires a shortcut has to survive
-/// the same table.
+/// One such shortcut: an implicit-TLS number that sent the collection to a
+/// handshake and ended it there when the handshake failed would name OpenSSH on
+/// 443 `http`. This is written against the shape of that rather than the
+/// instance, so any number that acquires a shortcut has to survive the same
+/// table.
 ///
 /// No privilege check: this drives `fingerprint_tcp` directly rather than a
 /// scan, so there is no raw-socket path for root to take and the assertions hold
@@ -577,7 +578,7 @@ async fn identifies_a_wsd_responder_from_the_type_it_publishes() {
 
 /// memcached over UDP is identified by the rule written for its TCP banner.
 ///
-/// No new match rule was added for this port. The UDP probe draws the same
+/// No match rule is written for this port over UDP. The UDP probe draws the same
 /// `VERSION` line the TCP probe does, so a product here means the existing rule
 /// read a datagram it was never written for.
 #[tokio::test]
@@ -620,9 +621,9 @@ async fn memcached_over_udp_is_named_by_the_rule_written_for_tcp() {
 /// timestamps that prove the port open and say nothing else, and the daemon's
 /// own account of itself comes back only to a control message.
 ///
-/// This shipped broken. The service pass took the first registered probe, sent
-/// the client request, discarded the timestamps, and left the rules unreached
-/// that had just been given a decoder. A scan of a real ntpd is what showed it.
+/// A service pass that took only the first registered probe would send the
+/// client request, discard the timestamps, and leave unreached the rules that
+/// read the control message's reply. Checked against a scan of a real ntpd.
 #[tokio::test]
 async fn a_port_registering_two_probes_is_asked_both() {
     if is_privileged() {

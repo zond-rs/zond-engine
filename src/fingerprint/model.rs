@@ -115,8 +115,8 @@ pub struct Evidence {
     /// an SSH `protocol 2.0`). Kept separate from `product` precisely so it can
     /// never displace the primary product in the resolver.
     pub extrainfo: Option<String>,
-    /// A CPE identifier, when known. Kept as a string until a typed CPE model
-    /// lands; forward-compatible with structured parsing later.
+    /// A CPE identifier, when known. Kept as a string rather than a typed CPE
+    /// model, so parsing it into parts is left to whoever needs them.
     pub cpe: Option<String>,
     /// The transport this observation was read through, if any. Set when the
     /// data was decrypted from a tunnel (e.g. banner matched inside TLS).
@@ -342,8 +342,8 @@ impl ServiceVerdict {
         // bytes and disagree about what to call the result: splitting
         // `Microsoft-IIS/10.0` on its slash yields `Microsoft-IIS` and nothing
         // else, while the corpus rule for the same value yields `IIS` and the
-        // CPE. Both carry a version, so both are `Strong`, and the tie used to
-        // be settled by the order the analyzers happened to push them.
+        // CPE. Both carry a version, so both are `Strong`, and left alone the
+        // tie would be settled by the order the analyzers happened to push them.
         //
         // A rule that names a vendor, a product and a version is a stricter
         // reading than a split on a separator, so this is the more specific
@@ -375,10 +375,10 @@ impl ServiceVerdict {
         // A CPE is a whole identity rather than a fragment of one: vendor,
         // product and version in a single string, already resolved against its
         // own observation's version. Filled independently of the product, a
-        // verdict reported `gunicorn 21.2.0` beside
+        // verdict can report `gunicorn 21.2.0` beside
         // `cpe:/a:apache:http_server:2.4.49`, measured, and `cve` joins on the
-        // CPE, so the port was matched against Apache's vulnerabilities while
-        // the report named something else entirely. That is a false finding in
+        // CPE, so the port is matched against Apache's vulnerabilities while
+        // the report names something else entirely. That is a false finding in
         // a security report, which is the most expensive thing this crate can
         // produce.
         //
@@ -390,12 +390,12 @@ impl ServiceVerdict {
         // software the service does. Elasticsearch is the case that needs it.
         // Its body rule holds the CPE and names `elasticsearch` on service
         // `elasticsearch`, so the echo rule above bars it from the slot, and a
-        // favicon hash naming `Search` and holding nothing took the identifier
-        // down with it.
+        // favicon hash naming `Search` and holding nothing would take the
+        // identifier down with it.
         //
         // An observation that states no product at all is not agreement. It is
-        // the absence of a claim, and borrowing from it is how a verdict came to
-        // report `gunicorn 21.2.0` beside an Apache CPE.
+        // the absence of a claim, and borrowing from it is how a verdict comes
+        // to report `gunicorn 21.2.0` beside an Apache CPE.
         verdict.cpe = match named {
             Some(ev) if ev.cpe.is_some() => ev.cpe.clone(),
             Some(ev) => evidence
@@ -495,9 +495,8 @@ mod tests {
 
     #[test]
     fn a_cpe_flows_from_evidence_through_the_verdict_into_the_service() {
-        // Before `to_service` carried it, the verdict resolved the cpe and then
-        // dropped it on the way to the `Service`, so every service CPE was
-        // lost.
+        // `to_service` carries the cpe. A verdict that resolved it and then
+        // dropped it on the way to the `Service` would lose every service CPE.
         let mut evidence = ev(Confidence::Strong).with_product("nginx");
         evidence.cpe = Some("cpe:/a:nginx:nginx:1.24.0".to_string());
 
@@ -514,8 +513,8 @@ mod tests {
     /// value on its slash yields the product `Microsoft-IIS` and no CPE, and the
     /// corpus rule for the same value yields `IIS` and
     /// `microsoft:internet_information_services`. Both carry a version, so both
-    /// are `Strong` and neither is port-confirmed: a tie, and the tie used to be
-    /// settled by the order the analyzer pushed them.
+    /// are `Strong` and neither is port-confirmed: a tie, which left alone would
+    /// be settled by the order the analyzer pushed them.
     #[test]
     fn a_tie_for_the_product_goes_to_the_observation_that_knows_the_platform() {
         let mut split = ev(Confidence::Strong)
@@ -538,11 +537,11 @@ mod tests {
     }
 
     /// A rule whose product echoes the service is not eligible for the product
-    /// slot, and its CPE used to go with it. Measured on Elasticsearch, where
-    /// the body rule names `elasticsearch` on service `elasticsearch` and holds
-    /// the CPE, while a favicon hash names `Search` and holds nothing. The
-    /// echo is still not surfaced as a product; what changes is that naming the
-    /// service is no longer a reason to discard the platform identifier.
+    /// slot, but its CPE is. Measured on Elasticsearch, where the body rule
+    /// names `elasticsearch` on service `elasticsearch` and holds the CPE,
+    /// while a favicon hash names `Search` and holds nothing. The echo is not
+    /// surfaced as a product, and naming the service is not a reason to discard
+    /// the platform identifier.
     #[test]
     fn an_echoing_product_still_supplies_the_platform_identifier() {
         let favicon = ev(Confidence::Strong)
@@ -563,7 +562,7 @@ mod tests {
         );
     }
 
-    /// And the case the coupling existed for. A reverse-proxied host states two
+    /// And the case the coupling exists for. A reverse-proxied host states two
     /// products and only one can have the slot; the CPE may not be taken from
     /// the loser, because `cve` joins on it and the report would name one
     /// product while being matched against another's vulnerabilities.
@@ -621,12 +620,11 @@ mod tests {
 
     /// A product that merely repeats the service is dropped.
     ///
-    /// This reverses an earlier choice, which surfaced the echo "rather than
-    /// dropping the product entirely". What that cost only became visible when
-    /// two scanners were compared: nmap reports port 53 as `domain / Unbound`
-    /// and this engine reported it as `dns / dns`, so a comparison of the two
-    /// showed a product changing where both tools had found the same thing and
-    /// only one of them had named the software.
+    /// Surfacing the echo rather than dropping the product entirely has a cost
+    /// that shows when two scanners are compared: nmap reports port 53 as
+    /// `domain / Unbound`, and an engine surfacing the echo reports it as
+    /// `dns / dns`, so a comparison of the two shows a product changing where
+    /// both tools found the same thing and only one of them named the software.
     ///
     /// `dns` is not the software behind DNS. Where nothing named a product,
     /// none is named.
@@ -643,7 +641,7 @@ mod tests {
     }
 
     /// And the echo is still what *names* the service where nothing else did,
-    /// which is the one thing the earlier choice was protecting.
+    /// which is the one thing an echo is good for.
     #[test]
     fn a_product_with_no_service_beside_it_still_names_the_service() {
         let verdict = ServiceVerdict::resolve(vec![ev(Confidence::Probable).with_product("nginx")]);
@@ -688,12 +686,12 @@ mod tests {
     /// A platform identifier belongs to the product it names.
     ///
     /// The HTTP analyzer never sets a CPE and a banner rule often does, so a
-    /// versioned `Server` header outranking a versionless curated rule left the
-    /// two fields filled from different observations. Measured:
+    /// versioned `Server` header outranking a versionless curated rule can
+    /// leave the two fields filled from different observations. Measured:
     /// `product=gunicorn version=21.2.0` beside
     /// `cpe:/a:apache:http_server:2.4.49`, which is the path-traversal release
-    /// of httpd. `cve` joins on the CPE, so a port the report named gunicorn was
-    /// matched against Apache's vulnerabilities.
+    /// of httpd. `cve` joins on the CPE, so a port the report names gunicorn
+    /// would be matched against Apache's vulnerabilities.
     #[test]
     fn a_cpe_never_belongs_to_a_product_the_verdict_did_not_name() {
         let http = ev(Confidence::Strong)

@@ -120,9 +120,8 @@ impl VlanTag {
 /// The type every reader of a captured frame takes. It borrows the bytes and
 /// holds an offset, so [`payload`](Self::payload) hands back a slice borrowed
 /// from the frame itself rather than from the view, which is what lets a parsed
-/// header outlive the walk that found it, and the reason
-/// readers here no longer have to take a `&'a EthernetPacket<'a>` to work around
-/// `pnet` lending from `&self`.
+/// header outlive the walk that found it, and why readers here need not take a
+/// `&'a EthernetPacket<'a>` to work around `pnet` lending from `&self`.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame<'a> {
     bytes: &'a [u8],
@@ -444,7 +443,8 @@ mod tests {
     }
 
     /// The ordinary untagged case, which every other reader in the crate depends
-    /// on continuing to work exactly as it did.
+    /// on, and which the tag walk must leave reading exactly as a plain Ethernet
+    /// header does.
     #[test]
     fn an_untagged_frame_reads_as_it_always_did() {
         let bytes = frame_with(&[], EtherTypes::Ipv4.0, &[0x11; 20]);

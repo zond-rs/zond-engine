@@ -39,8 +39,8 @@
 //! one goes out carrying sequence number A, attempt two carries B, and then a
 //! `SYN+ACK` acknowledging A arrives. It is a genuine answer from an open port,
 //! but a scanner holding only B has no way to recognize it and reports the port
-//! filtered. Retransmission would have made the scan *less* accurate on exactly
-//! the lossy paths it was added for.
+//! filtered. Retransmission would make the scan *less* accurate on exactly the
+//! lossy paths it exists for.
 //!
 //! Keeping every live token also buys something TCP itself cannot have. Karn's
 //! algorithm exists because an endpoint cannot tell which transmission an
@@ -273,11 +273,10 @@ impl RetryPolicy {
     /// wait that can still produce an answer, which is a property of the
     /// protocol rather than of how much hurry the caller is in.
     ///
-    /// `factor` is positive and finite. It used to be guarded here instead, and
-    /// a caller's zero or NaN was discarded without a word and then written into
-    /// the report as though it had applied;
-    /// [`TimeoutScale`](crate::config::TimeoutScale) is where that is refused
-    /// now.
+    /// `factor` is positive and finite, because
+    /// [`TimeoutScale`](crate::config::TimeoutScale) refuses anything else.
+    /// Guarded here instead, a caller's zero or NaN would be discarded without
+    /// a word and then written into the report as though it had applied.
     fn scaled(self, factor: f64) -> Self {
         debug_assert!(
             factor.is_finite() && factor > 0.0,
@@ -915,9 +914,8 @@ where
     /// Such a message must not retire the probe — the port is still undecided
     /// and keeps its remaining attempts — but it still has to be shown to be
     /// about a probe this scan actually sent before anything is recorded on its
-    /// word. Without this there was nothing to show it with: an ICMP host
-    /// unreachable was believed on the strength of its quoted source port
-    /// alone.
+    /// word. Without this nothing can show it: an ICMP host unreachable would
+    /// be believed on the strength of its quoted source port alone.
     ///
     /// `None` for the token means the quotation was too short to carry one,
     /// which leaves the key as the whole of the evidence. That is weaker and the
@@ -1554,7 +1552,7 @@ mod tests {
         assert_eq!(ledger.len(), 1, "someone else's packet resolves nothing");
     }
 
-    /// The regression this design exists to prevent. Attempt one goes out
+    /// The failure this design exists to prevent. Attempt one goes out
     /// carrying token 7, attempt two carries 8, and the answer to the *first*
     /// arrives afterwards. A ledger holding only the newest token would discard
     /// a genuine reply and report the target filtered.
@@ -2198,10 +2196,10 @@ mod tests {
     /// A scale no schedule can be built from never reaches this policy, because
     /// it cannot be written into a [`RetryConfig`] at all.
     ///
-    /// It used to be accepted there, silently discarded here, and then written
+    /// Accepted there, it would be silently discarded here and then written
     /// into the report as though it had applied. Guarding it at the point of use
-    /// fixed the schedule and left the record wrong, which is why the guard
-    /// moved to [`TimeoutScale`](crate::config::TimeoutScale) and this asserts
+    /// fixes the schedule and leaves the record wrong, which is why the guard
+    /// sits at [`TimeoutScale`](crate::config::TimeoutScale) and this asserts
     /// the refusal rather than the shrug.
     #[test]
     fn a_scale_no_schedule_can_be_built_from_never_reaches_a_policy() {

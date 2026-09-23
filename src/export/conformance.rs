@@ -22,7 +22,7 @@
 //! `the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out`. The
 //! module documentation of [`schema`](super::schema) tells a consumer what an
 //! absent field means, and a `skip_serializing_if` added without a thought for
-//! that sentence is how the two stopped agreeing once already.
+//! that sentence is how the two stop agreeing.
 
 use boon::{Compiler, Schemas};
 use regex::Regex;
@@ -163,8 +163,7 @@ fn the_schema_pins_the_version_the_code_emits() {
 ///
 /// The reverse direction matters as much: a name the schema advertises and the
 /// engine cannot produce is a promise to a third party writing this format that
-/// both report readers then refuse. That is how `sctp` came to sit in
-/// `$defs/protocol` for a release.
+/// both report readers then refuse.
 ///
 /// Only the enums whose type publishes an `ALL` are here, and every closed enum
 /// in the schema has one except `port_scope`, whose variants carry data. An
@@ -172,11 +171,10 @@ fn the_schema_pins_the_version_the_code_emits() {
 /// variants, which is the arrangement this test exists to catch, so a new enum
 /// in the document should arrive with an `ALL`.
 ///
-/// `reason.protocol` was that gap for a while. Its eight built-in names sat in
-/// the schema as a closed list with no `ALL` to compare against.
-/// [`StatusProtocol::ALL`] now exists and is read below. The enum's ninth variant
-/// carries a strategy-chosen name and is the schema's other `anyOf` arm, a
-/// `custom:` prefix, which is a pattern rather than an enumeration.
+/// `reason.protocol` is compared through [`StatusProtocol::ALL`], which holds
+/// its built-in names. The one variant it leaves out carries a strategy-chosen
+/// name and is the schema's other `anyOf` arm, a `custom:` prefix, which is a
+/// pattern rather than an enumeration.
 fn enumerations() -> Vec<(&'static str, Vec<String>)> {
     let named = |names: Vec<&'static str>| names.into_iter().map(str::to_owned).collect();
 
@@ -784,8 +782,8 @@ fn a_redacted_comparison_masks_what_a_redacted_report_masks() {
     );
 }
 
-/// A phase carried nothing worth masking until it began carrying an
-/// attachment, which names a device and its hardware address.
+/// What a phase carries worth masking is its attachment, which names a device
+/// and its hardware address.
 ///
 /// Neither is less identifying for describing a switch rather than a
 /// workstation: a switch name is an internal hostname and a chassis address is a
@@ -915,9 +913,8 @@ fn accepted_change_kinds() -> BTreeSet<String> {
 /// The exporter and the schema name the same set of change kinds.
 ///
 /// `a_comparison_matches_the_published_schema` sees only the kinds the fixture
-/// produces, so a kind the fixture omits is a kind nothing checks.
-/// `finding_appeared` and `finding_resolved` were emitted for a while by code the
-/// schema would have rejected while the conformance suite stayed green.
+/// produces, so a kind the fixture omits is a kind nothing checks: the exporter
+/// could emit one the schema rejects while the conformance suite stays green.
 #[test]
 fn the_schema_accepts_exactly_the_change_kinds_the_exporter_emits() {
     let emitted = emitted_change_kinds();
@@ -1096,12 +1093,12 @@ fn field_names(value: &Value) -> BTreeSet<String> {
 /// leaves clean is a field those tests walk straight past, and the report says
 /// nothing about it either way.
 ///
-/// Fourteen were clean when this was written. Most were the engine's own —
-/// enum names, timestamps, addresses — but five were not: `device_name`,
-/// `device_mac` and `management_address` come from LLDP and CDP, which are
-/// unauthenticated by design and so are written by whoever is on the segment;
-/// `extrainfo` comes from a service banner and `kernel` from a fingerprint.
-/// The escaping turned out to cover them. Nothing had established that.
+/// Most string properties are the engine's own — enum names, timestamps,
+/// addresses — but not all: `device_name`, `device_mac` and
+/// `management_address` come from LLDP and CDP, which are unauthenticated by
+/// design and so are written by whoever is on the segment; `extrainfo` comes
+/// from a service banner and `kernel` from a fingerprint. Whether the escaping
+/// covers a field is established only for the fields the fixture poisons.
 ///
 /// So this is the census that keeps the two in step: a string property added to
 /// the schema fails here until the fixture carries a hostile value in it.

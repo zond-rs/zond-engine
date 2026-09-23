@@ -430,9 +430,9 @@ impl SignatureDb {
     /// That second case is not a special case. A banner identifies a service, and
     /// what it implies about the host is a separate inference, so the signature
     /// that answers one is very often not the signature that answers the other.
-    /// Stopping at the port tier discarded every operating-system reading that
-    /// lives only in the global set, measured on a real host whose release was
-    /// sitting there unread.
+    /// Stopping at the port tier would discard every operating-system reading
+    /// that lives only in the global set: measured on a real host, its release
+    /// sits there unread.
     ///
     /// [`Evidence::port_confirmed`](crate::fingerprint::Evidence::port_confirmed)
     /// records which tier named the service, so the resolver can prefer a match
@@ -652,8 +652,8 @@ impl SignatureDb {
     /// regexes.
     ///
     /// Crate-visible. Both the type and the trait its only method comes from are
-    /// private, so outside the crate this returned a value with nothing callable
-    /// on it; [`identify`](Self::identify) is what it was there to serve.
+    /// private, so outside the crate it would return a value with nothing
+    /// callable on it; [`identify`](Self::identify) is what it is there to serve.
     pub(crate) fn prefilter(&self) -> &LiteralPrefilter {
         self.prefilter
             .get_or_init(|| LiteralPrefilter::build(&self.signatures))
@@ -837,11 +837,11 @@ fn best_match_within(
 /// say the same amount the first stands, so the answer does not depend on which
 /// signature happened to be indexed earlier.
 ///
-/// Every part counts, including the ones added later. A field left out here
-/// is a field that cannot win a rule its ranking: when the kernel was first
-/// given a home of its own, the rule that read one lost to an imported rule that
-/// had crammed the same string into `version`, purely because this function had
-/// not been told the new field existed.
+/// Every part counts, including any added to the model later. A field left out
+/// here is a field that cannot win a rule its ranking: a rule that reads the
+/// kernel into a field of its own would lose to an imported rule that crams the
+/// same string into `version`, purely because this function has not been told
+/// the field exists.
 pub(super) fn os_detail(os: &crate::model::host::OsEvidence) -> u8 {
     u8::from(os.version.is_some())
         + u8::from(os.kernel.is_some())
@@ -856,9 +856,9 @@ pub(super) fn os_detail(os: &crate::model::host::OsEvidence) -> u8 {
 /// The whole per-banner decision in one place: text extraction, both tiers, and
 /// the separate choice of service and operating-system readings. `analyze` is a
 /// loop around it and the tests call it directly, which is on purpose: a test
-/// that reproduced this logic instead of calling it is what let the release-
+/// that reproduced this logic instead of calling it could let the release-
 /// naming SSH rules go unreachable while a test asserting "real banners name an
-/// operating system" went on passing.
+/// operating system" goes on passing.
 fn identify_within(
     db: &SignatureDb,
     port_signatures: &[usize],
@@ -881,13 +881,14 @@ fn identify_within(
     // That second case is not a special case: a banner identifies a service, and
     // what it implies about the host is a separate inference, so the signature
     // that answers one is very often not the signature that answers the other.
-    // Stopping at the port tier discarded every operating-system reading that
-    // lives only in the global set, measured on a real host whose release was
-    // sitting there unread.
+    // Stopping at the port tier would discard every operating-system reading
+    // that lives only in the global set: measured on a real host, its release
+    // sits there unread.
     //
     // It costs an Aho-Corasick pass over the banner and a bounded candidate
-    // evaluation, on banners that previously skipped both. Regex compilation is
-    // cached, so a scan pays it once per signature rather than once per host.
+    // evaluation, even on banners the port tier already named a service for.
+    // Regex compilation is cached, so a scan pays it once per signature rather
+    // than once per host.
     if found.as_ref().is_none_or(|found| found.os.is_none()) {
         // Narrowed against every text, unioned: a literal that only appears in
         // the extracted field would otherwise select no candidates and the field
@@ -1176,9 +1177,9 @@ mod tests {
     /// The other half of the same door.
     ///
     /// The authoring schema is exported so a consumer writing signatures of
-    /// their own is held to the same bounds as the shipped corpus. Until this
-    /// constructor existed there was nowhere to load what they had authored, so
-    /// the export bought the types and not the thing the types are for.
+    /// their own is held to the same bounds as the shipped corpus. Without this
+    /// constructor there would be nowhere to load what they author, and the
+    /// export would buy the types and not the thing the types are for.
     #[test]
     fn a_caller_can_load_signatures_of_their_own() {
         let db =
@@ -1407,9 +1408,8 @@ mod tests {
     }
 
     /// The stage runs on the output of a match, and its own output is a match,
-    /// so it has to stop. `best_match_within` is the floor, and this is a
-    /// regression guard: the first version of this recursed until the stack ran
-    /// out.
+    /// so it has to stop. `best_match_within` is the floor; a stage that called
+    /// back into itself would recurse until the stack ran out.
     #[test]
     fn the_canonical_stage_does_not_call_itself() {
         for name in [

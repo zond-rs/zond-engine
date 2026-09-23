@@ -577,12 +577,11 @@ mod tests {
     /// destination is reachable only from a link-local address, so a global one
     /// must not be offered for it.
     ///
-    /// Nor may a link-local one be, which is what this used to assert. The
-    /// property above is real and still holds; what it does not establish is
-    /// *which* link-local address, and on a fixture with one interface there
-    /// was only one to pick. Every interface holds an `fe80::/64`, so on a real
-    /// host the answer was whichever the platform listed first: a guess with
-    /// the shape of an answer, and the one
+    /// Nor may a link-local one be. The property above is real, but it does not
+    /// establish *which* link-local address, and on a fixture with one
+    /// interface there is only one to pick. Every interface holds an
+    /// `fe80::/64`, so on a real host the answer would be whichever the platform
+    /// listed first: a guess with the shape of an answer, and the one
     /// [`RoutedTargets::ambiguous`](super::RoutedTargets) names as exactly the
     /// mistake.
     #[test]

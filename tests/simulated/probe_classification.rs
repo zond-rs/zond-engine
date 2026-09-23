@@ -15,8 +15,8 @@
 //! duplicate, a reply too damaged to parse - has no coverage without a network
 //! that can be told to misbehave. That is what this file adds.
 //!
-//! These pass today. They are regression guards, and the most valuable ones are
-//! the near-misses: an administratively prohibited port that must read
+//! These guard behaviour the engine has, and the most valuable ones are the
+//! near-misses: an administratively prohibited port that must read
 //! `Filtered` rather than `Closed`, and an ICMPv6 code that means something
 //! different from the identically numbered ICMPv4 one. Both are the kind of
 //! mistake that produces a confident, wrong answer.
@@ -257,16 +257,14 @@ async fn established_traffic_does_not_discover_a_host() {
     );
 }
 
-/// A SYN scan over IPv6 classifies a port, which nothing here previously
-/// checked.
+/// A SYN scan over IPv6 classifies a port.
 ///
 /// The engine reaches this conclusion through code that is almost all
-/// family-agnostic — `RoutedScanner` contains no IPv6 branch at all — so the
-/// belief that IPv6 port scanning works rested on the parts rather than on a
-/// run: the TCP checksum has an IPv6 pseudo-header arm, the transport picks a v6
+/// family-agnostic — `RoutedScanner` contains no IPv6 branch at all — so
+/// without a run the belief that IPv6 port scanning works rests on the parts:
+/// the TCP checksum has an IPv6 pseudo-header arm, the transport picks a v6
 /// socket, and the capture filter admits v6 answers. Each is tested alone. This
-/// is the first test that puts a SYN on the wire over IPv6 and reads a port
-/// state back.
+/// test puts a SYN on the wire over IPv6 and reads a port state back.
 ///
 /// Both answers in one scan, because the failure worth catching is not "IPv6
 /// finds nothing" — that would be obvious — but a family whose replies are
@@ -822,8 +820,7 @@ async fn a_scan_names_no_operating_system_from_a_closed_port_alone() {
 
 /// An open port whose first answer never arrived is still reported open.
 ///
-/// The defect this covers was found while measuring something else. The
-/// sequence is ordinary and the failure was silent:
+/// The sequence is ordinary and the failure it guards against is silent:
 ///
 /// 1. A SYN reaches an open port, which accepts and holds the connection.
 /// 2. The SYN+ACK is lost. This host never sees it, so it never resets it, and
@@ -833,19 +830,19 @@ async fn a_scan_names_no_operating_system_from_a_closed_port_alone() {
 /// 4. That SYN does not fit the held connection, so the target challenges it
 ///    rather than answering it (RFC 793 §3.9, RFC 5961 §4).
 ///
-/// Every retransmission after the first draws a challenge, all of them were
-/// discarded as noise, and the port resolved `Filtered` once the budget ran out
-/// — an open port reported firewalled on a lossy path, which is precisely the
-/// case retransmission exists to rescue.
+/// Every retransmission after the first draws a challenge. Discard those as
+/// noise and the port resolves `Filtered` once the budget runs out — an open
+/// port reported firewalled on a lossy path, which is precisely the case
+/// retransmission exists to rescue.
 ///
-/// It stayed invisible because the ordinary path never reaches step 2: when the
+/// It is invisible on the ordinary path, which never reaches step 2: when the
 /// SYN+ACK *does* arrive, this host's kernel resets it — no socket owns the
 /// scan's source port — which clears the target's half-open connection, so the
 /// next attempt meets a listener in LISTEN and gets a clean handshake.
 ///
-/// And no test could reach it, because the simulated network answered each probe
-/// from its flags alone. A stateless target cannot answer a second SYN
-/// differently from the first, so the defect was unreachable by construction.
+/// And a simulated network answering each probe from its flags alone cannot
+/// reach it. A stateless target cannot answer a second SYN differently from the
+/// first, so the target here holds the connection.
 #[tokio::test]
 async fn an_open_port_whose_first_answer_was_lost_is_still_found() {
     // The probe lands and the answer vanishes, which is what leaves the target

@@ -13,19 +13,20 @@
 //!
 //! ## Why this is a type here and not a re-export
 //!
-//! It was a re-export: every function that took an interface took
-//! `pnet::datalink::NetworkInterface`, and that type reached the public API
-//! through half a dozen signatures. Two things were wrong with that, and only
-//! one of them was about `pnet`.
+//! A re-export would have every function that takes an interface take the
+//! enumerating library's type, such as `pnet::datalink::NetworkInterface`, and
+//! carry it into the public API through half a dozen signatures. Two things are
+//! wrong with that, and only one of them is about the library.
 //!
-//! The one about `pnet`: its Windows backend fills the flags word with a
-//! literal zero and a `FIXME`, so `is_up()` was false for every interface on
-//! that platform, always. Nothing errored. Every entry point in this engine
-//! filtered on it, found nothing, and reported a machine with no network, which
-//! is the one failure shape the rest of this crate is built to refuse.
+//! The one about the library: `pnet`'s Windows backend fills the flags word
+//! with a literal zero and a `FIXME`, so its `is_up()` is false for every
+//! interface on that platform, always. Nothing errors. Every entry point in
+//! this engine filtering on it would find nothing and report a machine with no
+//! network, which is the one failure shape the rest of this crate is built to
+//! refuse.
 //!
-//! The one that outlives it: swapping that type for another library's would
-//! have fixed the platform and kept the shape, and the next library's defect
+//! The one that outlives any library: swapping that type for another library's
+//! would fix the platform and keep the shape, and the next library's defect
 //! would arrive by the same route. A consumer of this crate should not have to
 //! know which crate read the interface table, any more than they have to know
 //! which syscall did. So the facts an interface has are named here, and where
@@ -356,9 +357,9 @@ impl Link {
 /// How addresses on a link reach anything, which decides what a scan may send
 /// out of it.
 ///
-/// One value rather than the two flags this used to be. A link is one of these
-/// three and the flags were never independent, so a signature that let a caller
-/// say both could describe a link no operating system reports.
+/// One value rather than two flags. A link is one of these three and the flags
+/// are not independent, so a signature that let a caller say both could
+/// describe a link no operating system reports.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Addressing {
@@ -481,10 +482,10 @@ pub fn is_layer_2_capable(link: &Link) -> bool {
 /// needs a router, and treating the whole as local would have a sweep wait out
 /// a timeout for every address past the boundary.
 ///
-/// It read only the IPv4 ranges until September 2026, which made an IPv6-only
-/// target set vacuously on-link for every link, including one holding no IPv6
-/// address at all. Nothing called it, so nothing was wrong in a scan; what was
-/// wrong was that the answer did not mean what the name said.
+/// Both families are read. Reading only the IPv4 ranges would make an
+/// IPv6-only target set vacuously on-link for every link, including one
+/// holding no IPv6 address at all, an answer that does not mean what the name
+/// says.
 ///
 /// An empty set is on-link, which is the ordinary reading of "every": there is
 /// no target here that needs a router.

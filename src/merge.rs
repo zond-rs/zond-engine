@@ -562,9 +562,9 @@ fn fold_port(accounts: &[&Port]) -> Port {
     // one found — an open port becoming `Unasked` — which is the thing this
     // module's own rule promises does not happen: *an endpoint nothing listed is
     // not evidence the port closed*. It is the same carve-out
-    // [`HostStatus::Unknown`](crate::model::host::HostStatus::Unknown) already
-    // gets a few lines up, for the same reason, and it was missed because
-    // `Unasked` was added after this fold was written.
+    // [`HostStatus::Unknown`](crate::model::host::HostStatus::Unknown) gets a
+    // few lines up, for the same reason, and a state added to `PortState` has
+    // to be asked the same question here.
     //
     // So the state is the newest one that says anything, and `Unasked` only
     // where nothing ever did.
@@ -1442,8 +1442,8 @@ mod tests {
     /// [`pairing`](crate::diff::pairing) scopes a link-local token by the
     /// interface it was read on. A fold that correctly separates two of them
     /// then needs a report that can hold both: keyed by the bare address the
-    /// second replaced the first, and a scanner watching two segments published
-    /// a report holding fewer hosts than it found.
+    /// second would replace the first, and a scanner watching two segments would
+    /// publish a report holding fewer hosts than it found.
     #[test]
     fn two_link_locals_on_different_segments_stay_two_hosts() {
         let shared = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
@@ -1478,8 +1478,7 @@ mod tests {
     /// does not offer and a fold cannot invent.
     ///
     /// Asserted rather than left alone, since the tempting claim is that a merge
-    /// is associative: it reads true, the API gives no hint otherwise, and three
-    /// separate places in this crate once said it was.
+    /// is associative: it reads true, and the API gives no hint otherwise.
     #[test]
     fn folding_in_rounds_is_not_folding_at_once() {
         let january = report(
@@ -1679,10 +1678,10 @@ mod tests {
     /// nothing was established either way. Its own documentation says it "never
     /// overrides anything", and `Port::merge` honours that with a `max`.
     ///
-    /// This fold did not. It took the newest account's state outright, on the
+    /// A fold that took the newest account's state outright would not, on the
     /// reasoning that a source recording no verdict contributes nothing to the
     /// list — true of every state but this one, which is absence that made it
-    /// into the list. So a later, narrower scan erased what an earlier, wider
+    /// into the list. A later, narrower scan would erase what an earlier, wider
     /// one found, which is exactly what this module's rule promises does not
     /// happen.
     #[test]

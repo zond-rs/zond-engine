@@ -155,8 +155,8 @@ pub enum ChannelError {
 /// the first time a reader was added without anybody thinking to look down here.
 pub fn start_capture(link: &Link, filter: &str) -> Result<EthernetHandle, ChannelError> {
     // Two handles on the one library, rather than one handle each on two. See
-    // `FrameSender`: this used to open a `pnet` channel for the sending half and
-    // discard its receiver, leaving a kernel buffer nothing drained.
+    // `FrameSender`: a `pnet` channel opened for the sending half would come
+    // with a receiver this discards, leaving a kernel buffer nothing drains.
     let tx = capture::FrameSender::open(link.name()).map_err(|source| ChannelError::Send {
         interface: link.name().to_owned(),
         source,

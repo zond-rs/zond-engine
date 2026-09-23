@@ -334,8 +334,8 @@ impl Enrichment {
 ///
 /// No strategy can establish one. The kernel routes traffic for an address this
 /// host holds through loopback, so an ARP request for it goes onto a link where
-/// nothing will answer, and the address is reported down while `ping` to it
-/// succeeds. That is what happened before this existed.
+/// nothing will answer, and without this the address would be reported down
+/// while `ping` to it succeeds.
 ///
 /// The evidence is named rather than borrowed from a probe protocol, because
 /// nothing was sent: the interface table is the whole of it, and it is
@@ -700,8 +700,8 @@ fn connect_udp(
 ///
 /// The steps are kept rather than their [`ScannerKind`]s, because "did this
 /// need raw sockets" is the question being asked and a strategy's name is a
-/// different fact about it. Answered from the name, this silently stopped
-/// enriching every scan whose technique was not a SYN.
+/// different fact about it. Answered from the name, this would silently skip
+/// enriching every scan whose technique is not a SYN.
 pub(super) struct BuiltPortScan {
     pub(super) scanner: Box<dyn PortScanner>,
     opened: Vec<plan::PortScanStep>,
@@ -769,13 +769,13 @@ pub(super) async fn finish_enrichment(
 /// Reads an operating system out of what the scan already knows, sending
 /// nothing.
 ///
-/// This is [`OsDetection::Passive`] applied to a phase that had no way to apply
-/// it. The port scanner reads a stack off the segments it drew and the echo
-/// prober reads one off a ping it sent, but host discovery draws neither, so
-/// until now a discovery sweep concluded nothing about any host, however much it
-/// had learned about it. A machine whose hardware address names its maker and
-/// whose hostname is the one its system generated was sitting in the store,
-/// unread.
+/// This is [`OsDetection::Passive`] applied to a phase that has no other way to
+/// apply it. The port scanner reads a stack off the segments it drew and the
+/// echo prober reads one off a ping it sent, but host discovery draws neither,
+/// so without this a discovery sweep concludes nothing about any host, however
+/// much it has learned about it. A machine whose hardware address names its
+/// maker and whose hostname is the one its system generated would sit in the
+/// store, unread.
 ///
 /// Runs after enrichment and not before it: [`os::hostname_evidence`] reads a
 /// name, and the name arrives on the resolver's tail. Ordering this earlier
@@ -1918,8 +1918,8 @@ pub(super) async fn run_port_phase(
 /// own, and a subset that dropped that would answer a different question.
 pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
     // Walked once, not once per unit. `live.iter()` expands every address of
-    // every host the sweep found, so doing it inside the loop cost that walk
-    // again for each target set - and a scan naming several port lists over a
+    // every host the sweep found, so doing it inside the loop would cost that
+    // walk again for each target set - and a scan naming several port lists over a
     // wide range is exactly when both numbers are large.
     let live: Vec<IpAddr> = live.iter().collect();
 
@@ -1969,11 +1969,11 @@ pub(super) fn sctp_discovery_port(map: &TargetMap) -> Option<u16> {
 
 /// Every address the liveness pass found a host at.
 ///
-/// A set rather than a narrowed plan. The port phase used to be handed a
-/// `TargetMap` rebuilt from these, and the dispatcher numbered *that*, so a
-/// position was counted in a plan that depended on which hosts happened to
-/// answer, and two sittings of one job could disagree about what position 400
-/// meant. The addresses travel to
+/// A set rather than a narrowed plan. Were the port phase handed a `TargetMap`
+/// rebuilt from these, the dispatcher would number *that*, so a position would
+/// be counted in a plan that depends on which hosts happened to answer, and two
+/// sittings of one job could disagree about what position 400 means. The
+/// addresses travel to
 /// [`Dispatcher::only_live`](crate::scanner::dispatcher::Dispatcher::only_live)
 /// instead, which filters after numbering.
 ///
@@ -2294,10 +2294,10 @@ mod tests {
         crate::model::parse::ip::to_set(exprs, None, None).expect("hand-written targets parse")
     }
 
-    /// The defect this function exists for. A `/64` handed to the unprivileged
-    /// path was probed one address at a time until the process was killed, while
-    /// the same range with root was refused in the plan before a packet was
-    /// sent: one engine giving two answers about one range.
+    /// What this function exists for. Without it a `/64` handed to the
+    /// unprivileged path would be probed one address at a time until the process
+    /// was killed, while the same range with root is refused in the plan before a
+    /// packet is sent: one engine giving two answers about one range.
     #[test]
     fn a_range_too_large_to_walk_is_refused_rather_than_started() {
         let (_session, ctx) = ScanSession::new();
@@ -2407,13 +2407,12 @@ mod tests {
     }
 
     /// The plan refuses what it can foresee and `ensure_coverage` catches what
-    /// only the attempt reveals. Both had the same words for the same cause, so
-    /// an unprivileged flag-probe scan recorded the identical failure twice:
-    /// once from the plan's refusal and once from the coverage check that did
-    /// not know the plan had already spoken.
+    /// only the attempt reveals. Both have the same words for the same cause, so
+    /// a coverage check that did not know the plan had already spoken would
+    /// record an unprivileged flag-probe scan's failure twice, once from each.
     ///
-    /// A consumer counting failures over-reports, and one rendering them shows
-    /// the same paragraph to a user twice.
+    /// A consumer counting failures would over-report, and one rendering them
+    /// would show the same paragraph to a user twice.
     #[test]
     fn a_refusal_the_plan_already_made_is_not_recorded_again() {
         let cfg = ZondConfig {
@@ -2463,8 +2462,8 @@ mod tests {
     }
 
     /// A frames-only scan of nothing but loopback, or of one box behind a VPN,
-    /// has no target a raw strategy can reach. Opened anyway, each held a
-    /// capture on every interface and sent nothing: two audit lines of `0/0
+    /// has no target a raw strategy can reach. Opened anyway, each holds a
+    /// capture on every interface and sends nothing: two audit lines of `0/0
     /// hosts` on the machine this was measured on. Not opened, the connect
     /// strategies take every target, nothing is reported as failing, and the
     /// phase still says its evidence is connect evidence.
@@ -2495,9 +2494,9 @@ mod tests {
 
     /// Host enrichment is keyed on whether a raw scan is happening, and a raw
     /// scan is one whatever segment its probes carry. Read off the strategy's
-    /// name instead, a FIN scan stopped counting as raw the moment it stopped
-    /// being called `syn_port`, and every non-SYN privileged scan quietly lost
-    /// its MAC addresses and round trips.
+    /// name instead, a FIN scan, not being called `syn_port`, would not count as
+    /// raw, and every non-SYN privileged scan would quietly lose its MAC
+    /// addresses and round trips.
     #[test]
     fn a_raw_scan_earns_enrichment_whichever_technique_it_carries() {
         for technique in TcpScanTechnique::ALL {
@@ -2529,10 +2528,10 @@ mod tests {
         assert!(protocols.contains(&Protocol::Udp));
     }
 
-    /// The regression guard for the per-protocol fallback: a host that could
-    /// build the raw UDP scanner but not the SYN one must still probe TCP.
-    /// Gating on "any privileged scanner exists" left those targets with no
-    /// route at all, so they were dropped without a record.
+    /// The per-protocol fallback: a host that can build the raw UDP scanner but
+    /// not the SYN one must still probe TCP. Gating on "any privileged scanner
+    /// exists" would leave those targets with no route at all, so they would be
+    /// dropped without a record.
     #[test]
     fn a_protocol_without_a_privileged_scanner_still_gets_a_fallback() {
         let protocols = covered(vec![Box::new(StubScanner(vec![Protocol::Udp]))]);
@@ -2648,11 +2647,12 @@ mod tests {
             .collect()
     }
 
-    /// The defect this exists for: a frames-only scan's raw routes are handed
-    /// every address but the ones a frame cannot reach, so without a strategy
-    /// of their own those addresses reached no scanner at all and every port on
-    /// loopback came back unasked. Each protocol the raw routes cover gets its
-    /// connect strategy for them alone, and the phase records that it did.
+    /// What this exists for: a frames-only scan's raw routes are handed every
+    /// address but the ones a frame cannot reach, so without a strategy of
+    /// their own those addresses would reach no scanner at all and every port
+    /// on loopback would come back unasked. Each protocol the raw routes cover
+    /// gets its connect strategy for them alone, and the phase records that it
+    /// did.
     #[test]
     fn what_frames_cannot_reach_gets_the_connect_strategies_for_itself_alone() {
         let (_session, ctx) = ScanSession::new();
@@ -2886,12 +2886,13 @@ mod tests {
     /// A host that answers has proved a port open, and a scanner that knew and
     /// did not say would be withholding a finding.
     ///
-    /// This was nearly built the other way, on the reasoning that 161 is not a
-    /// port the caller asked to scan. That confuses two things: the objection to
-    /// widening `--ports` is to sending traffic nobody requested, and this
-    /// traffic *was* requested: by the detection level. Once it is sent, all
-    /// that remains is whether the answer is reported or thrown away, and an
-    /// open agent answering the default community is a finding in its own right.
+    /// The other way to build it is to discard the answer, on the reasoning
+    /// that 161 is not a port the caller asked to scan. That confuses two
+    /// things: the objection to widening `--ports` is to sending traffic nobody
+    /// requested, and this traffic *was* requested: by the detection level.
+    /// Once it is sent, all that remains is whether the answer is reported or
+    /// thrown away, and an open agent answering the default community is a
+    /// finding in its own right.
     ///
     /// Recorded with the evidence that found it, so a report never has to imply
     /// it was asked for.
@@ -3096,8 +3097,8 @@ mod tests {
     /// A scan that identified software carries the vulnerabilities that
     /// identification implies, with no second pass a caller has to remember.
     ///
-    /// Moved here from `PhaseRecorder::finish` with W10. The behaviour is the
-    /// same and the step that performs it is now named.
+    /// Performed by a named step of its own rather than as a side effect of
+    /// `PhaseRecorder::finish`.
     #[test]
     fn correlation_records_a_known_vulnerability_against_the_software_it_names() {
         use crate::model::ip::scoped::ScopedIp;

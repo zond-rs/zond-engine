@@ -19,17 +19,17 @@
 //! addressed by position through [`TargetIndex`] rather than expanded, so this
 //! costs a few words whatever the range.
 //!
-//! Without one it falls back to what this module used to do on its own: fill a
-//! fixed-size batch in plan order, shuffle that, and stream it out before moving
-//! on. Neighbouring addresses end up spread apart in time and the memory cost
-//! stays bounded, but only within the batch. At batch granularity a `/16` is
-//! still walked in address order, which is the most recognisable thing a scanner
+//! Without one it falls back to a batch-local shuffle: fill a fixed-size batch
+//! in plan order, shuffle that, and stream it out before moving on.
+//! Neighbouring addresses end up spread apart in time and the memory cost stays
+//! bounded, but only within the batch. At batch granularity a `/16` is still
+//! walked in address order, which is the most recognisable thing a scanner
 //! emits, so the fallback is for the plans a permutation cannot address rather
 //! than a setting anybody should want.
 //!
-//! The batch stays either way, because it was doing a second job all along: it is
-//! the unit the channel is sized against, and a rearranged stream is filled and
-//! drained through the same buffer.
+//! The batch stays either way, because it has a second job: it is the unit the
+//! channel is sized against, and a rearranged stream is filled and drained
+//! through the same buffer.
 //!
 //! ## The numbering is not the order
 //!
@@ -142,9 +142,9 @@ pub fn dispatch_addresses(
 ///
 /// Generic over what the batch carries because both streams here draw the same
 /// bargain and differ only in what they yield: a sweep is counted in addresses
-/// and a port scan in numbered targets. The dispatcher used to spell this out
-/// twice inline, once for a full batch and once for the flush, which is two
-/// places for the stop check to be got wrong.
+/// and a port scan in numbered targets. One function serves both the full batch
+/// and the flush, because spelling it out twice inline would be two places for
+/// the stop check to be got wrong.
 async fn drain<T>(batch: &mut Vec<T>, tx: &mpsc::Sender<T>, scan_handle: &ScanHandle) -> bool {
     batch.shuffle(&mut rand::rng());
     for item in batch.drain(..) {
@@ -160,10 +160,10 @@ async fn drain<T>(batch: &mut Vec<T>, tx: &mpsc::Sender<T>, scan_handle: &ScanHa
 /// Small enough that the buffer behind it is a few hundred kilobytes rather than
 /// a function of the range, and wide enough to keep the send path fed.
 ///
-/// It used to be the spread as well, since a batch was also what got shuffled,
-/// and the number was chosen so that neighbouring addresses of a `/24` landed
-/// far apart. A [`Permutation`] spreads the whole plan however this is set, so
-/// what is left here is the memory bound.
+/// Without a seed it is the spread as well, since a batch is then what gets
+/// shuffled, and at this size neighbouring addresses of a `/24` land far apart.
+/// With one, a [`Permutation`] spreads the whole plan however this is set, so
+/// what this decides is the memory bound.
 pub const DEFAULT_BATCH: usize = 8192;
 
 /// Streams the targets of a [`TargetMap`] out in shuffled batches, each
@@ -219,8 +219,8 @@ impl Dispatcher {
     /// question it already answered.
     ///
     /// Without this the plan would have to be narrowed to the live hosts before
-    /// numbering, which is what made a position mean something different in
-    /// every sitting.
+    /// numbering, which would make a position mean something different in every
+    /// sitting.
     pub fn only_live(mut self, live: IpSet) -> Self {
         self.live = Some(live);
         self
@@ -339,9 +339,9 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
 
-    /// A batch of zero reached `mpsc::channel`, which asserts on an empty
-    /// buffer, so the mistake ended the scan in a panic rather than in an empty
-    /// result. Both entry points take the size from the caller.
+    /// A batch of zero would reach `mpsc::channel`, which asserts on an empty
+    /// buffer, so the mistake would end the scan in a panic rather than in an
+    /// empty result. Both entry points take the size from the caller.
     #[tokio::test]
     async fn a_zero_batch_is_read_as_one_probe_rather_than_panicking() {
         use crate::scanner::session::ScanSession;
@@ -644,10 +644,10 @@ mod tests {
         }
     }
 
-    /// The defect the whole item is about. A batch-local shuffle spreads
-    /// neighbours within eight thousand targets and walks everything above that
-    /// in plan order, so the first batch of a `/20` was always its first `/24`
-    /// and a sensor watching the range saw a monotonic sweep.
+    /// A batch-local shuffle spreads neighbours within one batch, eight thousand
+    /// targets by default, and walks everything above that in plan order, so the
+    /// first batch of a range wider than a batch is always drawn from its lowest
+    /// addresses and a sensor watching the range sees a monotonic sweep.
     ///
     /// The first batch out of a rearranged plan is drawn from all of it.
     #[tokio::test]

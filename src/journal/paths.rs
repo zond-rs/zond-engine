@@ -70,9 +70,9 @@ const DIRECTORY: &str = "zond";
 
 /// The subdirectory holding one journal per scan.
 ///
-/// Named rather than implied, since the state root will acquire neighbours, a
-/// fingerprint submission queue being the obvious next one, and
-/// journals that had claimed the root would have to move when it did.
+/// Named rather than implied, so the state root can take neighbours, a
+/// fingerprint submission queue say, without journals that had claimed the
+/// root having to move to make room.
 ///
 /// `journals` rather than `scans`, so that everything from this module to
 /// whatever a front end calls its subcommand uses one word for one thing. A
@@ -418,9 +418,9 @@ mod tests {
 
     /// An elevated scan and an unelevated listing must look in the same place.
     ///
-    /// The bug this guards: with `XDG_STATE_HOME` set, `sudo zond scan` resolved
-    /// the invoking user's home while `zond journal` resolved the variable, so
-    /// the second reported no scans at all.
+    /// What this guards: with `XDG_STATE_HOME` set, `sudo zond scan` resolving
+    /// the invoking user's home while `zond journal` resolves the variable would
+    /// leave the second reporting no scans at all.
     #[cfg(not(windows))]
     #[test]
     fn a_configured_root_wins_however_the_scan_was_run() {

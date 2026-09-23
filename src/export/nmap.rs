@@ -1050,15 +1050,12 @@ mod tests {
 
     /// A multi-homed host comes back keyed by the address it went out under.
     ///
-    /// It once did not. Nmap has no attribute for which address is the host's,
-    /// so a reader takes the first one in the document, and this writer emitted
-    /// them in the set's own ascending order. A host keyed by `203.0.113.10`
-    /// that also held `198.51.100.4` came back keyed by `198.51.100.4`, so a
-    /// scan exported here and read again compared against its own source as one
-    /// host removed and one added.
-    ///
-    /// Found by the `import_nmap` fuzz target, on a mangled document whose
-    /// broken markup put two addresses under one host.
+    /// Nmap has no attribute for which address is the host's, so a reader takes
+    /// the first one in the document, and a writer emitting them in the set's
+    /// own ascending order would re-key the host. One keyed by `203.0.113.10`
+    /// that also held `198.51.100.4` would come back keyed by `198.51.100.4`, so
+    /// a scan exported here and read again would compare against its own source
+    /// as one host removed and one added.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn a_multi_homed_host_keeps_the_address_it_is_keyed_by() {
@@ -1133,8 +1130,8 @@ mod tests {
 
     /// Every attribute nmap's DTD marks `#REQUIRED` has to be present on every
     /// element written, or a validating consumer rejects the document. `line`
-    /// on `osmatch` is the one this missed until nmap's own DTD was run against
-    /// the output.
+    /// on `osmatch` is the one easiest to miss without running nmap's own DTD
+    /// against the output.
     #[test]
     fn required_attributes_the_dtd_demands_are_present() {
         let document = render();

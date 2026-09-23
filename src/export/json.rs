@@ -145,10 +145,10 @@ mod tests {
     /// The two halves of `engine` name the same build, whoever produced the
     /// findings.
     ///
-    /// They once did not. `name` was fixed at this engine's while `version` was
-    /// the report's own attribution, so exporting a report read out of nmap's
-    /// XML wrote `zond-engine` paired with `nmap 7.94`, a build that never
-    /// existed. What produced the findings is `produced_by`.
+    /// With `name` fixed at this engine's and `version` taken from the report's
+    /// own attribution, exporting a report read out of nmap's XML would write
+    /// `zond-engine` paired with `nmap 7.94`, a build that never existed. What
+    /// produced the findings is `produced_by`.
     #[test]
     fn the_engine_object_names_the_build_that_wrote_the_document() {
         let foreign =
@@ -379,12 +379,12 @@ mod tests {
 
     /// The two ways of building one of these have to produce the same exporter.
     ///
-    /// They did not. `Default` was derived, which reads `pretty` as `false`, so
-    /// `JsonExporter::default()` wrote the compact document while
-    /// `JsonExporter::new(ExportOptions::default())` wrote the indented one that
+    /// A derived `Default` reads `pretty` as `false`, so
+    /// `JsonExporter::default()` would write the compact document while
+    /// `JsonExporter::new(ExportOptions::default())` writes the indented one that
     /// `new` documents as the default. Compared as bytes, because the difference
-    /// was only ever whitespace and every test that parsed the output first was
-    /// blind to it.
+    /// is only whitespace and a test that parses the output first is blind to
+    /// it.
     #[test]
     fn the_default_exporter_is_the_one_new_builds() {
         let report = fixture::report();

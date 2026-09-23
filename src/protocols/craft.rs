@@ -2044,11 +2044,12 @@ mod tests {
     /// A transport layer with no IP header around it has no pseudo-header to
     /// checksum over, so the field is left for whoever supplies one.
     ///
-    /// UDP used to answer that with `0xFFFF`, because the RFC 768 substitution
-    /// for a genuine zero fired on the "there was nothing to sum" zero as well.
-    /// `0xFFFF` is a valid checksum meaning "computed, and it came to zero", so
-    /// nothing downstream could tell the two apart, and `Udp::to_bytes`'s own
-    /// documentation says the rules are `Tcp::to_bytes`'s.
+    /// UDP must not answer that with `0xFFFF`, which is what the RFC 768
+    /// substitution for a genuine zero would produce if it fired on the "there
+    /// was nothing to sum" zero as well. `0xFFFF` is a valid checksum meaning
+    /// "computed, and it came to zero", so nothing downstream could tell the two
+    /// apart, and `Udp::to_bytes`'s own documentation says the rules are
+    /// `Tcp::to_bytes`'s.
     #[test]
     fn a_transport_layer_with_no_addresses_leaves_its_checksum_unset() {
         let tcp = Tcp::new(50_000, 80).to_bytes(None).expect("a segment");
@@ -2070,9 +2071,9 @@ mod tests {
     /// An ICMPv6 message inside an IPv4 header is a packet nothing can build,
     /// and it is not two addresses of different families.
     ///
-    /// It used to report `FamilyMismatch`, whose message reads "an IPv4 and an
-    /// IPv6 address" about two IPv4 ones, which sends a reader after a fault
-    /// that is not there.
+    /// Reported as `FamilyMismatch`, whose message reads "an IPv4 and an IPv6
+    /// address", it would say so about two IPv4 ones, which sends a reader after
+    /// a fault that is not there.
     #[test]
     fn an_icmpv6_message_under_an_ipv4_header_names_the_family_it_needed() {
         let refused = Packet::new()
@@ -2107,7 +2108,7 @@ mod tests {
     /// A header built on its own has no layer inside it to name, so its protocol
     /// field falls back rather than being derived. That is a trap worth pinning
     /// rather than fixing: making it a refusal would turn two infallible
-    /// builders fallible, and the fallback is now documented at both.
+    /// builders fallible, and the fallback is documented at both.
     #[test]
     fn a_header_built_alone_falls_back_to_tcp_and_says_so() {
         let derived = Ipv4 {
@@ -2371,10 +2372,10 @@ mod tests {
     /// wrapped into it.
     ///
     /// Both fields are four bits of four-byte words, so forty bytes of options
-    /// is the most either header can describe. Silently, forty-four produced a
-    /// header declaring itself zero words long and a hundred produced one
-    /// claiming fifty-six bytes over a buffer of a hundred and twenty, a packet
-    /// every receiver reads as something other than what was built.
+    /// is the most either header can describe. Wrapped silently, forty-four
+    /// would produce a header declaring itself zero words long and a hundred
+    /// one claiming fifty-six bytes over a buffer of a hundred and twenty, a
+    /// packet every receiver reads as something other than what was built.
     #[test]
     fn options_past_what_the_length_field_measures_are_refused() {
         const LARGEST: usize = 40;
@@ -2413,9 +2414,9 @@ mod tests {
 
     /// Options that are not a whole number of words are refused too.
     ///
-    /// The field counts words, so the division rounded down and the odd bytes
-    /// became payload to whatever received the packet: six bytes of options
-    /// built a twenty-six byte header declaring twenty-four.
+    /// The field counts words, so the division would round down and the odd
+    /// bytes become payload to whatever received the packet: six bytes of
+    /// options would build a twenty-six byte header declaring twenty-four.
     #[test]
     fn options_that_are_not_a_whole_number_of_words_are_refused() {
         for options in [1usize, 2, 3, 5, 6, 7, 39] {

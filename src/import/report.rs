@@ -460,9 +460,9 @@ mod tests {
 
     /// A document a Windows editor saved is still the document it is.
     ///
-    /// This side stripped no mark at all, so a report saved through
-    /// `Out-File` was refused as neither format, nmap XML included, which
-    /// the reader behind it would have read without complaint.
+    /// A sniff that stripped no mark would refuse a report saved through
+    /// `Out-File` as neither format, nmap XML included, which the reader
+    /// behind it reads without complaint.
     #[test]
     fn a_byte_order_mark_hides_neither_format() {
         let marked = |text: &str| {

@@ -7,10 +7,10 @@
 //! `format::time` states that [`rfc3339`] and [`parse_rfc3339`] are inverses and
 //! that the parser is "no more permissive than it needs to be". The property
 //! test beside them only ever feeds the parser strings the writer produced,
-//! which is the half that was already right: the shapes that got through were
-//! ones no writer emits. A negative hour parsed and moved the moment into the
-//! previous day, and `2026-02-31` parsed as the third of March — each a
-//! perfectly ordinary-looking timestamp naming the wrong one.
+//! and the shapes a lax parser lets through are ones no writer emits. A
+//! negative hour that parsed would move the moment into the previous day, and
+//! `2026-02-31` would parse as the third of March — each a perfectly
+//! ordinary-looking timestamp naming the wrong one.
 //!
 //! That matters where the parser is reached from, which is a report rebuilt out
 //! of a file somebody else wrote. A `cert_not_after` off by a day is an expiry

@@ -335,9 +335,9 @@ proptest! {
 /// **The test that keeps the tests above honest.**
 ///
 /// Every property here is "the parser returns", which a generator producing
-/// bytes no parser accepts satisfies perfectly while proving nothing. The first
-/// draft of this file did exactly that: one LLDP advertisement in four thousand
-/// got past the walk, and none of the others got past theirs at all.
+/// bytes no parser accepts satisfies perfectly while proving nothing. Unshaped
+/// generators do exactly that: one LLDP advertisement in four thousand gets past
+/// the walk, and none of the others get past theirs at all.
 ///
 /// So the generators are measured. Each is run against its reader and has to
 /// reach it often enough that the walk behind it is under test, which turns a

@@ -27,8 +27,8 @@
 //!   beginning `SSH-`. Reported as service `ssh` at [`Strong`] confidence.
 //! * **Host-key algorithms.** The server's offered host-key algorithm list
 //!   (`ssh-ed25519,rsa-sha2-512,…`) is surfaced as `extrainfo`. It is useful in
-//!   its own right and the basis for future HASSH-style identification of
-//!   servers whose banner is generic or spoofed.
+//!   its own right, and it is what HASSH-style identification of servers whose
+//!   banner is generic or spoofed would be built on.
 //!
 //! ## Scope
 //!
@@ -66,9 +66,9 @@ const SSH_PORTS: &[u16] = &[22, 2222];
 ///
 /// So a rule naming a release can never match the whole line, and that is not a
 /// hypothetical. Fed the complete banner, every version-bearing Debian rule
-/// failed and only a loose rule naming the family fired, a host announcing
-/// `SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10` was reported as `Linux` when the
-/// corpus held a rule mapping that exact string to Debian 12 with a CPE.
+/// fails and only a loose rule naming the family fires: a host announcing
+/// `SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10` is reported as `Linux` although
+/// the corpus holds a rule mapping that exact string to Debian 12 with a CPE.
 ///
 /// This is the SSH counterpart of what `HttpHeadersAnalyzer` does for a `Server`
 /// header: the corpus matches a *field*, so something has to extract the field.
@@ -483,8 +483,8 @@ mod tests {
     /// RFC 4253 §4.2 lets a server send lines before its identification string
     /// and requires a client to skip them; a legal notice ahead of the
     /// identifier is near-universal on hardened hosts. Reading exactly one line
-    /// left this analyzer silent on all of them, and silent invisibly, since the
-    /// passive banner grab still named the service.
+    /// would leave this analyzer silent on all of them, and silent invisibly,
+    /// since the passive banner grab still names the service.
     #[tokio::test]
     async fn a_server_that_greets_before_identifying_is_still_read() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

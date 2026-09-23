@@ -446,8 +446,8 @@ mod tests {
 
     /// A scan whose raw strategies send frames alone splits one protocol by
     /// address: the raw scanner takes what a frame reaches and a connect
-    /// scanner the rest. Routed by protocol alone, every target went to the raw
-    /// one, and loopback came back unasked.
+    /// scanner the rest. Routed by protocol alone, every target would go to the
+    /// raw one, and loopback would come back unasked.
     #[tokio::test]
     async fn targets_are_routed_by_address_where_a_scanner_says_so() {
         let (raw, raw_rx) = MockPortScanner::new(vec![Protocol::Tcp]);
@@ -522,8 +522,8 @@ mod tests {
         assert_eq!(composite.scanners.len(), 2, "both scanners restored");
     }
 
-    /// A panicking scanner used to vanish along with its task, leaving the run
-    /// looking clean. It has to surface as a failure like any other.
+    /// A panicking scanner would otherwise vanish along with its task, leaving
+    /// the run looking clean. It has to surface as a failure like any other.
     #[tokio::test]
     async fn a_panicking_scanner_surfaces_as_a_failure() {
         let (panicking, _) = MockPortScanner::with_behaviour(vec![Protocol::Tcp], Behaviour::Panic);

@@ -570,8 +570,8 @@ mod tests {
 
     #[test]
     fn a_service_cpe_is_resolved_carried_and_dropped_when_unfillable() {
-        // A template resolves against the captured version, the wiring that was
-        // dropping 1226 corpus CPEs before Evidence.cpe was ever set.
+        // A template resolves against the captured version; without that, every
+        // CPE template in the corpus would be dropped and Evidence.cpe never set.
         let ev = Signature::new(
             "http",
             &rule_with_metadata(

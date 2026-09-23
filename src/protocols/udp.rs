@@ -67,7 +67,7 @@ pub fn build_packet(
 /// [`FamilyMismatch`](crate::protocols::error::PacketError::FamilyMismatch)
 /// across address families, and a
 /// [`TooLong`](crate::protocols::error::PacketError::TooLong) for a payload the
-/// 16-bit length field cannot describe, padding now counted.
+/// 16-bit length field cannot describe, padding included.
 pub fn build_packet_shaped(
     src_addr: IpAddr,
     dst_addr: IpAddr,

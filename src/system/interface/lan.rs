@@ -51,17 +51,17 @@ pub enum ViabilityError {
 /// The link a LAN scan runs on: the interface itself and how it is addressed in
 /// both families.
 ///
-/// The selection picks a *link*, and until this existed it returned an
-/// `Ipv4Network`, so everything the link knew about itself was thrown away at
-/// the moment it was chosen. The interface identity is what
+/// The selection picks a *link*, and returns one rather than an
+/// `Ipv4Network`, which would throw away everything the link knew about itself
+/// at the moment it was chosen. The interface identity is what
 /// [`Zone`](crate::model::ip::scoped::Zone) needs to make a link-local
 /// address usable, and the IPv6 prefixes are what say which addresses are on
 /// this segment at all.
 ///
 /// `ipv4` is optional because a viable LAN link need not have one. An interface
 /// carrying only a link-local IPv6 address is perfectly scannable, the
-/// all-nodes echo and neighbour discovery both work, and treating that as "no
-/// network found" is what the shape of the old return value forced.
+/// all-nodes echo and neighbour discovery both work, and a return value that
+/// required an IPv4 network would force treating that as "no network found".
 #[derive(Debug, Clone)]
 pub struct LanLink {
     /// The interface the sweep runs on, carrying the name and index a zone is
@@ -93,11 +93,11 @@ pub fn prioritized_interfaces(limit: usize) -> Vec<Link> {
 
 /// The ordering, decoupled from the host so it can be tested.
 ///
-/// Wired before wireless, and a name is no longer consulted. This sorted on
-/// `name.starts_with("e")`, which is `eth0` and `en0` on Linux and macOS, and
+/// Wired before wireless, and a name is not consulted. A sort on
+/// `name.starts_with("e")` catches `eth0` and `en0` on Linux and macOS, and
 /// nothing at all on Windows, where an adapter is named by its GUID. It also
-/// ranked `en1` above `wlan0` on a machine where `en1` *is* the Wi-Fi, which is
-/// this laptop. A link now says what it is, so the sort asks it.
+/// ranks `en1` above `wlan0` on a machine where `en1` *is* the Wi-Fi, which is
+/// an ordinary Mac layout. A link says what it is, so the sort asks it.
 pub(crate) fn prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) -> Vec<Link> {
     links.sort_by_key(|link| if link.is_wireless() { 1 } else { 0 });
     links.into_iter().take(limit).collect()
@@ -113,17 +113,17 @@ pub(crate) fn prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) ->
 ///
 /// `None` rather than an error, because there is no error to report. A
 /// machine with nothing but loopback and a VPN tunnel is a machine with no LAN,
-/// which is an answer about the host and not a failure to find one out. Every
-/// caller of this treated the two the same way when they were separate.
+/// which is an answer about the host and not a failure to find one out, and a
+/// caller has nothing to do differently between the two.
 pub fn lan_link() -> Option<LanLink> {
     lan_link_with(crate::system::interface::interfaces())
 }
 
 /// The IPv4 half of [`lan_link`], for callers that only sweep IPv4.
 ///
-/// Kept because it is the engine's published surface and a front end builds
-/// against it; new work inside the engine wants the link, since half of what a
-/// LAN scan now does is IPv6.
+/// Part of the engine's published surface, which a front end builds against;
+/// work inside the engine wants the link, since half of what a LAN scan does
+/// is IPv6.
 pub fn lan_network() -> Option<LinkAddress> {
     lan_link()?.ipv4
 }
@@ -135,9 +135,8 @@ pub fn lan_network() -> Option<LinkAddress> {
 /// exist, so the selection can be exercised without depending on whatever the
 /// machine running the tests happens to have plugged in.
 ///
-/// It used to be a `is_physical` predicate injected alongside, which is what
-/// the paragraph here described for a while after `Link` grew a field for it
-/// and the parameter went.
+/// Whether a link is physical is read off the `Link` itself, not injected
+/// alongside as a predicate.
 pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
     let interfaces_str: &str = match interfaces.len() {
         1 => "interface",
@@ -180,10 +179,11 @@ pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
 
 /// Whether `link` could carry a LAN sweep, and what stops it if not.
 ///
-/// Public because [`ViabilityError`] was otherwise a vocabulary for a decision
-/// nobody could see: [`lan_link`] answers `Option` and drops the reason, which
-/// is right for the question it asks and leaves a caller whose sweep found no
-/// network with nothing to look at. This is that reason, per link.
+/// Public because [`ViabilityError`] would otherwise be a vocabulary for a
+/// decision nobody could see: [`lan_link`] answers `Option` and drops the
+/// reason, which is right for the question it asks and leaves a caller whose
+/// sweep found no network with nothing to look at. This is that reason, per
+/// link.
 ///
 /// The conditions are the ones ARP and neighbour discovery need between them: a
 /// segment with somebody else on it, and a hardware address to send from.
@@ -222,18 +222,18 @@ pub fn lan_viability(link: &Link) -> Result<(), ViabilityError> {
 /// on, and it is a fact about the routing table rather than a guess about the
 /// hardware, which is why it is answerable the same way on every platform.
 ///
-/// The guess is what this used to do, and macOS is where it broke. `awdl0`
-/// (AirDrop) and `llw0` present as ordinary broadcast Ethernet with real
-/// hardware behind them: physical, up, a MAC, indistinguishable from a wired
-/// port by every field an interface table exposes. So "prefer a wired link"
-/// picked `awdl0`, which has no IPv4 at all, over the Wi-Fi carrying the whole
-/// `/24`, and `zond discover lan` answered *"awdl0 has no private IPv4 network
-/// to sweep"* on a machine plainly on a network.
+/// A guess about the hardware breaks on macOS. `awdl0` (AirDrop) and `llw0`
+/// present as ordinary broadcast Ethernet with real hardware behind them:
+/// physical, up, a MAC, indistinguishable from a wired port by every field an
+/// interface table exposes. So "prefer a wired link" would pick `awdl0`, which
+/// has no IPv4 at all, over the Wi-Fi carrying the whole `/24`, and a sweep of
+/// `lan` would answer *"awdl0 has no private IPv4 network to sweep"* on a
+/// machine plainly on a network.
 ///
 /// Neither does having an address make a link the LAN. Falling back to "the
-/// first one with a private IPv4" would pick `bridge100` on this same laptop,
-/// which is the virtualisation bridge on `192.168.64.1/24`: a real private
-/// network with nothing on it but virtual machines.
+/// first one with a private IPv4" would pick `bridge100` on the same kind of
+/// Mac, the virtualisation bridge on `192.168.64.1/24`: a real private network
+/// with nothing on it but virtual machines.
 ///
 /// The remaining order is for the case where no link claims the default route
 /// at all, which is a machine with no route off itself: prefer one that could
@@ -290,10 +290,11 @@ mod tests {
 
     /// A wired link outranks a wireless one, whatever either is called.
     ///
-    /// The old ordering read the first letter of the name. `en1` is the Wi-Fi on
-    /// this laptop and `eth0` is wired on that server, and both start with `e`,
-    /// so the sort was right by accident where it was right at all, and had
-    /// nothing to say on Windows, where an adapter is named by a GUID.
+    /// An ordering by the first letter of the name cannot tell them apart:
+    /// `en1` can be a Mac's Wi-Fi and `eth0` a server's wired port, and both
+    /// start with `e`, so such a sort is right by accident where it is right at
+    /// all, and has nothing to say on Windows, where an adapter is named by a
+    /// GUID.
     #[test]
     fn a_wired_link_is_preferred_however_the_platform_names_it() {
         let ordered = prioritized_interfaces_with(
@@ -403,8 +404,9 @@ mod tests {
         assert_eq!(link.ipv6.len(), 1);
     }
 
-    /// The published IPv4-only entry point keeps answering exactly as it did,
-    /// since a front end outside this repo builds against it.
+    /// The published IPv4-only entry point answers with a link's private IPv4
+    /// network, address and prefix, since a front end outside this repo builds
+    /// against it.
     #[test]
     fn the_ipv4_view_of_a_link_is_unchanged() {
         let intf = mock_interface(true, true, true, false, false, true);
@@ -419,11 +421,11 @@ mod tests {
     /// The default route decides, and a link that merely looks like hardware
     /// does not.
     ///
-    /// Found by running `zond discover lan` on a real Mac, which answered
-    /// *"awdl0 has no private IPv4 network to sweep"* while sitting on a `/24`.
+    /// On a real Mac sitting on a `/24`, a preference for wired links answers a
+    /// sweep of `lan` with *"awdl0 has no private IPv4 network to sweep"*.
     /// `awdl0` is AirDrop: macOS presents it as broadcast Ethernet, physical, up,
-    /// with a MAC, every field a wired port has, so "prefer a wired link" chose
-    /// it over the Wi-Fi that had the actual network.
+    /// with a MAC, every field a wired port has, so "prefer a wired link" chooses
+    /// it over the Wi-Fi that has the actual network.
     #[test]
     fn the_link_carrying_the_default_route_is_the_lan() {
         let wifi = mock_interface(true, true, true, false, false, true)
@@ -531,10 +533,8 @@ mod tests {
 
     /// A virtual adapter is not a LAN, however well-addressed it is.
     ///
-    /// It says so itself now. This used to inject an `is_physical` that answered
-    /// `false`, because the interface type could not carry the answer and the
-    /// real one shelled out to `networksetup` on macOS. The link knows, so the
-    /// test states the fact rather than stubbing the function that found it.
+    /// It says so itself: the link carries whether it is physical, so the test
+    /// states the fact rather than stubbing a function that finds it out.
     #[test]
     fn is_viable_not_physical() {
         let intf = mock_interface(true, true, true, false, false, true).with_physical(false);

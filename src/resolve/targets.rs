@@ -132,15 +132,15 @@ pub async fn to_set<S: AsRef<str>>(
 /// The addresses `exprs` names, under the caller's DNS policy.
 ///
 /// The one decision [`for_discovery_with`] and [`for_exclusion_with`] both make,
-/// and they used to make it in identical blocks a dozen lines apart. `Some`
+/// made here once rather than in two identical blocks. `Some`
 /// resolves hostnames; `None` refuses them, which is what a scan running under
 /// [`ZondConfig::no_dns`](crate::config::ZondConfig::no_dns) needs, since looking
 /// a target up emits a query to a resolver somebody else operates. Either way a
 /// name that cannot be turned into addresses is reported rather than dropped.
 ///
 /// An empty list of expressions is an empty set of addresses through the
-/// ordinary path. `for_exclusion_with` used to answer that case first and by
-/// hand, which read as a difference between the two callers and was not one.
+/// ordinary path. A caller answering that case first and by hand would read as
+/// a difference between the two callers, and there is none.
 async fn addresses_of<S: AsRef<str>>(
     exprs: &[S],
     names: Option<&Resolver>,
@@ -235,9 +235,9 @@ impl DiscoveryTargets {
 ///
 /// The one call a front end makes. It wires this host's own interface table for
 /// `lan` and for the `%interface` suffix, resolves any hostnames, and works out
-/// whether a segment sweep was asked for: three steps that were once three
-/// separate things for every consumer to remember, and that every consumer
-/// remembered differently.
+/// whether a segment sweep was asked for: three steps that, left separate,
+/// every consumer would have to remember, and every consumer would remember
+/// differently.
 ///
 /// `names` is the DNS policy, and it is the caller's because only they know it.
 /// `Some` resolves hostnames; `None` refuses them, which is what a scan running
@@ -379,11 +379,11 @@ pub async fn for_exclusion_with<S: AsRef<str>>(
 /// will not even split is skipped for the same reason: the builder will raise it
 /// verbatim.
 ///
-/// The second half used to be missing, and `Malformed` alone is not the
-/// builder's rule: it applies two more tests before it consults the lookup, so
-/// `192.0.2.300` was sent to a resolver here and refused as a mistyped address
-/// there. Asking the same function is what makes the two passes agree, rather
-/// than a comment saying they do.
+/// The second half matters because `Malformed` alone is not the builder's
+/// rule: it applies two more tests before it consults the lookup, so without
+/// them `192.0.2.300` would be sent to a resolver here and refused as a
+/// mistyped address there. Asking the same function is what makes the two
+/// passes agree, rather than a comment saying they do.
 ///
 /// The grammar is asked without the host's keyword and zone lookups. Neither can
 /// make a token `Malformed` or stop it being so: a keyword or a zoned address is
@@ -419,9 +419,8 @@ fn collect_names<S: AsRef<str>>(exprs: &[S]) -> Vec<String> {
 /// flight, keeping only those that resolved to something.
 ///
 /// One lookup per name rather than per spelling. DNS is case-insensitive, so
-/// `NAS` and `nas` are one host and were once two round trips and two map
-/// entries.
-/// They are resolved once and the answer is recorded under every spelling that
+/// `NAS` and `nas` are one host, not two round trips and two map entries. They
+/// are resolved once and the answer is recorded under every spelling that
 /// asked for it, which leaves the returned map keyed as the caller wrote things:
 /// the build pass looks a name up by the token in the expression, and lowering
 /// the keys here would simply move the mismatch.
@@ -498,12 +497,11 @@ mod tests {
     /// The two passes agree about what a name is, because they ask the same
     /// function.
     ///
-    /// They once did not. The collector took [`IpParseError::Malformed`] as the
-    /// whole answer while the builder applies two more tests before consulting
-    /// the lookup, so a mistyped address was sent to a resolver somebody else
-    /// operates and then refused here without ever being looked up. A typo in a
-    /// target file became a DNS query, which is what `no_dns` exists to
-    /// prevent.
+    /// A collector taking [`IpParseError::Malformed`] as the whole answer, while
+    /// the builder applies two more tests before consulting the lookup, would
+    /// send a mistyped address to a resolver somebody else operates and then
+    /// refuse it here without ever looking it up. A typo in a target file would
+    /// become a DNS query, which is what `no_dns` exists to prevent.
     #[test]
     fn a_token_the_builder_will_refuse_is_never_put_on_the_network() {
         let refused = [
@@ -532,8 +530,8 @@ mod tests {
 
     /// One host is one lookup, however many ways it is spelled.
     ///
-    /// DNS is case-insensitive, so `NAS` and `nas` name one host. They used to
-    /// be two entries and two round trips.
+    /// DNS is case-insensitive, so `NAS` and `nas` name one host, not two
+    /// entries and two round trips.
     #[test]
     fn a_name_written_two_ways_is_looked_up_once() {
         // Collection keeps every spelling, since the build pass looks a name up

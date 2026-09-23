@@ -83,8 +83,7 @@ type and nine-bit length, CDP records whose length counts its own header, an
 ICMPv6 message behind a real IPv6 header, BOOTP options behind a real magic
 cookie. `the_generators_reach_the_parsers_they_are_written_for` measures how
 often each one gets through and fails if it stops, because a property that says
-"the parser returns" is satisfied perfectly by input the parser never reads. The
-first draft of the file was in exactly that state.
+"the parser returns" is satisfied perfectly by input the parser never reads.
 
 ## Tier 2: the simulated network
 
@@ -143,12 +142,6 @@ An `#[ignore]`d test here is a claim about something the engine does not do yet,
 not a test that is switched off. It runs, it fails for the reason it says, and
 removing the attribute is the definition of done.
 
-`retransmission.rs` was written this way against a feature the engine did not
-have, and every test in it now runs. So does the one claim `detections.rs`
-carried, that a whole scan hands a passive detection the responses it already
-drew: the connect path now keeps what its inline fingerprint read instead of
-discarding it.
-
 One live claim stands under the convention, and it is in Tier 3:
 `an_administratively_prohibited_port_is_filtered_rather_than_closed`. A real
 ICMP prohibition comes back as `Unasked` rather than `Filtered`, because Linux
@@ -164,21 +157,18 @@ the nmap importer test needs a document nmap itself wrote. It is not a claim
 about unfinished work, and removing the attribute is not the definition of done
 for it.
 
-There were three. The other two drove a `libpcap` capture on loopback to prove
-that a real kernel's ICMP error names the probe that caused it, and that a real
-reply gets through the capture filter. Neither could run where it was, since the
-lib tests have no namespace to borrow capture access from, and Tier 3 now asks
-both questions of the whole scanner rather than of a hand-driven capture:
+Whether a real kernel's ICMP error names the probe that caused it, and whether
+a real reply gets through the capture filter, are not asked of a hand-driven
+`libpcap` capture in the lib tests, which have no namespace to borrow capture
+access from. Tier 3 asks both of the whole scanner:
 `a_udp_port_nothing_is_bound_to_is_reported_closed` and
-`a_udp_reply_reaches_the_scan_and_opens_the_port`. The loop they closed is
-closed further out, so they were removed rather than left switched off.
+`a_udp_reply_reaches_the_scan_and_opens_the_port`.
 
-There were four. `dump_for_external_validation` asserted nothing, printing a
-document for `xmllint` to judge, so it was never a test at all. It is
-`examples/nmap_dump.rs` now, which compiles under `cargo check --all-targets` and
-runs without a harness flag.
+A document printed for `xmllint` to judge asserts nothing, so it is not a test
+at all. `examples/nmap_dump.rs` prints one; it compiles under
+`cargo check --all-targets` and runs without a harness flag.
 
-`retransmission.rs` is also the one place in Tier 2 that takes seconds rather
+`retransmission.rs` is the one place in Tier 2 that takes seconds rather
 than milliseconds, because a bounded retry schedule is exactly what it is
 asserting on: a probe that is meant to go unanswered has to actually wait out
 every attempt before the verdict it produces means anything.
@@ -217,8 +207,8 @@ Each `Probe` in that log carries more than the target it was aimed at. It also
 holds the Layer 4 segment as it went out, the source address and source port it
 left from, its TCP flags, and the `Emission` the sender was handed. That is what
 lets a test assert on the packet a scanner emitted rather than only on how many
-it sent, which is what `evasion.rs` needed: every knob on an `EvasionProfile`
-changes a probe and nothing outside the crate was reading one.
+it sent, which is what `evasion.rs` needs: every knob on an `EvasionProfile`
+changes a probe, and the log is where a test outside the crate reads one.
 
 Policies start from the reply and layer conditions on top: `Policy::open()`,
 `closed()`, `silent()`, `admin_prohibited()` and `truncated()`, combined with
@@ -309,11 +299,11 @@ without it this tier quietly stops being Tier 3. `netdev` reads a link's RFC
 the `IFF_UP` flag that is set. `PortScanPlan` then finds no source address,
 abandons the raw path, and runs a `connect` scan instead.
 
-That is not a hypothetical. It is what this tier did for its first two phases,
-reporting the same verdicts over a path that never builds an IP header, while a
-guard asserting only privilege passed. `the_engine_takes_its_raw_path_here` now
-asserts the planner's whole condition, privilege and a resolvable source, which
-is what makes the tier's name true.
+Nothing in the results shows it: the `connect` scan reports the same verdicts
+over a path that never builds an IP header, and a guard asserting only privilege
+passes. So `the_engine_takes_its_raw_path_here` asserts the planner's whole
+condition, privilege and a resolvable source, which is what makes the tier's
+name true.
 
 ### How the process gets there
 
@@ -366,9 +356,10 @@ the query going to a group whose membership decides whether it arrives at all.
 
 `techniques` and `characterise` are where this tier pays for itself. Tier 2
 covers the techniques more thoroughly than this ever will, and cannot disagree
-with whoever wrote its stacks; Linux can. `characterise` was the least covered
-file in the crate at 18.3%, because every conclusion it draws is about a
-firewall's behaviour and there was no firewall to put in front of it.
+with whoever wrote its stacks; Linux can. Measured without this tier,
+`characterise` was the least covered file in the crate at 18.3%, because every
+conclusion it draws is about a firewall's behaviour and nothing below this tier
+puts a firewall in front of it.
 
 A `Segment` can also firewall a port in the peer's namespace, with `drop` for
 silence and `reject` for an ICMP error, and shape the near end of the pair with
@@ -382,9 +373,9 @@ verdicts over a path that never builds an IP header, and the tier would go on
 passing while testing nothing the tiers above it do not.
 `the_engine_takes_its_raw_path_here` is the guard against that.
 
-It was also checked the other way, by severing the near end of the pair mid-test
-and confirming the open-port case fails. Worth repeating after any change to the
-harness: a green tier that has stopped reading the wire looks exactly like a
+The guard is checked the other way by severing the near end of the pair mid-test,
+which has to make the open-port case fail. Worth repeating after any change to
+the harness: a green tier that has stopped reading the wire looks exactly like a
 green tier.
 
 ### What belongs here

@@ -80,10 +80,9 @@ const MEASURED_ACCURACY: f32 = 65.0;
 /// Lower, and not because published defaults are unreliable, an initial hop
 /// counter and an option order are ordinary engineering facts. Lower because
 /// the rule has not been seen *through this engine's own probe on a real
-/// network*, which is the gap that has already caught this project out once:
-/// option negotiation is reciprocal, so a documented layout is documented
-/// against some probe, and against a different one it is wrong while looking
-/// right.
+/// network*, which is the gap that matters: option negotiation is reciprocal,
+/// so a documented layout is documented against some probe, and against a
+/// different one it is wrong while looking right.
 ///
 /// Above [`MIN_REPORTABLE_ACCURACY`], so such a rule reports rather than hides,
 /// a plausible answer that says how sure it is beats no answer. Confirming one
@@ -180,9 +179,9 @@ impl OsVerdict {
     pub fn label(&self) -> String {
         // A corpus that sets `product` to the family name is *declining* to name
         // a product, and for a Linux distribution it puts the distribution in
-        // `vendor`. 993 shipped rules are written that way, which is why a host
-        // running Debian 12 was reported as `Linux 12.0`: a version number no
-        // Linux has ever had, attached to the wrong noun.
+        // `vendor`. 993 shipped rules are written that way, and read literally
+        // they report a host running Debian 12 as `Linux 12.0`: a version
+        // number no Linux has ever had, attached to the wrong noun.
         //
         // A rule with **no** product at all is a different case and must not be
         // read the same way. There, `vendor` is often the maker of a device
@@ -545,12 +544,12 @@ mod tests {
     ///
     /// A verdict's accuracy is a base worth times the weight, clamped at
     /// [`MAX_STACK_ACCURACY`]. Past the point where that clamp bites, every
-    /// weight produces the same answer: the bound was ten and measured, 1.08
-    /// through 10 were indistinguishable, so nine tenths of the range an author
-    /// could reach for did nothing and the build validated against the end of it
-    /// where nothing happens.
+    /// weight produces the same answer: measured with a bound of ten, 1.08
+    /// through 10 are indistinguishable, so nine tenths of the range an author
+    /// could reach for would do nothing and the build would validate against
+    /// the end of it where nothing happens.
     ///
-    /// This fails if the bound rises back above where the arithmetic saturates.
+    /// This fails if the bound rises above where the arithmetic saturates.
     #[test]
     fn the_weight_bound_leaves_no_dead_range() {
         use super::super::MAX_RULE_WEIGHT;
@@ -598,10 +597,10 @@ mod tests {
         // no stack writes, and padding. Well-formed, and belonging to no family
         // in the corpus.
         //
-        // The layout rather than the window; see the test
-        // below. A window nothing has been measured at is an ordinary Linux
-        // host whose owner tuned it, and naming that one nothing was the defect
-        // this pair now guards from both sides.
+        // The layout rather than the window; see the test below. A window
+        // nothing has been measured at is an ordinary Linux host whose owner
+        // tuned it, and naming that one nothing is the defect this pair guards
+        // from both sides.
         let nothing_emits = [2, 4, 0x05, 0xb4, 99, 2, 1, 1];
         let verdict = classify_reply(
             ip(),
@@ -614,14 +613,14 @@ mod tests {
     /// tuned.
     ///
     /// Measured 2026-08-21: one `sysctl -w net.ipv4.tcp_rmem=...` on an
-    /// untouched kernel moved a Debian guest's window and window scale together,
-    /// and the rule that pinned them stopped matching. A machine went from
-    /// `Linux [65%]` to no operating system at all because somebody had raised
+    /// untouched kernel moves a Debian guest's window and window scale
+    /// together, and a rule that pins them stops matching. The machine goes
+    /// from `Linux [65%]` to no operating system at all because somebody raised
     /// their receive buffers, which is a rule describing a configuration while
     /// claiming to describe a system.
     ///
     /// The hop counter, the option layout and the two capabilities the peer
-    /// named are what survive tuning, and they are what the rule now tests.
+    /// named are what survive tuning, and they are what the rule tests.
     #[test]
     fn a_linux_host_with_tuned_receive_buffers_is_still_linux() {
         for window in [12_345u16, 29_200, 64_240, 65_160] {
@@ -855,10 +854,10 @@ mod second_family {
         })
     }
 
-    /// The corpus now holds a second family confirmed on hardware, which is what
-    /// makes the Linux rules falsifiable: until there was something else for a
-    /// reply to be named, "everything is Linux" and "the rules work" produced the
-    /// same output.
+    /// The corpus holds a second family confirmed on hardware, which is what
+    /// makes the Linux rules falsifiable: with nothing else for a reply to be
+    /// named, "everything is Linux" and "the rules work" produce the same
+    /// output.
     ///
     /// Darwin shares its hop counter with Linux, so nothing in the IP header
     /// separates them. The option order does, in every position.

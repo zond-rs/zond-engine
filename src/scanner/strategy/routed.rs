@@ -422,11 +422,11 @@ impl HostScanner for RoutedScanner {
         //
         // **Only the failures that are about this host.** An address with no
         // route is not a strategy that did not run: the strategy ran, and that
-        // address is not reachable from here. Recorded as a failure it made
-        // every scan of a dual-stack name on an IPv4-only network report itself
-        // as partial, which is the surest way to teach a reader to ignore the
-        // warning that matters. It is recorded against the address instead, just
-        // below.
+        // address is not reachable from here. Recorded as a failure it would
+        // make every scan of a dual-stack name on an IPv4-only network report
+        // itself as partial, which is the surest way to teach a reader to
+        // ignore the warning that matters. It is recorded against the address
+        // instead, just below.
         if let Some(reason) = &self.faults.broken {
             let broken = self.sweep.audit.sends_failed - self.faults.unroutable_count;
             self.ctx.record_failure(
@@ -683,15 +683,15 @@ impl RoutedScanner {
         }
 
         // Not every TCP segment from a probed address answers a probe, and over
-        // IPv6 the kernel no longer guarantees otherwise: `tcp[tcpflags]` does
+        // IPv6 the kernel does not guarantee otherwise: `tcp[tcpflags]` does
         // not compile for that family, so the transport admits established
         // traffic too and the narrowing has to happen here.
         //
         // Checking it is what keeps the two families held to one standard. The
-        // IPv4 half has only ever seen SYN+ACK and RST because the filter
-        // dropped the rest; without the same test, an ACK from an IPv6 host the
-        // user happens to be connected to would credit a discovery this scan did
-        // not make, on evidence the IPv4 path has never accepted.
+        // IPv4 half only ever sees SYN+ACK and RST because the filter drops the
+        // rest; without the same test, an ACK from an IPv6 host the user
+        // happens to be connected to would credit a discovery this scan did not
+        // make, on evidence the IPv4 path never accepts.
         if !self.probe.answers(reply) {
             self.sweep.audit.record_off_target();
             return;

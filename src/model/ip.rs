@@ -71,7 +71,7 @@ pub fn is_global_unicast(ipv6_addr: &Ipv6Addr) -> bool {
 /// on every segment and is neither.
 ///
 /// [`Host::consider_primary_ip`](crate::model::host::Host::consider_primary_ip)
-/// reads it, and once carried the unique-local half itself.
+/// reads it rather than carrying the unique-local half itself.
 pub fn is_globally_scoped(ipv6_addr: &Ipv6Addr) -> bool {
     is_global_unicast(ipv6_addr) || is_unique_local(ipv6_addr)
 }

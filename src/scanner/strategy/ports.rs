@@ -28,17 +28,17 @@
 //!
 //! ## Why this line and not a different one
 //!
-//! The split is drawn where the two scanners were *identical*, not merely
-//! similar. Their stop conditions, their pacing arithmetic, their unreachable
-//! handling, their audit tails and the loop that drives all of it were
-//! duplicated with no difference but a label, while their probe construction
-//! and their evidence mapping differed in almost every line, because a RST and
-//! an ICMP port unreachable prove genuinely different things. Sharing the first
-//! and not the second is what keeps this an abstraction rather than a
+//! The split is drawn where the TCP and UDP scanners are *identical*, not
+//! merely similar. Their stop conditions, their pacing arithmetic, their
+//! unreachable handling, their audit tails and the loop that drives all of it
+//! would be duplicated with no difference but a label, while their probe
+//! construction and their evidence mapping differ in almost every line, because
+//! a RST and an ICMP port unreachable prove genuinely different things. Sharing
+//! the first and not the second is what keeps this an abstraction rather than a
 //! coincidence.
 //!
-//! Where the two copies of the loop did differ, they differed in four
-//! expressions: which protocol to accept, what silence means, and two labels.
+//! Where two copies of the loop would differ, they differ in four expressions:
+//! which protocol to accept, what silence means, and two labels.
 //! [`RawPortScan`] is those four, written down.
 //!
 //! ## Why the shared half is the half worth sharing
@@ -46,26 +46,24 @@
 //! The four stop conditions are the subtlest code in either scanner and the
 //! least visible when wrong. Each one is a claim about what silence means, and
 //! stopping on the wrong one does not fail: it returns a smaller answer that
-//! looks exactly like a quiet network. This engine has already paid for that
-//! once: a stop condition was fixed in one discovery scanner and left standing
-//! in its twin, because nothing tied the two together. One
-//! copy is what makes that class of divergence impossible rather than merely
-//! unlikely.
+//! looks exactly like a quiet network. Two copies invite exactly that: a stop
+//! condition fixed in one scanner and left standing in its twin, because
+//! nothing ties the two together. One copy is what makes that class of
+//! divergence impossible rather than merely unlikely.
 //!
 //! ## Writing a fourth one
 //!
 //! Everything here is public because the argument above applies to a scanner
-//! this engine does not have yet. The SCTP INIT scan was written this way after
-//! the fact and needed no changes here, which is the evidence the line is in the
-//! right place; any protocol added later needs the same stop conditions, the
-//! same congestion window and the same audit tail. Implementing [`RawPortScan`]
+//! this engine does not have. The SCTP INIT scan is built this way and needs
+//! nothing here that TCP and UDP do not, which is the evidence the line is in
+//! the right place; any other protocol needs the same stop conditions, the same
+//! congestion window and the same audit tail. Implementing [`RawPortScan`]
 //! gets all of it, and the only code to write is the part that is actually
 //! about the protocol.
 
 // Public rather than private-with-re-exports. A caller writing a fifth scanner
 // has to be able to read the four that exist, and a module they cannot name is
-// a file they have to already know about. Which is what the shared machinery
-// here used to be, under a name that described where the target sat.
+// a file they have to already know about.
 pub mod idle;
 pub mod sctp;
 pub mod tcp;
@@ -106,8 +104,8 @@ use crate::transport::probe::{Emission, ProbeTransport};
 // What a raw port scan is paced and timed by
 // ---------------------------------------------------------------------------
 //
-// Declared here rather than beside the sweep they were written next to. These
-// are what a *port scan* is held to, and the four scanners below are their only
+// Declared here rather than beside the discovery sweep. These are what a *port
+// scan* is held to, and the four scanners below are their only
 // readers; the profiles a routed probe shares whatever it is asking about are
 // in `raw`.
 
@@ -172,9 +170,9 @@ const PORT_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 ///   Nothing can be known about a target until a probe to it has been answered
 ///   or has timed out, and slow start doubles every round trip in the meantime,
 ///   so the threshold is the worst overshoot a target can be subjected to before
-///   the scan has any evidence about it at all. It was 256, and against a
-///   Raspberry Pi that meant several hundred probes already in the air by the
-///   time the first timeout arrived. Sixty-four outstanding still empties a
+///   the scan has any evidence about it at all. Measured against a Raspberry
+///   Pi, a threshold of 256 puts several hundred probes in the air by the time
+///   the first timeout arrives. Sixty-four outstanding still empties a
 ///   thousand ports in a fraction of a second on any local segment, and linear
 ///   growth carries it further wherever the evidence supports it.
 const TCP_PORT_WINDOW: WindowLimits = WindowLimits::new(32, 16, 1_024, 64);
@@ -277,8 +275,8 @@ pub struct RawProbeScan<T> {
     /// Why the first probe that could not be sent failed, if any did.
     ///
     /// The *first*, and the send path keeps it that way by only recording when
-    /// this is empty. It used to hold the last, which on a link that had stopped
-    /// accepting sends meant the report named whichever of seven thousand
+    /// this is empty. Holding the last instead, on a link that has stopped
+    /// accepting sends, would make the report name whichever of seven thousand
     /// identical failures happened to finish the run.
     ///
     /// Without this a scan whose probes never reached the wire reports every
@@ -572,7 +570,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// Records one probe leaving the wire, or failing to.
     ///
     /// All three parts of the bookkeeping in one call because they are one event
-    /// and were drifting apart: the audit counts every attempt so a scan that
+    /// and, kept apart, drift apart: the audit counts every attempt so a scan that
     /// could not send can say so, the window counts only the ones that reached
     /// the wire, since a probe nobody sent occupied nothing and must not be part
     /// of the evidence that the path is busy, and `host`'s slot under
@@ -624,9 +622,9 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// Folds one answered probe into everything this scan tracks about itself:
     /// the deadline, the window and the audit.
     ///
-    /// One place rather than one per protocol, because the three used to be
-    /// three statements repeated in each scanner and the window is a fourth that
-    /// would have been added to one of them.
+    /// One place rather than one per protocol, because the three would
+    /// otherwise be three statements repeated in each scanner, and the window a
+    /// fourth that one scanner could gain and another miss.
     ///
     /// The window reads the *attempt* that was answered, not merely that
     /// something was. A reply to the first attempt says the target is keeping
@@ -1150,19 +1148,17 @@ pub trait RawPortScan: PortScanner {
 
     /// Records every target still queued when the scan stopped.
     ///
-    /// A scan that hits its deadline with targets still queued used to leave
-    /// them with no record whatsoever: not a filtered port, not an unknown one,
-    /// simply absent from the host as though nobody had ever named it. That is
-    /// the worst of the three ways a scan can fall short, because it is the only
-    /// one a reader cannot see: a truncated port list and a complete one look
-    /// identical, and the count in the summary agrees with itself.
+    /// A scan that hits its deadline with targets still queued would otherwise
+    /// leave them with no record whatsoever: not a filtered port, not an unknown
+    /// one, simply absent from the host as though nobody had ever named it. That
+    /// is the worst of the three ways a scan can fall short, because it is the
+    /// only one a reader cannot see: a truncated port list and a complete one
+    /// look identical, and the count in the summary agrees with itself.
     ///
-    /// So they are written down and counted. They used to be written down under
-    /// whatever the scan read silence as, argued for here as too kind but better
-    /// than absence. Both halves of that were true, and the choice really was
-    /// between those two. [`PortState::Unasked`] is the third option that did not
-    /// exist then: the port stays on the host, which is what the argument was
-    /// protecting, and it says what happened to it rather than borrowing the
+    /// So they are written down and counted. Written down under whatever the
+    /// scan reads silence as, they would be better than absent but credited
+    /// too kindly. [`PortState::Unasked`] is the third option: the port stays on
+    /// the host, and it says what happened to it rather than borrowing the
     /// verdict of a port that was probed and stayed quiet.
     ///
     /// What is already queued, and no more. Waiting for the dispatcher to
@@ -1220,11 +1216,11 @@ pub struct AuditLabels {
 
 /// Drives one raw port scan from its first probe to its audit line.
 ///
-/// This is the whole of what the TCP and UDP scanners used to hold a copy of
-/// each. The two copies differed in four expressions: which protocol to accept,
-/// what silence meant, and two labels. Everything around those was identical
-/// down to the comments, including the ordering that makes the stop conditions
-/// mean anything, and that is a dangerous thing to keep two of. A stop
+/// This is the whole of what the TCP and UDP scanners would otherwise each hold
+/// a copy of. Two copies would differ in four expressions: which protocol to
+/// accept, what silence means, and two labels. Everything around those is
+/// identical, including the ordering that makes the stop conditions mean
+/// anything, and that is a dangerous thing to keep two of. A stop
 /// condition fixed in one copy and missed in the other does not fail; it
 /// returns a smaller answer that looks exactly like a quiet network.
 ///
@@ -1281,8 +1277,8 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
         tokio::select! {
             // One tick releases a batch, which is how a rate faster than the
             // timer's resolution is expressed. Taken from the stream only when
-            // the ledger has room: the ceiling still bounds how many answers are
-            // outstanding, and the rate now bounds how fast they are asked for.
+            // the ledger has room: the ceiling bounds how many answers are
+            // outstanding, and the rate bounds how fast they are asked for.
             _ = send_tick.tick(), if admitting => {
                 let now = Instant::now();
                 for _ in 0..scanner.core().batch {
@@ -1466,9 +1462,10 @@ mod tests {
     /// capture that would have seen them was still listening.
     ///
     /// Seeing a probe leave takes the same capture that hears its answer. A
-    /// reader that died sees neither, so every port after it looked unsent, and
-    /// the report said this machine swallowed probes that may well have gone
-    /// out: a claim about the host that the evidence could not support.
+    /// reader that died sees neither, so every port after it looks unsent, and
+    /// a report blaming that on sending would say this machine swallowed probes
+    /// that may well have gone out: a claim about the host that the evidence
+    /// cannot support.
     #[test]
     fn ports_unseen_after_a_capture_died_are_not_blamed_on_sending() {
         let (mut core, _session) = core();
@@ -1644,8 +1641,9 @@ mod tests {
     ///
     /// The way that actually happens is the send path failing. A link that has
     /// stopped accepting sends leaves the ledger empty while the stream is still
-    /// full, and a loop that read the quiet as an answer abandoned thirty-one
-    /// thousand queued targets and reported them as ports nobody could reach.
+    /// full, and a loop that read the quiet as an answer would abandon every
+    /// target still queued, measured at thirty-one thousand, and report them as
+    /// ports nobody could reach.
     #[test]
     fn an_empty_ledger_does_not_end_a_scan_that_still_has_targets_coming() {
         let (core, _session) = core();
@@ -1786,11 +1784,10 @@ mod tests {
     /// Silence from a host that is answering most of what it is asked is the
     /// opposite: it is not running a block list, it is failing to keep up.
     ///
-    /// This is the signal the first version of the controller did not have, and
-    /// its absence is measurable. Against a Raspberry Pi answering three quarters
-    /// of a thousand probes, the window never cut once and the remaining quarter
-    /// was reported as a firewall that did not exist: a different set of ports
-    /// on every run.
+    /// A controller without this signal fails measurably. Against a Raspberry Pi
+    /// answering three quarters of a thousand probes, its window never cut once
+    /// and the remaining quarter was reported as a firewall that did not exist:
+    /// a different set of ports on every run.
     #[test]
     fn silence_from_a_host_that_is_answering_cuts_the_window() {
         let (mut core, _session) = core();

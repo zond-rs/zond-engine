@@ -281,7 +281,7 @@ mod tests {
     /// data update can give it one.
     ///
     /// Answered by reading the bit, so this asserts something about the two
-    /// lines above it. It used to assert that the OUI database happens to hold
+    /// lines above it. It does not assert that the OUI database happens to hold
     /// no entry for `02:…`, which is the dependency's business and not this
     /// crate's, and which the test beside it declines to do for the same
     /// reason. The second address here is a registered OUI with the local bit

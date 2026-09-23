@@ -26,9 +26,9 @@ use crate::model::host::status::StatusProtocol;
 
 /// How many round trips a host keeps by default.
 ///
-/// Every latency figure in every report is computed over this many samples, and
-/// it was a bare `10` inside the [`Default`] impl, which is the only bound in
-/// the module that was not a named constant with its reasoning under it.
+/// Every latency figure in every report is computed over this many samples, so
+/// it is a named constant with its reasoning under it, like every other bound
+/// in the module, rather than a bare `10` inside the [`Default`] impl.
 ///
 /// Ten is enough for a median to mean something and short enough that the window
 /// describes the host now rather than an average over an afternoon, which is

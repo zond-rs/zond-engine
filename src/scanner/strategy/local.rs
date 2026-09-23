@@ -71,13 +71,12 @@ use ipv6::Ipv6Discovery;
 /// adding a protocol widens the capture by the same edit that adds the reader.
 /// see [`DiscoveryProtocol::capture_clause`] for why that is not a convenience.
 ///
-/// The sweep used to receive the whole segment and reject the surplus in
-/// userspace, which on a busy link meant copying every frame on the wire to
-/// discard almost all of it.
+/// Receiving the whole segment and rejecting the surplus in userspace would, on
+/// a busy link, copy every frame on the wire to discard almost all of it.
 ///
-/// 802.1Q-tagged frames are not admitted, and that is not a new loss: the
-/// frame reader below takes the EtherType from its fixed offset, so a tagged
-/// frame already read as an unsupported EtherType and was rejected a layer up.
+/// 802.1Q-tagged frames are not admitted, and that loses nothing: the frame
+/// reader below takes the EtherType from its fixed offset, so a tagged frame
+/// would read as an unsupported EtherType and be rejected a layer up anyway.
 fn sweep_filter() -> String {
     let mut clauses: Vec<&'static str> = frames::sweep_protocols()
         .iter()
@@ -292,9 +291,9 @@ impl SourceIdentity {
     /// The interface belongs in the key, not only on the record. Every
     /// address here was read off one segment, and a link-local one is valid on
     /// that segment alone: `fe80::1` on `en0` and `fe80::1` on `en1` are two
-    /// machines. Keyed by the bare address they were one entry, and the second
-    /// sweep to find one folded its neighbour's hardware address, roles and
-    /// round trips into the first's record.
+    /// machines. Keyed by the bare address they would be one entry, and the
+    /// second sweep to find one would fold its neighbour's hardware address,
+    /// roles and round trips into the first's record.
     ///
     /// [`ScopedIp::scoped`] drops the zone from every address that does not need
     /// one, so this is the plain address for an IPv4 neighbour and for a global
@@ -642,8 +641,8 @@ impl LocalScanner {
         let identity = SourceIdentity::resolve(&link, &ip_set)?;
 
         // Saturating, not truncating. An address count is a `u128` and a `/64`
-        // is exactly `usize::MAX + 1`, so the plain cast turned the largest
-        // possible sweep into a target count of zero and handed it the smallest
+        // is exactly `usize::MAX + 1`, so the plain cast would turn the largest
+        // possible sweep into a target count of zero and hand it the smallest
         // possible budget. `ScanBudget::unclamped` saturates its own cast for
         // the same reason one layer down.
         let target_count = usize::try_from(ip_set.len()).unwrap_or(usize::MAX);
@@ -799,8 +798,8 @@ impl LocalScanner {
 
         // What the kernel discarded before this scanner could read it. A frame
         // lost there is indistinguishable from a host that never answered, so a
-        // sweep finding fewer hosts than the segment holds can now be attributed
-        // to loss rather than guessed at. `None` only for a synthetic stream,
+        // sweep finding fewer hosts than the segment holds can be attributed to
+        // loss rather than guessed at. `None` only for a synthetic stream,
         // which has no kernel buffer to have overflowed.
         let capture = self.eth_handle.capture_counts();
         let targets = self.ip_set.len();
@@ -818,18 +817,16 @@ impl LocalScanner {
     ///
     /// Every send in this scanner goes through here, and that is the point.
     /// The audit's counters are only worth reading if they cover every frame,
-    /// and a second send path is how they stop doing that: the sweep's own first
-    /// attempts went out beside this one for a while, uncounted, so
-    /// `sends_attempted` described the retries and nothing else while reading
-    /// like a total.
+    /// and a second send path is how they stop doing that: were the sweep's own
+    /// first attempts to go out beside this one, uncounted, `sends_attempted`
+    /// would describe the retries and nothing else while reading like a total.
     ///
     /// [`FrameSink::send_frame`] reports whether the frame left, and an error is
-    /// the only way it did not. The predecessor returned `Option<io::Result<()>>`
-    /// with two shapes of failure, no buffer to write into, and a write that
-    /// failed, and both meant the same thing to every caller, which is why this
-    /// says it once. Reading only whether the *packet built* would leave
-    /// `sends_failed` making a claim about this code where a caller reads it as
-    /// a claim about the link.
+    /// the only way it did not. Every way a frame can fail to leave, no buffer to
+    /// write into or a write that failed, means the same thing to every caller,
+    /// which is why this says it once. Reading only whether the *packet built*
+    /// would leave `sends_failed` making a claim about this code where a caller
+    /// reads it as a claim about the link.
     fn emit(&mut self, packet: &[u8], what: &str) -> bool {
         match self.eth_handle.tx.send_frame(packet) {
             Ok(()) => {
@@ -1070,8 +1067,8 @@ impl LocalScanner {
     /// [`Attachment`] on the phase. It is not a claim about a host in the
     /// report, it is a relation between this machine and somebody else's
     /// equipment, so the rule that keeps a targeted run targeted does not
-    /// apply to it. A run handed one address still reports one host, and now
-    /// also says which switch port it was run from.
+    /// apply to it. A run handed one address still reports one host, and also
+    /// says which switch port it was run from.
     ///
     /// What the sender is goes through `note_declaration` like any other
     /// overheard claim: filed against the announcing hardware address and
@@ -1638,12 +1635,13 @@ impl LocalScanner {
                 //
                 // **Set here rather than left to the key.** A host is born with
                 // the zone its *key* carries, and a key carries one only where
-                // the address needs it: a machine whose IPv4 answered before its
-                // link-local was created unscoped, and its link-local was then
-                // reported bare. `fe80::aa` names a different machine on every
-                // segment, so which of two addresses replied first decided
-                // whether the record was usable. `set_zone` keeps
-                // the first it is given, so repeating this is free.
+                // the address needs it: a machine whose IPv4 answers before its
+                // link-local is created unscoped, and left to the key its
+                // link-local would then be reported bare. `fe80::aa` names a
+                // different machine on every segment, so which of two addresses
+                // replied first would decide whether the record was usable.
+                // `set_zone` keeps the first it is given, so repeating this is
+                // free.
                 host.set_zone(zone.clone());
 
                 // Recorded whether we just created the host or the port scanner

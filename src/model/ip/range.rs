@@ -281,11 +281,12 @@ impl Ipv6Range {
     /// silently.
     ///
     /// True where *any* of the range is link-local, which is the direction a
-    /// safety question has to fail in. It used to ask
-    /// `start_addr.is_unicast_link_local()`, and a range is two addresses where
-    /// that predicate takes one: `fe00::-fe80::5` covers link-local space,
-    /// starts outside it, and reached `system::interface::routing`'s
-    /// `owning_interface` as though its segment were knowable.
+    /// safety question has to fail in. Asking
+    /// `start_addr.is_unicast_link_local()` would not do, since a range is two
+    /// addresses where that predicate takes one: `fe00::-fe80::5` covers
+    /// link-local space, starts outside it, and would reach
+    /// `system::interface::routing`'s `owning_interface` as though its segment
+    /// were knowable.
     pub fn is_ambiguous(&self) -> bool {
         self.zone.is_none() && self.covers_link_local()
     }
@@ -491,12 +492,12 @@ impl FromStr for IpRange {
         // Handle hyphenated range
         if let Some(pos) = s.find('-') {
             // Not trimmed around the separator, so `192.0.2.1 - 192.0.2.5` is
-            // not a range here either. It was, and nothing that reads a written
-            // range through this crate could express it: `IpSet` splits its
-            // input on spaces as well as commas, so that spelling arrived as
-            // three tokens and the middle one was a bare `-`. The module
+            // not a range here either. Nothing that reads a written range
+            // through this crate could express it anyway: `IpSet` splits its
+            // input on spaces as well as commas, so that spelling arrives as
+            // three tokens and the middle one is a bare `-`. The module
             // documentation above claims one grammar with no second dialect, and
-            // this was the second dialect.
+            // trimming here would be the second dialect.
             let start_str = &s[..pos];
             let end_str = &s[pos + 1..];
 
@@ -551,8 +552,8 @@ fn expand_v4_end(start: Ipv4Addr, end_str: &str) -> Option<Ipv4Addr> {
 /// `u8::from_str` is not that: it takes a leading `+` and a leading zero, where
 /// `Ipv4Addr::from_str` has refused a leading zero since 1.53 because `010` is
 /// octal to enough software to matter. Reading the two halves of one range with
-/// two grammars meant `010.0.0.50` was refused as a start and accepted as an
-/// end, which is the ambiguity the address parser rejects it for arriving by the
+/// two grammars would refuse `010.0.0.50` as a start and accept it as an end,
+/// which is the ambiguity the address parser rejects it for arriving by the
 /// other door. In a scanner the addresses a range covers are the machines that
 /// receive packets.
 fn octet(part: &str) -> Option<u8> {
@@ -584,9 +585,8 @@ pub fn cidr_range(ip: IpAddr, prefix: u8) -> Result<IpRange, IpError> {
             }
 
             // No special case for a zero prefix: `checked_shr(0)` is the whole
-            // mask, whose complement is no mask, which is what `/0` means. The
-            // branch that used to be here could not change an answer, and both
-            // property tests below start at 1, so it was never reached either.
+            // mask, whose complement is no mask, which is what `/0` means, so a
+            // branch for it could not change an answer.
             let ip_u32 = u32::from(v4);
             let mask = !u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
 
@@ -734,12 +734,12 @@ mod tests {
 
     /// One grammar for both halves of a range.
     ///
-    /// The end of a shortened range was read by `u8::from_str` where the start
-    /// was read by `Ipv4Addr::from_str`, and the two disagree about a leading
-    /// zero: the address parser has refused it since 1.53 because `010` is octal
-    /// to enough software to matter, and the integer parser takes it, along with
-    /// a leading `+`. So one token was read by two grammars, and the spelling
-    /// refused on the left of the hyphen was accepted on the right.
+    /// Reading the end of a shortened range with `u8::from_str` and the start
+    /// with `Ipv4Addr::from_str` would read one token by two grammars, and the
+    /// two disagree about a leading zero: the address parser has refused it
+    /// since 1.53 because `010` is octal to enough software to matter, and the
+    /// integer parser takes it, along with a leading `+`. The spelling refused
+    /// on the left of the hyphen would be accepted on the right.
     #[test]
     fn both_halves_of_a_range_read_octets_the_same_way() {
         for spelling in [
@@ -770,12 +770,12 @@ mod tests {
 
     /// A range has no spaces in it, whichever door it arrives through.
     ///
-    /// `IpRange::from_str` trimmed around the separator and `IpSet::from_str`
-    /// splits its input on spaces as well as commas, so
-    /// `198.51.100.1 - 198.51.100.5` was a range through one entry point and
-    /// three tokens through the other.
-    /// The module documentation says there is one grammar and no two entry
-    /// points that accept different spellings of the same thing.
+    /// `IpSet::from_str` splits its input on spaces as well as commas, so an
+    /// `IpRange::from_str` that trimmed around the separator would make
+    /// `198.51.100.1 - 198.51.100.5` a range through one entry point and three
+    /// tokens through the other. The module documentation says there is one
+    /// grammar and no two entry points that accept different spellings of the
+    /// same thing.
     #[test]
     fn a_range_written_with_spaces_is_not_a_range() {
         assert!("198.51.100.1 - 198.51.100.5".parse::<IpRange>().is_err());
@@ -813,10 +813,11 @@ mod tests {
     /// A range is two addresses, and whether it is link-local is a question
     /// about both.
     ///
-    /// `is_ambiguous` asked `start_addr.is_unicast_link_local()`, so a range
-    /// that runs into link-local space from below was not ambiguous and went to
-    /// `owning_interface` as though its segment were knowable, and one that runs
-    /// out of it from within was ambiguous along its whole length. The two
+    /// An `is_ambiguous` that asked `start_addr.is_unicast_link_local()` would
+    /// find a range that runs into link-local space from below not ambiguous
+    /// and send it to `owning_interface` as though its segment were knowable,
+    /// and would find one that runs out of it from within ambiguous along its
+    /// whole length. The two
     /// questions are also not the same question: covering *some* link-local
     /// space is what makes a range ambiguous, and covering *only* link-local
     /// space is what a `%zone` suffix needs.
@@ -861,8 +862,8 @@ mod tests {
     ///
     /// `is_ambiguous` is what a caller asks before deciding a link-local range
     /// can be attributed to a segment, and it reads the zone. A `Some(0)` left
-    /// as written made the range look answered, so the question the classifier
-    /// exists to ask was never asked.
+    /// as written would make the range look answered, so the question the
+    /// classifier exists to ask would never be asked.
     #[test]
     fn a_zone_of_zero_is_no_zone_at_all() {
         let link_local: Ipv6Addr = "fe80::1".parse().expect("literal");
@@ -1000,9 +1001,9 @@ mod property_tests {
             prop_assert_eq!(range.iter().count() as u128, range.len());
         }
 
-        /// From zero, which the ranges used to start at one to avoid: the
-        /// assertion could not write `1 << 128`, so the case the implementation
-        /// special-cased was the case neither generator reached.
+        /// From zero, the prefix an implementation is tempted to special-case.
+        /// A generator starting at one, to spare the assertion writing
+        /// `1 << 128`, would never reach it.
         #[test]
         fn cidr_v4_roundtrip(v4 in any_ipv4(), prefix in 0..=32u8) {
             let range = cidr_range(IpAddr::V4(v4), prefix).unwrap();

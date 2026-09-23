@@ -113,18 +113,13 @@ timestamp.
 
 This wants an instrument that takes the samples, prints the class each series
 was read as with the raw values beside it, and says whether the extra samples
-actually split hosts that a single reply reported as identical. The engine
-carried one until 2026-08-30; the numbers it produced are recorded in the doc
-comments of whatever they sized. A feature that never refines that partition cannot change a
-verdict, whatever else it reveals.
+actually split hosts that a single reply reported as identical. The engine does
+not ship one; the numbers such an instrument produced are recorded in the doc
+comments of whatever they sized. A feature that never refines that partition
+cannot change a verdict, whatever else it reveals.
 
-```
-cargo bench --no-run --bench os_sample
-sudo -E <binary> <target> [ports] [samples] [spacing_ms] [rate]
-```
-
-The other half is simply the CLI, which runs the same phases through the same
-entry point:
+What the engine does ship is the CLI, which runs the same phases through the
+same entry point:
 
 ```
 sudo zond scan <target> -p 22,80,443 --os-detection aggressive -v

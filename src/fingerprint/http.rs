@@ -141,10 +141,10 @@ impl Analyzer for HttpHeadersAnalyzer {
                 evidence.push(stamp(carrier, ctx));
             }
 
-            // What the same match said about the *service*. It used to be
-            // dropped, and with it the runtime a rule names beside the server:
-            // `SimpleHTTP/0.6 Python/3.13.5` was read as a server nobody attacks
-            // with the interpreter behind it thrown away.
+            // What the same match said about the *service*. Dropping it would
+            // drop the runtime a rule names beside the server with it:
+            // `SimpleHTTP/0.6 Python/3.13.5` would read as a server nobody
+            // attacks with the interpreter behind it thrown away.
             //
             // After the reading `parse_server` drew, so a tie leaves the product
             // where it was and this fills the fields nothing else supplied.
@@ -934,8 +934,7 @@ mod tests {
     }
 
     /// The body is only reachable if the parser kept it, and it only exists if
-    /// the transport read past the header block. Both were true of neither
-    /// before this analyzer learned to read a title.
+    /// the transport read past the header block. Reading a title needs both.
     #[test]
     fn the_parser_separates_the_body_from_the_headers() {
         let response = HttpResponse::parse(
@@ -1130,10 +1129,10 @@ mod os_from_headers {
     /// than a fixture.
     ///
     /// A real `Server` header, through the real analyzer, has to reach the
-    /// imported rule that maps that server version to a Windows release. Before
-    /// this, the rule was compiled into the database and unreachable: it is
-    /// anchored to a header *value*, and the matcher only ever saw whole
-    /// responses.
+    /// imported rule that maps that server version to a Windows release.
+    /// Without this, the rule is compiled into the database and unreachable: it
+    /// is anchored to a header *value*, and a matcher that sees only whole
+    /// responses never reaches it.
     #[test]
     fn a_server_header_reaches_the_rules_that_name_a_windows_release() {
         let evidence = HttpHeadersAnalyzer.analyze(
@@ -1165,7 +1164,7 @@ mod os_from_headers {
         );
     }
 
-    /// The failure mode this replaced. Matching the whole response against
+    /// The failure mode this prevents. Matching the whole response against
     /// rules anchored to a header value cannot succeed, and looks exactly like
     /// a corpus that has no such rule, so the check is that the *response* form
     /// still fails while the extracted form works.

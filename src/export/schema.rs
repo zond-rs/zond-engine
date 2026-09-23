@@ -642,7 +642,7 @@ pub struct PhaseOriginDto<'a> {
 impl<'a> PhaseDto<'a> {
     /// Renders a recorded phase, applying the redaction policy in `options`.
     ///
-    /// A phase carried nothing to redact until it began carrying an
+    /// What a phase carries to redact is its
     /// [`attachment`](crate::report::Attachment), which names a device and its
     /// hardware address. Neither is less identifying for describing a switch
     /// rather than a workstation.
@@ -1103,7 +1103,7 @@ pub struct RetryDto {
     ///
     /// `null` when the caller set none. Always a positive, finite number when
     /// present: [`TimeoutScale`](crate::config::TimeoutScale) refuses anything
-    /// else, so this no longer has to filter for what a scan could not have
+    /// else, so this has no need to filter for what a scan could not have
     /// honoured.
     pub timeout_scale: Option<f64>,
     /// Whether a host that answered nothing could have its budget cut short.
@@ -2382,11 +2382,9 @@ mod tests {
     /// A scale nobody can write down is not a scale two runs should be claimed
     /// to share, and it is not a JSON number either.
     ///
-    /// This document used to be where that was caught, by filtering a value the
-    /// engine had already discarded and recorded anyway. The refusal is at
-    /// [`TimeoutScale`](crate::config::TimeoutScale) now, so what reaches here
-    /// is always a number JSON can hold, and this holds that rather than the
-    /// filter.
+    /// The refusal is at [`TimeoutScale`](crate::config::TimeoutScale), before
+    /// a scan can record the value, so what reaches here is always a number
+    /// JSON can hold, and this holds that rather than a filter in the document.
     #[test]
     fn a_recorded_timeout_scale_is_always_a_number_json_can_hold() {
         for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {

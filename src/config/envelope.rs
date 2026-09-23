@@ -121,10 +121,10 @@ impl FromStr for DetectionEnvelope {
 
     /// Reads a ceiling by name or by number.
     ///
-    /// The envelope is the one thing here an *operator* decides, and it was the
-    /// one scale a front end could not read from text: it had no parser, so
-    /// offering it as a flag meant writing the word-to-class table again in
-    /// whoever called this, which is what two front ends eventually disagree
+    /// The envelope is the one thing here an *operator* decides, and without a
+    /// parser it would be the one scale a front end could not read from text:
+    /// offering it as a flag would mean writing the word-to-class table again
+    /// in whoever called this, which is what two front ends eventually disagree
     /// about.
     ///
     /// Names are [`DetectionClass::label`], matched without regard to case, and

@@ -12,9 +12,10 @@
 //!
 //! **By hand is the point.** `fold_host` and `fold_port` name the fields they
 //! carry, so a field neither names is one a merge silently discards, and nothing
-//! about that fails to compile. It had already happened: what the filter in
-//! front of a host was shown to be doing was produced by a scanner, journalled,
-//! exported and imported, and dropped by every fold in the crate.
+//! about that fails to compile. A field can be produced by a scanner,
+//! journalled, exported and imported, and still be dropped by every fold in the
+//! crate; what the filter in front of a host was shown to be doing is one that
+//! travels that whole way.
 //!
 //! ## The oracle: folding one report changes nothing
 //!
@@ -23,9 +24,8 @@
 //! identity — so the result has to describe the same network the source did, and
 //! `diff` is what says whether it does.
 //!
-//! That is exactly the check the missing field would have failed, and it fails
-//! for any field either fold forgets from now on, including one added after this
-//! target was written.
+//! That is exactly the check a missing field fails, and it fails for any field
+//! either fold forgets, including one added after this target was written.
 //!
 //! ## And that nothing goes in without coming out
 //!
@@ -50,8 +50,8 @@
 //!
 //! ## What is not asserted
 //!
-//! **That the order sources are added in does not decide the outcome.** It was,
-//! and it is wrong: records are ordered by when each was observed, the sort is
+//! **That the order sources are added in does not decide the outcome.** It
+//! does, sometimes: records are ordered by when each was observed, the sort is
 //! stable, and the module says what that means for a tie — "two sources that
 //! stopped at the same instant stay in the order they were added and the fold
 //! has one answer rather than two". Two documents written by one scan carry one

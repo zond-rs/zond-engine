@@ -229,8 +229,8 @@ mod tests {
     /// The address an ARP frame is credited to, read through the dispatcher
     /// the receive loop actually calls rather than through a copy of it.
     ///
-    /// These used to exercise a reimplementation of `source_address` that
-    /// lived in this test module, so they passed whatever the real one did.
+    /// A reimplementation of `source_address` in this test module would pass
+    /// whatever the real one did.
     #[test]
     fn a_well_formed_frame_is_credited_to_its_sender() {
         let expected = Ipv4Addr::new(192, 0, 2, 123);

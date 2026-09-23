@@ -30,11 +30,11 @@
 //! | [`composite`] | routes each target to a strategy that covers its protocol |
 //! | [`raw`], [`frames`], [`icmp_error`], [`sweep`] | not strategies: what they are built from, what they read, and what they all keep track of |
 //!
-//! It was arranged by the target's network position until September 2026, and
-//! the two axes had been crossed: `routed` meant "reached through a gateway"
-//! for one strategy and "opens a raw socket" for the ten others that had been
-//! written underneath it, including every port scanner, both operating-system
-//! probes and the trace. What each of them *is* now decides where it sits.
+//! Arranged by the target's network position instead, the two axes cross:
+//! `routed` would mean "reached through a gateway" for one strategy and "opens a
+//! raw socket" for the ten others that would sit underneath it, including every
+//! port scanner, both operating-system probes and the trace. What each of them
+//! *is* decides where it sits.
 //!
 //! ## Findings go to the context, not to the return value
 //!
@@ -64,7 +64,7 @@
 //!
 //! Neither consumes `self`. A strategy runs once in practice, but taking
 //! `self: Box<Self>` to say so would force every caller to box a scanner it
-//! already owns, and the orchestrator is not the only caller any more.
+//! already owns, and the orchestrator is not the only caller.
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;

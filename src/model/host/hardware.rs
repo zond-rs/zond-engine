@@ -87,8 +87,8 @@ pub struct HardwareInfo {
     /// The model, where something named it: `PDR M800`, `Firewall-1`.
     ///
     /// Not derivable from an address at any prefix length, so this arrives only
-    /// from a service that stated it. Over a thousand shipped rules carry one and
-    /// nothing read them until this field existed.
+    /// from a service that stated it. Over a thousand shipped rules carry one,
+    /// and this field is where it lands.
     product: Option<Arc<str>>,
 
     /// The line the model belongs to, where a rule distinguishes the two:
@@ -444,10 +444,10 @@ mod tests {
     /// under is whatever the sender chooses. The record has to be bounded by
     /// something this crate decides.
     ///
-    /// It was not. `prune_stale_macs` was named as the bound and has never had a
-    /// caller, so the map grew for as long as anything was listening: two
-    /// hundred thousand sightings left two hundred thousand entries, held per
-    /// address on the segment.
+    /// `prune_stale_macs` cannot be that bound, since it runs only when a caller
+    /// asks. Bounded by nothing else, the map would grow for as long as anything
+    /// was listening: two hundred thousand sightings would leave two hundred
+    /// thousand entries, held per address on the segment.
     ///
     /// The newest survive, since the oldest is what makes room. That is the half
     /// worth asserting: a bound that kept the *first* sixty-four addresses would

@@ -60,14 +60,14 @@ pub use telemetry::HostTelemetry;
 /// there widens this along with it.
 ///
 /// It has to sit here and cannot sit lower, because anything lower truncates a
-/// scan somebody deliberately asked for. It has been too low twice. It was a
-/// thousand, which is a number an ordinary scan reaches: probing `1-1024` on a
-/// host that answers, and a closed port is an answer, recorded a thousand ports,
-/// dropped the last twenty-four without a word, and marked a domestic router as
-/// a tarpit. It was then one protocol's port space, which is not the largest
-/// port set a person can write either: [`PortSet`](crate::model::port::PortSet)
-/// spells the UDP half, so `1-65535,u:1-65535` is one specification and twice
-/// that number, and half of it was dropped.
+/// scan somebody deliberately asked for. A thousand is a number an ordinary
+/// scan reaches: probing `1-1024` on a host that answers, and a closed port is
+/// an answer, records a thousand ports, so a cap there drops the last
+/// twenty-four without a word and marks a domestic router as a tarpit. One
+/// protocol's port space is not the largest port set a person can write
+/// either: [`PortSet`](crate::model::port::PortSet) spells the UDP half, so
+/// `1-65535,u:1-65535` is one specification and twice that number, and a cap
+/// there drops half of it.
 ///
 /// A host that reaches it is marked [`NetworkRole::Truncated`] and further ports
 /// are dropped. **No scan can reach it**, since the map is keyed on a port
@@ -269,15 +269,15 @@ pub enum NetworkRole {
     ///
     /// A claim about the *scan* rather than about the host: it says only that
     /// [`MAX_PORTS_PER_HOST`] was reached and that findings past it were
-    /// dropped. Kept apart from [`Tarpit`](Self::Tarpit) because the two used to
-    /// be one thing and the conflation was wrong in both directions: an ordinary
-    /// host probed widely enough was reported as a tarpit, and a real tarpit
-    /// answering a narrow scan was reported as nothing at all.
+    /// dropped. Kept apart from [`Tarpit`](Self::Tarpit) because conflating the
+    /// two is wrong in both directions: an ordinary host probed widely enough
+    /// would be reported as a tarpit, and a real tarpit answering a narrow scan
+    /// would be reported as nothing at all.
     ///
-    /// No scan this build can run assigns it. `MAX_PORTS_PER_HOST` is now
-    /// derived from the port space and [`Protocol::ALL`], so it equals what a
-    /// host's port map can hold and nothing a scan reports can pass it. The
-    /// variant stays because the check does: a `Protocol` variant that never
+    /// No scan this build can run assigns it. `MAX_PORTS_PER_HOST` is derived
+    /// from the port space and [`Protocol::ALL`], so it equals what a host's
+    /// port map can hold and nothing a scan reports can pass it. The variant
+    /// exists because the check does: a `Protocol` variant that never
     /// reached `Protocol::ALL` puts the cap below the key space, and this is
     /// what a report would then say about the ports that went missing.
     Truncated,
@@ -408,8 +408,8 @@ impl Filtering {
     /// built from it, so a conclusion missing from here is one that survives a
     /// scan and disappears on the way to the report.
     ///
-    /// The array's length is not the check against that, though it read as
-    /// one for a while. It catches an entry added here without the number being
+    /// The array's length is not the check against that, though it can read
+    /// as one. It catches an entry added here without the number being
     /// raised, and nothing else; a variant added to the enum and not to this
     /// list compiles, and was measured doing so. What the compiler does refuse
     /// is a variant with no wire name, in
@@ -498,16 +498,16 @@ pub struct Host {
     /// a service banner are independent, and two independent sources agreeing on
     /// a family are worth more than either, which is the design of
     /// [`resolve`](crate::fingerprint::os::resolve). Keeping only the resulting
-    /// [`OsFingerprint`] threw that away: the banner arrived after the stack
-    /// reading, scored lower on its own, and was discarded whole, taking the
-    /// release it alone could name with it.
+    /// [`OsFingerprint`] would throw that away: a banner arriving after the
+    /// stack reading scores lower on its own and would be discarded whole,
+    /// taking the release it alone could name with it.
     ///
     /// One item per distinct claim, which is not one per source.
     ///
     /// Keyed per source, an SSH banner naming `Debian 12` and an SNMP agent
-    /// naming `kernel 6.1.0` are both `ServiceBanner`, so the second evicted the
-    /// first and a host that had told this engine two different things
-    /// about itself was reported from whichever arrived last. They are two
+    /// naming `kernel 6.1.0` are both `ServiceBanner`, so the second would evict
+    /// the first and a host that had told this engine two different things
+    /// about itself would be reported from whichever arrived last. They are two
     /// services, on two ports, read from two protocols: two pieces of evidence
     /// by any reading.
     ///
@@ -1393,9 +1393,8 @@ impl Host {
     /// machine-reported-as-two that the ranking prevents within one.
     pub fn merge(&mut self, other: Host) {
         // Destructured rather than reached through `other.…`, so a field added
-        // to this struct is a compile error here and not a value that quietly
-        // stops being folded. `filtering` and `os_evidence` were both lost that
-        // way, silently, at every call site this has.
+        // to this struct is a compile error here and not a value that is
+        // quietly dropped at every call site this has.
         let Host {
             primary_ip: other_primary,
             ips,
@@ -1490,7 +1489,7 @@ impl Host {
 
         // A conclusion about the filter in front of a host is drawn by a
         // comparative probe that only one of two records will have run, so a
-        // fold that dropped the other side's discarded the whole finding.
+        // fold that dropped the other side's would discard the whole finding.
         self.filtering.extend(filtering);
 
         // Through the recorder rather than by extending the map, so a record
@@ -1669,11 +1668,11 @@ mod tests {
     /// Every field of the record being folded in, not merely the ones somebody
     /// remembered.
     ///
-    /// `merge` consumed `other` field by field, and two fields were never named:
-    /// `filtering` and `os_evidence` were dropped at every call site it has, so a
-    /// resumed scan kept only the first journal record's and a report assembled
-    /// from two records lost the second's. Destructuring `other` is what stops
-    /// the next field going the same way; this asserts the two that already did.
+    /// A `merge` consuming `other` field by field drops any field it never
+    /// names, at every call site it has: without `filtering` and `os_evidence`,
+    /// a resumed scan would keep only the first journal record's and a report
+    /// assembled from two records would lose the second's. Destructuring
+    /// `other` is what stops a field going that way; this asserts those two.
     #[test]
     fn a_merge_keeps_every_field_of_the_record_it_folds_in() {
         let ip: IpAddr = "192.0.2.1".parse().expect("an address");
@@ -1885,9 +1884,9 @@ mod tests {
     /// `MAX_PORTS_PER_HOST` endpoints. Every one has to be kept and the record
     /// has to say it is complete.
     ///
-    /// The cap was one protocol's port space and the map holds two, so this
-    /// scan recorded its TCP half, refused all 65 536 UDP findings, and reported
-    /// the host as truncated. The operator was told the list was short and not
+    /// A cap of one protocol's port space, where the map holds two, would have
+    /// this scan record its TCP half, refuse all 65 536 UDP findings, and report
+    /// the host as truncated, telling the operator the list was short and not
     /// which half was missing.
     #[test]
     fn a_full_scan_of_both_transports_is_recorded_whole() {
@@ -1913,22 +1912,21 @@ mod tests {
     ///
     /// Pinned because that is the property, not an accident of the number: the
     /// map is keyed on a port number and a transport, and the cap is derived
-    /// from the same two. A cap written as a literal, or one that stopped
-    /// counting the transports, is a scan silently cut short, which is what it
-    /// was twice.
+    /// from the same two. A cap written as a literal, or one that does not
+    /// count the transports, is a scan silently cut short.
     #[test]
     fn the_cap_is_what_the_port_map_can_hold() {
         let endpoints = (usize::from(u16::MAX) + 1) * Protocol::ALL.len();
         assert_eq!(MAX_PORTS_PER_HOST, endpoints);
     }
 
-    /// The regression the two markings were split apart over.
+    /// Why the two markings are kept apart.
     ///
     /// Probing the well-known range on a host that answers records a thousand
-    /// ports, because a closed port is an answer. Under the old rule that was
-    /// the cap: the last findings were dropped without a word and a domestic
-    /// router came back labelled a tarpit. Nothing about a wide scan of an
-    /// ordinary machine says either thing.
+    /// ports, because a closed port is an answer. Were that the cap, under one
+    /// marking for both, the last findings would be dropped without a word and
+    /// a domestic router would come back labelled a tarpit. Nothing about a
+    /// wide scan of an ordinary machine says either thing.
     #[test]
     fn a_wide_scan_of_an_ordinary_host_is_neither_truncated_nor_a_tarpit() {
         let mut host = Host::new(IP_ADDR);
@@ -2075,9 +2073,9 @@ mod tests {
     /// point, so an overlap is not two ports and an endpoint on the other
     /// transport is not a collision.
     ///
-    /// The second half is the one that was wrong. A UDP endpoint folded into a
-    /// record holding the whole of TCP was refused and marked the merged host
-    /// truncated, because the cap counted both transports against one
+    /// The second half is the one at risk. A UDP endpoint folded into a record
+    /// holding the whole of TCP would be refused, and the merged host marked
+    /// truncated, by a cap that counted both transports against one
     /// transport's port space.
     #[test]
     fn merging_two_records_keeps_the_union_of_their_ports() {

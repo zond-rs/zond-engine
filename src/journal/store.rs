@@ -146,12 +146,13 @@ impl Journal {
         let (id, directory) = claim_directory(root)?;
         let manifest = JournalManifest::new(id, plan, privilege, summary);
 
-        // A scan that never started should leave no trace, and until this was
-        // one arm it was only true of one failure. The lock it could not take
-        // cleaned up after itself; a manifest write that ran out of disk, or a
-        // findings header that could not be flushed, propagated and left the
-        // directory behind, which lists as a scan that found nothing, or does
-        // not list at all. Both are the state that reasoning called unreadable.
+        // A scan that never started should leave no trace, whichever step
+        // failed, so every failure past the claim is caught in this one arm.
+        // Without it, a lock it could not take would clean up after itself, but
+        // a manifest write that ran out of disk, or a findings header that could
+        // not be flushed, would propagate and leave the directory behind, which
+        // lists as a scan that found nothing, or does not list at all. Both are
+        // the state that reasoning called unreadable.
         match Self::furnish(&directory, manifest) {
             Ok(journal) => Ok(journal),
             Err(error) => {
@@ -508,13 +509,13 @@ impl Entry {
     /// [`Cursor::from_checkpoint`](super::cursor::Cursor::from_checkpoint)
     /// applies to the same list. `Checkpoint::read` deliberately does not drop
     /// the entries below it, the read is shared, and the cursor is what
-    /// filters, so a list naming positions the watermark has already passed
-    /// used to be counted twice here and nowhere else. That inflates the total,
-    /// and [`is_complete`](Self::is_complete) can tip to `true` on the
-    /// inflation, which is what a retention sweep deletes on. Every writer this
-    /// crate ships keeps the list clean, so reaching it wants a damaged or
-    /// hand-edited file; the count is a claim about the scan either way, and
-    /// two readers of one file should not disagree about it.
+    /// filters, so without the same filter here a list naming positions the
+    /// watermark has already passed would be counted twice here and nowhere
+    /// else. That inflates the total, and [`is_complete`](Self::is_complete) can
+    /// tip to `true` on the inflation, which is what a retention sweep deletes
+    /// on. Every writer this crate ships keeps the list clean, so reaching it
+    /// wants a damaged or hand-edited file; the count is a claim about the scan
+    /// either way, and two readers of one file should not disagree about it.
     pub fn settled(&self) -> Option<u128> {
         self.checkpoint.as_ref().map(|checkpoint| {
             let above = checkpoint
@@ -531,29 +532,30 @@ impl Entry {
 /// invoked an elevated run.
 ///
 /// Call this before [`Journal::create`]. It exists because `create_dir_all`
-/// alone was not enough, and the gap was invisible until somebody ran a scan
-/// that did not need root.
+/// alone is not enough, and the gap stays invisible until somebody runs a scan
+/// that does not need root.
 ///
 /// # The defect this closes
 ///
 /// Every raw strategy needs root, so the first run on a machine is almost always
 /// under `sudo`, and [`paths::root`](super::paths::root) resolves the invoking
 /// user's home so the journals land where that user will look. What they land in
-/// is two directories created by a root process, and nothing was giving those
-/// away: each scan's own directory was claimed and the two above it were not.
+/// is two directories created by a root process, and claiming each scan's own
+/// directory does not give away the two above it.
 ///
-/// The result was silent and total. Every later run that did not need root found
-/// a directory it could not write to, said `not recording this run: Permission
-/// denied`, and carried on. A listening phase needs no privileges, so it never
-/// recorded anything on a machine where a scan had run first.
+/// Left to root, the result is silent and total. Every later run that does not
+/// need root finds a directory it cannot write to, says `not recording this
+/// run: Permission denied`, and carries on. A listening phase needs no
+/// privileges, so it would never record anything on a machine where a scan had
+/// run first.
 ///
 /// # It repairs as well as creates
 ///
 /// The two directories are claimed whether or not this call created them.
 /// Creating and claiming alone would fix new installations and leave every
-/// existing one broken, since the directory is already there, put there by an
-/// earlier run that made it wrongly. Claiming an already-correct directory is a
-/// `chown` to the owner it already has.
+/// existing one broken, since the directory may already be there, made by a run
+/// that left it to root. Claiming an already-correct directory is a `chown` to
+/// the owner it already has.
 ///
 /// Only the two this crate creates. The state directory above them may predate
 /// this engine by years and belongs to whoever made it.
@@ -810,10 +812,10 @@ pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, Jour
 ///
 /// [`format::Writer::append`](super::format::Writer::append) states a
 /// precondition, "a caller appending has already opened the file for reading
-/// and validated it", and until this existed, no caller established it. All
-/// three append sites open by path and write. This is that caller, and it is
-/// one function rather than three checks because both failures below are the
-/// same defect from two ends: the append path cannot see what it is appending
+/// and validated it", and this is what establishes it for all three append
+/// sites, which would otherwise open by path and write. It is one function
+/// rather than three checks because both failures below are the same defect
+/// from two ends: the append path cannot see what it is appending
 /// to, and `O_APPEND` guarantees it lands after whatever is there.
 ///
 /// A torn tail stops being discardable the moment anything follows it. The
@@ -904,10 +906,10 @@ fn last_whole_line(file: &mut fs::File, length: u64) -> Result<u64, JournalError
     /// Comfortably more than a record, so the answer is almost always one read.
     ///
     /// A `u64`, so the arithmetic below stays in the width the file's length is
-    /// measured in. It was a `usize` against `end as usize`, which truncates
-    /// wherever `usize` is narrower: a length that is an exact multiple of 4 GiB
-    /// has low bits of zero, so the window became empty, `start == end`, and the
-    /// loop stopped advancing — a hang holding the journal's lock, on a 32-bit
+    /// measured in. A `usize` against `end as usize` would truncate wherever
+    /// `usize` is narrower: a length that is an exact multiple of 4 GiB has low
+    /// bits of zero, so the window would be empty, `start == end`, and the loop
+    /// would stop advancing — a hang holding the journal's lock, on a 32-bit
     /// target, on the file this engine grows with a scan's duration.
     const WINDOW: u64 = 8 * 1024;
 
@@ -1075,10 +1077,10 @@ pub(super) fn read_bounded(path: &Path, what: &str) -> Result<String, JournalErr
 ///
 /// Staged and renamed, like [`Checkpoint::write_atomically`] and
 /// [`Journal::compact`], so the name either holds the whole file or does not
-/// exist. The manifest is its only caller and was the one file here written by
-/// truncate-and-write, the file every other read begins with, and so the one
-/// torn file no reader has a policy for: the torn-tail bargain covers records,
-/// and [`read_manifest`] answers a partial document with a parse error that
+/// exist. The manifest is its only caller. It is the file every other read
+/// begins with, so written by truncate-and-write it would be the one torn file
+/// no reader has a policy for: the torn-tail bargain covers records, and
+/// [`read_manifest`] answers a partial document with a parse error that
 /// [`list`] absorbs as a journal that is not there.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
     use std::io::Write;
@@ -1809,10 +1811,11 @@ mod tests {
     /// A cursor that exists and cannot be read is not a scan that settled
     /// nothing.
     ///
-    /// This is what a `sudo` scan used to leave behind: a journal in the
-    /// invoking user's home whose cursor stayed root's. Reported as zero, every
-    /// finished scan listed as untouched and offered itself to be continued.
-    /// Reported as unknown, a reader is told to go and look.
+    /// This is what a `sudo` scan leaves behind if its cursor is not handed over
+    /// with the rest: a journal in the invoking user's home whose cursor stays
+    /// root's. Reported as zero, every finished scan would list as untouched
+    /// and offer itself to be continued. Reported as unknown, a reader is told
+    /// to go and look.
     #[cfg(unix)]
     #[test]
     fn a_cursor_that_cannot_be_read_is_not_a_scan_that_settled_nothing() {
@@ -2287,9 +2290,9 @@ mod tests {
     /// resumed sitting appends directly after the torn bytes under `O_APPEND`,
     /// so the tear becomes the prefix of the next record's line, and that line
     /// is newline-terminated, which makes it corruption by the reader's own
-    /// rule. Measured before the mend: every read of the file from that moment
-    /// failed with `Malformed`, so the journal could be neither read back nor
-    /// resumed again, and everything in front of the tear was stranded.
+    /// rule. Without the mend, every read of the file from that moment fails
+    /// with `Malformed`, so the journal can be neither read back nor resumed
+    /// again, and everything in front of the tear is stranded.
     ///
     /// `format`'s `a_torn_final_line_ends_the_journal_without_an_error` reads a
     /// tear. This is the sequence that appends past one.
@@ -2594,7 +2597,8 @@ mod tests {
         assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
     }
 
-    /// The root is created, and creating it is not the half that was missing.
+    /// The root is created, which is the half of this call that is not the
+    /// chown.
     ///
     /// The chown cannot be exercised here, since it needs a real elevated process
     /// with a real invoking user and is a no-op without one. What this pins is

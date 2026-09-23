@@ -1068,14 +1068,14 @@ mod tests {
         assert_eq!(read_response(&record), None);
     }
 
-    /// **The defect the handshake length now catches**, named so it stays
-    /// caught.
+    /// **A hello cut short is refused rather than read**, which is what the
+    /// handshake's declared length is checked for.
     ///
     /// A TLS 1.3 ServerHello cut off before its `supported_versions` extension
     /// leaves a body that reads perfectly well and says `0x0303` in the legacy
     /// field. Answering from that field reports a 1.3 server as 1.2 — which is
-    /// the exact misreading this module was built to prevent, arriving by the
-    /// one route the design did not cover: a peer that stops sending.
+    /// the exact misreading this module exists to prevent, arriving by a route
+    /// the version fields alone cannot close: a peer that stops sending.
     #[test]
     fn a_truncated_tls13_hello_is_refused_rather_than_read_as_tls12() {
         let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];

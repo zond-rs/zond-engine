@@ -177,13 +177,13 @@ fn md5_hex(bytes: &[u8]) -> String {
 
 /// The icon this endpoint serves, found the way a browser finds one.
 ///
-/// Asking for `/favicon.ico` and stopping there is what the first version of
-/// this did, and it reaches almost none of the applications the corpus is for.
+/// Asking for `/favicon.ico` and stopping there reaches almost none of the
+/// applications the corpus is for.
 /// Anything built with a bundler serves its icon under a content-hashed name
 /// (`favicon.bc8d51405ec040305a87.ico`) and declares it in a `<link>`; Jellyfin
 /// answers the conventional path with a 404 while serving an icon whose digest
 /// the corpus holds. So the page is read first and its declaration followed,
-/// with the conventional path as the fallback it always was.
+/// with the conventional path as the fallback.
 ///
 /// The page usually costs nothing: first contact already fetched `/`, and only a
 /// root that redirects (which a self-hosted application very often does) needs a

@@ -187,7 +187,7 @@ pub enum Reply {
     /// A bare ACK: traffic from an established connection to this host, not an
     /// answer to any probe.
     ///
-    /// This exists because the kernel filter no longer keeps it out. libpcap
+    /// This exists because the kernel filter does not keep it out. libpcap
     /// cannot narrow TCP by flags over IPv6, so the SYN transport admits every
     /// IPv6 TCP segment on every captured interface, and a scan of an address
     /// the host is already talking to will see its traffic. Over IPv4 the
@@ -790,12 +790,12 @@ impl FakeLink {
                 // part of, which is the whole of what makes this segment
                 // somebody else's.
                 //
-                // It used to be built with `tcp_reply`, which acknowledges the
-                // probe — so the simulated "unrelated traffic" carried this
-                // scan's own nonce and was indistinguishable, on the wire, from a
-                // segment genuinely answering it. The test resting on it passed
-                // for the wrong reason: the engine was declining every bare ACK,
-                // rather than declining the ones that answer nothing.
+                // Not built with `tcp_reply`, which acknowledges the probe: the
+                // simulated "unrelated traffic" would carry this scan's own nonce
+                // and be indistinguishable, on the wire, from a segment genuinely
+                // answering it. A test resting on that would pass for the wrong
+                // reason, an engine declining every bare ACK rather than only the
+                // ones that answer nothing.
                 //
                 // A real third-party ACK matching a probe's nonce is a one-in-2^32
                 // coincidence, and the nonce is exactly what tells the two apart.

@@ -87,7 +87,7 @@ pub struct RoutedTarget {
 /// user can reason about, the whole space is 2^32, and a `/8` is an
 /// unreasonable request rather than an impossible one.
 ///
-/// Public as the number, where [`is_enumerable`] is the test: three places now
+/// Public as the number, where [`is_enumerable`] is the test: three places
 /// ask the question and every one of them asks it through the function, which is
 /// what keeps the number in one place. The classifier applies it to a routed
 /// range it would have to walk; [`crate::scanner`] applies it on the
@@ -152,8 +152,7 @@ pub struct RoutedTargets {
 /// Reads the host's interface table through
 /// [`interfaces`](super::interfaces), narrowed to the links that could carry a
 /// probe. Where that table comes from is [`Link::from_netdev`](super::Link)'s
-/// business and nobody else's; this used to name `pnet::datalink`,
-/// which stopped being the source, and then stopped being a dependency.
+/// business and nobody else's, so nothing here names the crate that reads it.
 pub fn map_ips_to_interfaces(ip_set: IpSet) -> RoutedTargets {
     map_ips_to_interfaces_with(ip_set, viable_interfaces(), &[])
 }
@@ -254,9 +253,10 @@ pub(crate) fn map_ips_to_interfaces_with(
             // kernel answers `::1` with `::1`, which no interface here holds, and
             // the fallback after it would then pair the target with a global
             // source as though it were a routed address behind a VPN; a forced
-            // source would do the same. `127.0.0.1` fell through to `Unmapped`
-            // only because that fallback declines IPv4, so the two loopbacks were
-            // planned differently for no reason either of them had.
+            // source would do the same. `127.0.0.1` would fall through to
+            // `Unmapped` only because that fallback declines IPv4, so without
+            // this the two loopbacks would be planned differently for no reason
+            // either of them has.
             if target.is_loopback() {
                 return (target, Classification::Unmapped);
             }
@@ -900,11 +900,12 @@ mod tests {
         literal.parse().expect("a literal")
     }
 
-    /// `::1` used to come out of the classifier as a routed target paired with
-    /// a global source, because the kernel answers it from `::1`, no viable
-    /// interface holds that, and the VPN fallback then offered the first global
-    /// address it found. `127.0.0.1` was spared only because that fallback
-    /// declines IPv4. A forced source did the same to both.
+    /// Without its own check, `::1` would come out of the classifier as a
+    /// routed target paired with a global source, because the kernel answers it
+    /// from `::1`, no viable interface holds that, and the VPN fallback then
+    /// offers the first global address it finds. `127.0.0.1` would be spared
+    /// only because that fallback declines IPv4. A forced source would do the
+    /// same to both.
     #[test]
     fn loopback_is_unmapped_in_both_families_whatever_is_forced() {
         let interfaces = vec![ethernet(&[("192.0.2.10", 24), ("2001:db8:1::10", 64)])];

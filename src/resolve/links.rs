@@ -118,10 +118,10 @@ pub fn for_listening<S: AsRef<str>>(exprs: &[S]) -> Result<Vec<Zone>, LinkError>
 /// machine that has none of them, the seam
 /// [`for_discovery_with`](super::for_discovery_with) exists for.
 ///
-/// Every branch reads `interfaces` and nothing else. `lan` used to reach past it
-/// to the running machine, so this function handed an empty table still answered
-/// with whichever interface held the default route, and the one case the seam is
-/// named for was the one it did not cover.
+/// Every branch reads `interfaces` and nothing else. A `lan` that reached past it
+/// to the running machine would have this function, handed an empty table,
+/// still answer with whichever interface held the default route, and the one
+/// case the seam is named for would be the one it did not cover.
 pub fn for_listening_on<S: AsRef<str>>(
     exprs: &[S],
     interfaces: &[Link],
@@ -202,8 +202,8 @@ mod tests {
         let up = |name: &str, index: u32, up: bool| Link::new(name, index).with_link_up(up);
 
         // A link says whether it is up rather than carrying a flags word the
-        // reader has to know the bit positions of, which is what was wrong on
-        // Windows, where nobody filled that word in.
+        // reader has to know the bit positions of, a word nobody fills in on
+        // Windows.
         vec![
             up("en0", 4, true),
             up("en1", 5, true),
@@ -230,11 +230,11 @@ mod tests {
     /// `lan` is answered from the table this was handed, like every other
     /// expression it takes.
     ///
-    /// This test could not be written before. The branch called
-    /// `interface::lan_link()`, which reads the running machine, so the seam this
-    /// function exists to provide covered `%en0` and the empty case but not the
-    /// one its own documentation names first. An empty table still answered with
-    /// whichever interface held the host's default route.
+    /// A branch calling `interface::lan_link()`, which reads the running
+    /// machine, would leave the seam this function exists to provide covering
+    /// `%en0` and the empty case but not the one its own documentation names
+    /// first: an empty table would still answer with whichever interface held
+    /// the host's default route.
     #[test]
     fn lan_is_answered_from_the_table_this_was_given() {
         let table = vec![lan_capable("lab0", 42)];

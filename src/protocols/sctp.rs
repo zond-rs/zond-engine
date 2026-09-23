@@ -713,12 +713,12 @@ mod tests {
     /// A chunk value past what the length field can count is refused, not
     /// wrapped.
     ///
-    /// The two build profiles used to disagree about this. A `debug_assert`
-    /// stated the bound, so a debug build panicked and a release build wrapped:
-    /// four bytes short of 64 KiB produced a chunk declaring itself zero bytes
+    /// A `debug_assert` stating the bound would have the two build profiles
+    /// disagree: a debug build would panic and a release build wrap, and four
+    /// bytes short of 64 KiB would produce a chunk declaring itself zero bytes
     /// long, which every receiver reads as the end of the packet. `ip.rs` has a
-    /// test making the same argument about `build_ipv4_header`, and this is the
-    /// same fix.
+    /// test making the same argument about `build_ipv4_header`, and both are
+    /// refused the same way.
     #[test]
     fn a_chunk_value_too_large_for_the_length_field_is_refused_rather_than_wrapped() {
         let largest = vec![0u8; MAX_CHUNK_VALUE];

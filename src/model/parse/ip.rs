@@ -80,12 +80,12 @@ impl Keyword {
     /// Every keyword this build knows, in declaration order.
     ///
     /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
-    /// gives, and because [`from_token`](Self::from_token) had the list written
-    /// out inside it. `as_str` is an exhaustive match, so a keyword added to the
-    /// enum stops the build until it has a spelling; nothing then required it to
-    /// be *recognised*, and an unrecognised keyword falls through to the address
-    /// parser, comes back [`Malformed`](IpParseError::Malformed), and is looked
-    /// up in DNS.
+    /// gives, and so that [`from_token`](Self::from_token) reads the list rather
+    /// than writing it out. `as_str` is an exhaustive match, so a keyword added
+    /// to the enum stops the build until it has a spelling; nothing there
+    /// requires it to be *recognised*, and an unrecognised keyword falls through
+    /// to the address parser, comes back [`Malformed`](IpParseError::Malformed),
+    /// and is looked up in DNS.
     ///
     /// [`names_keyword`] reads the same function, so a scan that should have
     /// asked for a segment sweep would not have.
@@ -141,11 +141,11 @@ pub enum IpParseError {
     /// never too long.
     ///
     /// Wider than the `u8` a prefix fits in, because what a person types is not
-    /// bounded by what a prefix is. `/999` was reported as
+    /// bounded by what a prefix is. Held in a `u8`, `/999` would be reported as
     /// [`Malformed`](Self::Malformed) purely because the number did not fit,
     /// and `Malformed` is the signal a caller takes as "this might be a
-    /// hostname": a mistyped prefix went to a DNS lookup and came back as a name
-    /// that could not be resolved, which sends its author to look at their
+    /// hostname": a mistyped prefix would go to a DNS lookup and come back as a
+    /// name that could not be resolved, which sends its author to look at their
     /// resolver over a typo.
     #[error("Invalid CIDR prefix: {0} (0-32 for IPv4, 0-128 for IPv6)")]
     InvalidPrefix(u32),
@@ -161,11 +161,10 @@ pub enum IpParseError {
     /// A keyword's resolver could not answer.
     ///
     /// Carries the keyword, because [`Keyword`] is `#[non_exhaustive]` and meant
-    /// to grow: this was `LanError(String)`, named after the one word in the
-    /// vocabulary, so a second keyword failing would have reported a LAN
-    /// problem. The reason stays prose, since it is the caller's resolver that
-    /// knows why and there is no set of answers this module could enumerate for
-    /// it.
+    /// to grow: a variant named after the one word in the vocabulary would
+    /// report a LAN problem when a second keyword failed. The reason stays
+    /// prose, since it is the caller's resolver that knows why and there is no
+    /// set of answers this module could enumerate for it.
     #[error("could not resolve `{keyword}`: {reason}")]
     KeywordUnresolved {
         /// The word that could not be expanded.
@@ -291,12 +290,12 @@ pub fn insert_expression(
     resolver: Option<ResolverFn<'_>>,
     zones: Option<ZoneResolverFn<'_>>,
 ) -> Result<(), IpParseError> {
-    // Trimmed here rather than by `to_set`, which is the only caller that was
-    // doing it. This function is public and its documentation invites an
-    // importer to call it directly with a token it has already split out, and
-    // such a caller got a grammar split in two: `Keyword::from_token` trims, so
-    // ` lan ` resolved, and `IpAddr::from_str` does not, so ` 10.0.0.1 ` came
-    // back malformed and was tried as a hostname.
+    // Trimmed here rather than by `to_set` alone. This function is public and
+    // its documentation invites an importer to call it directly with a token
+    // it has already split out, and such a caller would otherwise get a
+    // grammar split in two: `Keyword::from_token` trims, so ` lan ` would
+    // resolve, and `IpAddr::from_str` does not, so ` 10.0.0.1 ` would come
+    // back malformed and be tried as a hostname.
     let s = s.trim();
 
     // The interface suffix is stripped first and applied to whatever the rest
@@ -371,7 +370,7 @@ fn parse_scoped(
     };
     // The whole range, not its first address. A zone on a range only partly
     // link-local is meaningful for that part and meaningless for the rest, and
-    // asking about the start alone accepted `fe80::1-fec0::1` and refused
+    // asking about the start alone would accept `fe80::1-fec0::1` and refuse
     // `fe00::1-fe80::5`, neither of which is what the suffix means.
     if !v6.is_link_local() {
         return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
@@ -474,8 +473,8 @@ mod tests {
     ///
     /// Compares the sets rather than their sizes. Two ranges of equal length are
     /// equal lengths and nothing more, and the divergence this exists to catch
-    /// was one entry point reading a spelling the other refused outright, which
-    /// a size comparison would have seen only as a panic on the unwrap.
+    /// is one entry point reading a spelling the other refuses outright, which
+    /// a size comparison would see only as a panic on the unwrap.
     #[test]
     fn both_ways_into_the_parser_accept_the_same_spellings() {
         for expression in [
@@ -485,7 +484,7 @@ mod tests {
             "192.168.1.0/24",
             "2001:db8::1-2001:db8::5",
             "8.8.8.8",
-            // Spellings one of the two used to take and the other did not.
+            // Spellings a second grammar would most easily read differently.
             "10.0.0.0-0",
             "  10.0.0.1  ",
         ] {
@@ -587,14 +586,14 @@ mod tests {
 
     /// A prefix too large to be a prefix at all is still a prefix.
     ///
-    /// `/999` does not fit a `u8`, and the parse failing on the width was read
+    /// `/999` does not fit a `u8`, and a parse failing on the width would read
     /// as [`Malformed`](IpParseError::Malformed), which is the one error a
-    /// caller treats as "this might be a hostname". So a mistyped prefix went to
-    /// a DNS lookup and came back reported as a name nothing could resolve,
+    /// caller treats as "this might be a hostname". A mistyped prefix would go
+    /// to a DNS lookup and come back reported as a name nothing could resolve,
     /// which is the wrong thing to hand somebody who typed one digit too many.
     ///
     /// `/33` and `/999` are the same mistake made twice as far as a person is
-    /// concerned, and the two now say the same thing.
+    /// concerned, so the two say the same thing.
     #[test]
     fn a_prefix_too_large_for_a_u8_is_still_a_prefix() {
         let too_large = to_set(&["10.0.0.0/999"], None, None).unwrap_err();
@@ -683,11 +682,12 @@ mod tests {
     /// One grammar, whatever whitespace the caller left on the token.
     ///
     /// [`insert_expression`] is public and its documentation invites an importer
-    /// reading a file to call it with a token it has already split out. Such a
-    /// caller met a grammar split in two, because `to_set` was the only thing
-    /// trimming: `Keyword::from_token` trims of its own accord so ` lan `
-    /// resolved, and `IpAddr::from_str` does not, so ` 10.0.0.1 ` came back
-    /// malformed and was then tried as a hostname by the builder above it.
+    /// reading a file to call it with a token it has already split out. Were
+    /// `to_set` the only thing trimming, such a caller would meet a grammar
+    /// split in two: `Keyword::from_token` trims of its own accord so ` lan `
+    /// would resolve, and `IpAddr::from_str` does not, so ` 10.0.0.1 ` would
+    /// come back malformed and then be tried as a hostname by the builder above
+    /// it.
     #[test]
     fn an_untrimmed_token_reads_the_same_as_a_trimmed_one() {
         let mut set = IpSet::new();

@@ -172,9 +172,9 @@ impl Security {
     pub fn merge(&mut self, other: Security) {
         // Destructured rather than reached through `other.…`, so a field added
         // to this struct is a compile error here and not a value that quietly
-        // stops being folded. The doc above used to name the version and the
-        // cipher suite and not the certificate, which is the field a caller is
-        // most likely to be reading the record for.
+        // stops being folded. The doc above names every field for the same
+        // reason, the certificate included, which is the field a caller is most
+        // likely to be reading the record for.
         let Security {
             tls_version,
             cipher_suite,
@@ -289,10 +289,10 @@ impl Default for Security {
 ///
 /// A bound on what a single target can make this process allocate. The names
 /// come out of a certificate the scanned host presented, so their number is the
-/// host's to choose, and the only thing standing between this and an
-/// unbounded list was whatever the TLS layer admits as a handshake message,
-/// which is not a bound this crate states. A `Security` is held per port and a
-/// port per host.
+/// host's to choose, and without this the only thing standing between it and
+/// an unbounded list would be whatever the TLS layer admits as a handshake
+/// message, which is not a bound this crate states. A `Security` is held per
+/// port and a port per host.
 ///
 /// A hundred is past what a real certificate carries. A wildcard covers a domain
 /// in one name, and the shared-hosting certificates that do enumerate carry tens
@@ -552,8 +552,8 @@ mod tests {
     /// The names on a certificate are the scanned host's to choose, so the list
     /// needs a bound this crate decides.
     ///
-    /// It had none. `subject_alt_names` collects every DNS and IP name in the
-    /// extension and hands the vector straight here, so the only ceiling was
+    /// `subject_alt_names` collects every DNS and IP name in the extension and
+    /// hands the vector straight here, so without one the only ceiling would be
     /// whatever the TLS layer admits as a handshake message, which is not
     /// something this crate states. A `Security` is held per port and a port per
     /// host.
@@ -647,10 +647,9 @@ mod tests {
     }
 
     /// Both questions have to be answerable against the time the scan ran, or a
-    /// stored report answers differently every time it is opened. Expiry is the
-    /// one that was missing: only the wall-clock form existed, so a report from
-    /// last quarter described a renewal queue that was never true of the
-    /// network it recorded.
+    /// stored report answers differently every time it is opened. With only a
+    /// wall-clock form of expiry, a report from last quarter would describe a
+    /// renewal queue that was never true of the network it recorded.
     #[test]
     fn validity_and_expiry_are_both_answerable_at_a_caller_chosen_time() {
         let day = Duration::from_secs(86_400);

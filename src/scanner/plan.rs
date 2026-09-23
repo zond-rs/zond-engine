@@ -321,11 +321,10 @@ impl RefusedStep {
     /// prefix. A [`Scope::Sweep`] step already sends that packet and refuses
     /// nothing.
     ///
-    /// Walking it instead is what used to happen, and the failure was silent:
-    /// the address count overflowed the deadline's target count, the sweep was
-    /// budgeted as though it had no targets at all, and it stopped a couple of
-    /// thousand solicitations into a space of eighteen quintillion having
-    /// reported the range covered.
+    /// Walking it instead would fail silently: the address count overflows the
+    /// deadline's target count, the sweep is budgeted as though it had no
+    /// targets at all, and it stops a couple of thousand solicitations into a
+    /// space of eighteen quintillion having reported the range covered.
     pub fn local_range_needs_a_sweep(range: &Ipv6Range) -> Self {
         Self {
             scanner: ScannerKind::Local,
@@ -590,9 +589,9 @@ impl DiscoveryPlan {
         }
 
         // Ranges no strategy can take. A routed IPv6 prefix cannot be walked
-        // (see `MAX_ENUMERABLE_ADDRESSES`), and until discovery gains a strategy
-        // that searches a scope instead of a list, saying so is the whole of
-        // what the engine can honestly do with one.
+        // (see `MAX_ENUMERABLE_ADDRESSES`), and with no discovery strategy that
+        // searches a scope instead of a list, saying so is the whole of what
+        // the engine can honestly do with one.
         for range in &unenumerable {
             refusals.push(RefusedStep::routed_range_not_enumerable(range));
         }
@@ -810,9 +809,9 @@ impl DiscoveryPlan {
     /// Up by construction and covered by no step, because no strategy can
     /// establish one: the kernel routes traffic for an address this host holds
     /// through loopback, so a probe never reaches the link and nothing on the
-    /// link answers for it. Before these were separated, scanning a machine by
-    /// its own LAN address reported it down while `ping` to the same address
-    /// succeeded.
+    /// link answers for it. Were these handed to a strategy, scanning a machine
+    /// by its own LAN address would report it down while `ping` to the same
+    /// address succeeds.
     ///
     /// A caller running the plan itself records these up rather than probing
     /// them; [`orchestrator`](crate::scanner) does.
@@ -898,8 +897,8 @@ impl PortScanStep {
     /// trip, and the connect fallbacks yield neither.
     ///
     /// A property of the step rather than of its [`kind`](Self::kind), because
-    /// the two answer different questions. Read off the name instead, this went
-    /// wrong the moment a technique stopped being called `syn_port`.
+    /// the two answer different questions. Read off the name instead, this
+    /// would be wrong for every raw technique not called `syn_port`.
     pub fn is_raw(&self) -> bool {
         matches!(self, Self::RawTcp { .. } | Self::RawUdp | Self::RawSctp)
     }
@@ -1213,11 +1212,11 @@ fn seed_from_neighbor_table_with(
             // it says an exclusion that holds for the list and not for what the
             // sweep discovers is worse than no exclusion at all.
             //
-            // Without this a swept segment sent a unicast solicitation to an
-            // address somebody had been told would not be probed. `write_host`
-            // then dropped the finding, so the *report* stayed clean and the
-            // packet still went out — which is the half of the promise that
-            // cannot be checked from the report afterwards.
+            // Without this a swept segment would send a unicast solicitation to
+            // an address somebody had been told would not be probed.
+            // `write_host` would then drop the finding, so the *report* would
+            // stay clean and the packet would still go out — which is the half
+            // of the promise that cannot be checked from the report afterwards.
             if exclusions.excludes(&addr) {
                 info!(
                     verbosity = 2,
@@ -1698,8 +1697,8 @@ mod tests {
     ///
     /// [`ScannerKind::SynPort`] is the one that matters. It is documented to
     /// mean a half-open connection attempt was made, and a plan that called
-    /// every raw TCP step by that name attributed a FIN scan's socket failure
-    /// to `syn_port` when no SYN was ever sent.
+    /// every raw TCP step by that name would attribute a FIN scan's socket
+    /// failure to `syn_port` when no SYN was ever sent.
     #[test]
     fn a_step_reports_under_the_same_name_as_the_scanner_it_builds() {
         use crate::scanner::session::ScanSession;
@@ -1788,9 +1787,9 @@ mod tests {
     /// this case: an exclusion that holds for the list and not for what the
     /// sweep discovers is worse than no exclusion at all.
     ///
-    /// The recording gate at `write_host` would have dropped the finding, so the
-    /// report stayed clean either way. What it could not undo is the packet, and
-    /// that is the half of the promise a reader cannot check afterwards.
+    /// The recording gate at `write_host` would drop the finding, so the report
+    /// stays clean either way. What it cannot undo is the packet, and that is
+    /// the half of the promise a reader cannot check afterwards.
     #[test]
     fn a_swept_plan_does_not_take_an_excluded_neighbour_as_a_candidate() {
         let intf = interface_with(7, "en0", Vec::new());

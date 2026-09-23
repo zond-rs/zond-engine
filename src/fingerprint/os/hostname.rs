@@ -72,19 +72,18 @@
 //! would make this source confidently wrong about every carefully-named machine
 //! on the network.
 //!
-//! A prefix is not a convention, and for a while this table treated it as one.
-//! Every entry was matched with `starts_with`, so `DESKTOP-` took
-//! `desktop-erik` and `sm-` took `sm-prod-db01`: ten of twelve ordinary
-//! hand-typed names matched something. The cost was not the wrong family on its
-//! own, since a lone hit stays under the reporting floor by design. It was what
-//! a wrong vote does to a reading that was right, because
-//! [`resolve`](super::resolve) reduces a leader by whatever dissents from it, a
-//! Linux stack reading fell from 65 to 42 on a `desktop-` hostname, and to
-//! nothing at all with a second mistaken source beside it.
+//! A prefix is not a convention. Matched with `starts_with`, `DESKTOP-` takes
+//! `desktop-erik` and `sm-` takes `sm-prod-db01`: against a table of bare
+//! prefixes, ten of twelve ordinary hand-typed names match something. The cost
+//! is not the wrong family on its own, since a lone hit stays under the
+//! reporting floor by design. It is what a wrong vote does to a reading that
+//! was right, because [`resolve`](super::resolve) reduces a leader by whatever
+//! dissents from it: a Linux stack reading falls from 65 to 42 on a `desktop-`
+//! hostname, and to nothing at all with a second mistaken source beside it.
 //!
-//! So an entry now states the shape of the tail its convention generates, and
-//! an entry whose shape nobody could state came out of the table. See
-//! [`Token`], and `WITHDRAWN` for what came out.
+//! So an entry states the shape of the tail its convention generates, and a
+//! convention whose shape nobody can state is left out of the table. See
+//! [`Token`], and `WITHDRAWN` for what is left out.
 
 use crate::model::host::OsEvidence;
 use crate::model::host::OsSource;
@@ -178,15 +177,15 @@ const DEFAULT_NAMES: &[(Pattern, &str)] = &[
     (model("netbsd"), "NetBSD"),
 ];
 
-/// Conventions this table used to carry and no longer does, so that re-adding
-/// one is a decision rather than a rediscovery.
+/// Conventions this table leaves out, so that adding one is a decision rather
+/// than a rediscovery.
 ///
-/// Each was a bare prefix matched with `starts_with`, and each fired on names a
-/// person had typed: `sm-prod-db01`, `galaxy-cluster-01`, `amazon-connector`,
+/// Each is a bare prefix, and matched with `starts_with` each fires on names a
+/// person has typed: `sm-prod-db01`, `galaxy-cluster-01`, `amazon-connector`,
 /// `echo-service`, `rokuro-pc`, `chromebook-loaner`. They are out because
-/// nobody could state the shape the system actually generates, which is the one
+/// nobody can state the shape the system actually generates, which is the one
 /// thing that separates a default from a coincidence. A convention somebody can
-/// write down as a [`Token`] is welcome back.
+/// write down as a [`Token`] is welcome in the table.
 #[cfg(test)]
 const WITHDRAWN: &[&str] = &[
     "sm-",
@@ -461,9 +460,9 @@ mod tests {
     }
 
     /// Constructed fixtures rather than observations, unlike the `DESKTOP-` name
-    /// above. `lgwebostv-1234` was among them and is now `lgwebostv-2`: a
+    /// above. The webOS one is `lgwebostv-2` rather than `lgwebostv-1234`: a
     /// four-digit tail is past the enumeration [`Pattern::Model`] accepts, and
-    /// loosening the bound to keep an unverified fixture would have weakened the
+    /// loosening the bound to admit an unverified fixture would weaken the
     /// Apple case the bound was written for.
     #[test]
     fn additional_oem_defaults_resolve_correctly() {
@@ -491,11 +490,11 @@ mod tests {
         }
     }
 
-    /// The regression the token shapes exist for.
+    /// The failure the token shapes exist for.
     ///
-    /// Every one of these matched before the tails were checked, and every one
-    /// is a name somebody typed. Ten of the twelve names this was measured
-    /// against fired on a bare-prefix table.
+    /// Every one of these matches a prefix when the tail goes unchecked, and
+    /// every one is a name somebody typed. Ten of the twelve names this was
+    /// measured against fire on a bare-prefix table.
     #[test]
     fn a_name_a_person_typed_does_not_wear_a_generated_prefix() {
         for name in [
@@ -571,8 +570,9 @@ mod tests {
         let alone = super::super::resolve(vec![stack.clone()]).expect("names the host");
         assert_eq!(alone.accuracy, 65);
 
-        // What `desktop-erik` used to contribute, stated directly so the cost is
-        // visible without the table having to produce it.
+        // What a bare `DESKTOP-` prefix would make of `desktop-erik`, stated
+        // directly so the cost is visible without the table having to produce
+        // it.
         let mistaken = crate::model::host::OsEvidence {
             source: OsSource::Hostname,
             family: Some("Windows".to_string()),
@@ -588,7 +588,7 @@ mod tests {
             alone.accuracy
         );
 
-        // And the table no longer produces it.
+        // And the table does not produce it.
         assert_eq!(family_of(Some("desktop-erik")), None);
     }
 }

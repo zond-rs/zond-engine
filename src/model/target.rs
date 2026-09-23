@@ -116,10 +116,10 @@ pub struct TargetSet {
     /// The ports to try on each of them.
     ///
     /// Private for symmetry with the addresses rather than to protect anything:
-    /// a [`PortSet`] is canonical from construction and has no lazy state, which
-    /// is what the note here used to claim it had. [`ports`](Self::ports) hands
-    /// out a reference and [`into_parts`](Self::into_parts) the value, so what
-    /// privacy buys is that nobody replaces it under a set that has been counted.
+    /// a [`PortSet`] is canonical from construction and has no lazy state.
+    /// [`ports`](Self::ports) hands out a reference and
+    /// [`into_parts`](Self::into_parts) the value, so what privacy buys is that
+    /// nobody replaces it under a set that has been counted.
     ports: PortSet,
 }
 
@@ -558,10 +558,10 @@ mod tests {
         assert_eq!(index.target_at(index.total()), None, "past the end");
     }
 
-    /// A unit naming no port yields no target, so it takes no positions. It used
-    /// to be the case that skipping it and counting it were the same thing;
-    /// they are not, and counting it would put a gap in the middle of the
-    /// numbering that moves every position above it.
+    /// A unit naming no port yields no target, so it takes no positions.
+    /// Skipping it and counting it are not the same thing: counting it would
+    /// put a gap in the middle of the numbering that moves every position above
+    /// it.
     #[test]
     fn a_unit_with_no_ports_takes_no_positions() {
         let mut map = TargetMap::new();
