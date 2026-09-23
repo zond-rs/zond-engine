@@ -64,7 +64,8 @@ pub struct SocketProbe {
     /// Why the last `speak` refused, if a budget did rather than the port going
     /// silent.
     last_refusal: Option<ProbeRefusal>,
-    /// Whether the last `speak` read its reply to a clean close.
+    /// Whether the last `speak` read its reply to a self-terminating end: the
+    /// peer closing, or an HTTP message reaching the length it declared.
     last_complete: bool,
 }
 
@@ -235,6 +236,56 @@ mod tests {
 
         assert!(probe.speak(b"far too long").is_none());
         assert_eq!(probe.last_refusal(), Some(ProbeRefusal::Bytes));
+    }
+
+    /// A web server that keeps the connection open after its reply, whatever
+    /// `Connection: close` asked, as some embedded servers do. The reply says
+    /// how long it is, so the exchange is over when that much has arrived: a
+    /// flow asking three questions of such a server gets three whole answers
+    /// inside a budget one idle connection would otherwise have spent.
+    #[test]
+    fn a_reply_that_says_how_long_it_is_ends_there_rather_than_when_the_server_hangs_up() {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for sock in listener.incoming().take(3) {
+                let Ok(mut sock) = sock else { return };
+                std::thread::spawn(move || {
+                    let _ = sock.read(&mut [0u8; 512]);
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found");
+                    // Held until the client lets go, which is what a server
+                    // ignoring `Connection: close` looks like from this side.
+                    let _ = sock.read(&mut [0u8; 1]);
+                });
+            }
+        });
+
+        let budget_ms = 1_500;
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, budget_ms, 3));
+        let started = Instant::now();
+        for path in ["/a", "/b", "/c"] {
+            let request = format!("GET {path} HTTP/1.1\r\nConnection: close\r\n\r\n");
+            let reply = probe.speak(request.as_bytes());
+            assert!(
+                reply
+                    .as_deref()
+                    .is_some_and(|reply| reply.ends_with(b"not found")),
+                "{path} went unanswered: {reply:?}, refused on {:?}",
+                probe.last_refusal()
+            );
+            assert!(
+                probe.reply_complete(),
+                "{path}'s reply was whole but not taken as such"
+            );
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(budget_ms / 2),
+            "three exchanges with an idle server took {:?}",
+            started.elapsed()
+        );
     }
 
     /// An SCTP port has no client stack behind it here, so a flow aimed at one
