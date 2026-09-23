@@ -1375,6 +1375,37 @@ fn first_printable(responses: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
 
+    /// One SNMP reply is one witness to what a host runs.
+    ///
+    /// A rule that names the box files its maker with the host's hardware, and
+    /// identification then read the same maker back as the hardware vendor and
+    /// counted it a second time. This MikroTik switch's description reached 86 on
+    /// one datagram, past the 85 at which the active OS probe is skipped as having
+    /// nothing left to settle. The host here is one reached through a gateway, so
+    /// no hardware address stands behind the vendor at all.
+    #[test]
+    fn a_service_describing_its_hardware_is_one_witness_and_not_two() {
+        let evidence = SignatureDb::global()
+            .identify(161, Protocol::Udp, "CSS326-24G-2S+ SwOS v2.13")
+            .expect("the corpus knows SwOS");
+        assert!(
+            evidence.os.is_some() && evidence.hardware.is_some(),
+            "test premise: the rule names both the system and the box"
+        );
+
+        let mut host = crate::model::host::Host::new("192.0.2.1".parse().expect("literal"));
+        AboutTheHost::from_evidence(&[evidence]).apply(&mut host);
+
+        let os = host
+            .os()
+            .expect("an SNMP description is a verdict on its own");
+        assert!(
+            !os.is_highly_confident(),
+            "one reply settled the host at {}",
+            os.accuracy()
+        );
+    }
+
     /// A port number nothing is registered under yields no service at all.
     ///
     /// The alternative was a placeholder, and a placeholder is a service name as

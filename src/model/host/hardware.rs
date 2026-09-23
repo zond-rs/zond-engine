@@ -279,10 +279,34 @@ impl HardwareInfo {
         }
     }
 
-    /// The manufacturer the OUI attributes this hardware to, if the database
-    /// recognises it.
+    /// Who made the box: what a service said about itself where one did, and
+    /// otherwise the manufacturer the OUI attributes the address to, if the
+    /// database recognises it. See the field for why the first outranks the
+    /// second.
     pub fn vendor(&self) -> Option<&str> {
         self.vendor.as_deref()
+    }
+
+    /// Who registered the address block this hardware was seen at, as the OUI
+    /// database has it: the reading of the address alone.
+    ///
+    /// Beside [`vendor`](Self::vendor) rather than instead of it, because the
+    /// two are asked for different things. `vendor` is the best answer to who
+    /// made the box, and gives way to what a service says about itself. This is
+    /// the one part of the record no service said, which is what lets it stand
+    /// as a witness of its own beside one that did: a vendor a reply stated,
+    /// read back out of the record, would be the same reply counted twice.
+    ///
+    /// The newest address with a registered block answers. `None` for a record
+    /// with no address behind it, which is one a service described about a host
+    /// reached through a gateway, and for a host seen only at randomised
+    /// addresses, which have no registered block.
+    pub(crate) fn registered_vendor(&self) -> Option<String> {
+        let mut newest_first: Vec<(&MacAddr, &SystemTime)> = self.macs.iter().collect();
+        newest_first.sort_by(|a, b| b.1.cmp(a.1));
+        newest_first
+            .into_iter()
+            .find_map(|(address, _)| mac::vendor(address))
     }
 
     /// Returns a read-only view of all recorded MAC addresses and their

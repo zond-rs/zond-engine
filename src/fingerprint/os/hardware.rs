@@ -137,10 +137,13 @@ const VENDOR_DEVICES: &[(&str, &str)] = &[
 /// guessed here would be wrong on the commonest hardware there is, in a way
 /// nothing downstream could see.
 pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
-    // `None` here is already the randomised-address case: `HardwareInfo` does not
-    // name a vendor for a locally-administered address, because there is no
-    // registered block behind one.
-    let vendor = hardware.vendor()?;
+    // The address's own vendor, and not the record's best answer. A vendor a
+    // service stated is already that service's evidence, filed under its own
+    // source; read back from here it would be one reply counted as two
+    // witnesses, enough to carry a single SNMP description past the confidence
+    // at which the active probe is skipped. `None` covers the randomised
+    // address and the host with no address behind it at all.
+    let vendor = hardware.registered_vendor()?;
     let lowered = vendor.to_ascii_lowercase();
 
     let matches = |table: &'static [(&str, &str)]| {
@@ -304,6 +307,55 @@ mod tests {
                 "{mac} named a host on its own"
             );
         }
+    }
+
+    /// A vendor a service stated is that service's evidence, and never this
+    /// module's, whichever vendor the tables know.
+    ///
+    /// Every vendor either table maps, described by a service about a host with
+    /// no address behind it, yields nothing here. Read back out of the record it
+    /// would count the reply that stated it a second time, and a single SNMP
+    /// description reached 86 that way. The address is the witness, and where
+    /// one stands behind the record it is still read: the last assertion.
+    #[test]
+    fn a_described_vendor_is_never_counted_as_the_address_reading() {
+        use crate::model::host::HardwareDescription;
+
+        for (prefix, _) in VENDOR_FAMILIES.iter().chain(VENDOR_DEVICES) {
+            let described = HardwareInfo::described(HardwareDescription {
+                vendor: Some(prefix),
+                product: Some("described by its own service"),
+                ..HardwareDescription::default()
+            })
+            .expect("a vendor and a product name something");
+            assert!(
+                evidence_from(&described).is_none(),
+                "`{prefix}`, stated by a service, was counted again as the hardware's own"
+            );
+        }
+
+        // An Apple address behind a record a service then described as something
+        // else still reads as Apple: the address was seen, whatever was said.
+        let mut seen = HardwareInfo::new("a4:83:e7:00:00:01".parse().expect("an address"));
+        seen.merge(
+            HardwareInfo::described(HardwareDescription {
+                vendor: Some("Check Point"),
+                product: Some("Firewall-1"),
+                ..HardwareDescription::default()
+            })
+            .expect("names something"),
+        );
+        assert_eq!(
+            seen.vendor(),
+            Some("Check Point"),
+            "test premise: the stated vendor leads"
+        );
+        assert_eq!(
+            evidence_from(&seen)
+                .and_then(|evidence| evidence.family)
+                .as_deref(),
+            Some("macOS")
+        );
     }
 
     /// A commodity adapter and a randomised address both say nothing, which is
