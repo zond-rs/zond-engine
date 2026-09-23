@@ -342,6 +342,11 @@ impl Enrichment {
 /// The evidence is named rather than borrowed from a probe protocol, because
 /// nothing was sent: the interface table is the whole of it, and it is
 /// conclusive in a way no reply is.
+///
+/// Each is settled as answered, too. A sweep counted in addresses otherwise
+/// leaves this host's own position unsettled for ever, the watermark stops
+/// behind it, and every finished sweep of the segment the scanner sits on reads
+/// as resumable with nothing left to ask.
 fn record_our_own_addresses(ours: &crate::model::ip::set::IpSet, ctx: &ScanContext) {
     let addresses: Vec<IpAddr> = ours.iter().collect();
     if addresses.is_empty() {
@@ -364,6 +369,7 @@ fn record_our_own_addresses(ours: &crate::model::ip::set::IpSet, ctx: &ScanConte
                 ),
             );
         });
+        ctx.settle_address(address, crate::journal::settle::Settled::Answered);
     }
 }
 
@@ -2338,6 +2344,29 @@ mod tests {
     use crate::report::Refusal;
     use crate::scanner::session::ScanSession;
     use tokio::sync::mpsc;
+
+    /// A finished sweep of the segment the scanner sits on is finished: this
+    /// host's own address, recorded up without a probe, is settled with the
+    /// rest, so the watermark reaches the end of the plan rather than stopping
+    /// behind it and leaving the sweep resumable with nothing left to ask.
+    #[test]
+    fn this_hosts_own_address_is_settled_with_the_rest_of_a_sweep() {
+        let plan: IpSet = "192.0.2.1-192.0.2.3".parse().expect("a range");
+        let (_session, ctx) = ScanSession::builder().counting(plan.positions()).build();
+
+        // The two neighbours answer; the middle address is this host's own.
+        ctx.settle_address(
+            "192.0.2.1".parse().expect("an address"),
+            crate::journal::settle::Settled::Answered,
+        );
+        ctx.settle_address(
+            "192.0.2.3".parse().expect("an address"),
+            crate::journal::settle::Settled::Answered,
+        );
+        record_our_own_addresses(&"192.0.2.2".parse().expect("an address"), &ctx);
+
+        assert_eq!(ctx.settlements().checkpoint().watermark, 3);
+    }
 
     /// A scanner that claims a protocol and does nothing, standing in for a
     /// privileged strategy that was built successfully.
