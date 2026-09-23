@@ -67,6 +67,28 @@
 //! changed, and one that finished made a claim about all of it; either is the
 //! newer answer.
 //!
+//! ### A finding goes with the evidence it was drawn from
+//!
+//! Findings accumulate, since a finding a newer scan does not carry is a
+//! detection that did not fire rather than a claim that the subject is clean.
+//! The exception is a finding the newer scan's own evidence refutes, and that
+//! can be seen only where the evidence a finding rests on is in the report
+//! beside it. Two derivations draw from such evidence: what a TLS endpoint
+//! accepts, whose claims rest on the versions whose walk drew them, and the
+//! certificate an endpoint presents, whose posture claims rest on that
+//! certificate. Where the folded record settled what such a claim rests on
+//! and does not draw it, as where a newer walk finished and found TLS 1.0
+//! refused or a newer scan was shown a different certificate, the claim is
+//! dropped. Where the folded record left it unsettled, as where the newer walk
+//! was cut short before it got there, the claim stands.
+//!
+//! Every other finding is kept whatever a newer scan found, because nothing in
+//! the report says what it rests on. A detection's finding rests on an exchange
+//! the report keeps no account of. A vulnerability correlation rests on a
+//! service's platform identifiers, and a fold keeps every identifier any
+//! account recorded, so the identifier an older correlation matched is still
+//! on the merged service however the newer scan identified it.
+//!
 //! ### What a merge does not enforce, and a scan does
 //!
 //! [`Exclusions`](crate::model::exclusion::Exclusions) is not a parameter here,
@@ -153,6 +175,7 @@ use std::time::SystemTime;
 
 use crate::diff::HostIdentity;
 use crate::diff::pairing;
+use crate::model::finding::{Finding, Standing};
 use crate::model::host::hardware::HardwareInfo;
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::{Host, HostStatus};
@@ -621,14 +644,35 @@ fn fold_port(accounts: &[&Port]) -> Port {
         port.set_security(security);
     }
 
-    // As on the host, and for the same reason.
+    // As on the host, and for the same reason, less every claim the folded
+    // record overturned. That record is what the report will say the endpoint
+    // accepts and presents, and a finding it refutes carried beside it would
+    // have the one port say both.
     for account in accounts {
         for finding in account.findings() {
-            port.add_finding(finding.clone());
+            if !overturned(finding, account, &port) {
+                port.add_finding(finding.clone());
+            }
         }
     }
 
     port
+}
+
+/// Whether the folded record of an endpoint overturned a finding one account
+/// of it carried.
+///
+/// Asked of the account's own record, which is the evidence the finding was
+/// drawn from, against the folded one. The fold takes each part of that record
+/// from the newest account that settled it, so what overturns a claim here is
+/// always a newer account that settled what the claim rests on.
+fn overturned(finding: &Finding, account: &Port, folded: &Port) -> bool {
+    match (folded.security(), account.security()) {
+        (Some(folded), Some(basis)) => {
+            folded.standing(finding, basis) == Some(Standing::Overturned)
+        }
+        _ => false,
+    }
 }
 
 /// The service one endpoint is running, from every account of it.
@@ -1836,6 +1880,145 @@ mod tests {
         ]);
 
         assert_eq!(support_on(&merged), march);
+    }
+
+    /// Host 1, with 443 carrying `support` and the findings drawn from it, as
+    /// a scan records an enumeration.
+    fn audited(support: TlsSupport) -> Host {
+        let findings = support.findings();
+        let mut port = Port::new(443, TCP, PortState::Open)
+            .with_security(Security::new().with_support(support));
+        for finding in findings {
+            port.add_finding(finding);
+        }
+        with_port(host(1), port)
+    }
+
+    /// The titles of the findings host 1's 443 carries in `report`.
+    fn findings_on(report: &ScanReport) -> Vec<String> {
+        report
+            .hosts()
+            .next()
+            .and_then(|host| host.ports().find(|port| port.number() == 443))
+            .map(|port| port.findings().map(|f| f.title().to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    /// **A finding goes with the evidence it was drawn from.**
+    ///
+    /// January found TLS 1.0 accepted, and February walked every version to
+    /// the end and found it refused. The fold already takes February's word for
+    /// TLS 1.0, so a January finding carried beside it would have the merged
+    /// report say the endpoint accepts a version its own record says it
+    /// refuses, which is the finding a remediation ticket is opened from.
+    #[test]
+    fn a_finding_a_newer_finished_walk_overturned_is_not_carried() {
+        use TlsVersion::{Tls10, Tls12};
+
+        let january = TlsSupport::new()
+            .accepting(VersionSupport::new(Tls10, vec![suite(0x002F)], vec![]))
+            .accepting(VersionSupport::new(Tls12, vec![suite(0xC02F)], vec![]));
+        let february =
+            TlsSupport::new().accepting(VersionSupport::new(Tls12, vec![suite(0xC02F)], vec![]));
+
+        let merged = merged(vec![
+            report("january", day(1), vec![audited(january)]),
+            report("february", day(2), vec![audited(february.clone())]),
+        ]);
+
+        assert_eq!(support_on(&merged), february, "February's walk stands");
+        // Every claim January drew rests on TLS 1.0 alone, and February's
+        // strong TLS 1.2 suite draws none of its own.
+        let titles = findings_on(&merged);
+        assert!(
+            titles.is_empty(),
+            "the merged port carries findings its own record refutes: {titles:?}"
+        );
+    }
+
+    /// A newer walk cut short settled nothing past where it stopped, so a
+    /// claim resting on what lies there stands, which is the rule's other
+    /// half: a later source overrides only where it made a claim.
+    ///
+    /// February's TLS 1.0 walk stopped having found a suite January does not
+    /// list, so the fold takes it as the configuration now and no longer lists
+    /// January's static-RSA suite. Whether the server still accepts that suite
+    /// is in the part of the walk February never reached, and January's claim
+    /// about it is the only word there is.
+    #[test]
+    fn a_finding_a_newer_walk_never_got_back_to_is_kept() {
+        use TlsVersion::Tls10;
+
+        let january =
+            TlsSupport::new().accepting(VersionSupport::new(Tls10, vec![suite(0x002F)], vec![]));
+        let february = TlsSupport::new()
+            .accepting(VersionSupport::new(Tls10, vec![suite(0xC013)], vec![]))
+            .leaving_unfinished(UnfinishedVersion::new(Tls10, Interruption::Stopped));
+
+        let merged = merged(vec![
+            report("january", day(1), vec![audited(january.clone())]),
+            report("february", day(2), vec![audited(february.clone())]),
+        ]);
+        assert_eq!(support_on(&merged), february, "February's walk stands");
+
+        let static_rsa = january
+            .findings()
+            .into_iter()
+            .map(|finding| finding.title().to_owned())
+            .find(|title| title.contains("long-term key"))
+            .expect("January draws a claim from the static-RSA suite");
+        assert!(
+            findings_on(&merged).contains(&static_rsa),
+            "a claim the newer walk never got back to was dropped"
+        );
+    }
+
+    /// A certificate's posture is a property of that certificate, so a claim
+    /// about the one an older scan was shown goes when a newer scan is shown
+    /// another, and stays while the same one is presented.
+    #[test]
+    fn a_posture_finding_goes_with_the_certificate_it_was_drawn_from() {
+        use crate::model::port::security::CertificateInfo;
+
+        let presenting = |fingerprint: &str, issuer: &str| {
+            let certificate =
+                CertificateInfo::new("www.example.test", issuer, day(0), day(365), fingerprint);
+            let findings = certificate.findings(day(1));
+            let mut port = Port::new(443, TCP, PortState::Open)
+                .with_security(Security::new().with_certificate(certificate));
+            for finding in findings {
+                port.add_finding(finding);
+            }
+            with_port(host(1), port)
+        };
+        let self_signed = "TLS certificate is self-signed".to_owned();
+
+        let rotated = merged(vec![
+            report(
+                "older",
+                day(1),
+                vec![presenting("aaaa", "www.example.test")],
+            ),
+            report("newer", day(2), vec![presenting("bbbb", "Example CA")]),
+        ]);
+        assert!(
+            !findings_on(&rotated).contains(&self_signed),
+            "a claim about a certificate the endpoint no longer presents"
+        );
+
+        let kept = merged(vec![
+            report(
+                "older",
+                day(1),
+                vec![presenting("aaaa", "www.example.test")],
+            ),
+            report(
+                "newer",
+                day(2),
+                vec![presenting("aaaa", "www.example.test")],
+            ),
+        ]);
+        assert!(findings_on(&kept).contains(&self_signed));
     }
 
     /// A port only ever recorded unasked stays unasked, rather than vanishing or

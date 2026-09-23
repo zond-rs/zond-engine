@@ -200,9 +200,30 @@ impl Security {
     /// account of the same endpoint, or `None` where the finding is not one
     /// drawn from evidence a record like this holds.
     ///
-    /// What the endpoint accepts is that evidence, and
-    /// [`TlsSupport::standing`] says what a claim drawn from it rests on.
+    /// Two derivations draw from it. What the endpoint accepts is one, and
+    /// [`TlsSupport::standing`] says what a claim drawn from it rests on. The
+    /// certificate's posture is the other, and a claim drawn from it rests on
+    /// the certificate as a whole: whether it lapsed, names its own issuer or
+    /// carries a short key is a property of those bytes, so this record upholds
+    /// the claim while it holds the same certificate and overturned it once it
+    /// holds another. A certificate with no fingerprint cannot be told from
+    /// another, and a claim resting on one has no standing.
     pub(crate) fn standing(&self, finding: &Finding, basis: &Security) -> Option<Standing> {
+        if finding.detection().id() == CERTIFICATE_DETECTION {
+            fn fingerprint(security: &Security) -> Option<&str> {
+                security
+                    .certificate
+                    .as_ref()
+                    .map(CertificateInfo::fingerprint_sha256)
+                    .filter(|fingerprint| !fingerprint.is_empty())
+            }
+            let (now, then) = (fingerprint(self)?, fingerprint(basis)?);
+            return Some(if now == then {
+                Standing::Upheld
+            } else {
+                Standing::Overturned
+            });
+        }
         self.support.standing(finding, &basis.support)
     }
 
@@ -522,6 +543,10 @@ impl CertificateInfo {
     }
 }
 
+/// The id every certificate-posture finding is stamped under, which is how
+/// one is recognised again once it is on a port.
+const CERTIFICATE_DETECTION: &str = "zond:certificate";
+
 /// The identity the certificate-posture findings are stamped with.
 ///
 /// A built-in derivation like the TLS-suite one, so its content hash is taken
@@ -540,7 +565,7 @@ fn certificate_detection_id() -> DetectionId {
             use std::fmt::Write;
             let _ = write!(hash, "{byte:02x}");
         }
-        DetectionId::new("zond:certificate", version, hash)
+        DetectionId::new(CERTIFICATE_DETECTION, version, hash)
             .expect("the identifier is a non-empty literal")
     })
     .clone()
