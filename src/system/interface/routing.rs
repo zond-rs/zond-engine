@@ -390,7 +390,7 @@ impl std::fmt::Display for Unframed {
             Self::Ours => f.write_str("own address"),
             Self::Tunnel(link) => write!(f, "via {link}"),
             Self::NoRoute => f.write_str("no route"),
-            Self::Neighbour(link) => write!(f, "IPv6 on {link}"),
+            Self::Neighbour(link) => write!(f, "IPv6 neighbour on {link}, no NDP"),
         }
     }
 }
