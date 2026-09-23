@@ -886,6 +886,38 @@ fn timestamp_of(packet: &pcap::Packet<'_>) -> SystemTime {
     UNIX_EPOCH + Duration::new(seconds, micros.saturating_mul(1_000))
 }
 
+/// The capture device for the interface named `name`.
+///
+/// On Unix the two share a name. On Windows they do not: an interface is named
+/// by its adapter GUID, `{…}`, and Npcap names the same adapter under its own
+/// prefix, `\Device\NPF_{…}`. See [`npcap_device_name`].
+fn device(name: &str) -> Device {
+    #[cfg(windows)]
+    {
+        Device::from(npcap_device_name(name).as_str())
+    }
+    #[cfg(not(windows))]
+    {
+        Device::from(name)
+    }
+}
+
+/// The name Npcap gives the adapter an interface list names `name`.
+///
+/// Npcap lists an adapter as `\Device\NPF_` followed by the GUID Windows
+/// names it by, and that full form is the one its device list hands out and
+/// its open call is documented against. A name already in that form, or one
+/// that is not a GUID at all, such as Npcap's own loopback adapter, is passed
+/// through unchanged.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn npcap_device_name(name: &str) -> String {
+    if name.starts_with('{') {
+        format!("\\Device\\NPF_{name}")
+    } else {
+        name.to_owned()
+    }
+}
+
 /// Opens and activates a single filtered capture, returning it alongside the
 /// [`LinkType`] its frames must be parsed as.
 ///
@@ -902,8 +934,7 @@ fn open(name: &str, options: &CaptureOptions) -> Result<(Capture<Active>, LinkTy
         source,
     };
 
-    let device = Device::from(name);
-    let mut inactive = Capture::from_device(device)
+    let mut inactive = Capture::from_device(device(name))
         .map_err(refused)?
         .immediate_mode(true)
         .promisc(options.promiscuous)
@@ -1108,7 +1139,7 @@ impl FrameSender {
     /// which is the defect the arrangement this replaces was documented as
     /// having. `less 0` asks for frames shorter than nothing.
     pub fn open(link: &str) -> Result<Self, CaptureError> {
-        let mut capture = Capture::from_device(Device::from(link))
+        let mut capture = Capture::from_device(device(link))
             .and_then(|inactive| inactive.snaplen(1).timeout(1).open())
             .map_err(|source| CaptureError::Open {
                 interface: link.to_owned(),
@@ -1174,7 +1205,7 @@ impl FrameChannel {
         read_timeout: std::time::Duration,
     ) -> Result<Self, CaptureError> {
         let millis = i32::try_from(read_timeout.as_millis()).unwrap_or(i32::MAX);
-        let mut capture = Capture::from_device(Device::from(link))
+        let mut capture = Capture::from_device(device(link))
             .and_then(|inactive| {
                 inactive
                     .immediate_mode(true)
@@ -1226,6 +1257,21 @@ impl FrameSink for FrameChannel {
 
 #[cfg(test)]
 mod tests {
+
+    /// Npcap opens an adapter by its own name, the Windows GUID under the
+    /// driver's prefix. Handed the bare GUID an interface list gives, the
+    /// capture every raw strategy stands on would fail to open.
+    #[test]
+    fn an_adapter_guid_is_named_the_way_npcap_names_it() {
+        let guid = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
+        assert_eq!(npcap_device_name(guid), format!("\\Device\\NPF_{guid}"));
+        assert_eq!(
+            npcap_device_name(&format!("\\Device\\NPF_{guid}")),
+            format!("\\Device\\NPF_{guid}"),
+            "a name already in Npcap's form is left alone"
+        );
+        assert_eq!(npcap_device_name("en0"), "en0");
+    }
 
     /// The stamp is taken where the segment is taken, so a round trip measured
     /// against it carries the path and not the queue behind it.
