@@ -574,7 +574,7 @@ pub enum CaptureError {
     ///
     /// A mistake in the expression rather than anything about the host, and the
     /// expression is named because it is the thing to look at.
-    #[error("the filter `{filter}` would not compile: {source}")]
+    #[error("the filter `{filter}` would not compile: {}", library_message(.source))]
     Filter {
         /// The expression that was rejected.
         filter: String,
@@ -586,7 +586,7 @@ pub enum CaptureError {
     /// One named link could not be opened. Unlike `NoInterface` this names the
     /// link, because a caller asked for that one in particular and there is
     /// nothing else to fall back to.
-    #[error("{interface} could not be opened: {source}")]
+    #[error("{interface} could not be opened: {}", library_message(.source))]
     Open {
         /// The link that refused.
         interface: String,
@@ -594,6 +594,33 @@ pub enum CaptureError {
         #[source]
         source: pcap::Error,
     },
+}
+
+impl CaptureError {
+    /// What went wrong, without naming the link it went wrong on, for a line
+    /// that names the link its own way.
+    fn reason(&self) -> String {
+        match self {
+            Self::Open { source, .. } => library_message(source).into_owned(),
+            Self::UnsupportedLinkType { dlt, .. } => {
+                format!("it carries data-link type {dlt}, which nothing here parses")
+            }
+            other => other.to_string(),
+        }
+    }
+}
+
+/// What the capture library said, in its own words.
+///
+/// The `pcap` crate prefixes every message the library returns with `libpcap
+/// error:`, whatever the library is. On Windows it is Npcap, and the prefix
+/// reads as a library missing when one is installed and has said precisely what
+/// it refused, so the message is quoted bare.
+fn library_message(error: &pcap::Error) -> std::borrow::Cow<'_, str> {
+    match error {
+        pcap::Error::PcapError(message) => message.into(),
+        other => other.to_string().into(),
+    }
 }
 
 /// Opens a filtered capture on each named link and starts reading, parsing
@@ -745,7 +772,8 @@ pub fn frames(
 /// here so that it cannot come to differ.
 ///
 /// Interfaces that fail to open, or whose data-link type this crate cannot
-/// parse, are logged and skipped rather than aborting the whole capture: a host
+/// parse, are skipped rather than aborting the whole capture, and told about by
+/// [`tell_unheard`]: a host
 /// has many, most of them irrelevant to any given capture, and refusing because
 /// a virtual bridge declined would be wrong. Only *every* link failing is an
 /// error, since a capture with no link is a receive path that can never hear
@@ -771,6 +799,9 @@ where
     let mut opened = 0usize;
     // Why the last reader thread refused to start, for the case where none did.
     let mut unstarted: Option<std::io::Error> = None;
+    // The links that would not open, told about together once it is known
+    // whether any did. See `tell_unheard`.
+    let mut unheard: Vec<(&Zone, CaptureError)> = Vec::new();
 
     for zone in links {
         let name = zone.name();
@@ -799,8 +830,12 @@ where
                     }
                 }
             }
-            Err(e) => warn!("skipping capture on {name}: {e}"),
+            Err(e) => unheard.push((zone, e)),
         }
+    }
+
+    if !unheard.is_empty() {
+        tell_unheard(&unheard, opened == 0);
     }
 
     if handles.is_empty() {
@@ -823,6 +858,107 @@ where
         stats,
     })
 }
+
+/// Says which links could not be captured on, and why: once per link for the
+/// life of the process, and on the default console only where the scan's
+/// answers depend on it.
+///
+/// Every transport opens its own capture on every link, so a link that refuses
+/// one refuses them all, three or four times a scan, and a front end that runs
+/// several scans asks again each time. What refused is a fact about this
+/// machine rather than about any one of those opens: an adapter Npcap is not
+/// bound to, such as a hypervisor's or a VPN's, stays that way. So it is said
+/// the first time and not again, unless it later matters more than it did.
+///
+/// How much it matters is [`loudness`]'s question. The link is named as a
+/// person knows it, with the system's name beside it on the quiet line, where
+/// somebody matching it against the capture library's own device list will be
+/// reading.
+fn tell_unheard(unheard: &[(&Zone, CaptureError)], every_link_failed: bool) {
+    let links = crate::system::interface::interfaces();
+    let mut told = TOLD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    for (zone, error) in unheard {
+        let link = links.iter().find(|link| link.zone() == **zone);
+        let loudness = loudness(
+            every_link_failed,
+            link.is_some_and(|link| link.carries_default_route()),
+        );
+        if !told.first_time(zone.name(), loudness) {
+            continue;
+        }
+
+        let known_as = link.map_or(zone.name(), |link| link.display_name());
+        let reason = error.reason();
+        match loudness {
+            Loudness::Aloud => warn!("no capture on {known_as}: {reason}"),
+            Loudness::Quiet if known_as == zone.name() => {
+                warn!(verbosity = 1, "no capture on {known_as}: {reason}");
+            }
+            Loudness::Quiet => {
+                warn!(
+                    verbosity = 1,
+                    "no capture on {known_as} ({}): {reason}",
+                    zone.name()
+                );
+            }
+        }
+    }
+}
+
+/// How a link that could not be captured on is told about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Loudness {
+    /// At verbosity 1, with the decisions behind a result: a link nothing
+    /// in the scan was shown to need.
+    Quiet,
+    /// On the default console, because the scan's answers depend on it.
+    Aloud,
+}
+
+/// How loudly a link that could not be captured on is told about.
+///
+/// Aloud when the scan's answers depend on it. They do when no link could be
+/// captured on at all, since then nothing can be heard and the failures are the
+/// reason why. They do when the link carries the default route, since every
+/// target beyond this machine's own segments is reached through it and answers
+/// through it. Otherwise the link is one of the adapters a host keeps beside
+/// the one it uses, a hypervisor's switch, a VPN's tunnel, a bridge, and a
+/// target only reaches it by sitting on its own segment: quiet, where a reader
+/// asking what went uncovered will find it.
+fn loudness(every_link_failed: bool, carries_default_route: bool) -> Loudness {
+    if every_link_failed || carries_default_route {
+        Loudness::Aloud
+    } else {
+        Loudness::Quiet
+    }
+}
+
+/// The links this process has said it cannot capture on, and how loudly.
+struct Told(std::collections::BTreeMap<String, Loudness>);
+
+impl Told {
+    const fn new() -> Self {
+        Self(std::collections::BTreeMap::new())
+    }
+
+    /// Whether `link` is to be told about at `loudness`: never told about, or
+    /// told about more quietly than it now deserves. Records it either way.
+    fn first_time(&mut self, link: &str, loudness: Loudness) -> bool {
+        match self.0.get(link) {
+            Some(&said) if said >= loudness => false,
+            _ => {
+                self.0.insert(link.to_owned(), loudness);
+                true
+            }
+        }
+    }
+}
+
+/// Every link this process has said it cannot capture on. See [`tell_unheard`].
+static TOLD: std::sync::Mutex<Told> = std::sync::Mutex::new(Told::new());
 
 /// Starts the thread that reads one capture, marking the capture stopped early
 /// if that thread dies.
@@ -1257,6 +1393,67 @@ impl FrameSink for FrameChannel {
 
 #[cfg(test)]
 mod tests {
+
+    /// An adapter that refuses is named once, and the capture library's own
+    /// words say why. The `pcap` crate prefixes every message with `libpcap
+    /// error:`, which on Windows reads as a missing library when Npcap is
+    /// installed and has said exactly what is wrong.
+    #[test]
+    fn a_refused_open_names_the_adapter_once_and_quotes_the_library() {
+        let guid = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
+        let message = "Error opening adapter: Network interface was not found.";
+        let refused = CaptureError::Open {
+            interface: guid.to_owned(),
+            source: pcap::Error::PcapError(message.to_owned()),
+        };
+
+        assert_eq!(
+            refused.to_string(),
+            format!("{guid} could not be opened: {message}")
+        );
+        assert_eq!(refused.reason(), message, "the reason leaves the name out");
+    }
+
+    /// A link the scan's answers depend on goes to the default console, and
+    /// one they do not goes where a reader asking what went uncovered looks.
+    /// A host keeps hypervisor, VPN and bridge adapters beside the one it
+    /// uses, and a default console telling of each on every scan is noise
+    /// about links no target was reached through.
+    #[test]
+    fn a_failed_link_is_told_aloud_only_when_answers_depend_on_it() {
+        assert_eq!(loudness(false, false), Loudness::Quiet, "a spare adapter");
+        assert_eq!(
+            loudness(false, true),
+            Loudness::Aloud,
+            "the link off-segment targets answer through"
+        );
+        assert_eq!(
+            loudness(true, false),
+            Loudness::Aloud,
+            "no link heard at all"
+        );
+    }
+
+    /// Every transport a scan opens asks every link again, so a link that
+    /// refused is told about once, and again only if it comes to matter more.
+    #[test]
+    fn a_failed_link_is_told_about_once_unless_it_comes_to_matter_more() {
+        let mut told = Told::new();
+        let guid = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
+
+        assert!(told.first_time(guid, Loudness::Quiet));
+        assert!(
+            !told.first_time(guid, Loudness::Quiet),
+            "a second transport"
+        );
+        assert!(told.first_time(guid, Loudness::Aloud), "now it matters");
+        assert!(!told.first_time(guid, Loudness::Aloud));
+        assert!(
+            !told.first_time(guid, Loudness::Quiet),
+            "said louder already"
+        );
+        assert!(told.first_time("eth1", Loudness::Quiet), "another link");
+    }
 
     /// Npcap opens an adapter by its own name, the Windows GUID under the
     /// driver's prefix. Handed the bare GUID an interface list gives, the

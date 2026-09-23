@@ -132,6 +132,7 @@ pub enum LinkKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Link {
     name: String,
+    friendly_name: Option<String>,
     index: u32,
     mac: Option<MacAddr>,
     addresses: Vec<LinkAddress>,
@@ -153,6 +154,7 @@ impl Link {
     pub fn new(name: impl Into<String>, index: u32) -> Self {
         Self {
             name: name.into(),
+            friendly_name: None,
             index,
             mac: None,
             addresses: Vec::new(),
@@ -230,6 +232,16 @@ impl Link {
     /// by, so it is the one worth carrying.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// What a person calls the interface, for a message addressed to one.
+    ///
+    /// The name the system settings show where the platform keeps one apart
+    /// from [`name`](Self::name): `Wi-Fi` or `vEthernet (WSL)` on Windows, where
+    /// the name is a GUID nobody recognises, and the display name on macOS.
+    /// Otherwise the name itself, which on Linux is what a person writes.
+    pub(crate) fn display_name(&self) -> &str {
+        self.friendly_name.as_deref().unwrap_or(&self.name)
     }
 
     /// Its number in this kernel's interface table.
@@ -460,6 +472,10 @@ impl Link {
                 .gateway
                 .as_ref()
                 .is_some_and(|g| !g.ipv4.is_empty() || !g.ipv6.is_empty()),
+            // Kept only where it says something the name does not.
+            friendly_name: interface
+                .friendly_name
+                .filter(|friendly| !friendly.is_empty() && *friendly != interface.name),
             name: interface.name,
             index: interface.index,
         }
@@ -713,6 +729,28 @@ mod tests {
 
         assert_eq!(zone.name(), "en0");
         assert_eq!(zone.index(), Some(7));
+    }
+
+    /// A message about an interface names it the way the system settings do.
+    /// On Windows the system name is the adapter GUID, which nobody reading a
+    /// warning recognises, while an empty or repeated friendly name would name
+    /// nothing at all.
+    #[test]
+    fn an_interface_is_called_what_a_person_calls_it() {
+        let guid = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
+        let read = |friendly: Option<&str>| {
+            let mut interface = netdev::Interface::dummy();
+            interface.name = guid.to_owned();
+            interface.friendly_name = friendly.map(str::to_owned);
+            Link::from_netdev(interface)
+        };
+
+        assert_eq!(
+            read(Some("vEthernet (WSL)")).display_name(),
+            "vEthernet (WSL)"
+        );
+        assert_eq!(read(None).display_name(), guid);
+        assert_eq!(read(Some("")).display_name(), guid);
     }
 
     /// Whatever the host says, read through the one function that reads it.
