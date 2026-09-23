@@ -1450,7 +1450,9 @@ pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::Zon
 /// Ports are walked with the same concurrency the service pass uses, and a host
 /// that has spent [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout)
 /// is left alone: this is the most expensive thing the engine does to a single
-/// endpoint, and the last place to spend a budget that has already run out.
+/// endpoint, and the last place to spend a budget that has already run out. The
+/// question is put again before every offer of a walk, so a budget that runs
+/// out part way through one ends it there.
 pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
     if !cfg.tls_enumeration {
         return;
@@ -1493,7 +1495,8 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
         if ctx.host_expired(address.addr()) {
             continue;
         }
-        pool.admit(enumerate_one(address, number)).await;
+        pool.admit(enumerate_one(ctx.clone(), address, number))
+            .await;
     }
 
     pool.drain().await;
@@ -1524,7 +1527,15 @@ fn tls_ports(ctx: &ScanContext) -> Vec<(crate::model::ip::scoped::ScopedIp, u16)
 }
 
 /// Enumerates one endpoint, or `None` where its address cannot be dialled.
+///
+/// The walk is up to 80 connections under one version, so it asks before each
+/// of them what the admission loop asked before the endpoint: whether the scan
+/// is still running and the host still within its budget. The scan's own stop
+/// is asked first, so a host is not named as left for its budget when it was
+/// the scan that stopped; a host whose budget ran out mid-walk is named by
+/// [`ScanContext::host_expired`] the moment it answers true.
 async fn enumerate_one(
+    ctx: ScanContext,
     address: crate::model::ip::scoped::ScopedIp,
     number: u16,
 ) -> Option<(
@@ -1533,7 +1544,11 @@ async fn enumerate_one(
     crate::model::tls::TlsSupport,
 )> {
     let socket = address.to_socket_addr(number)?;
-    let support = crate::fingerprint::enumerate_tls(socket).await;
+    let ip = address.addr();
+    let support = crate::fingerprint::enumerate_tls_while(socket, || {
+        !ctx.handle.should_stop() && !ctx.host_expired(ip)
+    })
+    .await;
     // An endpoint that accepted nothing is left alone rather than recorded as
     // an empty enumeration: the two are the same value, and writing it back
     // would announce a host update that carries no new fact.
@@ -3147,11 +3162,8 @@ mod tests {
                 let Ok(read) = stream.read(&mut hello).await else {
                     continue;
                 };
-                let record = match answer_to(&hello[..read], suite) {
-                    Some(record) => record,
-                    // Fatal handshake_failure: these terms are refused.
-                    None => vec![0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28],
-                };
+                let record = answer_to(&hello[..read], |offered| offered == suite)
+                    .unwrap_or_else(|| REFUSAL.to_vec());
                 let _ = stream.write_all(&record).await;
             }
         });
@@ -3159,9 +3171,52 @@ mod tests {
         addr
     }
 
-    /// A ServerHello for `suite` where the hello offered TLS 1.2 and named it,
-    /// and `None` otherwise. Walked by offset off the RFC layout.
-    fn answer_to(hello: &[u8], suite: u16) -> Option<Vec<u8>> {
+    /// A server accepting every suite TLS 1.2 can express, taking `pause` over
+    /// each answer, and a count of the connections it has taken.
+    ///
+    /// Accepting everything is what makes a walk long: each answer removes one
+    /// suite from the offer, so a walk nothing stops puts every TLS 1.2 suite
+    /// to it, one connection each. Each connection is served on its own task so
+    /// the pause is paid per offer, as a slow server charges it, rather than
+    /// queued behind the other versions' offers.
+    async fn slow_endpoint_accepting_everything(
+        pause: std::time::Duration,
+    ) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+        let addr = listener.local_addr().expect("has an address");
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&seen);
+
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut hello = vec![0u8; 4096];
+                    let Ok(read) = stream.read(&mut hello).await else {
+                        return;
+                    };
+                    tokio::time::sleep(pause).await;
+                    let record =
+                        answer_to(&hello[..read], |_| true).unwrap_or_else(|| REFUSAL.to_vec());
+                    let _ = stream.write_all(&record).await;
+                });
+            }
+        });
+
+        (addr, seen)
+    }
+
+    /// A fatal handshake_failure: the terms offered are refused.
+    const REFUSAL: [u8; 7] = [0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28];
+
+    /// A ServerHello for the first suite offered that `accepts` takes, where
+    /// the hello offered TLS 1.2, and `None` otherwise. Walked by offset off the
+    /// RFC layout.
+    fn answer_to(hello: &[u8], accepts: impl Fn(u16) -> bool) -> Option<Vec<u8>> {
         // Record header, handshake header, then the version field.
         let version = u16::from_be_bytes([*hello.get(9)?, *hello.get(10)?]);
         if version != 0x0303 {
@@ -3173,15 +3228,13 @@ mod tests {
         let session_len = usize::from(*hello.get(after_random)?);
         let rest = hello.get(after_random + 1 + session_len..)?;
         let len = usize::from(u16::from_be_bytes([*rest.first()?, *rest.get(1)?]));
-        let offered = rest.get(2..2 + len)?;
-        if !offered
+        let suite = rest
+            .get(2..2 + len)?
             .as_chunks::<2>()
             .0
             .iter()
-            .any(|pair| u16::from_be_bytes(*pair) == suite)
-        {
-            return None;
-        }
+            .map(|pair| u16::from_be_bytes(*pair))
+            .find(|offered| accepts(*offered))?;
 
         let mut body = vec![2u8, 0, 0, 0];
         body.extend_from_slice(&0x0303u16.to_be_bytes());
@@ -3199,12 +3252,17 @@ mod tests {
     }
 
     /// A context holding one host with one open TLS port at `port`, which is
-    /// what the pass selects on.
-    fn context_with_tls_port(port: u16) -> (crate::scanner::session::ScanSession, ScanContext) {
+    /// what the pass selects on, in a scan giving each host `host_timeout`.
+    fn context_with_tls_port(
+        port: u16,
+        host_timeout: Option<std::time::Duration>,
+    ) -> (crate::scanner::session::ScanSession, ScanContext) {
         use crate::model::host::Host;
         use crate::model::port::{Port, Security};
 
-        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        let (session, ctx) = crate::scanner::session::ScanSession::builder()
+            .host_timeout(host_timeout)
+            .build();
         let address: IpAddr = "127.0.0.1".parse().expect("an address");
 
         let mut host = Host::new(address);
@@ -3241,7 +3299,7 @@ mod tests {
     #[tokio::test]
     async fn the_pass_asks_nothing_unless_it_is_switched_on() {
         let addr = tls_endpoint(0xC02F).await;
-        let (_session, ctx) = context_with_tls_port(addr.port());
+        let (_session, ctx) = context_with_tls_port(addr.port(), None);
 
         let cfg = crate::config::ZondConfig::default();
         assert!(!cfg.tls_enumeration, "off by default");
@@ -3264,7 +3322,7 @@ mod tests {
     async fn the_pass_records_what_the_endpoint_accepts() {
         // A suite with a fault, so the findings path is exercised too.
         let addr = tls_endpoint(0x000A).await;
-        let (_session, ctx) = context_with_tls_port(addr.port());
+        let (_session, ctx) = context_with_tls_port(addr.port(), None);
 
         let cfg = crate::config::ZondConfig {
             tls_enumeration: true,
@@ -3305,24 +3363,7 @@ mod tests {
     #[tokio::test]
     async fn a_host_out_of_time_is_not_enumerated() {
         let addr = tls_endpoint(0xC02F).await;
-
-        let (_session, ctx) = {
-            use crate::model::host::Host;
-            use crate::model::port::{Port, Security};
-
-            let (session, ctx) = crate::scanner::session::ScanSession::builder()
-                .host_timeout(Some(std::time::Duration::ZERO))
-                .build();
-            let address: IpAddr = "127.0.0.1".parse().expect("an address");
-            let mut host = Host::new(address);
-            host.set_status(crate::model::host::HostStatus::Up);
-            host.add_port(
-                Port::new(addr.port(), Protocol::Tcp, PortState::Open)
-                    .with_security(Security::new().with_tls_version("TLSv1.2")),
-            );
-            ctx.store.insert(host.scoped_ip(), host);
-            (session, ctx)
-        };
+        let (_session, ctx) = context_with_tls_port(addr.port(), Some(std::time::Duration::ZERO));
 
         let cfg = crate::config::ZondConfig {
             tls_enumeration: true,
@@ -3332,5 +3373,87 @@ mod tests {
 
         let support = recorded_support(&ctx, addr.port()).expect("the port is still there");
         assert!(support.is_empty(), "a spent budget skips the endpoint");
+    }
+
+    /// A walk already under way stops when its host's budget runs out, keeps
+    /// what it learned, and names the host as left early.
+    ///
+    /// One endpoint is up to 80 offers under TLS 1.2 alone, each allowed two
+    /// seconds, so a budget asked about only before an endpoint is started
+    /// bounds almost nothing: a host with a second left would be held for
+    /// minutes past it, and the report would describe its enumeration as
+    /// finished.
+    #[tokio::test]
+    async fn a_walk_under_way_stops_when_its_host_runs_out_of_time() {
+        use crate::model::tls::{CipherSuite, TlsVersion};
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        let (addr, seen) = slow_endpoint_accepting_everything(Duration::from_millis(50)).await;
+        let (_session, ctx) = context_with_tls_port(addr.port(), Some(Duration::from_millis(500)));
+
+        let cfg = crate::config::ZondConfig {
+            tls_enumeration: true,
+            ..Default::default()
+        };
+        run_tls_enumeration(&ctx, &cfg).await;
+
+        // A walk nothing stopped would have asked about every one of them.
+        let every = CipherSuite::offered_under(TlsVersion::Tls12).count();
+        let asked = seen.load(Ordering::SeqCst);
+        assert!(
+            asked < every / 2,
+            "the walk stops near its budget, and it went on for {asked} connections \
+             against {every} suites"
+        );
+
+        let address: IpAddr = "127.0.0.1".parse().expect("an address");
+        assert_eq!(
+            ctx.take_timed_out(),
+            vec![address],
+            "a host left part way through its walk is named as left early"
+        );
+
+        let support = recorded_support(&ctx, addr.port()).expect("the port is still there");
+        assert!(
+            support.accepts(TlsVersion::Tls12),
+            "what the walk learned before the budget ran out is kept"
+        );
+    }
+
+    /// A walk already under way stops when the scan does.
+    ///
+    /// The same shape as the budget above, from the scan's side: a caller who
+    /// aborts, or a scan whose own budget runs out, is otherwise kept waiting
+    /// for every walk in flight to finish, which is minutes against an
+    /// endpoint that accepts everything.
+    #[tokio::test]
+    async fn a_walk_under_way_stops_when_the_scan_stops() {
+        use crate::model::tls::{CipherSuite, TlsVersion};
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        let (addr, seen) = slow_endpoint_accepting_everything(Duration::from_millis(50)).await;
+        let (_session, ctx) = context_with_tls_port(addr.port(), None);
+
+        let handle = ctx.handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            handle.abort();
+        });
+
+        let cfg = crate::config::ZondConfig {
+            tls_enumeration: true,
+            ..Default::default()
+        };
+        run_tls_enumeration(&ctx, &cfg).await;
+
+        let every = CipherSuite::offered_under(TlsVersion::Tls12).count();
+        let asked = seen.load(Ordering::SeqCst);
+        assert!(
+            asked < every / 2,
+            "the walk stops soon after the scan does, and it went on for {asked} \
+             connections against {every} suites"
+        );
     }
 }

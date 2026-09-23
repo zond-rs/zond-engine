@@ -100,6 +100,8 @@ pub(crate) use signature::unescape;
 pub use ssh::SshAnalyzer;
 pub use tls_cert::TlsCertAnalyzer;
 pub use tls_enum::{EXCHANGE_TIMEOUT, MAX_OFFERS_PER_VERSION, enumerate_tls};
+// The same walk answering to a scan's budget; see its documentation.
+pub(crate) use tls_enum::enumerate_tls_while;
 
 use std::net::SocketAddr;
 use std::time::Duration;

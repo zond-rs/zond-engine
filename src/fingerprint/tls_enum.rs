@@ -45,11 +45,13 @@
 //! TLS 1.2 alone, and 56 under each of SSL 3.0, 1.0 and 1.1 — and that is the
 //! case this exists to find, so it is a cost to bound in time rather than to cut
 //! short by count. [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout)
-//! is what bounds it: a host that would take longer than its budget is left
-//! early and *named in the report as having been left early*, which a walk
-//! stopped by a count is not. [`MAX_OFFERS_PER_VERSION`] is set at the registry's
-//! own size and so bounds only a defect in the loop; see its documentation for
-//! the ceiling that used to sit below the registry and what that cost.
+//! is what bounds it. A scan asks before every offer whether the host may still
+//! be probed, so a host that would take longer than its budget is left within
+//! one exchange of it, keeps what was found, and is *named in the report as
+//! having been left early*, which a walk stopped by a count is not.
+//! [`MAX_OFFERS_PER_VERSION`] is set at the registry's own size and so bounds
+//! only a defect in the loop; see its documentation for the ceiling that used
+//! to sit below the registry and what that cost.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -102,14 +104,31 @@ pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(2);
 /// [`Offer::server_name`](crate::protocols::tls::Offer::server_name) for why the
 /// name is usually absent.
 pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
+    enumerate_tls_while(addr, || true).await
+}
+
+/// [`enumerate_tls`], asking `may_probe` before every offer and ending each
+/// version's walk at the first no.
+///
+/// For a caller whose budget the walk has to answer to. One endpoint is up to
+/// 80 offers under TLS 1.2 alone, so a budget consulted once before the walk
+/// bounds almost nothing; consulted here, a walk ends within one exchange of
+/// it. What was learned before the answer turned is kept, since every suite in
+/// it was named by the server, and saying the walk was cut short is left to
+/// the caller, whose budget it was.
+pub(crate) async fn enumerate_tls_while(
+    addr: SocketAddr,
+    may_probe: impl Fn() -> bool,
+) -> TlsSupport {
+    let may_probe = &may_probe;
     // Fixed at five, so the versions are joined rather than spawned: each walk
     // borrows nothing the others need and none of them outlives this call.
     let (ssl30, tls10, tls11, tls12, tls13) = tokio::join!(
-        walk(addr, TlsVersion::Ssl30),
-        walk(addr, TlsVersion::Tls10),
-        walk(addr, TlsVersion::Tls11),
-        walk(addr, TlsVersion::Tls12),
-        walk(addr, TlsVersion::Tls13),
+        walk(addr, TlsVersion::Ssl30, may_probe),
+        walk(addr, TlsVersion::Tls10, may_probe),
+        walk(addr, TlsVersion::Tls11, may_probe),
+        walk(addr, TlsVersion::Tls12, may_probe),
+        walk(addr, TlsVersion::Tls13, may_probe),
     );
 
     let mut support = TlsSupport::new();
@@ -119,11 +138,16 @@ pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
     support
 }
 
-/// Narrows the offer under one version until the endpoint stops answering.
+/// Narrows the offer under one version until the endpoint stops answering, or
+/// `may_probe` stops the walk.
 ///
 /// `None` where the version was never accepted, which is the ordinary outcome
 /// for four of the five against a current server.
-async fn walk(addr: SocketAddr, version: TlsVersion) -> Option<VersionSupport> {
+async fn walk(
+    addr: SocketAddr,
+    version: TlsVersion,
+    may_probe: &impl Fn() -> bool,
+) -> Option<VersionSupport> {
     let mut remaining: Vec<CipherSuite> = CipherSuite::offered_under(version).collect();
     let mut accepted: Vec<CipherSuite> = Vec::new();
     let mut unrecognised: Vec<u16> = Vec::new();
@@ -140,6 +164,12 @@ async fn walk(addr: SocketAddr, version: TlsVersion) -> Option<VersionSupport> {
                 "{addr} was still answering under {version} after {MAX_OFFERS_PER_VERSION} offers; \
                  the enumeration is incomplete"
             );
+            break;
+        }
+        // Every offer is a connection to the endpoint, so the question is put
+        // before each of them. A no ends the version quietly: the caller that
+        // said it is the one that knows why, and says so itself.
+        if !may_probe() {
             break;
         }
         offers += 1;
