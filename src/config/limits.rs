@@ -85,7 +85,26 @@ pub const DETECTION_FLOW_CONCURRENCY: usize = 8;
 /// How many connect probes the unprivileged discovery sweep keeps in flight.
 /// Far higher than [`CONNECT_CONCURRENCY`] because each probe is a bare liveness
 /// check against a handful of ports, not a full fingerprint conversation.
+///
+/// A ceiling, and not always the one that binds. Each probe in flight holds a
+/// socket, and the process may hold only so many: every connect probe takes its
+/// socket from a budget of half the process's descriptor limit, shared by every
+/// scan the process runs, so a shell's default of 256 or 1,024 holds a sweep
+/// below this and slows it rather than letting it lose the addresses it has no
+/// socket for.
 pub const DISCOVERY_CONCURRENCY: usize = 2048;
+
+/// How long a connect probe keeps asking for a socket while the process has
+/// none to give, before its target is left unasked.
+///
+/// A probe refused a socket has sent nothing, so waiting costs time and never
+/// a verdict. The engine's own probes take at most half the table, and a sweep
+/// gives each socket back within a [`CONNECT_PROBE_TIMEOUT`], so a table that
+/// stays full for several of those is held by the rest of the process, and
+/// nothing the scan finishes will free it. Past this the target is filed
+/// unasked, the scan reports that it ran out of descriptors, and a resume asks
+/// again.
+pub(crate) const DESCRIPTOR_PATIENCE: Duration = Duration::from_secs(10);
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║

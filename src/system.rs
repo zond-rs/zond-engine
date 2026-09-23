@@ -16,7 +16,9 @@
 //! address nobody named. [`privilege`] reports whether the process may open raw
 //! sockets. `dial`, internal to the crate, opens the ordinary TCP and UDP
 //! sockets the engine speaks to a target through, which is where each one is
-//! given what the host's stack has to be told before it connects.
+//! given what the host's stack has to be told before it connects, and
+//! `descriptors`, also internal, reads how many of those sockets the process
+//! may hold at once and shares that budget among every scan it runs.
 //!
 //! This is the only module that asks the host about itself, and it asks only
 //! what a scan needs to send a packet. It does not profile the
@@ -24,6 +26,7 @@
 //! that changes what goes on the wire, and a library that gathers it is
 //! collecting data on its embedder's host for nobody's benefit.
 
+pub(crate) mod descriptors;
 pub(crate) mod dial;
 pub mod interface;
 pub mod neighbor_cache;
