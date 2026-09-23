@@ -321,6 +321,26 @@ impl Segment {
         address
     }
 
+    /// An address routed through the peer that nothing holds, and returns it:
+    /// a host that is not there, reached the way a real one would be.
+    ///
+    /// The peer resolves and takes the frames, and its kernel, which holds no
+    /// such address and forwards nothing, drops them without a word. That is
+    /// the silence an address nobody answers for produces, built here rather
+    /// than borrowed from a documentation range, whose probes would leave the
+    /// machine by its default route.
+    pub fn silent_host(&self) -> Ipv4Addr {
+        let address = Ipv4Addr::new(10, 98, self.index as u8, 9);
+        ip(&[
+            "route",
+            "add",
+            &format!("{address}/32"),
+            "via",
+            &peer_v4(self.index).to_string(),
+        ]);
+        address
+    }
+
     /// Joins the two ends with a tunnel carried over the segment, gives each
     /// end an address in one `/24` on it, and returns the peer's.
     ///

@@ -14,10 +14,11 @@
 //! thing worth checking is the sequencing — a gate that reads the store at the
 //! wrong moment sees an empty one and turns every target away.
 //!
-//! `192.0.2.1` is TEST-NET-1 (RFC 5737) and belongs to nobody, so it is the
-//! address that reliably answers nothing.
+//! The address that answers nothing is [`silent_loopback`], which never leaves
+//! the machine. Where the machine has none, as on Linux, those tests skip, and
+//! Tier 3's `liveness` asks the same questions of a silent host it builds.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
 use crate::support::*;
 use zond_engine::model::ip::set::IpSet;
@@ -25,8 +26,14 @@ use zond_engine::model::port::PortSet;
 use zond_engine::model::target::{TargetMap, TargetSet};
 use zond_engine::report::ScanKind;
 
-/// Reserved for documentation, and therefore reliably dead.
-const DEAD: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+/// An address nothing answers for, or `None` with the reason already printed.
+fn dead() -> Option<IpAddr> {
+    let dead = silent_loopback();
+    if dead.is_none() {
+        eprintln!("SKIP: every loopback address answers here, so none is silent");
+    }
+    dead
+}
 
 /// The report says how the run was spent: what it took to establish anything
 /// was there, and what it took to probe it.
@@ -44,10 +51,11 @@ async fn a_port_scan_records_the_liveness_pass_as_its_own_phase() {
 /// probes, not one per port.
 #[tokio::test]
 async fn an_address_nothing_answers_for_is_never_port_scanned() {
-    let outcome = run_scan(target_map(DEAD, "1-64"), &test_config()).await;
+    let Some(dead) = dead() else { return };
+    let outcome = run_scan(target_map(dead, "1-64"), &test_config()).await;
 
     assert_eq!(
-        outcome.host(DEAD).map_or(0, |host| host.port_count()),
+        outcome.host(dead).map_or(0, |host| host.port_count()),
         0,
         "a dead address was port-scanned anyway"
     );
@@ -63,7 +71,8 @@ async fn an_address_nothing_answers_for_is_never_port_scanned() {
 /// hosts it skipped.
 #[tokio::test]
 async fn the_port_phase_covers_only_what_answered() {
-    let report = run_scan(target_map(DEAD, "1,2"), &test_config())
+    let Some(dead) = dead() else { return };
+    let report = run_scan(target_map(dead, "1,2"), &test_config())
         .await
         .report;
 
@@ -84,7 +93,8 @@ async fn the_port_phase_covers_only_what_answered() {
 async fn assume_up_probes_the_ports_without_asking_first() {
     let mut cfg = test_config();
     cfg.assume_up = true;
-    let outcome = run_scan(target_map(DEAD, "1,2"), &cfg).await;
+    let Some(dead) = dead() else { return };
+    let outcome = run_scan(target_map(dead, "1,2"), &cfg).await;
 
     let kinds: Vec<ScanKind> = outcome
         .report

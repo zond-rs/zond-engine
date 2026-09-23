@@ -48,6 +48,7 @@ mod characterise;
 mod classification;
 mod degraded;
 mod listening;
+mod liveness;
 mod resolving;
 mod resuming;
 mod segment;

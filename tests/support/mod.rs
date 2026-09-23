@@ -85,6 +85,27 @@ pub fn is_privileged() -> bool {
     zond_engine::system::privilege::can_send_raw()
 }
 
+/// An address nothing answers for that a probe cannot leave the machine to
+/// reach, or `None` where this machine has no such address.
+///
+/// `127.0.0.2` is routed to loopback everywhere. macOS and the BSDs hold
+/// `127.0.0.1` alone, so there a probe to it is delivered to loopback and
+/// dropped, which is silence produced without a network. Linux holds the whole
+/// of `127.0.0.0/8` and answers it as it answers `127.0.0.1`, so there is no
+/// such address to borrow, and Tier 3 builds one instead. Whether this machine
+/// holds it is asked by binding to it, which sends nothing.
+///
+/// A documentation address such as `192.0.2.1` is silent too, and is the wrong
+/// choice: it belongs to nobody on the internet, but a probe to it still leaves
+/// through the default route onto whatever network the machine running the
+/// suite is on.
+pub fn silent_loopback() -> Option<IpAddr> {
+    let address = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+    std::net::UdpSocket::bind((address, 0))
+        .is_err()
+        .then_some(address)
+}
+
 /// A running loopback server bound to an ephemeral port. The port stays open for
 /// as long as this handle is alive; drop it (or let the test's runtime end) to
 /// release it.

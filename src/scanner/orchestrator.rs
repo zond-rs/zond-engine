@@ -3037,8 +3037,10 @@ mod tests {
         };
 
         let (_session, ctx) = ScanSession::new();
-        // Named, with no kernel: still worth asking.
-        let named: IpAddr = "192.0.2.10".parse().expect("a valid address");
+        // Named, with no kernel: still worth asking. On loopback, so the
+        // question never leaves the machine running the suite: Linux refuses it
+        // with a port-unreachable and macOS, holding `127.0.0.1` alone, drops it.
+        let named: IpAddr = "127.0.0.2".parse().expect("a valid address");
         ctx.update_host(named, |host| {
             up(host);
             host.set_os(OsFingerprint::new("Debian", 84).with_family("Linux"));
@@ -3054,9 +3056,9 @@ mod tests {
             );
         });
 
-        // TEST-NET-1 routes nowhere, so nothing answers and nothing is recorded.
-        // What this pins is the selection: the phase must run at all, and must
-        // not fail, for a store in exactly this state.
+        // No SNMP agent answers there, so nothing is recorded. What this pins
+        // is the selection: the phase must run at all, and must not fail, for a
+        // store in exactly this state.
         run_active_os_snmp(&ctx, OsDetection::Active).await;
 
         assert!(ctx.take_failures().is_empty(), "declining is not failing");
