@@ -246,16 +246,15 @@
 //!
 //! # Platforms
 //!
-//! Linux and macOS. Windows is not currently supported.
+//! Linux, macOS and Windows.
 //!
-//! There is `cfg(windows)` code all the same, and it is worth knowing what it
-//! is. Where the platform difference is small and testable it is real: paths
-//! resolve to `%LOCALAPPDATA%`, a local time gets its offset from
-//! `SystemTimeToTzSpecificLocalTime`, and privilege is read from the process
-//! token. Where it is not, the arm is a **stub that refuses** rather than one
-//! that guesses: a journal lock reports that a scan may be running, so nothing
-//! resumes underneath a writer this build cannot see. None of it is exercised by
-//! the test suite, and none of it should be read as a promise.
+//! On Windows, raw scanning goes through [Npcap](https://npcap.com), whose
+//! `wpcap.dll` has to be installed for a program built on this crate to start.
+//! Windows refuses raw TCP sockets, so an elevated process builds whole
+//! Ethernet frames and sends them through Npcap, and reaches by connect what a
+//! frame cannot; an unelevated one takes the connect path. Journals live under
+//! `%LOCALAPPDATA%`. The IPv6 neighbour table is not read there, so a sweep
+//! learns IPv6 neighbours from what answers it alone.
 
 // A public item without a doc comment is a gap in this crate's contract, so the
 // standard is enforced rather than kept by hand.

@@ -256,9 +256,10 @@ mod imp {
         is_elevated()
     }
 
-    /// Npcap can be installed so that non-administrators may capture, but the
-    /// engine does not claim Windows support, so this follows elevation with
-    /// the rest.
+    /// Follows elevation with the rest. Npcap can be installed so that
+    /// non-administrators may capture, and whether a run takes the frame path
+    /// should not depend on how it was: an unelevated run takes the connect
+    /// path on every Windows machine.
     pub fn can_inject_frames() -> bool {
         is_elevated()
     }

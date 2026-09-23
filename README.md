@@ -111,7 +111,8 @@ Each import and export format sits behind a cargo feature. The reference on
 
 ## Compatibility
 
-Linux and macOS. Windows is not supported.
+Linux, macOS and Windows. On Windows the engine sends and captures through
+[Npcap](https://npcap.com).
 
 |                                | IPv4       | IPv6                                                                |
 | ------------------------------ | ---------- | ------------------------------------------------------------------- |

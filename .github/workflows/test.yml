@@ -12,7 +12,7 @@
 # instead is check, on every change, that the crate *could* be published: see the
 # packaging job.
 #
-# Linux and macOS only. Windows is unsupported and its checks are not run here.
+# Runs on Linux and macOS runners.
 name: Test
 
 on:
