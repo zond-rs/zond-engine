@@ -30,6 +30,22 @@
 //! of thing an event is, which is what a terminal colours on and a structured
 //! consumer filters on. `verbosity` is set by the caller on anything below a
 //! headline: a default run shows none of it.
+//!
+//! ## What each `verbosity` holds
+//!
+//! A front end maps its `-v` count onto the field, so each level is a promise
+//! about what is found there, and a line goes to the level its reader is at:
+//!
+//! | `verbosity` | Holds | For example |
+//! |---|---|---|
+//! | none | what the run is doing, and anything to act on | the privilege it runs with, a strategy that failed |
+//! | 1 | the decisions behind this result | the link a sweep covers, where extra candidates came from, what went uncovered and why, which resolvers are asked, what named a host |
+//! | 2 | a line per host or per exchange | a reverse query and its answer, a trace, a target with no route |
+//! | 3 | the engine's working, for debugging it | capture filters, strategy spawns, the audit counters a report also carries |
+//!
+//! A line that repeats per host belongs at 2 however interesting it is. And a
+//! function that answers a question does not narrate its answer: whoever acts
+//! on it says so, once.
 
 macro_rules! info {
     (incoming, $($arg:tt)+) => {

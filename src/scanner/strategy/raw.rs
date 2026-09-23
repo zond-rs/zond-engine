@@ -435,7 +435,7 @@ pub(super) fn send_syn(
                 // The operating system's own words are kept for `-v`, where
                 // somebody is asking why rather than being told.
                 if faults.unroutable.is_none() {
-                    info!(verbosity = 1, "no route to {dst_addr}: {e:#}");
+                    info!(verbosity = 2, "no route to {dst_addr}: {e:#}");
                 }
             } else if faults.broken.is_none() {
                 // `{e:#}` rather than `{e}`: the outer message says which probe

@@ -614,6 +614,20 @@ impl DiscoveryPlan {
             if targets.is_empty() && matches!(scope, Scope::Targeted) {
                 continue;
             }
+            // Said here, once, because this is where it is decided. The lookup
+            // that found the link answers whoever asks, and is asked more than
+            // once a run.
+            if matches!(scope, Scope::Sweep) {
+                info!(
+                    verbosity = 1,
+                    "sweeping {}: {}",
+                    interface.name(),
+                    match targets.len() {
+                        0 => "IPv6 neighbours only, having no IPv4 range to walk".to_string(),
+                        count => counted(count, "address", "addresses"),
+                    }
+                );
+            }
             steps.push(DiscoveryStep::Local {
                 interface: Box::new(interface),
                 targets,
@@ -1122,11 +1136,6 @@ fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
         return;
     }
 
-    info!(
-        verbosity = 1,
-        "sweeping {} for IPv6 neighbours; it has no IPv4 range to walk",
-        link.link.name()
-    );
     local.insert(link.link, IpSet::new());
 }
 
@@ -1210,7 +1219,8 @@ fn seed_from_neighbor_table_with(
             targets.canonicalize();
             info!(
                 verbosity = 1,
-                "took {seeded} IPv6 address(es) from the neighbour table as candidates on {}",
+                "took {} from the neighbour table as candidates on {}",
+                counted(seeded as u128, "IPv6 address", "IPv6 addresses"),
                 intf.name()
             );
         }

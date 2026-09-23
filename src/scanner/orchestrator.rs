@@ -347,7 +347,7 @@ fn record_our_own_addresses(ours: &crate::model::ip::set::IpSet, ctx: &ScanConte
     }
 
     info!(
-        verbosity = 1,
+        verbosity = 2,
         "{} named is this host's own and is up without asking",
         counted(addresses.len() as u128, "address", "addresses")
     );
@@ -392,7 +392,7 @@ pub(super) async fn spawn_explorers(
     for step in plan.into_steps() {
         let kind = step.kind();
         info!(
-            verbosity = 1,
+            verbosity = 3,
             "spawning {kind:?} scanner for {}",
             counted(step.target_count(), "target", "targets")
         );
@@ -1678,7 +1678,9 @@ pub(super) async fn spawn_resolver(
     tokio::spawn(async move {
         match HostnameResolver::new(dns_rx) {
             Ok(resolver) => {
-                success!("successfully initialized hostname resolver");
+                // Working, not news: every run that resolves names starts one,
+                // and the failure below is the case worth a line.
+                success!(verbosity = 3, "successfully initialized hostname resolver");
                 Some(resolver.run().await)
             }
             Err(e) => {

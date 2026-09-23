@@ -278,7 +278,7 @@ impl HostnameResolver {
         match self.send_dns_query(&ip).await {
             Ok(count) => info!(
                 outgoing,
-                verbosity = 1,
+                verbosity = 2,
                 "reverse query for {ip} sent to {}",
                 counted(count as u128, "resolver", "resolvers")
             ),
@@ -376,7 +376,7 @@ impl HostnameResolver {
             Some(hostname) => {
                 info!(
                     incoming,
-                    verbosity = 1,
+                    verbosity = 2,
                     "{from} resolved {ip} to {hostname}"
                 );
                 self.hostname_map.entry(ip).or_insert(hostname);
@@ -450,7 +450,7 @@ impl HostnameResolver {
         }
 
         if let Entry::Vacant(slot) = self.hostname_map.entry(ip) {
-            info!(verbosity = 1, "overheard {ip} named {hostname}");
+            info!(verbosity = 2, "overheard {ip} named {hostname}");
             slot.insert(hostname);
         }
     }
@@ -470,7 +470,7 @@ impl HostnameResolver {
                 continue;
             };
 
-            info!(verbosity = 1, "mDNS names {ip} as {}", host.hostname);
+            info!(verbosity = 2, "mDNS names {ip} as {}", host.hostname);
             self.mdns_cache.insert(ip, host);
         }
     }

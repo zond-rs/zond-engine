@@ -1526,7 +1526,7 @@ impl LocalScanner {
                 }) => continue,
                 Ok(reading) => return Some((reading, protocol.status_protocol())),
                 Err(e) => {
-                    error!(verbosity = 1, "failed to interpret discovery response: {e}");
+                    error!(verbosity = 3, "failed to interpret discovery response: {e}");
                     return None;
                 }
             }

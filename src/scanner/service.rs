@@ -272,7 +272,7 @@ async fn fingerprint_one(
 ) -> Attempt {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
-            verbosity = 1,
+            verbosity = 2,
             "cannot fingerprint {}: no interface recorded for a link-local address",
             target.endpoint(port_number)
         );

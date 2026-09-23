@@ -358,7 +358,7 @@ impl ProbeAudit {
         window: Option<WindowSummary>,
     ) {
         crate::info!(
-            verbosity = 1,
+            verbosity = 3,
             "audit[{scanner}] {found}/{targets} hosts in {elapsed:.0?}, stopped: {reason:?} \
              | sent {sent} (failed {failed}) \
              | captured {seen} (off-target {off}, no-rtt {no_rtt}){kernel} \

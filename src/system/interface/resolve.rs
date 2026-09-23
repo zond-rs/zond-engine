@@ -117,7 +117,7 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
         )?;
 
         info!(
-            verbosity = 1,
+            verbosity = 3,
             "resolved LAN: {} - {}",
             range.start_addr(),
             range.end_addr()

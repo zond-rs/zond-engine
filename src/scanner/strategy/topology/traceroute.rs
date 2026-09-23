@@ -337,7 +337,7 @@ impl Tracer {
                 // network: logging the difference at `-vv` hid the answer to
                 // exactly the question a reader with an empty path is asking.
                 warn!(
-                    verbosity = 1,
+                    verbosity = 2,
                     "trace probe to {target} was not sent: {error:#}"
                 );
                 self.failed += 1;
@@ -668,7 +668,7 @@ impl Tracer {
             );
         } else {
             info!(
-                verbosity = 1,
+                verbosity = 3,
                 "traceroute: {} probes sent ({} refused), {} answered",
                 self.sent,
                 self.failed,
@@ -707,7 +707,7 @@ impl Tracer {
                 Some(arrived) => {
                     let distance = distance_from(arrived);
                     info!(
-                        verbosity = 1,
+                        verbosity = 2,
                         "{target} is about {} away, from the hop counter of {arrived} \
                          its reply arrived with",
                         counted(u128::from(distance), "hop", "hops")
@@ -734,7 +734,7 @@ impl Tracer {
             for target in window {
                 let Some(source) = self.resolver.resolve(*target) else {
                     warn!(
-                        verbosity = 1,
+                        verbosity = 2,
                         "no source address to trace {target} from; skipping it"
                     );
                     continue;

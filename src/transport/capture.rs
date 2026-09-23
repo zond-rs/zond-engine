@@ -819,7 +819,7 @@ where
     }
 
     info!(
-        verbosity = 1,
+        verbosity = 3,
         "capturing on {} with filter: {}",
         counted(opened as u128, "interface", "interfaces"),
         options.filter,

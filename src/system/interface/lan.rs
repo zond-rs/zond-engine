@@ -145,7 +145,7 @@ pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
     };
 
     info!(
-        verbosity = 1,
+        verbosity = 3,
         "identified {} network {}, picking the best one",
         interfaces.len(),
         interfaces_str
@@ -158,7 +158,7 @@ pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
 
     let link = select_best_lan_interface(viable)?;
     info!(
-        verbosity = 1,
+        verbosity = 3,
         "performing LAN scan on interface {}",
         link.name()
     );
