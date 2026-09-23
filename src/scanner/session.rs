@@ -2650,11 +2650,11 @@ mod tests {
     /// may look at.
     #[test]
     fn an_excluded_address_reaches_neither_the_store_nor_the_stream() {
-        let excluded: IpAddr = "10.0.5.7".parse().expect("literal");
-        let allowed: IpAddr = "10.0.6.7".parse().expect("literal");
+        let excluded: IpAddr = "198.51.100.7".parse().expect("literal");
+        let allowed: IpAddr = "203.0.113.7".parse().expect("literal");
 
         let mut ips = crate::model::ip::set::IpSet::new();
-        ips.insert_range("10.0.5.0/24".parse().expect("a valid range"));
+        ips.insert_range("198.51.100.0/24".parse().expect("a valid range"));
         let (mut session, ctx) = ScanSession::builder()
             .excluding(Exclusions::new(ips))
             .build();
@@ -3120,11 +3120,11 @@ mod tests {
     /// continuation of its own scan.
     #[test]
     fn a_resume_leaves_out_an_address_this_sitting_may_not_report() {
-        let excluded: IpAddr = "10.0.5.7".parse().expect("literal");
-        let allowed: IpAddr = "10.0.6.7".parse().expect("literal");
+        let excluded: IpAddr = "198.51.100.7".parse().expect("literal");
+        let allowed: IpAddr = "203.0.113.7".parse().expect("literal");
 
         let mut ips = crate::model::ip::set::IpSet::new();
-        ips.insert_range("10.0.5.0/24".parse().expect("a valid range"));
+        ips.insert_range("198.51.100.0/24".parse().expect("a valid range"));
         let (mut session, ctx) = ScanSession::builder()
             .excluding(Exclusions::new(ips))
             .build();

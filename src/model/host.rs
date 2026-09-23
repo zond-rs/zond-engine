@@ -1569,7 +1569,7 @@ mod tests {
     use crate::model::port::{Port, PortState, Protocol};
     use std::net::Ipv4Addr;
 
-    static IP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 100));
+    static IP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 100));
 
     /// Refusing the address a host leads with hands the lead to the best of the
     /// rest, by the same ranking that chose it: a global IPv6 address over a
@@ -1733,7 +1733,7 @@ mod tests {
         later.record_hop_counter(59);
         later.record_hop(path::Hop::answered(
             1,
-            IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
             None,
         ));
         later.record_hop(path::Hop::silent(2));
@@ -1757,7 +1757,7 @@ mod tests {
     /// so the merge has to go through it hop by hop rather than choosing a side.
     #[test]
     fn merging_paths_keeps_the_stronger_claim_at_every_distance() {
-        let router = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
+        let router = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
 
         let mut inherited = Host::new(IP_ADDR);
         inherited.record_hop(path::Hop::answered(1, router, None).as_inferred());
@@ -1834,7 +1834,7 @@ mod tests {
     /// same journal. A report a reader diffs by eye has to be stable.
     #[test]
     fn a_host_prints_its_roles_in_one_order_however_they_were_recorded() {
-        let expected = "192.168.0.100 (Up) [router, DNS, origin]";
+        let expected = "203.0.113.100 (Up) [router, DNS, origin]";
 
         for order in [
             [
@@ -1874,7 +1874,7 @@ mod tests {
         host.set_status(HostStatus::Up);
         host.add_network_role(NetworkRole::Tarpit);
 
-        assert_eq!(host.to_string(), "192.168.0.100 (Up) [tarpit]");
+        assert_eq!(host.to_string(), "203.0.113.100 (Up) [tarpit]");
     }
 
     /// The largest scan a person can write, recorded whole.

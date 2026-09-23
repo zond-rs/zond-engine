@@ -994,7 +994,7 @@ mod tests {
     use crate::transport::probe::{MockSender, ProbeSender, SendError};
 
     fn ip(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, last))
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, last))
     }
 
     // ─── A network that answers ──────────────────────────────────────────────
@@ -1046,7 +1046,7 @@ mod tests {
 
     /// The address of the router `distance` hops out.
     fn router_at(distance: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(10, 0, distance, 1))
+        IpAddr::V4(Ipv4Addr::new(198, 51, 100, distance))
     }
 
     impl Network {

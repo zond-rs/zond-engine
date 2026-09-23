@@ -639,42 +639,35 @@ mod tests {
     #[test]
     fn test_find_local_index() {
         let interfaces = vec![
-            mock_interface(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 24),
-            mock_interface(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), 8),
+            mock_interface(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 100)), 24),
+            mock_interface(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 5)), 24),
         ];
 
-        // 192.168.1.50 is in 192.168.1.0/24 (index 0)
+        // 192.0.2.50 is in 192.0.2.0/24 (index 0)
         assert_eq!(
-            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50))),
+            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50))),
             Some(0)
         );
 
-        // 10.50.0.1 is in 10.0.0.0/8 (index 1)
+        // 198.51.100.200 is in 198.51.100.0/24 (index 1)
         assert_eq!(
-            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(10, 50, 0, 1))),
+            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 200))),
             Some(1)
         );
 
-        // 172.16.0.1 is unmapped
+        // 203.0.113.1 is unmapped
         assert_eq!(
-            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))),
+            find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
             None
         );
     }
 
     #[test]
     fn on_link_v4_range_stays_intact_and_local() {
-        let interfaces = vec![mock_interface(
-            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
-            24,
-        )];
+        let interfaces = vec![mock_interface(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24)];
         let mut set = IpSet::new();
         set.insert_range(IpRange::V4(
-            Ipv4Range::new(
-                Ipv4Addr::new(192, 168, 1, 10),
-                Ipv4Addr::new(192, 168, 1, 20),
-            )
-            .unwrap(),
+            Ipv4Range::new(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(192, 0, 2, 20)).unwrap(),
         ));
 
         let result = map_ips_to_interfaces_with(set, interfaces, &[]);
@@ -713,10 +706,7 @@ mod tests {
     /// from a range with nothing on it.
     #[test]
     fn a_routed_v6_prefix_too_large_to_walk_is_refused_rather_than_expanded() {
-        let interfaces = vec![mock_interface(
-            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
-            24,
-        )];
+        let interfaces = vec![mock_interface(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24)];
         let mut set = IpSet::new();
         set.insert_range(IpRange::V6(
             Ipv6Range::new(
@@ -815,13 +805,13 @@ mod tests {
         assert_eq!(ips.len(), 5);
     }
 
-    /// The case that sent a scan of `zond <own lan address>` looking for an ARP
-    /// reply nothing would send: the address sits inside its own interface's
-    /// subnet, so the on-link test claims it, and no probe can establish it
-    /// because the kernel routes it through loopback.
+    /// The case that sends a scan of this host's own LAN address looking for an
+    /// ARP reply nothing would send: the address sits inside its own
+    /// interface's subnet, so the on-link test claims it, and no probe can
+    /// establish it because the kernel routes it through loopback.
     #[test]
     fn an_address_this_host_holds_is_ours_rather_than_on_link() {
-        let own: IpAddr = "192.168.0.160".parse().unwrap();
+        let own: IpAddr = "203.0.113.160".parse().unwrap();
         let interfaces = vec![mock_interface(own, 24)];
 
         let mut targets = IpSet::new();
@@ -840,8 +830,8 @@ mod tests {
     /// the half of the distinction that has to keep working.
     #[test]
     fn a_neighbour_on_the_same_segment_is_still_on_link() {
-        let own: IpAddr = "192.168.0.160".parse().unwrap();
-        let neighbour: IpAddr = "192.168.0.101".parse().unwrap();
+        let own: IpAddr = "203.0.113.160".parse().unwrap();
+        let neighbour: IpAddr = "203.0.113.101".parse().unwrap();
         let interfaces = vec![mock_interface(own, 24)];
 
         let mut targets = IpSet::new();
@@ -1070,7 +1060,7 @@ mod tests {
     /// routing table is never asked - the source picks itself by family.
     #[test]
     fn a_forced_source_outranks_the_routing_table_for_a_routed_target() {
-        let lan: IpAddr = "192.168.0.160".parse().unwrap();
+        let lan: IpAddr = "203.0.113.160".parse().unwrap();
         let public: IpAddr = "1.1.1.1".parse().unwrap();
         let interfaces = vec![mock_interface(lan, 24)];
 

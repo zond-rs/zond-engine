@@ -44,8 +44,8 @@ pub enum ProtocolMatch {
     /// neighbor advertisement names the address it is about in its own target
     /// field, and a host with several addresses answers from whichever its stack
     /// prefers rather than from the one that was asked about: measured on a
-    /// real segment, a phone solicited at `2a02:…::21e9` answered from
-    /// `2a02:…:14f0:ca99:5818:74ee`. Keyed on the source, that reply retires no
+    /// real segment, a phone solicited at one global address answered from
+    /// another of its own. Keyed on the source, that reply retires no
     /// probe, yields no round trip, and files the host under an address nobody
     /// asked about.
     ///

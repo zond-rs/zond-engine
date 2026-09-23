@@ -153,10 +153,10 @@ impl LanHost {
     /// that was asked about.
     ///
     /// Not perverse: a host with several IPv6 addresses answers from whichever
-    /// its stack prefers, and on a real segment a phone solicited at
-    /// `2a02:…::21e9` answered from `2a02:…:14f0:ca99:5818:74ee`. The
-    /// advertisement still names the address it is about in its target field,
-    /// which is the only thing tying the reply to the question.
+    /// its stack prefers, and on a real segment a phone solicited at one global
+    /// address answered from another of its own. The advertisement
+    /// still names the address it is about in its target field, which is the
+    /// only thing tying the reply to the question.
     pub fn answering_from(mut self, address: Ipv6Addr) -> Self {
         self.answers_from = Some(address);
         self

@@ -18,7 +18,7 @@
 //! [`crate::scanner::rdns`].
 //!
 //! A hostname comes from the *owner* of an address record: `raspberrypi.local.
-//! A 192.168.0.150` says that this address belongs to that name, and says it
+//! A 203.0.113.150` says that this address belongs to that name, and says it
 //! about one host. The PTR records in the same message do not - service
 //! discovery answers `_airplay._tcp.local. PTR Living Room._airplay._tcp.local.`,
 //! which names a service instance and not the machine hosting it. The one PTR
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn an_address_record_names_its_owner() {
         let message = response(&[
-            record("raspberrypi.local", Rdata::A([192, 168, 0, 150])),
+            record("raspberrypi.local", Rdata::A([203, 0, 113, 150])),
             record("raspberrypi.local", Rdata::Aaaa("fe80::1".parse().unwrap())),
         ]);
 
@@ -267,7 +267,7 @@ mod tests {
             extract_hosts(&message).unwrap(),
             vec![MdnsHost {
                 hostname: "raspberrypi.local".to_string(),
-                ips: BTreeSet::from(["192.168.0.150".parse().unwrap(), "fe80::1".parse().unwrap()]),
+                ips: BTreeSet::from(["203.0.113.150".parse().unwrap(), "fe80::1".parse().unwrap()]),
             }]
         );
     }
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn a_reverse_record_names_the_host_at_that_address() {
         let message = response(&[record(
-            "150.0.168.192.in-addr.arpa",
+            "150.113.0.203.in-addr.arpa",
             Rdata::Ptr("raspberrypi.local"),
         )]);
 
@@ -304,7 +304,7 @@ mod tests {
             extract_hosts(&message).unwrap(),
             vec![MdnsHost {
                 hostname: "raspberrypi.local".to_string(),
-                ips: BTreeSet::from(["192.168.0.150".parse().unwrap()]),
+                ips: BTreeSet::from(["203.0.113.150".parse().unwrap()]),
             }]
         );
     }
@@ -315,12 +315,12 @@ mod tests {
     #[test]
     fn each_owner_in_a_message_is_a_host_of_its_own() {
         let message = response(&[
-            record("appletv.local", Rdata::A([192, 168, 0, 40])),
+            record("appletv.local", Rdata::A([203, 0, 113, 40])),
             record(
                 "_airplay._tcp.local",
                 Rdata::Ptr("Living Room._airplay._tcp.local"),
             ),
-            record("printer.local", Rdata::A([192, 168, 0, 30])),
+            record("printer.local", Rdata::A([203, 0, 113, 30])),
         ]);
 
         assert_eq!(
@@ -328,11 +328,11 @@ mod tests {
             vec![
                 MdnsHost {
                     hostname: "appletv.local".to_string(),
-                    ips: BTreeSet::from(["192.168.0.40".parse().unwrap()]),
+                    ips: BTreeSet::from(["203.0.113.40".parse().unwrap()]),
                 },
                 MdnsHost {
                     hostname: "printer.local".to_string(),
-                    ips: BTreeSet::from(["192.168.0.30".parse().unwrap()]),
+                    ips: BTreeSet::from(["203.0.113.30".parse().unwrap()]),
                 },
             ]
         );
@@ -577,14 +577,14 @@ mod tests {
     /// answer is what makes the device-info query possible at all.
     #[test]
     fn the_reverse_query_asks_for_the_name_of_an_address() {
-        let ip: IpAddr = "192.168.0.160".parse().expect("a literal address");
+        let ip: IpAddr = "203.0.113.160".parse().expect("a literal address");
         let query = build_reverse_query(ip).expect("a reverse name fits");
         let packet = Packet::parse(&query).expect("a responder can parse it");
 
         let question = packet.questions.first().expect("one question");
         assert_eq!(
             question.qname.to_string(),
-            "160.0.168.192.in-addr.arpa",
+            "160.113.0.203.in-addr.arpa",
             "the reverse name names the address"
         );
         assert_eq!(question.qtype, QueryType::PTR);

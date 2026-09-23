@@ -304,16 +304,16 @@ mod tests {
     /// and `excludes` says the gate holds for an address the plan never held.
     #[test]
     fn an_excluded_range_leaves_the_scope_and_stays_out_of_the_gate() {
-        let policy = Exclusions::new(ips("10.0.5.0/24"));
-        let mut scope = ips("10.0.0.0/16");
+        let policy = Exclusions::new(ips("198.51.100.64/26"));
+        let mut scope = ips("198.51.100.0/24");
 
-        assert_eq!(policy.withhold(&mut scope), 256);
-        assert_eq!(scope.len(), 65536 - 256);
-        assert!(!scope.contains(&v4(10, 0, 5, 7)));
-        assert!(scope.contains(&v4(10, 0, 6, 7)));
+        assert_eq!(policy.withhold(&mut scope), 64);
+        assert_eq!(scope.len(), 256 - 64);
+        assert!(!scope.contains(&v4(198, 51, 100, 70)));
+        assert!(scope.contains(&v4(198, 51, 100, 7)));
 
-        assert!(policy.excludes(&v4(10, 0, 5, 7)));
-        assert!(!policy.excludes(&v4(10, 0, 6, 7)));
+        assert!(policy.excludes(&v4(198, 51, 100, 70)));
+        assert!(!policy.excludes(&v4(198, 51, 100, 7)));
     }
 
     /// A policy that names ground the scan was never going to walk withholds
@@ -324,8 +324,8 @@ mod tests {
     /// document was applied when nothing about it was.
     #[test]
     fn a_policy_that_does_not_overlap_withholds_nothing() {
-        let policy = Exclusions::new(ips("192.168.9.0/24"));
-        let mut scope = ips("10.0.0.0/24");
+        let policy = Exclusions::new(ips("203.0.113.0/24"));
+        let mut scope = ips("198.51.100.0/24");
 
         assert_eq!(policy.withhold(&mut scope), 0);
         assert_eq!(scope.len(), 256);
@@ -339,19 +339,19 @@ mod tests {
     /// the resulting scan would look exactly like a correct one.
     #[test]
     fn layers_accumulate_and_emptied_units_are_dropped() {
-        let mut policy = Exclusions::new(ips("10.0.5.0/24"));
-        policy.extend(&Exclusions::new(ips("10.0.7.0/24")));
+        let mut policy = Exclusions::new(ips("192.0.2.0/24"));
+        policy.extend(&Exclusions::new(ips("203.0.113.0/24")));
 
-        assert!(policy.excludes(&v4(10, 0, 5, 1)));
-        assert!(policy.excludes(&v4(10, 0, 7, 1)));
+        assert!(policy.excludes(&v4(192, 0, 2, 1)));
+        assert!(policy.excludes(&v4(203, 0, 113, 1)));
         assert!(
-            policy.excludes(&"::ffff:10.0.7.1".parse().expect("literal")),
+            policy.excludes(&"::ffff:203.0.113.1".parse().expect("literal")),
             "a layer's other spelling arrives with it"
         );
 
         let mut map = TargetMap::new();
-        map.add_unit(TargetSet::new(ips("10.0.5.0/24"), PortSet::top_tcp(2)));
-        map.add_unit(TargetSet::new(ips("10.0.6.0/24"), PortSet::top_tcp(2)));
+        map.add_unit(TargetSet::new(ips("192.0.2.0/24"), PortSet::top_tcp(2)));
+        map.add_unit(TargetSet::new(ips("198.51.100.0/24"), PortSet::top_tcp(2)));
 
         let withheld = policy.withhold_targets(&mut map);
 

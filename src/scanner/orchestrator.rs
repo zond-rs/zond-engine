@@ -1916,7 +1916,7 @@ pub(super) async fn run_port_phase(
 /// would report a scan that covered ground it deliberately skipped.
 ///
 /// Narrows every unit rather than rebuilding one set against one port list,
-/// because a unit may carry ports no other one does: `10.0.0.1:8080` names its
+/// because a unit may carry ports no other one does: `192.0.2.1:8080` names its
 /// own, and a subset that dropped that would answer a different question.
 pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
     // Walked once, not once per unit. `live.iter()` expands every address of
@@ -2331,7 +2331,7 @@ mod tests {
         let (_session, ctx) = ScanSession::new();
 
         let kept = walkable(
-            ip_set(&["2001:db8::/64", "10.0.0.0/30", "2001:db8:1::/126"]),
+            ip_set(&["2001:db8::/64", "192.0.2.0/30", "2001:db8:1::/126"]),
             &ctx,
         );
 
@@ -2348,7 +2348,7 @@ mod tests {
     fn a_set_that_can_be_walked_is_left_alone_and_files_nothing() {
         let (_session, ctx) = ScanSession::new();
 
-        let kept = walkable(ip_set(&["10.0.0.0/24", "2001:db8::/120"]), &ctx);
+        let kept = walkable(ip_set(&["192.0.2.0/24", "2001:db8::/120"]), &ctx);
 
         assert_eq!(kept.len(), 512);
         assert!(ctx.failures_snapshot().is_empty());
@@ -3052,7 +3052,7 @@ mod tests {
     #[test]
     fn a_host_that_did_not_answer_is_not_live() {
         for status in [HostStatus::Down, HostStatus::Unknown] {
-            let (_session, ctx) = store_holding(vec![host_at("10.0.0.1", status)]);
+            let (_session, ctx) = store_holding(vec![host_at("192.0.2.1", status)]);
 
             assert!(
                 live_addresses(&ctx).is_empty(),
@@ -3063,10 +3063,10 @@ mod tests {
 
     #[test]
     fn a_host_that_answered_is_live() {
-        let (_session, ctx) = store_holding(vec![host_at("10.0.0.1", HostStatus::Up)]);
+        let (_session, ctx) = store_holding(vec![host_at("192.0.2.1", HostStatus::Up)]);
         let live = live_addresses(&ctx);
 
-        assert!(live.contains(&"10.0.0.1".parse::<IpAddr>().expect("an address")));
+        assert!(live.contains(&"192.0.2.1".parse::<IpAddr>().expect("an address")));
         assert_eq!(live.len(), 1);
     }
 
@@ -3076,13 +3076,13 @@ mod tests {
     #[test]
     fn every_address_of_a_live_host_is_live() {
         let mut host = host_at("2001:db8::1", HostStatus::Up);
-        host.add_ip("10.0.0.1".parse().expect("an address"));
+        host.add_ip("192.0.2.1".parse().expect("an address"));
 
         let (_session, ctx) = store_holding(vec![host]);
         let live = live_addresses(&ctx);
 
         assert!(
-            live.contains(&"10.0.0.1".parse::<IpAddr>().expect("an address")),
+            live.contains(&"192.0.2.1".parse::<IpAddr>().expect("an address")),
             "the targeted address was lost because the host was filed elsewhere"
         );
         assert!(live.contains(&"2001:db8::1".parse::<IpAddr>().expect("an address")));
@@ -3109,7 +3109,7 @@ mod tests {
         use crate::model::port::{Port, PortState, Protocol, Service};
 
         let (session, ctx) = crate::scanner::session::ScanSession::new();
-        let ip: std::net::IpAddr = "192.168.0.1".parse().expect("literal");
+        let ip: std::net::IpAddr = "203.0.113.1".parse().expect("literal");
         ctx.write_host(ScopedIp::unscoped(ip), |host| {
             let service = Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49");
             host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(service));
@@ -3143,7 +3143,7 @@ mod tests {
         use crate::model::port::{Port, PortState, Protocol, Service};
 
         let (session, ctx) = crate::scanner::session::ScanSession::new();
-        let ip: std::net::IpAddr = "192.168.0.1".parse().expect("literal");
+        let ip: std::net::IpAddr = "203.0.113.1".parse().expect("literal");
         ctx.write_host(ScopedIp::unscoped(ip), |host| {
             let service = Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49");
             host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(service));

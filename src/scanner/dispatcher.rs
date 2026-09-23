@@ -378,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_emits_all_targets_shuffled() {
         let mut target_map = TargetMap::new();
-        let ip_set: IpSet = "192.168.1.1-192.168.1.10".parse().unwrap();
+        let ip_set: IpSet = "192.0.2.1-192.0.2.10".parse().unwrap();
         let port_set: PortSet = "80".parse().unwrap();
         let unit = TargetSet::new(ip_set, port_set);
         target_map.units.push(unit);
@@ -413,11 +413,11 @@ mod tests {
     async fn the_dispatcher_emits_exactly_the_plans_enumeration() {
         let mut target_map = TargetMap::new();
         target_map.units.push(TargetSet::new(
-            "192.168.1.1-192.168.1.10".parse().unwrap(),
+            "192.0.2.1-192.0.2.10".parse().unwrap(),
             "80,443".parse().unwrap(),
         ));
         target_map.units.push(TargetSet::new(
-            "10.0.0.1-10.0.0.3".parse().unwrap(),
+            "198.51.100.1-198.51.100.3".parse().unwrap(),
             "22".parse().unwrap(),
         ));
 
@@ -452,7 +452,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_stops_early_on_abort() {
         let mut target_map = TargetMap::new();
-        let ip_set: IpSet = "192.168.1.1-192.168.1.100".parse().unwrap();
+        let ip_set: IpSet = "192.0.2.1-192.0.2.100".parse().unwrap();
         let port_set: PortSet = "80".parse().unwrap();
         let unit = TargetSet::new(ip_set, port_set);
         target_map.units.push(unit);

@@ -865,7 +865,7 @@ pub async fn resolve_hosts_async(ctx: &ScanContext) {
 ///
 /// A resolver that answers a reverse lookup for every address in a range,
 /// whether or not anything is there, does it by writing the address into the
-/// label: `192.168.0.26` comes back as `192-168-0-26.lan`. Consumer routers do
+/// label: `203.0.113.26` comes back as `203-0-113-26.lan`. Consumer routers do
 /// this by default, and cloud providers do it deliberately.
 ///
 /// That is not a name, and accepting it costs more than an empty column. It
@@ -880,7 +880,7 @@ pub async fn resolve_hosts_async(ctx: &ScanContext) {
 /// and a colon becomes a dash. Each substitution is undone and the result read
 /// back as an address, then compared against the very address the answer was
 /// about. A machine genuinely called `10-4-good-buddy` is not an address and
-/// keeps its name; one called `192-168-0-26` while answering at some other
+/// keeps its name; one called `203-0-113-26` while answering at some other
 /// address keeps its name too, because there the name says something the address
 /// does not.
 fn restates(name: &str, ip: IpAddr) -> bool {
@@ -907,7 +907,7 @@ fn address_written_as_a_label(name: &str) -> Option<IpAddr> {
         return Some(ip);
     }
 
-    // The other shape: the address as leading labels of its own, `192.168.0.26`
+    // The other shape: the address as leading labels of its own, `203.0.113.26`
     // in front of the domain rather than inside one label. Rarer, because it
     // needs the resolver to hand out a name four labels deep, and produced by
     // enough of them to be worth reading.
@@ -956,14 +956,14 @@ mod tests {
     /// label, and the address it was answering about.
     #[test]
     fn an_address_written_into_a_label_is_recognised_as_one() {
-        let subject = v4(192, 168, 0, 26);
+        let subject = v4(203, 0, 113, 26);
 
         for name in [
-            "192-168-0-26.lan",
-            "192-168-0-26.fritz.box",
-            "192_168_0_26.lan",
-            "192.168.0.26.lan",
-            "192-168-0-26",
+            "203-0-113-26.lan",
+            "203-0-113-26.fritz.box",
+            "203_0_113_26.lan",
+            "203.0.113.26.lan",
+            "203-0-113-26",
         ] {
             assert!(
                 restates(name, subject),
@@ -989,15 +989,15 @@ mod tests {
     /// how a name *looks* would take them.
     #[test]
     fn a_real_name_is_not_mistaken_for_an_address() {
-        let subject = v4(192, 168, 0, 26);
+        let subject = v4(203, 0, 113, 26);
 
         for name in [
             "epson928262.lan",
             "10-4-good-buddy.lan",
-            "kabelbox.local",
+            "gateway.local",
             "MacBook-Pro.local",
             "host-1.example",
-            "192-168-0.lan",
+            "203-0-113.lan",
         ] {
             assert!(!restates(name, subject), "{name} was taken for an address");
         }
@@ -1011,7 +1011,7 @@ mod tests {
     /// engine has no business deciding it is wrong.
     #[test]
     fn a_label_naming_some_other_address_is_left_alone() {
-        assert!(!restates("10-0-0-1.lan", v4(192, 168, 0, 26)));
+        assert!(!restates("198-51-100-1.lan", v4(203, 0, 113, 26)));
     }
 
     /// The point of the whole exercise: a synthesised name never reaches the
@@ -1025,9 +1025,9 @@ mod tests {
         let mut resolver = resolver_asking(vec![
             "127.0.0.1:53".parse().expect("a valid socket address"),
         ]);
-        let ip = v4(192, 168, 0, 26);
+        let ip = v4(203, 0, 113, 26);
 
-        resolver.absorb_sniffed_dns(&overheard(ip, "192-168-0-26.lan"));
+        resolver.absorb_sniffed_dns(&overheard(ip, "203-0-113-26.lan"));
         assert!(
             !resolver.hostname_map.contains_key(&ip),
             "the address written again was recorded as a name"
@@ -1404,12 +1404,12 @@ mod tests {
     /// replaced.
     #[tokio::test]
     async fn an_overheard_name_does_not_displace_a_resolved_one() {
-        let ip = v4(192, 168, 0, 40);
+        let ip = v4(203, 0, 113, 40);
         let mut resolver = resolver_holding(ip, "resolver-confirmed.example.com");
 
         resolver.absorb_sniffed(
             &from_port(DNS_PORT, named_response(ip, "attacker-chosen.example.com")),
-            v4(10, 0, 0, 99),
+            v4(198, 51, 100, 99),
         );
 
         assert_eq!(
@@ -1430,7 +1430,7 @@ mod tests {
     /// the resolver's name for good.
     #[tokio::test]
     async fn an_overheard_name_that_arrives_first_gives_way_to_the_resolver() {
-        let ip = v4(192, 168, 0, 42);
+        let ip = v4(203, 0, 113, 42);
         let server: SocketAddr = "127.0.0.1:53".parse().expect("a valid socket address");
         let (session, ctx) = ScanSession::new();
         ctx.update_host(ip, |host| host.set_status(HostStatus::Up));
@@ -1441,7 +1441,7 @@ mod tests {
 
         resolver.absorb_sniffed(
             &from_port(DNS_PORT, named_response(ip, "attacker-chosen.example.com")),
-            v4(10, 0, 0, 99),
+            v4(198, 51, 100, 99),
         );
         resolver.absorb_reply(
             &named_response(ip, "resolver-confirmed.example.com"),
@@ -1466,7 +1466,7 @@ mod tests {
     /// delivered last.
     #[tokio::test]
     async fn between_two_resolvers_asked_the_first_answer_stands() {
-        let ip = v4(192, 168, 0, 43);
+        let ip = v4(203, 0, 113, 43);
         let first: SocketAddr = "127.0.0.1:53".parse().expect("a valid socket address");
         let second: SocketAddr = "127.0.0.2:53".parse().expect("a valid socket address");
         let mut resolver = resolver_asking(vec![first, second]);
@@ -1489,14 +1489,14 @@ mod tests {
     /// And it still fills a gap, which is the whole reason the path exists.
     #[tokio::test]
     async fn an_overheard_name_still_names_an_address_nothing_else_has() {
-        let ip = v4(192, 168, 0, 41);
+        let ip = v4(203, 0, 113, 41);
         let mut resolver = resolver_asking(vec![
             "127.0.0.1:53".parse().expect("a valid socket address"),
         ]);
 
         resolver.absorb_sniffed(
             &from_port(DNS_PORT, named_response(ip, "overheard.example.com")),
-            v4(10, 0, 0, 99),
+            v4(198, 51, 100, 99),
         );
 
         assert_eq!(

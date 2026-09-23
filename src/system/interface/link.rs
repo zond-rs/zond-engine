@@ -542,13 +542,16 @@ mod tests {
     /// sweep wait out a timeout for every address past the edge.
     #[test]
     fn a_range_is_on_link_only_if_all_of_it_is() {
-        let link = holding("en0", "10.0.0.7", 24);
+        let link = holding("en0", "198.51.100.7", 25);
 
-        assert!(is_on_link(&link, &targets("10.0.0.1-10.0.0.50")));
-        assert!(is_on_link(&link, &targets("10.0.0.0/24")), "the whole");
-        assert!(!is_on_link(&link, &targets("10.0.1.1-10.0.1.5")), "past");
+        assert!(is_on_link(&link, &targets("198.51.100.1-198.51.100.50")));
+        assert!(is_on_link(&link, &targets("198.51.100.0/25")), "the whole");
         assert!(
-            !is_on_link(&link, &targets("10.0.0.200-10.0.1.10")),
+            !is_on_link(&link, &targets("198.51.100.130-198.51.100.135")),
+            "past"
+        );
+        assert!(
+            !is_on_link(&link, &targets("198.51.100.100-198.51.100.140")),
             "a range that starts on the link and leaves it is not on the link"
         );
     }
@@ -557,7 +560,7 @@ mod tests {
     fn a_link_with_no_addressing_has_nothing_on_it() {
         let bare = link("en0", LinkKind::Wired);
 
-        assert!(!is_on_link(&bare, &targets("10.0.0.1-10.0.0.50")));
+        assert!(!is_on_link(&bare, &targets("198.51.100.1-198.51.100.50")));
     }
     /// An IPv6 address on the link does not make an IPv4 range local.
     ///
@@ -571,7 +574,10 @@ mod tests {
             64,
         )]);
 
-        assert!(!is_on_link(&v6_only, &targets("10.0.0.1-10.0.0.50")));
+        assert!(!is_on_link(
+            &v6_only,
+            &targets("198.51.100.1-198.51.100.50")
+        ));
     }
     use super::*;
 
@@ -584,21 +590,33 @@ mod tests {
     /// Both ends because the question this answers is what the *link* carries,
     /// not what is worth probing. Whether a sweep spends a probe on the network
     /// or broadcast address is a decision made later and by somebody else; an
-    /// on-link test that excluded them would report a host at `10.0.0.255` as
-    /// being somewhere else entirely.
+    /// on-link test that excluded them would report a host at `198.51.100.127`
+    /// as being somewhere else entirely.
     #[test]
     fn a_network_covers_every_address_its_prefix_names() {
-        let held = v4("10.0.0.7", 24);
+        let held = v4("198.51.100.7", 25);
         let network = held.network();
 
-        assert_eq!(network.start_addr(), "10.0.0.0".parse::<IpAddr>().unwrap());
-        assert_eq!(network.end_addr(), "10.0.0.255".parse::<IpAddr>().unwrap());
-        assert!(held.contains(&"10.0.0.0".parse().unwrap()), "the network");
+        assert_eq!(
+            network.start_addr(),
+            "198.51.100.0".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            network.end_addr(),
+            "198.51.100.127".parse::<IpAddr>().unwrap()
+        );
         assert!(
-            held.contains(&"10.0.0.255".parse().unwrap()),
+            held.contains(&"198.51.100.0".parse().unwrap()),
+            "the network"
+        );
+        assert!(
+            held.contains(&"198.51.100.127".parse().unwrap()),
             "the broadcast"
         );
-        assert!(!held.contains(&"10.0.1.1".parse().unwrap()), "the next one");
+        assert!(
+            !held.contains(&"198.51.100.128".parse().unwrap()),
+            "the next one"
+        );
     }
 
     /// A `/32` is one address, and a `/0` is all of them. Both are real: a
@@ -622,10 +640,10 @@ mod tests {
     /// lets it return a value rather than a `Result` nobody could act on.
     #[test]
     fn a_prefix_past_its_family_is_clamped_and_the_address_survives() {
-        let absurd = v4("10.0.0.7", 200);
+        let absurd = v4("198.51.100.7", 200);
 
         assert_eq!(absurd.prefix(), 32, "clamped to what IPv4 has");
-        assert_eq!(absurd.address(), "10.0.0.7".parse::<IpAddr>().unwrap());
+        assert_eq!(absurd.address(), "198.51.100.7".parse::<IpAddr>().unwrap());
         assert_eq!(absurd.network().len(), 1);
 
         let v6 = LinkAddress::new(IpAddr::V6("fe80::1".parse().unwrap()), 255);
@@ -672,15 +690,15 @@ mod tests {
     #[test]
     fn a_links_addresses_are_readable_by_family() {
         let link = Link::new("en0", 1).with_addresses(vec![
-            v4("10.0.0.7", 24),
+            v4("198.51.100.7", 24),
             LinkAddress::new(IpAddr::V6("fe80::1".parse().unwrap()), 64),
-            v4("192.168.1.5", 25),
+            v4("192.0.2.5", 25),
         ]);
 
         let v4s: Vec<_> = link.ipv4().collect();
         assert_eq!(v4s.len(), 2);
-        assert_eq!(v4s[0], ("10.0.0.7".parse().unwrap(), 24));
-        assert_eq!(v4s[1], ("192.168.1.5".parse().unwrap(), 25));
+        assert_eq!(v4s[0], ("198.51.100.7".parse().unwrap(), 24));
+        assert_eq!(v4s[1], ("192.0.2.5".parse().unwrap(), 25));
 
         let v6s: Vec<_> = link.ipv6().collect();
         assert_eq!(v6s.len(), 1);

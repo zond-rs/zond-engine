@@ -17,16 +17,16 @@
 //! | Written | Means |
 //! |---|---|
 //! | `127.0.0.1`, `2001:db8::1` | one address |
-//! | `192.168.1.0/24`, `2001:db8::/64` | a CIDR block |
-//! | `10.0.0.1-10.0.0.50` | a range, both ends written out |
-//! | `10.0.0.1-50`, `192.168.1.1-2.254` | a range whose end continues the start's octets |
+//! | `192.0.2.0/24`, `2001:db8::/64` | a CIDR block |
+//! | `198.51.100.1-198.51.100.50` | a range, both ends written out |
+//! | `198.51.100.1-50`, `192.168.1.1-2.254` | a range whose end continues the start's octets |
 //! | `fe80::1%en0` | a link-local address on a named interface |
 //! | `lan` | a keyword, resolved by the caller |
 //!
 //! The shortened range is IPv4 only: the end is read as however many trailing
-//! octets it names, so `10.0.0.1-50` ends at `10.0.0.50` and `192.168.1.1-2.254`
-//! at `192.168.2.254`. IPv6 has no comparable form, and inventing one would
-//! make `::1-5` ambiguous with hex.
+//! octets it names, so `198.51.100.1-50` ends at `198.51.100.50` and
+//! `192.168.1.1-2.254` at `192.168.2.254`. IPv6 has no comparable form, and
+//! inventing one would make `::1-5` ambiguous with hex.
 //!
 //! ## An IPv4-mapped address is the IPv4 host it spells
 //!
@@ -119,7 +119,7 @@ impl Keyword {
 /// `lan` keyword therefore has to know whether it was used, and this answers
 /// from the caller's own input rather than from anything the parser remembers.
 ///
-/// Splits on commas the way [`to_set`] does, so `"lan,10.0.0.0/24"` counts.
+/// Splits on commas the way [`to_set`] does, so `"lan,198.51.100.0/24"` counts.
 pub fn names_keyword<S: AsRef<str>>(targets: &[S], keyword: Keyword) -> bool {
     targets.iter().any(|target| {
         target
@@ -235,7 +235,7 @@ pub type ZoneResolverFn<'a> = &'a (dyn Fn(&str) -> Option<u32> + Sync);
 /// ```
 /// use zond_engine::model::parse::ip::to_set;
 ///
-/// let set = to_set(&["192.168.1.0/24", "10.0.0.1", "10.0.0.5-10"], None, None).unwrap();
+/// let set = to_set(&["192.0.2.0/24", "198.51.100.1", "198.51.100.5-10"], None, None).unwrap();
 ///
 /// // 256 from the block, one literal, six from the range.
 /// assert_eq!(set.len(), 263);
@@ -294,7 +294,7 @@ pub fn insert_expression(
     // its documentation invites an importer to call it directly with a token
     // it has already split out, and such a caller would otherwise get a
     // grammar split in two: `Keyword::from_token` trims, so ` lan ` would
-    // resolve, and `IpAddr::from_str` does not, so ` 10.0.0.1 ` would come
+    // resolve, and `IpAddr::from_str` does not, so ` 198.51.100.1 ` would come
     // back malformed and be tried as a hostname.
     let s = s.trim();
 
@@ -396,7 +396,7 @@ fn parse_scoped(
 /// Parses a hyphenated range, deferring to the one range grammar.
 ///
 /// Written here as a thin wrapper rather than as a second implementation so
-/// that `10.0.0.1-50` cannot mean one thing through this module and fail to
+/// that `198.51.100.1-50` cannot mean one thing through this module and fail to
 /// parse through [`IpRange`]'s own `from_str`.
 fn parse_range(s: &str) -> Result<IpRange, IpParseError> {
     s.parse::<IpRange>().map_err(|error| match error {
@@ -478,15 +478,15 @@ mod tests {
     #[test]
     fn both_ways_into_the_parser_accept_the_same_spellings() {
         for expression in [
-            "10.0.0.1-50",
+            "198.51.100.1-50",
             "192.168.1.1-2.254",
-            "10.0.0.1-10.0.0.50",
-            "192.168.1.0/24",
+            "198.51.100.1-198.51.100.50",
+            "192.0.2.0/24",
             "2001:db8::1-2001:db8::5",
             "8.8.8.8",
             // Spellings a second grammar would most easily read differently.
-            "10.0.0.0-0",
-            "  10.0.0.1  ",
+            "198.51.100.0-0",
+            "  198.51.100.1  ",
         ] {
             let direct = to_set(&[expression], None, None)
                 .unwrap_or_else(|e| panic!("to_set rejected `{expression}`: {e}"));
@@ -541,27 +541,27 @@ mod tests {
     /// to.
     #[test]
     fn a_single_literal_address_becomes_a_set_of_one() {
-        let input = vec!["192.168.1.1"];
+        let input = vec!["192.0.2.1"];
         let set = to_set(&input, None, None).expect("Should parse single IP");
         assert_eq!(set.len(), 1);
-        assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))));
     }
 
     /// One argument may itself be a list, so a command line and a whole target
     /// file reach the same code.
     #[test]
     fn one_argument_may_name_several_addresses() {
-        let input = vec!["10.0.0.1, 10.0.0.2, 10.0.0.5"];
+        let input = vec!["198.51.100.1, 198.51.100.2, 198.51.100.5"];
         let set = to_set(&input, None, None).expect("Should parse comma list");
         assert_eq!(set.len(), 3);
-        assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
     }
 
     /// A block is expanded to what it covers rather than to what was written,
     /// which is the difference a budget check depends on.
     #[test]
     fn a_cidr_block_covers_every_address_in_it() {
-        let input = vec!["172.16.0.0/24"];
+        let input = vec!["203.0.113.0/24"];
         let set = to_set(&input, None, None).expect("Should parse CIDR");
         assert_eq!(set.len(), 256);
     }
@@ -579,7 +579,7 @@ mod tests {
     /// a clamped `/33` silently scans the whole `/32` it was not asked about.
     #[test]
     fn a_prefix_longer_than_its_family_allows_is_refused() {
-        let input = vec!["192.168.1.1/33"];
+        let input = vec!["192.0.2.1/33"];
         let result = to_set(&input, None, None);
         assert_eq!(result.unwrap_err(), IpParseError::InvalidPrefix(33));
     }
@@ -596,14 +596,14 @@ mod tests {
     /// concerned, so the two say the same thing.
     #[test]
     fn a_prefix_too_large_for_a_u8_is_still_a_prefix() {
-        let too_large = to_set(&["10.0.0.0/999"], None, None).unwrap_err();
+        let too_large = to_set(&["198.51.100.0/999"], None, None).unwrap_err();
         assert_eq!(too_large, IpParseError::InvalidPrefix(999));
         assert!(too_large.to_string().contains("0-32"), "{too_large}");
 
         // Text that is not a number at all stays malformed, which is what lets
         // a hostname reach the lookup that resolves it.
         assert!(matches!(
-            to_set(&["10.0.0.0/wide"], None, None),
+            to_set(&["198.51.100.0/wide"], None, None),
             Err(IpParseError::Malformed(_))
         ));
     }
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(v6, IpParseError::InvalidPrefix(129));
         assert!(v6.to_string().contains("0-128"), "{v6}");
 
-        let v4 = to_set(&["192.168.1.1/33"], None, None).unwrap_err();
+        let v4 = to_set(&["192.0.2.1/33"], None, None).unwrap_err();
         assert!(v4.to_string().contains("0-32"), "{v4}");
     }
 
@@ -626,7 +626,7 @@ mod tests {
     /// read as an empty set that scans nothing.
     #[test]
     fn a_range_written_backwards_is_refused() {
-        let input = vec!["10.0.0.10-1"];
+        let input = vec!["198.51.100.10-1"];
         let result = to_set(&input, None, None);
         assert!(matches!(result, Err(IpParseError::InvalidRange(_, _))));
     }
@@ -685,20 +685,20 @@ mod tests {
     /// reading a file to call it with a token it has already split out. Were
     /// `to_set` the only thing trimming, such a caller would meet a grammar
     /// split in two: `Keyword::from_token` trims of its own accord so ` lan `
-    /// would resolve, and `IpAddr::from_str` does not, so ` 10.0.0.1 ` would
-    /// come back malformed and then be tried as a hostname by the builder above
-    /// it.
+    /// would resolve, and `IpAddr::from_str` does not, so ` 198.51.100.1 `
+    /// would come back malformed and then be tried as a hostname by the builder
+    /// above it.
     #[test]
     fn an_untrimmed_token_reads_the_same_as_a_trimmed_one() {
         let mut set = IpSet::new();
-        insert_expression(" 10.0.0.1 ", &mut set, None, None).expect("an address with space");
-        insert_expression("\t192.168.1.0/24\n", &mut set, None, None).expect("a block with space");
-        insert_expression(" 10.0.0.5-10 ", &mut set, None, None).expect("a range with space");
+        insert_expression(" 198.51.100.1 ", &mut set, None, None).expect("an address with space");
+        insert_expression("\t192.0.2.0/24\n", &mut set, None, None).expect("a block with space");
+        insert_expression(" 198.51.100.5-10 ", &mut set, None, None).expect("a range with space");
 
         assert_eq!(set.len(), 1 + 256 + 6);
 
         fn keywords(_: Keyword, set: &mut IpSet) -> Result<(), IpParseError> {
-            set.insert("172.16.0.1".parse().expect("an address"));
+            set.insert("203.0.113.1".parse().expect("an address"));
             Ok(())
         }
         let mut keyword = IpSet::new();
@@ -743,7 +743,7 @@ mod tests {
             Err(IpParseError::ZoneOnUnscopedTarget(_))
         ));
         assert!(matches!(
-            to_set(&["192.168.1.1%en0"], None, Some(&zones)),
+            to_set(&["192.0.2.1%en0"], None, Some(&zones)),
             Err(IpParseError::ZoneOnUnscopedTarget(_))
         ));
     }

@@ -845,14 +845,14 @@ mod tests {
     const TCP: Protocol = Protocol::Tcp;
 
     fn ip(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, last))
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, last))
     }
 
     fn day(n: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + DAY * n as u32
     }
 
-    /// A host that answered, at `10.0.0.<last>`.
+    /// A host that answered, at `192.0.2.<last>`.
     fn host(last: u8) -> Host {
         let mut host = Host::new(ip(last));
         host.set_status(HostStatus::Up);

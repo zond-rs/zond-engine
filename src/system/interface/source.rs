@@ -420,14 +420,14 @@ mod tests {
     /// of address and must not cost the rest anything.
     #[test]
     fn an_on_link_target_still_resolves_to_its_own_segment() {
-        let table = OnLinkTable::from_links(&[mock_interface(vec![v4net(192, 168, 1, 10, 24)])]);
+        let table = OnLinkTable::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])]);
 
         assert_eq!(
-            table.source_for(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50))),
-            Some(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 10)))
+            table.source_for(IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 50))),
+            Some(IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10)))
         );
         assert_eq!(
-            table.source_for(IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1))),
+            table.source_for(IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1))),
             None
         );
     }
@@ -457,18 +457,18 @@ mod tests {
 
     #[test]
     fn on_link_target_uses_that_subnet_source() {
-        let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
+        let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24)]);
         let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
-            table.source_for(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200))),
-            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)))
+            table.source_for(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200))),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)))
         );
     }
 
     #[test]
     fn off_link_target_has_no_on_link_source() {
-        let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
+        let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24)]);
         let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
@@ -479,12 +479,15 @@ mod tests {
 
     #[test]
     fn longest_prefix_wins() {
-        let intf = mock_interface(vec![v4net(10, 0, 0, 1, 8), v4net(10, 1, 2, 3, 24)]);
+        let intf = mock_interface(vec![
+            v4net(198, 51, 100, 1, 24),
+            v4net(198, 51, 100, 130, 25),
+        ]);
         let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
-            table.source_for(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 200))),
-            Some(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3)))
+            table.source_for(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 200))),
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 130)))
         );
     }
 
@@ -494,7 +497,7 @@ mod tests {
         // families not matching each other, and a link-local target is declined
         // for a different reason that would mask what is being tested.
         let v6 = v6net(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, 1), 64);
-        let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24), v6]);
+        let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24), v6]);
         let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
@@ -510,18 +513,18 @@ mod tests {
 
     #[test]
     fn resolver_caches_and_reports_sources() {
-        let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
+        let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24)]);
         let mut resolver = SourceResolver::from_links(&[intf]);
 
         assert!(resolver.has_sources());
-        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
         assert_eq!(
             resolver.resolve(target),
-            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)))
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)))
         );
         assert_eq!(
             resolver.resolve(target),
-            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)))
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)))
         );
     }
 
@@ -537,9 +540,9 @@ mod tests {
     /// the kernel is never consulted.
     #[test]
     fn a_forced_source_answers_a_routed_target_by_family() {
-        let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
         let v6 = IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1));
-        let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
+        let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24)]);
         let mut resolver = SourceResolver::from_links(&[intf]).with_forced(vec![v6, v4]);
 
         let public = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
@@ -559,7 +562,7 @@ mod tests {
     /// may not work, and the scan will say so; refusing to try cannot.
     #[test]
     fn a_global_target_the_kernel_will_not_route_still_gets_a_global_source() {
-        let global = Ipv6Addr::new(0x2a02, 0x908, 0, 0, 0, 0, 0, 0xb1a0);
+        let global = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0);
         let intf = mock_interface(vec![
             v6net(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50), 64),
             v6net(global, 64),
@@ -588,7 +591,7 @@ mod tests {
     fn a_link_local_target_is_offered_no_source_at_all() {
         let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
         let intf = mock_interface(vec![
-            v6net(Ipv6Addr::new(0x2a02, 0x908, 0, 0, 0, 0, 0, 1), 64),
+            v6net(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 64),
             v6net(link_local, 64),
         ]);
 
@@ -609,7 +612,7 @@ mod tests {
     /// none.
     #[test]
     fn an_unroutable_v4_target_is_not_second_guessed() {
-        let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
+        let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24)]);
 
         assert_eq!(
             plausible_source(

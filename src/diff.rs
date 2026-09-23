@@ -579,7 +579,7 @@ mod tests {
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
     fn ip(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, last))
     }
 
     fn host(last: u8) -> Host {
@@ -805,8 +805,8 @@ mod tests {
     #[test]
     fn a_host_that_appeared_where_the_baseline_looked_is_confirmed() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let before = scoped(vec![host(10)], "192.168.0.0/24", &[], at);
-        let after = scoped(vec![host(10), host(11)], "192.168.0.0/24", &[], at + DAY);
+        let before = scoped(vec![host(10)], "203.0.113.0/24", &[], at);
+        let after = scoped(vec![host(10), host(11)], "203.0.113.0/24", &[], at + DAY);
 
         let diff = ScanDiff::compare(&before, &after, &DiffOptions::default());
 
@@ -831,8 +831,8 @@ mod tests {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         // The baseline walked a quarter of the segment. The host that turns up
         // in the wider scan was never in reach of the first one.
-        let before = scoped(vec![host(10)], "192.168.0.0/26", &[], at);
-        let after = scoped(vec![host(10), host(200)], "192.168.0.0/24", &[], at + DAY);
+        let before = scoped(vec![host(10)], "203.0.113.0/26", &[], at);
+        let after = scoped(vec![host(10), host(200)], "203.0.113.0/24", &[], at + DAY);
 
         let diff = ScanDiff::between(&before, &after);
 
@@ -861,11 +861,11 @@ mod tests {
     #[test]
     fn a_host_the_current_scan_was_forbidden_reads_as_withheld() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let before = scoped(vec![host(10), host(11)], "192.168.0.0/24", &[], at);
+        let before = scoped(vec![host(10), host(11)], "203.0.113.0/24", &[], at);
         let after = scoped(
             vec![host(10)],
-            "192.168.0.0/24",
-            &["192.168.0.11"],
+            "203.0.113.0/24",
+            &["203.0.113.11"],
             at + DAY,
         );
 
@@ -914,8 +914,8 @@ mod tests {
     #[test]
     fn a_host_that_went_quiet_where_the_scan_looked_is_confirmed() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let before = scoped(vec![host(10), host(11)], "192.168.0.0/24", &[], at);
-        let after = scoped(vec![host(10)], "192.168.0.0/24", &[], at + DAY);
+        let before = scoped(vec![host(10), host(11)], "203.0.113.0/24", &[], at);
+        let after = scoped(vec![host(10)], "203.0.113.0/24", &[], at + DAY);
 
         let diff = ScanDiff::between(&before, &after);
         let summary = diff.summary();
@@ -1054,13 +1054,13 @@ mod tests {
         let diff = ScanDiff::between(
             &port_scanned(
                 vec![host(10)],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at,
             ),
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at + DAY,
             ),
@@ -1086,13 +1086,13 @@ mod tests {
         let diff = ScanDiff::between(
             &port_scanned(
                 vec![host(10)],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at,
             ),
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024,8080")),
                 at + DAY,
             ),
@@ -1127,13 +1127,13 @@ mod tests {
         let diff = ScanDiff::between(
             &port_scanned(
                 vec![before],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at,
             ),
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at + DAY,
             ),
@@ -1179,13 +1179,13 @@ mod tests {
         let diff = ScanDiff::between(
             &port_scanned(
                 vec![before],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at,
             ),
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at + DAY,
             ),
@@ -1218,13 +1218,13 @@ mod tests {
         let diff = ScanDiff::between(
             &port_scanned(
                 vec![before],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at,
             ),
             &port_scanned(
                 vec![host(10)],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at + DAY,
             ),
@@ -1248,13 +1248,13 @@ mod tests {
         let diff = ScanDiff::between(
             &port_scanned(
                 vec![before],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at,
             ),
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at + DAY,
             ),
@@ -1283,13 +1283,13 @@ mod tests {
         let diff = ScanDiff::between(
             &port_scanned(
                 vec![before],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at,
             ),
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at + DAY,
             ),
@@ -1318,8 +1318,8 @@ mod tests {
         arrival.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
 
         let diff = ScanDiff::between(
-            &scoped(vec![host(10)], "192.168.0.0/26", &[], at),
-            &scoped(vec![host(10), arrival], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![host(10)], "203.0.113.0/26", &[], at),
+            &scoped(vec![host(10), arrival], "203.0.113.0/24", &[], at + DAY),
         );
 
         let appeared = diff
@@ -1352,8 +1352,8 @@ mod tests {
         after.record_ip_protocol(47, IpProtocolState::Open);
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + DAY),
         );
 
         let delta = &diff.hosts()[0];
@@ -1392,8 +1392,8 @@ mod tests {
         after.record_ip_protocol(89, IpProtocolState::Closed);
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + DAY),
         );
 
         assert!(diff.is_empty(), "{:?}", diff.hosts());
@@ -1411,8 +1411,8 @@ mod tests {
         after.set_hostname(Some("new.example.test".to_string()));
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + DAY),
         );
 
         assert!(!diff.is_empty(), "the hostname did move");
@@ -1426,10 +1426,10 @@ mod tests {
         after.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
 
         let diff = ScanDiff::between(
-            &scoped(vec![host(10)], "192.168.0.0/24", &[], at),
+            &scoped(vec![host(10)], "203.0.113.0/24", &[], at),
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at + DAY,
             ),
@@ -1453,13 +1453,13 @@ mod tests {
         let diff = ScanDiff::between(
             &port_scanned(
                 vec![host(10)],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Mixed(ports("80,443")),
                 at,
             ),
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("80,443")),
                 at + DAY,
             ),
@@ -1482,8 +1482,8 @@ mod tests {
 
         // A job of two phases: a sweep that certainly walked no ports, and a
         // port scan from a record that does not say which ports it walked.
-        let sweep = scoped(vec![host(10)], "192.168.0.0/24", &[], at);
-        let unstated = port_scanned(vec![host(10)], "192.168.0.0/24", PortScope::Unstated, at);
+        let sweep = scoped(vec![host(10)], "203.0.113.0/24", &[], at);
+        let unstated = port_scanned(vec![host(10)], "203.0.113.0/24", PortScope::Unstated, at);
         let mut phases = sweep.phases().to_vec();
         phases.extend(unstated.phases().iter().cloned());
         let baseline = ScanReport::recorded("test", phases, vec![host(10)]);
@@ -1492,7 +1492,7 @@ mod tests {
             &baseline,
             &port_scanned(
                 vec![after],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 PortScope::Every(ports("1-1024")),
                 at + DAY,
             ),
@@ -1520,10 +1520,10 @@ mod tests {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
 
         let diff = ScanDiff::between(
-            &swept(vec![host(10)], "192.168.0.0/24", "en1", at),
+            &swept(vec![host(10)], "203.0.113.0/24", "en1", at),
             &swept(
                 vec![host(10), neighbour(0x41a, "en1")],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 "en1",
                 at + DAY,
             ),
@@ -1553,10 +1553,10 @@ mod tests {
 
         let diff = ScanDiff::between(
             // The earlier scan swept a different interface's link.
-            &swept(vec![host(10)], "192.168.0.0/24", "en0", at),
+            &swept(vec![host(10)], "203.0.113.0/24", "en0", at),
             &swept(
                 vec![host(10), neighbour(0x41a, "en1")],
-                "192.168.0.0/24",
+                "203.0.113.0/24",
                 "en1",
                 at + DAY,
             ),
@@ -1590,13 +1590,13 @@ mod tests {
         use crate::model::ip::scoped::Zone;
 
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let mut routable = Host::new("2a02:908:8c1:b880::4".parse::<IpAddr>().expect("valid"));
+        let mut routable = Host::new("2001:db8::4".parse::<IpAddr>().expect("valid"));
         routable.set_status(HostStatus::Up);
         routable.set_zone(Zone::new(1, "en1"));
 
         let diff = ScanDiff::between(
-            &swept(vec![host(10), routable], "192.168.0.0/24", "en1", at),
-            &swept(vec![host(10)], "192.168.0.0/24", "en1", at + DAY),
+            &swept(vec![host(10), routable], "203.0.113.0/24", "en1", at),
+            &swept(vec![host(10)], "203.0.113.0/24", "en1", at + DAY),
         );
 
         let gone = diff
@@ -1623,8 +1623,8 @@ mod tests {
         routable.set_status(HostStatus::Up);
 
         let diff = ScanDiff::between(
-            &swept(vec![host(10)], "192.168.0.0/24", "en1", at),
-            &swept(vec![host(10), routable], "192.168.0.0/24", "en1", at + DAY),
+            &swept(vec![host(10)], "203.0.113.0/24", "en1", at),
+            &swept(vec![host(10), routable], "203.0.113.0/24", "en1", at + DAY),
         );
 
         let appeared = diff
@@ -1656,8 +1656,8 @@ mod tests {
         dual.add_ip(ip(11));
 
         let diff = ScanDiff::between(
-            &scoped(vec![host(10)], "192.168.0.0/24", &[], at),
-            &scoped(vec![host(10), dual], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![host(10)], "203.0.113.0/24", &[], at),
+            &scoped(vec![host(10), dual], "203.0.113.0/24", &[], at + DAY),
         );
 
         let appeared = diff
@@ -1671,7 +1671,7 @@ mod tests {
             Presence::Added {
                 before: Coverage::Covered
             },
-            "the earlier scan walked 192.168.0.11 and found nothing there"
+            "the earlier scan walked 203.0.113.11 and found nothing there"
         );
     }
 
@@ -1700,8 +1700,8 @@ mod tests {
         );
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + DAY),
         );
 
         let changes = diff.hosts()[0].ports()[0].changes();
@@ -1731,8 +1731,8 @@ mod tests {
         after.add_port(Port::new(443, Protocol::Tcp, PortState::Open).with_security(same()));
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + 80 * DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + 80 * DAY),
         );
 
         let changes = diff.hosts()[0].ports()[0].changes();
@@ -1780,15 +1780,15 @@ mod tests {
         let forever = DiffOptions::new().with_expiry_threshold(Duration::MAX);
 
         let untouched = ScanDiff::compare(
-            &scoped(vec![endpoint("aaaa")], "192.168.0.0/24", &[], at),
-            &scoped(vec![endpoint("aaaa")], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![endpoint("aaaa")], "203.0.113.0/24", &[], at),
+            &scoped(vec![endpoint("aaaa")], "203.0.113.0/24", &[], at + DAY),
             &forever,
         );
         assert_eq!(untouched.summary().certificates_expiring, 0);
 
         let rotated = ScanDiff::compare(
-            &scoped(vec![endpoint("aaaa")], "192.168.0.0/24", &[], at),
-            &scoped(vec![endpoint("bbbb")], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![endpoint("aaaa")], "203.0.113.0/24", &[], at),
+            &scoped(vec![endpoint("bbbb")], "203.0.113.0/24", &[], at + DAY),
             &forever,
         );
         assert_eq!(rotated.summary().certificates_expiring, 1);
@@ -1818,8 +1818,8 @@ mod tests {
         );
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + 7 * DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + 7 * DAY),
         );
 
         let changes = diff.hosts()[0].ports()[0].changes();
@@ -1865,8 +1865,8 @@ mod tests {
         );
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + DAY),
         );
 
         assert_eq!(diff.summary().certificates_rotated, 1);
@@ -1892,8 +1892,8 @@ mod tests {
         after.add_port(Port::new(443, Protocol::Tcp, PortState::Open).with_security(same()));
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + 5 * DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + 5 * DAY),
         );
 
         assert!(
@@ -1914,8 +1914,8 @@ mod tests {
         after.add_port(Port::new(443, Protocol::Tcp, PortState::Open).with_security(same()));
 
         let diff = ScanDiff::between(
-            &scoped(vec![before], "192.168.0.0/24", &[], at),
-            &scoped(vec![after], "192.168.0.0/24", &[], at + 40 * DAY),
+            &scoped(vec![before], "203.0.113.0/24", &[], at),
+            &scoped(vec![after], "203.0.113.0/24", &[], at + 40 * DAY),
         );
 
         let changes = diff.hosts()[0].ports()[0].changes();
@@ -1943,8 +1943,8 @@ mod tests {
 
         // Both scans ran while the certificate had plenty of life left, so at
         // their own clocks nothing crossed.
-        let baseline = scoped(vec![before], "192.168.0.0/24", &[], at);
-        let current = scoped(vec![after], "192.168.0.0/24", &[], at + DAY);
+        let baseline = scoped(vec![before], "203.0.113.0/24", &[], at);
+        let current = scoped(vec![after], "203.0.113.0/24", &[], at + DAY);
         assert!(ScanDiff::between(&baseline, &current).is_empty());
 
         let asked_later = ScanDiff::compare(
