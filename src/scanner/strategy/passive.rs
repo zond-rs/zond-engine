@@ -2137,6 +2137,57 @@ mod tests {
         );
     }
 
+    /// The same machine the other way round: heard first at the address nobody
+    /// excluded, so that address keys it, and then at the excluded one, which
+    /// the merge would carry into the record under a key the gate had passed.
+    #[test]
+    fn a_machine_heard_at_an_excluded_address_second_does_not_carry_it_into_the_record() {
+        use crate::model::exclusion::Exclusions;
+        use crate::protocols::tcp::flags;
+
+        const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        let excluded = Ipv4Addr::new(10, 0, 0, 5);
+        let ordinary = Ipv4Addr::new(10, 0, 0, 6);
+        let peer = Ipv4Addr::new(10, 0, 0, 9);
+
+        let mut forbidden = IpSet::new();
+        forbidden.insert(IpAddr::V4(excluded));
+        let (_session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(forbidden))
+            .build();
+
+        let (_tx, rx) = tokio::sync::mpsc::channel(16);
+        let mut ranges = IpSet::new();
+        ranges.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+        let mut listener = PassiveListener::over(
+            rx,
+            capture::CaptureGuard::noop(),
+            Recording::Everything,
+            OnLink::of(ranges),
+            ctx.clone(),
+        );
+
+        for (from, port, client) in [(ordinary, 22, 51235), (excluded, 443, 51234)] {
+            listener.read(&captured(tcp_frame_from(
+                MAC,
+                from,
+                port,
+                peer,
+                client,
+                flags::SYN | flags::ACK,
+            )));
+        }
+
+        let hosts = ctx.hosts_snapshot();
+        assert_eq!(hosts.len(), 1, "one machine, one record");
+        assert_eq!(hosts[0].primary_ip(), IpAddr::V4(ordinary));
+        assert!(
+            !hosts[0].ips().contains(&IpAddr::V4(excluded)),
+            "the excluded address rode in on the merge: {:?}",
+            hosts[0].ips()
+        );
+    }
+
     /// The one phase with no end of its own needs a ceiling, and reaching it
     /// stops new records without touching the ones already made.
     ///

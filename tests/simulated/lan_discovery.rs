@@ -395,6 +395,43 @@ async fn a_neighbour_answering_from_another_address_is_still_measured() {
     );
 }
 
+/// The address a neighbour answers from joins its record only where the
+/// operator allowed it.
+///
+/// The same shape as the test above, and the one a real segment showed: a
+/// television asked at one global address answered from another, and with the
+/// second excluded it was still listed beside the first. The host is keyed by
+/// the address that was asked about, which the policy allows, so a gate that
+/// tested only the key let the other one through.
+#[tokio::test]
+async fn an_excluded_address_a_neighbour_answers_from_stays_off_its_record() {
+    let solicited = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x21e9);
+    let preferred = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0x14f0, 0xca99, 0x5818, 0x74ee);
+    let lan = FakeLan::new().host(
+        IpAddr::V6(solicited),
+        LanHost::at(PEER_B).answering_from(preferred),
+    );
+
+    let session = sweep_excluding(
+        &lan,
+        &[IpAddr::V6(solicited)],
+        Scope::Targeted,
+        &[IpAddr::V6(preferred)],
+    )
+    .await;
+
+    let host = session
+        .hosts()
+        .get(IpAddr::V6(solicited))
+        .expect("the address that was asked about is allowed, and answered");
+    assert!(
+        !host.ips().contains(&IpAddr::V6(preferred)),
+        "the excluded address it answered from is listed: {:?}",
+        host.ips()
+    );
+    assert_eq!(host.primary_ip(), IpAddr::V6(solicited));
+}
+
 /// A neighbour found by overhearing is asked directly, so it arrives with a
 /// round trip rather than a blank.
 ///

@@ -862,6 +862,32 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
+    /// Drops every address `keep` refuses, and returns whether any is left.
+    ///
+    /// For the exclusion policy, which holds for every address a host is known
+    /// by and not only for the one it was found at. The primary goes too if it
+    /// is refused, and the best of what remains takes its place, ranked the way
+    /// [`consider_primary_ip`](Self::consider_primary_ip) ranks, so a host is
+    /// reported under whichever of its reportable addresses identifies it best.
+    ///
+    /// A host every address of which is refused is left as it was, and this
+    /// returns `false`: a host always has an address, and what becomes of one
+    /// with none it may be reported under is the caller's decision.
+    pub(crate) fn retain_ips(&mut self, keep: impl Fn(&IpAddr) -> bool) -> bool {
+        if self.ips.iter().all(&keep) {
+            return true;
+        }
+        let kept: BTreeSet<IpAddr> = self.ips.iter().copied().filter(&keep).collect();
+        let Some(best) = kept.iter().copied().min_by_key(identity_rank) else {
+            return false;
+        };
+        if !kept.contains(&self.primary_ip) {
+            self.primary_ip = best;
+        }
+        self.ips = kept;
+        true
+    }
+
     /// Records the name this host resolved to, replacing any already recorded.
     ///
     /// The one field that is overwritten. Unlike a status or an address, a
@@ -1532,6 +1558,41 @@ mod tests {
     use std::net::Ipv4Addr;
 
     static IP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 100));
+
+    /// Refusing the address a host leads with hands the lead to the best of the
+    /// rest, by the same ranking that chose it: a global IPv6 address over a
+    /// link-local, whichever was learned first.
+    #[test]
+    fn a_refused_lead_passes_to_the_best_address_left() {
+        let v4: IpAddr = "192.0.2.60".parse().expect("literal");
+        let global: IpAddr = "2001:db8::5".parse().expect("literal");
+        let link_local: IpAddr = "fe80::10".parse().expect("literal");
+
+        let mut host = Host::new(link_local);
+        host.add_ip(global);
+        host.consider_primary_ip(v4);
+        assert_eq!(host.primary_ip(), v4, "test premise");
+
+        assert!(host.retain_ips(|ip| *ip != v4));
+        assert_eq!(host.primary_ip(), global);
+        assert_eq!(
+            host.ips().iter().copied().collect::<Vec<_>>(),
+            vec![global, link_local]
+        );
+    }
+
+    /// A host with nothing left to be reported under is not left without an
+    /// address: it is handed back as it was, and the caller decides.
+    #[test]
+    fn a_host_every_address_of_which_is_refused_is_left_as_it_was() {
+        let mut host = Host::new(IP_ADDR);
+        host.add_ip("192.0.2.61".parse().expect("literal"));
+        let before = host.ips().clone();
+
+        assert!(!host.retain_ips(|_| false));
+        assert_eq!(host.primary_ip(), IP_ADDR);
+        assert_eq!(*host.ips(), before);
+    }
 
     /// A pass that only got as far as naming a protocol must not unlearn one
     /// that reached it, in either direction: a promotion is a promotion and a

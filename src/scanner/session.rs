@@ -1422,8 +1422,12 @@ impl ScanContext {
     ///
     /// # Exclusions
     ///
-    /// An address the scan's [`Exclusions`] forbid is dropped here: `edit` is not
-    /// run, no host is created, no event is emitted, and this returns `false`.
+    /// A key the scan's [`Exclusions`] forbid is dropped here: `edit` is not run,
+    /// no host is created, no event is emitted, and this returns `false`. Every
+    /// other address `edit` attaches to the host is held to the same policy once
+    /// it has run, the sweep's later replies from the same machine, a merged
+    /// sighting, an mDNS record's other addresses, so none of them reaches the
+    /// report either, and none can become the address the host is reached at.
     ///
     /// This is the enforcement that a subtraction from the target list cannot
     /// perform, and putting it here rather than at each scanner is deliberate.
@@ -1475,6 +1479,19 @@ impl ScanContext {
             host
         });
         let announce = edit(&mut host);
+        // The key passed the gate above, and what the edit attached under it
+        // has not been asked. The key's own address is among what is kept, so
+        // the host never runs out of addresses here.
+        if !self.exclusions.is_empty() {
+            let before = host.ips().len();
+            host.retain_ips(|address| !self.exclusions.excludes(address));
+            if host.ips().len() < before {
+                info!(
+                    verbosity = 2,
+                    "an excluded address arrived beside {ip}; leaving it off the host"
+                );
+            }
+        }
         drop(host);
 
         // Marked whether or not the edit asked to be announced. `edit` was
@@ -1861,13 +1878,13 @@ impl ScanContext {
     /// they came from the journal, and writing them straight back would be work
     /// with nothing new in it.
     ///
-    /// The exclusions this sitting was given apply to what comes back.
-    /// [`Exclusions`] promises that no excluded address appears in the report,
-    /// and names two places it is enforced: before anything is opened, and at
-    /// [`write_host`](Self::write_host) on every finding. This is a third way
-    /// into the store, added for resume, and it went through neither, so a scan
-    /// interrupted before an exclusion was added restored the addresses that
-    /// exclusion now forbids, and reported them.
+    /// The exclusions this sitting was given apply to what comes back, address
+    /// by address, as they do in [`write_host`](Self::write_host): this is the
+    /// one other way into the store, and a scan interrupted before an exclusion
+    /// was added carries the addresses it now forbids in its journal. A host
+    /// loses each of those, and is restored under its best remaining address
+    /// where the one it was recorded under is among them. Only a host with no
+    /// address left that this sitting may report is left out.
     ///
     /// The journal itself is left alone. It is an honest record of a sitting
     /// that was allowed to make it, and rewriting history to match a policy that
@@ -1875,22 +1892,21 @@ impl ScanContext {
     /// sitting is willing to say.
     pub fn restore_hosts(&self, hosts: &[Host]) {
         for host in hosts {
-            let key = host.scoped_ip();
-            let ip = key.addr();
-
-            if self.exclusions.excludes(&ip) {
+            let mut host = host.clone();
+            if !host.retain_ips(|address| !self.exclusions.excludes(address)) {
                 info!(
                     verbosity = 2,
-                    "excluded address {ip} is in the journal from an earlier sitting; \
-                     leaving it out of this one"
+                    "every address of {} in the journal is excluded; leaving it out of this sitting",
+                    host.primary_ip()
                 );
                 continue;
             }
 
+            let key = host.scoped_ip();
             match self.store.get_mut(&key) {
-                Some(mut existing) => existing.merge(host.clone()),
+                Some(mut existing) => existing.merge(host),
                 None => {
-                    self.store.insert(key.clone(), host.clone());
+                    self.store.insert(key.clone(), host);
                 }
             }
             let _ = self.events_tx.send(ScanEvent::HostUpdated(key));
@@ -3120,5 +3136,98 @@ mod tests {
             session.events().try_recv().is_none(),
             "an excluded address is not announced either"
         );
+    }
+
+    /// A session forbidding exactly `address`.
+    fn forbidding(address: IpAddr) -> (ScanSession, ScanContext) {
+        let mut ips = crate::model::ip::set::IpSet::new();
+        ips.insert(address);
+        ScanSession::builder()
+            .excluding(Exclusions::new(ips))
+            .build()
+    }
+
+    /// **What an edit attaches under a permitted key is held to the policy
+    /// too.**
+    ///
+    /// The gate tests the key, and four callers add addresses inside the edit:
+    /// the local sweep as a host's other replies arrive, listen mode merging a
+    /// later sighting, hostname resolution folding in an mDNS record's other
+    /// addresses, and the resume path. Every one of them passes the key, so a
+    /// test of the key alone let an excluded address into the report beside it.
+    #[test]
+    fn an_address_an_edit_attaches_is_held_to_the_exclusions() {
+        let key: IpAddr = "192.0.2.60".parse().expect("literal");
+        let excluded: IpAddr = "192.0.2.61".parse().expect("literal");
+        let (_session, ctx) = forbidding(excluded);
+
+        ctx.write_host(key, |host| host.add_ip(excluded));
+
+        let ips = ctx
+            .read_host(key, |host| host.ips().clone())
+            .expect("the permitted key is recorded");
+        assert!(!ips.contains(&excluded), "{ips:?}");
+        assert!(ips.contains(&key));
+    }
+
+    /// An excluded address never leads a host, which is the half that matters
+    /// most: the address a host leads with is the one the service, SNMP, TLS
+    /// and detection passes connect to. A global IPv6 address outranks a
+    /// link-local, so one attached to a neighbour found at its link-local took
+    /// the lead from it.
+    #[test]
+    fn an_excluded_address_does_not_become_the_one_a_host_is_reached_at() {
+        let key: IpAddr = "fe80::10".parse().expect("literal");
+        let excluded: IpAddr = "2001:db8::5".parse().expect("literal");
+        let (_session, ctx) = forbidding(excluded);
+
+        ctx.write_host(key, |host| host.consider_primary_ip(excluded));
+
+        let (primary, ips) = ctx
+            .read_host(key, |host| (host.primary_ip(), host.ips().clone()))
+            .expect("the permitted key is recorded");
+        assert_eq!(primary, key, "led by the address the policy allows");
+        assert!(!ips.contains(&excluded), "{ips:?}");
+    }
+
+    /// The resume path, which writes into the store without going through
+    /// `write_host`, holds a restored host's other addresses to the policy as
+    /// well as the one it is keyed by.
+    #[test]
+    fn a_resume_brings_back_none_of_a_hosts_excluded_addresses() {
+        let key: IpAddr = "192.0.2.60".parse().expect("literal");
+        let excluded: IpAddr = "192.0.2.61".parse().expect("literal");
+        let (_session, ctx) = forbidding(excluded);
+
+        let mut host = Host::new(key);
+        host.add_ip(excluded);
+        ctx.restore_hosts(&[host]);
+
+        let ips = ctx
+            .read_host(key, |host| host.ips().clone())
+            .expect("the host is restored");
+        assert!(!ips.contains(&excluded), "{ips:?}");
+    }
+
+    /// And a host an earlier sitting recorded under an address excluded since
+    /// is restored under its best remaining one, rather than dropped along with
+    /// every address it was found at that the policy still allows.
+    #[test]
+    fn a_resumed_host_led_by_an_excluded_address_is_kept_at_its_others() {
+        let other: IpAddr = "fe80::10".parse().expect("literal");
+        let excluded: IpAddr = "2001:db8::5".parse().expect("literal");
+        let (_session, ctx) = forbidding(excluded);
+
+        let mut host = Host::new(other);
+        host.consider_primary_ip(excluded);
+        host.set_status(HostStatus::Up);
+        assert_eq!(host.primary_ip(), excluded, "test premise");
+        ctx.restore_hosts(&[host]);
+
+        let (primary, ips) = ctx
+            .read_host(other, |host| (host.primary_ip(), host.ips().clone()))
+            .expect("the host is kept at the address the policy allows");
+        assert_eq!(primary, other);
+        assert!(!ips.contains(&excluded), "{ips:?}");
     }
 }

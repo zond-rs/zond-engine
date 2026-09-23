@@ -1098,6 +1098,48 @@ mod tests {
         );
     }
 
+    /// An mDNS record names every address its host answers at, and folding
+    /// them into the host is how a scan learns a machine's other addresses. The
+    /// ones the scan is forbidden to report are not among what it learns.
+    #[tokio::test]
+    async fn an_mdns_record_does_not_carry_an_excluded_address_into_a_host() {
+        use crate::model::exclusion::Exclusions;
+
+        let found = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 60));
+        let excluded = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 61));
+
+        let mut forbidden = crate::model::ip::set::IpSet::new();
+        forbidden.insert(excluded);
+        let (_session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(forbidden))
+            .build();
+        ctx.update_host(found, |host| host.set_status(HostStatus::Up));
+
+        let mut resolver = resolver_asking(vec![
+            "127.0.0.1:53".parse().expect("a valid socket address"),
+        ]);
+        resolver.mdns_cache.insert(
+            found,
+            mdns::MdnsHost {
+                hostname: "tv.local".to_string(),
+                ips: [found, excluded].into_iter().collect(),
+            },
+        );
+        resolver.resolve_hosts(&ctx);
+
+        let (hostname, ips) = ctx
+            .read_host(found, |host| {
+                (host.hostname().map(str::to_owned), host.ips().clone())
+            })
+            .expect("the host is in the store");
+        assert_eq!(
+            hostname.as_deref(),
+            Some("tv.local"),
+            "test premise: the record applied"
+        );
+        assert!(!ips.contains(&excluded), "{ips:?}");
+    }
+
     /// The reply to our own reverse query proves the same thing, and only from
     /// a resolver we actually asked.
     ///
