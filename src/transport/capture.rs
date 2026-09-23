@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use pcap::{Active, Capture, Device};
+use pcap::{Active, Capture};
 use pnet_packet::ip::IpNextHeaderProtocol;
 #[cfg(not(windows))]
 use std::os::unix::io::AsRawFd;
@@ -812,8 +812,19 @@ where
     for zone in links {
         let name = zone.name();
         match open(name, options) {
-            Ok((capture, link)) => {
-                info!(verbosity = 3, "capturing on {name} (link type {link:?})");
+            Ok(Opened {
+                capture,
+                link,
+                warning,
+            }) => {
+                match warning {
+                    Some(warning) => info!(
+                        verbosity = 3,
+                        "capturing on {name} (link type {link:?}), which libpcap \
+                         opened with a warning: {warning}"
+                    ),
+                    None => info!(verbosity = 3, "capturing on {name} (link type {link:?})"),
+                }
                 opened += 1;
 
                 let stop = stop.clone();
@@ -1028,19 +1039,19 @@ fn timestamp_of(packet: &pcap::Packet<'_>) -> SystemTime {
     UNIX_EPOCH + Duration::new(seconds, micros.saturating_mul(1_000))
 }
 
-/// The capture device for the interface named `name`.
+/// The name of the capture device for the interface named `name`.
 ///
 /// On Unix the two share a name. On Windows they do not: an interface is named
 /// by its adapter GUID, `{…}`, and Npcap names the same adapter under its own
 /// prefix, `\Device\NPF_{…}`. See [`npcap_device_name`].
-fn device(name: &str) -> Device {
+fn device_name(name: &str) -> String {
     #[cfg(windows)]
     {
-        Device::from(npcap_device_name(name).as_str())
+        npcap_device_name(name)
     }
     #[cfg(not(windows))]
     {
-        Device::from(name)
+        name.to_owned()
     }
 }
 
@@ -1060,6 +1071,17 @@ fn npcap_device_name(name: &str) -> String {
     }
 }
 
+/// A capture [`open`] brought up, with what it is and what `libpcap` had to say
+/// about bringing it up.
+struct Opened {
+    capture: Capture<Active>,
+    /// How its frames are framed.
+    link: LinkType,
+    /// The warning `libpcap` activated it under, if it gave one. See
+    /// [`libpcap`].
+    warning: Option<String>,
+}
+
 /// Opens and activates a single filtered capture, returning it alongside the
 /// [`LinkType`] its frames must be parsed as.
 ///
@@ -1070,30 +1092,27 @@ fn npcap_device_name(name: &str) -> String {
 /// caller, so a blocking read on an interface seeing no matching frames never
 /// returns and the stop flag is never observed. BSD's `BPF` (macOS) does return
 /// on timeout, but relying on that would leave Linux broken.
-fn open(name: &str, options: &CaptureOptions) -> Result<(Capture<Active>, LinkType), CaptureError> {
-    let refused = |source: pcap::Error| CaptureError::Open {
-        interface: name.to_owned(),
-        source,
-    };
-
-    let mut inactive = Capture::from_device(device(name))
-        .map_err(refused)?
-        .immediate_mode(true)
-        .promisc(options.promiscuous)
-        .snaplen(saturating_i32(options.snaplen))
-        .timeout(READ_TIMEOUT_MS);
-
-    // Left alone unless asked for, so that not choosing a buffer size keeps
-    // whatever the platform's `libpcap` decided rather than this crate picking a
-    // number for every capture on every operating system it runs on.
-    if let Some(bytes) = options.buffer_bytes {
-        inactive = inactive.buffer_size(saturating_i32(bytes));
-    }
-
-    let capture = inactive.open().map_err(refused)?;
+fn open(name: &str, options: &CaptureOptions) -> Result<Opened, CaptureError> {
+    let (capture, warning) = libpcap::activate(
+        name,
+        &libpcap::Setup {
+            snaplen: saturating_i32(options.snaplen),
+            promiscuous: options.promiscuous,
+            timeout_ms: READ_TIMEOUT_MS,
+            immediate: true,
+            // Left alone unless asked for, so that not choosing a buffer size
+            // keeps whatever the platform's `libpcap` decided rather than this
+            // crate picking a number for every capture on every operating
+            // system it runs on.
+            buffer_bytes: options.buffer_bytes.map(saturating_i32),
+        },
+    )?;
 
     #[cfg(not(windows))]
-    let capture = capture.setnonblock().map_err(refused)?;
+    let capture = capture.setnonblock().map_err(|source| CaptureError::Open {
+        interface: name.to_owned(),
+        source,
+    })?;
 
     let mut capture = capture;
     let link = LinkType::from_dlt(capture.get_datalink().0);
@@ -1111,7 +1130,11 @@ fn open(name: &str, options: &CaptureOptions) -> Result<(Capture<Active>, LinkTy
             source,
         })?;
 
-    Ok((capture, link))
+    Ok(Opened {
+        capture,
+        link,
+        warning,
+    })
 }
 
 /// Narrows a byte count to the signed width `libpcap` takes, saturating rather
@@ -1281,12 +1304,16 @@ impl FrameSender {
     /// the defect a discarded receiver has. `less 0` asks for frames shorter
     /// than nothing.
     pub fn open(link: &str) -> Result<Self, CaptureError> {
-        let mut capture = Capture::from_device(device(link))
-            .and_then(|inactive| inactive.snaplen(1).timeout(1).open())
-            .map_err(|source| CaptureError::Open {
-                interface: link.to_owned(),
-                source,
-            })?;
+        let (mut capture, _) = libpcap::activate(
+            link,
+            &libpcap::Setup {
+                snaplen: 1,
+                promiscuous: false,
+                timeout_ms: 1,
+                immediate: false,
+                buffer_bytes: None,
+            },
+        )?;
 
         capture
             .filter("less 0", true)
@@ -1347,18 +1374,16 @@ impl FrameChannel {
         read_timeout: std::time::Duration,
     ) -> Result<Self, CaptureError> {
         let millis = i32::try_from(read_timeout.as_millis()).unwrap_or(i32::MAX);
-        let mut capture = Capture::from_device(device(link))
-            .and_then(|inactive| {
-                inactive
-                    .immediate_mode(true)
-                    .snaplen(saturating_i32(REPLY_SNAP_LEN))
-                    .timeout(millis)
-                    .open()
-            })
-            .map_err(|source| CaptureError::Open {
-                interface: link.to_owned(),
-                source,
-            })?;
+        let (mut capture, _) = libpcap::activate(
+            link,
+            &libpcap::Setup {
+                snaplen: saturating_i32(REPLY_SNAP_LEN),
+                promiscuous: false,
+                timeout_ms: millis,
+                immediate: true,
+                buffer_bytes: None,
+            },
+        )?;
 
         capture
             .filter(filter, true)
@@ -1385,6 +1410,205 @@ impl FrameChannel {
 impl FrameSink for FrameChannel {
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
         self.capture.sendpacket(frame).map_err(|e| e.to_string())
+    }
+}
+
+/// Bringing a capture handle up, the one step taken through `libpcap` itself
+/// rather than through the `pcap` crate.
+///
+/// # Why this step, and only this one
+///
+/// `pcap_activate` has three kinds of answer, not two. Zero is success and a
+/// negative status is failure. A positive status is a *warning*: the handle is
+/// live and capturing, and `libpcap` wants it known that it is not quite what
+/// was asked for. `PCAP_WARNING_PROMISC_NOTSUP` is a link that will not go
+/// promiscuous. `PCAP_WARNING` is, among other things, how Linux brings up a
+/// link whose hardware type `libpcap` has no mapping for, a GRE tunnel or an
+/// `ip6tnl` or `ip6gre` link, which it serves cooked as `DLT_LINUX_SLL` and
+/// [`LinkType::LinuxSll`] reads.
+///
+/// The `pcap` crate's `Capture::open` treats every non-zero status as failure
+/// and closes the handle, warnings included. Through it, a GRE tunnel cannot be
+/// captured on at all, and neither can any link that merely declined to be
+/// promiscuous, so a scan through one hears nothing and reads its targets as
+/// down.
+///
+/// The crate leaves no way round that. A handle becomes an active capture only
+/// through that call, and it cannot be moved out of the crate's inactive type
+/// into its active one without closing it or leaking the wrapper that owns it.
+/// So the handle is created and activated here and adopted into a
+/// `Capture<Active>` the moment it exists, through the conversion the crate
+/// provides for a raw handle. From then on it is the crate's: every read,
+/// filter, statistic and send goes through its API, and so does the close.
+///
+/// The alternatives were worse. Forking the crate to change one comparison is
+/// a dependency this tree would have to carry. Capturing on Linux's `any`
+/// device and filtering by interface index would serve only Linux, and would
+/// copy every link's traffic into the kernel filter to find one link's. The
+/// seam here is eight functions `libpcap` has exported unchanged since 1.5,
+/// every one of which the crate declares too, so linking it asks nothing of
+/// `libpcap` or Npcap that the crate did not already.
+mod libpcap {
+    use std::ffi::{CStr, CString, c_char, c_int};
+    use std::marker::{PhantomData, PhantomPinned};
+    use std::ptr::NonNull;
+
+    use pcap::{Active, Capture};
+
+    use super::{CaptureError, device_name};
+
+    /// `libpcap`'s capture handle, which this side only ever holds a pointer
+    /// to.
+    ///
+    /// Declared here rather than named from the `pcap` crate, which keeps its
+    /// bindings private. The pointer is converted to the crate's own type once,
+    /// in [`activate`], and the two name the same C struct.
+    #[repr(C)]
+    struct Handle {
+        _opaque: [u8; 0],
+        _unmovable: PhantomData<(*mut u8, PhantomPinned)>,
+    }
+
+    /// The size `libpcap` requires of the buffer `pcap_create` writes an error
+    /// into, `PCAP_ERRBUF_SIZE`.
+    const ERRBUF_SIZE: usize = 256;
+
+    // `pcap_activate`'s statuses, from `pcap/pcap.h`. Every negative status is a
+    // failure and every positive one a warning; these are the ones this module
+    // has words of its own for, where `libpcap` left its error buffer empty.
+    const PCAP_WARNING: c_int = 1;
+    const PCAP_WARNING_PROMISC_NOTSUP: c_int = 2;
+    const PCAP_WARNING_TSTAMP_TYPE_NOTSUP: c_int = 3;
+    const PCAP_ERROR_NO_SUCH_DEVICE: c_int = -5;
+    const PCAP_ERROR_PERM_DENIED: c_int = -8;
+    const PCAP_ERROR_IFACE_NOT_UP: c_int = -9;
+    const PCAP_ERROR_PROMISC_PERM_DENIED: c_int = -11;
+
+    unsafe extern "C" {
+        fn pcap_create(source: *const c_char, errbuf: *mut c_char) -> *mut Handle;
+        fn pcap_set_snaplen(handle: *mut Handle, snaplen: c_int) -> c_int;
+        fn pcap_set_promisc(handle: *mut Handle, promisc: c_int) -> c_int;
+        fn pcap_set_timeout(handle: *mut Handle, to_ms: c_int) -> c_int;
+        fn pcap_set_immediate_mode(handle: *mut Handle, immediate: c_int) -> c_int;
+        fn pcap_set_buffer_size(handle: *mut Handle, buffer_size: c_int) -> c_int;
+        fn pcap_activate(handle: *mut Handle) -> c_int;
+        fn pcap_geterr(handle: *mut Handle) -> *mut c_char;
+    }
+
+    /// What a handle is set to before it is activated.
+    ///
+    /// Together because `libpcap` accepts every one of them only on a handle
+    /// not yet activated, and the crate's builders for them are on the type
+    /// this module does not use.
+    pub(super) struct Setup {
+        pub(super) snaplen: c_int,
+        pub(super) promiscuous: bool,
+        pub(super) timeout_ms: c_int,
+        pub(super) immediate: bool,
+        /// `None` leaves `libpcap`'s own default in place.
+        pub(super) buffer_bytes: Option<c_int>,
+    }
+
+    /// Creates a capture handle on `link`, sets it up, and activates it,
+    /// returning it with the warning it was activated under, if any.
+    ///
+    /// A warning is not a failure. The handle is live, and the warning says in
+    /// what way it differs from what was asked for; the caller decides whether
+    /// that is worth saying.
+    pub(super) fn activate(
+        link: &str,
+        setup: &Setup,
+    ) -> Result<(Capture<Active>, Option<String>), CaptureError> {
+        let refused = |message: String| CaptureError::Open {
+            interface: link.to_owned(),
+            source: pcap::Error::PcapError(message),
+        };
+
+        let device = CString::new(device_name(link)).map_err(|_| CaptureError::Open {
+            interface: link.to_owned(),
+            source: pcap::Error::InvalidInputString,
+        })?;
+
+        let mut errbuf = [0 as c_char; ERRBUF_SIZE];
+        // SAFETY: `device` is a NUL-terminated string that outlives the call,
+        // and `errbuf` is the `PCAP_ERRBUF_SIZE` bytes `pcap_create` may write.
+        let created = unsafe { pcap_create(device.as_ptr(), errbuf.as_mut_ptr()) };
+        let Some(created) = NonNull::new(created) else {
+            // SAFETY: on failure `pcap_create` has written a NUL-terminated
+            // message into `errbuf`, which was zeroed, so it is terminated
+            // either way.
+            let message = unsafe { CStr::from_ptr(errbuf.as_ptr()) };
+            return Err(refused(message.to_string_lossy().into_owned()));
+        };
+
+        // Adopted before it is activated, so that every path out of this
+        // function, the failures below included, closes it through the
+        // crate's own `Drop`, which is what `libpcap` asks of a handle whose
+        // activation failed. Nothing but the pointer is read from it until
+        // activation has succeeded.
+        let capture: Capture<Active> = Capture::from(created.cast());
+        let handle = capture.as_ptr().cast::<Handle>();
+
+        // SAFETY: `handle` is the live handle `pcap_create` returned, owned by
+        // `capture` for the rest of this function, and not yet activated,
+        // which is the only state in which these calls are defined. Each
+        // returns an error only for an activated handle.
+        unsafe {
+            pcap_set_snaplen(handle, setup.snaplen);
+            pcap_set_promisc(handle, c_int::from(setup.promiscuous));
+            pcap_set_timeout(handle, setup.timeout_ms);
+            pcap_set_immediate_mode(handle, c_int::from(setup.immediate));
+            if let Some(bytes) = setup.buffer_bytes {
+                pcap_set_buffer_size(handle, bytes);
+            }
+        }
+
+        // SAFETY: as above; activation is the call these settings were for.
+        let status = unsafe { pcap_activate(handle) };
+        let message = || status_message(handle, status);
+
+        match status {
+            0 => Ok((capture, None)),
+            warning if warning > 0 => Ok((capture, Some(message()))),
+            _ => Err(refused(message())),
+        }
+    }
+
+    /// What `libpcap` said about `status`, in its own words where it wrote
+    /// some.
+    ///
+    /// `pcap_geterr` holds the detail for most statuses and is empty for a
+    /// few, where the status alone is the whole of what is known. Those are
+    /// named here in the words `pcap_statustostr` would use, rather than
+    /// through that function, which is the one this module would declare that
+    /// the crate does not.
+    fn status_message(handle: *mut Handle, status: c_int) -> String {
+        // SAFETY: `handle` is live, and `pcap_geterr` returns a pointer into
+        // it, NUL-terminated, valid until the next call on the handle. It is
+        // copied out before anything else is.
+        let said = unsafe { CStr::from_ptr(pcap_geterr(handle)) }
+            .to_string_lossy()
+            .into_owned();
+        if !said.is_empty() {
+            return said;
+        }
+
+        match status {
+            PCAP_WARNING => "a generic warning".to_owned(),
+            PCAP_WARNING_PROMISC_NOTSUP => {
+                "this device does not support promiscuous mode".to_owned()
+            }
+            PCAP_WARNING_TSTAMP_TYPE_NOTSUP => {
+                "this device does not support the requested timestamp type".to_owned()
+            }
+            PCAP_ERROR_NO_SUCH_DEVICE => "no such device exists".to_owned(),
+            PCAP_ERROR_PERM_DENIED => "permission denied".to_owned(),
+            PCAP_ERROR_IFACE_NOT_UP => "the interface is not up".to_owned(),
+            PCAP_ERROR_PROMISC_PERM_DENIED => {
+                "permission denied to put it in promiscuous mode".to_owned()
+            }
+            other => format!("activation failed with status {other}"),
+        }
     }
 }
 

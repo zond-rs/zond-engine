@@ -348,7 +348,8 @@ what survives loss and delay; `techniques` for all seven TCP techniques against
 a kernel rather than a model of one; `characterise` for what kind of filter sits
 in front of a host; `sourcing` for the address a probe leaves from when the
 scan forces one; `tunnelled` for a peer inside a tunnel's own prefix, which
-is routed through the tunnel rather than swept; `resuming` for what a resumed
+is routed through the tunnel rather than swept, and for a GRE tunnel, which
+`libpcap` opens only with a warning; `resuming` for what a resumed
 sitting of a raw scan sends, since the sweeps beside a port scan never ask about
 a loopback target.
 

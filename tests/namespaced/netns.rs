@@ -402,10 +402,36 @@ impl Segment {
         theirs
     }
 
+    /// Joins the two ends with a GRE tunnel carried over the segment, gives
+    /// each end an address in one `/24` on it, and returns the peer's.
+    ///
+    /// The link [`tunnel`](Self::tunnel) is not, to `libpcap`: it has no
+    /// mapping for GRE's hardware type, so it brings the link up cooked, as
+    /// `DLT_LINUX_SLL`, and says so with a warning rather than a plain success.
+    /// An `ip6tnl` or `ip6gre` link comes up the same way.
+    pub fn gre_tunnel(&self) -> Ipv4Addr {
+        let (ours, theirs) = (
+            Ipv4Addr::new(10, 95, self.index as u8, 1),
+            Ipv4Addr::new(10, 95, self.index as u8, 2),
+        );
+        self.join_by(
+            "gre",
+            "zg",
+            &[&format!("{ours}/24")],
+            &[&format!("{theirs}/24")],
+        );
+        theirs
+    }
+
     /// An IP-in-IP link between the two ends of the segment, named `<stem>Na`
     /// here and `<stem>Nb` over there, each end given `ip addr add` with the
     /// arguments for its side.
     fn join_by_tunnel(&self, stem: &str, near_address: &[&str], far_address: &[&str]) {
+        self.join_by("ipip", stem, near_address, far_address);
+    }
+
+    /// [`join_by_tunnel`](Self::join_by_tunnel), with a tunnel of `kind`.
+    fn join_by(&self, kind: &str, stem: &str, near_address: &[&str], far_address: &[&str]) {
         let (near, far) = (
             format!("{stem}{}a", self.index),
             format!("{stem}{}b", self.index),
@@ -416,7 +442,7 @@ impl Segment {
         );
 
         ip(&[
-            "link", "add", &near, "type", "ipip", "local", &scanner, "remote", &peer,
+            "link", "add", &near, "type", kind, "local", &scanner, "remote", &peer,
         ]);
         let mut add = vec!["addr", "add"];
         add.extend_from_slice(near_address);
@@ -425,7 +451,7 @@ impl Segment {
         ip(&["link", "set", &near, "up"]);
 
         self.there(&[
-            "ip", "link", "add", &far, "type", "ipip", "local", &peer, "remote", &scanner,
+            "ip", "link", "add", &far, "type", kind, "local", &peer, "remote", &scanner,
         ]);
         let mut add = vec!["ip", "addr", "add"];
         add.extend_from_slice(far_address);

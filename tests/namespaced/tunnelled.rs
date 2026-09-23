@@ -67,3 +67,30 @@ async fn the_peer_of_a_point_to_point_link_is_scanned_rather_than_taken_for_this
 
     assert_eq!(outcome.port_state(target, open), Some(PortState::Open));
 }
+
+/// A port behind a GRE tunnel is found open through it.
+///
+/// `libpcap` has no mapping for GRE's hardware type, so it brings the link up
+/// cooked and says so with a warning. A capture that took the warning for a
+/// failure has no receive path on the tunnel: the probe leaves through it, the
+/// answer comes back through it, nothing is listening, and the peer reads down
+/// with its port never scanned.
+#[tokio::test]
+async fn a_port_behind_a_gre_tunnel_is_found_open_through_it() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let peer = segment.gre_tunnel();
+    let open = segment.listen_tcp_on(peer);
+    let target = IpAddr::V4(peer);
+
+    let outcome = run_scan(target_map(target, &open.to_string()), &test_config()).await;
+
+    assert!(
+        outcome.host(target).is_some(),
+        "the peer behind the GRE tunnel should be found alive"
+    );
+    assert_eq!(outcome.port_state(target, open), Some(PortState::Open));
+}
