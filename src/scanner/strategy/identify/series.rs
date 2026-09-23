@@ -389,13 +389,13 @@ impl OsSeriesScanner {
     /// this sweep's own.
     ///
     /// Returns once the last probe is away. Replies are filed *while* it sends
-    /// rather than afterwards, and that is not an optimisation: a reading is
-    /// stamped when it is read, so a send phase that reads nothing until it
-    /// finishes stamps every early reply with the moment the sweep ended, and
-    /// the first interval of every series is then shorter than what the target's
-    /// clock actually lived through. That defect once had one host reporting two
-    /// different frequencies for one clock, depending only on how long the sweep
-    /// took.
+    /// rather than afterwards, which keeps the capture's queue drained. A
+    /// reading carries the moment the capture took delivery of it, so filing
+    /// late does not move its stamp, but a queue left to fill holds the capture
+    /// thread, and a reply waiting behind it in the kernel is stamped when the
+    /// thread gets to it rather than when it arrived. The filter admits more
+    /// than this scan's own replies, so how soon that happens is the network's
+    /// to decide.
     async fn sweep(&mut self, batch: &[SeriesTarget]) {
         let source_port: u16 = rand::random_range(50_000..u16::MAX);
         let mut tick = tokio::time::interval(SEND_TICK);
@@ -504,10 +504,11 @@ impl OsSeriesScanner {
             self.audit.record_off_target();
             return;
         }
-        // Stamped here, before any parsing: this is the only record of when the
-        // reply was seen, and every interval the classifiers read is a
-        // difference of two of these.
-        let at = Instant::now();
+        // When the capture took delivery, not when this got round to filing it.
+        // Every interval the classifiers read is a difference of two of these,
+        // and replies leave the capture's queue in bursts: stamped here, two
+        // that arrived a sweep apart would read as having arrived together.
+        let at = reply.received_at;
 
         let Ok(segment) = tcp::parse(&reply.bytes) else {
             self.audit.record_off_target();
@@ -1066,6 +1067,56 @@ mod tests {
             "a repeated source port makes every sample after the first describe \
              a connection the previous one opened"
         );
+    }
+
+    /// A reply is timed by the capture that took it, not by when this scanner
+    /// got round to filing it.
+    ///
+    /// Replies come off the capture's queue in bursts, so the moment one is
+    /// filed says how the queue was drained rather than when the reply arrived,
+    /// and every interval the classifiers read is a difference of two stamps.
+    /// Here a counter the host's other traffic advances by fifty a tenth of a
+    /// second apart, three refusals filed in one burst: stamped as filed, it
+    /// jumps fifty at a time in no time at all, which no counter does.
+    #[test]
+    fn a_reply_is_timed_by_the_capture_that_took_it() {
+        use crate::fingerprint::os::{IdClass, read_identifiers};
+        use crate::protocols::tcp::flags;
+        use crate::transport::probe::MockSender;
+
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = mpsc::channel(1);
+        let transport = ProbeTransport::from_parts(Box::new(MockSender::default()), rx);
+        let mut scanner = OsSeriesScanner::with_transport(
+            ctx,
+            vec![both_ports()],
+            3,
+            transport,
+            Emission::routed(),
+        );
+
+        let first = Instant::now();
+        for (nth, identification) in [100u16, 150, 200].into_iter().enumerate() {
+            let nonce = 0x5eed_0000 + nth as u32;
+            scanner.sent.insert(nonce, Sent { address: TARGET });
+            let refusal = Reply {
+                source_port: CLOSED,
+                destination_port: 50_000,
+                sequence: 0,
+                acknowledgement: nonce.wrapping_add(1),
+                flags: flags::RST | flags::ACK,
+                window: 0,
+                options: Vec::new(),
+            };
+            scanner.file(&CapturedSegment {
+                received_at: first + SPACING * nth as u32,
+                ..captured(refusal.bytes(), identification)
+            });
+        }
+
+        let refusals = &scanner.collected[&TARGET].closed.samples;
+        let reading = read_identifiers(refusals);
+        assert_eq!(reading.class, IdClass::Counting, "{}", reading.line);
     }
 
     /// Somebody else's segment carries a nonce this scan never sent. It must

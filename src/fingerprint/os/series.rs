@@ -57,9 +57,11 @@ use std::time::{Duration, Instant};
 /// type holds no packets and knows nothing about how the samples were drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeriesSample {
-    /// When the reply was read. The interval between two of these is what a
-    /// clock rate and an identifier step are computed against, a nominal
-    /// spacing is what the sender intended, not what happened.
+    /// When the reply arrived, as near the wire as its collector could stamp
+    /// it. The interval between two of these is what a clock rate and an
+    /// identifier step are computed against, a nominal spacing is what the
+    /// sender intended, not what happened, and a stamp taken when the reply
+    /// was later read carries the reader's scheduling as well.
     pub at: Instant,
     /// The TCP flag byte, so a series can say whether it is reading SYN+ACKs or
     /// resets.
@@ -93,12 +95,15 @@ impl SeriesSample {
 /// as a class the series cannot support.
 pub const MAX_INTERVAL_FOR_ID: Duration = Duration::from_millis(500);
 
-/// The largest identifier step per sample still consistent with a counter.
+/// How fast a host's other traffic may advance an identifier counter between
+/// two samples, in identifiers a second, and leave it read as a counter.
 ///
 /// A counter can be advanced by other traffic between two samples, the host was
 /// busy, but not by more than its own output can plausibly account for. 20 000
 /// identifiers a second is far beyond any interface a scanner shares a segment
-/// with, so a larger step is noise or randomness wearing a counter's shape.
+/// with, so a larger step is noise or randomness wearing a counter's shape. The
+/// one step the sampled reply itself takes is allowed on top, since it is owed
+/// however little time passed.
 const PLAUSIBLE_ID_RATE: f64 = 20_000.0;
 
 /// The largest interval still consistent with reading a clock rate.
@@ -481,22 +486,31 @@ pub fn read_identifiers(series: &[SeriesSample]) -> Reading<IdClass> {
         .windows(2)
         .map(|pair| pair[1].1.wrapping_sub(pair[0].1))
         .collect();
-    // The **fastest** interval, because one step implying an implausible rate is
-    // enough to say this is not a counter being followed. Taking the slowest
-    // instead asks whether *any* interval looks like a counter, which a random
-    // series answers by accident: measured, 284 of 2000 purely random six-sample
-    // series read as `counting` that way, and one clean counter with a single
-    // forty-thousand jump read as one too.
+    // **Every** interval has to be one a counter could have covered. Asking
+    // instead whether *any* interval looks like a counter is a question a
+    // random series answers by accident: measured, 284 of 2000 purely random
+    // six-sample series read as `counting` that way, and one clean counter with
+    // a single forty-thousand jump read as one too.
     //
-    // `read_clock` forty lines down computes both bounds and tests the maximum,
-    // which is the same question about the field next door.
-    let fastest = sampled
-        .windows(2)
-        .zip(&steps)
-        .map(|(pair, step)| f64::from(*step) / pair[1].0.duration_since(pair[0].0).as_secs_f64())
-        .fold(0.0, f64::max);
+    // Bounded by multiplying the interval rather than dividing by it. Two
+    // replies can be stamped at one instant, and a step over no time is an
+    // infinity or a NaN, which would read a real counter as scattered and pass
+    // over a still one in silence. A counter the host shares advances by one
+    // for its own next reply however soon that follows, so that step is
+    // allowed at any interval, and only the traffic past it has to fit the
+    // time.
+    //
+    // Not dropped, as `read_clock` drops an interval of no length. A clock's
+    // rate is ticks over time and there is none without both, where a
+    // counter's step says something alone: forty thousand between two replies
+    // read together is no counter, and dropping the pair would let a random
+    // value hide in exactly the interval that gives it away.
+    let plausible = sampled.windows(2).zip(&steps).all(|(pair, &step)| {
+        let elapsed = pair[1].0.duration_since(pair[0].0).as_secs_f64();
+        f64::from(step) <= 1.0 + PLAUSIBLE_ID_RATE * elapsed
+    });
 
-    if fastest <= PLAUSIBLE_ID_RATE {
+    if plausible {
         return Reading {
             class: IdClass::Counting,
             line: format!("{raw} - counting"),
@@ -885,6 +899,31 @@ mod tests {
         ];
         let slow = series(&gaps, &[10, 11, 12], &[], &[]);
         assert_eq!(read_identifiers(&slow).class, IdClass::Unclear);
+    }
+
+    /// Two replies stamped at one instant are still two readings of a counter.
+    ///
+    /// A step divided by an interval of no length is an infinity where the
+    /// counter moved, which would read a genuine counter as scattered, and a
+    /// NaN where it did not, which every comparison passes over in silence.
+    /// Replies taken off a capture together arrive stamped close together, so
+    /// this is the ordinary case for a prompt answer rather than a curiosity.
+    ///
+    /// The interval is not dropped either, as the clock reading drops one: a
+    /// counter's step means something at no interval, and forty thousand
+    /// between two replies read together is nothing a counter does.
+    #[test]
+    fn replies_stamped_at_one_instant_are_still_read_as_a_counter() {
+        let together = [Duration::ZERO, Duration::ZERO, Duration::from_millis(100)];
+
+        let counter = read_identifiers(&series(&together, &[100, 101, 102], &[], &[]));
+        assert_eq!(counter.class, IdClass::Counting, "{}", counter.line);
+
+        let unmoved = read_identifiers(&series(&together, &[100, 100, 101], &[], &[]));
+        assert_eq!(unmoved.class, IdClass::Counting, "{}", unmoved.line);
+
+        let jumped = read_identifiers(&series(&together, &[100, 40_100, 40_101], &[], &[]));
+        assert_eq!(jumped.class, IdClass::Scattered, "{}", jumped.line);
     }
 
     /// Random values have no step a counter could follow, and the fastest
