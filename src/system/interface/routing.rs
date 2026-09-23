@@ -260,6 +260,15 @@ pub(crate) fn map_ips_to_interfaces_with(
             if target.is_loopback() {
                 return (target, Classification::Unmapped);
             }
+            // An IPv4-mapped address is an IPv4 host written inside IPv6, and
+            // no wire carries one. The fallbacks below would pair it with a
+            // global IPv6 source as a routed target and frame it toward the
+            // router, which is the one place it certainly is not. Unmapped, it
+            // is left to whatever asks the kernel, whose dual-stack socket
+            // reaches the IPv4 host it spells.
+            if is_ipv4_mapped(target) {
+                return (target, Classification::Unmapped);
+            }
 
             if let Some(idx) = find_local_index(&interfaces, target) {
                 return (target, Classification::Local(idx));
@@ -379,6 +388,9 @@ pub(crate) enum Unframed {
     /// The target is an IPv6 neighbour on the named link, and the probe
     /// transport's sender has no neighbour discovery to resolve it with.
     Neighbour(String),
+    /// The target is an IPv4 address written in the IPv4-mapped IPv6 block,
+    /// which only a socket can reach: no frame carries such an address.
+    Mapped,
 }
 
 /// A few words, since a message puts one in brackets after the addresses it
@@ -391,6 +403,7 @@ impl std::fmt::Display for Unframed {
             Self::Tunnel(link) => write!(f, "via {link}"),
             Self::NoRoute => f.write_str("no route"),
             Self::Neighbour(link) => write!(f, "IPv6 neighbour on {link}, no NDP"),
+            Self::Mapped => f.write_str("IPv4-mapped"),
         }
     }
 }
@@ -438,6 +451,12 @@ impl BeyondFrames {
         extend(&mut self.targets, &targets);
         self.reasons.push((reason, targets));
     }
+}
+
+/// Whether `target` is an IPv4 address written in the IPv4-mapped IPv6 block,
+/// `::ffff:0:0/96`.
+fn is_ipv4_mapped(target: IpAddr) -> bool {
+    matches!(target, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some())
 }
 
 /// Adds every range of `from` to `into`, leaving the merge to whoever reads it.
@@ -497,6 +516,8 @@ pub(crate) fn beyond_frames_with(
     for address in unmapped.iter() {
         let reason = if address.is_loopback() {
             Unframed::Loopback
+        } else if is_ipv4_mapped(address) {
+            Unframed::Mapped
         } else {
             Unframed::NoRoute
         };
@@ -904,6 +925,48 @@ mod tests {
             assert!(routed.unmapped.contains(&ip("127.0.0.1")));
             assert!(routed.unmapped.contains(&ip("::1")));
         }
+    }
+
+    /// An IPv4-mapped address is an IPv4 host no frame can carry, so it is never
+    /// paired with an IPv6 source and framed toward the router, whatever source
+    /// is forced and whatever global address the host holds.
+    #[test]
+    fn a_mapped_address_is_unmapped_whatever_is_forced() {
+        let interfaces = vec![ethernet(&[("192.0.2.10", 24), ("2001:db8:1::10", 64)])];
+        let forced = [ip("192.0.2.10"), ip("2001:db8:1::10")];
+
+        for forced in [&forced[..], &[]] {
+            let routed = map_ips_to_interfaces_with(
+                set_of(&["::ffff:127.0.0.1", "::ffff:198.51.100.7"]),
+                interfaces.clone(),
+                forced,
+            );
+
+            assert!(
+                routed.routed.is_empty(),
+                "a mapped address is not behind a gateway: {:?}",
+                routed.routed
+            );
+            assert!(routed.unmapped.contains(&ip("::ffff:127.0.0.1")));
+            assert!(routed.unmapped.contains(&ip("::ffff:198.51.100.7")));
+        }
+    }
+
+    /// And a frames-only run says why it reaches one by connect rather than
+    /// calling it unroutable.
+    #[test]
+    fn a_mapped_address_is_beyond_frames_as_what_it_is() {
+        let beyond = beyond_frames_with(
+            set_of(&["::ffff:198.51.100.7"]),
+            vec![ethernet(&[("192.0.2.10", 24), ("2001:db8:1::10", 64)])],
+            &[],
+            FrameSender::Probe,
+        );
+
+        assert_eq!(
+            beyond.summary(),
+            vec![(Unframed::Mapped, ip("::ffff:198.51.100.7"), 1)]
+        );
     }
 
     /// What a frame reaches, which has to keep working for the split to be worth

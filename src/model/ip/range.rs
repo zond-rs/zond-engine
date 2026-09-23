@@ -307,6 +307,26 @@ impl Ipv6Range {
             && u128::from(self.end_addr) <= LINK_LOCAL_LAST
     }
 
+    /// The IPv4 range this range spells, when it lies wholly inside the
+    /// IPv4-mapped block `::ffff:0:0/96`.
+    ///
+    /// RFC 4291 §2.5.5.2 writes an IPv4 address inside an IPv6 one that way,
+    /// and a dual-stack socket handed `::ffff:192.0.2.1` connects to
+    /// `192.0.2.1` over IPv4. No packet on any wire carries such an address, so
+    /// wherever one names a host rather than an IPv6 value, the host is the
+    /// IPv4 one it spells.
+    ///
+    /// [`None`] when either end lies outside the block, which includes a range
+    /// that merely contains it: `::/0` holds the block as it holds every IPv6
+    /// address, and whoever writes it means IPv6, not every address there is.
+    pub(crate) fn spelled_ipv4(&self) -> Option<Ipv4Range> {
+        // Both ends inside the block put the whole range inside it, since the
+        // block is contiguous.
+        let start = self.start_addr.to_ipv4_mapped()?;
+        let end = self.end_addr.to_ipv4_mapped()?;
+        Ipv4Range::new(start, end).ok()
+    }
+
     /// Returns an iterator over every [`IpAddr`] within the range.
     ///
     /// # Warning

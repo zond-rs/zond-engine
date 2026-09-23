@@ -28,6 +28,19 @@
 //! at `192.168.2.254`. IPv6 has no comparable form, and inventing one would
 //! make `::1-5` ambiguous with hex.
 //!
+//! ## An IPv4-mapped address is the IPv4 host it spells
+//!
+//! `::ffff:192.0.2.1` is how RFC 4291 §2.5.5.2 writes `192.0.2.1` inside an
+//! IPv6 address. A dual-stack socket handed it connects over IPv4, and no
+//! packet on any wire carries it. So an address, block or range written wholly
+//! inside `::ffff:0:0/96` becomes the IPv4 one it spells, the reading
+//! [`Exclusions`](crate::model::exclusion::Exclusions) gives the same spelling.
+//! Kept as IPv6 it would name a host no link holds, probed as off-link IPv6
+//! and reported apart from the same machine written the ordinary way.
+//!
+//! A range that reaches outside the block is kept as written. `::/0` holds the
+//! block as it holds every IPv6 address, and whoever writes it means IPv6.
+//!
 //! ## What it cannot do for itself
 //!
 //! Resolving `lan` means reading this host's interface table, and resolving
@@ -295,13 +308,13 @@ pub fn insert_expression(
 
     if s.contains('/') {
         let range = parse_cidr(s)?;
-        set.insert_range(range);
+        set.insert_range(as_hosts(range));
         return Ok(());
     }
 
     if s.contains('-') {
         let range = parse_range(s)?;
-        set.insert_range(range);
+        set.insert_range(as_hosts(range));
         return Ok(());
     }
 
@@ -318,9 +331,19 @@ pub fn insert_expression(
     let ip = s
         .parse::<IpAddr>()
         .map_err(|_| IpParseError::Malformed(s.to_string()))?;
-    set.insert(ip);
+    set.insert(ip.to_canonical());
 
     Ok(())
+}
+
+/// `range` as the hosts it names: a range written wholly inside the
+/// IPv4-mapped block is the IPv4 range it spells, and anything else is itself.
+/// See the module documentation.
+fn as_hosts(range: IpRange) -> IpRange {
+    match range {
+        IpRange::V6(v6) => v6.spelled_ipv4().map_or(range, IpRange::V4),
+        IpRange::V4(_) => range,
+    }
 }
 
 /// Parses a target carrying an explicit `%interface` suffix.
@@ -444,6 +467,11 @@ mod tests {
     /// too, or a target file works through one API and silently fails through
     /// the other.
     ///
+    /// They differ in one reading, on purpose: this module reads an address in
+    /// the IPv4-mapped block as the host it names, where an [`IpSet`] holds the
+    /// value it was given, as a set of values should. See
+    /// `a_mapped_address_is_read_as_the_ipv4_host_it_spells`.
+    ///
     /// Compares the sets rather than their sizes. Two ranges of equal length are
     /// equal lengths and nothing more, and the divergence this exists to catch
     /// was one entry point reading a spelling the other refused outright, which
@@ -470,6 +498,43 @@ mod tests {
                 direct, via_set,
                 "`{expression}` means different things through the two entry points"
             );
+        }
+    }
+
+    /// An address written the IPv4-mapped way is read as the IPv4 host it
+    /// spells, in every form the grammar has.
+    ///
+    /// Kept as IPv6 it names no machine a packet can reach: a frame for it goes
+    /// to the router as off-link IPv6, and the host behind it, reached by a
+    /// dual-stack socket as the IPv4 address it is, is reported filtered, and
+    /// reported apart from the same machine written the ordinary way.
+    #[test]
+    fn a_mapped_address_is_read_as_the_ipv4_host_it_spells() {
+        for (mapped, plain) in [
+            ("::ffff:192.0.2.1", "192.0.2.1"),
+            ("::ffff:127.0.0.1", "127.0.0.1"),
+            ("::ffff:192.0.2.0/120", "192.0.2.0/24"),
+            ("::ffff:192.0.2.1-::ffff:192.0.2.9", "192.0.2.1-192.0.2.9"),
+            ("::ffff:0:0/96", "0.0.0.0/0"),
+        ] {
+            assert_eq!(
+                to_set(&[mapped], None, None).expect("parses"),
+                to_set(&[plain], None, None).expect("parses"),
+                "`{mapped}`"
+            );
+        }
+    }
+
+    /// A range reaching outside the mapped block is kept as written, IPv6 and
+    /// all. `::/0` holds the block as it holds every IPv6 address, and whoever
+    /// writes it means IPv6; read as the IPv4 it contains it would be a scan of
+    /// every address there is.
+    #[test]
+    fn a_range_that_only_overlaps_the_mapped_block_is_kept_as_written() {
+        for written in ["::/0", "::fffe:ffff:ffff-::ffff:0:5"] {
+            let set = to_set(&[written], None, None).expect("parses");
+            assert!(set.v4().is_empty(), "`{written}` gained IPv4");
+            assert_eq!(set, IpSet::from_str(written).expect("parses"));
         }
     }
 

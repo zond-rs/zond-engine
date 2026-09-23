@@ -66,7 +66,7 @@
 
 use std::net::IpAddr;
 
-use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
+use crate::model::ip::range::{IpRange, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::model::target::{TargetMap, TargetSet};
 
@@ -267,13 +267,7 @@ fn twins_of(set: &IpSet) -> IpSet {
         }
     }
     for range in set.v6() {
-        // Both ends inside the mapped block puts the whole range inside it,
-        // since the block is contiguous.
-        if let (Some(start), Some(end)) = (
-            range.start_addr().to_ipv4_mapped(),
-            range.end_addr().to_ipv4_mapped(),
-        ) && let Ok(spelled) = Ipv4Range::new(start, end)
-        {
+        if let Some(spelled) = range.spelled_ipv4() {
             twins.push_v4_range(spelled);
         }
     }
