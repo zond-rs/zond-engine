@@ -1507,6 +1507,88 @@ impl VersionSupport {
     }
 }
 
+/// Why a version's walk ended before the endpoint had declined an offer.
+///
+/// A walk is finished when the server declines what is left of the offer, and
+/// only then are the suites it found the whole of what it accepts. A walk that
+/// ended any other way found a floor, and what it missed is the tail of the
+/// server's own preference order, where a legacy configuration keeps its worst
+/// suites. The two causes are kept apart because they are acted on apart: one
+/// is a property of the path to the endpoint, the other of the scan's budget.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Interruption {
+    /// The endpoint stopped answering: connections failed, timed out or were
+    /// closed unanswered, and went on doing so when the offer was put again.
+    /// Rate limiters and busy embedded stacks are the usual cause, and a slower
+    /// scan the usual remedy.
+    Unanswered,
+    /// The scan stopped asking: the host's budget ran out, which also puts its
+    /// address in the phase's
+    /// [`timed_out`](crate::report::ScanPhase::timed_out) list, or the scan
+    /// itself was stopped.
+    Stopped,
+}
+
+impl Interruption {
+    /// Every cause, in the order the enum declares them.
+    pub const ALL: [Self; 2] = [Self::Unanswered, Self::Stopped];
+
+    /// The name this cause is written under wherever it reaches text.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unanswered => "unanswered",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    /// [`name`](Self::name) read back, or `None` for a name this build does
+    /// not know.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|cause| cause.name() == name)
+    }
+}
+
+impl fmt::Display for Interruption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A version whose walk did not finish, and why.
+///
+/// Held apart from [`VersionSupport`] because the two answer different
+/// questions: that one says a version was accepted, and a walk can be cut
+/// before the server has said anything about its version at all. Such a
+/// version is neither accepted nor refused, and this is the only place a
+/// reader learns that it is unknown rather than absent.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnfinishedVersion {
+    version: TlsVersion,
+    interruption: Interruption,
+}
+
+impl UnfinishedVersion {
+    /// Records that the walk under `version` ended for `interruption`.
+    pub fn new(version: TlsVersion, interruption: Interruption) -> Self {
+        Self {
+            version,
+            interruption,
+        }
+    }
+
+    /// The version whose walk did not finish.
+    pub fn version(&self) -> TlsVersion {
+        self.version
+    }
+
+    /// Why it did not.
+    pub fn interruption(&self) -> Interruption {
+        self.interruption
+    }
+}
+
 /// What an endpoint accepts, version by version.
 ///
 /// The answer a TLS enumeration exists to produce, and a different question from
@@ -1514,14 +1596,19 @@ impl VersionSupport {
 /// records what *was* negotiated; this records what *would be*, which is what a
 /// PCI scan, an ASV report or an internal audit is actually asking.
 ///
-/// Empty for an endpoint that accepted nothing under any version, which is a
-/// real outcome rather than a failure: a server refusing every offer is either
-/// very strictly configured or was asked without the name it insists on. See
+/// Empty for an endpoint that accepted nothing under any version and left no
+/// walk unfinished, which is a real outcome rather than a failure: a server
+/// refusing every offer is either very strictly configured or was asked
+/// without the name it insists on. See
 /// [`Offer::server_name`](crate::protocols::tls::Offer::server_name).
+///
+/// A version under [`unfinished`](Self::unfinished) is one whose accepted
+/// suites, if it has any here, are a floor rather than the whole answer.
 #[must_use]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TlsSupport {
     versions: Vec<VersionSupport>,
+    unfinished: Vec<UnfinishedVersion>,
 }
 
 impl TlsSupport {
@@ -1548,14 +1635,52 @@ impl TlsSupport {
         self
     }
 
+    /// Adds a version whose walk did not finish, keeping the list oldest first
+    /// and one entry to a version.
+    pub fn record_unfinished(&mut self, unfinished: UnfinishedVersion) {
+        let at = self
+            .unfinished
+            .partition_point(|held| held.version < unfinished.version);
+        match self.unfinished.get(at) {
+            Some(held) if held.version == unfinished.version => self.unfinished[at] = unfinished,
+            _ => self.unfinished.insert(at, unfinished),
+        }
+    }
+
+    /// Builder form of [`record_unfinished`](Self::record_unfinished).
+    pub fn leaving_unfinished(mut self, unfinished: UnfinishedVersion) -> Self {
+        self.record_unfinished(unfinished);
+        self
+    }
+
     /// Every version accepted, oldest first.
     pub fn versions(&self) -> &[VersionSupport] {
         &self.versions
     }
 
-    /// Whether anything was established at all.
+    /// Every version whose walk did not finish, oldest first.
+    ///
+    /// Accepted or not: a version listed here and under
+    /// [`versions`](Self::versions) accepts at least the suites found, and one
+    /// listed only here was never settled either way.
+    pub fn unfinished(&self) -> &[UnfinishedVersion] {
+        &self.unfinished
+    }
+
+    /// Whether every version's walk finished, so that what is recorded is the
+    /// whole of what the endpoint accepts.
+    pub fn is_complete(&self) -> bool {
+        self.unfinished.is_empty()
+    }
+
+    /// Whether nothing was recorded at all: no version accepted, and no walk
+    /// left unfinished.
+    ///
+    /// An enumeration that settled nothing because the endpoint stopped
+    /// answering is not empty. It is the one a reader most needs to see,
+    /// since the alternative reading is an endpoint that refused everything.
     pub fn is_empty(&self) -> bool {
-        self.versions.is_empty()
+        self.versions.is_empty() && self.unfinished.is_empty()
     }
 
     /// Whether `version` was accepted.
@@ -2122,6 +2247,39 @@ mod tests {
 
         assert_eq!(support.versions().len(), 1);
         assert_eq!(support.suites().len(), 1);
+    }
+
+    /// A version whose walk was cut before the server said anything about it
+    /// is unknown, and must read as neither of the two things it is not.
+    ///
+    /// Read as accepted, an unfinished TLS 1.0 walk would report the most
+    /// quotable finding a TLS scan produces about a server that may never have
+    /// spoken 1.0. Read as nothing, the enumeration would look like an endpoint
+    /// that refused every offer, and be dropped as carrying no new fact.
+    #[test]
+    fn a_version_never_settled_is_neither_accepted_nor_nothing() {
+        let support = TlsSupport::new().leaving_unfinished(UnfinishedVersion::new(
+            TlsVersion::Tls10,
+            Interruption::Unanswered,
+        ));
+
+        assert!(!support.accepts(TlsVersion::Tls10));
+        assert!(support.findings().is_empty(), "nothing was established");
+        assert!(!support.is_complete());
+        assert!(
+            !support.is_empty(),
+            "a walk the endpoint cut short is a fact about it"
+        );
+    }
+
+    /// Every cause round-trips through its name, so a record read back says why
+    /// a walk did not finish in the words it was written with.
+    #[test]
+    fn every_interruption_round_trips_through_its_name() {
+        for cause in Interruption::ALL {
+            assert_eq!(Interruption::from_name(cause.name()), Some(cause));
+        }
+        assert_eq!(Interruption::from_name("abandoned"), None);
     }
 
     /// A suite accepted under two versions is one suite, and the faults it

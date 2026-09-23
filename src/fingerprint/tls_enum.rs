@@ -34,6 +34,22 @@
 //! answer naming a different version ends that version's walk and records
 //! nothing.
 //!
+//! ## A lost exchange is not a refusal
+//!
+//! A server declines an offer by saying so: an alert, a reply that is not TLS,
+//! or a hello naming another version. A connection that fails, or an answer
+//! that never comes, says nothing about the offer, and a walk that read one as
+//! a refusal would record the suites found so far as the whole answer. What
+//! that loses is the tail of the server's preference order, which is where a
+//! legacy configuration keeps RC4, the export ciphers and the anonymous key
+//! exchanges, and eighty connections in a row is what a walk asks of a rate
+//! limiter or an embedded stack. So a lost exchange is put again after a pause,
+//! and a version whose walk still cannot go on is listed under
+//! [`TlsSupport::unfinished`] rather than passed off as complete.
+//!
+//! A connection closed unanswered could be either, since some stacks decline
+//! by hanging up; `ask` documents how the two are told apart.
+//!
 //! ## What it costs, and what bounds it
 //!
 //! One TCP connection per exchange, and the five versions are walked
@@ -45,15 +61,16 @@
 //! TLS 1.2 alone, and 56 under each of SSL 3.0, 1.0 and 1.1 — and that is the
 //! case this exists to find, so it is a cost to bound in time rather than to cut
 //! short by count. [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout)
-//! is what bounds it. A scan asks before every offer whether the host may still
-//! be probed, so a host that would take longer than its budget is left within
-//! one exchange of it, keeps what was found, and is *named in the report as
-//! having been left early*, which a walk stopped by a count is not.
+//! is what bounds it. A scan asks before every connection whether the host may
+//! still be probed, so a host that would take longer than its budget is left
+//! within one exchange of it, keeps what was found, and is *named in the report
+//! as having been left early*, which a walk stopped by a count is not.
 //! [`MAX_OFFERS_PER_VERSION`] is set at the registry's own size and so bounds
 //! only a defect in the loop; see its documentation for the ceiling that used
 //! to sit below the registry and what that cost.
 
 use std::net::SocketAddr;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -61,7 +78,9 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
-use crate::model::tls::{CipherSuite, TlsSupport, TlsVersion, VersionSupport};
+use crate::model::tls::{
+    CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
+};
 use crate::protocols::tls::{self, Offer, RECORD_HEADER_LEN, ServerResponse};
 use crate::{info, warn};
 
@@ -92,9 +111,23 @@ pub const MAX_OFFERS_PER_VERSION: usize = CipherSuite::MOST_OFFERED_UNDER_ONE_VE
 /// How long one offer may take, from the connection to the answer.
 ///
 /// A server that has already been found to speak TLS answers a hello in a round
-/// trip. This is generous against that, and it is paid once per offer, so a
-/// tarpit costs the version's walk rather than the scan.
+/// trip. This is generous against that. An exchange that outlasts it is lost
+/// and put again, so a tarpit costs the version's walk three of these rather
+/// than costing the scan.
 pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long to wait before putting an offer again whose exchange was lost, one
+/// entry to a retry.
+///
+/// A lost exchange has two usual causes, and the pauses are set by them. A busy
+/// embedded stack drops connections when its accept queue overflows, which five
+/// concurrent walks are enough to do; a quarter of a second is many round trips,
+/// and the queue has drained by then. A rate limiter refuses connections past a
+/// budget counted per second, and the second pause outlasts one. A limiter
+/// holding a longer window outlasts both, and the version is then recorded as
+/// unfinished rather than waited out: the pauses are paid per lost offer, and a
+/// walk is up to eighty offers.
+const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
 
 /// Everything `addr` accepts, version by version.
 ///
@@ -103,54 +136,71 @@ pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(2);
 /// been asked without the name it insists on. See
 /// [`Offer::server_name`](crate::protocols::tls::Offer::server_name) for why the
 /// name is usually absent.
+///
+/// A version whose walk the endpoint cut short, by going on not answering when
+/// asked again, is listed under [`TlsSupport::unfinished`], and whatever it had
+/// accepted by then is kept.
 pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
     enumerate_tls_while(addr, || true).await
 }
 
-/// [`enumerate_tls`], asking `may_probe` before every offer and ending each
-/// version's walk at the first no.
+/// [`enumerate_tls`], asking `may_probe` before every connection and ending
+/// each version's walk at the first no.
 ///
 /// For a caller whose budget the walk has to answer to. One endpoint is up to
 /// 80 offers under TLS 1.2 alone, so a budget consulted once before the walk
 /// bounds almost nothing; consulted here, a walk ends within one exchange of
 /// it. What was learned before the answer turned is kept, since every suite in
-/// it was named by the server, and saying the walk was cut short is left to
-/// the caller, whose budget it was.
+/// it was named by the server, and each version it cut short is listed as
+/// [`Interruption::Stopped`].
 pub(crate) async fn enumerate_tls_while(
     addr: SocketAddr,
     may_probe: impl Fn() -> bool,
 ) -> TlsSupport {
     let may_probe = &may_probe;
-    // Fixed at five, so the versions are joined rather than spawned: each walk
-    // borrows nothing the others need and none of them outlives this call.
+    // Shared by the five walks, so one with nothing accepted yet can still tell
+    // a server declining its offer from one not answering at all. See `ask`.
+    let control = OnceLock::new();
+    let control = &control;
+    // Fixed at five, so the versions are joined rather than spawned: what they
+    // share is borrowed from this frame, and none of them outlives this call.
     let (ssl30, tls10, tls11, tls12, tls13) = tokio::join!(
-        walk(addr, TlsVersion::Ssl30, may_probe),
-        walk(addr, TlsVersion::Tls10, may_probe),
-        walk(addr, TlsVersion::Tls11, may_probe),
-        walk(addr, TlsVersion::Tls12, may_probe),
-        walk(addr, TlsVersion::Tls13, may_probe),
+        walk(addr, TlsVersion::Ssl30, control, may_probe),
+        walk(addr, TlsVersion::Tls10, control, may_probe),
+        walk(addr, TlsVersion::Tls11, control, may_probe),
+        walk(addr, TlsVersion::Tls12, control, may_probe),
+        walk(addr, TlsVersion::Tls13, control, may_probe),
     );
 
     let mut support = TlsSupport::new();
-    for found in [ssl30, tls10, tls11, tls12, tls13].into_iter().flatten() {
-        support.record(found);
+    for (found, unfinished) in [ssl30, tls10, tls11, tls12, tls13] {
+        if let Some(found) = found {
+            support.record(found);
+        }
+        if let Some(unfinished) = unfinished {
+            support.record_unfinished(unfinished);
+        }
     }
     support
 }
 
-/// Narrows the offer under one version until the endpoint stops answering, or
-/// `may_probe` stops the walk.
+/// Narrows the offer under one version until the endpoint declines what is
+/// left of it, or the walk cannot go on.
 ///
-/// `None` where the version was never accepted, which is the ordinary outcome
-/// for four of the five against a current server.
+/// The first half is what the version accepted, `None` where it accepted
+/// nothing, which is the ordinary outcome for four of the five against a
+/// current server. The second is the walk's own account of ending before the
+/// endpoint had declined anything, where it did.
 async fn walk(
     addr: SocketAddr,
     version: TlsVersion,
+    control: &OnceLock<Control>,
     may_probe: &impl Fn() -> bool,
-) -> Option<VersionSupport> {
+) -> (Option<VersionSupport>, Option<UnfinishedVersion>) {
     let mut remaining: Vec<CipherSuite> = CipherSuite::offered_under(version).collect();
     let mut accepted: Vec<CipherSuite> = Vec::new();
     let mut unrecognised: Vec<u16> = Vec::new();
+    let mut interruption = None;
 
     // Counted rather than bounded by a `for`, so that exhausting the budget is
     // distinguishable from finishing. With the ceiling at the registry's size
@@ -166,12 +216,6 @@ async fn walk(
             );
             break;
         }
-        // Every offer is a connection to the endpoint, so the question is put
-        // before each of them. A no ends the version quietly: the caller that
-        // said it is the one that knows why, and says so itself.
-        if !may_probe() {
-            break;
-        }
         offers += 1;
 
         let offer = Offer {
@@ -183,17 +227,27 @@ async fn walk(
             server_name: None,
         };
 
-        let Some(ServerResponse::Hello {
-            version: named,
-            suite,
-            retry,
-            ..
-        }) = exchange(addr, &offer).await
-        else {
-            // An alert, a silence, or bytes that are not TLS. All three end the
-            // version, and none of them is worth telling apart here: the server
-            // declined these terms and the walk has nothing narrower to ask.
-            break;
+        let (named, suite, retry) = match ask(addr, &offer, control, may_probe).await {
+            Answer::Hello {
+                version,
+                suite,
+                retry,
+            } => (version, suite, retry),
+            // The server declined these terms and the walk has nothing
+            // narrower to ask. This is the one way a walk finishes.
+            Answer::Declined => break,
+            Answer::Interrupted(why) => {
+                // A stop is the caller's, which says so itself; a silence is
+                // this endpoint's, and nothing else will mention it.
+                if why == Interruption::Unanswered {
+                    warn!(
+                        verbosity = 2,
+                        "{addr} stopped answering under {version}; its enumeration there is incomplete"
+                    );
+                }
+                interruption = Some(UnfinishedVersion::new(version, why));
+                break;
+            }
         };
 
         // A server that named a different version declined this one, whatever
@@ -218,7 +272,16 @@ async fn walk(
         }
 
         match remaining.iter().position(|held| held.code() == suite) {
-            Some(at) => accepted.push(remaining.remove(at)),
+            Some(at) => {
+                let chosen = remaining.remove(at);
+                // The first acceptance any walk reads is the question every
+                // walk can put to find out whether the endpoint is answering.
+                let _ = control.set(Control {
+                    version,
+                    suite: chosen,
+                });
+                accepted.push(chosen);
+            }
             None => {
                 // Selected something it was never offered. The offer cannot
                 // shrink, so asking again would put the same question forever.
@@ -232,8 +295,129 @@ async fn walk(
         }
     }
 
-    (!accepted.is_empty() || !unrecognised.is_empty())
-        .then(|| VersionSupport::new(version, accepted, unrecognised))
+    let found = (!accepted.is_empty() || !unrecognised.is_empty())
+        .then(|| VersionSupport::new(version, accepted, unrecognised));
+    (found, interruption)
+}
+
+/// An offer the endpoint has answered with a ServerHello: a version, and a
+/// suite it chose under it.
+#[derive(Debug, Clone, Copy)]
+struct Control {
+    version: TlsVersion,
+    suite: CipherSuite,
+}
+
+impl Control {
+    /// The offer of that suite alone, which an endpoint still answering
+    /// answers with a hello.
+    fn offer(&self) -> Offer<'_> {
+        Offer {
+            version: self.version,
+            suites: std::slice::from_ref(&self.suite),
+            server_name: None,
+        }
+    }
+}
+
+/// What putting one offer came to, once it had been put as often as it needed
+/// to be.
+enum Answer {
+    /// A ServerHello, and what it named.
+    Hello {
+        version: Option<TlsVersion>,
+        suite: u16,
+        retry: bool,
+    },
+    /// The server declined the offer.
+    Declined,
+    /// No answer could be had, for the reason given.
+    Interrupted(Interruption),
+}
+
+/// Puts `offer` to the endpoint until it is answered or declined, or until
+/// asking again stops being worth it.
+///
+/// A lost exchange says nothing about the offer, so it is put again after each
+/// of [`RETRY_PAUSES`]. A connection closed without an answer is the one outcome
+/// that could mean either. Some stacks decline by hanging up, on a version they
+/// have disabled or on an offer holding nothing they accept, and a rate limiter
+/// hangs up on everything for a while. So a hang-up is put again too, and a
+/// second one is settled by the `control`: an endpoint that hangs up on this
+/// offer twice and answers the control is declining the offer, and one that
+/// hangs up on the control as well is not answering anything.
+///
+/// Where no walk has had a hello from this endpoint yet there is no control, and
+/// a second hang-up is taken as declining. That is what a stack that disabled a
+/// version does to every hello asking for it, and with nothing the endpoint is
+/// known to answer there is no evidence the other way.
+///
+/// `may_probe` is asked before every connection, the control's included.
+async fn ask(
+    addr: SocketAddr,
+    offer: &Offer<'_>,
+    control: &OnceLock<Control>,
+    may_probe: &impl Fn() -> bool,
+) -> Answer {
+    let mut hung_up = false;
+    let mut pauses = RETRY_PAUSES.into_iter();
+
+    loop {
+        if !may_probe() {
+            return Answer::Interrupted(Interruption::Stopped);
+        }
+        match exchange(addr, offer).await {
+            Exchange::Answered(ServerResponse::Hello {
+                version,
+                suite,
+                retry,
+            }) => {
+                return Answer::Hello {
+                    version,
+                    suite,
+                    retry,
+                };
+            }
+            // An alert, or a record that answers nothing.
+            Exchange::Answered(_) | Exchange::Unreadable => return Answer::Declined,
+            Exchange::HungUp if hung_up => {
+                let Some(control) = control.get() else {
+                    return Answer::Declined;
+                };
+                if !may_probe() {
+                    return Answer::Interrupted(Interruption::Stopped);
+                }
+                if let Exchange::Answered(ServerResponse::Hello { .. }) =
+                    exchange(addr, &control.offer()).await
+                {
+                    return Answer::Declined;
+                }
+            }
+            Exchange::HungUp => hung_up = true,
+            Exchange::Lost => {}
+        }
+
+        let Some(pause) = pauses.next() else {
+            return Answer::Interrupted(Interruption::Unanswered);
+        };
+        tokio::time::sleep(pause).await;
+    }
+}
+
+/// How one exchange ended.
+enum Exchange {
+    /// A TLS answer: a ServerHello naming the terms chosen, or an alert.
+    Answered(ServerResponse),
+    /// A whole record that is not an answer: bytes that are not TLS, or TLS
+    /// carrying something other than a hello or an alert. The peer is not
+    /// taking the question, which settles it as surely as an alert does.
+    Unreadable,
+    /// The connection closed or reset after the hello went out and before a
+    /// whole answer came back.
+    HungUp,
+    /// No question was put or no answer came: the connection could not be
+    /// made, the hello could not be sent, or nothing arrived in time.
+    Lost,
 }
 
 /// One offer: connect, send the hello, read the first record back, hang up.
@@ -241,20 +425,43 @@ async fn walk(
 /// The connection is dropped as soon as the answer is read. Nothing is
 /// completed, so the endpoint sees a client that opened a connection, asked what
 /// it would accept, and left.
-async fn exchange(addr: SocketAddr, offer: &Offer<'_>) -> Option<ServerResponse> {
+async fn exchange(addr: SocketAddr, offer: &Offer<'_>) -> Exchange {
     let hello = tls::client_hello(offer);
 
     timeout(EXCHANGE_TIMEOUT, async {
-        let mut stream = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr))
-            .await
-            .ok()?
-            .ok()?;
-        stream.write_all(&hello).await.ok()?;
-        let record = first_record(&mut stream).await?;
-        tls::read_response(&record)
+        let Ok(Ok(mut stream)) = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr)).await
+        else {
+            return Exchange::Lost;
+        };
+        if stream.write_all(&hello).await.is_err() {
+            return Exchange::Lost;
+        }
+        match first_record(&mut stream).await {
+            Record::Whole(record) => {
+                tls::read_response(&record).map_or(Exchange::Unreadable, Exchange::Answered)
+            }
+            // A record cut short can still hold a whole ServerHello, where the
+            // server coalesced more messages behind it, and that is an answer.
+            // The parser refuses anything short of one.
+            Record::Cut(partial) => {
+                tls::read_response(&partial).map_or(Exchange::HungUp, Exchange::Answered)
+            }
+            Record::Oversized => Exchange::Unreadable,
+        }
     })
     .await
-    .ok()?
+    .unwrap_or(Exchange::Lost)
+}
+
+/// What arrived on a connection, read as far as the first record.
+enum Record {
+    /// The first record whole, and possibly more behind it.
+    Whole(Vec<u8>),
+    /// Less than a whole record, possibly nothing, and then the peer closed or
+    /// reset the connection.
+    Cut(Vec<u8>),
+    /// A header announcing a record no peer may send.
+    Oversized,
 }
 
 /// Reads until the first TLS record is whole, or the peer stops being one.
@@ -266,29 +473,27 @@ async fn exchange(addr: SocketAddr, offer: &Offer<'_>) -> Option<ServerResponse>
 /// [`record_length`](crate::protocols::tls::record_length) refuses past the
 /// largest TLS permits, so a stranger cannot decide how much this process
 /// buffers.
-async fn first_record(stream: &mut TcpStream) -> Option<Vec<u8>> {
+async fn first_record(stream: &mut TcpStream) -> Record {
     let mut buffer = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
 
     loop {
         match tls::record_length(&buffer) {
-            Some(total) if buffer.len() >= total => return Some(buffer),
+            Some(total) if buffer.len() >= total => return Record::Whole(buffer),
             // The header is here and the body is not. Keep reading.
             Some(_) => {}
             // Past five bytes a header that still yields nothing is one
             // announcing a record no peer may send.
-            None if buffer.len() >= RECORD_HEADER_LEN => return None,
+            None if buffer.len() >= RECORD_HEADER_LEN => return Record::Oversized,
             None => {}
         }
 
-        let read = stream.read(&mut chunk).await.ok()?;
-        if read == 0 {
-            // The peer hung up mid-record. What arrived is handed on rather than
-            // discarded: a complete ServerHello followed by a reset is still an
-            // answer, and the parser refuses anything short of one.
-            return (!buffer.is_empty()).then_some(buffer);
+        match stream.read(&mut chunk).await {
+            // A close and a reset are one outcome here: either way the peer
+            // went before the record was whole, and what arrived is handed on.
+            Ok(0) | Err(_) => return Record::Cut(buffer),
+            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
         }
-        buffer.extend_from_slice(&chunk[..read]);
     }
 }
 
@@ -333,6 +538,12 @@ mod tests {
         /// A suite this server names whatever it was offered, for the case the
         /// walk has to survive rather than loop on.
         ignores_the_offer: Option<u16>,
+        /// Which connections it closes without a word, by the order it took
+        /// them in, counting from one: a dropped exchange, or a rate limiter.
+        hangs_up_on: fn(usize) -> bool,
+        /// Whether it declines terms by closing the connection rather than by
+        /// sending an alert, as some stacks do.
+        refuses_by_hanging_up: bool,
         /// How many connections it has taken.
         seen: Arc<AtomicUsize>,
     }
@@ -345,8 +556,22 @@ mod tests {
                 retry: false,
                 version_in_extension: false,
                 ignores_the_offer: None,
+                hangs_up_on: |_| false,
+                refuses_by_hanging_up: false,
                 seen: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        /// Closes the connections `which` picks without reading or answering.
+        fn hanging_up_on(mut self, which: fn(usize) -> bool) -> Self {
+            self.hangs_up_on = which;
+            self
+        }
+
+        /// Declines by closing the connection instead of sending an alert.
+        fn refusing_by_hanging_up(mut self) -> Self {
+            self.refuses_by_hanging_up = true;
+            self
         }
 
         fn answering_in_the_extension(mut self) -> Self {
@@ -376,7 +601,10 @@ mod tests {
                     let Ok((mut stream, _)) = listener.accept().await else {
                         return;
                     };
-                    self.seen.fetch_add(1, Ordering::SeqCst);
+                    let taken = self.seen.fetch_add(1, Ordering::SeqCst) + 1;
+                    if (self.hangs_up_on)(taken) {
+                        continue;
+                    }
 
                     let mut buffer = vec![0u8; 4096];
                     let Ok(read) = stream.read(&mut buffer).await else {
@@ -390,16 +618,27 @@ mod tests {
             (addr, seen)
         }
 
-        /// The record this server sends back for `hello`.
+        /// The record this server sends back for `hello`, or nothing where it
+        /// hangs up instead.
         fn answer(&self, hello: &[u8]) -> Vec<u8> {
             if let Some(fixed) = self.ignores_the_offer {
                 return self.server_hello(fixed);
             }
+            // A stack that declines by hanging up does so for a version it has
+            // disabled too, where an alerting one answers with its own version
+            // and leaves the walk to decline it.
+            if self.refuses_by_hanging_up && hello_version(hello) != Some(self.version) {
+                return Vec::new();
+            }
+            let refusal = match self.refuses_by_hanging_up {
+                true => Vec::new(),
+                false => alert(),
+            };
             let Some(offered) = offered_suites(hello) else {
-                return alert();
+                return refusal;
             };
             let Some(chosen) = offered.iter().find(|code| self.accepts.contains(code)) else {
-                return alert();
+                return refusal;
             };
             self.server_hello(*chosen)
         }
@@ -446,6 +685,12 @@ mod tests {
     /// accept any of the terms offered.
     fn alert() -> Vec<u8> {
         vec![0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28]
+    }
+
+    /// The version field of a ClientHello, which reads `0x0303` for TLS 1.3.
+    fn hello_version(hello: &[u8]) -> Option<u16> {
+        // Past the record header and the handshake header.
+        Some(u16::from_be_bytes([*hello.get(9)?, *hello.get(10)?]))
     }
 
     /// The suites a ClientHello offered, walked by offset off the RFC layout.
@@ -575,16 +820,27 @@ mod tests {
         assert!(support.weakest().is_none());
     }
 
-    /// Nothing listening is the same answer as a refusal, and neither hangs.
+    /// Nothing listening settles nothing, and says so rather than reading as
+    /// an endpoint that refused every version.
+    ///
+    /// The port was open when the scan found it, and a connection refused now
+    /// is a listener gone or a limiter at work: neither is an answer to the
+    /// hello that was never sent.
     #[tokio::test]
-    async fn a_closed_port_yields_nothing() {
+    async fn a_closed_port_leaves_every_version_unfinished() {
         // Bound and dropped, so the port is closed and connections are refused.
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
         let addr = listener.local_addr().expect("has an address");
         drop(listener);
 
         let support = enumerate_tls(addr).await;
-        assert!(support.is_empty());
+        assert!(support.versions().is_empty(), "nothing was accepted");
+        assert_eq!(
+            support.unfinished(),
+            TlsVersion::ALL
+                .map(|version| UnfinishedVersion::new(version, Interruption::Unanswered))
+                .as_slice()
+        );
     }
 
     /// A deprecated version is found and named, which is the whole point: this
@@ -709,6 +965,99 @@ mod tests {
             support.suites().len(),
             every.len(),
             "every suite the server accepts has to be found, not the first {MAX_OFFERS_PER_VERSION}"
+        );
+    }
+
+    /// One connection lost part way through a walk costs that connection and
+    /// not the rest of the walk.
+    ///
+    /// The walk removes each suite as the server picks it, so what a walk
+    /// ending at a dropped connection loses is the tail of the server's own
+    /// preference order: where a legacy configuration keeps RC4, the export
+    /// ciphers and the anonymous exchanges. A rate limiter or a busy embedded
+    /// stack drops connections readily, and eighty in a row is what a walk
+    /// asks of it.
+    #[tokio::test]
+    async fn a_connection_lost_mid_walk_does_not_end_the_walk() {
+        let every: Vec<u16> = CipherSuite::offered_under(TlsVersion::Tls12)
+            .map(|suite| suite.code())
+            .collect();
+        // Past the first offer of each of the five versions, so the connection
+        // lost is one the TLS 1.2 walk made with suites still to find.
+        let (addr, _) = FakeTlsServer::new(0x0303, every.clone())
+            .hanging_up_on(|taken| taken == 20)
+            .spawn()
+            .await;
+
+        let support = enumerate_tls(addr).await;
+
+        assert_eq!(
+            support.suites().len(),
+            every.len(),
+            "the offer the lost connection carried is put again, and the walk goes on"
+        );
+        assert!(support.is_complete());
+    }
+
+    /// An endpoint that goes on hanging up leaves its walk unfinished, and says
+    /// so, rather than passing what was found as the whole answer.
+    ///
+    /// A rate limiter holding a window longer than the retries is the case: it
+    /// hangs up on the known-good control offer as readily as on the walk's, and
+    /// that is what separates it from a server declining the offer.
+    #[tokio::test]
+    async fn an_endpoint_that_goes_on_hanging_up_leaves_the_walk_unfinished() {
+        let every: Vec<u16> = CipherSuite::offered_under(TlsVersion::Tls12)
+            .map(|suite| suite.code())
+            .collect();
+        let (addr, _) = FakeTlsServer::new(0x0303, every.clone())
+            .hanging_up_on(|taken| taken >= 20)
+            .spawn()
+            .await;
+
+        let support = enumerate_tls(addr).await;
+
+        let found = support.suites().len();
+        assert!(
+            (1..every.len()).contains(&found),
+            "what was found before the endpoint went quiet is kept, and it is not \
+             everything: {found} of {}",
+            every.len()
+        );
+        assert_eq!(
+            support.unfinished(),
+            &[UnfinishedVersion::new(
+                TlsVersion::Tls12,
+                Interruption::Unanswered
+            )],
+            "the walk it cut short is named, and no other"
+        );
+    }
+
+    /// A server that declines by hanging up rather than by alert is declining,
+    /// and leaves nothing unfinished.
+    ///
+    /// Some stacks answer a version they have disabled, or an offer holding
+    /// nothing they accept, by closing the connection. Read as a lost exchange,
+    /// every walk against one would end unfinished, and the marker would say
+    /// nothing about the endpoints it is meant to single out.
+    #[tokio::test]
+    async fn a_server_that_declines_by_hanging_up_leaves_nothing_unfinished() {
+        let accepted = [0xC02F, 0x009C];
+        let (addr, _) = FakeTlsServer::new(0x0303, accepted)
+            .refusing_by_hanging_up()
+            .spawn()
+            .await;
+
+        let support = enumerate_tls(addr).await;
+
+        let found: BTreeSet<u16> = support.suites().iter().map(|suite| suite.code()).collect();
+        assert_eq!(found, accepted.into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(support.floor(), Some(TlsVersion::Tls12));
+        assert!(
+            support.is_complete(),
+            "every hang-up here was the server declining: {:?}",
+            support.unfinished()
         );
     }
 

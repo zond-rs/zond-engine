@@ -101,14 +101,15 @@ use crate::model::host::Host;
 use crate::model::mac::MacAddr;
 use crate::model::port::PortSet;
 use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
-use crate::model::tls::TlsVersion;
+use crate::model::tls::{Interruption, TlsVersion};
 use crate::record::wire;
 use crate::record::{
     AcceptedVersionRecord, CaptureRecord, CertificateRecord, DetectionIdRecord, DiscoveryRecord,
     EvasionSettingsRecord, FailureRecord, FindingRecord, HardwareRecord, HopRecord, HostRecord,
     IdleScanRecord, OsRecord, PhaseOriginRecord, PhaseRecord, PortRecord, PortsRecord,
     ProbeStatsRecord, RangeRecord, ReferenceRecord, RefusalRecord, ScopeRecord, SecurityRecord,
-    ServiceRecord, SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
+    ServiceRecord, SettingsRecord, StatusReasonRecord, TelemetryRecord, UnfinishedVersionRecord,
+    WindowRecord,
 };
 use crate::report::{ScanPhase, ScanReport};
 use crate::transport::probe::SendMode;
@@ -1591,6 +1592,7 @@ struct SecurityDto {
     alpn: Vec<String>,
     certificate: Option<CertificateDto>,
     accepts: Vec<AcceptedVersionDto>,
+    unfinished: Vec<UnfinishedVersionDto>,
 }
 
 impl SecurityDto {
@@ -1605,6 +1607,38 @@ impl SecurityDto {
                 .into_iter()
                 .map(AcceptedVersionDto::record)
                 .collect::<Result<_, _>>()?,
+            unfinished: self
+                .unfinished
+                .into_iter()
+                .map(UnfinishedVersionDto::record)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+/// `security.unfinished`, the versions whose enumeration did not finish.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct UnfinishedVersionDto {
+    version: String,
+    interruption: String,
+}
+
+impl UnfinishedVersionDto {
+    fn record(self) -> Result<UnfinishedVersionRecord, String> {
+        known(
+            self.version.parse::<TlsVersion>().ok(),
+            "a TLS version",
+            &self.version,
+        )?;
+        known(
+            Interruption::from_name(&self.interruption),
+            "a reason an enumeration was interrupted",
+            &self.interruption,
+        )?;
+        Ok(UnfinishedVersionRecord {
+            version: self.version,
+            interruption: self.interruption,
         })
     }
 }

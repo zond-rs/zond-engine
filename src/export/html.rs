@@ -916,6 +916,15 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
             if !accepted.unrecognised.is_empty() {
                 detail.push(format!("{} unnamed", accepted.unrecognised.len()));
             }
+            // A walk cut short found a floor, and a reader comparing two
+            // endpoints has to know which of their lists is one.
+            if let Some(unfinished) = security
+                .unfinished
+                .iter()
+                .find(|unfinished| unfinished.version == accepted.version)
+            {
+                detail.push(format!("incomplete, {}", esc(unfinished.interruption)));
+            }
 
             let suites: Vec<String> = accepted
                 .suites
@@ -932,6 +941,23 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
                 esc(accepted.version),
                 dim(&detail),
                 dim(&[suites.join(" · ")])
+            );
+        }
+
+        // A version whose walk ended before the endpoint said anything about
+        // it is neither accepted nor refused, and a page that left it out would
+        // be read as the second.
+        for unfinished in security.unfinished.iter().filter(|unfinished| {
+            !security
+                .accepts
+                .iter()
+                .any(|accepted| accepted.version == unfinished.version)
+        }) {
+            let _ = write!(
+                facts,
+                "<dt>unsettled</dt><dd>{}{}</dd>",
+                esc(unfinished.version),
+                dim(&[esc(unfinished.interruption)])
             );
         }
 
@@ -1805,6 +1831,24 @@ mod tests {
         ] {
             assert!(page.contains(expected), "the page never says {expected:?}");
         }
+    }
+
+    /// An enumeration that did not finish says so beside what it found.
+    ///
+    /// Without it, a version the endpoint stopped answering about reads as one
+    /// it refused, and a list of suites cut short reads as the whole of them.
+    #[test]
+    fn an_unfinished_enumeration_says_so_on_the_page() {
+        let page = default_page();
+
+        assert!(
+            page.contains("<dt>unsettled</dt><dd>TLSv1.1"),
+            "a version never settled is named"
+        );
+        assert!(
+            page.contains("incomplete, stopped"),
+            "an accepted version whose walk was cut short says so"
+        );
     }
 
     /// A phase that did none of it says none of it, or the notices become a band

@@ -1549,9 +1549,11 @@ async fn enumerate_one(
         !ctx.handle.should_stop() && !ctx.host_expired(ip)
     })
     .await;
-    // An endpoint that accepted nothing is left alone rather than recorded as
-    // an empty enumeration: the two are the same value, and writing it back
-    // would announce a host update that carries no new fact.
+    // An endpoint that accepted nothing and left no walk unfinished is left
+    // alone rather than recorded as an empty enumeration: the two are the same
+    // value, and writing it back would announce a host update that carries no
+    // new fact. One whose walks were cut short is written back even with
+    // nothing accepted, since that is a fact a reader needs.
     (!support.is_empty()).then_some((address, number, support))
 }
 
@@ -3385,7 +3387,7 @@ mod tests {
     /// finished.
     #[tokio::test]
     async fn a_walk_under_way_stops_when_its_host_runs_out_of_time() {
-        use crate::model::tls::{CipherSuite, TlsVersion};
+        use crate::model::tls::{CipherSuite, Interruption, TlsVersion, UnfinishedVersion};
         use std::sync::atomic::Ordering;
         use std::time::Duration;
 
@@ -3418,6 +3420,14 @@ mod tests {
         assert!(
             support.accepts(TlsVersion::Tls12),
             "what the walk learned before the budget ran out is kept"
+        );
+        assert_eq!(
+            support.unfinished(),
+            &[UnfinishedVersion::new(
+                TlsVersion::Tls12,
+                Interruption::Stopped
+            )],
+            "and the walk it cut short says the scan stopped it, not the endpoint"
         );
     }
 

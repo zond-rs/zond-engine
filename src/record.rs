@@ -89,7 +89,9 @@ use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::security::{CertificateInfo, Security};
 use crate::model::port::{Port, PortSet, PortState, Service};
 use crate::model::target::{TargetMap, TargetSet};
-use crate::model::tls::{CipherSuite, TlsSupport, TlsVersion, VersionSupport};
+use crate::model::tls::{
+    CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
+};
 use crate::report::ScannerKind;
 use crate::report::WindowSummary;
 use crate::report::{
@@ -1060,6 +1062,21 @@ pub struct SecurityRecord {
     /// reads back as one that did not.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepts: Vec<AcceptedVersionRecord>,
+    /// The versions whose enumeration did not finish, where any did.
+    ///
+    /// Skipped when empty and defaulted on the way in, on the reasoning
+    /// `accepts` gives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unfinished: Vec<UnfinishedVersionRecord>,
+}
+
+/// One version whose enumeration did not finish, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnfinishedVersionRecord {
+    /// The version, by the name it prints.
+    pub version: String,
+    /// Why the walk ended, by the name it prints.
+    pub interruption: String,
 }
 
 /// One version an endpoint accepted, and the suites chosen under it.
@@ -1096,6 +1113,15 @@ impl From<&Security> for SecurityRecord {
                     version: held.version().name().to_owned(),
                     suites: held.suites().iter().map(|suite| suite.code()).collect(),
                     unrecognised: held.unrecognised().to_vec(),
+                })
+                .collect(),
+            unfinished: security
+                .support()
+                .unfinished()
+                .iter()
+                .map(|held| UnfinishedVersionRecord {
+                    version: held.version().name().to_owned(),
+                    interruption: held.interruption().name().to_owned(),
                 })
                 .collect(),
         }
@@ -1136,6 +1162,18 @@ impl From<&SecurityRecord> for Security {
                 }
             }
             support.record(VersionSupport::new(version, suites, unrecognised));
+        }
+        for held in &record.unfinished {
+            let Ok(version) = held.version.parse::<TlsVersion>() else {
+                continue;
+            };
+            // Read downward, as every other name here is. Dropping the entry
+            // would claim the walk finished, which is the one reading the file
+            // did not make; `Stopped` keeps the claim that it did not, and says
+            // nothing about the endpoint.
+            let interruption =
+                Interruption::from_name(&held.interruption).unwrap_or(Interruption::Stopped);
+            support.record_unfinished(UnfinishedVersion::new(version, interruption));
         }
         security.set_support(support);
 
@@ -2442,12 +2480,24 @@ mod tests {
         .with_sans(["example.com".into(), "www.example.com".into()])
         .with_public_key("rsa", 2048);
 
+        let support = TlsSupport::new()
+            .accepting(VersionSupport::new(
+                TlsVersion::Tls12,
+                vec![CipherSuite::from_code(0xC02F).expect("a registered suite")],
+                vec![0xFF01],
+            ))
+            .leaving_unfinished(UnfinishedVersion::new(
+                TlsVersion::Tls12,
+                Interruption::Unanswered,
+            ));
+
         let security = Security::new()
             .with_tls_version("TLSv1.3")
             .with_cipher_suite("TLS_AES_256_GCM_SHA384")
             .with_alpn("h2")
             .with_alpn("http/1.1")
-            .with_certificate(certificate);
+            .with_certificate(certificate)
+            .with_support(support);
 
         let discovery = Discovery::new(ScanResponse::TcpSynAck)
             .seen_at(at(1_700_000_500))

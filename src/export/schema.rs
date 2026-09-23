@@ -94,7 +94,7 @@ use crate::model::host::{
 };
 use crate::model::ip::range::IpRange;
 use crate::model::port::{CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service};
-use crate::model::tls::{CipherSuite, VersionSupport};
+use crate::model::tls::{CipherSuite, UnfinishedVersion, VersionSupport};
 use crate::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, Refusal, ScanPhase,
     ScanReport, ScanSettings, ScanSummary, ScannerFailure, TargetScope,
@@ -2009,6 +2009,15 @@ pub struct SecurityDto<'a> {
     /// accepts the withdrawn one, which is the configuration an audit looks for.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub accepts: Vec<AcceptedVersionDto>,
+    /// The versions whose enumeration ended before the endpoint had declined
+    /// an offer, oldest first. Left out where every walk finished, and where
+    /// the scan did not enumerate.
+    ///
+    /// A version listed here and in `accepts` accepts at least what `accepts`
+    /// says; one listed only here was never settled either way, which is not
+    /// the same as not being accepted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unfinished: Vec<UnfinishedVersionDto>,
 }
 
 impl<'a> SecurityDto<'a> {
@@ -2027,6 +2036,35 @@ impl<'a> SecurityDto<'a> {
                 .iter()
                 .map(AcceptedVersionDto::new)
                 .collect(),
+            unfinished: security
+                .support()
+                .unfinished()
+                .iter()
+                .map(UnfinishedVersionDto::new)
+                .collect(),
+        }
+    }
+}
+
+/// One protocol version whose enumeration did not finish, and why.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct UnfinishedVersionDto {
+    /// The version, spelled as in `accepts`.
+    pub version: &'static str,
+    /// `unanswered` where the endpoint stopped answering and went on not
+    /// answering when asked again; `stopped` where the scan stopped asking,
+    /// because the host's budget ran out, which also puts its address in the
+    /// phase's `timed_out`, or because the scan itself was stopped.
+    pub interruption: &'static str,
+}
+
+impl UnfinishedVersionDto {
+    /// Renders one version whose walk did not finish.
+    pub fn new(unfinished: &UnfinishedVersion) -> Self {
+        Self {
+            version: unfinished.version().name(),
+            interruption: unfinished.interruption().name(),
         }
     }
 }

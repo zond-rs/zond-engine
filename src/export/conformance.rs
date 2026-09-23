@@ -40,7 +40,7 @@ use crate::model::host::status::StatusProtocol;
 use crate::model::host::{Filtering, HostStatus, IpProtocolState, NetworkRole};
 use crate::model::port::{PortState, Protocol};
 use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
-use crate::model::tls::{SuiteFault, SuiteStrength, TlsVersion};
+use crate::model::tls::{Interruption, SuiteFault, SuiteStrength, TlsVersion};
 use crate::record::wire::{
     attachment_source_name, confidence_name, detection_class_name, filtering_name,
     host_status_name, ip_protocol_state_name, network_role_name, port_state_name, protocol_name,
@@ -188,6 +188,14 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
         (
             "/$defs/accepted_version/properties/version/enum",
             named(TlsVersion::ALL.iter().map(|v| v.name()).collect()),
+        ),
+        (
+            "/$defs/unfinished_version/properties/version/enum",
+            named(TlsVersion::ALL.iter().map(|v| v.name()).collect()),
+        ),
+        (
+            "/$defs/unfinished_version/properties/interruption/enum",
+            named(Interruption::ALL.iter().map(|i| i.name()).collect()),
         ),
         (
             "/$defs/accepted_suite/properties/strength/enum",
@@ -527,6 +535,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         ("scope", "listened"),
         // A port on a scan that did not enumerate, which is the default.
         ("security", "accepts"),
+        // A port whose every walk finished, which is every port a scan did
+        // not enumerate and nearly every one it did.
+        ("security", "unfinished"),
         ("settings", "evasion"),
         ("settings", "idle_scan"),
     ];

@@ -1503,6 +1503,41 @@
           "items": {
             "$ref": "#/$defs/accepted_version"
           }
+        },
+        "unfinished": {
+          "description": "The protocol versions whose enumeration ended before the endpoint had declined an offer, oldest first. Absent where every walk finished, and where the scan did not enumerate. A version listed here and in `accepts` accepts at least what `accepts` says, and may accept more; one listed only here was never settled either way, which is not the same as not being accepted.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unfinished_version"
+          }
+        }
+      }
+    },
+    "unfinished_version": {
+      "description": "One protocol version whose enumeration did not finish, and why.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "interruption"
+      ],
+      "properties": {
+        "version": {
+          "description": "The version, spelled as in `accepted_version`.",
+          "enum": [
+            "SSLv3",
+            "TLSv1.0",
+            "TLSv1.1",
+            "TLSv1.2",
+            "TLSv1.3"
+          ]
+        },
+        "interruption": {
+          "description": "`unanswered` where the endpoint stopped answering and went on not answering when the offer was put again, which is usually a rate limiter or a busy embedded stack; `stopped` where the scan stopped asking, because the host's budget ran out, which puts its address in the phase's `timed_out` list as well, or because the scan itself was stopped.",
+          "enum": [
+            "unanswered",
+            "stopped"
+          ]
         }
       }
     },

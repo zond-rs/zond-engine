@@ -40,7 +40,9 @@ use crate::model::mac::MacAddr;
 use crate::model::port::{
     CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
 };
-use crate::model::tls::{CipherSuite, TlsSupport, TlsVersion, VersionSupport};
+use crate::model::tls::{
+    CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
+};
 use crate::protocols::tcp::flags;
 use crate::report::ScannerKind;
 use crate::report::WindowSummary;
@@ -164,8 +166,8 @@ fn https_port() -> Port {
 ///
 /// The shape the document has to be able to say, rather than a plausible
 /// server: a withdrawn version beside a current one, a suite with nothing wrong
-/// with it beside one that is simply broken, and a number the engine could not
-/// name. A fixture that only held a well-configured server would leave every
+/// with it beside one that is simply broken, a number the engine could not
+/// name, and walks that did not finish for each of the reasons one can end. A fixture that only held a well-configured server would leave every
 /// interesting field of the block untested.
 fn accepted() -> TlsSupport {
     let suite = |code: u16| CipherSuite::from_code(code).expect("a suite in the registry");
@@ -188,6 +190,18 @@ fn accepted() -> TlsSupport {
             TlsVersion::Tls13,
             vec![suite(0x1302)],
             Vec::new(),
+        ))
+        // A version the endpoint stopped answering about before saying
+        // anything, which is neither accepted nor refused.
+        .leaving_unfinished(UnfinishedVersion::new(
+            TlsVersion::Tls11,
+            Interruption::Unanswered,
+        ))
+        // And one whose suites above are a floor, because the scan stopped
+        // asking part way through.
+        .leaving_unfinished(UnfinishedVersion::new(
+            TlsVersion::Tls12,
+            Interruption::Stopped,
         ))
 }
 

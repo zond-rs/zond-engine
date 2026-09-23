@@ -3852,6 +3852,7 @@ pub zond_engine::export::schema::SecurityDto::alpn: alloc::vec::Vec<&'a str>
 pub zond_engine::export::schema::SecurityDto::certificate: core::option::Option<zond_engine::export::schema::CertificateDto<'a>>
 pub zond_engine::export::schema::SecurityDto::cipher_suite: core::option::Option<&'a str>
 pub zond_engine::export::schema::SecurityDto::tls_version: core::option::Option<&'a str>
+pub zond_engine::export::schema::SecurityDto::unfinished: alloc::vec::Vec<zond_engine::export::schema::UnfinishedVersionDto>
 impl<'a> zond_engine::export::schema::SecurityDto<'a>
 pub fn zond_engine::export::schema::SecurityDto<'a>::new(&'a zond_engine::model::port::security::Security, &zond_engine::export::ExportOptions) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::SecurityDto<'a>
@@ -3973,6 +3974,24 @@ impl core::marker::Unpin for zond_engine::export::schema::TelemetryDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::TelemetryDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::TelemetryDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::TelemetryDto
+#[non_exhaustive] pub struct zond_engine::export::schema::UnfinishedVersionDto
+pub zond_engine::export::schema::UnfinishedVersionDto::interruption: &'static str
+pub zond_engine::export::schema::UnfinishedVersionDto::version: &'static str
+impl zond_engine::export::schema::UnfinishedVersionDto
+pub fn zond_engine::export::schema::UnfinishedVersionDto::new(&zond_engine::model::tls::UnfinishedVersion) -> Self
+impl core::clone::Clone for zond_engine::export::schema::UnfinishedVersionDto
+pub fn zond_engine::export::schema::UnfinishedVersionDto::clone(&self) -> zond_engine::export::schema::UnfinishedVersionDto
+impl core::fmt::Debug for zond_engine::export::schema::UnfinishedVersionDto
+pub fn zond_engine::export::schema::UnfinishedVersionDto::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for zond_engine::export::schema::UnfinishedVersionDto
+pub fn zond_engine::export::schema::UnfinishedVersionDto::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl core::marker::Freeze for zond_engine::export::schema::UnfinishedVersionDto
+impl core::marker::Send for zond_engine::export::schema::UnfinishedVersionDto
+impl core::marker::Sync for zond_engine::export::schema::UnfinishedVersionDto
+impl core::marker::Unpin for zond_engine::export::schema::UnfinishedVersionDto
+impl core::marker::UnsafeUnpin for zond_engine::export::schema::UnfinishedVersionDto
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::UnfinishedVersionDto
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::UnfinishedVersionDto
 #[non_exhaustive] pub struct zond_engine::export::schema::WindowDto
 pub zond_engine::export::schema::WindowDto::adaptive: bool
 pub zond_engine::export::schema::WindowDto::at_floor: bool
@@ -10963,6 +10982,36 @@ impl core::marker::Unpin for zond_engine::model::tls::BulkCipher
 impl core::marker::UnsafeUnpin for zond_engine::model::tls::BulkCipher
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::BulkCipher
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::BulkCipher
+#[non_exhaustive] pub enum zond_engine::model::tls::Interruption
+pub zond_engine::model::tls::Interruption::Stopped
+pub zond_engine::model::tls::Interruption::Unanswered
+impl zond_engine::model::tls::Interruption
+pub const zond_engine::model::tls::Interruption::ALL: [Self; 2]
+pub const fn zond_engine::model::tls::Interruption::name(self) -> &'static str
+impl core::clone::Clone for zond_engine::model::tls::Interruption
+pub fn zond_engine::model::tls::Interruption::clone(&self) -> zond_engine::model::tls::Interruption
+impl core::cmp::Eq for zond_engine::model::tls::Interruption
+impl core::cmp::Ord for zond_engine::model::tls::Interruption
+pub fn zond_engine::model::tls::Interruption::cmp(&self, &zond_engine::model::tls::Interruption) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::tls::Interruption
+pub fn zond_engine::model::tls::Interruption::eq(&self, &zond_engine::model::tls::Interruption) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::tls::Interruption
+pub fn zond_engine::model::tls::Interruption::partial_cmp(&self, &zond_engine::model::tls::Interruption) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::tls::Interruption
+pub fn zond_engine::model::tls::Interruption::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::tls::Interruption
+pub fn zond_engine::model::tls::Interruption::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::tls::Interruption
+pub fn zond_engine::model::tls::Interruption::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::tls::Interruption
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::Interruption
+impl core::marker::Freeze for zond_engine::model::tls::Interruption
+impl core::marker::Send for zond_engine::model::tls::Interruption
+impl core::marker::Sync for zond_engine::model::tls::Interruption
+impl core::marker::Unpin for zond_engine::model::tls::Interruption
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::Interruption
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::Interruption
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::Interruption
 #[non_exhaustive] pub enum zond_engine::model::tls::KeyExchange
 pub zond_engine::model::tls::KeyExchange::Anonymous
 pub zond_engine::model::tls::KeyExchange::Dhe
@@ -11187,10 +11236,14 @@ pub fn zond_engine::model::tls::TlsSupport::ceiling(&self) -> core::option::Opti
 pub fn zond_engine::model::tls::TlsSupport::deprecated_versions(&self) -> impl core::iter::traits::iterator::Iterator<Item = zond_engine::model::tls::TlsVersion> + '_
 pub fn zond_engine::model::tls::TlsSupport::faults(&self) -> alloc::vec::Vec<zond_engine::model::tls::SuiteFault>
 pub fn zond_engine::model::tls::TlsSupport::floor(&self) -> core::option::Option<zond_engine::model::tls::TlsVersion>
+pub fn zond_engine::model::tls::TlsSupport::is_complete(&self) -> bool
 pub fn zond_engine::model::tls::TlsSupport::is_empty(&self) -> bool
+pub fn zond_engine::model::tls::TlsSupport::leaving_unfinished(self, zond_engine::model::tls::UnfinishedVersion) -> Self
 pub fn zond_engine::model::tls::TlsSupport::new() -> Self
 pub fn zond_engine::model::tls::TlsSupport::record(&mut self, zond_engine::model::tls::VersionSupport)
+pub fn zond_engine::model::tls::TlsSupport::record_unfinished(&mut self, zond_engine::model::tls::UnfinishedVersion)
 pub fn zond_engine::model::tls::TlsSupport::suites(&self) -> alloc::vec::Vec<zond_engine::model::tls::CipherSuite>
+pub fn zond_engine::model::tls::TlsSupport::unfinished(&self) -> &[zond_engine::model::tls::UnfinishedVersion]
 pub fn zond_engine::model::tls::TlsSupport::versions(&self) -> &[zond_engine::model::tls::VersionSupport]
 pub fn zond_engine::model::tls::TlsSupport::weakest(&self) -> core::option::Option<zond_engine::model::tls::SuiteStrength>
 impl zond_engine::model::tls::TlsSupport
@@ -11212,6 +11265,27 @@ impl core::marker::Unpin for zond_engine::model::tls::TlsSupport
 impl core::marker::UnsafeUnpin for zond_engine::model::tls::TlsSupport
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::TlsSupport
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::TlsSupport
+pub struct zond_engine::model::tls::UnfinishedVersion
+impl zond_engine::model::tls::UnfinishedVersion
+pub fn zond_engine::model::tls::UnfinishedVersion::interruption(&self) -> zond_engine::model::tls::Interruption
+pub fn zond_engine::model::tls::UnfinishedVersion::new(zond_engine::model::tls::TlsVersion, zond_engine::model::tls::Interruption) -> Self
+pub fn zond_engine::model::tls::UnfinishedVersion::version(&self) -> zond_engine::model::tls::TlsVersion
+impl core::clone::Clone for zond_engine::model::tls::UnfinishedVersion
+pub fn zond_engine::model::tls::UnfinishedVersion::clone(&self) -> zond_engine::model::tls::UnfinishedVersion
+impl core::cmp::Eq for zond_engine::model::tls::UnfinishedVersion
+impl core::cmp::PartialEq for zond_engine::model::tls::UnfinishedVersion
+pub fn zond_engine::model::tls::UnfinishedVersion::eq(&self, &zond_engine::model::tls::UnfinishedVersion) -> bool
+impl core::fmt::Debug for zond_engine::model::tls::UnfinishedVersion
+pub fn zond_engine::model::tls::UnfinishedVersion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::model::tls::UnfinishedVersion
+impl core::marker::StructuralPartialEq for zond_engine::model::tls::UnfinishedVersion
+impl core::marker::Freeze for zond_engine::model::tls::UnfinishedVersion
+impl core::marker::Send for zond_engine::model::tls::UnfinishedVersion
+impl core::marker::Sync for zond_engine::model::tls::UnfinishedVersion
+impl core::marker::Unpin for zond_engine::model::tls::UnfinishedVersion
+impl core::marker::UnsafeUnpin for zond_engine::model::tls::UnfinishedVersion
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::UnfinishedVersion
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::UnfinishedVersion
 pub struct zond_engine::model::tls::UnknownTlsVersion
 pub zond_engine::model::tls::UnknownTlsVersion::input: alloc::string::String
 impl core::clone::Clone for zond_engine::model::tls::UnknownTlsVersion
@@ -13261,6 +13335,7 @@ pub zond_engine::record::SecurityRecord::alpn: alloc::vec::Vec<alloc::string::St
 pub zond_engine::record::SecurityRecord::certificate: core::option::Option<zond_engine::record::CertificateRecord>
 pub zond_engine::record::SecurityRecord::cipher_suite: core::option::Option<alloc::string::String>
 pub zond_engine::record::SecurityRecord::tls_version: core::option::Option<alloc::string::String>
+pub zond_engine::record::SecurityRecord::unfinished: alloc::vec::Vec<zond_engine::record::UnfinishedVersionRecord>
 impl core::clone::Clone for zond_engine::record::SecurityRecord
 pub fn zond_engine::record::SecurityRecord::clone(&self) -> zond_engine::record::SecurityRecord
 impl core::cmp::Eq for zond_engine::record::SecurityRecord
@@ -13420,6 +13495,28 @@ impl core::marker::Unpin for zond_engine::record::TelemetryRecord
 impl core::marker::UnsafeUnpin for zond_engine::record::TelemetryRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::TelemetryRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::TelemetryRecord
+pub struct zond_engine::record::UnfinishedVersionRecord
+pub zond_engine::record::UnfinishedVersionRecord::interruption: alloc::string::String
+pub zond_engine::record::UnfinishedVersionRecord::version: alloc::string::String
+impl core::clone::Clone for zond_engine::record::UnfinishedVersionRecord
+pub fn zond_engine::record::UnfinishedVersionRecord::clone(&self) -> zond_engine::record::UnfinishedVersionRecord
+impl core::cmp::Eq for zond_engine::record::UnfinishedVersionRecord
+impl core::cmp::PartialEq for zond_engine::record::UnfinishedVersionRecord
+pub fn zond_engine::record::UnfinishedVersionRecord::eq(&self, &zond_engine::record::UnfinishedVersionRecord) -> bool
+impl core::fmt::Debug for zond_engine::record::UnfinishedVersionRecord
+pub fn zond_engine::record::UnfinishedVersionRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::record::UnfinishedVersionRecord
+impl serde_core::ser::Serialize for zond_engine::record::UnfinishedVersionRecord
+pub fn zond_engine::record::UnfinishedVersionRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::record::UnfinishedVersionRecord
+pub fn zond_engine::record::UnfinishedVersionRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::record::UnfinishedVersionRecord
+impl core::marker::Send for zond_engine::record::UnfinishedVersionRecord
+impl core::marker::Sync for zond_engine::record::UnfinishedVersionRecord
+impl core::marker::Unpin for zond_engine::record::UnfinishedVersionRecord
+impl core::marker::UnsafeUnpin for zond_engine::record::UnfinishedVersionRecord
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::UnfinishedVersionRecord
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::UnfinishedVersionRecord
 pub struct zond_engine::record::UnitRecord
 pub zond_engine::record::UnitRecord::enumerated_ports: alloc::vec::Vec<(u16, alloc::string::String)>
 pub zond_engine::record::UnitRecord::ranges: alloc::vec::Vec<zond_engine::record::RangeRecord>
