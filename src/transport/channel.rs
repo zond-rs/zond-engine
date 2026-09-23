@@ -101,22 +101,23 @@ impl EthernetHandle {
 ///
 /// The variants name the interface, because a scan opens one channel per segment
 /// it means to sweep and "opening a channel failed" is not actionable without
-/// knowing which.
+/// knowing which. They name it once: the capture layer's error names the link
+/// too, so what follows the name here is that error's reason alone, and the
+/// whole error stays reachable as the source.
+///
 /// Two halves open here and either can refuse, so which one did is the whole of
 /// what this says. Both usually fail for the same underlying reason, that sending
 /// and receiving raw frames needs root everywhere this engine runs, and a person
 /// reading the message needs to know whether their probes would have
 /// left, not only that something went wrong.
-///
-/// There were three variants and one of them was ever constructed. `NoCapture`
-/// carried both failures, including the send half's, while its own
-/// documentation said the send half had already opened; `Open` and
-/// `NotEthernet` were named, documented and unreachable.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
     /// The link would not open for sending, so no probe could leave by it.
-    #[error("{interface} would not open for sending, so no probe could leave by it: {source}")]
+    #[error(
+        "{interface} would not open for sending, so no probe could leave by it: {}",
+        source.reason()
+    )]
     Send {
         /// The interface that refused.
         interface: String,
@@ -131,7 +132,10 @@ pub enum ChannelError {
     /// Separate from [`Send`](Self::Send) because it fails at a different point
     /// and costs something different: the link is already carrying this scan's
     /// frames by the time this happens.
-    #[error("nothing could be captured on {interface}, so no reply could be heard: {source}")]
+    #[error(
+        "nothing could be captured on {interface}, so no reply could be heard: {}",
+        source.reason()
+    )]
     Receive {
         /// The interface in question.
         interface: String,
@@ -178,4 +182,67 @@ pub fn start_capture(link: &Link, filter: &str) -> Result<EthernetHandle, Channe
         rx,
         capture,
     })
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::capture::CaptureError;
+
+    /// How often `needle` appears in `haystack`.
+    fn occurrences(haystack: &str, needle: &str) -> usize {
+        haystack.matches(needle).count()
+    }
+
+    /// A channel that could not hear names its link once, and says why.
+    ///
+    /// The capture layer's error names the link as well, and quoted whole it
+    /// made the line read the name twice around a second statement of the same
+    /// failure: `nothing could be captured on en0, so no reply could be heard:
+    /// no link could be captured on, so nothing could be heard: en0: ...`.
+    #[test]
+    fn a_channel_that_could_not_hear_names_its_link_once() {
+        let refused = ChannelError::Receive {
+            interface: "en0".into(),
+            source: CaptureError::NoInterface {
+                refused: vec![(
+                    "en0".into(),
+                    CaptureError::Open {
+                        interface: "en0".into(),
+                        source: pcap::Error::PcapError("BIOCSETIF failed".into()),
+                    },
+                )],
+            },
+        };
+
+        assert_eq!(
+            refused.to_string(),
+            "nothing could be captured on en0, so no reply could be heard: BIOCSETIF failed"
+        );
+    }
+
+    /// And one that could not send, on the same rule.
+    #[test]
+    fn a_channel_that_could_not_send_names_its_link_once() {
+        let refused = ChannelError::Send {
+            interface: "en0".into(),
+            source: CaptureError::Denied {
+                interface: "en0".into(),
+                source: pcap::Error::PcapError("/dev/bpf0: Permission denied".into()),
+            },
+        };
+        let said = refused.to_string();
+
+        assert_eq!(occurrences(&said, "en0"), 1, "{said}");
+        assert!(said.contains("Permission denied"), "{said}");
+    }
 }

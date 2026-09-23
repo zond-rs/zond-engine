@@ -659,8 +659,16 @@ impl CaptureError {
 
     /// What went wrong, without naming the link it went wrong on, for a line
     /// that names the link its own way.
-    fn reason(&self) -> String {
+    ///
+    /// A capture of one link that no link would take is that link's own
+    /// refusal, so it too is told without the name. Of several, each keeps its
+    /// name, since the line naming one link cannot name them all.
+    pub(crate) fn reason(&self) -> String {
         match self {
+            Self::NoInterface { refused } => match refused.as_slice() {
+                [(_, only)] => only.reason(),
+                several => refusals_reason(several),
+            },
             Self::Open { source, .. } => library_message(source).into_owned(),
             Self::Denied { source, .. } => format!(
                 "this process lacks the privileges to capture on it: {}",
