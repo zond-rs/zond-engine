@@ -17,9 +17,10 @@
 //!
 //! A port carries its verdict and the evidence behind it, and only the verdict
 //! is compared. [`Discovery`](crate::model::port::Discovery) says which packet
-//! settled the state, when it arrived, how long it took and on which interface;
-//! none of that is a fact about the network, and a diff carrying it would report
-//! a change every time a reply came back on a different interface. The same
+//! settled the state, when it arrived, how long it took and who sent it; none
+//! of that is the verdict, and a diff carrying it would report a change every
+//! time a reply took a millisecond longer or a different router on the path
+//! answered for a filtered port. The same
 //! reasoning excludes a service's confidence score, which measures how sure the
 //! fingerprinter is rather than what is running.
 

@@ -1014,7 +1014,7 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
             detail.push(format!("ttl {ttl}"));
         }
         if let Some(source) = &discovery.source_ip {
-            detail.push(format!("answered on {}", esc(source)));
+            detail.push(format!("reply from {}", esc(source)));
         }
         let _ = write!(
             facts,

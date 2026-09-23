@@ -2223,8 +2223,10 @@ pub struct DiscoveryDto<'a> {
     pub rtt_us: Option<u64>,
     /// The TTL of the response packet.
     pub ttl: Option<u8>,
-    /// The local interface address the probe was answered on. Relevant on
-    /// multi-homed hosts, where port states differ by path.
+    /// The reply's sender, the source address in its IP header, where it was
+    /// recorded. Never an address of the scanning machine. Where it is not the
+    /// target's, the verdict came from something on the path, such as a
+    /// router's ICMP error. `null` where nothing recorded one.
     pub source_ip: Option<String>,
 }
 

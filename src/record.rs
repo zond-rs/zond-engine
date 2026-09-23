@@ -1280,7 +1280,7 @@ pub struct DiscoveryRecord {
     /// The hop counter it carried.
     #[serde(default)]
     pub ttl: Option<u8>,
-    /// Where it came from.
+    /// Who sent it: the source address its IP header carried.
     #[serde(default)]
     pub source_ip: Option<IpAddr>,
 }

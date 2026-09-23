@@ -10,7 +10,7 @@
 //!
 //! [`PortState`](super::PortState) is the verdict; [`Discovery`] is the
 //! evidence behind it: which packet decided it, when, how long it took to
-//! arrive, and which of this host's interfaces it arrived on.
+//! arrive, the hop counter it carried, and who sent it.
 //!
 //! Kept beside the verdict rather than folded into it because the two are read
 //! by different people for different reasons. A report renders the verdict; an
@@ -21,7 +21,25 @@
 //!
 //! Everything except the reason is optional, because an unprivileged connect
 //! attempt knows only that it succeeded or failed: there is no header to read a
-//! TTL from and no interface it can name.
+//! TTL or a sender from.
+//!
+//! ## Who sent the reply
+//!
+//! [`source_ip`](Discovery::source_ip) is the reply's sender, the source
+//! address in its IP header, and never an address of this machine. It says
+//! something only where it is not the target's own: an ICMP error from a
+//! router or firewall on the path is a fact about the path rather than about
+//! the port. It is the fact a host's
+//! [`EvidenceSource`](crate::model::host::EvidenceSource) records about the
+//! evidence it is alive, taken one level down to a single port.
+//!
+//! No scanner in this crate fills it, and it arrives only on a record read
+//! back from a document that carries one. A sender can be an address the
+//! scan's exclusions forbid the report to name, so a scanner that records one
+//! has to withhold an excluded sender the way
+//! [`EvidenceSource::Withheld`](crate::model::host::EvidenceSource::Withheld)
+//! does for a host's evidence, and `tests/hygiene/exclusions.rs` holds every
+//! writer of the field to saying how.
 
 use std::{
     net::IpAddr,
@@ -76,7 +94,7 @@ pub enum ScanResponse {
 }
 
 /// The evidence behind a port's state: which packet decided it, when, how long
-/// it took, and where it came from.
+/// it took, and who sent it.
 ///
 /// The two times answer different questions and neither substitutes for the
 /// other. `timestamp` places the finding on a timeline a person reads, so it is
@@ -101,8 +119,9 @@ pub struct Discovery {
     /// middlebox-generated reply is caught.
     ttl: Option<u8>,
 
-    /// Who sent the reply, when that is worth recording separately. A `Closed`
-    /// sourced from an address that is not the target's says something about the
+    /// The reply's sender: the source address in its IP header, never an
+    /// address of this machine. Worth recording where it is not the target's,
+    /// since a verdict sent by something on the path says something about the
     /// path rather than about the port.
     source_ip: Option<IpAddr>,
 }
@@ -112,7 +131,7 @@ impl Discovery {
     ///
     /// Everything else is optional and attached by the builder methods below,
     /// because an unprivileged connect attempt knows only that it succeeded or
-    /// failed: there is no header to read a TTL from and no interface to name.
+    /// failed: there is no header to read a TTL or a sender from.
     ///
     /// # Examples
     ///
@@ -162,7 +181,9 @@ impl Discovery {
         self.ttl
     }
 
-    /// Who sent the reply, if that was recorded.
+    /// The reply's sender, the source address its IP header carried, if that
+    /// was recorded. See the [module documentation](self) for what it is worth
+    /// and what a scanner recording it owes the exclusion policy.
     pub fn source_ip(&self) -> Option<IpAddr> {
         self.source_ip
     }
@@ -179,7 +200,10 @@ impl Discovery {
         self
     }
 
-    /// Attaches the address the reply came from.
+    /// Attaches the reply's sender, the source address its IP header carried.
+    ///
+    /// A scanner calling this withholds a sender the scan's exclusions forbid
+    /// the report to name, as the [module documentation](self) says.
     pub fn with_source_ip(mut self, ip: IpAddr) -> Self {
         self.source_ip = Some(ip);
         self

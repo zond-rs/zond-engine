@@ -307,7 +307,7 @@
           "$ref": "#/$defs/ttl"
         },
         "source_ip": {
-          "description": "The local interface address the probe was answered on. Relevant on multi-homed hosts, where port states differ by path.",
+          "description": "The address that sent the reply, the source address in its IP header, where one was recorded. Never an address of the scanning machine. Where it is not the target's, the verdict came from something on the path, such as a router's ICMP error, and says something about the path rather than about the port. `null` where nothing recorded a sender.",
           "type": [
             "string",
             "null"

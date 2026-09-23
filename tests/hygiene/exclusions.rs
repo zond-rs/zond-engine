@@ -80,12 +80,16 @@ const WRITES: &[&str] = &["store.insert", "store.get_mut", "store.entry"];
 /// cannot put an excluded address in the report.
 ///
 /// A second census, for the one address a host's record can carry that
-/// `write_host` does not hold to the policy: the source a port's
-/// `Discovery` names. It is not held there because holding it would cost a
-/// walk of every port on every finding, on the path every port scan takes,
-/// for a field no scanner fills. What keeps the promise instead is that no
-/// scanner fills it, and this list is where a scanner that starts to has to
-/// say how it withholds an excluded sender first.
+/// `write_host` does not hold to the policy: `Discovery::source_ip`, which
+/// names the reply's sender, the source address its IP header carried. A
+/// sender is often not the target, and a router or firewall answering for a
+/// filtered port can sit at an address the operator excluded. It is not held
+/// at `write_host` because holding it would cost a walk of every port on every
+/// finding, on the path every port scan takes, for a field no scanner fills.
+/// What keeps the promise instead is that no scanner fills it, and this list
+/// is where a scanner that starts to has to say how it withholds an excluded
+/// sender first: the way `EvidenceSource` does for a host's evidence, keeping
+/// the verdict, marking it second-hand, and naming nobody.
 const DISCOVERY_SOURCE_WRITERS: &[(&str, &str)] = &[(
     "src/record.rs",
     "reads a port's discovery back from a journal or an imported report, and \
@@ -94,7 +98,8 @@ const DISCOVERY_SOURCE_WRITERS: &[(&str, &str)] = &[(
      imported report is the other scan's document and not a scan at all.",
 )];
 
-/// The call that names a port's sender.
+/// The call that names a port's sender, the source address of the reply that
+/// settled it.
 const DISCOVERY_SOURCE: &str = ".with_source_ip(";
 
 /// The files belonging to a module some parent declared `#[cfg(test)]`.
@@ -243,10 +248,10 @@ fn every_writer_into_the_host_store_has_said_how_it_is_gated() {
 /// excluded one is kept out of the report.**
 ///
 /// The recording gate withholds an excluded router on a host's path and an
-/// excluded middlebox behind a host's evidence, and leaves a port's discovery
-/// source alone for the cost [`DISCOVERY_SOURCE_WRITERS`] gives. That holds
-/// only while nothing fills the field, so the first scanner to fill it has to
-/// stop here and decide how its excluded senders are withheld.
+/// excluded middlebox behind a host's evidence, and leaves the sender a port's
+/// discovery names alone for the cost [`DISCOVERY_SOURCE_WRITERS`] gives. That
+/// holds only while nothing fills the field, so the first scanner to fill it
+/// has to stop here and decide how its excluded senders are withheld.
 #[test]
 fn every_writer_of_a_ports_sender_has_said_how_it_is_withheld() {
     let mut found = BTreeSet::new();
@@ -268,7 +273,8 @@ fn every_writer_of_a_ports_sender_has_said_how_it_is_withheld() {
         "these name a port's sender and are not in DISCOVERY_SOURCE_WRITERS: {unlisted:?}\n\n\
          `write_host` does not withhold the source a port's discovery names, so a sender \
          the operator excluded would reach the report. Withhold an excluded sender before \
-         recording it, the way a status reason's is withheld, and add the file to \
+         recording it, the way `EvidenceSource::Withheld` withholds a status reason's, and \
+         add the file to \
          DISCOVERY_SOURCE_WRITERS in tests/hygiene/exclusions.rs saying how."
     );
 
