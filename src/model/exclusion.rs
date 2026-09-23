@@ -66,7 +66,7 @@
 
 use std::net::IpAddr;
 
-use crate::model::ip::range::IpRange;
+use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::model::target::{TargetMap, TargetSet};
 
@@ -86,6 +86,23 @@ use crate::model::target::{TargetMap, TargetSet};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Exclusions {
     set: IpSet,
+    /// The same addresses in their other spelling: each excluded IPv4 range as
+    /// the IPv4-mapped IPv6 range naming it, and each range written inside
+    /// `::ffff:0:0/96` as the IPv4 range it spells. Derived from `set` whenever
+    /// that changes, enforced beside it, and never quoted, since nobody wrote it.
+    ///
+    /// `::ffff:192.0.2.1` is not an address in its own right: RFC 4291
+    /// §2.5.5.2 makes it the way an IPv4 address is written inside an IPv6
+    /// one, and a dual-stack socket handed it opens a connection to
+    /// `192.0.2.1`. An [`IpSet`] keeps the two apart, correctly, since they are
+    /// different values, so a policy held only to what was written covers one
+    /// spelling of a machine and not the other.
+    ///
+    /// Only a range written wholly inside the mapped block speaks for IPv4.
+    /// `::/0` holds that block as it holds every IPv6 address, and whoever
+    /// writes it means "no IPv6"; read as a policy over all of IPv4 it would
+    /// withhold a whole scan nobody excluded.
+    twins: IpSet,
 }
 
 impl Exclusions {
@@ -104,7 +121,8 @@ impl Exclusions {
     /// take `&self` and its fast path.
     pub fn new(mut ips: IpSet) -> Self {
         ips.canonicalize();
-        Self { set: ips }
+        let twins = twins_of(&ips);
+        Self { set: ips, twins }
     }
 
     /// Whether the policy names any address at all.
@@ -116,40 +134,23 @@ impl Exclusions {
         self.set.is_empty()
     }
 
-    /// Whether `ip` may not be probed or recorded.
+    /// Whether `ip` may not be probed or recorded, in either of the spellings a
+    /// machine with an IPv4 address has.
     ///
     /// The whole of the policy, asked one address at a time. A binary search over
     /// merged ranges, and a bare `is_empty` check when no policy is in force,
     /// which is the case on most scans and is why this is affordable on the path
     /// every finding takes.
+    ///
+    /// Seeing through the mapping only ever widens what is excluded, so it
+    /// cannot cause a probe that was not going to happen. It is done here and in
+    /// [`withhold`](Self::withhold) rather than by normalising addresses at the
+    /// parser, because these are the two places getting it wrong sends a packet.
     pub fn excludes(&self, ip: &IpAddr) -> bool {
         if self.set.is_empty() {
             return false;
         }
-        if self.set.contains(ip) {
-            return true;
-        }
-
-        // **One machine, two spellings.** `::ffff:192.0.2.1` is not an address
-        // in its own right: RFC 4291 §2.5.5.2 defines it as the way an IPv4
-        // address is written inside an IPv6 one, and the unprivileged connect
-        // path hands it to the operating system, which opens a connection to
-        // 192.0.2.1. An `IpSet` keeps the two apart, correctly — they are
-        // different values — so a policy naming the v4 form did not cover a
-        // target written the other way, and the packet went out.
-        //
-        // Checked here rather than normalised at the parser, and only in this
-        // direction: seeing through the mapping can only ever *widen* what is
-        // excluded, so it cannot cause a probe that was not going to happen. A
-        // caller who wants the two treated as one address everywhere else has a
-        // larger question, and this is the one place where getting it wrong
-        // sends a packet.
-        match ip {
-            IpAddr::V6(v6) => v6
-                .to_ipv4_mapped()
-                .is_some_and(|v4| self.set.contains(&IpAddr::V4(v4))),
-            IpAddr::V4(_) => false,
-        }
+        self.set.contains(ip) || self.twins.contains(ip)
     }
 
     /// Every excluded range, ascending, IPv4 before IPv6.
@@ -187,6 +188,7 @@ impl Exclusions {
             self.set.push_v6_range(*range);
         }
         self.set.canonicalize();
+        self.twins = twins_of(&self.set);
     }
 
     /// Removes every excluded address from `ips`, returning how many it lost.
@@ -207,6 +209,7 @@ impl Exclusions {
         }
         let before = ips.len();
         ips.subtract(&self.set);
+        ips.subtract(&self.twins);
         before.saturating_sub(ips.len())
     }
 
@@ -248,6 +251,34 @@ impl Exclusions {
         map.units = kept;
         withheld
     }
+}
+
+/// The other spelling of every range in `set` that has one. See
+/// [`Exclusions::twins`].
+fn twins_of(set: &IpSet) -> IpSet {
+    let mut twins = IpSet::new();
+    for range in set.v4() {
+        let mapped = Ipv6Range::new(
+            range.start_addr().to_ipv6_mapped(),
+            range.end_addr().to_ipv6_mapped(),
+        );
+        if let Ok(mapped) = mapped {
+            twins.push_v6_range(mapped);
+        }
+    }
+    for range in set.v6() {
+        // Both ends inside the mapped block puts the whole range inside it,
+        // since the block is contiguous.
+        if let (Some(start), Some(end)) = (
+            range.start_addr().to_ipv4_mapped(),
+            range.end_addr().to_ipv4_mapped(),
+        ) && let Ok(spelled) = Ipv4Range::new(start, end)
+        {
+            twins.push_v4_range(spelled);
+        }
+    }
+    twins.canonicalize();
+    twins
 }
 
 impl From<IpSet> for Exclusions {
@@ -319,6 +350,10 @@ mod tests {
 
         assert!(policy.excludes(&v4(10, 0, 5, 1)));
         assert!(policy.excludes(&v4(10, 0, 7, 1)));
+        assert!(
+            policy.excludes(&"::ffff:10.0.7.1".parse().expect("literal")),
+            "a layer's other spelling arrives with it"
+        );
 
         let mut map = TargetMap::new();
         map.add_unit(TargetSet::new(ips("10.0.5.0/24"), PortSet::top_tcp(2)));
@@ -356,6 +391,67 @@ mod tests {
 
         assert_eq!(policy.withhold(&mut scope), 1);
         assert!(scope.is_empty());
+    }
+
+    /// The same rule before anything is opened, which is where it keeps a packet
+    /// off the wire.
+    ///
+    /// A target written the mapped way is withheld from the plan by a policy
+    /// naming the IPv4 form, and one written the IPv4 way by a policy naming the
+    /// mapped form. Surviving withholding, such a target lands in a connect
+    /// step, the dual-stack socket reaches the machine the policy forbade, and
+    /// the gate drops the reply: a probe the report never shows.
+    #[test]
+    fn a_target_is_withheld_in_either_spelling() {
+        let v4_policy = Exclusions::new(ips("192.0.2.0/24"));
+        let mut mapped = ips("::ffff:192.0.2.1");
+        assert_eq!(v4_policy.withhold(&mut mapped), 1);
+        assert!(mapped.is_empty());
+
+        let mapped_policy = Exclusions::new(ips("::ffff:192.0.2.0/120"));
+        let mut plain = ips("192.0.2.1");
+        assert_eq!(mapped_policy.withhold(&mut plain), 1);
+        assert!(plain.is_empty());
+        assert!(mapped_policy.excludes(&v4(192, 0, 2, 1)));
+    }
+
+    /// Only an exclusion written inside the mapped block speaks for IPv4.
+    ///
+    /// `::/0` holds that block as it holds every IPv6 address, and whoever
+    /// writes it means "no IPv6", not "nothing at all". Read as a policy over
+    /// every IPv4 address it would withhold a whole scan nobody excluded, so the
+    /// mapped addresses it covers are excluded as written and no further.
+    #[test]
+    fn an_ipv6_range_that_only_contains_the_mapped_block_leaves_ipv4_alone() {
+        let policy = Exclusions::new(ips("::/0"));
+
+        let mut plain = ips("192.0.2.1");
+        assert_eq!(policy.withhold(&mut plain), 0);
+        assert!(!policy.excludes(&v4(192, 0, 2, 1)));
+        assert!(
+            policy.excludes(&"::ffff:192.0.2.1".parse().expect("literal")),
+            "the mapped spelling is inside ::/0 as written"
+        );
+    }
+
+    /// What a report quotes as the policy is what was written. The other
+    /// spelling is enforced beside it, and quoting it too would list a range
+    /// nobody asked for.
+    #[test]
+    fn the_other_spelling_is_enforced_without_being_quoted() {
+        let policy = Exclusions::new(ips("192.0.2.0/24"));
+        assert_eq!(
+            policy.ranges(),
+            vec![IpRange::V4(
+                "192.0.2.0/24"
+                    .parse::<IpRange>()
+                    .map(|range| match range {
+                        IpRange::V4(v4) => v4,
+                        IpRange::V6(_) => unreachable!("an IPv4 literal"),
+                    })
+                    .expect("a valid range")
+            )]
+        );
     }
 
     /// **A machine written the other way round is still the machine.**
