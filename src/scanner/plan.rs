@@ -155,6 +155,21 @@ impl RefusedStep {
         }
     }
 
+    /// UDP ports were named for a scan running as an idle scan, for the reason
+    /// [`sctp_not_in_an_idle_scan`](Self::sctp_not_in_an_idle_scan) gives:
+    /// the zombie's counter moves only for the TCP segments it answers, so a
+    /// datagram has no way to be read through it, and one sent directly would
+    /// put this host's address on the target.
+    pub fn udp_not_in_an_idle_scan() -> Self {
+        Self {
+            scanner: ScannerKind::UdpPort,
+            reason: "an idle scan reads a third party's counter, which carries no udp probe, \
+                     and sending one directly would put this host's address on the target - so \
+                     no udp port was probed"
+                .to_string(),
+        }
+    }
+
     /// The TCP half left undone on the targets a frames-only run cannot reach.
     ///
     /// [`technique_needs_raw_sockets`](Self::technique_needs_raw_sockets) for
@@ -986,6 +1001,15 @@ pub struct PortScanPlan {
     /// there as what the plan declined rather than as work a scanner lost.
     refused: Vec<Protocol>,
     technique: TcpScanTechnique,
+    /// Whether this is an idle scan, whether or not its idle step survived.
+    ///
+    /// Kept apart from the steps because a refused idle scan has no idle step,
+    /// and is still an idle scan: what the targets name on another transport is
+    /// refused as one, rather than planned as the direct probe the caller chose
+    /// an idle scan to avoid sending. Read from the steps instead, a privileged
+    /// run through an excluded zombie would plan the target's SCTP ports as a
+    /// direct probe from this host's own address.
+    idle: bool,
 }
 
 impl PortScanPlan {
@@ -1021,12 +1045,14 @@ impl PortScanPlan {
             refusals: Vec::new(),
             refused: Vec::new(),
             technique: cfg.tcp_technique,
+            idle: cfg.idle_scan.is_some(),
         };
 
         // An idle scan replaces the ordinary port scan wholesale. It is TCP-only
         // by nature, a UDP port has no counter to be read through, and probing
         // one directly would announce the scanner the technique exists to hide,
-        // so a UDP target is simply left unprobed, with no step to cover it.
+        // so no step covers UDP. The refusal that says so waits for the targets
+        // to name a UDP port; see `cover_udp`.
         if let Some(idle) = &cfg.idle_scan {
             // Asked first: a policy refusal holds whatever the privilege, and
             // telling somebody to find root for a scan that would be refused
@@ -1121,11 +1147,7 @@ impl PortScanPlan {
     ///
     /// Called with the same `privilege` the plan was built for.
     pub fn cover_sctp(&mut self, privilege: Privilege) {
-        if self
-            .steps
-            .iter()
-            .any(|step| matches!(step, PortScanStep::Idle { .. }))
-        {
+        if self.idle {
             self.refuse(Protocol::Sctp, RefusedStep::sctp_not_in_an_idle_scan());
             return;
         }
@@ -1136,6 +1158,26 @@ impl PortScanPlan {
             self.steps.push(PortScanStep::RawSctp);
         } else {
             self.refuse(Protocol::Sctp, RefusedStep::sctp_needs_raw_sockets());
+        }
+    }
+
+    /// Adds the refusal that says why UDP ports go unprobed, where the plan
+    /// holds no step for them.
+    ///
+    /// Only an idle scan plans none, and its refusal is apart from
+    /// [`build`](Self::build) for the reason [`cover_sctp`](Self::cover_sctp)
+    /// is: whether a UDP port was named is in the targets, which the plan is
+    /// built before reading, and an idle scan of TCP ports alone refusing UDP
+    /// would put a line in every such report about ground nobody asked for.
+    /// Without it the targets that do name UDP reach the router with nothing
+    /// to take them and no refusal to account for them, and are filed as ports
+    /// the scan lost.
+    ///
+    /// Call it when the targets name a UDP port. On any other plan it does
+    /// nothing, since every other plan already has a UDP step.
+    pub fn cover_udp(&mut self) {
+        if self.idle && !self.covers(Protocol::Udp) {
+            self.refuse(Protocol::Udp, RefusedStep::udp_not_in_an_idle_scan());
         }
     }
 
@@ -1582,6 +1624,63 @@ mod tests {
             "the reason names the zombie and the exclusion: {}",
             refusal.reason
         );
+    }
+
+    /// An idle scan the plan refused is still an idle scan, and what it names
+    /// on other transports is refused as one. Neither SCTP nor UDP can be read
+    /// through a zombie's counter, and a privileged plan that forgot the scan
+    /// was an idle one once its idle step was gone would probe the target's
+    /// SCTP ports from this host's own address: the one thing the caller chose
+    /// an idle scan to avoid, done to the target the moment the zombie is
+    /// excluded.
+    #[test]
+    fn a_refused_idle_scan_probes_no_other_transport_directly() {
+        let zombie = v6("192.0.2.9");
+        let mut forbidden = IpSet::new();
+        forbidden.insert(zombie);
+        let cfg = ZondConfig {
+            idle_scan: Some(crate::config::IdleScan::new(zombie)),
+            exclusions: Exclusions::new(forbidden),
+            ..ZondConfig::default()
+        };
+
+        for privilege in [Privilege::Raw, Privilege::Connect] {
+            let mut plan = PortScanPlan::build(&cfg, privilege);
+            plan.cover_sctp(privilege);
+            plan.cover_udp();
+
+            assert!(
+                plan.steps().is_empty(),
+                "{privilege:?}: nothing is probed directly: {:?}",
+                plan.steps()
+            );
+            for protocol in [Protocol::Sctp, Protocol::Udp] {
+                assert!(plan.refuses(protocol), "{privilege:?}: {protocol:?}");
+            }
+            let reasons: Vec<&str> = plan.refusals().iter().map(|r| r.reason.as_str()).collect();
+            for transport in ["sctp", "udp"] {
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|reason| reason.contains(transport) && reason.contains("idle scan")),
+                    "{privilege:?}: {transport} is refused as an idle scan's: {reasons:?}"
+                );
+            }
+        }
+    }
+
+    /// An ordinary scan plans its UDP step whatever the targets name, so being
+    /// told they name UDP changes nothing about it.
+    #[test]
+    fn covering_udp_changes_nothing_about_a_plan_that_already_does() {
+        let mut plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
+        let steps = plan.steps().len();
+
+        plan.cover_udp();
+
+        assert_eq!(plan.steps().len(), steps);
+        assert!(plan.covers(Protocol::Udp) && !plan.refuses(Protocol::Udp));
+        assert!(plan.refusals().is_empty());
     }
 
     fn v6_set(cidr: &str) -> IpSet {

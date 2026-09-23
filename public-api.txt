@@ -14887,6 +14887,7 @@ pub struct zond_engine::scanner::plan::PortScanPlan
 impl zond_engine::scanner::plan::PortScanPlan
 pub fn zond_engine::scanner::plan::PortScanPlan::build(&zond_engine::config::ZondConfig, zond_engine::system::privilege::Privilege) -> Self
 pub fn zond_engine::scanner::plan::PortScanPlan::cover_sctp(&mut self, zond_engine::system::privilege::Privilege)
+pub fn zond_engine::scanner::plan::PortScanPlan::cover_udp(&mut self)
 pub fn zond_engine::scanner::plan::PortScanPlan::covers(&self, zond_engine::model::port::Protocol) -> bool
 pub fn zond_engine::scanner::plan::PortScanPlan::into_steps(self) -> alloc::vec::Vec<zond_engine::scanner::plan::PortScanStep>
 pub fn zond_engine::scanner::plan::PortScanPlan::refusals(&self) -> &[zond_engine::scanner::plan::RefusedStep]
@@ -14916,6 +14917,7 @@ pub fn zond_engine::scanner::plan::RefusedStep::routed_range_not_enumerable(&zon
 pub fn zond_engine::scanner::plan::RefusedStep::sctp_needs_raw_sockets() -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::sctp_not_in_an_idle_scan() -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::technique_needs_raw_sockets(zond_engine::model::technique::TcpScanTechnique) -> Self
+pub fn zond_engine::scanner::plan::RefusedStep::udp_not_in_an_idle_scan() -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::unprivileged_range_not_enumerable(&zond_engine::model::ip::range::Ipv6Range) -> Self
 impl core::clone::Clone for zond_engine::scanner::plan::RefusedStep
 pub fn zond_engine::scanner::plan::RefusedStep::clone(&self) -> zond_engine::scanner::plan::RefusedStep

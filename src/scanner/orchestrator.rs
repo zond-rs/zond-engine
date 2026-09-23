@@ -1912,10 +1912,15 @@ pub(super) async fn run_port_phase(
 
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
     // SCTP is planned from the targets rather than from the configuration,
-    // since the ports are what name it and no default list holds one.
+    // since the ports are what name it and no default list holds one. UDP is
+    // planned by the configuration, except under an idle scan, whose refusal of
+    // it is owed only where the targets name a UDP port.
     let mut plan = super::plan::PortScanPlan::build(cfg, caps.privilege);
     if target_map.names(Protocol::Sctp) {
         plan.cover_sctp(caps.privilege);
+    }
+    if target_map.names(Protocol::Udp) {
+        plan.cover_udp();
     }
 
     // Over what this sitting will probe, which is the addresses an earlier one
@@ -2558,6 +2563,61 @@ mod tests {
         );
         assert_eq!(refusals[0].scanner(), ScannerKind::TcpPort);
         assert!(refusals[0].reason().contains("fin"));
+    }
+
+    /// **An idle scan's UDP ports are refused, and not lost.**
+    ///
+    /// An idle scan reads a third party's counter, which a UDP probe gives it no
+    /// way to move, and sending one directly would announce the host the
+    /// technique exists to hide. So the plan holds no UDP step, and the ports
+    /// reach the router with nothing to take them. Unless a refusal names them,
+    /// the router files them as a scan that had no scanner for their protocol:
+    /// a failure, which reads as a defect in the engine and is its own decision
+    /// told as an accident.
+    ///
+    /// Through the whole port phase, which is where the plan learns the targets
+    /// name a UDP port. The zombie is excluded so the idle scan is refused
+    /// whatever privilege runs the test, and nothing is sent anywhere.
+    #[tokio::test]
+    async fn an_idle_scans_udp_ports_are_refused_rather_than_lost() {
+        use crate::journal::cursor::Checkpoint;
+        use crate::model::exclusion::Exclusions;
+        use crate::model::target::TargetSet;
+
+        let cfg = ZondConfig {
+            idle_scan: Some(crate::config::IdleScan::new(
+                "192.0.2.9".parse().expect("an address"),
+            )),
+            exclusions: Exclusions::new(ip_set(&["192.0.2.9"])),
+            ..ZondConfig::default()
+        };
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            ip_set(&["192.0.2.1"]),
+            "80, u:53".parse().expect("a port set"),
+        ));
+        let (_session, ctx) = ScanSession::new();
+        let caps = ScanCapabilities {
+            privilege: Privilege::Connect,
+            frames_only: false,
+            dns: false,
+        };
+
+        run_port_phase(map, None, &ctx, caps, &cfg, Checkpoint::default()).await;
+
+        let failures = ctx.take_failures();
+        assert!(
+            failures.is_empty(),
+            "a port the plan chose not to probe is not one the scan lost: {failures:?}"
+        );
+        let refusals = ctx.take_refusals();
+        let reasons: Vec<&str> = refusals.iter().map(Refusal::reason).collect();
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("udp") && reason.contains("idle scan")),
+            "the refusal names UDP under an idle scan: {reasons:?}"
+        );
     }
 
     /// Which of the three a phase is, by what its frames cannot reach against
