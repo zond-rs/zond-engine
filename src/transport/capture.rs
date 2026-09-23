@@ -1471,7 +1471,7 @@ fn reader_loop(
             refresh(&mut capture, counters);
             since_refresh = 0;
             #[cfg(not(windows))]
-            wait_readable(fd);
+            wait_readable(fd, READ_TIMEOUT_MS);
         }
     }
 
@@ -1517,12 +1517,12 @@ fn refresh(capture: &mut Capture<Active>, counters: &CaptureStats) {
     }
 }
 
-/// Waits for `fd` to have a frame ready, giving up after [`READ_TIMEOUT_MS`] so
-/// the caller can re-check its stop flag. Poll failures are not reported: the
-/// caller's next read reports anything genuinely wrong, and an interrupted poll
-/// simply costs one extra loop.
+/// Waits for `fd` to have a frame ready, giving up after `timeout_ms` so the
+/// caller can re-check its stop flag or its deadline. Poll failures are not
+/// reported: the caller's next read reports anything genuinely wrong, and an
+/// interrupted poll simply costs one extra loop.
 #[cfg(not(windows))]
-fn wait_readable(fd: std::os::unix::io::RawFd) {
+fn wait_readable(fd: std::os::unix::io::RawFd, timeout_ms: i32) {
     let mut poll_fd = libc::pollfd {
         fd,
         events: libc::POLLIN,
@@ -1531,7 +1531,7 @@ fn wait_readable(fd: std::os::unix::io::RawFd) {
 
     // SAFETY: `poll_fd` is a single initialized `pollfd` and the count says so;
     // `poll` reads it and writes only `revents`.
-    unsafe { libc::poll(&mut poll_fd, 1, READ_TIMEOUT_MS) };
+    unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
 }
 
 /// A handle for putting whole frames on a link.
@@ -1613,6 +1613,15 @@ pub trait FrameSink: Send {
 /// worth is decided by whoever reads it.
 pub struct FrameChannel {
     capture: Capture<Active>,
+    /// How long [`next_frame`](Self::next_frame) waits for a frame to arrive.
+    /// Windows has no descriptor to wait on, and its capture's own read
+    /// timeout does the waiting there.
+    #[cfg(not(windows))]
+    wait_ms: i32,
+    /// The frame [`next_frame`](Self::next_frame) last read, copied out of
+    /// `libpcap`'s buffer so that reading it and waiting for it can be
+    /// separate steps. See [`next_frame`](Self::next_frame).
+    frame: Vec<u8>,
 }
 
 impl FrameChannel {
@@ -1626,36 +1635,89 @@ impl FrameChannel {
         filter: &str,
         read_timeout: std::time::Duration,
     ) -> Result<Self, CaptureError> {
-        let millis = i32::try_from(read_timeout.as_millis()).unwrap_or(i32::MAX);
-        let (mut capture, _) = libpcap::activate(
+        let wait_ms = i32::try_from(read_timeout.as_millis()).unwrap_or(i32::MAX);
+        let (capture, _) = libpcap::activate(
             link,
             &libpcap::Setup {
                 snaplen: saturating_i32(REPLY_SNAP_LEN),
                 promiscuous: false,
-                timeout_ms: millis,
+                timeout_ms: wait_ms,
                 immediate: true,
                 buffer_bytes: None,
             },
         )?;
 
+        // Non-blocking, with the wait done on the descriptor, for the reason
+        // `open` gives: on Linux a blocking read waits until a frame arrives
+        // whatever the read timeout says. See `next_frame`.
+        #[cfg(not(windows))]
+        let capture = capture.setnonblock().map_err(|source| CaptureError::Open {
+            interface: link.to_owned(),
+            source,
+        })?;
+
+        let mut capture = capture;
         capture
             .filter(filter, true)
-            .map_err(|source| CaptureError::Open {
-                interface: link.to_owned(),
+            .map_err(|source| CaptureError::Filter {
+                filter: filter.to_owned(),
                 source,
             })?;
 
-        Ok(Self { capture })
+        Ok(Self {
+            capture,
+            #[cfg(not(windows))]
+            wait_ms,
+            frame: Vec::new(),
+        })
     }
 
-    /// The next frame the filter admitted, or `None` on a read timeout.
+    /// The next frame the filter admitted, or `None` if none arrived within
+    /// the read timeout.
     ///
     /// `None` is not the end of anything. It means nothing arrived inside the
     /// timeout, and a caller with a deadline left should ask again.
+    ///
+    /// # How the wait is bounded
+    ///
+    /// On Unix the read never blocks. A frame already waiting is returned at
+    /// once; otherwise the wait is a `poll` on the capture's descriptor, bounded
+    /// by the read timeout, followed by one more read. That is the discipline
+    /// every reader thread in this module keeps, and for the same reason:
+    /// `libpcap`'s own read timeout does not bound a blocking read on Linux, and
+    /// a caller relying on it, such as an address resolution waiting on a
+    /// neighbour that will never answer, would wait until some unrelated frame
+    /// happens to pass the filter, which on a quiet link is never.
+    ///
+    /// The read comes before the wait rather than after it because `libpcap`
+    /// may already hold frames it read from the kernel in one batch, which a
+    /// descriptor that has nothing more to give would not announce. Windows
+    /// keeps the blocking read, whose timeout Npcap honours.
     pub fn next_frame(&mut self) -> Option<&[u8]> {
+        if self.read_one() {
+            return Some(&self.frame);
+        }
+
+        #[cfg(not(windows))]
+        {
+            wait_readable(self.capture.as_raw_fd(), self.wait_ms);
+            if self.read_one() {
+                return Some(&self.frame);
+            }
+        }
+
+        None
+    }
+
+    /// Reads one frame into `frame`, if one is ready, and says whether one was.
+    fn read_one(&mut self) -> bool {
         match self.capture.next_packet() {
-            Ok(packet) => Some(packet.data),
-            Err(_) => None,
+            Ok(packet) => {
+                self.frame.clear();
+                self.frame.extend_from_slice(packet.data);
+                true
+            }
+            Err(_) => false,
         }
     }
 }
@@ -2116,6 +2178,49 @@ mod tests {
         assert!(
             link_of(RAW).compile(&expression, true).is_err(),
             "and the link then refuses it whole"
+        );
+    }
+
+    /// A frame channel bounds its own wait, on the descriptor, rather than
+    /// trusting `libpcap`'s read timeout to end a blocking read.
+    ///
+    /// Linux does not end one on the timeout: its memory-mapped path polls
+    /// again, and the read returns only when a frame passes the filter. An
+    /// address resolution waiting there on a neighbour that will never answer
+    /// waits for as long as the link stays quiet. So the capture must not be a
+    /// blocking one, which is the property this holds; that the wait then ends
+    /// on a quiet Linux link is Tier 3's to show.
+    ///
+    /// Needs the right to capture on the loopback, and says nothing where the
+    /// process lacks it.
+    #[test]
+    fn a_frame_channel_bounds_its_wait_itself_rather_than_trusting_libpcap() {
+        let Some(loopback) = crate::system::interface::interfaces()
+            .into_iter()
+            .find(|link| link.is_loopback())
+        else {
+            return;
+        };
+
+        let timeout = Duration::from_millis(50);
+        let mut channel = match FrameChannel::open(loopback.name(), "less 0", timeout) {
+            Ok(channel) => channel,
+            Err(refused) if refused.is_denied() => return,
+            Err(refused) => panic!("the loopback would not open: {refused}"),
+        };
+
+        #[cfg(not(windows))]
+        assert!(
+            channel.capture.is_nonblock(),
+            "a blocking read is bounded by nothing on Linux"
+        );
+
+        let started = Instant::now();
+        assert_eq!(channel.next_frame(), None, "`less 0` admits nothing");
+        let waited = started.elapsed();
+        assert!(
+            waited >= timeout / 2 && waited < Duration::from_secs(1),
+            "a {timeout:?} wait took {waited:?}"
         );
     }
 

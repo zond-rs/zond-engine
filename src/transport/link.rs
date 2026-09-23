@@ -50,6 +50,28 @@ use crate::transport::probe::{Emission, IpProtocols, ProbeSender, SendError};
 /// How long to wait for an ARP reply before giving up on an on-link target.
 const ARP_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// How many ARP requests one resolution sends, spread evenly across
+/// [`ARP_TIMEOUT`]: at its start, a third of the way in, and two thirds.
+///
+/// More than one because a single request is a single chance, and a lost
+/// request or a lost reply is not rare. ARP is broadcast, and a switch under
+/// load drops broadcast before anything else. One lost frame costs far more
+/// than the resolution: the neighbour is then remembered as unanswered for
+/// [`NEIGHBOR_UNREACHABLE_TTL`], so a live host's every port goes unasked for
+/// that long on the strength of one dropped packet. The kernel covers the same
+/// risk the same way, with several solicitations before it gives a neighbour
+/// up.
+///
+/// Three, and spaced a third of the timeout apart, because a neighbour on the
+/// same segment that is going to answer does so in well under a millisecond.
+/// A request unanswered after a sixth of a second was lost rather than slow, so
+/// asking again then is not impatience, and the spacing is wide enough that a
+/// burst which dropped one request has usually passed before the next. The
+/// local sweep asks three times on much the same schedule, for the same
+/// reason. A dead address still costs exactly [`ARP_TIMEOUT`]: the requests
+/// share the wait rather than each bringing one of their own.
+const ARP_REQUESTS: u32 = 3;
+
 /// How long a neighbour that did not answer its address resolution is left
 /// unasked before the sender tries it again.
 ///
@@ -203,9 +225,10 @@ impl EthernetSender {
         Ok(mac)
     }
 
-    /// Sends an ARP request for `target` and waits for the reply, returning
+    /// Asks for `target`'s hardware address and waits for the reply, returning
     /// the target's MAC. Runs synchronously against the interface's datalink
-    /// channel, bounded by [`ARP_TIMEOUT`].
+    /// channel, bounded by [`ARP_TIMEOUT`], with the requests [`ARP_REQUESTS`]
+    /// describes.
     fn arp_resolve(
         &self,
         interface: &str,
@@ -220,21 +243,9 @@ impl EthernetSender {
         let channel = self.channel_for(&mut channels, interface)?;
 
         let request = arp::build_request(src_mac, src_ip, target);
-        channel
-            .channel
-            .send_frame(&request)
-            .map_err(|reason| SendError::Refused(format!("sending an ARP request: {reason}")))?;
-
-        let deadline = Instant::now() + ARP_TIMEOUT;
-        while Instant::now() < deadline {
-            let Some(frame) = channel.channel.next_frame() else {
-                continue; // read timeout; keep waiting until the deadline
-            };
-            if let Some(mac) = parse_arp_reply(frame, target) {
-                return Ok(mac);
-            }
-        }
-        Err(unanswered_neighbor(IpAddr::V4(target), interface))
+        resolve_over(&mut channel.channel, &request, target)
+            .map_err(|reason| SendError::Refused(format!("sending an ARP request: {reason}")))?
+            .ok_or_else(|| unanswered_neighbor(IpAddr::V4(target), interface))
     }
 
     /// Returns the datalink channel for `interface`, opening it on first use.
@@ -321,6 +332,61 @@ impl ProbeSender for EthernetSender {
             }
             Ok(())
         })()
+    }
+}
+
+/// A link an address resolution runs over: somewhere to put a request, and
+/// the frames that come back.
+///
+/// The seam between [`resolve_over`] and the capture it runs on, so that the
+/// schedule of requests can be shown against a neighbour that answers only
+/// some of them, which a real segment offers only by chance.
+trait ResolutionLink: FrameSink {
+    /// The next frame the link's filter admitted, or `None` once its read
+    /// timeout passes with nothing.
+    fn next_frame(&mut self) -> Option<&[u8]>;
+}
+
+impl ResolutionLink for capture::FrameChannel {
+    fn next_frame(&mut self) -> Option<&[u8]> {
+        capture::FrameChannel::next_frame(self)
+    }
+}
+
+/// Runs one address resolution for `target` over `link`: `request` sent as
+/// [`ARP_REQUESTS`] schedules it, and the replies read until one answers or
+/// [`ARP_TIMEOUT`] passes.
+///
+/// `Ok(None)` is a neighbour that never answered; an `Err` is a request that
+/// could not be sent, which says nothing about the neighbour at all.
+fn resolve_over(
+    link: &mut impl ResolutionLink,
+    request: &[u8],
+    target: Ipv4Addr,
+) -> Result<Option<MacAddr>, String> {
+    let started = Instant::now();
+    let spacing = ARP_TIMEOUT / ARP_REQUESTS;
+    let mut sent = 0;
+
+    loop {
+        let elapsed = started.elapsed();
+        if elapsed >= ARP_TIMEOUT {
+            return Ok(None);
+        }
+        // The next request goes out once its share of the wait has begun.
+        // Reads end on the channel's own timeout, so a request is at most
+        // that late.
+        if sent < ARP_REQUESTS && elapsed >= spacing * sent {
+            link.send_frame(request)?;
+            sent += 1;
+        }
+
+        let Some(frame) = link.next_frame() else {
+            continue; // read timeout; keep waiting until the deadline
+        };
+        if let Some(mac) = parse_arp_reply(frame, target) {
+            return Ok(Some(mac));
+        }
     }
 }
 
@@ -466,6 +532,86 @@ mod tests {
             a.set_target_proto_addr(Ipv4Addr::new(192, 0, 2, 50));
         }
         buf
+    }
+
+    /// A neighbour on a segment that loses frames: it answers the request
+    /// numbered `answers` and none before it, as it would if the earlier ones
+    /// or their replies were dropped, and waits out each read the way a quiet
+    /// capture does.
+    struct LossyNeighbour {
+        reply: Vec<u8>,
+        answers: u32,
+        requests: u32,
+        replied: bool,
+    }
+
+    impl LossyNeighbour {
+        fn answering(answers: u32, ip: Ipv4Addr, mac: MacAddr) -> Self {
+            Self {
+                reply: arp_reply(ip, mac),
+                answers,
+                requests: 0,
+                replied: false,
+            }
+        }
+    }
+
+    impl FrameSink for LossyNeighbour {
+        fn send_frame(&mut self, _frame: &[u8]) -> Result<(), String> {
+            self.requests += 1;
+            Ok(())
+        }
+    }
+
+    impl ResolutionLink for LossyNeighbour {
+        fn next_frame(&mut self) -> Option<&[u8]> {
+            if self.requests >= self.answers && !self.replied {
+                self.replied = true;
+                return Some(&self.reply);
+            }
+            std::thread::sleep(CHANNEL_READ_TIMEOUT / 10);
+            None
+        }
+    }
+
+    /// A neighbour whose first request was lost is still resolved, by the next.
+    ///
+    /// One request per resolution made a single dropped broadcast final: the
+    /// neighbour read as unanswered, and the memory of that turned a live
+    /// host's every port away for the next half-minute.
+    #[test]
+    fn a_neighbour_answering_only_a_later_request_is_resolved() {
+        let ip = Ipv4Addr::new(192, 0, 2, 200);
+        let mac = MacAddr::new(0x02, 0, 0, 0, 0, 0xc8);
+
+        // At least the second, so a schedule of one request cannot pass by
+        // having no later request to test.
+        for answers in 2..=ARP_REQUESTS.max(2) {
+            let mut neighbour = LossyNeighbour::answering(answers, ip, mac);
+            let resolved = resolve_over(&mut neighbour, b"request", ip);
+
+            assert_eq!(resolved, Ok(Some(mac)), "answering request {answers}");
+            assert_eq!(neighbour.requests, answers, "and asked no further");
+        }
+    }
+
+    /// A neighbour that never answers is asked every scheduled time, and given
+    /// up after the one timeout the requests share.
+    #[test]
+    fn a_neighbour_that_never_answers_costs_one_timeout_across_every_request() {
+        let ip = Ipv4Addr::new(192, 0, 2, 200);
+        let mut neighbour =
+            LossyNeighbour::answering(u32::MAX, ip, MacAddr::new(0x02, 0, 0, 0, 0, 1));
+
+        let started = Instant::now();
+        assert_eq!(resolve_over(&mut neighbour, b"request", ip), Ok(None));
+        let waited = started.elapsed();
+
+        assert_eq!(neighbour.requests, ARP_REQUESTS);
+        assert!(
+            waited >= ARP_TIMEOUT && waited < ARP_TIMEOUT + CHANNEL_READ_TIMEOUT * 2,
+            "a dead neighbour cost {waited:?}"
+        );
     }
 
     #[test]
