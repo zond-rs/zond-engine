@@ -10,12 +10,20 @@
 //!
 //! Nothing here binds a socket or calls the library. Each module reads source
 //! files off disk and holds the tree to a rule the compiler cannot express: that
-//! the module graph matches the order `lib.rs` claims, that every cited file is
-//! in the repository, that a doc comment landed on the item it was written for,
-//! and that two obligations a module states and its callers keep are written
-//! down where the next caller will meet them: every reader of an ICMP error says
-//! how it ties one to a probe, and every writer into the host store says how it
-//! is held to the exclusions.
+//! the module graph matches the order `lib.rs` claims and has no cycle, that
+//! every cited file is in the repository, that a doc comment landed on the item
+//! it was written for and every item the standard covers has one, and that the
+//! obligations a module states and its callers keep are written down where the
+//! next caller will meet them.
+//!
+//! Those obligations are kept by three censuses. Every reader of an ICMP error
+//! says how it ties one to a probe; every file opening a capture that admits
+//! ICMP says where it checks the protocol before it parses a byte; and every
+//! writer into the host store says how it is held to the exclusions. Each
+//! census also holds itself to account: an entry has to say something, every
+//! probe kind has to be placed by whether its capture admits ICMP, and the way
+//! the ICMP censuses find a file is tried against the spellings it has to see
+//! through and the prose it has to ignore.
 //!
 //! These are lints wearing a test's clothes, and they run with the ordinary
 //! suite because `cargo test` is where a contributor looks. They need no

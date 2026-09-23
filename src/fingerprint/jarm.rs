@@ -29,8 +29,11 @@
 //! and their order, the extension order, where GREASE goes, which fields are
 //! read back, and the shape of the hash. A change that looks like a tidy-up
 //! produces hashes that match nothing, and nothing about the result says so.
-//! The corpus carries nineteen rules written against published hashes, and
-//! `the_hash_matches_the_reference_implementation` is what holds this to them.
+//! The corpus carries nineteen rules written against published hashes.
+//! `every_hello_matches_the_reference_implementation` holds the ten hellos to
+//! the reference byte for byte, the tests beside it pin how each answer is
+//! coded into the hash, and `a_published_hash_reaches_the_corpus` holds the
+//! lookup to those rules.
 //!
 //! ## What the hash is
 //!
@@ -1366,7 +1369,6 @@ mod tests {
     fn a_published_hash_reaches_the_corpus() {
         let db = super::super::db::SignatureDb::global();
 
-        // Cobalt Strike's, from `tls_jarm.toml`.
         // Cobalt Strike's, from `tls_jarm.toml`.
         let found = db
             .identify_jarm("07d14d16d21d21d07c42d41d00041d24a458a375eef0c576d23a7bab9a9fb1")
