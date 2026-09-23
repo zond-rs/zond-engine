@@ -460,11 +460,11 @@ impl Link {
             mac: interface.mac_addr.map(|mac| MacAddr::from(mac.octets())),
             addresses,
             kind,
-            // Both, because they are not the same claim: a cable can be plugged
-            // in to an interface nobody has brought up, and an interface can be
-            // administratively up with nothing on the other end. A scan wants
-            // the conjunction: there is no point probing out of either.
-            up: interface.is_up() && interface.is_oper_up(),
+            up: carries_traffic(
+                interface.is_up(),
+                interface.oper_state(),
+                interface.is_running(),
+            ),
             addressing: Addressing::of(interface.is_broadcast(), interface.is_point_to_point()),
             physical: interface.is_physical(),
             default_route: interface.default,
@@ -519,6 +519,42 @@ pub fn is_on_link(link: &Link, ips: &IpSet) -> bool {
             .v6()
             .iter()
             .all(|range| within(range.start_addr().into(), range.end_addr().into()))
+}
+
+/// Whether an interface with this administrative state, operational state and
+/// running flag can carry a probe or a reply.
+///
+/// Both states count, because they are not the same claim: a cable can be
+/// plugged in to an interface nobody has brought up, and an interface can be
+/// administratively up with nothing on the other end. A scan wants the
+/// conjunction, since there is no point probing out of either.
+///
+/// **An operational state of `unknown` is read from the running flag.** It is
+/// what a driver reports when it keeps no operational state at all, and the
+/// kernel's own documentation says to treat such an interface as usable. Linux
+/// reports it for every tun, WireGuard and ppp device, which is to say for the
+/// link every VPN a CTF player connects through arrives on: read as down, the
+/// tunnel was left out of source selection and of the capture list, and a SYN
+/// scan through it read every port filtered while the replies arrived unheard.
+/// The running flag is what such a driver does set, once something is attached
+/// to the device, so a tunnel nobody has opened stays out.
+fn carries_traffic(
+    admin_up: bool,
+    oper: netdev::interface::state::OperState,
+    running: bool,
+) -> bool {
+    use netdev::interface::state::OperState;
+
+    admin_up
+        && match oper {
+            OperState::Up => true,
+            OperState::Unknown => running,
+            OperState::NotPresent
+            | OperState::Down
+            | OperState::LowerLayerDown
+            | OperState::Testing
+            | OperState::Dormant => false,
+        }
 }
 
 // ╔════════════════════════════════════════════╗
@@ -596,6 +632,37 @@ mod tests {
         ));
     }
     use super::*;
+
+    /// A tunnel is a link: Linux reports `unknown` for tun and WireGuard
+    /// devices, and one with something attached to it carries traffic. Read as
+    /// down, a VPN's replies were never captured.
+    #[test]
+    fn an_interface_of_unknown_state_carries_traffic_while_it_runs() {
+        use netdev::interface::state::OperState;
+
+        assert!(carries_traffic(true, OperState::Up, true));
+        assert!(
+            carries_traffic(true, OperState::Unknown, true),
+            "a tunnel in use"
+        );
+        assert!(
+            !carries_traffic(true, OperState::Unknown, false),
+            "a tunnel nothing is attached to"
+        );
+        assert!(
+            !carries_traffic(false, OperState::Unknown, true),
+            "brought down"
+        );
+        for down in [
+            OperState::Down,
+            OperState::LowerLayerDown,
+            OperState::Dormant,
+            OperState::Testing,
+            OperState::NotPresent,
+        ] {
+            assert!(!carries_traffic(true, down, true), "{down:?}");
+        }
+    }
 
     fn v4(address: &str, prefix: u8) -> LinkAddress {
         LinkAddress::new(IpAddr::V4(address.parse().expect("an address")), prefix)
