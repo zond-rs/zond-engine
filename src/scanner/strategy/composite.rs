@@ -80,6 +80,10 @@ pub struct CompositePortScanner {
     /// unless the composite was built by
     /// [`with_reach`](Self::with_reach).
     scanners: Vec<(Box<dyn PortScanner>, Reach)>,
+    /// Each protocol the scan refused to probe, with the addresses the refusal
+    /// covers. Empty unless the composite was built with
+    /// [`refusing`](Self::refusing).
+    refused: Vec<(Protocol, Reach)>,
     /// Where targets that never reached a scanner are reported.
     ///
     /// The router is the one place in a scan that can drop work without any
@@ -107,7 +111,25 @@ impl CompositePortScanner {
         scanners: Vec<(Box<dyn PortScanner>, Reach)>,
         ctx: ScanContext,
     ) -> Self {
-        Self { scanners, ctx }
+        Self {
+            scanners,
+            refused: Vec::new(),
+            ctx,
+        }
+    }
+
+    /// The same composite, told which targets the scan refused to probe: each
+    /// protocol a refusal names, with the addresses it covers.
+    ///
+    /// A target the router can place nowhere is one of two things, and only
+    /// the scan that assembled the router knows which. Either something decided
+    /// not to probe it and a refusal in the report already says so, or nothing
+    /// did and the scan has lost it. Both leave the target unprobed and owed to
+    /// a resume. Only the second is a fault: the first reported as one reads as
+    /// a defect in the engine, and tells one decision twice.
+    pub(crate) fn refusing(mut self, refused: Vec<(Protocol, Reach)>) -> Self {
+        self.refused = refused;
+        self
     }
 }
 
@@ -166,14 +188,15 @@ impl PortScanner for CompositePortScanner {
         // already stopped listening, is counted rather than dropped in silence:
         // either means ports the caller asked about are missing from the
         // results, and a scan that quietly answers a narrower question than it
-        // was asked is worse than one that says so.
+        // was asked is worse than one that says so. A target the scan refused
+        // is left unprobed as well, and its refusal is what says so.
         let mut unroutable = 0usize;
         let mut undeliverable = 0usize;
 
         while let Some(target) = targets.recv().await {
+            let (protocol, ip) = (target.protocol(), target.target.ip);
             match routes.iter().find(|route| {
-                route.supported_protocols.contains(&target.protocol())
-                    && route.reach.admits(&target.target.ip)
+                route.supported_protocols.contains(&protocol) && route.reach.admits(&ip)
             }) {
                 Some(route) => {
                     if route.tx.send(target).await.is_err() {
@@ -182,7 +205,13 @@ impl PortScanner for CompositePortScanner {
                     }
                 }
                 None => {
-                    unroutable += 1;
+                    if !self
+                        .refused
+                        .iter()
+                        .any(|(refused, reach)| *refused == protocol && reach.admits(&ip))
+                    {
+                        unroutable += 1;
+                    }
                     self.ctx.record_outcome(Outcome::Unroutable);
                 }
             }
@@ -592,6 +621,46 @@ mod tests {
             "the count is what says how much was missed: {}",
             failures[0].reason()
         );
+    }
+
+    /// A target the scan refused is left to the refusal that already names it,
+    /// and only there: the same protocol at an address the refusal does not
+    /// cover is still work the scan lost. Both stay unprobed and owed, so a
+    /// resume with the sockets the refusal wanted asks about them again.
+    #[tokio::test]
+    async fn a_refused_target_is_left_to_its_refusal_and_no_other_is() {
+        let (_session, ctx) = ScanSession::new();
+        let mut loopback = IpSet::new();
+        loopback.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+        let mut composite = CompositePortScanner::new(Vec::new(), ctx.clone())
+            .refusing(vec![(Protocol::Tcp, Reach::Only(Arc::new(loopback)))]);
+        let (tx, rx) = mpsc::channel(16);
+        let elsewhere = Target {
+            ip: "192.0.2.8".parse().expect("literal"),
+            ..target(Protocol::Tcp, 80)
+        };
+        for (position, t) in [target(Protocol::Tcp, 80), elsewhere]
+            .into_iter()
+            .enumerate()
+        {
+            tx.send(PlannedTarget::new(position as u64, t))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+        composite.scan(rx).await.expect("a narrowing, not an error");
+
+        let failures = ctx.take_failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0]
+                .reason()
+                .starts_with("1 target was never probed"),
+            "only the target the refusal does not cover is lost: {}",
+            failures[0].reason()
+        );
+        assert_eq!(ctx.settlements().count(Outcome::Unroutable), 2);
     }
 
     /// And nothing to report when nothing was missed, or every clean scan ends

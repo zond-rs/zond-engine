@@ -980,6 +980,11 @@ impl PortScanStep {
 pub struct PortScanPlan {
     steps: Vec<PortScanStep>,
     refusals: Vec<RefusedStep>,
+    /// The protocol each of `refusals` leaves unprobed, kept beside them
+    /// because a refusal is words and the scan has to act on it too: a target
+    /// of a refused protocol still reaches the router, and has to be counted
+    /// there as what the plan declined rather than as work a scanner lost.
+    refused: Vec<Protocol>,
     technique: TcpScanTechnique,
 }
 
@@ -1011,8 +1016,12 @@ impl PortScanPlan {
     /// would hand back verdicts from a technique they did not choose with no
     /// field in the report saying so.
     pub fn build(cfg: &ZondConfig, privilege: Privilege) -> Self {
-        let mut steps = Vec::new();
-        let mut refusals = Vec::new();
+        let mut plan = Self {
+            steps: Vec::new(),
+            refusals: Vec::new(),
+            refused: Vec::new(),
+            technique: cfg.tcp_technique,
+        };
 
         // An idle scan replaces the ordinary port scan wholesale. It is TCP-only
         // by nature, a UDP port has no counter to be read through, and probing
@@ -1024,20 +1033,19 @@ impl PortScanPlan {
             // anyway sends them the wrong way. The zombie is named in settings
             // rather than in the target list, so nothing else withholds it.
             if cfg.exclusions.excludes(&idle.zombie) {
-                refusals.push(RefusedStep::idle_zombie_excluded(idle.zombie));
+                plan.refuse(
+                    Protocol::Tcp,
+                    RefusedStep::idle_zombie_excluded(idle.zombie),
+                );
             } else if privilege.is_raw() {
-                steps.push(PortScanStep::Idle {
+                plan.steps.push(PortScanStep::Idle {
                     zombie: idle.zombie,
                     zombie_port: idle.zombie_port,
                 });
             } else {
-                refusals.push(RefusedStep::idle_needs_privilege());
+                plan.refuse(Protocol::Tcp, RefusedStep::idle_needs_privilege());
             }
-            return Self {
-                steps,
-                refusals,
-                technique: cfg.tcp_technique,
-            };
+            return plan;
         }
 
         // Raw scanning needs both the privilege and an address to probe from.
@@ -1047,23 +1055,29 @@ impl PortScanPlan {
         }
 
         if raw {
-            steps.push(PortScanStep::RawTcp {
+            plan.steps.push(PortScanStep::RawTcp {
                 technique: cfg.tcp_technique,
             });
-            steps.push(PortScanStep::RawUdp);
+            plan.steps.push(PortScanStep::RawUdp);
         } else if cfg.tcp_technique.has_connect_fallback() {
-            steps.push(PortScanStep::ConnectTcp);
-            steps.push(PortScanStep::ConnectUdp);
+            plan.steps.push(PortScanStep::ConnectTcp);
+            plan.steps.push(PortScanStep::ConnectUdp);
         } else {
-            refusals.push(RefusedStep::technique_needs_raw_sockets(cfg.tcp_technique));
-            steps.push(PortScanStep::ConnectUdp);
+            plan.refuse(
+                Protocol::Tcp,
+                RefusedStep::technique_needs_raw_sockets(cfg.tcp_technique),
+            );
+            plan.steps.push(PortScanStep::ConnectUdp);
         }
 
-        Self {
-            steps,
-            refusals,
-            technique: cfg.tcp_technique,
-        }
+        plan
+    }
+
+    /// Records that `protocol` will not be probed, and the refusal that says
+    /// why.
+    fn refuse(&mut self, protocol: Protocol, refusal: RefusedStep) {
+        self.refusals.push(refusal);
+        self.refused.push(protocol);
     }
 
     /// The TCP technique this plan was built for.
@@ -1112,7 +1126,7 @@ impl PortScanPlan {
             .iter()
             .any(|step| matches!(step, PortScanStep::Idle { .. }))
         {
-            self.refusals.push(RefusedStep::sctp_not_in_an_idle_scan());
+            self.refuse(Protocol::Sctp, RefusedStep::sctp_not_in_an_idle_scan());
             return;
         }
 
@@ -1121,8 +1135,20 @@ impl PortScanPlan {
         if privilege.is_raw() && interface::SourceResolver::from_system().has_sources() {
             self.steps.push(PortScanStep::RawSctp);
         } else {
-            self.refusals.push(RefusedStep::sctp_needs_raw_sockets());
+            self.refuse(Protocol::Sctp, RefusedStep::sctp_needs_raw_sockets());
         }
+    }
+
+    /// Whether one of [`refusals`](Self::refusals) leaves `protocol`
+    /// unprobed.
+    ///
+    /// Not the same question as [`covers`](Self::covers) answered in the
+    /// negative. A protocol no step covers and no refusal names is one the
+    /// plan left out without saying so, and the scan reports its targets as
+    /// lost; one a refusal names has already been reported, and its targets
+    /// are what that refusal is about.
+    pub(crate) fn refuses(&self, protocol: Protocol) -> bool {
+        self.refused.contains(&protocol)
     }
 
     /// Whether any step covers `protocol`.
@@ -1688,6 +1714,10 @@ mod tests {
             plan.refusals()[0].reason.contains("fin"),
             "the refusal has to name the technique: {}",
             plan.refusals()[0].reason
+        );
+        assert!(
+            plan.refuses(Protocol::Tcp) && !plan.refuses(Protocol::Udp),
+            "and which protocol it leaves unprobed, for the router to count"
         );
     }
 
