@@ -2,7 +2,7 @@
 
 Coverage-guided fuzzing over the code that reads bytes somebody else wrote, the
 code that writes bytes somebody else opens, and the code that decides what a
-scan already found means. Fifteen targets, each an entry point a hostile
+scan already found means. Eighteen targets, each an entry point a hostile
 network, a hostile file or an edited state directory reaches directly.
 
 ```
@@ -73,16 +73,17 @@ src/lib.rs                            →  the oracles more than one target asks
 watch.py                              →  a libFuzzer run as a status screen
 ```
 
-Nine surfaces, because a target is defined by the boundary it attacks rather
+Ten surfaces, because a target is defined by the boundary it attacks rather
 than by the module it happens to call: `wire` is bytes off a segment,
 `protocols` is bytes this engine puts on one, `import` is a file an operator was
 handed, `export` is a document this engine produces,
-`format` is the contract the two directions share, `record` is where a type with
-invariants becomes something a file can hold, `journal` is what a scan writes
-down as it runs, and `diff` and `merge` are what two scans and several scans
-respectively add up to. `export_report` reaches the writers by way of a reader
-and is still an export target, because a writer is what it asserts about; the
-same arrangement gets `diff` and `merge` their reports.
+`format` is the contract the two directions share, `fingerprint` is a remote
+host's replies read as a statement about what it is, `record` is where a type
+with invariants becomes something a file can hold, `journal` is what a scan
+writes down as it runs, and `diff` and `merge` are what two scans and several
+scans respectively add up to. `export_report` reaches the writers by way of a
+reader and is still an export target, because a writer is what it asserts about;
+the same arrangement gets `diff` and `merge` their reports.
 
 **The last four surfaces are not parsers, and that is why they are here.** A
 reader is fuzzed because it takes bytes from somebody hostile. `journal::cursor`
@@ -152,7 +153,7 @@ splicing between corpus entries reproduces them without being told. The two rows
 added later reproduce the same shape: 111% and 59% from nothing, and -1% and 3%
 beside the seeds.
 
-Seven of the fifteen have no dictionary, and `protocols_craft` has no seeds
+Ten of the eighteen have no dictionary, and `protocols_craft` has no seeds
 either. Its input is `arbitrary`'s encoding of a recipe rather than a document,
 so there are no tokens to put in a dictionary and no file anybody would write by
 hand to put in a seed. It is also the case where the table above predicts seeds
@@ -184,6 +185,9 @@ moved, or OSS-Fuzz beginning with nothing — and that is when it earns its plac
 | `import_settings` | `engine.toml`, and what applying one does to a `ZondConfig` | a file synced out of a team repository, which nobody reads before it takes effect |
 | `export_report` | every writer, over a report built by a reader | a device names itself, so every string a writer escapes is one the network chose |
 | `format_timestamp` | `parse_rfc3339` and `rfc3339` | the one parser both directions depend on, and the only one whose output is also its input |
+| `fingerprint_certificate` | the certificate a peer presents, through both readers that look at one | the handshake accepts any certificate on purpose, so this is where fully attacker-chosen bytes reach third-party parsing code |
+| `fingerprint_banner` | a service's response, through the signature matcher, the ranking and the resolver | every stage runs on text a remote host chose, and the backtracking engine has to terminate on all of it |
+| `fingerprint_stack` | a TCP reply, read as a statement about the stack that sent it | the option walk steps through lengths a remote host chose, and has to terminate on any of them |
 
 `protocols_craft` takes a recipe rather than a buffer, since a builder takes a
 description. Every derived field is an `Option`, which is `Field`'s own shape:
@@ -237,14 +241,18 @@ fuzzer finds on its own, and `wire_buffer` does slightly better from nothing,
 because its readers take a bare buffer and a seed only narrows where it looks.
 Seeds are not a ritual; they are what gets past a header.
 
-So `fuzz/seeds/` is tracked. Each file is a valid message built by this crate's
-own `protocols::craft` builders or, for the documents, written by its own
+So `fuzz/seeds/` is tracked. The packets are valid messages built by this
+crate's own `protocols::craft` builders and the documents were written by its own
 exporters: an LLDP advertisement with its mandatory TLVs, a CDP announcement
 behind its LLC/SNAP header, a neighbour advertisement, a DHCP acknowledgement, a
 VLAN-tagged frame, a report in each format this engine writes, and an nmap
-document. Two seeds are there to be *refused* rather than read —
-`import_nmap/entity.xml` and `format_timestamp/impossible-date` — which keeps the
-fuzzer near the refusal rather than away from it.
+document. The `fingerprint` seeds are what a peer says about itself: four
+service banners, a self-signed certificate, and three TCP headers, one a SYN+ACK
+carrying a Linux stack's options, one a reset, and one whose option list is forty
+NOPs. Some seeds are there to be *refused* rather than read —
+`import_nmap/entity.xml`, `format_timestamp/impossible-date` and
+`offset-refused`, and `journal_framing/version-too-new` — which keeps the fuzzer
+near the refusal rather than away from it.
 
 The corpus a run *produces* is not tracked. It is a machine-local artifact of one
 run, and one checked in goes stale the moment a parser's framing changes.

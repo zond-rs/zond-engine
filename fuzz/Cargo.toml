@@ -6,8 +6,9 @@
 # `cargo build` at the repository root never reaches it.
 #
 # `cargo fuzz run <target>` from the repository root; `cargo fuzz list` names
-# them. Tracked here: this file, `README.md`, `fuzz_targets/` and `seeds/`.
-# Everything else under `fuzz/` is what a run produces and is gitignored.
+# them. Tracked here: this file, `README.md`, `watch.py`, `src/`,
+# `fuzz_targets/`, `seeds/` and `dictionaries/`. Everything else under `fuzz/` is
+# what a run produces and is gitignored.
 [package]
 name = "zond-engine-fuzz"
 version = "0.0.0"
