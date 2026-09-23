@@ -634,20 +634,42 @@ pub fn port_scope(name: &str, ports: Option<PortSet>) -> Option<PortScope> {
 mod tests {
     use super::*;
 
+    /// One value of every variant of `$enum`, as the arms of one exhaustive
+    /// match.
+    ///
+    /// The list and the match are built from the same rows, so a variant added
+    /// to the enum without a row stops the build, and a row written twice is an
+    /// unreachable arm, which the lints refuse. A list kept beside a match holds
+    /// neither: the match forces an arm for a new variant, nothing forces the
+    /// list to name it, and the variant is written to files and never read back.
+    /// A variant carrying a value is given one, and matched whatever it carries.
+    macro_rules! every {
+        ($enum:ident { $($variant:ident $(($($carried:expr),+))?),+ $(,)? }) => {{
+            let rows = vec![$($enum::$variant $(($($carried),+))?),+];
+            for row in &rows {
+                match row {
+                    $($enum::$variant { .. } => {})+
+                }
+            }
+            rows
+        }};
+    }
+
     /// Every variant survives being written down and read back.
     ///
     /// What it catches is a name and a parser that disagree. What it does not
-    /// catch, and never did, is a variant with no name at all: the match arms
-    /// above are exhaustive, so the compiler refuses that before this runs.
+    /// catch is a variant with no name at all: the match arms above are
+    /// exhaustive, so the compiler refuses that before this runs.
     ///
     /// Driven from each vocabulary's `ALL` rather than from lists written out
-    /// here. Half of it already was, with a comment saying why, and the halves
-    /// argued opposite policies in one function. `ALL` wins the argument because
-    /// a list written here is a second hand-maintained list with one reader,
-    /// where `ALL` is the same list with five: the exported schema's enums, a
-    /// report's ordering, a `FromStr`'s error message, and this. A vocabulary
-    /// missing from `ALL` goes untested here either way, and being missing from
-    /// `ALL` is the more visible mistake of the two.
+    /// here, where there is one. A list written here is a second hand-maintained
+    /// list with one reader, where `ALL` is the same list with five: the
+    /// exported schema's enums, a report's ordering, a `FromStr`'s error
+    /// message, and this. A vocabulary missing from `ALL` goes untested here
+    /// either way, and being missing from `ALL` is the more visible mistake of
+    /// the two. A vocabulary with no `ALL`, or with variants an `ALL` cannot
+    /// hold because they carry a value, is listed by `every!`, which the
+    /// compiler holds to the enum.
     #[test]
     fn every_name_parses_back() {
         for value in HostStatus::ALL {
@@ -710,11 +732,11 @@ mod tests {
 
         // A reference carries a value beside its kind, so its round trip is over
         // both halves rather than a bare name.
-        for value in [
-            Reference::Cve("CVE-2021-44228".to_string()),
-            Reference::Cwe(79),
-            Reference::url("https://example.test/advisory"),
-        ] {
+        for value in every!(Reference {
+            Cve("CVE-2021-44228".to_string()),
+            Cwe(79),
+            Url("https://example.test/advisory".to_string()),
+        }) {
             let kind = reference_kind_name(&value);
             let carried = match &value {
                 Reference::Cve(s) | Reference::Url(s) => s.clone(),
@@ -723,16 +745,14 @@ mod tests {
             assert_eq!(reference(kind, &carried), Some(value));
         }
 
-        // Every variant, so one added without a spelling on the wire fails here
-        // rather than reaching a report under a name nothing reads back.
-        for value in [
-            OsSource::TcpStack,
-            OsSource::HardwareVendor,
-            OsSource::ServiceBanner,
-            OsSource::SnmpAgent,
-            OsSource::MdnsResponder,
-            OsSource::Hostname,
-        ] {
+        for value in every!(OsSource {
+            TcpStack,
+            HardwareVendor,
+            ServiceBanner,
+            SnmpAgent,
+            MdnsResponder,
+            Hostname,
+        }) {
             assert_eq!(os_source(os_source_name(value)), Some(value));
         }
 
@@ -747,16 +767,18 @@ mod tests {
             assert_eq!(status_protocol(&name), Some(value.clone()), "{name}");
         }
 
-        for value in [
-            ScanResponse::TcpSynAck,
-            ScanResponse::OverheardSynAck,
-            ScanResponse::TcpRst,
-            ScanResponse::UdpResponse,
-            ScanResponse::NoResponse,
-            ScanResponse::IcmpUnreachable,
-            ScanResponse::IcmpProhibited,
-            ScanResponse::Custom("a-strategy".to_string()),
-        ] {
+        for value in every!(ScanResponse {
+            TcpSynAck,
+            OverheardSynAck,
+            TcpRst,
+            UdpResponse,
+            SctpInitAck,
+            SctpAbort,
+            NoResponse,
+            IcmpUnreachable,
+            IcmpProhibited,
+            Custom("a-strategy".to_string()),
+        }) {
             let name = scan_response_name(&value);
             assert_eq!(scan_response(&name), Some(value.clone()), "{name}");
         }
@@ -770,9 +792,10 @@ mod tests {
     /// see, which is the gap that lets a finding survive a scan and disappear on
     /// the way to the report.
     ///
-    /// The `match` below has no wildcard for that reason: a variant
-    /// added to [`StatusProtocol`] stops this test compiling until somebody has
-    /// decided what the document calls it.
+    /// The protocols are listed by `every!` for that reason: a variant added to
+    /// [`StatusProtocol`] stops this test compiling until somebody has decided
+    /// what the document calls it, and then it is checked against the schema
+    /// and held to be in `ALL`.
     #[test]
     fn every_built_in_protocol_is_named_everywhere() {
         const SCHEMA: &str = include_str!("../../assets/schema/zond-report-v1.schema.json");
@@ -796,22 +819,32 @@ mod tests {
             "the search caught the network-role enum instead"
         );
 
-        for protocol in StatusProtocol::ALL {
-            match protocol {
-                StatusProtocol::Arp
-                | StatusProtocol::Ndp
-                | StatusProtocol::IcmpEcho
-                | StatusProtocol::IcmpTimestamp
-                | StatusProtocol::IcmpUnreachable
-                | StatusProtocol::TcpSyn
-                | StatusProtocol::Tcp
-                | StatusProtocol::Dhcp
-                | StatusProtocol::Udp
-                | StatusProtocol::Sctp => {}
-                StatusProtocol::Custom(_) => {
-                    unreachable!("`ALL` holds no strategy-supplied names")
-                }
-            }
+        let built_in: Vec<StatusProtocol> = every!(StatusProtocol {
+            Arp,
+            Ndp,
+            IcmpEcho,
+            IcmpTimestamp,
+            IcmpUnreachable,
+            TcpSyn,
+            Tcp,
+            Dhcp,
+            Udp,
+            Sctp,
+            Custom("a-strategy".into()),
+        })
+        .into_iter()
+        .filter(|protocol| !matches!(protocol, StatusProtocol::Custom(_)))
+        .collect();
+
+        // `ALL` is held to the same rows, since the schema's enum and every other
+        // reader of `ALL` count on it naming each built-in protocol.
+        assert_eq!(built_in.len(), StatusProtocol::ALL.len());
+
+        for protocol in &built_in {
+            assert!(
+                StatusProtocol::ALL.contains(protocol),
+                "`ALL` leaves out {protocol:?}"
+            );
 
             let name = status_protocol_name(protocol);
             assert_eq!(status_protocol(&name), Some(protocol.clone()));
@@ -822,25 +855,23 @@ mod tests {
         }
     }
 
-    /// A name this build does not know is refused rather than falling into a
-    /// neighbouring variant.
-    /// The one vocabulary here that `every_name_parses_back` could not drive.
+    /// A port scope travels as a name and a set, and reading one back has a rule
+    /// of its own, so it has a test of its own.
     ///
-    /// [`PortScope`] has no `ALL`, because two of its four carry a set, so the
-    /// module header's promise that adding a variant fails the build until it is
-    /// named held for every enum but this one: the writer is an exhaustive match
-    /// and breaks, and the reader is a string match with a fallback and does not.
-    /// Written out by hand instead, which is what an `ALL` would have bought.
+    /// [`PortScope`] has no `ALL`, because two of its four carry a set. The
+    /// writer is an exhaustive match and breaks when a variant is added; the
+    /// reader is a string match with a fallback and does not, so the rows are
+    /// listed by `every!`, and a variant added without one stops the build here.
     #[test]
     fn every_port_scope_parses_back() {
         let ports = || PortSet::try_from("80,443").expect("a port set");
 
-        for scope in [
-            PortScope::Unstated,
-            PortScope::NoPorts,
-            PortScope::Every(ports()),
-            PortScope::Mixed(ports()),
-        ] {
+        for scope in every!(PortScope {
+            Unstated,
+            NoPorts,
+            Every(ports()),
+            Mixed(ports()),
+        }) {
             let name = port_scope_name(&scope);
             assert_eq!(
                 port_scope(name, scope.ports().cloned()),
@@ -856,6 +887,8 @@ mod tests {
         assert_eq!(port_scope("thorough", Some(ports())), None);
     }
 
+    /// A name this build does not know is refused rather than falling into a
+    /// neighbouring variant.
     #[test]
     fn an_unknown_name_is_refused() {
         assert_eq!(host_status("perhaps"), None);
