@@ -372,7 +372,7 @@ fn ask_unless_unanswered(
     let outcome = exchange();
     match &outcome {
         Ok(_) => record()?.clear(interface, next_hop),
-        Err(SendError::Unroutable(_)) => record()?.note(interface, next_hop, Instant::now()),
+        Err(SendError::Unresolved(_)) => record()?.note(interface, next_hop, Instant::now()),
         Err(_) => {}
     }
     outcome
@@ -381,14 +381,19 @@ fn ask_unless_unanswered(
 /// The refusal for a next hop that did not answer its address resolution,
 /// whether the exchange just timed out or a recent one already did.
 ///
-/// An [`Unroutable`](SendError::Unroutable) rather than a [`Refused`], because
+/// An [`Unresolved`](SendError::Unresolved) rather than a [`Refused`], because
 /// it is a fact about that address and not about this sender: the neighbour is
-/// not answering, so the address was asked about and not covered. This is the
-/// same class the raw-socket path reports for the identical case, where the
-/// kernel runs the ARP itself and returns `EHOSTUNREACH` when it hears nothing,
-/// so a dead on-link host reads the same whichever backend a scan uses.
+/// not answering, so the address was asked about and not covered. A scan reads
+/// it as it reads no route, and it is the class the raw-socket path reports for
+/// the same case where the kernel says so, as macOS does with `EHOSTDOWN`, so a
+/// dead on-link host reads the same whichever backend a scan uses.
+///
+/// Not [`Unroutable`](SendError::Unroutable), which a transport holding the raw
+/// socket behind this sender reads as a reason to try the socket. This one is
+/// the answer, and asking the kernel the same question again is what would turn
+/// one dead host into ports that disagree about it.
 fn unanswered_neighbor(next_hop: IpAddr, interface: &str) -> SendError {
-    SendError::Unroutable(format!(
+    SendError::Unresolved(format!(
         "{next_hop} did not answer address resolution on {interface}"
     ))
 }
@@ -582,7 +587,7 @@ mod tests {
         for _ in 0..5 {
             assert!(matches!(
                 ask_unless_unanswered(&unanswered, "en0", DEAD, timing_out),
-                Err(SendError::Unroutable(_))
+                Err(SendError::Unresolved(_))
             ));
         }
         assert_eq!(exchanges.get(), 1, "one exchange for five probes");

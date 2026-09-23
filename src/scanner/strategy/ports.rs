@@ -98,7 +98,8 @@ use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::PortScanner;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::{Emission, ProbeTransport};
+use crate::transport::probe::{Emission, ProbeTransport, SendError};
+use crate::{info, logging::error};
 
 // ---------------------------------------------------------------------------
 // What a raw port scan is paced and timed by
@@ -273,23 +274,52 @@ pub struct RawProbeScan<T> {
     /// empty. Resolved once from the scan's
     /// [`EvasionProfile`](crate::evasion::EvasionProfile).
     pub decoys: Vec<IpAddr>,
-    /// Why the first probe that could not be sent failed, if any did.
+    /// Why the first probe this host's own sender would not put on the wire
+    /// failed, if any did.
     ///
-    /// The *first*, and the send path keeps it that way by only recording when
-    /// this is empty. Holding the last instead, on a link that has stopped
-    /// accepting sends, would make the report name whichever of seven thousand
-    /// identical failures happened to finish the run.
+    /// The *first*, and [`record_send`](Self::record_send) keeps it that way by
+    /// only recording when this is empty. Holding the last instead, on a link
+    /// that has stopped accepting sends, would make the report name whichever
+    /// of seven thousand identical failures happened to finish the run.
     ///
     /// Without this a scan whose probes never reached the wire reports every
     /// port with whatever its protocol reads silence as - the same answer a
     /// firewall produces - and says nothing about the difference. That verdict
     /// is a claim about the network; a probe that was never sent is a claim
     /// about this host.
+    ///
+    /// Only this host's failures. A destination the sender says cannot be
+    /// reached is in [`unreachable`](Self::unreachable) instead.
     pub send_failure: Option<String>,
+    /// Ports recorded unasked because the sender refused their first probe for
+    /// a reason on this host.
+    ///
+    /// Counted apart from [`retries_refused`](Self::retries_refused) because the
+    /// two cost different things. A refused first attempt leaves its port with
+    /// no verdict at all; a refused retry leaves one asked fewer times than the
+    /// policy allows, whose verdict still stands on the attempts that left.
+    pub unasked_refused: u64,
+    /// Retries the sender refused for a reason on this host. See
+    /// [`unasked_refused`](Self::unasked_refused).
+    pub retries_refused: u64,
     /// Ports settled unasked because no probe for them was ever seen leaving.
     /// The report is driven off this, not the send tally, so a run that lost
     /// sends but still resolved every port stays quiet.
     pub unasked_unsent: u64,
+    /// The addresses the sender said cannot be reached from here: no route to
+    /// them, or no answer from the neighbour a route leads through.
+    ///
+    /// An address rather than a port, because that is what the sender's answer
+    /// is about, and because read port by port it contradicts itself. A kernel
+    /// resolving a dead neighbour accepts the first probes while it waits and
+    /// refuses the rest once it gives up, so the accepted ones go unanswered
+    /// and would read as silence beside refused ones reading unasked, with
+    /// nothing about the ports to tell them apart. So every port of an address
+    /// here that has never answered is recorded unasked, whichever of the two
+    /// its own probe met, and the address is reported as not reached rather
+    /// than as a scanner that failed. See
+    /// [`is_unreachable`](Self::is_unreachable).
+    pub unreachable: std::collections::BTreeSet<IpAddr>,
     /// Per-run counters, so a scan that classified fewer ports than it asked
     /// about can be attributed to loss, to its own deadline, or to correlation
     /// rather than guessed at. Reported once when the loop exits.
@@ -428,7 +458,10 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             shaping: tuning.evasion.segment_shaping(),
             decoys: tuning.evasion.decoys.clone(),
             send_failure: None,
+            unasked_refused: 0,
+            retries_refused: 0,
             unasked_unsent: 0,
+            unreachable: std::collections::BTreeSet::new(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(window),
             send_tick,
@@ -568,40 +601,115 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         None
     }
 
-    /// Records one probe leaving the wire, or failing to.
+    /// Records one probe leaving the wire, or failing to, and why.
     ///
-    /// All three parts of the bookkeeping in one call because they are one event
-    /// and, kept apart, drift apart: the audit counts every attempt so a scan that
-    /// could not send can say so, the window counts only the ones that reached
-    /// the wire, since a probe nobody sent occupied nothing and must not be part
-    /// of the evidence that the path is busy, and `host`'s slot under
+    /// All of the bookkeeping in one call because it is one event and, kept
+    /// apart, drifts apart: the audit counts every attempt so a scan that could
+    /// not send can say so, the window counts only the ones that reached the
+    /// wire, since a probe nobody sent occupied nothing and must not be part of
+    /// the evidence that the path is busy, and `target`'s host slot under
     /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
     /// moves on the same terms as the window, for the same reason.
     ///
+    /// A refusal is sorted by whose fact it is, the way
+    /// [`SendError::is_unroutable`] draws the line, and by whether `target`'s
+    /// host has ever answered. An unreachable address that never has is an
+    /// absent host: it is filed in [`unreachable`](Self::unreachable) and
+    /// touches nothing else, since the path this scan is pacing itself against
+    /// was never tried and a dead neighbour among live hosts must not slow the
+    /// scan of the live ones. Anything else is this host's: congestion for the
+    /// window and a fault for the report. That includes a host that answered
+    /// and then could not be reached, which is a link that stopped keeping up
+    /// mid-scan rather than an address with nothing at it. Measured: a wireless
+    /// host whose neighbour entry went unresolved mid-scan was refused seven
+    /// thousand probes with `No route to host`, and a window that ignored them
+    /// went on offering the link as much as before.
+    ///
     /// `first_attempt` decides whether the send takes a window slot. A retry
     /// does not: the slot went back when the question it repeats ran out of
-    /// round-trip budget, and handing it back a second time would let the window
-    /// admit more than it believes it has. The host's slot draws no such
+    /// round-trip budget, and handing it back a second time would let the
+    /// window admit more than it believes it has. The host's slot draws no such
     /// distinction: a retry is a packet at the target like any other, and the
-    /// gap is about what the target receives rather than about what this scan is
-    /// still waiting for.
-    pub fn record_send(&mut self, host: IpAddr, sent: bool, first_attempt: bool) {
-        self.audit.record_send(sent);
-        if sent {
-            self.ctx.host_probed(host, Instant::now());
-        }
+    /// gap is about what the target receives rather than about what this scan
+    /// is still waiting for.
+    ///
+    /// Each kind of refusal is logged once, at the level of a line about one
+    /// target: the first of this host's, and the first for each address. A link
+    /// that has stopped accepting sends refuses every probe behind the one that
+    /// noticed, and the same line seven thousand times buries the count, which
+    /// is the number that matters and which the report carries on its own.
+    pub fn record_send(
+        &mut self,
+        (host, port): ProbeTarget,
+        sent: Result<(), &SendError>,
+        first_attempt: bool,
+    ) {
+        self.audit.record_send(sent.is_ok());
         match (sent, first_attempt) {
-            // A send the kernel refused is the one signal this controller gets
-            // from *its own machine* rather than from the network, and it is the
-            // least ambiguous one there is. Whatever the reason, a full
-            // interface queue, an unresolved neighbour, a link that has stopped
-            // keeping up, offering it more of the same faster cannot help. So
-            // it is read as congestion, and the damping bounds how far a
-            // permanent failure can cut.
-            (false, _) => self.window.record_congestion(),
-            (true, true) => self.window.record_send(),
-            (true, false) => self.window.record_resend(),
+            (Ok(()), first) => {
+                self.ctx.host_probed(host, Instant::now());
+                if first {
+                    self.window.record_send();
+                } else {
+                    self.window.record_resend();
+                }
+            }
+            (Err(error), _) if error.is_unroutable() && !self.ledger.host_has_answered(&host) => {
+                if self.unreachable.insert(host) {
+                    // `{error:#}` for the operating system's own words, which
+                    // are the part a reader asking why can act on.
+                    info!(verbosity = 2, "{host} cannot be reached: {error:#}");
+                }
+            }
+            (Err(error), first) => {
+                // A send this machine refused is the one signal this controller
+                // gets from *its own machine* rather than from the network, and
+                // it is the least ambiguous one there is. Whatever the reason, a
+                // full interface queue, a link that has stopped keeping up,
+                // offering it more of the same faster cannot help. So it is read
+                // as congestion, and the damping bounds how far a permanent
+                // failure can cut.
+                self.window.record_congestion();
+                if first {
+                    self.unasked_refused += 1;
+                } else {
+                    self.retries_refused += 1;
+                }
+                if self.send_failure.is_none() {
+                    error!(
+                        verbosity = 2,
+                        "failed to send a probe to {host}:{port}: {error:#}"
+                    );
+                    self.send_failure = Some(format!("{error:#}"));
+                }
+            }
         }
+    }
+
+    /// Records that no address on this host can reach `host`, so none of its
+    /// probes could be built.
+    ///
+    /// The source resolver's answer rather than the sender's, reached before a
+    /// probe exists to hand over, and the same fact about the destination as
+    /// the sender's no route. Not a send attempt, so the audit does not count
+    /// it.
+    pub fn record_no_route(&mut self, host: IpAddr) {
+        if self.unreachable.insert(host) {
+            info!(
+                verbosity = 2,
+                "{host} cannot be reached: no address on this host has a route to it"
+            );
+        }
+    }
+
+    /// Whether `host` is an address this scan cannot reach and has never heard
+    /// from, so every port of it is recorded unasked whatever its own probe met.
+    ///
+    /// Never true of a host that has answered anything. A host that answered
+    /// and then became unreachable is one whose route changed mid-scan, and the
+    /// ports it was asked about were asked: their silence is still silence.
+    pub fn is_unreachable(&self, host: &IpAddr) -> bool {
+        self.unreachable.contains(host) && !self.ledger.host_has_answered(host)
     }
 
     /// Reads one probe's first timeout: frees the window slot it was holding,
@@ -755,6 +863,35 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         recorded
     }
 
+    /// What the report says about the probes this host's own sender refused,
+    /// or `None` when it refused none.
+    ///
+    /// It says what those refusals cost and no more. A refused first attempt is
+    /// a port recorded unasked; a refused retry is a port asked fewer times than
+    /// the policy allows, whose verdict stands on the attempts that did leave.
+    /// Calling the second kind unasked would contradict the verdict the report
+    /// holds for the port, which is the one a reader will act on.
+    fn refusals_failure(&self, silence_verdict: &str) -> Option<String> {
+        let cause = self.send_failure.as_deref().unwrap_or("cause unrecorded");
+        let unasked = crate::logging::counted(u128::from(self.unasked_refused), "port", "ports");
+        let retries = crate::logging::counted(u128::from(self.retries_refused), "retry", "retries");
+        match (self.unasked_refused, self.retries_refused) {
+            (0, 0) => None,
+            (_, 0) => Some(format!(
+                "{unasked} recorded unasked rather than {silence_verdict}: their probes \
+                 could not be sent: {cause}"
+            )),
+            (0, _) => Some(format!(
+                "{retries} could not be sent, so some ports were asked fewer times than \
+                 the retry policy allows: {cause}"
+            )),
+            (_, _) => Some(format!(
+                "{unasked} recorded unasked rather than {silence_verdict}, and {retries} \
+                 lost, because probes could not be sent: {cause}"
+            )),
+        }
+    }
+
     /// Closes out a run: reports probes that never reached the wire, then files
     /// the audit.
     ///
@@ -774,16 +911,18 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         probes: u128,
         reason: StopReason,
     ) {
-        if self.audit.sends_failed > 0 {
-            self.ctx.record_failure(
-                kind,
-                format!(
-                    "{} probes could not be sent, so their ports are recorded \
-                     unasked rather than {silence_verdict}: {}",
-                    self.audit.sends_failed,
-                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
-                ),
-            );
+        if let Some(failure) = self.refusals_failure(silence_verdict) {
+            self.ctx.record_failure(kind, failure);
+        }
+
+        // Reported against the address, not as a failure: the scan ran, and
+        // these addresses are not reachable from here. Only the ones never heard
+        // from, since an address that answered was reached, and a report saying
+        // otherwise would contradict the ports it holds for it.
+        for host in &self.unreachable {
+            if !self.ledger.host_has_answered(host) {
+                self.ctx.record_unroutable(*host);
+            }
         }
 
         if self.unasked_unsent > 0 {
@@ -1112,6 +1251,15 @@ pub trait RawPortScan: PortScanner {
                     if attempts == 1 {
                         self.core_mut().judge_timeout(ip);
                     }
+                    // An address the sender says cannot be reached, and which
+                    // never answered: this probe's own silence is a kernel that
+                    // took the write while it waited on a neighbour it then gave
+                    // up on, and the port takes the verdict every other port of
+                    // the address took. See `RawProbeScan::unreachable`.
+                    if self.core().is_unreachable(&ip) {
+                        self.record_unasked_endpoint(ip, port);
+                        continue;
+                    }
                     // No send ever seen leaving: unasked, not silent. Guarded on
                     // the run witnessing its egress at all, or every probe looks
                     // unsent.
@@ -1141,6 +1289,12 @@ pub trait RawPortScan: PortScanner {
         self.core_mut().window.release_all();
         let silence = self.silence_means();
         for (ip, port) in self.core_mut().ledger.drain_unresolved() {
+            // Unreachable is known of the address however far this probe's own
+            // schedule got. See `RawProbeScan::unreachable`.
+            if self.core().is_unreachable(&ip) {
+                self.record_unasked_endpoint(ip, port);
+                continue;
+            }
             self.record_port(ip, port, silence, None);
             // Assigned, not earned: the schedule was cut off rather than spent.
             self.settle(Outcome::Interrupted);
@@ -1189,19 +1343,28 @@ pub trait RawPortScan: PortScanner {
         self.record_unasked_endpoint(target.ip(), target.port());
     }
 
-    /// The single account of an endpoint nobody asked about, shared by the three
+    /// The single account of an endpoint nobody asked about, shared by the four
     /// ways one arises: still queued when the loop ended, reached after its host
     /// had spent the budget in
     /// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout),
-    /// and refused by this machine's own sender before it reached the wire.
+    /// refused by this machine's own sender before it reached the wire, and on
+    /// an address the sender says cannot be reached from here.
     ///
-    /// All three were named and none was probed, so all three are written down
-    /// the same way, and none leaves a port off the host.
+    /// All four were named and none was probed, so all four are written down
+    /// the same way, and none leaves a port off the host. What a resume owes
+    /// differs only in name: a port of an unreachable address is owed as
+    /// [`Outcome::Unroutable`], the way the sweep and the connect path settle
+    /// one, and every other as [`Outcome::Unasked`].
     fn record_unasked_endpoint(&mut self, ip: IpAddr, port: u16) {
         self.record_port(ip, port, PortState::Unasked, None);
         // Nothing was sent, so nothing was learned, and a resume owes this
         // target the probe this sitting did not spend on it.
-        self.settle(Outcome::Unasked);
+        let outcome = if self.core().is_unreachable(&ip) {
+            Outcome::Unroutable
+        } else {
+            Outcome::Unasked
+        };
+        self.settle(outcome);
     }
 }
 
@@ -1433,7 +1596,10 @@ mod tests {
             shaping: SegmentShaping::default(),
             decoys: Vec::new(),
             send_failure: None,
+            unasked_refused: 0,
+            retries_refused: 0,
             unasked_unsent: 0,
+            unreachable: std::collections::BTreeSet::new(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
             send_tick: Duration::from_millis(1),
@@ -1514,7 +1680,10 @@ mod tests {
             shaping: SegmentShaping::default(),
             decoys: Vec::new(),
             send_failure: None,
+            unasked_refused: 0,
+            retries_refused: 0,
             unasked_unsent: 0,
+            unreachable: std::collections::BTreeSet::new(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
             send_tick: Duration::from_millis(1),
@@ -1740,26 +1909,65 @@ mod tests {
     /// A send the kernel refused is backpressure from this machine, and the one
     /// signal in the controller that does not come from the network at all.
     ///
-    /// Whatever refused it, a full interface queue, a neighbour that will not
-    /// resolve, offering more of the same faster cannot help. Measured: seven
-    /// thousand `No route to host` failures in one run, at an unchanged window,
-    /// because nothing was reading them.
+    /// Whatever refused it, a full interface queue, a neighbour that stopped
+    /// resolving under load, offering more of the same faster cannot help.
+    /// Measured: seven thousand `No route to host` failures in one run, at an
+    /// unchanged window, because nothing was reading them.
     #[test]
     fn a_send_the_kernel_refused_cuts_the_window() {
+        let full = SendError::Refused("No buffer space available".to_string());
+        let unresolved = SendError::Unresolved("192.0.2.1 did not answer".to_string());
+
+        for (refusal, answered_before) in [(&full, false), (&unresolved, true)] {
+            let (mut core, _session) = core();
+            core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
+            if answered_before {
+                answer_once(&mut core, TARGET);
+            }
+
+            core.record_send((TARGET, 80), Err(refusal), true);
+
+            assert!(
+                core.window.capacity() < 64,
+                "the local stack refusing is the least ambiguous evidence there is: {refusal}"
+            );
+            assert_eq!(
+                core.window.in_flight(),
+                0,
+                "and a probe that never left takes no slot"
+            );
+            assert!(core.send_failure.is_some(), "and it is this host's fault");
+        }
+    }
+
+    /// An address the sender says cannot be reached, and which has never
+    /// answered, is an absent host rather than a busy path. The window paces
+    /// the scan against what its targets manage to answer, and a dead neighbour
+    /// among live hosts would otherwise cut it for every one of them, while
+    /// nothing a slower pace did could change the answer.
+    #[test]
+    fn an_address_that_cannot_be_reached_is_not_congestion() {
         let (mut core, _session) = core();
         core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
+        let dead = SendError::Unresolved("192.0.2.1 did not answer".to_string());
 
-        core.record_send("192.0.2.1".parse().expect("a literal address"), false, true);
+        core.record_send((TARGET, 80), Err(&dead), true);
 
+        assert_eq!(core.window.capacity(), 64, "the window is untouched");
         assert!(
-            core.window.capacity() < 64,
-            "the local stack refusing is the least ambiguous evidence there is"
+            core.send_failure.is_none(),
+            "and nothing on this host failed"
         );
-        assert_eq!(
-            core.window.in_flight(),
-            0,
-            "and a probe that never left takes no slot"
-        );
+        assert!(core.is_unreachable(&TARGET), "the address is what is filed");
+    }
+
+    /// Marks `host` as having answered one probe, the way a reply resolving it
+    /// would.
+    fn answer_once(core: &mut RawProbeScan<()>, host: IpAddr) {
+        core.ledger.arm(host, (host, 1), (), 0, Instant::now());
+        core.ledger
+            .resolve(&(host, 1), Some(()), Instant::now())
+            .expect("the armed probe resolves");
     }
 
     /// Silence from a host that has never said anything is not congestion. It is

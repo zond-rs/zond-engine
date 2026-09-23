@@ -56,7 +56,6 @@ use crate::config::ServiceDetection;
 use crate::evasion::SegmentShaping;
 use crate::fingerprint::os;
 use crate::journal::settle::Outcome;
-use crate::logging::error;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
@@ -71,7 +70,7 @@ use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::success;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
+use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport, SendError};
 
 // Port scanning and routed discovery send the same kind of raw TCP probe over
 // the same kind of network path, so they share one adaptive-deadline profile
@@ -662,7 +661,7 @@ impl RawPortScan for TcpPortScanner {
     /// that has never gone out, since the ledger keeps it thereafter.
     fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
         let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(verbosity = 2, "no route to {ip}; skipping {ip}:{port}");
+            self.core.record_no_route(ip);
             return;
         };
 
@@ -684,11 +683,11 @@ impl RawPortScan for TcpPortScanner {
             self.core.emission,
             self.core.shaping,
             &self.core.decoys,
-            &mut self.core.send_failure,
         );
-        self.core.record_send(ip, token.is_some(), first_attempt);
+        self.core
+            .record_send((ip, port), token.as_ref().map(|_| ()), first_attempt);
 
-        if let Some(token) = token {
+        if let Ok(token) = token {
             match position {
                 Some(position) => self.core.ledger.arm(ip, (ip, port), token, position, now),
                 None => self.core.ledger.rearm(ip, (ip, port), token, now),
@@ -883,10 +882,11 @@ const fn rst_evidence(technique: TcpScanTechnique) -> &'static str {
 /// the same nonce are indistinguishable in their replies, and a round trip
 /// measured against the wrong one is worse than no measurement.
 ///
-/// `reason` receives the failure when there is one, so a scan whose probes never
-/// reached the wire can say why in its report rather than only in a log line. A
-/// probe that was never sent and a probe nobody answered are indistinguishable
-/// in a port count and could hardly be more different in what they mean.
+/// A failure comes back whole rather than logged here, so the scan can sort it
+/// by whose fact it is and report it once: a probe that was never sent and a
+/// probe nobody answered are indistinguishable in a port count and could hardly
+/// be more different in what they mean. See
+/// [`RawProbeScan::record_send`](super::RawProbeScan::record_send).
 #[allow(clippy::too_many_arguments)]
 fn send_tcp_probe(
     sender: &dyn ProbeSender,
@@ -900,11 +900,12 @@ fn send_tcp_probe(
     emission: Emission,
     shaping: SegmentShaping,
     decoys: &[IpAddr],
-    reason: &mut Option<String>,
-) -> Option<TcpToken> {
+) -> Result<TcpToken, SendError> {
     let nonce: u32 = rand::random();
 
-    let packet = match tcp::build_probe_with_flags(
+    // A probe this host could not build is this host's failure, in the words
+    // the link-layer sender uses for a frame it could not build.
+    let packet = tcp::build_probe_with_flags(
         flags,
         src_addr,
         dst_addr,
@@ -913,16 +914,8 @@ fn send_tcp_probe(
         nonce,
         shaping.padding,
         shaping.bad_tcp_checksum,
-    ) {
-        Ok(packet) => packet,
-        Err(e) => {
-            error!(
-                verbosity = 2,
-                "failed to create {technique} probe for {dst_addr}:{dst_port}: {e}"
-            );
-            return None;
-        }
-    };
+    )
+    .map_err(|e| SendError::Refused(format!("the {technique} probe could not be built: {e}")))?;
 
     // A decoy from each address of the target's own family: its own port and
     // nonce, the same technique and shaping, so it is an equal-looking probe and
@@ -946,7 +939,7 @@ fn send_tcp_probe(
         })
         .collect();
 
-    match super::super::raw::emit_among_decoys(
+    super::super::raw::emit_among_decoys(
         sender,
         dst_addr,
         dst_zone,
@@ -954,35 +947,12 @@ fn send_tcp_probe(
         src_addr,
         &packet,
         &decoy_packets,
-    ) {
-        Ok(()) => {
-            success!(
-                verbosity = 2,
-                "sent {technique} probe to {dst_addr}:{dst_port}"
-            );
-            Some(TcpToken { nonce })
-        }
-        Err(e) => {
-            // `{e:#}` rather than `{e}`: the outer message says which probe
-            // failed, and the chained cause is the operating system's own
-            // explanation - "No route to host" and "Permission denied" call for
-            // completely different responses, and the bare wrapper distinguishes
-            // neither.
-            // Once. A link that has stopped accepting sends refuses every
-            // probe behind the one that noticed, and the same line seven
-            // thousand times buries everything else the run had to say:
-            // including the count, which is the number that actually matters and
-            // which the audit reports on its own.
-            if reason.is_none() {
-                error!(
-                    verbosity = 2,
-                    "failed to send {technique} probe to {dst_addr}:{dst_port}: {e:#}"
-                );
-                *reason = Some(format!("{e:#}"));
-            }
-            None
-        }
-    }
+    )?;
+    success!(
+        verbosity = 2,
+        "sent {technique} probe to {dst_addr}:{dst_port}"
+    );
+    Ok(TcpToken { nonce })
 }
 
 #[async_trait]

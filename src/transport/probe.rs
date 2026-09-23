@@ -403,11 +403,15 @@ impl ProbeKind {
 
 /// Why one probe could not be put on the wire.
 ///
-/// Two variants, because two things are worth telling apart and nothing else is.
-/// [`Unsupported`](Self::Unsupported) is a fact about this transport that will
-/// be just as true for the next probe, so retrying is pointless and a scan should
-/// give up on the path. [`Refused`](Self::Refused) came from outside and may not
-/// hold next time: a full send buffer clears, a route appears.
+/// Split by whose fact the failure is, because each calls for a different
+/// response. [`Unroutable`](Self::Unroutable) and
+/// [`Unresolved`](Self::Unresolved) are facts about the destination: the
+/// address was asked about and cannot be reached from here, and the sender is
+/// still working. [`Unsupported`](Self::Unsupported) is a fact about this
+/// transport that will be just as true for the next probe, so retrying is
+/// pointless and a scan should give up on the path. [`Refused`](Self::Refused)
+/// came from this host and may not hold next time: a full send buffer clears.
+/// [`is_unroutable`](Self::is_unroutable) is the test a scan reports by.
 ///
 /// The refusal carries the operating system's own words rather than a
 /// classification of them. "No route to host" and "Permission denied" call for
@@ -431,6 +435,25 @@ pub enum SendError {
     #[error("{0}")]
     Unroutable(String),
 
+    /// The neighbour this probe had to be framed to was asked for its hardware
+    /// address and did not answer.
+    ///
+    /// A dead host on the local segment, or a gateway that is not there. Read
+    /// as [`Unroutable`](Self::Unroutable) is, as a fact about the destination,
+    /// and kept apart from it for the one reader that must not treat the two
+    /// alike: a sender holding a second path. No route from one path says
+    /// nothing about another, and is the reason to try it. An unanswered
+    /// resolution is an answer about the destination itself, and a second path
+    /// would only ask the same neighbour the same question again, at a pace and
+    /// with a memory of its own that decide per probe whether it is accepted,
+    /// queued or refused. See [`SendMode::Auto`] on macOS.
+    ///
+    /// Also what a kernel reports once it has given up on the neighbour itself,
+    /// as `EHOSTDOWN`, which BSD-derived stacks return for a next hop whose
+    /// resolution recently failed.
+    #[error("{0}")]
+    Unresolved(String),
+
     /// The host would not send the packet, in its own words.
     #[error("{0}")]
     Refused(String),
@@ -451,23 +474,31 @@ impl SendError {
     ///
     /// Reads the operating system's own error kind rather than matching on the
     /// text of its message, which differs per platform and per locale. Only the
-    /// two unreachable kinds are singled out; everything else stays a refusal,
+    /// unreachable kinds are singled out; everything else stays a refusal,
     /// including the ones that look similar: a full send buffer or a permission
     /// failure says nothing about whether the destination exists.
+    ///
+    /// `EHOSTDOWN` has no [`ErrorKind`](std::io::ErrorKind) of its own and is
+    /// read by number. It is what macOS returns for every probe to a neighbour
+    /// whose resolution failed, for as long as it remembers the failure. Read
+    /// as a refusal, it would have a scan of one dead address report itself
+    /// broken.
     pub(crate) fn from_io<E: std::error::Error + 'static>(error: E) -> Self {
-        let unroutable = std::iter::successors(Some(&error as &dyn std::error::Error), |cause| {
-            cause.source()
-        })
-        .any(|cause| {
-            cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
-                matches!(
-                    io.kind(),
-                    std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable
-                )
+        let chain = || {
+            std::iter::successors(Some(&error as &dyn std::error::Error), |cause| {
+                cause.source()
             })
-        });
+            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        };
 
-        if unroutable {
+        if chain().any(host_is_down) {
+            Self::Unresolved(error.to_string())
+        } else if chain().any(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable
+            )
+        }) {
             Self::Unroutable(error.to_string())
         } else {
             Self::Refused(error.to_string())
@@ -475,12 +506,28 @@ impl SendError {
     }
 
     /// Whether this failure is about the destination rather than about the
-    /// sending host.
+    /// sending host: no route to it, or no answer from the neighbour a route
+    /// leads through.
     ///
     /// What separates "the scan could not run" from "that address is not
     /// reachable from here", which are reported differently and should be.
     pub fn is_unroutable(&self) -> bool {
-        matches!(self, Self::Unroutable(_))
+        matches!(self, Self::Unroutable(_) | Self::Unresolved(_))
+    }
+}
+
+/// Whether `error` is the kernel's `EHOSTDOWN`: the next hop's address
+/// resolution failed, and the kernel is refusing sends to it rather than ask
+/// again yet.
+fn host_is_down(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::EHOSTDOWN)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
     }
 }
 
@@ -730,20 +777,32 @@ impl ProbeSender for RawIpSender {
 /// loopback, and tunnels.
 ///
 /// The macOS default. There the raw socket accepts a quarter of a large scan's
-/// sends and drops them before the wire, where a self-built frame goes out. An
-/// emission only a frame can carry is not retried through the socket, which
-/// would send a different probe than the one asked for.
-struct LinkLayerFirst {
-    link: EthernetSender,
+/// sends and drops them before the wire, where a self-built frame goes out.
+///
+/// Two failures are final rather than a reason to try the socket. An emission
+/// only a frame can carry would leave the socket as a different probe than the
+/// one asked for. And a neighbour that did not answer its address resolution
+/// ([`SendError::Unresolved`]) was reachable by a frame and asked: the socket
+/// would hand the kernel the same question about the same neighbour, and the
+/// kernel answers it in its own time. macOS takes the first few writes while it
+/// asks and discards them later, then refuses the rest for twenty seconds once
+/// it has given up, so a port's verdict would record where the kernel was in
+/// that cycle when its probe left. Refused here, every probe to the address is
+/// refused alike, and the scan reads one absent host.
+///
+/// Generic over its two senders so the rule is tested on this type rather
+/// than on a copy of it; the transport only ever builds the one pairing.
+struct LinkLayerFirst<L = EthernetSender, S = RawIpSender> {
+    link: L,
     /// [`None`] when this process may inject frames but not open a raw socket,
     /// which is an unprivileged run on macOS with the BPF devices handed to a
     /// group. The fallback is what goes missing, not the scan: a destination
     /// with Ethernet in front of it is reached by the frame either way, and
     /// only loopback and tunnel-only addresses needed the socket.
-    socket: Option<RawIpSender>,
+    socket: Option<S>,
 }
 
-impl ProbeSender for LinkLayerFirst {
+impl<L: ProbeSender, S: ProbeSender> ProbeSender for LinkLayerFirst<L, S> {
     fn send(
         &self,
         segment: &[u8],
@@ -753,7 +812,11 @@ impl ProbeSender for LinkLayerFirst {
         emission: Emission,
     ) -> Result<(), SendError> {
         let framed = self.link.send(segment, src, dst, zone, emission);
-        if framed.is_ok() || emission.requires_link_layer() {
+        let final_answer = match &framed {
+            Ok(()) | Err(SendError::Unresolved(_)) => true,
+            Err(_) => emission.requires_link_layer(),
+        };
+        if final_answer {
             return framed;
         }
         match &self.socket {
@@ -1081,18 +1144,26 @@ mod tests {
 
     /// The fallback is what keeps the macOS default from costing reach. The
     /// frame path cannot resolve an on-link IPv6 neighbour and has no route to
-    /// loopback, and those destinations have to keep working: they were the
-    /// reason the raw socket was the default everywhere.
+    /// loopback or into a tunnel, and those destinations have to keep working:
+    /// they were the reason the raw socket was the default everywhere.
     #[test]
     fn a_destination_the_frame_path_cannot_reach_goes_through_the_socket() {
-        let refusing = RefusingSender(SendError::Unsupported("no NDP here"));
-        let socket = MockSender::default();
-        let sent = socket.sent.clone();
+        for cannot in [
+            SendError::Unsupported("no NDP here"),
+            SendError::Unroutable("no Ethernet route from 198.51.100.1".to_string()),
+        ] {
+            let socket = MockSender::default();
+            let sent = socket.sent.clone();
+            let sender = LinkLayerFirst {
+                link: RefusingSender(cannot),
+                socket: Some(socket),
+            };
 
-        let result = send_through_fallback(&refusing, &socket, Emission::routed());
+            let result = send_one(&sender, Emission::routed());
 
-        assert!(result.is_ok(), "the socket served it: {result:?}");
-        assert_eq!(sent.lock().unwrap().len(), 1);
+            assert!(result.is_ok(), "the socket served it: {result:?}");
+            assert_eq!(sent.lock().unwrap().len(), 1);
+        }
     }
 
     /// A probe carrying a field only a self-built frame can express is not
@@ -1100,9 +1171,12 @@ mod tests {
     /// probe on the wire and report it as the one that was asked for.
     #[test]
     fn a_probe_only_a_frame_can_carry_is_never_retried_through_the_socket() {
-        let refusing = RefusingSender(SendError::Refused("the link went down".to_string()));
         let socket = MockSender::default();
         let sent = socket.sent.clone();
+        let sender = LinkLayerFirst {
+            link: RefusingSender(SendError::Refused("the link went down".to_string())),
+            socket: Some(socket),
+        };
 
         let spoofed = Emission {
             source_mac: Some(crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 1)),
@@ -1110,12 +1184,45 @@ mod tests {
         };
         assert!(spoofed.requires_link_layer(), "test premise");
 
-        let result = send_through_fallback(&refusing, &socket, spoofed);
+        let result = send_one(&sender, spoofed);
 
         assert!(result.is_err(), "the refusal stands");
         assert!(
             sent.lock().unwrap().is_empty(),
             "and nothing went out the other way"
+        );
+    }
+
+    /// A neighbour the frame path asked for and heard nothing from is not asked
+    /// again through the kernel. The kernel would put the same question to the
+    /// same neighbour and accept or refuse each probe by where it had got to,
+    /// so the ports of one dead address would come back part silent and part
+    /// unasked. The frame's answer stands, and it stands as a fact about the
+    /// destination.
+    #[test]
+    fn a_neighbour_that_did_not_answer_is_not_asked_again_through_the_socket() {
+        let socket = MockSender::default();
+        let sent = socket.sent.clone();
+        let sender = LinkLayerFirst {
+            link: RefusingSender(SendError::Unresolved(
+                "198.51.100.9 did not answer address resolution on en0".to_string(),
+            )),
+            socket: Some(socket),
+        };
+
+        let result = send_one(&sender, Emission::routed());
+
+        assert!(
+            matches!(result, Err(SendError::Unresolved(_))),
+            "the frame's answer is the one reported: {result:?}"
+        );
+        assert!(
+            result.as_ref().is_err_and(SendError::is_unroutable),
+            "and it is read as the destination's, not this host's"
+        );
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "nothing was handed to the kernel"
         );
     }
 
@@ -1135,25 +1242,16 @@ mod tests {
                 SendError::Unsupported(why) => SendError::Unsupported(why),
                 SendError::Refused(why) => SendError::Refused(why.clone()),
                 SendError::Unroutable(why) => SendError::Unroutable(why.clone()),
+                SendError::Unresolved(why) => SendError::Unresolved(why.clone()),
             })
         }
     }
 
-    /// [`LinkLayerFirst::send`]'s rule, over two senders a test can drive.
-    /// The type itself holds concrete backends, and what is worth testing is
-    /// when it reaches for the second one.
-    fn send_through_fallback(
-        link: &dyn ProbeSender,
-        socket: &dyn ProbeSender,
-        emission: Emission,
-    ) -> Result<(), SendError> {
+    /// One probe through `sender`, to an address the tests share.
+    fn send_one(sender: &dyn ProbeSender, emission: Emission) -> Result<(), SendError> {
         let src = IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1));
         let dst = IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 9));
-        let framed = link.send(&[0xAA], src, dst, None, emission);
-        if framed.is_ok() || emission.requires_link_layer() {
-            return framed;
-        }
-        socket.send(&[0xAA], src, dst, None, emission)
+        sender.send(&[0xAA], src, dst, None, emission)
     }
 
     /// A Layer-2 sender writes the IP header itself and has nothing but this to
@@ -1402,6 +1500,32 @@ mod filter_conformance {
                 "{kind:?} is about this host, not the destination"
             );
         }
+    }
+
+    /// The kernel's own word for a neighbour it asked for and gave up on is a
+    /// fact about the destination, the same one the frame path reaches by
+    /// asking itself.
+    ///
+    /// macOS answers every probe to such a neighbour with `EHOSTDOWN` for as
+    /// long as it remembers the failure, and `std` has no error kind for it, so
+    /// it is the one case read by number. Read as a refusal it would file a
+    /// dead address as a scanner that broke. A full send buffer is the case
+    /// that must stay a refusal beside it, as it is this host's.
+    #[cfg(unix)]
+    #[test]
+    fn a_neighbour_the_kernel_gave_up_on_is_not_a_broken_send_path() {
+        use super::SendError;
+        use std::io::Error;
+
+        let error = SendError::from_io(Error::from_raw_os_error(libc::EHOSTDOWN));
+        assert!(
+            matches!(error, SendError::Unresolved(_)),
+            "an unanswered resolution: {error:?}"
+        );
+        assert!(error.is_unroutable(), "and about the destination");
+
+        let error = SendError::from_io(Error::from_raw_os_error(libc::ENOBUFS));
+        assert!(!error.is_unroutable(), "a full buffer is this host's");
     }
 
     // ─── TCP SYN ─────────────────────────────────────────────────────────────

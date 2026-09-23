@@ -15808,21 +15808,26 @@ pub zond_engine::scanner::strategy::ports::RawProbeScan::held: alloc::collection
 pub zond_engine::scanner::strategy::ports::RawProbeScan::ledger: zond_engine::scanner::pacing::retry::ProbeLedger<zond_engine::scanner::strategy::ports::ProbeTarget, T, u64>
 pub zond_engine::scanner::strategy::ports::RawProbeScan::max_unresolved: usize
 pub zond_engine::scanner::strategy::ports::RawProbeScan::resolver: zond_engine::system::interface::SourceResolver
+pub zond_engine::scanner::strategy::ports::RawProbeScan::retries_refused: u64
 pub zond_engine::scanner::strategy::ports::RawProbeScan::send_failure: core::option::Option<alloc::string::String>
 pub zond_engine::scanner::strategy::ports::RawProbeScan::send_tick: core::time::Duration
 pub zond_engine::scanner::strategy::ports::RawProbeScan::shaping: zond_engine::evasion::SegmentShaping
 pub zond_engine::scanner::strategy::ports::RawProbeScan::src_port: u16
 pub zond_engine::scanner::strategy::ports::RawProbeScan::transport: zond_engine::transport::probe::ProbeTransport
+pub zond_engine::scanner::strategy::ports::RawProbeScan::unasked_refused: u64
 pub zond_engine::scanner::strategy::ports::RawProbeScan::unasked_unsent: u64
+pub zond_engine::scanner::strategy::ports::RawProbeScan::unreachable: alloc::collections::btree::set::BTreeSet<core::net::ip_addr::IpAddr>
 pub zond_engine::scanner::strategy::ports::RawProbeScan::window: zond_engine::scanner::pacing::congestion::CongestionWindow
 impl<T: core::marker::Copy + core::cmp::PartialEq> zond_engine::scanner::strategy::ports::RawProbeScan<T>
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::admitting(&self, bool) -> bool
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::finish(&mut self, zond_engine::report::ScannerKind, &str, &str, u128, zond_engine::report::StopReason)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::held_is_full(&self) -> bool
+pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::is_unreachable(&self, &core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::judge_timeout(&mut self, core::net::ip_addr::IpAddr)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_answer<P: core::marker::Copy>(&mut self, &zond_engine::scanner::pacing::retry::Resolution<P>)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_host_down(&mut self, &zond_engine::scanner::strategy::ports::ProbeTarget, core::option::Option<T>, core::net::ip_addr::IpAddr) -> bool
-pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_send(&mut self, core::net::ip_addr::IpAddr, bool, bool)
+pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_no_route(&mut self, core::net::ip_addr::IpAddr)
+pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::record_send(&mut self, zond_engine::scanner::strategy::ports::ProbeTarget, core::result::Result<(), &zond_engine::transport::probe::SendError>, bool)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::seed_timing(&mut self)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::stop_reason(&self, bool) -> core::option::Option<zond_engine::report::StopReason>
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::tick_delay(&self, std::time::Instant) -> core::time::Duration
@@ -17137,6 +17142,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::ProbeKind
 #[non_exhaustive] pub enum zond_engine::transport::probe::SendError
 pub zond_engine::transport::probe::SendError::Refused(alloc::string::String)
+pub zond_engine::transport::probe::SendError::Unresolved(alloc::string::String)
 pub zond_engine::transport::probe::SendError::Unroutable(alloc::string::String)
 pub zond_engine::transport::probe::SendError::Unsupported(&'static str)
 impl zond_engine::transport::probe::SendError

@@ -51,7 +51,6 @@ use tokio::sync::mpsc;
 
 use crate::config::{ProbeTuning, ServiceDetection};
 use crate::journal::settle::Outcome;
-use crate::logging::error;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
@@ -519,10 +518,7 @@ impl RawPortScan for UdpPortScanner {
     /// that has never gone out, since the ledger keeps it thereafter.
     fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
         let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(
-                verbosity = 2,
-                "no route to {ip}; skipping UDP probe to {ip}:{port}"
-            );
+            self.core.record_no_route(ip);
             return;
         };
 
@@ -544,11 +540,11 @@ impl RawPortScan for UdpPortScanner {
                 shaping: self.core.shaping,
                 decoys: &self.core.decoys,
             },
-            &mut self.core.send_failure,
         );
-        self.core.record_send(ip, sent.is_some(), first_attempt);
+        self.core
+            .record_send((ip, port), sent.as_ref().map(|_| ()), first_attempt);
 
-        if sent.is_some() {
+        if sent.is_ok() {
             match position {
                 Some(position) => self.core.ledger.arm(ip, (ip, port), (), position, now),
                 None => self.core.ledger.rearm(ip, (ip, port), (), now),

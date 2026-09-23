@@ -73,7 +73,6 @@ use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
 use crate::journal::settle::Outcome;
-use crate::logging::error;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
@@ -87,7 +86,7 @@ use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::success;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
+use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport, SendError};
 
 use super::{AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
 use crate::scanner::strategy::icmp_error::{self, Unreachable};
@@ -556,10 +555,7 @@ impl RawPortScan for SctpPortScanner {
     /// carrying the same tag are indistinguishable in their answers.
     fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
         let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(
-                verbosity = 2,
-                "no route to {ip}; skipping SCTP probe to {ip}:{port}"
-            );
+            self.core.record_no_route(ip);
             return;
         };
 
@@ -575,11 +571,11 @@ impl RawPortScan for SctpPortScanner {
             port,
             self.core.emission,
             &self.core.decoys,
-            &mut self.core.send_failure,
         );
-        self.core.record_send(ip, sent.is_some(), first_attempt);
+        self.core
+            .record_send((ip, port), sent.as_ref().map(|_| ()), first_attempt);
 
-        if let Some(token) = sent {
+        if let Ok(token) = sent {
             match position {
                 Some(position) => self.core.ledger.arm(ip, (ip, port), token, position, now),
                 None => self.core.ledger.rearm(ip, (ip, port), token, now),
@@ -591,9 +587,11 @@ impl RawPortScan for SctpPortScanner {
 /// Sends one probe at `dst_addr:dst_port` and returns the tag it went out
 /// carrying, so a later answer can be recognised as this attempt's.
 ///
-/// `reason` receives the failure when there is one. A scan whose probes never
-/// left reports every port filtered, which is what a firewall produces, and only
-/// this says otherwise.
+/// A failure comes back whole rather than logged here, so the scan can sort it
+/// by whose fact it is and report it once. A scan whose probes never left
+/// reports every port filtered, which is what a firewall produces, and only the
+/// failure says otherwise. See
+/// [`RawProbeScan::record_send`](super::RawProbeScan::record_send).
 #[allow(clippy::too_many_arguments)]
 fn send_probe(
     sender: &dyn ProbeSender,
@@ -605,8 +603,7 @@ fn send_probe(
     dst_port: u16,
     emission: Emission,
     decoys: &[IpAddr],
-    reason: &mut Option<String>,
-) -> Option<SctpToken> {
+) -> Result<SctpToken, SendError> {
     // Non-zero either way: RFC 4960 §3.3.2 requires it of an Initiate Tag, and a
     // reflected verification tag of zero would not be distinguishable from a
     // packet that carried none.
@@ -629,7 +626,7 @@ fn send_probe(
         })
         .collect();
 
-    match super::super::raw::emit_among_decoys(
+    super::super::raw::emit_among_decoys(
         sender,
         dst_addr,
         dst_zone,
@@ -637,30 +634,12 @@ fn send_probe(
         src_addr,
         &packet,
         &decoy_packets,
-    ) {
-        Ok(()) => {
-            success!(
-                verbosity = 2,
-                "sent SCTP {technique} probe to {dst_addr}:{dst_port}"
-            );
-            Some(SctpToken { tag })
-        }
-        Err(e) => {
-            // `{e:#}` rather than `{e}`: the chained cause is the operating
-            // system's own explanation, and "No route to host" and "Permission
-            // denied" call for completely different responses. Once, so a scan
-            // of a range that cannot be reached reports one failure rather than
-            // one per port.
-            if reason.is_none() {
-                error!(
-                    verbosity = 2,
-                    "failed to send SCTP {technique} probe to {dst_addr}:{dst_port}: {e:#}"
-                );
-                *reason = Some(format!("{e:#}"));
-            }
-            None
-        }
-    }
+    )?;
+    success!(
+        verbosity = 2,
+        "sent SCTP {technique} probe to {dst_addr}:{dst_port}"
+    );
+    Ok(SctpToken { tag })
 }
 
 /// The packet `technique` puts on the wire, carrying `tag` wherever that

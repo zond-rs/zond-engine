@@ -464,10 +464,11 @@ pub(super) fn send_syn(
 /// to it, and the datagram quoted inside an ICMP error is checked against it.
 /// Randomizing per probe would leave no filter expressible but "all UDP".
 ///
-/// `reason` receives the failure when there is one, exactly as it does for
-/// [`send_syn`]. A UDP scan whose probes never left reports every port
-/// open-filtered - the same answer a firewall produces - and only this says
-/// otherwise.
+/// A failure comes back whole rather than logged here, so the port scan can
+/// sort it by whose fact it is and report it once. A UDP scan whose probes never
+/// left reports every port open-filtered, the same answer a firewall produces,
+/// and only the failure says otherwise. See
+/// [`RawProbeScan::record_send`](super::ports::RawProbeScan::record_send).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn send_udp(
     sender: &dyn ProbeSender,
@@ -477,8 +478,7 @@ pub(super) fn send_udp(
     dst_zone: Option<u32>,
     dst_port: u16,
     evasion: EvasionParts<'_>,
-    reason: &mut Option<String>,
-) -> Option<()> {
+) -> Result<(), SendError> {
     let EvasionParts {
         emission,
         shaping,
@@ -488,23 +488,17 @@ pub(super) fn send_udp(
     // application itself has to recognize the request. See [`payload`].
     let payload = payload::for_port(dst_port).to_vec();
 
-    let packet = match crate::protocols::udp::build_packet_shaped(
+    // A datagram this host could not build is this host's failure, in the words
+    // the link-layer sender uses for a frame it could not build.
+    let packet = crate::protocols::udp::build_packet_shaped(
         src_addr,
         dst_addr,
         src_port,
         dst_port,
         payload,
         shaping.padding,
-    ) {
-        Ok(pkt) => pkt,
-        Err(e) => {
-            error!(
-                verbosity = 2,
-                "failed to create UDP packet for {dst_addr}:{dst_port}: {e}"
-            );
-            return None;
-        }
-    };
+    )
+    .map_err(|e| SendError::Refused(format!("the UDP probe could not be built: {e}")))?;
 
     // A decoy datagram from each address of the target's own family, from its
     // own source port so its reply falls outside this scan's capture filter, and
@@ -526,7 +520,7 @@ pub(super) fn send_udp(
         })
         .collect();
 
-    match emit_among_decoys(
+    emit_among_decoys(
         sender,
         dst_addr,
         dst_zone,
@@ -534,27 +528,9 @@ pub(super) fn send_udp(
         src_addr,
         &packet,
         &decoy_packets,
-    ) {
-        Ok(_) => {
-            success!(verbosity = 2, "sent UDP probe to {dst_addr}:{dst_port}");
-            Some(())
-        }
-        Err(e) => {
-            // `{e:#}` rather than `{e}`, for the reason `send_syn` gives: the
-            // chained cause is the operating system's own explanation, and
-            // "No route to host" and "Permission denied" call for completely
-            // different responses.
-            // Once; see the same guard in `ports::tcp::send_tcp_probe`.
-            if reason.is_none() {
-                error!(
-                    verbosity = 2,
-                    "failed to send UDP probe to {dst_addr}:{dst_port}: {e:#}"
-                );
-                *reason = Some(format!("{e:#}"));
-            }
-            None
-        }
-    }
+    )?;
+    success!(verbosity = 2, "sent UDP probe to {dst_addr}:{dst_port}");
+    Ok(())
 }
 
 /// Why probes did not reach the wire, split by what that says.
