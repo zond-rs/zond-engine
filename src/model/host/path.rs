@@ -31,6 +31,24 @@
 //! that wants "the third router" should ask for distance three rather than index
 //! two.
 //!
+//! ## A router the scan may not name
+//!
+//! A router whose address falls under the scan's
+//! [`Exclusions`](crate::model::exclusion::Exclusions) keeps its distance and
+//! loses its address: see [`Hop::withheld`]. The policy promises that no
+//! excluded address appears in the report, and a trace hears from such a
+//! router without having asked it anything, since the probe it discarded was
+//! addressed to somebody else. Nothing was sent to it, so the recording half of
+//! the promise is the only half a path can break.
+//!
+//! Each of the other shapes that would keep the address out says something
+//! false. Recorded as silent, the hop claims nothing answered when a router did.
+//! Left out, the distance reads as one the trace knows nothing about, and where
+//! it is the furthest router a trace reached, the path reads a router shorter
+//! than it is. What a withheld hop says instead is exactly what the report may
+//! say: a router stood at this distance on the way to this host, and the scan
+//! will not say which.
+//!
 //! ## What a hop does and does not establish
 //!
 //! It establishes that a router at that address discarded a packet of ours that
@@ -57,9 +75,23 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hop {
     distance: u8,
-    address: Option<IpAddr>,
+    answer: Answer,
     rtt: Option<Duration>,
     inferred: bool,
+}
+
+/// What was heard from a distance.
+///
+/// One value rather than an address and a flag beside it, so that a withheld
+/// hop carrying an address cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// Nothing answered.
+    Silent,
+    /// A router answered, from this address.
+    Router(IpAddr),
+    /// A router answered, from an address the scan may not report.
+    Withheld,
 }
 
 impl Hop {
@@ -67,7 +99,7 @@ impl Hop {
     pub fn answered(distance: u8, address: IpAddr, rtt: Option<Duration>) -> Self {
         Self {
             distance,
-            address: Some(address),
+            answer: Answer::Router(address),
             rtt,
             inferred: false,
         }
@@ -81,7 +113,29 @@ impl Hop {
     pub fn silent(distance: u8) -> Self {
         Self {
             distance,
-            address: None,
+            answer: Answer::Silent,
+            rtt: None,
+            inferred: false,
+        }
+    }
+
+    /// A distance a router answered at, from an address the scan's exclusions
+    /// forbid it to report.
+    ///
+    /// Neither [`silent`](Self::silent), which would say nothing answered, nor
+    /// left out, which would say nothing is known; the module documentation
+    /// weighs the three. It carries no round trip either: that times the
+    /// router's own generation of an error, which is a fact about the router
+    /// rather than about the route.
+    ///
+    /// A scan does not build these by hand. A router is recorded as it
+    /// answered, and the scan withholds its address where the policy names it,
+    /// on every way a hop reaches a host's record. This is how a record of one
+    /// is read back.
+    pub fn withheld(distance: u8) -> Self {
+        Self {
+            distance,
+            answer: Answer::Withheld,
             rtt: None,
             inferred: false,
         }
@@ -104,15 +158,35 @@ impl Hop {
     }
 
     /// The address the router answered from, or `None` if nothing answered at
-    /// this distance.
+    /// this distance or the address is [withheld](Self::is_withheld).
     pub fn address(&self) -> Option<IpAddr> {
-        self.address
+        match self.answer {
+            Answer::Router(address) => Some(address),
+            Answer::Silent | Answer::Withheld => None,
+        }
     }
 
     /// How long the probe that expired here took to be answered, measured from
-    /// this machine. `None` for a silent hop, and for an inferred one.
+    /// this machine. `None` for a silent hop, an inferred one and a withheld
+    /// one.
     pub fn rtt(&self) -> Option<Duration> {
         self.rtt
+    }
+
+    /// Whether a router answered here from an address the scan may not report.
+    ///
+    /// The one case where [`address`](Self::address) is `None` and something
+    /// answered, so a reader drawing a path has to ask this before it draws a
+    /// gap: a withheld router is there and did identify itself, and the scan
+    /// declines to repeat what it said. See [`withheld`](Self::withheld).
+    pub fn is_withheld(&self) -> bool {
+        self.answer == Answer::Withheld
+    }
+
+    /// Whether anything answered at this distance, whether or not the report
+    /// may say what.
+    fn is_answer(&self) -> bool {
+        self.answer != Answer::Silent
     }
 
     /// Whether this hop was measured on the way to *this* host, or copied from
@@ -133,8 +207,9 @@ impl Hop {
 /// The routers between this machine and one host, in order of distance.
 ///
 /// Sorted by distance and holding at most one hop per distance. Both invariants
-/// are established by [`record`](Self::record) and nothing else can break them,
-/// since there is no other way in.
+/// are established by [`record`](Self::record), which is the only way in, and
+/// the only other change a path takes is withholding a router's address, which
+/// rewrites a hop where it stands and never moves one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkPath {
     hops: Vec<Hop>,
@@ -153,7 +228,8 @@ impl NetworkPath {
     /// itself has learned something; the same in reverse would throw away the
     /// stronger of two claims about the same router. An answered hop likewise
     /// replaces a silent one, since silence is the absence of a finding rather
-    /// than a finding of absence.
+    /// than a finding of absence. A [withheld](Hop::withheld) hop is an answered
+    /// one: a router answered there, and only its address goes unreported.
     pub fn record(&mut self, hop: Hop) {
         match self
             .hops
@@ -163,7 +239,7 @@ impl NetworkPath {
                 let known = &self.hops[index];
                 // The two rules above are ranked rather than added together.
                 // Whether anything answered comes first, because silence is the
-                // absence of a finding and an address is one; provenance decides
+                // absence of a finding and an answer is one; provenance decides
                 // only between two hops that agree about that.
                 //
                 // Or-ing them let a *measured silence* displace an *inferred
@@ -171,7 +247,7 @@ impl NetworkPath {
                 // it declined to answer this time. `Host::merge` replays one
                 // record's hops into another's in whatever order the two were
                 // folded, so it took no exotic trace to reach.
-                let stronger = match (known.address.is_some(), hop.address.is_some()) {
+                let stronger = match (known.is_answer(), hop.is_answer()) {
                     (false, true) => true,
                     (true, false) => false,
                     _ => known.inferred && !hop.inferred,
@@ -182,6 +258,30 @@ impl NetworkPath {
             }
             Err(index) => self.hops.insert(index, hop),
         }
+    }
+
+    /// Withholds the address of every router `keep` refuses, and returns
+    /// whether it withheld any.
+    ///
+    /// For the exclusion policy, which holds for the routers on a host's path as
+    /// it does for the host's own addresses. Each refused hop becomes
+    /// [`Hop::withheld`] at the same distance and with the same provenance, so a
+    /// spliced router stays marked as spliced, and loses its round trip with
+    /// its address.
+    pub(crate) fn withhold(&mut self, keep: impl Fn(&IpAddr) -> bool) -> bool {
+        let mut withheld = false;
+        for hop in &mut self.hops {
+            if let Answer::Router(address) = hop.answer
+                && !keep(&address)
+            {
+                *hop = Hop {
+                    inferred: hop.inferred,
+                    ..Hop::withheld(hop.distance)
+                };
+                withheld = true;
+            }
+        }
+        withheld
     }
 
     /// Every hop, ascending by distance. May have gaps; see the module docs.
@@ -202,12 +302,13 @@ impl NetworkPath {
         self.hops.last().map(Hop::distance)
     }
 
-    /// The address at `distance`, if a router answered there.
+    /// The address at `distance`, if a router answered there and its address
+    /// is not withheld.
     pub fn at(&self, distance: u8) -> Option<IpAddr> {
         self.hops
             .binary_search_by_key(&distance, |hop| hop.distance)
             .ok()
-            .and_then(|index| self.hops[index].address)
+            .and_then(|index| self.hops[index].address())
     }
 }
 
@@ -343,6 +444,56 @@ mod tests {
             keeping.at(2),
             Some(ip(2)),
             "silence does not erase an answer"
+        );
+    }
+
+    /// A withheld router ranks as the answer it was, not as the silence its
+    /// missing address resembles.
+    ///
+    /// Ranked by whether an address is present, a measured silence would
+    /// displace a spliced router whose address was withheld, and the path
+    /// would claim nothing answered at a distance where a router did. The
+    /// order `Host::merge` replays two records in decides which comes first.
+    #[test]
+    fn a_withheld_router_still_outranks_silence() {
+        let spliced = Hop::withheld(3).as_inferred();
+
+        let mut path = NetworkPath::new();
+        path.record(spliced);
+        path.record(Hop::silent(3));
+        assert!(path.hops()[0].is_withheld(), "{path:?}");
+
+        // Between two answers, provenance still decides.
+        let mut measured = NetworkPath::new();
+        measured.record(Hop::answered(3, ip(3), None).as_inferred());
+        measured.record(Hop::withheld(3));
+        assert!(measured.hops()[0].is_withheld());
+        assert!(!measured.hops()[0].inferred());
+    }
+
+    /// Withholding takes what is about the router and leaves what is about the
+    /// route: the distance, and whether this host's own trace measured it.
+    #[test]
+    fn withholding_a_router_keeps_its_place_and_its_provenance() {
+        let mut path = NetworkPath::new();
+        path.record(Hop::answered(1, ip(1), Some(Duration::from_millis(1))));
+        path.record(Hop::answered(2, ip(2), Some(Duration::from_millis(2))).as_inferred());
+        path.record(Hop::answered(3, ip(3), Some(Duration::from_millis(3))));
+
+        assert!(path.withhold(|address| *address != ip(2)));
+
+        let withheld = path.hops()[1];
+        assert_eq!(withheld.distance(), 2);
+        assert!(withheld.is_withheld());
+        assert!(withheld.inferred(), "a spliced router stays marked as one");
+        assert_eq!(withheld.address(), None);
+        assert_eq!(withheld.rtt(), None);
+        assert_eq!(path.at(1), Some(ip(1)), "a permitted router is untouched");
+        assert_eq!(path.length(), Some(3));
+
+        assert!(
+            !path.withhold(|address| *address != ip(2)),
+            "there is nothing left to withhold"
         );
     }
 

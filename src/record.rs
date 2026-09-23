@@ -725,6 +725,10 @@ pub struct HopRecord {
     /// Whether it was spliced from another host's path rather than measured.
     #[serde(default)]
     pub inferred: bool,
+    /// Whether a router answered here from an address the scan's exclusions
+    /// withheld. `address` and `rtt` are empty when it is set.
+    #[serde(default)]
+    pub withheld: bool,
 }
 
 impl From<&Hop> for HopRecord {
@@ -734,13 +738,17 @@ impl From<&Hop> for HopRecord {
             address: hop.address(),
             rtt: hop.rtt(),
             inferred: hop.inferred(),
+            withheld: hop.is_withheld(),
         }
     }
 }
 
 impl From<&HopRecord> for Hop {
     fn from(record: &HopRecord) -> Self {
+        // A record claiming a withheld router and naming one anyway is read as
+        // withheld: of its two claims, that is the one that reports less.
         let hop = match record.address {
+            _ if record.withheld => Hop::withheld(record.distance),
             Some(address) => Hop::answered(record.distance, address, record.rtt),
             None => Hop::silent(record.distance),
         };
@@ -2444,6 +2452,7 @@ mod tests {
         host.record_hop(
             Hop::answered(1, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254)), None).as_inferred(),
         );
+        host.record_hop(Hop::withheld(4).as_inferred());
 
         host.add_network_role(NetworkRole::Tarpit);
         host.add_network_role(NetworkRole::Truncated);

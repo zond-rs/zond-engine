@@ -65,7 +65,8 @@ const STORE_WRITERS: &[(&str, &str)] = &[(
     "src/scanner/session.rs",
     "two writers, both gated. `write_host` is the gate itself: it refuses an \
      excluded key before the caller's edit runs and every excluded address the \
-     edit attached once it has, and every finding in the engine goes through it. \
+     edit attached once it has, withholding an excluded router on the host's \
+     path, and every finding in the engine goes through it. \
      `restore_hosts` is the resume path and holds every address a restored host \
      carries to the same set before seeding what an earlier sitting found, since \
      nothing it restores passes through `write_host`.",

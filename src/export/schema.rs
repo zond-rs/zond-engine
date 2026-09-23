@@ -1528,11 +1528,12 @@ pub struct HopDto {
     /// path with a silent router in it, which is most of them.
     pub distance: u8,
     /// The address the router answered from, or `null` where nothing answered
-    /// at this distance.
+    /// at this distance or where the address is [`withheld`](Self::withheld).
     ///
     /// Null is a finding rather than a hole in the data. A router is there, since
-    /// the hops beyond it were reached, and it did not identify itself. Many will
-    /// not, and many rate-limit the answer to nothing.
+    /// the hops beyond it were reached, and unless `withheld` says otherwise it
+    /// did not identify itself. Many will not, and many rate-limit the answer to
+    /// nothing.
     pub address: Option<String>,
     /// The round trip to this router in microseconds, or `null`.
     ///
@@ -1549,6 +1550,16 @@ pub struct HopDto {
     /// agreed before it, so the inference is marked and a consumer acting on a
     /// single hop can tell which kind it has.
     pub inferred: bool,
+    /// Whether a router answered here from an address the scan's exclusions
+    /// forbid it to report, so `address` and `rtt_us` are `null`.
+    ///
+    /// The one `null` address that is not silence. The router identified itself
+    /// and the document declines to repeat what it said, which keeps the promise
+    /// that no excluded address appears in a report without claiming that
+    /// nothing answered. A consumer that reads only `address` sees the gap a
+    /// silent router leaves: it loses the fact that the router answered, and
+    /// still reads nothing that names the excluded machine.
+    pub withheld: bool,
 }
 
 impl HopDto {
@@ -1561,6 +1572,7 @@ impl HopDto {
                 .rtt()
                 .and_then(|rtt| u64::try_from(rtt.as_micros()).ok()),
             inferred: hop.inferred(),
+            withheld: hop.is_withheld(),
         }
     }
 }

@@ -888,6 +888,19 @@ impl Host {
         true
     }
 
+    /// Withholds the address of every router on this host's path that `keep`
+    /// refuses, and returns whether it withheld any.
+    ///
+    /// The other half of [`retain_ips`](Self::retain_ips) for the exclusion
+    /// policy, and a different treatment because a router is a different claim.
+    /// This host's own address, refused, takes the finding with it. A router
+    /// refused leaves the finding behind, since the distance it answered at is a
+    /// fact about the route to this host, and goes unnamed: see
+    /// [`Hop::withheld`].
+    pub(crate) fn withhold_routers(&mut self, keep: impl Fn(&IpAddr) -> bool) -> bool {
+        self.path.withhold(keep)
+    }
+
     /// Records the name this host resolved to, replacing any already recorded.
     ///
     /// The one field that is overwritten. Unlike a status or an address, a

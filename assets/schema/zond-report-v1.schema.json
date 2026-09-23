@@ -423,7 +423,8 @@
         "distance",
         "address",
         "rtt_us",
-        "inferred"
+        "inferred",
+        "withheld"
       ],
       "properties": {
         "distance": {
@@ -433,7 +434,7 @@
           "maximum": 255
         },
         "address": {
-          "description": "The address the router answered from, or null where nothing answered at this distance. Null is a finding rather than missing data: a router is there, since hops beyond it were reached, and it did not identify itself.",
+          "description": "The address the router answered from, or null where nothing answered at this distance or where `withheld` is true. Null is a finding rather than missing data: a router is there, since hops beyond it were reached, and it did not identify itself, or it did and the scan may not say what it said.",
           "oneOf": [
             {
               "type": "string",
@@ -457,6 +458,10 @@
         },
         "inferred": {
           "description": "Whether this hop was measured on the way to this host, or taken from another host's trace through the same router. The second is an inference: it assumes two paths meeting at one router at one distance agreed before it.",
+          "type": "boolean"
+        },
+        "withheld": {
+          "description": "Whether a router answered here from an address the scan's exclusions forbid it to report, in which case `address` and `rtt_us` are null. The one null address that is not silence: the router identified itself and the document declines to repeat what it said, which keeps excluded addresses out of the report without claiming that nothing answered.",
           "type": "boolean"
         }
       }

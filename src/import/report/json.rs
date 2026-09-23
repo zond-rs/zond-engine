@@ -1403,7 +1403,8 @@ impl TelemetryDto {
 
 /// One `path[]` entry: a router between this scan and the host, at its distance.
 /// `inferred` marks a hop taken from a path already measured to a neighbour
-/// rather than probed for again.
+/// rather than probed for again, and `withheld` one whose router answered from
+/// an address the scan that wrote the document was forbidden to report.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct HopDto {
@@ -1411,6 +1412,7 @@ struct HopDto {
     address: Option<String>,
     rtt_us: Option<u64>,
     inferred: bool,
+    withheld: bool,
 }
 
 impl HopDto {
@@ -1420,6 +1422,7 @@ impl HopDto {
             address: maybe(self.address.as_deref(), address)?,
             rtt: self.rtt_us.map(micros),
             inferred: self.inferred,
+            withheld: self.withheld,
         })
     }
 }
@@ -2103,6 +2106,31 @@ mod tests {
                 assert_eq!(restored_port.security(), port.security());
             }
         }
+    }
+
+    /// A path reads back hop for hop, each hop the kind it was written as.
+    ///
+    /// The comparison above cannot see this, since a diff compares no paths.
+    /// A silent hop and a withheld one both write a `null` address and differ
+    /// only in the flag beside it, so a reader that dropped the flag would turn
+    /// a withheld router into a silent one: a document saying nothing answered
+    /// where a router did.
+    #[test]
+    fn a_path_reads_back_hop_for_hop() {
+        let (original, restored) = round_trip();
+
+        for host in original.hosts() {
+            let read_back = restored
+                .host(&host.primary_ip())
+                .unwrap_or_else(|| panic!("{} is missing", host.primary_ip()));
+            assert_eq!(read_back.path(), host.path(), "{}", host.primary_ip());
+        }
+        assert!(
+            original
+                .hosts()
+                .any(|host| host.path().hops().iter().any(|hop| hop.is_withheld())),
+            "test premise: the fixture withholds a router"
+        );
     }
 
     #[test]

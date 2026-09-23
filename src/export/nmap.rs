@@ -456,6 +456,12 @@ fn write_host(
 /// nmap does and what the DTD allows, since `ipaddr` is implied. A consumer
 /// counting hops has to see that a router is there and would not name itself.
 ///
+/// A [withheld](crate::model::host::Hop::is_withheld) hop is written the same
+/// way. Its router did name itself, but the scan's exclusions forbid the
+/// address, and a `ttl` alone is the only form the format has that keeps the
+/// distance and names nobody. Like `inferred` below, the distinction survives
+/// only in [`super::json`].
+///
 /// `rtt` is milliseconds with two decimals, nmap's own rendering. A consumer
 /// reading this attribute expects nmap's units, and the engine's microseconds
 /// would read as a path a thousand times slower.

@@ -83,8 +83,10 @@ fn router() -> Host {
     host.add_rtt(Duration::from_micros(3_000));
 
     // Every shape a path can hold: a measured hop, a router that would not
-    // identify itself, and a hop inherited from another host's trace. Recorded
-    // out of order for the same reason the ports below are.
+    // identify itself, a hop inherited from another host's trace, and a router
+    // whose address the scan's exclusions withheld. Recorded out of order for
+    // the same reason the ports below are.
+    host.record_hop(Hop::withheld(4));
     host.record_hop(Hop::answered(
         3,
         IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),

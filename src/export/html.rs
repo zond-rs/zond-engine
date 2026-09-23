@@ -694,10 +694,16 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
     if !dto.path.is_empty() {
         // One line per router, distance first, so a gap where a router declined
         // to answer reads as a gap rather than as a shorter path. An inherited
-        // hop says so: it is a claim about a router this host never met.
+        // hop says so: it is a claim about a router this host never met. A
+        // withheld one is not a gap, since its router answered, so it reads as
+        // what it is rather than as the `*` of a router that stayed quiet.
         let mut path = String::new();
         for hop in &dto.path {
-            let address = hop.address.as_deref().unwrap_or("*");
+            let address = match hop.address.as_deref() {
+                Some(address) => address,
+                None if hop.withheld => "excluded",
+                None => "*",
+            };
             let mut detail = Vec::new();
             if let Some(rtt) = hop.rtt_us {
                 detail.push(duration(rtt));
@@ -1831,6 +1837,20 @@ mod tests {
         ] {
             assert!(page.contains(expected), "the page never says {expected:?}");
         }
+    }
+
+    /// A router whose address was withheld reads as excluded, and not as the
+    /// `*` of a router that stayed quiet: that one answered, and a page drawing
+    /// it as silence would say it had not.
+    #[test]
+    fn a_withheld_router_is_not_drawn_as_silence() {
+        let page = default_page();
+
+        assert!(page.contains("<div> 4. excluded"), "{page}");
+        assert!(
+            page.contains("<div> 2. *"),
+            "a silent router still reads as one"
+        );
     }
 
     /// An enumeration that did not finish says so beside what it found.

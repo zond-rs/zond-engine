@@ -3424,6 +3424,7 @@ pub zond_engine::export::schema::HopDto::address: core::option::Option<alloc::st
 pub zond_engine::export::schema::HopDto::distance: u8
 pub zond_engine::export::schema::HopDto::inferred: bool
 pub zond_engine::export::schema::HopDto::rtt_us: core::option::Option<u64>
+pub zond_engine::export::schema::HopDto::withheld: bool
 impl zond_engine::export::schema::HopDto
 pub fn zond_engine::export::schema::HopDto::new(&zond_engine::model::host::path::Hop) -> Self
 impl core::clone::Clone for zond_engine::export::schema::HopDto
@@ -8080,8 +8081,10 @@ pub fn zond_engine::model::host::path::Hop::answered(u8, core::net::ip_addr::IpA
 pub fn zond_engine::model::host::path::Hop::as_inferred(self) -> Self
 pub fn zond_engine::model::host::path::Hop::distance(&self) -> u8
 pub fn zond_engine::model::host::path::Hop::inferred(&self) -> bool
+pub fn zond_engine::model::host::path::Hop::is_withheld(&self) -> bool
 pub fn zond_engine::model::host::path::Hop::rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::path::Hop::silent(u8) -> Self
+pub fn zond_engine::model::host::path::Hop::withheld(u8) -> Self
 impl core::clone::Clone for zond_engine::model::host::path::Hop
 pub fn zond_engine::model::host::path::Hop::clone(&self) -> zond_engine::model::host::path::Hop
 impl core::cmp::Eq for zond_engine::model::host::path::Hop
@@ -8593,8 +8596,10 @@ pub fn zond_engine::model::host::path::Hop::answered(u8, core::net::ip_addr::IpA
 pub fn zond_engine::model::host::path::Hop::as_inferred(self) -> Self
 pub fn zond_engine::model::host::path::Hop::distance(&self) -> u8
 pub fn zond_engine::model::host::path::Hop::inferred(&self) -> bool
+pub fn zond_engine::model::host::path::Hop::is_withheld(&self) -> bool
 pub fn zond_engine::model::host::path::Hop::rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::path::Hop::silent(u8) -> Self
+pub fn zond_engine::model::host::path::Hop::withheld(u8) -> Self
 impl core::clone::Clone for zond_engine::model::host::path::Hop
 pub fn zond_engine::model::host::path::Hop::clone(&self) -> zond_engine::model::host::path::Hop
 impl core::cmp::Eq for zond_engine::model::host::path::Hop
@@ -12849,6 +12854,7 @@ pub zond_engine::record::HopRecord::address: core::option::Option<core::net::ip_
 pub zond_engine::record::HopRecord::distance: u8
 pub zond_engine::record::HopRecord::inferred: bool
 pub zond_engine::record::HopRecord::rtt: core::option::Option<core::time::Duration>
+pub zond_engine::record::HopRecord::withheld: bool
 impl core::clone::Clone for zond_engine::record::HopRecord
 pub fn zond_engine::record::HopRecord::clone(&self) -> zond_engine::record::HopRecord
 impl core::cmp::Eq for zond_engine::record::HopRecord

@@ -137,6 +137,11 @@ const MAX_IN_FLIGHT: usize = 16;
 ///
 /// See the module documentation for what a hit assumes and how a spliced hop is
 /// marked. Cheap to clone: it is a handle to one shared map.
+///
+/// It holds routers as they answered, one the scan's exclusions name included.
+/// It is working state rather than a finding, and nothing leaves it except into
+/// a traced host's record, through [`ScanContext::write_host`], which withholds
+/// such a router's address on a spliced path as it does on a measured one.
 #[derive(Debug, Clone, Default)]
 pub struct PathCache {
     /// A router, at a distance, and everything known to be in front of it.
@@ -604,7 +609,9 @@ fn probe_for(ctx: &ScanContext, target: &IpAddr) -> TraceProbe {
 /// ICMP trace through the same gateway still only measure it once.
 ///
 /// Records what it finds through [`ScanContext::update_host`], so an excluded
-/// address cannot acquire a path any more than it can acquire a port.
+/// address cannot acquire a path any more than it can acquire a port, and an
+/// excluded router on a permitted host's path keeps its distance and loses its
+/// address: see [`Hop::withheld`].
 pub async fn trace(ctx: &ScanContext, targets: Vec<IpAddr>) {
     if targets.is_empty() {
         return;
@@ -983,6 +990,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::model::capture::{IpObservation, Ipv4Observation};
+    use crate::model::exclusion::Exclusions;
     use crate::protocols::craft;
     use crate::scanner::session::ScanSession;
     use crate::transport::probe::{MockSender, ProbeSender, SendError};
@@ -1137,7 +1145,12 @@ mod tests {
 
     /// A tracer wired to `network`, with the store it writes into.
     fn tracer_against(network: Network) -> (ScanContext, Tracer) {
-        let (_session, ctx) = ScanSession::new();
+        tracer_under(network, Exclusions::none())
+    }
+
+    /// [`tracer_against`], for a scan forbidden to report `exclusions`.
+    fn tracer_under(network: Network, exclusions: Exclusions) -> (ScanContext, Tracer) {
+        let (_session, ctx) = ScanSession::builder().excluding(exclusions).build();
         let (tx, rx) = mpsc::channel(1024);
         let network = Network {
             replies: tx,
@@ -1203,6 +1216,57 @@ mod tests {
             ],
             "every distance is accounted for, including the router that stayed quiet"
         );
+    }
+
+    /// A router the scan may not report is withheld on every path through it,
+    /// the one measured and the one spliced from it alike.
+    ///
+    /// The splice is the case worth driving the whole loop for. The cache
+    /// holds routers as they answered, and the second trace takes the first
+    /// one's hops from it rather than from the store, so a withholding applied
+    /// anywhere short of the store would let the second path carry the
+    /// address the first one lost.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_excluded_router_is_withheld_whether_measured_or_spliced() {
+        let first = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+        let second = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10));
+
+        let mut forbidden = crate::model::ip::set::IpSet::new();
+        forbidden.insert(router_at(2));
+        let (ctx, mut tracer) = tracer_under(
+            Network {
+                distance: 4,
+                reply_ttl: 60,
+                silent: vec![],
+                replies: mpsc::channel(1024).0,
+            },
+            Exclusions::new(forbidden),
+        );
+
+        tracer.run(vec![first, second]).await;
+
+        for (target, spliced) in [(first, false), (second, true)] {
+            let path = ctx
+                .read_host(target, |host| host.path().clone())
+                .expect("the target was recorded");
+            assert!(
+                path.hops()
+                    .iter()
+                    .all(|hop| hop.address() != Some(router_at(2))),
+                "{target}: {path:?}"
+            );
+
+            let at_two = path.hops()[1];
+            assert_eq!(at_two.distance(), 2, "{target}: {path:?}");
+            assert!(at_two.is_withheld(), "{target}: {path:?}");
+            assert_eq!(
+                at_two.inferred(),
+                spliced,
+                "{target}: the splice happened, and stays marked: {path:?}"
+            );
+            assert_eq!(path.at(3), Some(router_at(3)), "{target}: {path:?}");
+            assert_eq!(path.length(), Some(4));
+        }
     }
 
     /// Traces `target` across `network`, seeding the hop counter the scan would

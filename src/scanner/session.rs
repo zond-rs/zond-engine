@@ -1433,6 +1433,10 @@ impl ScanContext {
     /// it has run, the sweep's later replies from the same machine, a merged
     /// sighting, an mDNS record's other addresses, so none of them reaches the
     /// report either, and none can become the address the host is reached at.
+    /// Every router on the host's path is held to it too, whether the trace
+    /// measured it or spliced it in from another host's trace: one the policy
+    /// names keeps its distance and loses its address, for the reason
+    /// [`Hop::withheld`](crate::model::host::Hop::withheld) gives.
     ///
     /// This is the enforcement that a subtraction from the target list cannot
     /// perform, and putting it here rather than at each scanner is deliberate.
@@ -1488,12 +1492,19 @@ impl ScanContext {
         // has not been asked. The key's own address is among what is kept, so
         // the host never runs out of addresses here.
         if !self.exclusions.is_empty() {
+            let keep = |address: &IpAddr| !self.exclusions.excludes(address);
             let before = host.ips().len();
-            host.retain_ips(|address| !self.exclusions.excludes(address));
+            host.retain_ips(keep);
             if host.ips().len() < before {
                 info!(
                     verbosity = 2,
                     "an excluded address arrived beside {ip}; leaving it off the host"
+                );
+            }
+            if host.withhold_routers(keep) {
+                info!(
+                    verbosity = 2,
+                    "an excluded router is on the way to {ip}; withholding its address"
                 );
             }
         }
@@ -1889,16 +1900,19 @@ impl ScanContext {
     /// was added carries the addresses it now forbids in its journal. A host
     /// loses each of those, and is restored under its best remaining address
     /// where the one it was recorded under is among them. Only a host with no
-    /// address left that this sitting may report is left out.
+    /// address left that this sitting may report is left out. A router the
+    /// policy names on a restored host's path keeps its distance and loses its
+    /// address, as it would have in `write_host`.
     ///
     /// The journal itself is left alone. It is an honest record of a sitting
     /// that was allowed to make it, and rewriting history to match a policy that
     /// arrived later would be the wrong repair. What changes is only what this
     /// sitting is willing to say.
     pub fn restore_hosts(&self, hosts: &[Host]) {
+        let keep = |address: &IpAddr| !self.exclusions.excludes(address);
         for host in hosts {
             let mut host = host.clone();
-            if !host.retain_ips(|address| !self.exclusions.excludes(address)) {
+            if !host.retain_ips(keep) {
                 info!(
                     verbosity = 2,
                     "every address of {} in the journal is excluded; leaving it out of this sitting",
@@ -1906,6 +1920,7 @@ impl ScanContext {
                 );
                 continue;
             }
+            host.withhold_routers(keep);
 
             let key = host.scoped_ip();
             match self.store.get_mut(&key) {
@@ -2272,7 +2287,7 @@ impl ScanSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+    use crate::model::host::{Hop, HostStatus, StatusProtocol, StatusReason};
 
     /// A whole run reads as one figure that only grows, rather than one per
     /// stage that starts over each time.
@@ -3193,6 +3208,85 @@ mod tests {
             .expect("the permitted key is recorded");
         assert_eq!(primary, key, "led by the address the policy allows");
         assert!(!ips.contains(&excluded), "{ips:?}");
+    }
+
+    /// A path three routers long, whose second router is `router`.
+    fn traced_through(target: IpAddr, router: IpAddr) -> [Hop; 3] {
+        [
+            Hop::answered(
+                1,
+                "203.0.113.1".parse().expect("literal"),
+                Some(Duration::from_millis(1)),
+            ),
+            Hop::answered(2, router, Some(Duration::from_millis(4))),
+            Hop::answered(3, target, None),
+        ]
+    }
+
+    /// **A router the policy forbids keeps its distance on a traced host's
+    /// path and loses its address.**
+    ///
+    /// A trace addresses nothing to the routers on the way: each hop is a
+    /// router discarding a probe addressed to the host being traced. So the
+    /// sending half of the policy holds for them without help, and the
+    /// recording half is the one a path can break. The router answered, so
+    /// the distance is not silent, and it is not dropped either, since a path
+    /// with no entry where a router stood reads as though nothing were known
+    /// there. What goes is everything that is about the router itself.
+    #[test]
+    fn a_router_the_exclusions_forbid_is_withheld_from_a_traced_hosts_path() {
+        let target: IpAddr = "203.0.113.9".parse().expect("literal");
+        let excluded: IpAddr = "198.51.100.1".parse().expect("literal");
+        let (_session, ctx) = forbidding(excluded);
+
+        ctx.write_host(target, |host| {
+            for hop in traced_through(target, excluded) {
+                host.record_hop(hop);
+            }
+            true
+        });
+
+        let path = ctx
+            .read_host(target, |host| host.path().clone())
+            .expect("the traced host is recorded");
+        assert!(
+            path.hops()
+                .iter()
+                .all(|hop| hop.address() != Some(excluded)),
+            "{path:?}"
+        );
+        let at_two = path.hops()[1];
+        assert_eq!(at_two.distance(), 2, "the router keeps its place");
+        assert!(at_two.is_withheld(), "a router answered there: {at_two:?}");
+        assert_eq!(at_two.rtt(), None, "its timing is a fact about the router");
+        assert_eq!(path.length(), Some(3));
+        assert_eq!(path.at(1), Some("203.0.113.1".parse().expect("literal")));
+    }
+
+    /// And a journal written before the router was excluded does not bring it
+    /// back, since the resume path reaches the store without `write_host`.
+    #[test]
+    fn a_resume_withholds_a_router_this_sitting_may_not_report() {
+        let target: IpAddr = "203.0.113.9".parse().expect("literal");
+        let excluded: IpAddr = "198.51.100.1".parse().expect("literal");
+        let (_session, ctx) = forbidding(excluded);
+
+        let mut journalled = Host::new(target);
+        for hop in traced_through(target, excluded) {
+            journalled.record_hop(hop);
+        }
+        ctx.restore_hosts(&[journalled]);
+
+        let path = ctx
+            .read_host(target, |host| host.path().clone())
+            .expect("the host is restored");
+        assert!(
+            path.hops()
+                .iter()
+                .all(|hop| hop.address() != Some(excluded)),
+            "{path:?}"
+        );
+        assert!(path.hops()[1].is_withheld(), "{path:?}");
     }
 
     /// The resume path, which writes into the store without going through
