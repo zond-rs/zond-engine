@@ -23,9 +23,10 @@
 //! why the counts here are gross rather than net. Two units naming one address
 //! are two questions about it, and both get asked.
 
+use crate::model::ip::range::IpRange;
 use crate::model::ip::set::{IpSet, Positions};
 use crate::model::port::{PortSet, Protocol};
-use std::{net::IpAddr, sync::Arc};
+use std::{net::IpAddr, ops::Range, sync::Arc};
 use thiserror::Error;
 
 /// Errors that can occur during target composition and calculation.
@@ -309,6 +310,9 @@ pub struct TargetIndex {
     total: u64,
     /// Whether that is every target the map holds.
     complete: bool,
+    /// The addresses of the units the numbering stopped at and after, which is
+    /// every unit it left out. Empty exactly when `complete` is true.
+    unnumbered: Vec<IpRange>,
 }
 
 /// One unit of a [`TargetIndex`], and where its targets sit in the numbering.
@@ -341,8 +345,9 @@ impl TargetIndex {
         let mut units = Vec::with_capacity(map.units.len());
         let mut total: u64 = 0;
         let mut complete = true;
+        let mut unnumbered = Vec::new();
 
-        for unit in &map.units {
+        for (at, unit) in map.units.iter().enumerate() {
             let addresses = Positions::of(unit.ips());
             let ports: Arc<[(u16, Protocol)]> = unit.ports().to_vec().into();
 
@@ -359,6 +364,16 @@ impl TargetIndex {
 
             let Some(len) = counted.filter(|len| total.checked_add(*len).is_some()) else {
                 complete = false;
+                // A unit without ports is skipped here as it is above: it has
+                // no target, so there is nothing at its addresses to ask.
+                for left_out in map.units[at..]
+                    .iter()
+                    .filter(|unit| !unit.ports().is_empty())
+                {
+                    let ips = left_out.ips();
+                    unnumbered.extend(ips.v4().iter().copied().map(IpRange::V4));
+                    unnumbered.extend(ips.v6().iter().copied().map(IpRange::V6));
+                }
                 break;
             };
 
@@ -375,6 +390,7 @@ impl TargetIndex {
             units,
             total,
             complete,
+            unnumbered,
         }
     }
 
@@ -406,6 +422,57 @@ impl TargetIndex {
         let ip = unit.addresses.address_at(local / ports)?;
 
         Some(Target { ip, port, protocol })
+    }
+
+    /// The addresses holding at least one of the targets numbered `positions`,
+    /// as ranges.
+    ///
+    /// The numbering seen host by host, for a pass that asks about an address
+    /// rather than about its ports. Such a pass has business with an address
+    /// while any one of its targets is in the span, so the span's partial
+    /// addresses at either end come back whole: the port index runs fastest, and
+    /// a span starting on an address's third port still holds that address.
+    ///
+    /// Positions past [`total`](Self::total) name nothing and are ignored. What
+    /// they would have named, had the numbering reached that far, is
+    /// [`unnumbered_addresses`](Self::unnumbered_addresses).
+    pub(crate) fn addresses_in(&self, positions: Range<u64>) -> Vec<IpRange> {
+        let end = positions.end.min(self.total);
+        let mut found = Vec::new();
+
+        // Units are contiguous and ascending, so the first one worth reading is
+        // the first that ends past the start of the span.
+        let first = self
+            .units
+            .partition_point(|unit| unit.start + unit.len <= positions.start);
+
+        for unit in &self.units[first..] {
+            if unit.start >= end {
+                break;
+            }
+            let from = positions.start.max(unit.start) - unit.start;
+            let to = end.min(unit.start + unit.len) - unit.start;
+            if from >= to {
+                continue;
+            }
+
+            let ports = unit.ports.len() as u64;
+            let addresses = from / ports..(to - 1) / ports + 1;
+            found.extend(unit.addresses.ranges_in(addresses));
+        }
+
+        found
+    }
+
+    /// The addresses of every unit the numbering could not reach, which is
+    /// empty exactly when the index [is complete](Self::is_complete).
+    ///
+    /// No position names a target at these, so nothing recorded against the
+    /// numbering can have settled one of them. A caller asking which addresses
+    /// still have work outstanding has to count every one of them as having
+    /// some.
+    pub(crate) fn unnumbered_addresses(&self) -> &[IpRange] {
+        &self.unnumbered
     }
 
     /// The unit holding `position`.
@@ -558,6 +625,64 @@ mod tests {
         assert!(index.is_complete());
         assert_eq!(index.total(), 0);
         assert_eq!(index.target_at(0), None);
+    }
+
+    /// Every span of the numbering names exactly the addresses its targets are
+    /// at, checked against the plan's own walk for every span there is.
+    ///
+    /// Exhaustive because the fixture is small and the mistakes are all at the
+    /// edges: a span starting or ending partway through an address's ports, one
+    /// crossing from a unit into the next, one ending on a unit boundary. An
+    /// address left out is a host a resumed pass never asks about while one of
+    /// its ports is still waiting on the answer.
+    #[test]
+    fn every_span_names_exactly_the_addresses_its_targets_are_at() {
+        let map = awkward();
+        let index = TargetIndex::of(&map);
+        let walked: Vec<Target> = map.iter().collect();
+        let total = walked.len();
+
+        for start in 0..=total {
+            for end in start..=total + 2 {
+                let mut expected = IpSet::new();
+                for target in &walked[start..end.min(total)] {
+                    expected.insert(target.ip);
+                }
+                expected.canonicalize();
+
+                let mut named = IpSet::new();
+                for range in index.addresses_in(start as u64..end as u64) {
+                    named.insert_range(range);
+                }
+                named.canonicalize();
+
+                assert_eq!(named, expected, "positions {start}..{end}");
+            }
+        }
+        assert!(index.unnumbered_addresses().is_empty(), "a complete index");
+    }
+
+    /// The units the numbering never reached come back as addresses, since a
+    /// caller asking what is outstanding has to count all of them. A unit naming
+    /// no port has no targets to be outstanding and is left out wherever it
+    /// sits.
+    #[test]
+    fn the_units_past_the_numbering_are_left_out_whole() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(ips("192.0.2.1"), ports("22")));
+        map.add_unit(TargetSet::new(ips("2001:db8::/64"), ports("80")));
+        map.add_unit(TargetSet::new(ips("198.51.100.0/24"), PortSet::new()));
+        map.add_unit(TargetSet::new(ips("203.0.113.9"), ports("443")));
+
+        let index = TargetIndex::of(&map);
+        let mut unnumbered = IpSet::new();
+        for range in index.unnumbered_addresses() {
+            unnumbered.insert_range(*range);
+        }
+        unnumbered.canonicalize();
+
+        assert!(!index.is_complete());
+        assert_eq!(unnumbered, ips("2001:db8::/64, 203.0.113.9"));
     }
 
     /// What decides whether a scan opens a socket for SCTP, which nothing

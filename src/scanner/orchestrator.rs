@@ -49,12 +49,12 @@ use crate::evasion::EvasionProfile;
 use crate::fingerprint::os;
 use crate::journal::cursor::Checkpoint;
 use crate::logging::error;
-use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
+use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::{Zone, ZoneMap};
 use crate::model::{
     ip::set::IpSet,
     port::{Discovery as PortDiscovery, Port, PortState, Protocol, ScanResponse},
-    target::{PlannedTarget, TargetMap, TargetSet},
+    target::{PlannedTarget, TargetIndex, TargetMap, TargetSet},
     technique::TcpScanTechnique,
 };
 use crate::report::ScannerKind;
@@ -1665,20 +1665,17 @@ pub(super) async fn run_active_os_probe(
     }
 }
 
-/// Collects every target address from a [`TargetMap`] into an [`IpSet`], so the
-/// host-enrichment phase knows which addresses to identify.
-pub(super) fn target_ips(target_map: &TargetMap) -> IpSet {
-    let mut ips = IpSet::new();
-    for unit in &target_map.units {
-        for range in unit.ips().v4() {
-            ips.insert_range(IpRange::V4(*range));
-        }
-        for range in unit.ips().v6() {
-            ips.insert_range(IpRange::V6(*range));
-        }
-    }
-    ips.canonicalize();
-    ips
+/// The addresses of `target_map` that still have a target `settled` does not
+/// account for: what a sitting of a port scan asks about host by host.
+///
+/// The liveness sweep and the enrichment beside the port scan are both aimed
+/// here rather than at every address in the plan. A resumed sitting probes only
+/// what an earlier one left, and an address with nothing left has already been
+/// swept by the sitting that settled it; asking again sends the network a
+/// question the job already put. For a sitting that continues nothing, this is
+/// every address the plan names a port at. See [`Checkpoint::remaining_hosts`].
+pub(super) fn unsettled_ips(target_map: &TargetMap, settled: &Checkpoint) -> IpSet {
+    settled.remaining_hosts(&TargetIndex::of(target_map))
 }
 
 /// Starts the background hostname resolver as its own task.
@@ -1837,10 +1834,11 @@ pub(super) async fn run_port_phase(
         plan.cover_sctp(caps.privilege);
     }
 
-    // Over what this phase will probe, which is the hosts that answered where
-    // the liveness phase ran: an address it found down is sent nothing here,
-    // and was reached by nothing.
-    let mut probed = target_ips(&target_map);
+    // Over what this sitting will probe, which is the addresses an earlier one
+    // left a target at, and of those the hosts that answered where the liveness
+    // phase ran: an address it found down is sent nothing here, and was reached
+    // by nothing.
+    let mut probed = unsettled_ips(&target_map, &settled);
     if let Some(live) = &live {
         probed = within(&probed, live);
     }
@@ -1851,9 +1849,12 @@ pub(super) async fn run_port_phase(
 
     // Only when nothing has enriched these hosts already. With the liveness
     // phase on, it has: the pass that established they are there is the same one
-    // that reads their hardware addresses and names.
-    let enrichment = if cfg.assume_up && built.opened_raw() {
-        let addresses = target_ips(&target_map);
+    // that reads their hardware addresses and names. And only over the hosts
+    // this sitting probes, since one whose every target an earlier sitting
+    // settled was enriched by that sitting, and a sitting with nothing left to
+    // probe has nothing to enrich.
+    let enrichment = if cfg.assume_up && built.opened_raw() && !probed.is_empty() {
+        let addresses = probed.clone();
         let unframed =
             caps.beyond_frames(&addresses, &cfg.send_source, interface::FrameSender::Sweep);
         let mut plan = super::plan::DiscoveryPlan::build(
@@ -2104,6 +2105,8 @@ mod tests {
 
     /// One address, valid on the interface with index `zone`.
     fn scoped_set(addr: &str, zone: u32) -> IpSet {
+        use crate::model::ip::range::IpRange;
+
         let addr: std::net::Ipv6Addr = addr.parse().expect("an address");
         let mut set = IpSet::new();
         set.insert_range(IpRange::V6(

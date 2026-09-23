@@ -31,10 +31,9 @@
 //! business here: a scan given a seed walks a
 //! [`Permutation`](crate::scanner::order::Permutation) of the whole index space
 //! and numbers what comes out by where the plan holds it, which it reads through
-//! [`TargetIndex`](crate::model::target::TargetIndex). That the index and this
-//! walk agree at every position is `model`'s own test,
-//! `a_position_names_the_target_the_plans_own_walk_numbers_it`, and it is what
-//! keeps the two from being two numberings.
+//! [`TargetIndex`]. That the index and this walk agree at every position is
+//! `model`'s own test, `a_position_names_the_target_the_plans_own_walk_numbers_it`,
+//! and it is what keeps the two from being two numberings.
 //!
 //! ## The watermark chases the settled set
 //!
@@ -57,11 +56,12 @@
 //! behind it and the next sitting asks again.
 
 use std::collections::BTreeSet;
+use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::ip::set::{IpSet, Positions};
-use crate::model::target::{PlannedTarget, Target};
+use crate::model::target::{PlannedTarget, Target, TargetIndex};
 
 /// How far a scan has got, maintained as it runs.
 ///
@@ -243,28 +243,11 @@ impl Checkpoint {
     /// fingerprint is what refuses a resume before it reaches here.
     pub fn remaining_addresses(&self, positions: &Positions) -> IpSet {
         let mut remaining = IpSet::new();
-        let total = positions.total();
-        let mut from = self.watermark;
 
-        // `settled_above` is written ascending, and a checkpoint from disk is
-        // only as ordered as the file said. Sorting a copy costs nothing on the
-        // window-sized list this holds and makes the walk below
-        // right either way.
-        let mut above = self.settled_above.clone();
-        above.sort_unstable();
-
-        for settled in above {
-            if settled < from {
-                continue;
-            }
-            for range in positions.ranges_in(from..settled) {
+        for span in self.unsettled_spans(positions.total()) {
+            for range in positions.ranges_in(span) {
                 remaining.insert_range(range);
             }
-            from = settled.saturating_add(1);
-        }
-
-        for range in positions.ranges_in(from..total) {
-            remaining.insert_range(range);
         }
 
         // A range too large to number holds no position, so nothing can ever
@@ -275,6 +258,70 @@ impl Checkpoint {
 
         remaining.canonicalize();
         remaining
+    }
+
+    /// The addresses a resumed port scan still has a target at.
+    ///
+    /// The port-plan counterpart of
+    /// [`remaining_addresses`](Self::remaining_addresses), for the passes beside
+    /// a port scan that ask about hosts rather than ports: the sweep that finds
+    /// which of them are there, and the one that reads their hardware addresses
+    /// and round trips. An address whose every target an earlier sitting settled
+    /// has nothing left to be asked, and sweeping it again puts the network a
+    /// question the job already put, which is what a resume exists not to do.
+    ///
+    /// An address with any target outstanding comes back whole. This sitting
+    /// probes it, and whether the host is there is a property of the network on
+    /// the day, so the answer that gates those probes is one the sitting has to
+    /// establish for itself rather than inherit.
+    ///
+    /// `index` has to number the plan this checkpoint was written against, as
+    /// for [`remaining`](Self::remaining). Every address of a unit the index
+    /// could not number comes back, since no position names a target there and
+    /// so none can have been settled.
+    pub(crate) fn remaining_hosts(&self, index: &TargetIndex) -> IpSet {
+        let mut remaining = IpSet::new();
+
+        for span in self.unsettled_spans(index.total()) {
+            for range in index.addresses_in(span) {
+                remaining.insert_range(range);
+            }
+        }
+        for range in index.unnumbered_addresses() {
+            remaining.insert_range(*range);
+        }
+
+        remaining.canonicalize();
+        remaining
+    }
+
+    /// The stretches of `0..total` this checkpoint leaves unsettled, ascending
+    /// and never empty.
+    ///
+    /// Everything below the watermark is settled, and above it only the few
+    /// positions that settled out of order are, so the stretches are the gaps
+    /// between those: a handful of spans however large the plan.
+    fn unsettled_spans(&self, total: u64) -> Vec<Range<u64>> {
+        // `settled_above` is written ascending, and a checkpoint from disk is
+        // only as ordered as the file said. Sorting a copy costs nothing on the
+        // window-sized list this holds and makes the walk below right either
+        // way.
+        let mut above = self.settled_above.clone();
+        above.sort_unstable();
+
+        let mut spans = Vec::with_capacity(above.len() + 1);
+        let mut from = self.watermark;
+        for settled in above {
+            if settled < from {
+                continue;
+            }
+            spans.push(from..settled.min(total));
+            from = settled.saturating_add(1);
+        }
+        spans.push(from..total);
+
+        spans.retain(|span| span.start < span.end);
+        spans
     }
 
     /// The targets a resumed scan still has to ask about, each carrying its
@@ -501,6 +548,114 @@ mod tests {
             sorted.remaining_addresses(&positions),
             shuffled.remaining_addresses(&positions)
         );
+    }
+
+    // ─── Resuming a port scan's host passes ──────────────────────────────────
+
+    /// Several units, both families, and port counts that divide nothing, so
+    /// that an address's ports straddle every kind of boundary a span can end
+    /// on.
+    fn ports_plan() -> TargetMap {
+        let mut map = TargetMap::new();
+        for (range, ports) in [
+            ("192.0.2.1-192.0.2.5", "22, 80, u:53"),
+            ("198.51.100.7", "443"),
+            ("203.0.113.0/30", "1-4, s:2905"),
+            ("2001:db8::1-2001:db8::3", "80, u:161"),
+        ] {
+            map.add_unit(TargetSet::new(
+                range.parse::<IpSet>().expect("a range"),
+                ports.parse::<PortSet>().expect("ports"),
+            ));
+        }
+        map
+    }
+
+    /// The addresses of what [`Checkpoint::remaining`] still yields, which is
+    /// what `remaining_hosts` has to agree with.
+    fn hosts_of_remaining(checkpoint: &Checkpoint, map: &TargetMap) -> IpSet {
+        let mut hosts = IpSet::new();
+        for planned in checkpoint.remaining(map.iter()) {
+            hosts.insert(planned.ip());
+        }
+        hosts.canonicalize();
+        hosts
+    }
+
+    /// An address with a target left is swept, and one whose every target
+    /// settled is not, whichever way the settling fell across its ports.
+    #[test]
+    fn a_resumed_port_scan_sweeps_only_the_hosts_with_a_target_left() {
+        // Three ports each: 192.0.2.1 is positions 0-2, .2 is 3-5, .3 is 6-8.
+        let map = plan("192.0.2.1-192.0.2.3", "22, 80, 443");
+        let index = TargetIndex::of(&map);
+
+        let finished_second = Checkpoint::new(4, [4, 5]);
+        assert_eq!(
+            finished_second.remaining_hosts(&index),
+            addresses("192.0.2.3"),
+            "the first two settled every port between the watermark and the \
+             positions above it"
+        );
+
+        let one_port_short = Checkpoint::new(4, [5]);
+        assert_eq!(
+            one_port_short.remaining_hosts(&index),
+            addresses("192.0.2.2-192.0.2.3"),
+            "the second host's port at position 4 is still outstanding"
+        );
+    }
+
+    /// A port scan whose first sitting settled everything has no host left to
+    /// sweep, so a resumed sitting puts nothing on the wire beside its (empty)
+    /// port scan.
+    #[test]
+    fn a_finished_port_scan_resumes_with_no_host_to_sweep() {
+        let map = ports_plan();
+        let index = TargetIndex::of(&map);
+        let finished = Checkpoint::new(index.total(), []);
+
+        assert!(finished.remaining_hosts(&index).is_empty());
+    }
+
+    /// A unit the numbering cannot reach is swept whole however far the rest
+    /// got, since nothing about it can have been settled.
+    #[test]
+    fn a_port_scan_of_an_unnumberable_plan_sweeps_all_of_that_part() {
+        let mut map = plan("192.0.2.1", "22");
+        map.add_unit(TargetSet::new(
+            addresses("2001:db8::/64"),
+            "80".parse::<PortSet>().expect("ports"),
+        ));
+        let index = TargetIndex::of(&map);
+
+        let remaining = Checkpoint::new(1, []).remaining_hosts(&index);
+
+        assert_eq!(remaining, addresses("2001:db8::/64"));
+    }
+
+    proptest::proptest! {
+        /// Whatever an earlier sitting settled, the hosts a resumed sitting
+        /// sweeps are exactly the addresses of the targets it still probes.
+        ///
+        /// One fewer is a host whose ports are probed without the answer that
+        /// gates them; one more is a question the job already put. Positions
+        /// past the plan are included, as a checkpoint read from a file can
+        /// hold them.
+        #[test]
+        fn the_hosts_swept_are_the_addresses_of_what_is_left(
+            watermark in 0u64..70,
+            above in proptest::collection::vec(0u64..72, 0..24),
+        ) {
+            let map = ports_plan();
+            let index = TargetIndex::of(&map);
+            let checkpoint = Checkpoint::new(watermark, above);
+
+            proptest::prop_assert_eq!(
+                checkpoint.remaining_hosts(&index),
+                hosts_of_remaining(&checkpoint, &map)
+            );
+        }
     }
 
     use crate::model::ip::set::IpSet;

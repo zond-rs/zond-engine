@@ -49,5 +49,6 @@ mod classification;
 mod degraded;
 mod listening;
 mod resolving;
+mod resuming;
 mod segment;
 mod techniques;

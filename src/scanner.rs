@@ -130,7 +130,6 @@ use crate::report::ScannerKind;
 use crate::report::{ScanKind, ScanReport, TargetScope};
 use crate::scanner::orchestrator::{
     Enrichment, ScanCapabilities, finish_enrichment, live_addresses, probed_subset, run_port_phase,
-    target_ips,
 };
 use crate::scanner::recorder::PhaseRecorder;
 use crate::scanner::session::{ScanContext, ScanSession, Stage};
@@ -1121,7 +1120,10 @@ fn spawn_scan(
         let (liveness, live) = if cfg.assume_up {
             (None, None)
         } else {
-            let mut ips = target_ips(&target_map);
+            // Over the addresses this sitting still has a target at, so a
+            // resumed one asks nothing of a host an earlier sitting finished,
+            // and its phase describes what it covered rather than the plan.
+            let mut ips = orchestrator::unsettled_ips(&target_map, &settled);
             let scope = TargetScope::from_ip_set(&mut ips, &cfg.exclusions);
             let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg);
 
