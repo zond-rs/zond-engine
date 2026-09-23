@@ -211,9 +211,13 @@ impl PortChange {
             PortChange::State(state) => of_state(state),
             PortChange::Service(service) => of_service(service),
             PortChange::Security(security) => of_security(security),
+            // A claim the current scan did not settle says how far the scan
+            // got rather than anything about the endpoint, so it grades as
+            // nothing having moved, the way an unreached port does.
             PortChange::Findings {
                 appeared,
                 resolved,
+                unsettled: _,
                 reassessed,
             } => of_findings(appeared, resolved, reassessed),
         }

@@ -759,6 +759,26 @@ impl Finding {
     }
 }
 
+/// Where one account of a subject leaves a claim drawn from another account's
+/// evidence.
+///
+/// Asked only of a finding a built-in derivation draws from evidence a report
+/// records beside it, such as what a TLS endpoint accepts, since only there can
+/// the evidence a claim rests on be named and asked about again. A finding a
+/// detection drew from an exchange the report keeps no account of has nothing
+/// to ask, and its absence from a later scan is a detection that did not fire,
+/// as the module documentation says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Standing {
+    /// The account draws the same claim from its own evidence.
+    Upheld,
+    /// The account settled everything the claim rests on and does not draw it.
+    Overturned,
+    /// The account left part of what the claim rests on unsettled, so it
+    /// neither draws the claim nor refutes it.
+    Unsettled,
+}
+
 /// Why a [`Finding`] or a [`DetectionId`] could not be constructed.
 ///
 /// Both cases are an empty identifier or title. A finding has to say what

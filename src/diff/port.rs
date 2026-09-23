@@ -29,7 +29,7 @@ use std::time::SystemTime;
 
 use crate::diff::change::{Change, Coverage, Presence};
 use crate::diff::host::Reassessment;
-use crate::model::finding::Finding;
+use crate::model::finding::{Finding, Standing};
 use crate::model::port::security::CertificateInfo;
 use crate::model::port::{Port, PortState, Protocol, Security, Service};
 
@@ -141,11 +141,24 @@ pub enum PortChange {
     /// Findings that appeared on the port, and findings no longer claimed about
     /// it. Paired the way [`HostChange::Findings`](super::host::HostChange::Findings)
     /// pairs its own.
+    ///
+    /// A claim the current scan does not make is resolved only where that
+    /// scan settled what the claim rests on. One drawn from what the endpoint
+    /// accepts rests on the versions whose walk drew it, and where the current
+    /// scan cut one of those walks short, or made none, its silence is the
+    /// finding's [`Coverage::Unreached`]: the claim goes under `unsettled`
+    /// rather than `resolved`, for the reason an endpoint the scan never
+    /// reached is not a port that closed.
     Findings {
         /// Findings the current scan claims and the baseline did not.
         appeared: Vec<Finding>,
-        /// Findings the baseline claimed and the current scan does not.
+        /// Findings the baseline claimed and the current scan does not, other
+        /// than those under `unsettled`.
         resolved: Vec<Finding>,
+        /// Findings the baseline claimed that the current scan neither claims
+        /// nor settled: part of the evidence each rests on is a walk the
+        /// current scan left unfinished or never made.
+        unsettled: Vec<Finding>,
         /// Findings both scans claim, where the severity moved.
         reassessed: Vec<Reassessment>,
     },
@@ -434,12 +447,31 @@ fn changes_between(
             .map(PortChange::Security),
     );
 
-    let (appeared, resolved, reassessed) =
+    let (appeared, gone, reassessed) =
         super::host::findings_between(before.findings(), after.findings());
-    if !appeared.is_empty() || !resolved.is_empty() || !reassessed.is_empty() {
+
+    // What the baseline's claim rests on is in the baseline's own record, and
+    // whether the current scan settled it is in the current one's. A scan that
+    // made no enumeration at all holds no record to ask, which is the same
+    // answer as one holding an empty one.
+    let silent = Security::new();
+    let now = after.security().unwrap_or(&silent);
+    let (unsettled, resolved): (Vec<Finding>, Vec<Finding>) =
+        gone.into_iter().partition(|finding| {
+            before
+                .security()
+                .is_some_and(|basis| now.standing(finding, basis) == Some(Standing::Unsettled))
+        });
+
+    if !appeared.is_empty()
+        || !resolved.is_empty()
+        || !unsettled.is_empty()
+        || !reassessed.is_empty()
+    {
         changes.push(PortChange::Findings {
             appeared,
             resolved,
+            unsettled,
             reassessed,
         });
     }
@@ -680,6 +712,9 @@ mod tests {
     use super::*;
     use crate::model::confidence::Confidence;
     use crate::model::finding::{DetectionClass, DetectionId, Severity, Version};
+    use crate::model::tls::{
+        CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
+    };
 
     fn clocks() -> Clocks {
         Clocks {
@@ -704,17 +739,26 @@ mod tests {
         .expect("a titled finding")
     }
 
-    fn findings_change(
-        changes: &[PortChange],
-    ) -> Option<(&[Finding], &[Finding], &[Reassessment])> {
+    /// A findings change's four lists: appeared, resolved, unsettled and
+    /// reassessed.
+    type Moved<'a> = (
+        &'a [Finding],
+        &'a [Finding],
+        &'a [Finding],
+        &'a [Reassessment],
+    );
+
+    fn findings_change(changes: &[PortChange]) -> Option<Moved<'_>> {
         changes.iter().find_map(|change| match change {
             PortChange::Findings {
                 appeared,
                 resolved,
+                unsettled,
                 reassessed,
             } => Some((
                 appeared.as_slice(),
                 resolved.as_slice(),
+                unsettled.as_slice(),
                 reassessed.as_slice(),
             )),
             _ => None,
@@ -750,7 +794,7 @@ mod tests {
         after.add_finding(finding("Weak cipher"));
 
         let changes = changes_between(Some(&before), Some(&after), &clocks());
-        let (appeared, resolved, _) = findings_change(&changes).expect("a findings change");
+        let (appeared, resolved, _, _) = findings_change(&changes).expect("a findings change");
         assert_eq!(appeared.len(), 1);
         assert_eq!(appeared[0].title(), "Weak cipher");
         assert!(resolved.is_empty());
@@ -763,9 +807,86 @@ mod tests {
         let after = port(PortState::Open);
 
         let changes = changes_between(Some(&before), Some(&after), &clocks());
-        let (appeared, resolved, _) = findings_change(&changes).expect("a findings change");
+        let (appeared, resolved, _, _) = findings_change(&changes).expect("a findings change");
         assert!(appeared.is_empty());
         assert_eq!(resolved.len(), 1);
+    }
+
+    /// An endpoint enumerated as `support` says, carrying the findings drawn
+    /// from it, which is how a scan records one.
+    fn enumerated(support: TlsSupport) -> Port {
+        let findings = support.findings();
+        let mut port = port(PortState::Open).with_security(Security::new().with_support(support));
+        for finding in findings {
+            port.add_finding(finding);
+        }
+        port
+    }
+
+    /// TLS 1.0 accepted under AES-128-CBC with RSA key exchange, walked to the
+    /// end.
+    fn ten_accepted() -> TlsSupport {
+        TlsSupport::new().accepting(VersionSupport::new(
+            TlsVersion::Tls10,
+            vec![CipherSuite::from_code(0x002F).expect("a registered suite")],
+            vec![],
+        ))
+    }
+
+    fn titles(findings: &[Finding]) -> Vec<&str> {
+        findings.iter().map(Finding::title).collect()
+    }
+
+    /// A walk the current scan did not finish settled nothing the baseline's
+    /// claim rests on, so the claim's absence is not a fix.
+    ///
+    /// The false fix a comparison already refuses for a port the scan never
+    /// reached: a scheduled scan whose budget ran out during the TLS 1.0 walk
+    /// would otherwise tell whoever reads the comparison that the withdrawn
+    /// version had been switched off.
+    #[test]
+    fn a_finding_a_cut_short_walk_did_not_get_back_to_is_not_resolved() {
+        let before = enumerated(ten_accepted());
+        let after = enumerated(TlsSupport::new().leaving_unfinished(UnfinishedVersion::new(
+            TlsVersion::Tls10,
+            Interruption::Stopped,
+        )));
+        assert!(
+            titles(&before.findings().cloned().collect::<Vec<_>>())
+                .contains(&"TLSv1.0 is still accepted"),
+            "the baseline's walk draws the claim this is about"
+        );
+
+        let changes = changes_between(Some(&before), Some(&after), &clocks());
+        let (_, resolved, unsettled, _) = findings_change(&changes).expect("a findings change");
+        assert!(
+            resolved.is_empty(),
+            "a walk that never finished reported {:?} resolved",
+            titles(resolved)
+        );
+        assert_eq!(
+            titles(unsettled),
+            titles(&before.findings().cloned().collect::<Vec<_>>()),
+            "every claim the baseline drew from TLS 1.0 is said to be unsettled"
+        );
+    }
+
+    /// The counterpart: a walk that finished and found TLS 1.0 refused is the
+    /// fix, and holding it back would hide the one change the comparison was
+    /// run to see.
+    #[test]
+    fn a_finding_a_finished_walk_refuted_is_resolved() {
+        let before = enumerated(ten_accepted());
+        let after = enumerated(TlsSupport::new().accepting(VersionSupport::new(
+            TlsVersion::Tls13,
+            vec![CipherSuite::from_code(0x1301).expect("a registered suite")],
+            vec![],
+        )));
+
+        let changes = changes_between(Some(&before), Some(&after), &clocks());
+        let (_, resolved, unsettled, _) = findings_change(&changes).expect("a findings change");
+        assert!(unsettled.is_empty(), "{:?}", titles(unsettled));
+        assert!(titles(resolved).contains(&"TLSv1.0 is still accepted"));
     }
 
     /// One side missing is an endpoint that appeared or went away, which the

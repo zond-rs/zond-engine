@@ -2009,6 +2009,7 @@ pub zond_engine::diff::port::PortChange::Findings
 pub zond_engine::diff::port::PortChange::Findings::appeared: alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub zond_engine::diff::port::PortChange::Findings::reassessed: alloc::vec::Vec<zond_engine::diff::host::Reassessment>
 pub zond_engine::diff::port::PortChange::Findings::resolved: alloc::vec::Vec<zond_engine::model::finding::Finding>
+pub zond_engine::diff::port::PortChange::Findings::unsettled: alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub zond_engine::diff::port::PortChange::Security(zond_engine::diff::port::SecurityChange)
 pub zond_engine::diff::port::PortChange::Service(zond_engine::diff::port::ServiceChange)
 pub zond_engine::diff::port::PortChange::State(zond_engine::diff::change::Change<zond_engine::model::port::PortState>)
@@ -2256,6 +2257,7 @@ pub zond_engine::diff::PortChange::Findings
 pub zond_engine::diff::PortChange::Findings::appeared: alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub zond_engine::diff::PortChange::Findings::reassessed: alloc::vec::Vec<zond_engine::diff::host::Reassessment>
 pub zond_engine::diff::PortChange::Findings::resolved: alloc::vec::Vec<zond_engine::model::finding::Finding>
+pub zond_engine::diff::PortChange::Findings::unsettled: alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub zond_engine::diff::PortChange::Security(zond_engine::diff::port::SecurityChange)
 pub zond_engine::diff::PortChange::Service(zond_engine::diff::port::ServiceChange)
 pub zond_engine::diff::PortChange::State(zond_engine::diff::change::Change<zond_engine::model::port::PortState>)

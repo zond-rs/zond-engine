@@ -427,8 +427,12 @@ fn write_change(out: &mut dyn Write, change: &ChangeDto) -> Result<(), ExportErr
         )?,
         (None, Some(after)) => write!(out, "<span class=\"mono\">{}</span>", Text(after))?,
         // A set member that went is said once. The kind above already reads
-        // "address lost", and an arrow pointing at nothing repeats it.
-        (Some(before), None) if change.kind.ends_with("_lost") => {
+        // "address lost", and an arrow pointing at nothing repeats it. A claim
+        // the later scan did not settle is said once too, since an arrow to
+        // nothing would read as the resolution it is kept apart from.
+        (Some(before), None)
+            if change.kind.ends_with("_lost") || change.kind == "finding_unsettled" =>
+        {
             write!(
                 out,
                 "<span class=\"change-was mono\">{}</span>",
@@ -634,6 +638,53 @@ mod tests {
                 assert!(!row.contains("nothing"), "a departure is said twice: {row}");
             }
         }
+    }
+
+    /// A claim the later scan did not settle is not pointed at "nothing",
+    /// which is how the page says a claim was resolved.
+    #[test]
+    fn a_claim_the_later_scan_did_not_settle_is_not_shown_as_gone() {
+        use crate::model::host::{Host, HostStatus};
+        use crate::model::port::{Port, PortState, Protocol, Security};
+        use crate::model::tls::{
+            CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
+        };
+
+        let scanned = |support: TlsSupport| {
+            let findings = support.findings();
+            let mut port = Port::new(443, Protocol::Tcp, PortState::Open)
+                .with_security(Security::new().with_support(support));
+            for finding in findings {
+                port.add_finding(finding);
+            }
+            let mut host = Host::new(std::net::IpAddr::from([203, 0, 113, 10]));
+            host.set_status(HostStatus::Up);
+            host.add_port(port);
+            ScanReport::recorded("test", Vec::new(), vec![host])
+        };
+        let before = scanned(TlsSupport::new().accepting(VersionSupport::new(
+            TlsVersion::Tls10,
+            vec![CipherSuite::from_code(0x002F).expect("a registered suite")],
+            vec![],
+        )));
+        let after = scanned(TlsSupport::new().leaving_unfinished(UnfinishedVersion::new(
+            TlsVersion::Tls10,
+            Interruption::Unanswered,
+        )));
+
+        let page = page(&ScanDiff::between(&before, &after));
+        let rows: Vec<&str> = page
+            .split("<div class=\"change\">")
+            .filter(|row| row.contains("finding unsettled"))
+            .collect();
+        assert!(
+            !rows.is_empty(),
+            "no unsettled claim reached the page: {page}"
+        );
+        for row in rows {
+            assert!(!row.contains("nothing"), "read as resolved: {row}");
+        }
+        assert!(!page.contains("finding resolved"), "{page}");
     }
 
     #[test]

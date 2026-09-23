@@ -576,7 +576,7 @@ impl ChangeDto {
                 appeared,
                 resolved,
                 reassessed,
-            } => Self::findings(appeared, resolved, reassessed),
+            } => Self::findings(appeared, resolved, &[], reassessed),
         }
     }
 
@@ -598,9 +598,14 @@ impl ChangeDto {
     /// Rendered as severity and title rather than the whole finding: this
     /// document says what moved, and the report the diff was taken over carries
     /// the evidence.
+    ///
+    /// A claim the later scan did not settle is its own kind rather than a
+    /// resolution, so a rule written against `finding_resolved` fires on a fix
+    /// and never on a walk the later scan cut short.
     fn findings(
         appeared: &[Finding],
         resolved: &[Finding],
+        unsettled: &[Finding],
         reassessed: &[Reassessment],
     ) -> Vec<Self> {
         let name = crate::record::wire::severity_name;
@@ -611,6 +616,11 @@ impl ChangeDto {
         let lost: Vec<String> = resolved.iter().map(describe).collect();
 
         let mut entries = Self::set("finding_appeared", "finding_resolved", &gained, &lost);
+        entries.extend(
+            unsettled
+                .iter()
+                .map(|finding| Self::lost("finding_unsettled", describe(finding))),
+        );
         entries.extend(reassessed.iter().map(|shift| {
             Self::between(
                 "finding_reassessed",
@@ -655,8 +665,9 @@ impl ChangeDto {
             PortChange::Findings {
                 appeared,
                 resolved,
+                unsettled,
                 reassessed,
-            } => Self::findings(appeared, resolved, reassessed),
+            } => Self::findings(appeared, resolved, unsettled, reassessed),
         }
     }
 

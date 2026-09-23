@@ -40,7 +40,7 @@ use std::sync::OnceLock;
 
 use crate::model::confidence::Confidence;
 use crate::model::finding::{
-    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+    ClaimId, DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Standing, Version,
 };
 
 // ---------------------------------------------------------------------------
@@ -1854,6 +1854,10 @@ impl Account {
 // What to report about it
 // ---------------------------------------------------------------------------
 
+/// The id every finding this module produces is stamped under, which is how
+/// one is recognised again once it is on a port.
+const DETECTION: &str = "zond:tls";
+
 /// The identity every finding this module produces is stamped with.
 ///
 /// A built-in derivation rather than a dataset, so its identity is this build
@@ -1890,7 +1894,7 @@ fn detection_id() -> DetectionId {
             let _ = write!(hash, "{byte:02x}");
         }
 
-        DetectionId::new("zond:tls", version, hash).expect("the identifier is a non-empty literal")
+        DetectionId::new(DETECTION, version, hash).expect("the identifier is a non-empty literal")
     })
     .clone()
 }
@@ -1983,6 +1987,58 @@ impl TlsSupport {
         }
 
         findings
+    }
+
+    /// Where this record leaves a claim [`findings`](Self::findings) drew
+    /// from `basis`, or `None` where `finding` is not one it draws from there.
+    ///
+    /// A claim rests on the versions whose accepted suites draw it: a
+    /// withdrawn version on that version alone, and a fault on every version
+    /// with a suite carrying it. This record upholds the claim where it draws
+    /// it too. Where it does not, it overturned the claim only if it finished
+    /// every version the claim rests on, because a walk cut short there found a
+    /// floor and the claim may sit in the tail it never reached. A record with
+    /// nothing in it made no walk, as [`merge`](Self::merge) reads it, and
+    /// settles nothing.
+    ///
+    /// `None` covers a finding another detection produced, and one of this
+    /// detection's that these rules do not draw from `basis`, as a build with
+    /// other rules may have written. What such a claim rests on is not this
+    /// build's to say, and a caller leaves it as it found it.
+    pub(crate) fn standing(&self, finding: &Finding, basis: &TlsSupport) -> Option<Standing> {
+        if finding.detection().id() != DETECTION {
+            return None;
+        }
+        let claim = finding.claim_id();
+
+        let rests_on: Vec<TlsVersion> = basis
+            .versions
+            .iter()
+            .filter(|held| {
+                let alone = TlsSupport::new().accepting((*held).clone());
+                alone.claims().contains(&claim)
+            })
+            .map(|held| held.version)
+            .collect();
+        if rests_on.is_empty() {
+            return None;
+        }
+
+        if self.claims().contains(&claim) {
+            return Some(Standing::Upheld);
+        }
+        let unfinished =
+            |version: &TlsVersion| self.unfinished.iter().any(|held| held.version == *version);
+        if self.is_empty() || rests_on.iter().any(unfinished) {
+            Some(Standing::Unsettled)
+        } else {
+            Some(Standing::Overturned)
+        }
+    }
+
+    /// Every claim [`findings`](Self::findings) draws from this record.
+    fn claims(&self) -> BTreeSet<ClaimId> {
+        self.findings().iter().map(Finding::claim_id).collect()
     }
 }
 
@@ -2658,6 +2714,78 @@ mod tests {
             findings.len(),
             "two findings collapsed into one claim and the difference was lost"
         );
+    }
+
+    // ── Where a later record leaves a claim ──────────────────────────────────
+
+    /// A fault claim rests on every version that drew it, so a later record
+    /// refutes it only by finishing all of them.
+    ///
+    /// The reading a comparison and a merge both act on: one that called a
+    /// claim overturned on the strength of a walk cut short would report a fix
+    /// nobody made, and one that called it unsettled after every walk finished
+    /// would never report the fix at all.
+    #[test]
+    fn a_claim_is_overturned_only_where_every_walk_it_rests_on_finished() {
+        use TlsVersion::{Tls10, Tls12};
+
+        let rc4 = suite(0x0005);
+        let basis = TlsSupport::new()
+            .accepting(VersionSupport::new(Tls10, vec![rc4], vec![]))
+            .accepting(VersionSupport::new(Tls12, vec![rc4], vec![]));
+        let claim = basis
+            .findings()
+            .into_iter()
+            .find(|finding| finding.title().contains("RC4"))
+            .expect("the basis draws an RC4 claim");
+
+        let strong = VersionSupport::new(Tls12, vec![suite(0xC030)], vec![]);
+        let refused_and_finished = TlsSupport::new().accepting(strong.clone());
+        let refused_and_cut_short = refused_and_finished
+            .clone()
+            .leaving_unfinished(UnfinishedVersion::new(Tls12, Interruption::Stopped));
+        let still_accepted =
+            TlsSupport::new().accepting(VersionSupport::new(Tls12, vec![rc4], vec![]));
+
+        assert_eq!(
+            refused_and_finished.standing(&claim, &basis),
+            Some(Standing::Overturned)
+        );
+        assert_eq!(
+            refused_and_cut_short.standing(&claim, &basis),
+            Some(Standing::Unsettled),
+            "TLS 1.0 is settled, but the TLS 1.2 walk may have stopped short of RC4"
+        );
+        assert_eq!(
+            TlsSupport::new().standing(&claim, &basis),
+            Some(Standing::Unsettled),
+            "a record with nothing in it made no walk"
+        );
+        assert_eq!(
+            still_accepted.standing(&claim, &basis),
+            Some(Standing::Upheld)
+        );
+    }
+
+    /// A claim this derivation does not draw from the record it is said to
+    /// rest on has nothing this build can name, and is left alone.
+    #[test]
+    fn a_claim_these_rules_do_not_draw_has_no_standing() {
+        let basis = TlsSupport::new().accepting(VersionSupport::new(
+            TlsVersion::Tls10,
+            vec![suite(0x002F)],
+            vec![],
+        ));
+        let foreign = Finding::new(
+            detection_id(),
+            "a claim worded by other rules",
+            Severity::Low,
+            Confidence::Certain,
+            DetectionClass::ActiveBenign,
+        )
+        .expect("a titled finding");
+
+        assert_eq!(TlsSupport::new().standing(&foreign, &basis), None);
     }
 
     /// The version this build reports itself as, which is what stamps a finding.

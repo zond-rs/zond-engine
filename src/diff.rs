@@ -116,6 +116,13 @@
 //! run the wall clock cut short reports the ports it never got to as ports it
 //! never got to rather than as ports that closed.
 //!
+//! A finding drawn from what a TLS endpoint accepts asks the same question one
+//! level down. It rests on the versions whose walk drew it, and the current
+//! scan's record says whether each of those walks finished. Where one was cut
+//! short, or the current scan made no enumeration at all, the claim's absence
+//! is how far the scan got, and the endpoint's
+//! [`PortChange::Findings`] carries it as unsettled rather than resolved.
+//!
 //! ## Which record continues which
 //!
 //! Hosts do not pair by address alone: a machine can change address between two

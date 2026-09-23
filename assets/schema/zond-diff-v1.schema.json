@@ -389,7 +389,7 @@
       ],
       "properties": {
         "kind": {
-          "description": "Which field moved. `filtering_gained` and `filtering_lost` are what the filter in front of a host was shown to be doing, which only a scan that ran the comparative probe records at all. `certificate_expiring` and `certificate_expired` are the two a certificate undergoes without being replaced: nothing about it moved, a threshold was crossed between the two scans, and `after` is when it lapses. They are also reported for a certificate that replaced one, since the baseline was never shown it and it has no earlier standing to have moved from. `finding_appeared`, `finding_resolved` and `finding_reassessed` carry a finding's severity and title; the report the diff was taken over holds its evidence. A reassessment is one claim both scans make, graded differently.",
+          "description": "Which field moved. `filtering_gained` and `filtering_lost` are what the filter in front of a host was shown to be doing, which only a scan that ran the comparative probe records at all. `certificate_expiring` and `certificate_expired` are the two a certificate undergoes without being replaced: nothing about it moved, a threshold was crossed between the two scans, and `after` is when it lapses. They are also reported for a certificate that replaced one, since the baseline was never shown it and it has no earlier standing to have moved from. `finding_appeared`, `finding_resolved`, `finding_unsettled` and `finding_reassessed` carry a finding's severity and title; the report the diff was taken over holds its evidence. A reassessment is one claim both scans make, graded differently. `finding_unsettled` is a claim the earlier scan made that the later one neither makes nor settled, as where it cut short the TLS walk the claim was drawn from: not a resolution, and not a claim the later scan makes either.",
           "enum": [
             "status",
             "hostname",
@@ -425,6 +425,7 @@
             "certificate_expired",
             "finding_appeared",
             "finding_resolved",
+            "finding_unsettled",
             "finding_reassessed"
           ]
         },

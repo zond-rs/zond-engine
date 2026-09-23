@@ -28,7 +28,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::model::confidence::Confidence;
 use crate::model::finding::{
-    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Standing, Version,
 };
 use crate::model::tls::TlsSupport;
 use std::time::{Duration, SystemTime};
@@ -194,6 +194,16 @@ impl Security {
                 self.alpn.push(protocol);
             }
         }
+    }
+
+    /// Where this record leaves a finding drawn from `basis`, another
+    /// account of the same endpoint, or `None` where the finding is not one
+    /// drawn from evidence a record like this holds.
+    ///
+    /// What the endpoint accepts is that evidence, and
+    /// [`TlsSupport::standing`] says what a claim drawn from it rests on.
+    pub(crate) fn standing(&self, finding: &Finding, basis: &Security) -> Option<Standing> {
+        self.support.standing(finding, &basis.support)
     }
 
     /// Whether the certificate is valid *now*, by this machine's clock.
