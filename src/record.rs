@@ -87,7 +87,7 @@ use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::security::{CertificateInfo, Security};
-use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
+use crate::model::port::{Port, PortSet, PortState, Service};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::model::tls::{CipherSuite, TlsSupport, TlsVersion, VersionSupport};
 use crate::report::ScannerKind;
@@ -270,31 +270,22 @@ impl From<&HostRecord> for Host {
             let state = wire::ip_protocol_state(&entry.state).unwrap_or(IpProtocolState::Unasked);
             host.record_ip_protocol(entry.protocol, state);
         }
-        // A port whose protocol this build cannot name is dropped, not filed
-        // under one it can. `Protocol` is `#[non_exhaustive]`, so a later build
-        // may record an endpoint under a number this one has never heard of, and
-        // ports are keyed by `(number, protocol)` — so reading the unknown one
-        // as TCP collides it with the real TCP port of the same number and
-        // `add_port` merges the two. Measured before this line existed: a record
-        // holding `443/tcp` and `443/<future>` came back as one port, and the
-        // service named on the second was reported as running on the first.
-        //
-        // That is the opposite of the rule the port rebuild states a few
-        // hundred lines down — least, never more. Misfiling is more, and about
-        // something else.
-        for port in record.ports.iter().filter(|port| {
-            wire::protocol(&port.protocol).is_some() || {
+        // A port under a transport this build cannot read is left out rather
+        // than filed under one it can, for the reason `PortRecord::rebuild`
+        // gives, and the omission is logged, since the host comes back with
+        // fewer ports than the file holds.
+        for entry in &record.ports {
+            let Some(port) = entry.rebuild() else {
                 info!(
                     verbosity = 2,
                     "port {}/{} was recorded under a protocol this build cannot read; \
                      leaving it out rather than filing it under another",
-                    port.port,
-                    port.protocol
+                    entry.port,
+                    entry.protocol
                 );
-                false
-            }
-        }) {
-            host.add_port(port.into());
+                continue;
+            };
+            host.add_port(port);
         }
         for finding in record.findings.iter().filter_map(FindingRecord::rebuild) {
             host.add_finding(finding);
@@ -799,29 +790,41 @@ impl From<&Port> for PortRecord {
     }
 }
 
-impl From<&PortRecord> for Port {
-    fn from(record: &PortRecord) -> Self {
-        // An unrecognised transport or state reads as the least this engine
-        // could have established, never as more. A state name this build cannot
-        // read is one a later build wrote, and `Unasked` is the state that holds
-        // no verdict at all.
-        let protocol = wire::protocol(&record.protocol).unwrap_or(Protocol::Tcp);
-        let state = wire::port_state(&record.state).unwrap_or(PortState::Unasked);
+impl PortRecord {
+    /// Rebuilds the port, or [`None`] where the record names a transport this
+    /// build cannot read.
+    ///
+    /// A state this build cannot read is one a later build wrote, and it reads
+    /// downward to [`PortState::Unasked`], the state that holds no verdict at
+    /// all. A transport cannot read downward, because transports have no
+    /// ordering: TCP is not *less* than one this build has never heard of; it
+    /// is a different endpoint. And ports are keyed by number and transport, so
+    /// a record filed under TCP instead collides with the real TCP port of the
+    /// same number, and [`Host::add_port`] merges the two. A host holding
+    /// `443/tcp` and `443/<unknown>` would come back holding one port, with the
+    /// service named on the second reported as running on the first. Leaving
+    /// the record out is the only reading that claims nothing.
+    ///
+    /// [`Protocol`](crate::model::port::Protocol) is `#[non_exhaustive]`, so a
+    /// later build writing such a record is expected rather than hypothetical.
+    pub fn rebuild(&self) -> Option<Port> {
+        let protocol = wire::protocol(&self.protocol)?;
+        let state = wire::port_state(&self.state).unwrap_or(PortState::Unasked);
 
-        let mut port = Port::new(record.port, protocol, state);
-        if let Some(service) = &record.service {
+        let mut port = Port::new(self.port, protocol, state);
+        if let Some(service) = &self.service {
             port = port.with_service(service.into());
         }
-        if let Some(security) = &record.security {
+        if let Some(security) = &self.security {
             port = port.with_security(security.into());
         }
-        if let Some(discovery) = &record.discovery {
+        if let Some(discovery) = &self.discovery {
             port = port.with_discovery(discovery.into());
         }
-        for finding in record.findings.iter().filter_map(FindingRecord::rebuild) {
+        for finding in self.findings.iter().filter_map(FindingRecord::rebuild) {
             port.add_finding(finding);
         }
-        port
+        Some(port)
     }
 }
 
@@ -2317,6 +2320,7 @@ mod tests {
     use super::*;
     use crate::model::host::{HostStatus, NetworkRole};
     use crate::model::mac::MacAddr;
+    use crate::model::port::Protocol;
     use std::net::Ipv4Addr;
     use std::time::UNIX_EPOCH;
 
@@ -2578,7 +2582,9 @@ mod tests {
     fn a_ports_findings_survive_a_record_round_trip() {
         let mut port = Port::new(3000, Protocol::Tcp, PortState::Open);
         port.add_finding(maximal_finding());
-        let rebuilt = Port::from(&PortRecord::from(&port));
+        let rebuilt = PortRecord::from(&port)
+            .rebuild()
+            .expect("a TCP port rebuilds");
 
         let original: Vec<_> = port.findings().cloned().collect();
         let round: Vec<_> = rebuilt.findings().cloned().collect();
@@ -2640,9 +2646,8 @@ mod tests {
         // different one, and ports are keyed by `(number, protocol)`. Reading
         // the unknown record as TCP therefore collides it with the real TCP port
         // of that number and `add_port` merges the two — so the service named on
-        // an endpoint this build could not read was reported as running on one it
-        // could. This used to assert `Protocol::Tcp` and a port still recorded;
-        // the record is dropped now, which is the only reading that claims
+        // an endpoint this build could not read would be reported as running on
+        // one it could. Leaving the record out is the only reading that claims
         // nothing.
         assert_eq!(
             rebuilt.ports().count(),
@@ -2716,6 +2721,32 @@ mod tests {
             "the TCP port must not acquire a service named on an endpoint this \
              build could not read"
         );
+    }
+
+    /// **The same holds for a port record rebuilt on its own.**
+    ///
+    /// The record types are public, so the host rebuild is not the only way
+    /// in: a caller holding a `PortRecord` rebuilds it directly. A record under
+    /// a transport this build cannot read has to come back as no port there as
+    /// well, or the collision the host rebuild avoids reappears one level down,
+    /// in whatever map of ports the caller keeps.
+    #[test]
+    fn a_port_record_under_an_unreadable_transport_rebuilds_as_no_port() {
+        let mut record = PortRecord::from(&Port::new(443, Protocol::Tcp, PortState::Open));
+        record.protocol = "quic".to_string();
+
+        assert_eq!(
+            record.rebuild(),
+            None,
+            "a transport this build cannot read is not TCP, or any other it can"
+        );
+
+        // An unreadable state is the contrast: it has a bottom to read down to.
+        let mut record = PortRecord::from(&Port::new(443, Protocol::Tcp, PortState::Open));
+        record.state = "ajar".to_string();
+        let port = record.rebuild().expect("a readable transport rebuilds");
+        assert_eq!(port.protocol(), Protocol::Tcp);
+        assert_eq!(port.state(), PortState::Unasked);
     }
 
     /// A phase survives the round trip, statistics included.

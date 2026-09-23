@@ -10441,8 +10441,6 @@ impl core::cmp::PartialEq for zond_engine::model::port::Port
 pub fn zond_engine::model::port::Port::eq(&self, &zond_engine::model::port::Port) -> bool
 impl core::convert::From<&zond_engine::model::port::Port> for zond_engine::record::PortRecord
 pub fn zond_engine::record::PortRecord::from(&zond_engine::model::port::Port) -> Self
-impl core::convert::From<&zond_engine::record::PortRecord> for zond_engine::model::port::Port
-pub fn zond_engine::model::port::Port::from(&zond_engine::record::PortRecord) -> Self
 impl core::fmt::Debug for zond_engine::model::port::Port
 pub fn zond_engine::model::port::Port::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::port::Port
@@ -13056,14 +13054,14 @@ pub zond_engine::record::PortRecord::protocol: alloc::string::String
 pub zond_engine::record::PortRecord::security: core::option::Option<zond_engine::record::SecurityRecord>
 pub zond_engine::record::PortRecord::service: core::option::Option<zond_engine::record::ServiceRecord>
 pub zond_engine::record::PortRecord::state: alloc::string::String
+impl zond_engine::record::PortRecord
+pub fn zond_engine::record::PortRecord::rebuild(&self) -> core::option::Option<zond_engine::model::port::Port>
 impl core::clone::Clone for zond_engine::record::PortRecord
 pub fn zond_engine::record::PortRecord::clone(&self) -> zond_engine::record::PortRecord
 impl core::cmp::PartialEq for zond_engine::record::PortRecord
 pub fn zond_engine::record::PortRecord::eq(&self, &zond_engine::record::PortRecord) -> bool
 impl core::convert::From<&zond_engine::model::port::Port> for zond_engine::record::PortRecord
 pub fn zond_engine::record::PortRecord::from(&zond_engine::model::port::Port) -> Self
-impl core::convert::From<&zond_engine::record::PortRecord> for zond_engine::model::port::Port
-pub fn zond_engine::model::port::Port::from(&zond_engine::record::PortRecord) -> Self
 impl core::fmt::Debug for zond_engine::record::PortRecord
 pub fn zond_engine::record::PortRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::record::PortRecord
@@ -17825,8 +17823,6 @@ impl core::cmp::PartialEq for zond_engine::model::port::Port
 pub fn zond_engine::model::port::Port::eq(&self, &zond_engine::model::port::Port) -> bool
 impl core::convert::From<&zond_engine::model::port::Port> for zond_engine::record::PortRecord
 pub fn zond_engine::record::PortRecord::from(&zond_engine::model::port::Port) -> Self
-impl core::convert::From<&zond_engine::record::PortRecord> for zond_engine::model::port::Port
-pub fn zond_engine::model::port::Port::from(&zond_engine::record::PortRecord) -> Self
 impl core::fmt::Debug for zond_engine::model::port::Port
 pub fn zond_engine::model::port::Port::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::port::Port
