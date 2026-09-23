@@ -158,28 +158,72 @@ impl Correlation {
     ///   reach the ports, or the echo identifier, so those are checked too. That
     ///   is the drawn [`source_port`](Self::source_port) and so ~16 bits a
     ///   stranger has to guess.
-    /// - Everything else — GRE, ESP, AH, OSPF, PIM — sends a bare header, so
-    ///   there is nothing after the IP header to check and the source address is
-    ///   the whole of it. Said plainly rather than papered over: a verdict for
-    ///   one of those rests on less than a verdict for TCP does.
+    /// - Everything else — GRE, ESP, AH, OSPF, PIM, and an ICMP number asked of
+    ///   the family that does not carry it — sends a bare header, so there is
+    ///   nothing after the IP header to check and the source address is the
+    ///   whole of it. Said plainly rather than papered over: a verdict for one
+    ///   of those rests on less than a verdict for TCP does.
+    ///
+    /// Which tier a quotation falls in is [`Header::of`], the answer the probe
+    /// was built from, so what is checked is what was sent.
     fn admits(&self, quoted: &IpSegment<'_>, number: u8) -> bool {
         if !self.sources.contains(&quoted.source) {
             return false;
         }
 
-        match number {
+        match Header::of(number, quoted.destination) {
             // An echo request carries its identifier at offset four, inside the
             // guaranteed eight.
-            1 | 58 => icmp::echo_token(quoted.payload)
+            Header::Echo => icmp::echo_token(quoted.payload)
                 .is_ok_and(|(identifier, _)| identifier == self.echo_identifier),
             // The three transports whose header begins with the two ports.
-            6 => tcp::quoted_probe(quoted.payload)
+            Header::Tcp => tcp::quoted_probe(quoted.payload)
                 .is_some_and(|probe| probe.source == self.source_port),
-            17 => udp_quoted_source(quoted.payload).is_some_and(|port| port == self.source_port),
-            132 => sctp::quoted_probe(quoted.payload)
+            Header::Udp => {
+                udp_quoted_source(quoted.payload).is_some_and(|port| port == self.source_port)
+            }
+            Header::Sctp => sctp::quoted_probe(quoted.payload)
                 .is_some_and(|probe| probe.source == self.source_port),
-            // A bare header. The source address above is all there is.
-            _ => true,
+            // The source address above is all there is.
+            Header::Bare => true,
+        }
+    }
+}
+
+/// What a probe carries after the IP header the kernel writes, which is also
+/// what a quotation of it can be checked for.
+///
+/// One answer for both halves of the pass: [`probe_payload`] builds what this
+/// names and [`Correlation::admits`] checks a quotation for it. Two tables would
+/// disagree somewhere, and a quotation checked for a header its probe never
+/// carried is never admitted, which reads as a host that stayed silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Header {
+    /// An echo request, carrying the pass's identifier.
+    Echo,
+    /// A SYN from the pass's source port.
+    Tcp,
+    /// An empty datagram from the pass's source port.
+    Udp,
+    /// An INIT from the pass's source port.
+    Sctp,
+    /// Nothing: the IP header is the whole probe.
+    Bare,
+}
+
+impl Header {
+    /// What a probe of `number` to `host` carries.
+    ///
+    /// The ICMP numbers depend on the family as well as the number, since each
+    /// is one family's message: 1 asked of an IPv6 host and 58 of an IPv4 one
+    /// go out bare, as every number without a header here does.
+    fn of(number: u8, host: IpAddr) -> Self {
+        match (number, host) {
+            (1, IpAddr::V4(_)) | (58, IpAddr::V6(_)) => Self::Echo,
+            (6, _) => Self::Tcp,
+            (17, _) => Self::Udp,
+            (132, _) => Self::Sctp,
+            _ => Self::Bare,
         }
     }
 }
@@ -345,11 +389,11 @@ fn send_probes(
 /// protocol this crate cannot build a header for is one whose acceptance it
 /// could not have observed anyway.
 fn probe_payload(number: u8, source: IpAddr, host: IpAddr, keys: &Correlation) -> Vec<u8> {
-    let built = match (number, host) {
-        (1, IpAddr::V4(_)) | (58, IpAddr::V6(_)) => {
+    let built = match Header::of(number, host) {
+        Header::Echo => {
             icmp::build_echo_request_message(source, host, 0, keys.echo_identifier, 0, &[])
         }
-        (6, _) => tcp::build_probe(
+        Header::Tcp => tcp::build_probe(
             crate::model::technique::TcpScanTechnique::Syn,
             source,
             host,
@@ -357,20 +401,20 @@ fn probe_payload(number: u8, source: IpAddr, host: IpAddr, keys: &Correlation) -
             CLOSED_PORT,
             rand::random(),
         ),
-        (17, _) => udp::build_packet(source, host, keys.source_port, CLOSED_PORT, Vec::new()),
-        (132, _) => Ok(sctp::build_init_probe(
+        Header::Udp => udp::build_packet(source, host, keys.source_port, CLOSED_PORT, Vec::new()),
+        Header::Sctp => Ok(sctp::build_init_probe(
             keys.source_port,
             CLOSED_PORT,
             rand::random(),
         )),
-        // Every other number, and an ICMP number aimed at the family that does
-        // not carry it. A bare header is the probe.
-        _ => return Vec::new(),
+        Header::Bare => return Vec::new(),
     };
 
     // A header that would not build is not a reason to skip the protocol: the
-    // bare datagram still asks the question the pass is about, and only the
-    // chance of an acceptance is lost.
+    // bare datagram still asks the question the pass is about. Only a source of
+    // the other family fails a build, which the resolver does not hand back;
+    // were one met, a refusal of the bare datagram would go unread as well,
+    // since its quotation lacks the header `Header::of` says to check for.
     built.unwrap_or_default()
 }
 
@@ -496,19 +540,24 @@ impl pnet_packet::Packet for Datagram<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     use pnet_packet::icmp::destination_unreachable::IcmpCodes;
     use pnet_packet::icmp::destination_unreachable::MutableDestinationUnreachablePacket;
     use pnet_packet::icmp::{IcmpCode, IcmpTypes};
+    use pnet_packet::icmpv6::{Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
     use pnet_packet::ip::IpNextHeaderProtocol;
 
     use crate::protocols::ip;
+    use crate::scanner::strategy::icmp_error::ICMPV6_UNRECOGNISED_NEXT_HEADER;
     use crate::transport::capture::CapturedSegment;
 
     const LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
     const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
     const STRANGER: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9));
+    /// The IPv6 halves of the two above, for a pass that probes both families.
+    const LOCAL_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x50));
+    const TARGET_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x200));
 
     /// The protocols a test pass asked about.
     ///
@@ -527,7 +576,7 @@ mod tests {
         Correlation {
             source_port: TEST_SOURCE_PORT,
             echo_identifier: TEST_ECHO_IDENTIFIER,
-            sources: [LOCAL].into_iter().collect(),
+            sources: [LOCAL, LOCAL_V6].into_iter().collect(),
         }
     }
 
@@ -580,12 +629,43 @@ mod tests {
         CapturedSegment::synthetic(host, IpNextHeaderProtocols::Icmp, bytes)
     }
 
+    /// The IPv6 form of a protocol refusal: a Parameter Problem naming an
+    /// unrecognised Next Header (RFC 4443 §3.4), from `host`, quoting the
+    /// datagram this pass would have sent it under `number`.
+    fn next_header_refusal(host: IpAddr, number: u8) -> CapturedSegment {
+        let (IpAddr::V6(src), IpAddr::V6(dst)) = (LOCAL_V6, host) else {
+            panic!("the fixture is IPv6");
+        };
+        let payload = probe_payload(number, LOCAL_V6, host, &keys());
+        let header = ip::build_ipv6_header(
+            src,
+            dst,
+            payload.len() as u16,
+            IpNextHeaderProtocol(number),
+            ip::HOP_LIMIT_ROUTED,
+        );
+
+        // The Pointer, naming the Next Header field six bytes into the quoted
+        // header, and then the quotation.
+        let mut body = 6u32.to_be_bytes().to_vec();
+        body.extend(header);
+        body.extend(payload);
+
+        let mut bytes = vec![0u8; Icmpv6Packet::minimum_packet_size() + body.len()];
+        let mut message = MutableIcmpv6Packet::new(&mut bytes).expect("a packet");
+        message.set_icmpv6_type(Icmpv6Types::ParameterProblem);
+        message.set_icmpv6_code(ICMPV6_UNRECOGNISED_NEXT_HEADER);
+        message.set_payload(&body);
+
+        CapturedSegment::synthetic(host, IpNextHeaderProtocols::Icmpv6, bytes)
+    }
+
     /// The verdict a captured message settles, for the tests that assert on it
     /// alone.
     fn verdict(reply: &CapturedSegment, named: &[u8]) -> Option<(IpAddr, u8, IpProtocolState)> {
         matched(
             reply,
-            &[TARGET].into_iter().collect(),
+            &[TARGET, TARGET_V6].into_iter().collect(),
             &asked(named),
             &keys(),
         )
@@ -711,6 +791,31 @@ mod tests {
         assert!(
             probe_payload(58, LOCAL, TARGET, &keys()).is_empty(),
             "icmpv6 has no business in an IPv4 datagram"
+        );
+    }
+
+    /// And a refusal of one sent that way is read the way any bare header's
+    /// is, on the address it left from.
+    ///
+    /// Protocol 1 goes to an IPv6 host, and 58 to an IPv4 one, as an IP header
+    /// and nothing more, so a quotation of either has no echo identifier to
+    /// check. Demanding one anyway leaves every such refusal unread, and
+    /// protocol 1 is in the default set: every IPv6 host would report it
+    /// open|filtered where its own stack said closed.
+    #[test]
+    fn an_icmp_number_sent_bare_is_refused_like_any_bare_header() {
+        assert_eq!(
+            verdict(&next_header_refusal(TARGET_V6, 1), &[1]),
+            Some((TARGET_V6, 1, IpProtocolState::Closed)),
+            "ICMP asked of an IPv6 host"
+        );
+        assert_eq!(
+            verdict(
+                &refusal(IcmpCodes::DestinationProtocolUnreachable, TARGET, 58),
+                &[58]
+            ),
+            Some((TARGET, 58, IpProtocolState::Closed)),
+            "ICMPv6 asked of an IPv4 host"
         );
     }
 
