@@ -98,6 +98,10 @@ pub const HELLO_RETRY_RANDOM: [u8; 32] = [
 /// The bytes of a record header: content type, version, and a two-byte length.
 pub const RECORD_HEADER_LEN: usize = 5;
 
+/// The bytes of a handshake message's header: its type and a three-byte
+/// length.
+const HANDSHAKE_HEADER_LEN: usize = 4;
+
 /// The largest record TLS permits (RFC 8446 §5.1), which bounds what a reader
 /// has to be willing to buffer before it can refuse.
 pub const MAX_RECORD_LEN: usize = 16_384 + 2_048;
@@ -374,14 +378,9 @@ pub fn record_length(bytes: &[u8]) -> Option<usize> {
 /// stranger's and the walk has to terminate on any input rather than merely on a
 /// well-formed one.
 pub fn read_response(bytes: &[u8]) -> Option<ServerResponse> {
-    let header: &[u8; RECORD_HEADER_LEN] = bytes.first_chunk()?;
-    let declared = usize::from(u16::from_be_bytes([header[3], header[4]]));
-    let body = bytes.get(RECORD_HEADER_LEN..)?;
-    // Trust the length field only as far as what arrived: a record announcing
-    // more than it delivered is read for what it delivered.
-    let body = body.get(..declared.min(body.len()))?;
+    let (content, body) = record_body(bytes)?;
 
-    match header[0] {
+    match content {
         content_type::ALERT => {
             let alert: &[u8; 2] = body.first_chunk()?;
             Some(ServerResponse::Alert {
@@ -392,6 +391,35 @@ pub fn read_response(bytes: &[u8]) -> Option<ServerResponse> {
         content_type::HANDSHAKE => read_server_hello(body),
         _ => None,
     }
+}
+
+/// Where the ServerHello a server's first record opens with ends, counted
+/// from the start of `bytes`, or `None` where the record does not open with a
+/// whole one.
+///
+/// For a reader that walks the hello by offsets of its own rather than through
+/// [`read_response`], and has to know both that all of it arrived and where it
+/// stops. It is bounded exactly as [`read_response`] reads, so the two cannot
+/// disagree about what a whole hello is.
+pub(crate) fn server_hello_end(bytes: &[u8]) -> Option<usize> {
+    let (content, body) = record_body(bytes)?;
+    if content != content_type::HANDSHAKE {
+        return None;
+    }
+    let message = hello_message(body)?;
+    Some(RECORD_HEADER_LEN + HANDSHAKE_HEADER_LEN + message.len())
+}
+
+/// The first record's content type and its body.
+///
+/// The length field is trusted only as far as what arrived: a record announcing
+/// more than it delivered is read for what it delivered, and whatever it holds
+/// is then judged by its own lengths.
+fn record_body(bytes: &[u8]) -> Option<(u8, &[u8])> {
+    let header: &[u8; RECORD_HEADER_LEN] = bytes.first_chunk()?;
+    let declared = usize::from(u16::from_be_bytes([header[3], header[4]]));
+    let body = bytes.get(RECORD_HEADER_LEN..)?;
+    Some((header[0], body.get(..declared.min(body.len()))?))
 }
 
 /// Reads a ServerHello out of a handshake record's body.
@@ -445,7 +473,7 @@ fn hello_message(body: &[u8]) -> Option<&[u8]> {
         return None;
     }
     let declared = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]) as usize;
-    body.get(4..)?.get(..declared)
+    body.get(HANDSHAKE_HEADER_LEN..)?.get(..declared)
 }
 
 /// The version a ServerHello's `supported_versions` extension names, or `None`
@@ -1093,6 +1121,33 @@ mod tests {
                 retry: false,
             })
         );
+    }
+
+    /// Where a hello ends, for a reader walking it by its own offsets: at the
+    /// end of its message once all of it has arrived, and never before.
+    ///
+    /// Short of whatever the record holds behind it, since that is another
+    /// message, and absent on every prefix, since a reader told a hello had
+    /// ended would read a partial one as whole.
+    #[test]
+    fn a_hello_ends_where_its_message_does() {
+        let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
+        let hello = server_hello(0x0303, 0x1301, [0u8; 32], Some(&extensions));
+
+        assert_eq!(server_hello_end(&hello), Some(hello.len()));
+        for cut in 0..hello.len() {
+            assert_eq!(server_hello_end(&hello[..cut]), None, "{cut} bytes");
+        }
+
+        let mut coalesced = hello.clone();
+        let trailer = [0x0Bu8, 0x00, 0x00, 0x03, 0xAA, 0xBB, 0xCC];
+        coalesced.extend_from_slice(&trailer);
+        let widened = (hello.len() - RECORD_HEADER_LEN + trailer.len()) as u16;
+        coalesced[3..5].copy_from_slice(&widened.to_be_bytes());
+        assert_eq!(server_hello_end(&coalesced), Some(hello.len()));
+
+        let alert = [content_type::ALERT, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28];
+        assert_eq!(server_hello_end(&alert), None);
     }
 
     /// And the message's own length is where its extensions end, whatever the

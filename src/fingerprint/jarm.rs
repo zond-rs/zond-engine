@@ -54,6 +54,7 @@ use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
 use crate::config::ServiceDetection;
 use crate::model::port::Protocol;
+use crate::protocols::tls;
 
 /// How long one probe may take, connection included.
 ///
@@ -766,13 +767,21 @@ struct Answer {
 ///
 /// Offsets are the reference's, counted from the record header, and the session
 /// id's length at byte 43 is what shifts everything after it. Nothing here
-/// trusts a length: a record that runs short returns an empty answer, which is
-/// what a refusal returns too.
+/// trusts a length: a hello that did not all arrive, or whose extensions claim
+/// more than it holds, returns an empty answer, which is what a refusal returns
+/// too.
 fn read_answer(reply: &[u8]) -> Answer {
     // An alert rather than a handshake: the server declined this hello.
     if reply.first() != Some(&0x16) || reply.get(5) != Some(&0x02) {
         return Answer::default();
     }
+
+    // All of the hello or none of it. Part of one has its cipher and version
+    // right and its extension list wrong, which hashes to something nobody
+    // published; every hello a published hash was taken from arrived whole.
+    let Some(end) = tls::server_hello_end(reply) else {
+        return Answer::default();
+    };
 
     let Some(&session_id_len) = reply.get(43) else {
         return Answer::default();
@@ -789,7 +798,9 @@ fn read_answer(reply: &[u8]) -> Answer {
         None => return Answer::default(),
     };
 
-    let (alpn, extensions) = read_extensions(reply, counter, hello_length);
+    let Some((alpn, extensions)) = read_extensions(reply, counter, hello_length, end) else {
+        return Answer::default();
+    };
     Answer {
         cipher: hex(cipher),
         version: hex(version),
@@ -798,15 +809,27 @@ fn read_answer(reply: &[u8]) -> Answer {
     }
 }
 
-/// The ALPN protocol a server agreed and the extension types it sent, in order.
+/// The ALPN protocol a server agreed and the extension types it sent, in order,
+/// or `None` where the extension list runs past the hello's end at `end`.
 ///
 /// Returns both empty where the hello carries no usable extension block. The
 /// three refusals checked for first are the reference's, and they are shapes
 /// rather than lengths: a handshake failure alert inside the record, and two
 /// byte sequences that mark a server answering something other than this
-/// question.
-fn read_extensions(reply: &[u8], counter: usize, hello_length: usize) -> (String, String) {
-    let empty = (String::new(), String::new());
+/// question. They read the reply as it arrived, past the hello included,
+/// because that is what the reference reads them against.
+///
+/// A list running past the hello is refused rather than read as far as it
+/// goes. The reference abandons the whole answer when its walk runs out of
+/// bytes, and a list read part way is a hash nobody published rather than a
+/// missing one.
+fn read_extensions(
+    reply: &[u8],
+    counter: usize,
+    hello_length: usize,
+    end: usize,
+) -> Option<(String, String)> {
+    let empty = Some((String::new(), String::new()));
 
     if reply.get(counter + 47) == Some(&11)
         || reply.get(counter + 50..counter + 53) == Some(&[0x0e, 0xac, 0x0b][..])
@@ -822,23 +845,24 @@ fn read_extensions(reply: &[u8], counter: usize, hello_length: usize) -> (String
     let length = u16::from_be_bytes([stated[0], stated[1]]) as usize;
 
     let mut at = counter + 49;
-    let end = length + at - 1;
+    if at + length > end {
+        return None;
+    }
+    // Walked within the hello, since what follows it is another message.
+    let hello = reply.get(..end)?;
+    let maximum = length + at - 1;
     let mut types = Vec::new();
     let mut alpn = String::new();
 
-    while at < end {
-        let Some(kind) = reply.get(at..at + 2) else {
-            break;
-        };
-        let Some(size) = reply.get(at + 2..at + 4) else {
-            break;
-        };
+    while at < maximum {
+        let kind = hello.get(at..at + 2)?;
+        let size = hello.get(at + 2..at + 4)?;
         let size = u16::from_be_bytes([size[0], size[1]]) as usize;
 
         // The ALPN extension's value is a list, and the protocol agreed sits
         // behind three bytes of framing.
         if kind == [0x00, 0x10]
-            && let Some(value) = reply.get(at + 4 + 3..at + 4 + size)
+            && let Some(value) = hello.get(at + 4 + 3..at + 4 + size)
         {
             alpn = String::from_utf8_lossy(value).into_owned();
         }
@@ -847,7 +871,7 @@ fn read_extensions(reply: &[u8], counter: usize, hello_length: usize) -> (String
         at += size + 4;
     }
 
-    (alpn, types.join("-"))
+    Some((alpn, types.join("-")))
 }
 
 /// The sixty-two character hash of ten answers.
@@ -939,6 +963,13 @@ pub async fn fingerprint(addr: SocketAddr, host: &str) -> Option<String> {
 
 /// Sends one hello and reads back as much of the answer as the fingerprint
 /// reads. [`None`] on any failure, which the caller treats as an empty answer.
+///
+/// Read until the hello is whole rather than for one read: TCP delivers a
+/// record in as many pieces as it likes, and the first piece taken for the
+/// whole answer is a hello the reader has to refuse. Where the first read
+/// holds the whole hello, which is nearly always, this is the one read the
+/// reference makes. What has arrived when the peer stops or the budget runs
+/// out is handed on, and the reader refuses it if it is short of a hello.
 async fn exchange(addr: SocketAddr, probe: &Probe, host: &str) -> Option<Vec<u8>> {
     let mut stream = timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
         .await
@@ -952,13 +983,38 @@ async fn exchange(addr: SocketAddr, probe: &Probe, host: &str) -> Option<Vec<u8>
         .ok()?;
 
     let mut reply = vec![0u8; MAX_REPLY_BYTES];
-    let read = timeout(PROBE_TIMEOUT, stream.read(&mut reply))
-        .await
-        .ok()?
-        .ok()?;
-    reply.truncate(read);
+    let mut filled = 0;
+    let _ = timeout(PROBE_TIMEOUT, async {
+        while filled < reply.len() && wants_more(&reply[..filled]) {
+            match stream.read(&mut reply[filled..]).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => filled += read,
+            }
+        }
+    })
+    .await;
+    reply.truncate(filled);
 
     (!reply.is_empty()).then_some(reply)
+}
+
+/// Whether `reply` is still short of what the fingerprint reads.
+///
+/// Reading stops at the end of the ServerHello, since nothing past it is part
+/// of the answer, and at the end of the first record where that comes first: a
+/// hello its record does not complete is split across records, which the
+/// reference does not read either, and a server that has said all it will
+/// until the client speaks would otherwise hold the probe to its budget.
+fn wants_more(reply: &[u8]) -> bool {
+    if tls::server_hello_end(reply).is_some() {
+        return false;
+    }
+    match tls::record_length(reply) {
+        Some(total) => reply.len() < total,
+        // Either the header has not all arrived, or it announced a record no
+        // peer may send.
+        None => reply.len() < tls::RECORD_HEADER_LEN,
+    }
 }
 
 /// Identifies a TLS stack, and often the product behind it, by how it answers
@@ -1259,25 +1315,33 @@ mod tests {
     /// `ECDHE-RSA-AES128-GCM-SHA256`, trimmed after the extension list.
     #[test]
     fn a_server_hello_reads_back_as_its_four_parts() {
-        let mut reply = vec![
-            0x16, 0x03, 0x03, 0x00, 0x51, // record: handshake, TLS 1.2, 81 bytes
-            0x02, 0x00, 0x00, 0x4d, // server hello, 77 bytes
-            0x03, 0x03, // the version it chose
-        ];
-        reply.extend_from_slice(&[0x11; 32]); // server random
-        reply.push(0x20);
-        reply.extend_from_slice(&[0x22; 32]); // session id
-        reply.extend_from_slice(&[0xc0, 0x2f]); // the suite it chose
-        reply.push(0x00); // null compression
-        reply.extend_from_slice(&[0x00, 0x08]); // eight bytes of extensions
-        reply.extend_from_slice(&[0xff, 0x01, 0x00, 0x01, 0x00]); // renegotiation info
-        reply.extend_from_slice(&[0x00, 0x17, 0x00, 0x00]); // extended master secret
-
-        let read = read_answer(&reply);
+        let read = read_answer(&server_hello(false));
         assert_eq!(read.cipher, "c02f");
         assert_eq!(read.version, "0303");
         assert_eq!(read.alpn, "", "the server agreed no protocol");
         assert_eq!(read.extensions, "ff01-0017");
+    }
+
+    /// A hello that did not all arrive is no answer, rather than part of one.
+    ///
+    /// Every cut of a real answer reads as the whole of it or as nothing. Half
+    /// an answer is worse than none: its cipher and version are right and its
+    /// extension list is not, so the probe's three characters agree with a
+    /// published hash while the digest over all ten extension lists does not,
+    /// and a product the corpus lists goes unnamed with nothing to say why.
+    #[test]
+    fn a_server_hello_reads_whole_or_not_at_all() {
+        let whole = server_hello(false);
+        assert_ne!(read_answer(&whole), Answer::default());
+
+        for cut in 0..whole.len() {
+            assert_eq!(
+                read_answer(&whole[..cut]),
+                Answer::default(),
+                "the first {cut} of {} bytes",
+                whole.len()
+            );
+        }
     }
 
     /// A refusal is not a hello. An alert record, and anything too short to hold
@@ -1400,10 +1464,16 @@ mod tests {
         assert_eq!(dialled.load(Ordering::SeqCst), PROBES.len(), "ten hellos");
     }
 
-    /// A listener that answers every hello the same way, and the fixed
-    /// `ServerHello` it sends. `refuse` makes it send a fatal alert instead,
-    /// which is what a server that liked none of the terms sends.
+    /// A listener that answers every hello the same way, with
+    /// [`server_hello`]. `refuse` makes it send a fatal alert instead, which is
+    /// what a server that liked none of the terms sends.
     async fn stub_server(refuse: bool) -> SocketAddr {
+        answering(server_hello(refuse), None).await
+    }
+
+    /// A listener that answers every hello with `reply`, in two writes a
+    /// moment apart where `split_at` says where to cut it.
+    async fn answering(reply: Vec<u8>, split_at: Option<usize>) -> SocketAddr {
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
@@ -1415,7 +1485,12 @@ mod tests {
                 if stream.read(&mut hello).await.is_err() {
                     continue;
                 }
-                let _ = stream.write_all(&server_hello(refuse)).await;
+                let (head, tail) = reply.split_at(split_at.unwrap_or(reply.len()));
+                let _ = stream.write_all(head).await;
+                if !tail.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let _ = stream.write_all(tail).await;
+                }
             }
         });
 
@@ -1423,23 +1498,25 @@ mod tests {
     }
 
     /// The record the stub sends: TLS 1.2, `ECDHE-RSA-AES128-GCM-SHA256`, and
-    /// two extensions. The same bytes the reading test walks.
+    /// two extensions. The same bytes the reading tests walk.
     fn server_hello(refuse: bool) -> Vec<u8> {
         if refuse {
             return vec![0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28];
         }
 
         let mut record = vec![
-            0x16, 0x03, 0x03, 0x00, 0x51, 0x02, 0x00, 0x00, 0x4d, 0x03, 0x03,
+            0x16, 0x03, 0x03, 0x00, 0x55, // record: handshake, TLS 1.2, 85 bytes
+            0x02, 0x00, 0x00, 0x51, // server hello, 81 bytes
+            0x03, 0x03, // the version it chose
         ];
-        record.extend_from_slice(&[0x11; 32]);
+        record.extend_from_slice(&[0x11; 32]); // server random
         record.push(0x20);
-        record.extend_from_slice(&[0x22; 32]);
-        record.extend_from_slice(&[0xc0, 0x2f]);
-        record.push(0x00);
-        record.extend_from_slice(&[0x00, 0x08]);
-        record.extend_from_slice(&[0xff, 0x01, 0x00, 0x01, 0x00]);
-        record.extend_from_slice(&[0x00, 0x17, 0x00, 0x00]);
+        record.extend_from_slice(&[0x22; 32]); // session id
+        record.extend_from_slice(&[0xc0, 0x2f]); // the suite it chose
+        record.push(0x00); // null compression
+        record.extend_from_slice(&[0x00, 0x09]); // nine bytes of extensions
+        record.extend_from_slice(&[0xff, 0x01, 0x00, 0x01, 0x00]); // renegotiation info
+        record.extend_from_slice(&[0x00, 0x17, 0x00, 0x00]); // extended master secret
         record
     }
 
@@ -1474,6 +1551,28 @@ mod tests {
             fingerprint(addr, "127.0.0.1").await.as_deref(),
             Some(found.as_str()),
             "the same server answers the same way twice"
+        );
+    }
+
+    /// A hello that arrives in two segments is read whole, and hashes as it
+    /// does in one.
+    ///
+    /// TCP delivers a record in as many pieces as it likes, and a single read
+    /// takes the first for the whole answer. Cut inside the extension list, as
+    /// here, that is the worst kind of wrong: a hash whose first thirty
+    /// characters are right and whose digest matches nothing anyone published.
+    #[tokio::test]
+    async fn a_server_hello_arriving_in_pieces_hashes_as_it_does_whole() {
+        let whole = stub_server(false).await;
+        let expected = fingerprint(whole, "127.0.0.1")
+            .await
+            .expect("a server that answered has a fingerprint");
+
+        // Four bytes into the nine of extensions.
+        let pieces = answering(server_hello(false), Some(85)).await;
+        assert_eq!(
+            fingerprint(pieces, "127.0.0.1").await.as_deref(),
+            Some(expected.as_str())
         );
     }
 
