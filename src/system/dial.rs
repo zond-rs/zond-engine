@@ -832,11 +832,15 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
         let addr = listener.local_addr().expect("its address");
-        let handle = std::thread::spawn(move || listener.accept().map(|(_, from)| from));
+        // The accepted stream is handed back rather than dropped with the
+        // thread: closed at once, it can reach the connecting side as a hang-up
+        // before the connect has seen its handshake finish, which macOS reports
+        // as a failed connect.
+        let handle = std::thread::spawn(move || listener.accept());
         let _stream = egress
             .connect_within(addr, Duration::from_secs(1))
             .expect("the blocking connect");
-        let from = handle.join().expect("the accept joins").expect("an accept");
+        let (_accepted, from) = handle.join().expect("the accept joins").expect("an accept");
         assert_eq!(from.ip(), source, "the blocking connection's source");
     }
 }
