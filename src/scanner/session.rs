@@ -1621,6 +1621,28 @@ impl ScanContext {
             .send(ScanEvent::ScannerFailed { scanner, reason });
     }
 
+    /// Where a strategy files work it began and could not finish because a
+    /// budget it runs under ran out: a detection whose declared time or bytes
+    /// were spent before its question was answered.
+    ///
+    /// Filed exactly as [`record_failure`](Self::record_failure) files, as a
+    /// [`ScannerFailure`] and a [`ScanEvent::ScannerFailed`], because the report
+    /// has one account of work that did not complete and a consumer reading it
+    /// for coverage has to find this there. The run did cover less than it was
+    /// asked to. What differs is the console. Nothing broke, so this is a
+    /// warning in the caller's own words rather than an error announcing that
+    /// the scanner failed: a reader told a scanner failed looks for a fault,
+    /// and here there is none to find, only a target that cost more than the
+    /// budget allowed.
+    pub(crate) fn record_cut_short(&self, scanner: ScannerKind, reason: String) {
+        crate::warn!("{reason}");
+        self.failures
+            .push(ScannerFailure::new(scanner, reason.clone()));
+        let _ = self
+            .events_tx
+            .send(ScanEvent::ScannerFailed { scanner, reason });
+    }
+
     /// The single place a refusal enters the record.
     ///
     /// Not a failure, and this is the difference. A refusal is the engine

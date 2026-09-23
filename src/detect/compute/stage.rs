@@ -40,7 +40,7 @@ use crate::fingerprint::PortContext;
 use crate::model::finding::{DetectionId, Finding};
 use crate::model::port::Protocol;
 
-use super::budget::RunOutcome;
+use super::budget::{Budget, RunOutcome};
 use super::capability::{Capabilities, Grant};
 use super::db::ReplayError;
 use super::replay::{CapTape, RecordedCapabilities, RecordingCapabilities};
@@ -55,6 +55,9 @@ pub(crate) struct InconclusiveRun {
     pub(crate) detection: DetectionId,
     /// Why it did not complete.
     pub(crate) outcome: RunOutcome,
+    /// The bounds it ran under, so a report can say how large the one it hit
+    /// was.
+    pub(crate) budget: Budget,
 }
 
 /// What a port's compute detections produced: the findings, and the runs that did
@@ -173,6 +176,7 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
                 inconclusive.push(InconclusiveRun {
                     detection: grant.detection.clone(),
                     outcome,
+                    budget: grant.budget,
                 });
             }
         }

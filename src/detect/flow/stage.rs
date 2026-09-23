@@ -41,9 +41,12 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use super::db::FlowDb;
+use super::schema::{FlowDetection, MAX_FLOW_STEPS, MAX_LOOP_ITEMS};
 use super::{FlowSeed, Probe, ProbeRefusal};
 use crate::config::limits::DETECTION_FLOW_CONCURRENCY;
-use crate::detect::manifest::{CapabilitySpec, Class, DEFAULT_MAX_BYTES, DEFAULT_MAX_MILLIS};
+use crate::detect::manifest::{
+    CapabilitySpec, Class, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS,
+};
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
 /// recording every finding they produce. `probe_for` supplies the [`Probe`] a
@@ -70,8 +73,8 @@ pub(crate) fn run_flows(
         let protocol = port.protocol();
         let service = port.service().map(|service| service.name());
         // run_flows is a synchronous convenience; the scanner drives detect_port
-        // directly and surfaces the refusals this `.0` discards.
-        let (produced, _refusals) = detect_port(
+        // directly and surfaces the shortfalls this discards.
+        let (produced, _shortfalls) = detect_port(
             corpus,
             envelope,
             &host_addr,
@@ -96,6 +99,9 @@ pub(crate) fn run_flows(
 /// or [`None`] to skip that flow. This is the per-port core the live detection
 /// phase drives: it holds no host and does no I/O of its own, so a caller can run
 /// it wherever the socket lives.
+///
+/// Beside the findings it returns each flow a budget of its own stopped on a
+/// port still answering, a [`Shortfall`], in corpus order like the findings.
 pub(crate) fn detect_port(
     corpus: &FlowDb,
     envelope: &DetectionEnvelope,
@@ -104,7 +110,7 @@ pub(crate) fn detect_port(
     number: u16,
     protocol: Protocol,
     probe_for: impl Fn(&CapabilitySpec) -> Option<Box<dyn Probe>> + Sync,
-) -> (Vec<Finding>, Vec<(String, ProbeRefusal)>) {
+) -> (Vec<Finding>, Vec<Shortfall>) {
     // Which flows this port answers to, settled before any of them runs. The pass
     // is cheap, it decides how wide the run below should be, and it gives every
     // flow the index that puts its findings back in corpus order afterwards.
@@ -139,32 +145,29 @@ pub(crate) fn detect_port(
         let flow = applicable[index];
         let manifest = &flow.flow().detection;
         let inner = probe_for(&manifest.capabilities)?;
-        let millis = manifest
-            .capabilities
-            .max_millis
-            .map_or(DEFAULT_MAX_MILLIS, u64::from);
-        let mut probe = CachingProbe {
+        let limits = Limits::of(&manifest.capabilities);
+        let mut probe = CachingProbe::new(
             inner,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(millis / 4 * 3),
-            budget: manifest
-                .capabilities
-                .max_bytes
-                .map_or(DEFAULT_MAX_BYTES, u64::from),
-        };
+            &cache,
+            &strikes,
+            Duration::from_millis(limits.millis / 4 * 3),
+            limits.bytes,
+        );
         let found = flow.run(&seed, &mut probe);
         // A flow that outran its own budget on a port still answering is recorded as
         // a coverage gap. One the probe withholds because a dead port stalled it is
         // not: that shortfall is the port's, the same as a clean run over a quiet one.
-        let refusal = probe
-            .last_refusal()
-            .map(|refusal| (manifest.id.clone(), refusal));
+        let shortfall = probe.refused().map(|refusal| Shortfall {
+            detection: manifest.id.clone(),
+            refusal,
+            limit: limits.of_refusal(refusal),
+            answered: probe.answered,
+            requests: requests(flow.flow()),
+        });
         Some(Run {
             index,
             findings: found,
-            refusal,
+            shortfall,
         })
     };
 
@@ -227,12 +230,12 @@ pub(crate) fn detect_port(
     runs.sort_by_key(|run| run.index);
 
     let mut findings = Vec::new();
-    let mut refusals = Vec::new();
+    let mut shortfalls = Vec::new();
     for run in runs {
         findings.extend(run.findings);
-        refusals.extend(run.refusal);
+        shortfalls.extend(run.shortfall);
     }
-    (findings, refusals)
+    (findings, shortfalls)
 }
 
 /// What one flow left behind, carrying the position it holds in the corpus so a
@@ -240,7 +243,87 @@ pub(crate) fn detect_port(
 struct Run {
     index: usize,
     findings: Vec<Finding>,
-    refusal: Option<(String, ProbeRefusal)>,
+    shortfall: Option<Shortfall>,
+}
+
+/// A flow one of its own budgets stopped on a port that was still answering:
+/// which flow, which budget, and how far it had got.
+///
+/// Carried to the report as its own fact because it is neither of the two
+/// things it would otherwise read as. It is not a clean run, since a question
+/// the flow meant to ask went unasked or unanswered and its silence clears
+/// nothing. And it is not a fault, since nothing broke: the detection declared
+/// a ceiling, the ceiling held, and the target simply cost more than the
+/// declaration allowed. A reader deciding whether to look again needs which
+/// ceiling, and how much of the flow was left when it held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Shortfall {
+    /// The flow's id.
+    pub(crate) detection: String,
+    /// The budget that stopped it.
+    pub(crate) refusal: ProbeRefusal,
+    /// That budget's ceiling as the flow ran under it, in its own unit:
+    /// milliseconds, bytes, or connections.
+    pub(crate) limit: u64,
+    /// The requests that drew a reply before it stopped.
+    pub(crate) answered: u32,
+    /// The requests the flow makes when every step runs, which is what it set
+    /// out to ask. See [`requests`].
+    pub(crate) requests: u32,
+}
+
+/// The ceilings a flow runs under, the ones it declared and this runtime's
+/// defaults for the ones it left open.
+struct Limits {
+    millis: u64,
+    bytes: u64,
+    connections: u64,
+}
+
+impl Limits {
+    fn of(capabilities: &CapabilitySpec) -> Self {
+        Self {
+            millis: capabilities
+                .max_millis
+                .map_or(DEFAULT_MAX_MILLIS, u64::from),
+            bytes: capabilities.max_bytes.map_or(DEFAULT_MAX_BYTES, u64::from),
+            connections: capabilities
+                .max_connections
+                .map_or(u64::from(DEFAULT_MAX_CONNECTIONS), u64::from),
+        }
+    }
+
+    /// The ceiling `refusal` names.
+    fn of_refusal(&self, refusal: ProbeRefusal) -> u64 {
+        match refusal {
+            ProbeRefusal::Deadline => self.millis,
+            ProbeRefusal::Bytes => self.bytes,
+            ProbeRefusal::Connections => self.connections,
+        }
+    }
+}
+
+/// How many requests `flow` makes when every step runs: one for each step that
+/// sends, and one per item for a `for_each`, clamped where the interpreter
+/// clamps them.
+///
+/// An upper bound rather than a prediction, because a step whose guard is false
+/// sends nothing. It is the number a reader weighs a shortfall against, what the
+/// flow set out to ask, and a guard that would have skipped a step the budget
+/// already stopped is not something the run can know.
+fn requests(flow: &FlowDetection) -> u32 {
+    let sends: usize = flow
+        .step
+        .iter()
+        .take(MAX_FLOW_STEPS)
+        .filter(|step| step.send.is_some())
+        .map(|step| {
+            step.for_each
+                .as_ref()
+                .map_or(1, |for_each| for_each.items.len().min(MAX_LOOP_ITEMS))
+        })
+        .sum();
+    u32::try_from(sends).unwrap_or(u32::MAX)
 }
 
 /// A [`Probe`] that shares one port's replies across the flows run against it.
@@ -287,6 +370,48 @@ struct CachingProbe<'a> {
     /// port's doing rather than the flow outrunning its own budget.
     stalled: bool,
     budget: u64,
+    /// The first budget that refused one of this flow's requests.
+    ///
+    /// Kept from the first rather than read off the last exchange, because a
+    /// refused request is a question left unasked whatever the flow does
+    /// next: a flow whose large request the byte budget turned away and whose
+    /// smaller one then fitted still left the first unanswered.
+    refused: Option<ProbeRefusal>,
+    /// How many of this flow's requests drew a reply, from the socket or the
+    /// cache, which is how far a flow a budget stopped had got.
+    answered: u32,
+}
+
+impl<'a> CachingProbe<'a> {
+    /// A flow's view of the port: its own probe, the port's shared cache and
+    /// strike count, and the two figures from its budget this wrapper reads.
+    fn new(
+        inner: Box<dyn Probe>,
+        cache: &'a Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+        strikes: &'a AtomicU32,
+        dead_after: Duration,
+        budget: u64,
+    ) -> Self {
+        Self {
+            inner,
+            cache,
+            strikes,
+            dead_after,
+            stalled: false,
+            budget,
+            refused: None,
+            answered: 0,
+        }
+    }
+
+    /// The budget that left this flow short of what it set out to ask, or
+    /// [`None`] when nothing did or when the port's own stall is to blame.
+    fn refused(&self) -> Option<ProbeRefusal> {
+        if self.stalled {
+            return None;
+        }
+        self.refused
+    }
 }
 
 /// How many dead exchanges a port may cost before its remaining flows stop opening
@@ -309,6 +434,7 @@ impl Probe for CachingProbe<'_> {
             if let Some(reply) = cache.get(bytes)
                 && reply.len() as u64 <= self.budget
             {
+                self.answered += 1;
                 return Some(reply.clone());
             }
         }
@@ -321,7 +447,11 @@ impl Probe for CachingProbe<'_> {
             self.strikes.fetch_add(1, Ordering::Relaxed);
             self.stalled = true;
         }
-        let reply = reply?;
+        let Some(reply) = reply else {
+            self.refused = self.refused.or(self.inner.last_refusal());
+            return None;
+        };
+        self.answered += 1;
         if self.inner.reply_complete() {
             self.cache
                 .lock()
@@ -334,13 +464,6 @@ impl Probe for CachingProbe<'_> {
 
     fn reply_complete(&self) -> bool {
         self.inner.reply_complete()
-    }
-
-    fn last_refusal(&self) -> Option<ProbeRefusal> {
-        if self.stalled {
-            return None;
-        }
-        self.inner.last_refusal()
     }
 }
 
@@ -541,8 +664,86 @@ mod tests {
         assert!(
             refusals
                 .iter()
-                .any(|(id, refusal)| id == "redis-unauth-access" && *refusal == ProbeRefusal::Bytes),
+                .any(|shortfall| shortfall.detection == "redis-unauth-access"
+                    && shortfall.refusal == ProbeRefusal::Bytes),
             "the budget refusal was not surfaced: {refusals:?}"
+        );
+    }
+
+    /// A request a budget turned away is a question the flow did not get
+    /// answered, even when a later, smaller one fitted and the flow ended on a
+    /// reply. What the stage reports is the first refusal and how far the flow
+    /// got, not whatever its last exchange happened to do.
+    #[test]
+    fn a_flow_refused_partway_is_reported_even_when_its_last_request_was_answered() {
+        use crate::detect::flow::db::CompiledFlow;
+
+        /// Turns the first request away on its byte budget and answers the
+        /// rest, as a probe whose budget one large reply had nearly spent does.
+        struct RefusesFirst {
+            calls: u32,
+            refused: Option<ProbeRefusal>,
+        }
+        impl Probe for RefusesFirst {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                self.calls += 1;
+                if self.calls == 1 {
+                    self.refused = Some(ProbeRefusal::Bytes);
+                    return None;
+                }
+                self.refused = None;
+                Some(b"no".to_vec())
+            }
+            fn last_refusal(&self) -> Option<ProbeRefusal> {
+                self.refused
+            }
+        }
+
+        let source = r#"
+            [detection]
+            id      = "three-questions"
+            version = "1.0.0"
+            title   = "Three questions"
+            [detection.when]
+            service = "redis"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            max_bytes = 512
+            [[step]]
+            for_each    = { var = "q", in = ["first", "second", "third"] }
+            on_no_match = "continue"
+            send        = "{q}"
+            expect      = "yes"
+        "#;
+        let flow: FlowDetection = toml::from_str(source).expect("a valid flow");
+        let corpus = FlowDb::from_flows(vec![CompiledFlow::from_parts(flow, "0".repeat(64))]);
+
+        let (_, shortfalls) = detect_port(
+            &corpus,
+            &benign_envelope(),
+            "192.0.2.10",
+            Some("redis"),
+            6379,
+            Protocol::Tcp,
+            |_caps| {
+                Some(Box::new(RefusesFirst {
+                    calls: 0,
+                    refused: None,
+                }))
+            },
+        );
+
+        assert_eq!(
+            shortfalls,
+            vec![Shortfall {
+                detection: "three-questions".to_string(),
+                refusal: ProbeRefusal::Bytes,
+                limit: 512,
+                answered: 2,
+                requests: 3,
+            }],
+            "the refused first question was lost behind the answered last one"
         );
     }
 
@@ -583,22 +784,8 @@ mod tests {
 
         let (first, first_calls) = counting(b"the page", true);
         let (second, second_calls) = counting(b"never read", true);
-        let mut a = CachingProbe {
-            inner: first,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(1500),
-            budget: 4096,
-        };
-        let mut b = CachingProbe {
-            inner: second,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(1500),
-            budget: 4096,
-        };
+        let mut a = CachingProbe::new(first, &cache, &strikes, Duration::from_millis(1500), 4096);
+        let mut b = CachingProbe::new(second, &cache, &strikes, Duration::from_millis(1500), 4096);
 
         let from_a = a.speak(request);
         let from_b = b.speak(request);
@@ -623,22 +810,8 @@ mod tests {
         let strikes = AtomicU32::new(0);
         let (first, _) = counting(b"root", true);
         let (second, second_calls) = counting(b"login", true);
-        let mut a = CachingProbe {
-            inner: first,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(1500),
-            budget: 4096,
-        };
-        let mut b = CachingProbe {
-            inner: second,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(1500),
-            budget: 4096,
-        };
+        let mut a = CachingProbe::new(first, &cache, &strikes, Duration::from_millis(1500), 4096);
+        let mut b = CachingProbe::new(second, &cache, &strikes, Duration::from_millis(1500), 4096);
 
         a.speak(b"GET / HTTP/1.1\r\n\r\n");
         let from_b = b.speak(b"GET /login HTTP/1.1\r\n\r\n");
@@ -659,27 +832,13 @@ mod tests {
 
         // The first flow reads a large page under a large budget and caches it.
         let (first, _) = counting(&[b'x'; 100], true);
-        let mut a = CachingProbe {
-            inner: first,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(1500),
-            budget: 4096,
-        };
+        let mut a = CachingProbe::new(first, &cache, &strikes, Duration::from_millis(1500), 4096);
         a.speak(request);
 
         // A flow whose budget could not have read the whole page fetches its own,
         // which its budget truncates exactly as it would without the cache.
         let (second, second_calls) = counting(&[b'y'; 40], true);
-        let mut b = CachingProbe {
-            inner: second,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(1500),
-            budget: 40,
-        };
+        let mut b = CachingProbe::new(second, &cache, &strikes, Duration::from_millis(1500), 40);
         let from_b = b.speak(request);
 
         assert_eq!(
@@ -701,14 +860,7 @@ mod tests {
         let strikes = AtomicU32::new(0);
 
         let (first, _) = counting(b"cut short", false);
-        let mut a = CachingProbe {
-            inner: first,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(1500),
-            budget: 4096,
-        };
+        let mut a = CachingProbe::new(first, &cache, &strikes, Duration::from_millis(1500), 4096);
         a.speak(request);
         assert!(
             cache.lock().expect("uncontended in a test").is_empty(),
@@ -716,14 +868,7 @@ mod tests {
         );
 
         let (second, second_calls) = counting(b"cut short", false);
-        let mut b = CachingProbe {
-            inner: second,
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_millis(1500),
-            budget: 4096,
-        };
+        let mut b = CachingProbe::new(second, &cache, &strikes, Duration::from_millis(1500), 4096);
         b.speak(request);
         assert_eq!(
             second_calls.load(Ordering::Relaxed),
@@ -904,14 +1049,13 @@ mod tests {
         // dead_after of zero, does so only after the whole budget, the way a port
         // that accepts the connection and then stays silent holds a real socket.
         for n in 0..DEAD_PORT_STRIKES + 5 {
-            let mut probe = CachingProbe {
-                inner: Box::new(Silent(calls.clone())),
-                cache: &cache,
-                strikes: &strikes,
-                stalled: false,
-                dead_after: Duration::ZERO,
-                budget: 4096,
-            };
+            let mut probe = CachingProbe::new(
+                Box::new(Silent(calls.clone())),
+                &cache,
+                &strikes,
+                Duration::ZERO,
+                4096,
+            );
             let request = format!("GET /{n} HTTP/1.1\r\n\r\n");
             assert!(probe.speak(request.as_bytes()).is_none());
         }
@@ -941,32 +1085,24 @@ mod tests {
         // A fast refusal with no dead wait is the flow outrunning its own budget on
         // a port still answering, so it is reported.
         let strikes = AtomicU32::new(0);
-        let mut live = CachingProbe {
-            inner: Box::new(Refuser),
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::from_secs(3600),
-            budget: 4096,
-        };
+        let mut live = CachingProbe::new(
+            Box::new(Refuser),
+            &cache,
+            &strikes,
+            Duration::from_secs(3600),
+            4096,
+        );
         live.speak(b"GET /a HTTP/1.1\r\n\r\n");
         assert!(!live.stalled);
-        assert_eq!(live.last_refusal(), Some(ProbeRefusal::Deadline));
+        assert_eq!(live.refused(), Some(ProbeRefusal::Deadline));
 
         // The same refusal after a dead wait is the port's doing, so it is withheld.
         // A dead_after of zero makes the exchange count as having run the clock out.
         let strikes = AtomicU32::new(0);
-        let mut dead = CachingProbe {
-            inner: Box::new(Refuser),
-            cache: &cache,
-            strikes: &strikes,
-            stalled: false,
-            dead_after: Duration::ZERO,
-            budget: 4096,
-        };
+        let mut dead = CachingProbe::new(Box::new(Refuser), &cache, &strikes, Duration::ZERO, 4096);
         dead.speak(b"GET /b HTTP/1.1\r\n\r\n");
         assert!(dead.stalled);
-        assert_eq!(dead.last_refusal(), None);
+        assert_eq!(dead.refused(), None);
     }
 
     #[test]
@@ -979,14 +1115,7 @@ mod tests {
         // timeout expires. Such a reply is real but as slow as silence.
         for n in 0..DEAD_PORT_STRIKES + 5 {
             let (inner, calls) = counting(b"slow but complete", true);
-            let mut probe = CachingProbe {
-                inner,
-                cache: &cache,
-                strikes: &strikes,
-                stalled: false,
-                dead_after: Duration::ZERO,
-                budget: 4096,
-            };
+            let mut probe = CachingProbe::new(inner, &cache, &strikes, Duration::ZERO, 4096);
             let request = format!("GET /{n} HTTP/1.1\r\n\r\n");
             probe.speak(request.as_bytes());
             let expected = if n < DEAD_PORT_STRIKES { 1 } else { 0 };

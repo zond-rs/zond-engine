@@ -123,7 +123,8 @@ impl Probe for SocketProbe {
         self.connections_left -= 1;
 
         // The reply may consume at most what the byte budget has left. A silent or
-        // unreachable port is not a refusal, so `last_refusal` stays clear.
+        // unreachable port is not a refusal, so `last_refusal` stays clear, unless
+        // it was the flow's clock that ended the wait.
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
                 self.addr,
@@ -138,7 +139,21 @@ impl Probe for SocketProbe {
             Protocol::Sctp => return None,
         }
         .ok()
-        .filter(|reply| !reply.bytes.is_empty())?;
+        .filter(|reply| !reply.bytes.is_empty());
+
+        let Some(reply) = reply else {
+            // Every wait in an exchange is drawn from what is left of the flow's
+            // time, so one that came back empty with none of it left was ended
+            // by the budget, not by the port: the question was still open when
+            // the clock stopped it. Refused, so the flow's report says a budget
+            // left it unanswered rather than that the port had nothing to say.
+            // A port that refused the connection or reset it did so with time
+            // to spare, and stays silence.
+            if exchange::remaining(self.deadline).is_none() {
+                self.last_refusal = Some(ProbeRefusal::Deadline);
+            }
+            return None;
+        };
 
         self.bytes_left -= reply.bytes.len() as u64;
         self.last_complete = reply.complete;
@@ -286,6 +301,43 @@ mod tests {
             "three exchanges with an idle server took {:?}",
             started.elapsed()
         );
+    }
+
+    /// An exchange the flow's clock ran out on is a question the budget left
+    /// unanswered, and says so: a flow whose last request was still waiting
+    /// when its time was up must not read the same as one the port declined.
+    #[test]
+    fn an_exchange_its_time_budget_ran_out_on_is_refused_rather_than_unanswered() {
+        use std::io::Read as _;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                // Takes the request and answers nothing until the client leaves.
+                let _ = sock.read(&mut [0u8; 512]);
+                let _ = sock.read(&mut [0u8; 1]);
+            }
+        });
+
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 300, 8));
+        assert!(probe.speak(b"GET / HTTP/1.1\r\n\r\n").is_none());
+        assert_eq!(probe.last_refusal(), Some(ProbeRefusal::Deadline));
+    }
+
+    /// A port that turns the connection away has answered, with a refusal of
+    /// its own, before the budget had any say: that is silence, not a cut.
+    #[test]
+    fn a_port_that_refuses_the_connection_is_unanswered_rather_than_refused() {
+        // Bound and dropped, so the port is closed and the kernel resets.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 5_000, 8));
+
+        assert!(probe.speak(b"anything").is_none());
+        assert_eq!(probe.last_refusal(), None);
     }
 
     /// An SCTP port has no client stack behind it here, so a flow aimed at one

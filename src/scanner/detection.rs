@@ -64,10 +64,12 @@ use crate::config::DetectionEnvelope;
 use crate::config::ServiceDetection;
 use crate::config::limits::CONNECT_CONCURRENCY;
 use crate::detect::compute::stage as compute_stage;
+use crate::detect::compute::stage::InconclusiveRun;
 use crate::detect::compute::{
-    Budget, CapError, CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities,
-    RunOutcome, ScanInstant,
+    Budget, BudgetTrap, CapError, CapTapeRecord, Capabilities, DetectionRunRecord,
+    LiveCapabilities, RunOutcome, ScanInstant,
 };
+use crate::detect::flow::stage::Shortfall;
 use crate::detect::flow::{Probe, ProbeRefusal, SocketProbe, stage};
 use crate::detect::host::stage as host_stage;
 use crate::detect::manifest::{
@@ -84,8 +86,41 @@ use crate::scanner::session::{ScanContext, Stage, Tapes};
 
 /// One port's detections as they travel off the blocking pool: the host key, the
 /// port and protocol, the findings drawn, and the detections that did not finish
-/// as `(id, reason)` pairs so the pool can record each as a failure.
-type PortResult = (ScopedIp, u16, Protocol, Vec<Finding>, Vec<(String, String)>);
+/// with why, so the pool can file each.
+type PortResult = (ScopedIp, u16, Protocol, Vec<Finding>, Vec<Unfinished>);
+
+/// A detection that did not finish on a port, sorted by whether anything broke.
+///
+/// Both reach the report the same way, as work the phase did not complete, since
+/// either leaves the port's question open and a report read for coverage has to
+/// count both. What differs is what the console calls them. A budget that ran out
+/// is the detection's own declared ceiling holding against a target that cost
+/// more than it allowed: nothing failed, and calling it a failed scanner sends a
+/// reader looking for a fault that is not there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Unfinished {
+    /// A budget the detection runs under ran out before it had its answer.
+    /// Carries the detection's id and which budget, as a phrase.
+    CutShort { id: String, why: String },
+    /// The detection broke, or the runtime refused it something it asked for.
+    Failed { id: String, why: String },
+}
+
+impl Unfinished {
+    /// Files this against the port it happened on.
+    fn record(&self, ctx: &ScanContext, endpoint: &str) {
+        match self {
+            Unfinished::CutShort { id, why } => ctx.record_cut_short(
+                ScannerKind::Detection,
+                format!("detection '{id}' on {endpoint} went unanswered: {why}"),
+            ),
+            Unfinished::Failed { id, why } => ctx.record_failure(
+                ScannerKind::Detection,
+                format!("detection '{id}' on {endpoint} {why}"),
+            ),
+        }
+    }
+}
 
 /// Runs the corpus against every open port a detection is interested in,
 /// recording the findings it produces.
@@ -130,15 +165,13 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         |result: Option<PortResult>, _audit| {
             ctx.stage_advanced();
 
-            if let Some((key, number, protocol, findings, inconclusive)) = result {
-                // A detection that trapped on a budget, faulted, or ran its socket
-                // budget dry did not clear the port; record that it did not finish
-                // so the report tells it apart from one that found nothing.
-                for (id, reason) in &inconclusive {
-                    ctx.record_failure(
-                        ScannerKind::Detection,
-                        format!("detection '{id}' on {} {reason}", key.endpoint(number)),
-                    );
+            if let Some((key, number, protocol, findings, unfinished)) = result {
+                // A detection a budget cut short or that broke did not clear the
+                // port; record that it did not finish so the report tells it
+                // apart from one that found nothing.
+                let endpoint = key.endpoint(number).to_string();
+                for detection in &unfinished {
+                    detection.record(ctx, &endpoint);
                 }
                 record(ctx, key, number, protocol, findings);
             }
@@ -263,7 +296,7 @@ async fn detect_one(
     let produced = tokio::task::spawn_blocking(move || {
         let flows = detections.flows();
         let modules = detections.modules();
-        let (mut findings, flow_refusals) = stage::detect_port(
+        let (mut findings, shortfalls) = stage::detect_port(
             flows,
             &envelope,
             &host,
@@ -323,62 +356,82 @@ async fn detect_one(
         );
         findings.extend(computed.findings);
 
-        // Both tiers' inconclusive runs, phrased for the report: a compute run that
-        // trapped or faulted, and a flow the socket budget cut short.
-        let mut inconclusive: Vec<(String, String)> = computed
-            .inconclusive
-            .iter()
-            .map(|run| {
-                (
-                    run.detection.id().to_string(),
-                    describe_outcome(&run.outcome),
-                )
-            })
-            .collect();
-        inconclusive.extend(
-            flow_refusals
-                .into_iter()
-                .map(|(id, refusal)| (id, describe_refusal(refusal))),
-        );
+        // Both tiers' unfinished runs, phrased for the report: a compute run that
+        // trapped or faulted, and a flow a budget cut short.
+        let mut unfinished: Vec<Unfinished> =
+            computed.inconclusive.iter().map(describe_outcome).collect();
+        unfinished.extend(shortfalls.iter().map(describe_shortfall));
 
-        (findings, inconclusive)
+        (findings, unfinished)
     })
     .await
     .ok()?;
 
-    let (findings, inconclusive) = produced;
-    (!findings.is_empty() || !inconclusive.is_empty()).then_some((
-        address,
-        number,
-        protocol,
-        findings,
-        inconclusive,
-    ))
+    let (findings, unfinished) = produced;
+    (!findings.is_empty() || !unfinished.is_empty())
+        .then_some((address, number, protocol, findings, unfinished))
 }
 
-/// A human phrase for why a compute run did not finish, for the failure the report
-/// carries. A reader needs which bound or fault ended the run, not the Rust
-/// spelling of the outcome enum.
-fn describe_outcome(outcome: &RunOutcome) -> String {
-    match outcome {
-        RunOutcome::BudgetExceeded(trap) => format!("hit its {trap:?} budget"),
-        RunOutcome::Denied(denial) => {
-            format!("was denied {:?}: {}", denial.capability, denial.reason)
+/// Why a compute run did not finish, phrased for the report. A reader needs
+/// which bound or fault ended the run, not the Rust spelling of the outcome
+/// enum.
+///
+/// A module's run is code rather than a list of requests, so unlike a flow's
+/// there is no count of what it set out to ask to weigh the shortfall against;
+/// the budget and its size are what there is to say.
+fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
+    let id = run.detection.id().to_string();
+    let budget = &run.budget;
+    match &run.outcome {
+        RunOutcome::BudgetExceeded(trap) => {
+            let why = match trap {
+                BudgetTrap::Deadline => {
+                    format!("its {} ms time budget ran out", budget.deadline.as_millis())
+                }
+                BudgetTrap::Bytes => format!("its {}-byte budget ran out", budget.max_bytes),
+                BudgetTrap::Connections => {
+                    format!("its {}-connection budget ran out", budget.max_connections)
+                }
+                BudgetTrap::Fuel => {
+                    format!("its work budget of {} operations ran out", budget.fuel)
+                }
+                BudgetTrap::Memory => format!(
+                    "its memory budget of {} elements ran out",
+                    budget.max_memory
+                ),
+            };
+            Unfinished::CutShort { id, why }
         }
-        RunOutcome::Faulted(fault) => format!("faulted: {fault:?}"),
-        RunOutcome::HostReentered => "re-entered the runtime".to_string(),
+        RunOutcome::Denied(denial) => Unfinished::Failed {
+            id,
+            why: format!("was denied {:?}: {}", denial.capability, denial.reason),
+        },
+        RunOutcome::Faulted(fault) => Unfinished::Failed {
+            id,
+            why: format!("faulted: {fault:?}"),
+        },
+        RunOutcome::HostReentered => Unfinished::Failed {
+            id,
+            why: "re-entered the runtime".to_string(),
+        },
     }
 }
 
-/// A human phrase for a socket budget that cut a flow short, for the failure the
-/// report carries.
-fn describe_refusal(refusal: ProbeRefusal) -> String {
-    match refusal {
-        ProbeRefusal::Bytes => "hit its byte budget",
-        ProbeRefusal::Connections => "hit its connection budget",
-        ProbeRefusal::Deadline => "hit its time budget",
+/// A flow a budget cut short, phrased for the report: the budget, its size, and
+/// how many of the flow's requests had been answered when it ran out.
+fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
+    let budget = match shortfall.refusal {
+        ProbeRefusal::Deadline => format!("{} ms time budget", shortfall.limit),
+        ProbeRefusal::Bytes => format!("{}-byte budget", shortfall.limit),
+        ProbeRefusal::Connections => format!("{}-connection budget", shortfall.limit),
+    };
+    Unfinished::CutShort {
+        id: shortfall.detection.clone(),
+        why: format!(
+            "its {budget} ran out with {} of {} requests answered",
+            shortfall.answered, shortfall.requests
+        ),
     }
-    .to_string()
 }
 
 /// Folds one port's findings back into its host.
@@ -787,6 +840,141 @@ mod tests {
             "a detection turned off cannot have waited on a connection"
         );
         drop(session);
+    }
+
+    /// The events a closure emits, as level and message, caught by a
+    /// subscriber installed for the closure's thread alone.
+    fn logged(run: impl FnOnce()) -> Vec<(tracing::Level, String)> {
+        use std::sync::Mutex;
+        use tracing::field::{Field, Visit};
+        use tracing::span::{Attributes, Id, Record};
+
+        struct Recorder(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+        struct Message(String);
+        impl Visit for Message {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        impl tracing::Subscriber for Recorder {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &Attributes<'_>) -> Id {
+                Id::from_u64(1)
+            }
+            fn record(&self, _: &Id, _: &Record<'_>) {}
+            fn record_follows_from(&self, _: &Id, _: &Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut message = Message(String::new());
+                event.record(&mut message);
+                self.0
+                    .lock()
+                    .unwrap_or_else(|held| held.into_inner())
+                    .push((*event.metadata().level(), message.0));
+            }
+            fn enter(&self, _: &Id) {}
+            fn exit(&self, _: &Id) {}
+        }
+
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        tracing::subscriber::with_default(Recorder(Arc::clone(&lines)), run);
+        lines
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .clone()
+    }
+
+    /// A flow its time budget stopped is filed with the work the phase did
+    /// not complete, where a report read for coverage looks, in words naming
+    /// the detection, the budget and how far it got. On the console it is a
+    /// warning in those same words, not an error saying the scanner failed:
+    /// nothing broke, the detection's own ceiling held.
+    #[test]
+    fn a_detection_cut_short_is_reported_as_unanswered_rather_than_as_a_failed_scanner() {
+        let (session, ctx) = ScanSession::new();
+        let shortfall = Shortfall {
+            detection: "backup-files".to_string(),
+            refusal: ProbeRefusal::Deadline,
+            limit: 3_000,
+            answered: 3,
+            requests: 6,
+        };
+
+        let lines = logged(|| describe_shortfall(&shortfall).record(&ctx, "192.0.2.1:443"));
+
+        let expected = "detection 'backup-files' on 192.0.2.1:443 went unanswered: \
+                        its 3000 ms time budget ran out with 3 of 6 requests answered";
+        let failures = ctx.failures_snapshot();
+        assert_eq!(
+            failures.len(),
+            1,
+            "the shortfall was not filed: {failures:?}"
+        );
+        assert_eq!(failures[0].scanner(), ScannerKind::Detection);
+        assert_eq!(failures[0].reason(), expected);
+        assert_eq!(lines, vec![(tracing::Level::WARN, expected.to_string())]);
+        drop(session);
+    }
+
+    /// A detection that broke is a failure, and the console says so as one.
+    #[test]
+    fn a_detection_that_broke_is_still_reported_as_a_failure() {
+        use crate::detect::compute::ModuleFault;
+        use crate::model::finding::{DetectionId, Version};
+
+        let (session, ctx) = ScanSession::new();
+        let run = InconclusiveRun {
+            detection: DetectionId::new("faulty", Version::new(1, 0, 0), "0".repeat(64))
+                .expect("a valid detection id"),
+            outcome: RunOutcome::Faulted(ModuleFault::Runtime("boom".to_string())),
+            budget: Budget::new(1, Duration::from_millis(1)),
+        };
+
+        let lines = logged(|| describe_outcome(&run).record(&ctx, "192.0.2.1:80"));
+
+        assert_eq!(ctx.failures_snapshot().len(), 1);
+        assert!(
+            matches!(lines.as_slice(), [(tracing::Level::ERROR, line)] if line.contains("failed")),
+            "a broken detection was not announced as a failure: {lines:?}"
+        );
+        drop(session);
+    }
+
+    /// Each budget a compute module can run out of is named with its size, so
+    /// a reader can tell a module the target starved of time from one that
+    /// asked for more bytes than it declared.
+    #[test]
+    fn a_compute_module_cut_short_names_the_budget_it_ran_out_of() {
+        use crate::model::finding::{DetectionId, Version};
+
+        let budget = Budget::new(1, Duration::from_millis(2_000))
+            .with_max_bytes(4_096)
+            .with_max_connections(2);
+        let cut = |trap| {
+            describe_outcome(&InconclusiveRun {
+                detection: DetectionId::new("module", Version::new(1, 0, 0), "0".repeat(64))
+                    .expect("a valid detection id"),
+                outcome: RunOutcome::BudgetExceeded(trap),
+                budget,
+            })
+        };
+        let why = |unfinished: Unfinished| match unfinished {
+            Unfinished::CutShort { why, .. } => why,
+            Unfinished::Failed { why, .. } => panic!("a spent budget read as a fault: {why}"),
+        };
+
+        assert_eq!(
+            why(cut(BudgetTrap::Deadline)),
+            "its 2000 ms time budget ran out"
+        );
+        assert_eq!(why(cut(BudgetTrap::Bytes)), "its 4096-byte budget ran out");
+        assert_eq!(
+            why(cut(BudgetTrap::Connections)),
+            "its 2-connection budget ran out"
+        );
     }
 
     /// The budget the probe is built with, which is the part of the probe's
