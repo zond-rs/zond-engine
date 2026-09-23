@@ -1436,7 +1436,12 @@ impl ScanContext {
     /// Every router on the host's path is held to it too, whether the trace
     /// measured it or spliced it in from another host's trace: one the policy
     /// names keeps its distance and loses its address, for the reason
-    /// [`Hop::withheld`](crate::model::host::Hop::withheld) gives.
+    /// [`Hop::withheld`](crate::model::host::Hop::withheld) gives. So is the
+    /// router or firewall that sent second-hand evidence about the host, an
+    /// ICMP unreachable above all: one the policy names leaves its evidence on
+    /// the host and its address off it, for the reason
+    /// [`EvidenceSource::Withheld`](crate::model::host::EvidenceSource::Withheld)
+    /// gives.
     ///
     /// This is the enforcement that a subtraction from the target list cannot
     /// perform, and putting it here rather than at each scanner is deliberate.
@@ -1501,10 +1506,10 @@ impl ScanContext {
                     "an excluded address arrived beside {ip}; leaving it off the host"
                 );
             }
-            if host.withhold_routers(keep) {
+            if host.withhold_intermediaries(keep) {
                 info!(
                     verbosity = 2,
-                    "an excluded router is on the way to {ip}; withholding its address"
+                    "an excluded router answered for a probe to {ip}; withholding its address"
                 );
             }
         }
@@ -1902,7 +1907,8 @@ impl ScanContext {
     /// where the one it was recorded under is among them. Only a host with no
     /// address left that this sitting may report is left out. A router the
     /// policy names on a restored host's path keeps its distance and loses its
-    /// address, as it would have in `write_host`.
+    /// address, and one that sent evidence about the host keeps the evidence
+    /// and loses its address, as each would have in `write_host`.
     ///
     /// The journal itself is left alone. It is an honest record of a sitting
     /// that was allowed to make it, and rewriting history to match a policy that
@@ -1920,7 +1926,7 @@ impl ScanContext {
                 );
                 continue;
             }
-            host.withhold_routers(keep);
+            host.withhold_intermediaries(keep);
 
             let key = host.scoped_ip();
             match self.store.get_mut(&key) {
@@ -2286,7 +2292,7 @@ impl ScanSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::host::{Hop, HostStatus, StatusProtocol, StatusReason};
+    use crate::model::host::{EvidenceSource, Hop, HostStatus, StatusProtocol, StatusReason};
 
     /// A whole run reads as one figure that only grows, rather than one per
     /// stage that starts over each time.
@@ -3286,6 +3292,62 @@ mod tests {
             "{path:?}"
         );
         assert!(path.hops()[1].is_withheld(), "{path:?}");
+    }
+
+    /// A host-down reason sent by `sender` rather than by the host it is about.
+    fn unreachable_from(sender: IpAddr) -> StatusReason {
+        StatusReason::new(StatusProtocol::IcmpUnreachable, "destination unreachable")
+            .from_source(sender)
+    }
+
+    /// **A middlebox the policy forbids is withheld from the evidence it sent
+    /// about a permitted host, and the evidence is kept.**
+    ///
+    /// An ICMP unreachable about a probed host arrives from whatever router or
+    /// firewall stood in the way, which nothing addressed. Its sender is the
+    /// same kind of claim as a router on a traced path, and the policy holds for
+    /// it the same way: the finding is about the host and stays, and the address
+    /// that sent it goes. Cleared rather than withheld, the reason would say the
+    /// host answered for itself, which is the one reading a middlebox's message
+    /// must never be given.
+    #[test]
+    fn an_excluded_middlebox_is_withheld_from_a_permitted_hosts_evidence() {
+        let target: IpAddr = "203.0.113.9".parse().expect("literal");
+        let excluded: IpAddr = "198.51.100.1".parse().expect("literal");
+        let (_session, ctx) = forbidding(excluded);
+
+        ctx.write_host(target, |host| {
+            host.record_evidence(HostStatus::Down, unreachable_from(excluded));
+            true
+        });
+
+        let (status, reasons) = ctx
+            .read_host(target, |host| (host.status(), host.reasons().clone()))
+            .expect("the host the evidence is about is recorded");
+        assert_eq!(status, HostStatus::Down, "the evidence still counts");
+        let sources: Vec<EvidenceSource> = reasons.iter().map(|reason| reason.source).collect();
+        assert_eq!(sources, [EvidenceSource::Withheld], "{reasons:?}");
+    }
+
+    /// And a journal written before the middlebox was excluded does not bring
+    /// its address back, since the resume path reaches the store without
+    /// `write_host`.
+    #[test]
+    fn a_resume_withholds_a_middlebox_this_sitting_may_not_report() {
+        let target: IpAddr = "203.0.113.9".parse().expect("literal");
+        let excluded: IpAddr = "198.51.100.1".parse().expect("literal");
+        let (_session, ctx) = forbidding(excluded);
+
+        let mut journalled = Host::new(target);
+        journalled.record_evidence(HostStatus::Down, unreachable_from(excluded));
+        ctx.restore_hosts(&[journalled]);
+
+        let sources: Vec<EvidenceSource> = ctx
+            .read_host(target, |host| {
+                host.reasons().iter().map(|reason| reason.source).collect()
+            })
+            .expect("the host is restored");
+        assert_eq!(sources, [EvidenceSource::Withheld]);
     }
 
     /// The resume path, which writes into the store without going through

@@ -79,7 +79,9 @@ use crate::model::finding::{
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
 use crate::model::host::telemetry::HostTelemetry;
-use crate::model::host::{HardwareInfo, Host, IpProtocolState, StatusProtocol, StatusReason};
+use crate::model::host::{
+    EvidenceSource, HardwareInfo, Host, IpProtocolState, StatusProtocol, StatusReason,
+};
 use crate::model::host::{OsEvidence, OsSource};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
@@ -304,9 +306,13 @@ impl From<&HostRecord> for Host {
 pub struct StatusReasonRecord {
     /// The protocol the finding came from, by wire name.
     pub protocol: String,
-    /// The address that answered, where one did.
+    /// The address that sent it, where that was not the host itself.
     #[serde(default)]
     pub source: Option<IpAddr>,
+    /// Whether something other than the host sent it, from an address the
+    /// scan's exclusions withheld. `source` is empty when it is set.
+    #[serde(default)]
+    pub source_withheld: bool,
     /// What was observed, in words.
     #[serde(default)]
     pub details: Option<String>,
@@ -316,7 +322,8 @@ impl From<&StatusReason> for StatusReasonRecord {
     fn from(reason: &StatusReason) -> Self {
         Self {
             protocol: wire::status_protocol_name(&reason.protocol).into_owned(),
-            source: reason.source,
+            source: reason.source.address(),
+            source_withheld: reason.source.is_withheld(),
             details: reason.details.as_ref().map(|d| d.to_string()),
         }
     }
@@ -329,7 +336,14 @@ impl From<&StatusReasonRecord> for StatusReason {
 
         let mut reason = StatusReason::new(protocol, "");
         reason.details = record.details.as_deref().map(Into::into);
-        reason.source = record.source;
+        // A record claiming a withheld sender and naming one anyway is read as
+        // withheld, for the reason a hop is: of its two claims, that is the one
+        // that reports less.
+        reason.source = match record.source {
+            _ if record.source_withheld => EvidenceSource::Withheld,
+            Some(address) => EvidenceSource::Intermediary(address),
+            None => EvidenceSource::Host,
+        };
         reason
     }
 }
@@ -2387,8 +2401,11 @@ mod tests {
         host.set_status(HostStatus::Up);
 
         let mut arp = StatusReason::new(StatusProtocol::Arp, "reply from gateway");
-        arp.source = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254)));
+        arp.source = EvidenceSource::Intermediary(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254)));
         host.add_reason(arp);
+        let mut unreachable = StatusReason::basic(StatusProtocol::IcmpUnreachable);
+        unreachable.source = EvidenceSource::Withheld;
+        host.add_reason(unreachable);
         host.add_reason(StatusReason::new(
             StatusProtocol::Custom("a-strategy".into()),
             "said so",

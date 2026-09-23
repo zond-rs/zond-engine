@@ -166,6 +166,7 @@
 "\"severity\":"
 "\"source\":"
 "\"source_ip\":"
+"\"source_withheld\":"
 "\"source_port\":"
 "\"spec\":"
 "\"spoof_mac\":"

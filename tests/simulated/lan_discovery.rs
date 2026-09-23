@@ -27,7 +27,7 @@ use pnet_base::MacAddr;
 use zond_engine::config::ZondConfig;
 use zond_engine::model::exclusion::Exclusions;
 use zond_engine::model::host::telemetry::RttSource;
-use zond_engine::model::host::{HostStatus, NetworkRole};
+use zond_engine::model::host::{EvidenceSource, HostStatus, NetworkRole};
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::report::{AttachmentSource, ScanKind, TargetScope};
 use zond_engine::scanner::recorder::PhaseRecorder;
@@ -194,7 +194,9 @@ async fn an_answering_host_records_what_proved_it_alive() {
     assert!(host.is_alive());
     assert_eq!(status_protocols(&session, v4(10)), vec!["Arp".to_string()]);
     assert!(
-        host.reasons().iter().all(|reason| reason.source.is_none()),
+        host.reasons()
+            .iter()
+            .all(|reason| reason.source == EvidenceSource::Host),
         "the host answered for itself, so no reason may name another sender"
     );
 }

@@ -31,8 +31,8 @@ use crate::model::finding::{
     DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
 };
 use crate::model::host::{
-    Filtering, HardwareDescription, HardwareInfo, Hop, Host, HostStatus, IpProtocolState,
-    NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
+    EvidenceSource, Filtering, HardwareDescription, HardwareInfo, Hop, Host, HostStatus,
+    IpProtocolState, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
 };
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
@@ -65,6 +65,18 @@ fn router() -> Host {
     host.set_hostname(Some("router.local".to_string()));
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
+    // Every sender a reason can name besides the host itself: a middlebox the
+    // report names, and one whose address the scan's exclusions withheld.
+    host.add_reason(
+        StatusReason::new(
+            StatusProtocol::IcmpUnreachable,
+            "unreachable, from the path",
+        )
+        .from_source(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))),
+    );
+    let mut withheld = StatusReason::new(StatusProtocol::IcmpUnreachable, "unreachable");
+    withheld.source = EvidenceSource::Withheld;
+    host.add_reason(withheld);
     host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01));
 
     let mut os = OsFingerprint::new("Linux", 95)

@@ -66,7 +66,8 @@ const STORE_WRITERS: &[(&str, &str)] = &[(
     "two writers, both gated. `write_host` is the gate itself: it refuses an \
      excluded key before the caller's edit runs and every excluded address the \
      edit attached once it has, withholding an excluded router on the host's \
-     path, and every finding in the engine goes through it. \
+     path and an excluded middlebox that sent evidence about it, and every \
+     finding in the engine goes through it. \
      `restore_hosts` is the resume path and holds every address a restored host \
      carries to the same set before seeding what an earlier sitting found, since \
      nothing it restores passes through `write_host`.",
@@ -74,6 +75,27 @@ const STORE_WRITERS: &[(&str, &str)] = &[(
 
 /// The methods that put a host into the store.
 const WRITES: &[&str] = &["store.insert", "store.get_mut", "store.entry"];
+
+/// Who attaches a sender's address to a port's discovery record, and why that
+/// cannot put an excluded address in the report.
+///
+/// A second census, for the one address a host's record can carry that
+/// `write_host` does not hold to the policy: the source a port's
+/// `Discovery` names. It is not held there because holding it would cost a
+/// walk of every port on every finding, on the path every port scan takes,
+/// for a field no scanner fills. What keeps the promise instead is that no
+/// scanner fills it, and this list is where a scanner that starts to has to
+/// say how it withholds an excluded sender first.
+const DISCOVERY_SOURCE_WRITERS: &[(&str, &str)] = &[(
+    "src/record.rs",
+    "reads a port's discovery back from a journal or an imported report, and \
+     carries only what a scan already recorded. No scan records a source, since \
+     no scanner is in this list, so a journal holds none to bring back; an \
+     imported report is the other scan's document and not a scan at all.",
+)];
+
+/// The call that names a port's sender.
+const DISCOVERY_SOURCE: &str = ".with_source_ip(";
 
 /// The files belonging to a module some parent declared `#[cfg(test)]`.
 ///
@@ -217,10 +239,51 @@ fn every_writer_into_the_host_store_has_said_how_it_is_gated() {
     );
 }
 
+/// **Nothing a scan records names a port's sender without saying how an
+/// excluded one is kept out of the report.**
+///
+/// The recording gate withholds an excluded router on a host's path and an
+/// excluded middlebox behind a host's evidence, and leaves a port's discovery
+/// source alone for the cost [`DISCOVERY_SOURCE_WRITERS`] gives. That holds
+/// only while nothing fills the field, so the first scanner to fill it has to
+/// stop here and decide how its excluded senders are withheld.
+#[test]
+fn every_writer_of_a_ports_sender_has_said_how_it_is_withheld() {
+    let mut found = BTreeSet::new();
+    for path in sources() {
+        let text = fs::read_to_string(&path).expect("a source file is readable");
+        if without_tests(&text).contains(DISCOVERY_SOURCE) {
+            found.insert(path.to_string_lossy().replace('\\', "/"));
+        }
+    }
+
+    let listed: BTreeSet<String> = DISCOVERY_SOURCE_WRITERS
+        .iter()
+        .map(|(path, _)| (*path).to_string())
+        .collect();
+
+    let unlisted: Vec<&String> = found.difference(&listed).collect();
+    assert!(
+        unlisted.is_empty(),
+        "these name a port's sender and are not in DISCOVERY_SOURCE_WRITERS: {unlisted:?}\n\n\
+         `write_host` does not withhold the source a port's discovery names, so a sender \
+         the operator excluded would reach the report. Withhold an excluded sender before \
+         recording it, the way a status reason's is withheld, and add the file to \
+         DISCOVERY_SOURCE_WRITERS in tests/hygiene/exclusions.rs saying how."
+    );
+
+    let stale: Vec<&String> = listed.difference(&found).collect();
+    assert!(
+        stale.is_empty(),
+        "these are in DISCOVERY_SOURCE_WRITERS but no longer name a port's sender: \
+         {stale:?}\n\nRemove them, so the list stays a census rather than a wish."
+    );
+}
+
 /// Nobody explains themselves in a blank line.
 #[test]
 fn every_store_writer_says_something() {
-    for (path, how) in STORE_WRITERS {
+    for (path, how) in STORE_WRITERS.iter().chain(DISCOVERY_SOURCE_WRITERS) {
         assert!(
             how.len() > 60,
             "{path}'s note is too short to be an answer: {how:?}"

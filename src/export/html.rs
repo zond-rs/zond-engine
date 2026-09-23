@@ -722,9 +722,18 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
         fact(out, "path", &path)?;
     }
 
+    // Who sent a piece of evidence qualifies it: a middlebox's word about a host
+    // is not the host's own, and a page that dropped the difference would
+    // present one as the other. A withheld sender says so rather than reading
+    // as the host.
     let mut evidence = String::new();
     for reason in &dto.reasons {
-        let detail: Vec<String> = reason.details.map(esc).into_iter().collect();
+        let mut detail: Vec<String> = reason.details.map(esc).into_iter().collect();
+        match &reason.source_ip {
+            Some(source) => detail.push(format!("via {}", esc(source))),
+            None if reason.source_withheld => detail.push("via an excluded address".to_owned()),
+            None => {}
+        }
         let _ = write!(
             evidence,
             "<div>{}{}</div>",
@@ -1850,6 +1859,23 @@ mod tests {
         assert!(
             page.contains("<div> 2. *"),
             "a silent router still reads as one"
+        );
+    }
+
+    /// Evidence a middlebox sent names it, and evidence from a withheld one
+    /// says it came second-hand. Drawn bare, either would read as the host
+    /// answering for itself, which is the claim neither makes.
+    #[test]
+    fn second_hand_evidence_says_who_sent_it() {
+        let page = default_page();
+
+        assert!(
+            page.contains("unreachable, from the path · via 198.51.100.1"),
+            "{page}"
+        );
+        assert!(
+            page.contains("unreachable · via an excluded address"),
+            "{page}"
         );
     }
 

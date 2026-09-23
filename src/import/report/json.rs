@@ -1273,11 +1273,14 @@ impl HostDto {
 /// One `reasons[]` entry: which protocol established a host's status, and from
 /// where. A host up by ARP and one up by a TCP reset are the same status reached
 /// two ways, and a reader who cannot tell them apart cannot weigh either.
+/// `source_withheld` marks evidence a middlebox sent from an address the scan
+/// that wrote the document was forbidden to report.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ReasonDto {
     protocol: String,
     source_ip: Option<String>,
+    source_withheld: bool,
     details: Option<String>,
 }
 
@@ -1292,6 +1295,7 @@ impl ReasonDto {
         Ok(StatusReasonRecord {
             protocol: self.protocol,
             source: maybe(self.source_ip.as_deref(), address)?,
+            source_withheld: self.source_withheld,
             details: self.details,
         })
     }
@@ -2128,6 +2132,32 @@ mod tests {
                 .hosts()
                 .any(|host| host.path().hops().iter().any(|hop| hop.is_withheld())),
             "test premise: the fixture withholds a router"
+        );
+    }
+
+    /// A host's evidence reads back reason for reason, each from the sender it
+    /// was written with.
+    ///
+    /// Evidence the host sent and evidence from a withheld middlebox both write
+    /// a `null` source and differ only in the flag beside it, so a reader that
+    /// dropped the flag would turn the second into the first: a document saying
+    /// the host answered for itself where a middlebox spoke for it.
+    #[test]
+    fn a_hosts_evidence_reads_back_with_its_senders() {
+        let (original, restored) = round_trip();
+
+        for host in original.hosts() {
+            let read_back = restored
+                .host(&host.primary_ip())
+                .unwrap_or_else(|| panic!("{} is missing", host.primary_ip()));
+            assert_eq!(read_back.reasons(), host.reasons(), "{}", host.primary_ip());
+        }
+        assert!(
+            original.hosts().any(|host| host
+                .reasons()
+                .iter()
+                .any(|reason| reason.source.is_withheld())),
+            "test premise: the fixture withholds a sender"
         );
     }
 

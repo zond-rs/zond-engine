@@ -1279,6 +1279,7 @@
       "required": [
         "protocol",
         "source_ip",
+        "source_withheld",
         "details"
       ],
       "properties": {
@@ -1306,11 +1307,15 @@
           ]
         },
         "source_ip": {
-          "description": "The address that sent the evidence, when it was not the host itself - an ICMP error from a router or firewall about the probed address. `null` means the host answered for itself, which is the stronger claim.",
+          "description": "The address that sent the evidence, when it was not the host itself and the report may name it - an ICMP error from a router or firewall about the probed address. `null` means the host answered for itself, which is the stronger claim, unless `source_withheld` is true.",
           "type": [
             "string",
             "null"
           ]
+        },
+        "source_withheld": {
+          "description": "Whether the evidence came second-hand from an address the scan's exclusions forbid it to report, in which case `source_ip` is null. The one null source that is not the host answering for itself: it keeps excluded addresses out of the report without passing a middlebox's word off as the host's.",
+          "type": "boolean"
         },
         "details": {
           "type": [

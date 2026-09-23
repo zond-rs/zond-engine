@@ -19,6 +19,12 @@
 //! A host keeps every reason it collected, not just the one that settled the
 //! verdict. Reachability is a claim someone will want to check, and "up" with
 //! nothing behind it cannot be checked.
+//!
+//! Who sent a reason is [`EvidenceSource`], which has a third answer besides
+//! the host and a named middlebox: a middlebox the scan's
+//! [`Exclusions`](crate::model::exclusion::Exclusions) forbid it to name. That
+//! is the policy a traced path applies to its routers, for the same reason;
+//! see [`Hop::withheld`](crate::model::host::Hop::withheld).
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -197,8 +203,8 @@ pub struct StatusReason {
     /// The specific protocol-level event that triggered this status.
     pub protocol: StatusProtocol,
 
-    /// The address that sent this evidence, when it is **not** the host the
-    /// evidence is about.
+    /// Who sent this evidence: the host it is about, or something in the path
+    /// speaking for it.
     ///
     /// An ICMP error names two addresses: the router or firewall that generated
     /// it, and the destination of the datagram it quotes. They are different
@@ -208,9 +214,9 @@ pub struct StatusReason {
     /// let a NAT answering on another host's behalf be reported as that host
     /// being up.
     ///
-    /// `None` means the host answered for itself, which is the common case and
-    /// the one needing no qualification.
-    pub source: Option<IpAddr>,
+    /// [`EvidenceSource::Host`] is the common case and the one needing no
+    /// qualification.
+    pub source: EvidenceSource,
 
     /// Extended details about the response (e.g., "Received TCP RST", "TTL Exceeded in transit").
     ///
@@ -224,7 +230,7 @@ impl StatusReason {
     pub fn new(protocol: StatusProtocol, details: impl Into<Arc<str>>) -> Self {
         Self {
             protocol,
-            source: None,
+            source: EvidenceSource::Host,
             details: Some(details.into()),
         }
     }
@@ -233,7 +239,7 @@ impl StatusReason {
     pub fn basic(protocol: StatusProtocol) -> Self {
         Self {
             protocol,
-            source: None,
+            source: EvidenceSource::Host,
             details: None,
         }
     }
@@ -244,8 +250,77 @@ impl StatusReason {
     /// against, since an unqualified reason already means the host answered for
     /// itself.
     pub fn from_source(mut self, source: IpAddr) -> Self {
-        self.source = Some(source);
+        self.source = EvidenceSource::Intermediary(source);
         self
+    }
+}
+
+/// Who sent a piece of evidence about a host.
+///
+/// One value rather than an address and a flag beside it, so that a withheld
+/// sender carrying an address cannot be built: the shape
+/// [`Hop`](crate::model::host::Hop) gives a router, for the same reason.
+///
+/// Not `#[non_exhaustive]`, unlike most vocabularies in this module. The three
+/// variants are a partition rather than a list that grows: the host sent it,
+/// somebody else did and the report names them, somebody else did and the
+/// report may not. A reader rendering one has to handle each, because the
+/// defect this type exists to prevent is one of them read as another, and a
+/// wildcard arm is where that would happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EvidenceSource {
+    /// The host the evidence is about sent it, which is the strongest claim a
+    /// reason can make.
+    Host,
+    /// Something in the path sent it about the host, from this address: a
+    /// router or firewall reporting the host unreachable, or a NAT answering on
+    /// its behalf.
+    Intermediary(IpAddr),
+    /// Something in the path sent it about the host, from an address the
+    /// scan's exclusions forbid it to report.
+    ///
+    /// Neither [`Host`](Self::Host), which would say the host answered for
+    /// itself, nor the evidence dropped, which would lose a finding about a host
+    /// the scan was allowed to probe. It says exactly what the report may say:
+    /// this came second-hand, and the scan will not say from whom.
+    ///
+    /// A scan does not build these by hand. Evidence is recorded as it arrived,
+    /// and the scan withholds the sender where the policy names it, on every
+    /// way a reason reaches a host's record. This is how a record of one is read
+    /// back.
+    Withheld,
+}
+
+impl EvidenceSource {
+    /// The address that sent the evidence, or `None` where the host sent it
+    /// or the sender is [withheld](Self::is_withheld).
+    pub fn address(&self) -> Option<IpAddr> {
+        match self {
+            Self::Intermediary(address) => Some(*address),
+            Self::Host | Self::Withheld => None,
+        }
+    }
+
+    /// Whether the evidence came second-hand from an address the scan may not
+    /// report.
+    ///
+    /// The one case where [`address`](Self::address) is `None` and the host
+    /// did not answer for itself, so a reader weighing a reason has to ask this
+    /// before it takes a missing address for the stronger claim.
+    pub fn is_withheld(&self) -> bool {
+        *self == Self::Withheld
+    }
+
+    /// Withholds the sender if `keep` refuses its address, and returns whether
+    /// it did.
+    pub(crate) fn withhold(&mut self, keep: impl Fn(&IpAddr) -> bool) -> bool {
+        match self {
+            Self::Intermediary(address) if !keep(address) => {
+                *self = Self::Withheld;
+                true
+            }
+            Self::Host | Self::Intermediary(_) | Self::Withheld => false,
+        }
     }
 }
 
@@ -356,14 +431,40 @@ mod tests {
             Some("Resolved A record successfully")
         );
         assert_eq!(
-            unattributed.source, None,
+            unattributed.source,
+            EvidenceSource::Host,
             "unqualified means the host answered for itself"
         );
 
         let router: IpAddr = "192.0.2.1".parse().expect("a valid address");
         let attributed = StatusReason::basic(StatusProtocol::IcmpUnreachable).from_source(router);
 
-        assert_eq!(attributed.source, Some(router));
+        assert_eq!(attributed.source, EvidenceSource::Intermediary(router));
         assert_eq!(attributed.details, None);
+    }
+
+    /// Withholding reaches only a named sender the policy refuses. The host's
+    /// own evidence has no sender to withhold, and marking it withheld would
+    /// demote the strongest claim a reason makes to a second-hand one.
+    #[test]
+    fn only_a_refused_sender_is_withheld() {
+        let refused: IpAddr = "198.51.100.1".parse().expect("a valid address");
+        let allowed: IpAddr = "192.0.2.1".parse().expect("a valid address");
+        let keep = |address: &IpAddr| *address != refused;
+
+        let mut named = EvidenceSource::Intermediary(refused);
+        assert!(named.withhold(keep));
+        assert_eq!(named, EvidenceSource::Withheld);
+        assert_eq!(named.address(), None);
+
+        for mut untouched in [
+            EvidenceSource::Host,
+            EvidenceSource::Intermediary(allowed),
+            EvidenceSource::Withheld,
+        ] {
+            let before = untouched;
+            assert!(!untouched.withhold(keep), "{before:?}");
+            assert_eq!(untouched, before);
+        }
     }
 }

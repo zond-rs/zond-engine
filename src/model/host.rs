@@ -50,7 +50,7 @@ pub use hardware::{HardwareDescription, HardwareInfo};
 pub use os::{OsEvidence, OsFingerprint, OsSource};
 pub use path::{Hop, NetworkPath};
 pub use protocol::{IpProtocolState, ip_protocol_name};
-pub use status::{HostStatus, StatusProtocol, StatusReason};
+pub use status::{EvidenceSource, HostStatus, StatusProtocol, StatusReason};
 pub use telemetry::HostTelemetry;
 
 /// The most ports one host will have recorded against it.
@@ -888,17 +888,42 @@ impl Host {
         true
     }
 
-    /// Withholds the address of every router on this host's path that `keep`
-    /// refuses, and returns whether it withheld any.
+    /// Withholds the address of every router or middlebox this host's record
+    /// names that `keep` refuses, and returns whether it withheld any.
     ///
     /// The other half of [`retain_ips`](Self::retain_ips) for the exclusion
-    /// policy, and a different treatment because a router is a different claim.
-    /// This host's own address, refused, takes the finding with it. A router
-    /// refused leaves the finding behind, since the distance it answered at is a
-    /// fact about the route to this host, and goes unnamed: see
-    /// [`Hop::withheld`].
-    pub(crate) fn withhold_routers(&mut self, keep: impl Fn(&IpAddr) -> bool) -> bool {
-        self.path.withhold(keep)
+    /// policy, and a different treatment because an intermediary is a different
+    /// claim. This host's own address, refused, takes the finding with it. An
+    /// intermediary refused leaves the finding behind, since it is a fact about
+    /// this host, and goes unnamed. That covers the two places a record names
+    /// one: a router on the path, which keeps the distance it answered at (see
+    /// [`Hop::withheld`]), and the sender of second-hand evidence, which keeps
+    /// the reason it sent (see [`EvidenceSource::Withheld`]).
+    pub(crate) fn withhold_intermediaries(&mut self, keep: impl Fn(&IpAddr) -> bool) -> bool {
+        let routers = self.path.withhold(&keep);
+
+        // A reason is its own hash key, so one whose sender changes has to be
+        // taken out and put back. Asked first because this runs on every
+        // finding a scan under a policy records, and the answer is almost
+        // always that nothing needs to move.
+        let refused = |reason: &StatusReason| {
+            reason
+                .source
+                .address()
+                .is_some_and(|address| !keep(&address))
+        };
+        let senders = self.reasons.iter().any(refused);
+        if senders {
+            self.reasons = std::mem::take(&mut self.reasons)
+                .into_iter()
+                .map(|mut reason| {
+                    reason.source.withhold(&keep);
+                    reason
+                })
+                .collect();
+        }
+
+        routers || senders
     }
 
     /// Records the name this host resolved to, replacing any already recorded.

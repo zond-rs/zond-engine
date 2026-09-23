@@ -3721,6 +3721,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::Range
 pub zond_engine::export::schema::ReasonDto::details: core::option::Option<&'a str>
 pub zond_engine::export::schema::ReasonDto::protocol: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::ReasonDto::source_ip: core::option::Option<alloc::string::String>
+pub zond_engine::export::schema::ReasonDto::source_withheld: bool
 impl<'a> zond_engine::export::schema::ReasonDto<'a>
 pub fn zond_engine::export::schema::ReasonDto<'a>::new(&'a zond_engine::model::host::status::StatusReason) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::ReasonDto<'a>
@@ -8167,6 +8168,31 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::proto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::protocol::IpProtocolState
 pub const fn zond_engine::model::host::protocol::ip_protocol_name(u8) -> core::option::Option<&'static str>
 pub mod zond_engine::model::host::status
+pub enum zond_engine::model::host::status::EvidenceSource
+pub zond_engine::model::host::status::EvidenceSource::Host
+pub zond_engine::model::host::status::EvidenceSource::Intermediary(core::net::ip_addr::IpAddr)
+pub zond_engine::model::host::status::EvidenceSource::Withheld
+impl zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::address(&self) -> core::option::Option<core::net::ip_addr::IpAddr>
+pub fn zond_engine::model::host::status::EvidenceSource::is_withheld(&self) -> bool
+impl core::clone::Clone for zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::clone(&self) -> zond_engine::model::host::status::EvidenceSource
+impl core::cmp::Eq for zond_engine::model::host::status::EvidenceSource
+impl core::cmp::PartialEq for zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::eq(&self, &zond_engine::model::host::status::EvidenceSource) -> bool
+impl core::fmt::Debug for zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::host::status::EvidenceSource
+impl core::marker::StructuralPartialEq for zond_engine::model::host::status::EvidenceSource
+impl core::marker::Freeze for zond_engine::model::host::status::EvidenceSource
+impl core::marker::Send for zond_engine::model::host::status::EvidenceSource
+impl core::marker::Sync for zond_engine::model::host::status::EvidenceSource
+impl core::marker::Unpin for zond_engine::model::host::status::EvidenceSource
+impl core::marker::UnsafeUnpin for zond_engine::model::host::status::EvidenceSource
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::status::EvidenceSource
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::EvidenceSource
 #[non_exhaustive] pub enum zond_engine::model::host::status::HostStatus
 pub zond_engine::model::host::status::HostStatus::Down
 pub zond_engine::model::host::status::HostStatus::Filtered
@@ -8236,7 +8262,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::
 #[non_exhaustive] pub struct zond_engine::model::host::status::StatusReason
 pub zond_engine::model::host::status::StatusReason::details: core::option::Option<alloc::sync::Arc<str>>
 pub zond_engine::model::host::status::StatusReason::protocol: zond_engine::model::host::status::StatusProtocol
-pub zond_engine::model::host::status::StatusReason::source: core::option::Option<core::net::ip_addr::IpAddr>
+pub zond_engine::model::host::status::StatusReason::source: zond_engine::model::host::status::EvidenceSource
 impl zond_engine::model::host::status::StatusReason
 pub fn zond_engine::model::host::status::StatusReason::basic(zond_engine::model::host::status::StatusProtocol) -> Self
 pub fn zond_engine::model::host::status::StatusReason::from_source(self, core::net::ip_addr::IpAddr) -> Self
@@ -8343,6 +8369,31 @@ impl core::marker::UnsafeUnpin for zond_engine::model::host::telemetry::RttSampl
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::telemetry::RttSample
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::telemetry::RttSample
 pub const zond_engine::model::host::telemetry::DEFAULT_RTT_SAMPLES: usize
+pub enum zond_engine::model::host::EvidenceSource
+pub zond_engine::model::host::EvidenceSource::Host
+pub zond_engine::model::host::EvidenceSource::Intermediary(core::net::ip_addr::IpAddr)
+pub zond_engine::model::host::EvidenceSource::Withheld
+impl zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::address(&self) -> core::option::Option<core::net::ip_addr::IpAddr>
+pub fn zond_engine::model::host::status::EvidenceSource::is_withheld(&self) -> bool
+impl core::clone::Clone for zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::clone(&self) -> zond_engine::model::host::status::EvidenceSource
+impl core::cmp::Eq for zond_engine::model::host::status::EvidenceSource
+impl core::cmp::PartialEq for zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::eq(&self, &zond_engine::model::host::status::EvidenceSource) -> bool
+impl core::fmt::Debug for zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::status::EvidenceSource
+pub fn zond_engine::model::host::status::EvidenceSource::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::host::status::EvidenceSource
+impl core::marker::StructuralPartialEq for zond_engine::model::host::status::EvidenceSource
+impl core::marker::Freeze for zond_engine::model::host::status::EvidenceSource
+impl core::marker::Send for zond_engine::model::host::status::EvidenceSource
+impl core::marker::Sync for zond_engine::model::host::status::EvidenceSource
+impl core::marker::Unpin for zond_engine::model::host::status::EvidenceSource
+impl core::marker::UnsafeUnpin for zond_engine::model::host::status::EvidenceSource
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::status::EvidenceSource
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::EvidenceSource
 #[non_exhaustive] pub enum zond_engine::model::host::Filtering
 pub zond_engine::model::host::Filtering::InlineMiddlebox
 pub zond_engine::model::host::Filtering::PortTrustingAcl
@@ -8847,7 +8898,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::os::OsFi
 #[non_exhaustive] pub struct zond_engine::model::host::StatusReason
 pub zond_engine::model::host::StatusReason::details: core::option::Option<alloc::sync::Arc<str>>
 pub zond_engine::model::host::StatusReason::protocol: zond_engine::model::host::status::StatusProtocol
-pub zond_engine::model::host::StatusReason::source: core::option::Option<core::net::ip_addr::IpAddr>
+pub zond_engine::model::host::StatusReason::source: zond_engine::model::host::status::EvidenceSource
 impl zond_engine::model::host::status::StatusReason
 pub fn zond_engine::model::host::status::StatusReason::basic(zond_engine::model::host::status::StatusProtocol) -> Self
 pub fn zond_engine::model::host::status::StatusReason::from_source(self, core::net::ip_addr::IpAddr) -> Self
@@ -13449,6 +13500,7 @@ pub struct zond_engine::record::StatusReasonRecord
 pub zond_engine::record::StatusReasonRecord::details: core::option::Option<alloc::string::String>
 pub zond_engine::record::StatusReasonRecord::protocol: alloc::string::String
 pub zond_engine::record::StatusReasonRecord::source: core::option::Option<core::net::ip_addr::IpAddr>
+pub zond_engine::record::StatusReasonRecord::source_withheld: bool
 impl core::clone::Clone for zond_engine::record::StatusReasonRecord
 pub fn zond_engine::record::StatusReasonRecord::clone(&self) -> zond_engine::record::StatusReasonRecord
 impl core::cmp::Eq for zond_engine::record::StatusReasonRecord

@@ -1460,6 +1460,7 @@ impl<'a> HostDto<'a> {
             a.protocol
                 .cmp(&b.protocol)
                 .then(a.source_ip.cmp(&b.source_ip))
+                .then(a.source_withheld.cmp(&b.source_withheld))
                 .then(a.details.cmp(&b.details))
         });
 
@@ -1583,13 +1584,23 @@ impl HopDto {
 pub struct ReasonDto<'a> {
     /// The protocol event that produced the evidence.
     pub protocol: Cow<'a, str>,
-    /// The address that sent the evidence, when it was not the host itself.
+    /// The address that sent the evidence, when it was not the host itself
+    /// and the report may name it.
     ///
     /// Present only for second-hand evidence, such as an ICMP error from a router
     /// or firewall about the probed address. `null` means the host answered for
-    /// itself, the stronger claim, so a consumer weighing how much to trust a
-    /// status can do it from this field alone.
+    /// itself, the stronger claim, unless
+    /// [`source_withheld`](Self::source_withheld) says otherwise, so a consumer
+    /// weighing how much to trust a status can do it from these two fields.
     pub source_ip: Option<String>,
+    /// Whether the evidence came second-hand from an address the scan's
+    /// exclusions forbid it to report, so `source_ip` is `null`.
+    ///
+    /// The one `null` source that is not the host answering for itself. It
+    /// keeps the promise that no excluded address appears in a report without
+    /// passing a middlebox's word off as the host's, which is what a consumer
+    /// reading only `source_ip` would take it for.
+    pub source_withheld: bool,
     /// What was observed, where the strategy recorded it.
     pub details: Option<&'a str>,
 }
@@ -1599,7 +1610,8 @@ impl<'a> ReasonDto<'a> {
     pub fn new(reason: &'a StatusReason) -> Self {
         Self {
             protocol: status_protocol_name(&reason.protocol),
-            source_ip: reason.source.map(|ip| ip.to_string()),
+            source_ip: reason.source.address().map(|ip| ip.to_string()),
+            source_withheld: reason.source.is_withheld(),
             details: reason.details.as_deref(),
         }
     }
