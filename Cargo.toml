@@ -218,16 +218,19 @@ pnet_transport = "0.35.0"
 pcap = "2.2.0"
 libc = "0.2"
 netdev = "0.38.0"
-# The one place the engine binds a socket with options `std` does not expose:
+# The two places the engine binds a socket with options `std` does not expose:
 # joining the mDNS multicast group and reusing port 5353 alongside the host's
-# own responder, which needs `SO_REUSEADDR`/`SO_REUSEPORT` set before the bind.
+# own responder, which needs `SO_REUSEADDR`/`SO_REUSEPORT` set before the bind,
+# and pinning a raw socket to a forced source address and its interface, which
+# needs `SO_BINDTOIFINDEX` on Linux and `IP_BOUND_IF` on macOS. The `all`
+# feature is what exposes the second.
 # Declared rather than hand-rolled through `libc`, on the same reasoning as
 # `ring` below: `tokio` already pins this exact version, so this names a crate
 # the build compiles either way, where reimplementing `setsockopt` for macOS and
 # Linux by hand would put platform-divergent unsafe code in the tree for one
 # call site. The bound `std` socket is handed straight to `tokio`, so socket2 is
 # confined to the few lines that configure it.
-socket2 = "0.6"
+socket2 = { version = "0.6", features = ["all"] }
 rand = "0.10.2"
 thiserror = "2.0.19"
 rayon = "1.12.0"

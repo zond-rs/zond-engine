@@ -17276,7 +17276,7 @@ impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::Pr
 pub struct zond_engine::transport::probe::RawIpSender
 impl zond_engine::transport::probe::ProbeSender for zond_engine::transport::probe::RawIpSender
 pub fn zond_engine::transport::probe::RawIpSender::send(&self, &[u8], core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, core::option::Option<u32>, zond_engine::transport::probe::Emission) -> core::result::Result<(), zond_engine::transport::probe::SendError>
-impl core::marker::Freeze for zond_engine::transport::probe::RawIpSender
+impl !core::marker::Freeze for zond_engine::transport::probe::RawIpSender
 impl core::marker::Send for zond_engine::transport::probe::RawIpSender
 impl core::marker::Sync for zond_engine::transport::probe::RawIpSender
 impl core::marker::Unpin for zond_engine::transport::probe::RawIpSender
@@ -17316,8 +17316,13 @@ pub zond_engine::transport::raw::RawSocketError::HopLimit::hop_limit: u8
 pub zond_engine::transport::raw::RawSocketError::HopLimit::source: core::io::error::Error
 pub zond_engine::transport::raw::RawSocketError::NoSocket
 pub zond_engine::transport::raw::RawSocketError::NoSocket::destination: core::net::ip_addr::IpAddr
+pub zond_engine::transport::raw::RawSocketError::NotHeld
+pub zond_engine::transport::raw::RawSocketError::NotHeld::address: core::net::ip_addr::IpAddr
 pub zond_engine::transport::raw::RawSocketError::Open
 pub zond_engine::transport::raw::RawSocketError::Open::source: core::io::error::Error
+pub zond_engine::transport::raw::RawSocketError::Pin
+pub zond_engine::transport::raw::RawSocketError::Pin::address: core::net::ip_addr::IpAddr
+pub zond_engine::transport::raw::RawSocketError::Pin::source: core::io::error::Error
 pub zond_engine::transport::raw::RawSocketError::Poisoned
 pub zond_engine::transport::raw::RawSocketError::Send
 pub zond_engine::transport::raw::RawSocketError::Send::destination: core::net::ip_addr::IpAddr
@@ -17355,8 +17360,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::Tr
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::TransportType
 pub struct zond_engine::transport::raw::TransportSenderHandle
 impl zond_engine::transport::raw::TransportSenderHandle
+pub fn zond_engine::transport::raw::TransportSenderHandle::send_from<T: pnet_macros_support::packet::Packet>(&self, T, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, core::option::Option<u32>, u8) -> core::result::Result<usize, zond_engine::transport::raw::RawSocketError>
 pub fn zond_engine::transport::raw::TransportSenderHandle::send_to<T: pnet_macros_support::packet::Packet>(&self, T, core::net::ip_addr::IpAddr, core::option::Option<u32>, u8) -> core::result::Result<usize, zond_engine::transport::raw::RawSocketError>
-impl core::marker::Freeze for zond_engine::transport::raw::TransportSenderHandle
+impl !core::marker::Freeze for zond_engine::transport::raw::TransportSenderHandle
 impl core::marker::Send for zond_engine::transport::raw::TransportSenderHandle
 impl core::marker::Sync for zond_engine::transport::raw::TransportSenderHandle
 impl core::marker::Unpin for zond_engine::transport::raw::TransportSenderHandle

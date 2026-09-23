@@ -703,7 +703,7 @@ impl ProbeSender for RawIpSender {
     fn send(
         &self,
         segment: &[u8],
-        _src: IpAddr,
+        src: IpAddr,
         dst: IpAddr,
         zone: Option<u32>,
         emission: Emission,
@@ -719,7 +719,7 @@ impl ProbeSender for RawIpSender {
             ));
         }
         self.handle
-            .send_to(RawSegment(segment), dst, zone, emission.hop_limit)
+            .send_from(RawSegment(segment), src, dst, zone, emission.hop_limit)
             .map(|_| ())
             .map_err(SendError::from_io)
     }

@@ -29,6 +29,7 @@
 //! [`crate::protocols::icmp`] emit whole Ethernet frames and so need a
 //! neighbour.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 
@@ -64,7 +65,7 @@ const CHANNEL_TYPE_SCTP_V6: TransportChannelType =
 pub enum TransportType {
     /// Raw TCP segments, over both IPv4 and IPv6 where available.
     TcpLayer4,
-    /// Raw UDP datagrams, over IPv4 only.
+    /// Raw UDP datagrams, over both IPv4 and IPv6 where available.
     UdpLayer4,
     /// Raw ICMP messages, over both IPv4 and IPv6 where available.
     ///
@@ -112,14 +113,65 @@ pub enum TransportType {
 }
 
 /// Routes an outgoing packet to whichever underlying raw socket matches its
-/// destination's address family.
+/// destination's address family, and its source.
 ///
-/// A [`TransportType::UdpLayer4`] handle only ever has an IPv4 sender, so
-/// sending to an IPv6 destination through it fails with a clear error rather
-/// than silently doing nothing.
+/// A handle opens what the host allows: one on a host with IPv6 raw sockets
+/// disabled carries IPv4 alone, and a send to an IPv6 destination through it
+/// fails with a clear error rather than silently doing nothing.
+///
+/// **A Layer-4 socket's source is the kernel's to choose**, and the segment's
+/// checksum is computed over the source the scan chose. The two agree when the
+/// scan took its source from the routing table, and not when it was forced
+/// (`send_source`, to leave by a LAN interface past a VPN's default route) or
+/// picked where the kernel had no route. There the segment goes out with the
+/// kernel's address in the header and a checksum over another, and every target
+/// drops it. So [`send_from`](Self::send_from) sends such a packet through a
+/// socket pinned to its source: bound to the address, so the kernel stamps that
+/// one, and to the interface holding it, so the packet leaves where the source
+/// belongs rather than where the routing table would send it.
 pub struct TransportSenderHandle {
-    v4: Option<Arc<Mutex<Socket>>>,
-    v6: Option<Arc<Mutex<Socket>>>,
+    v4: Option<Family>,
+    v6: Option<Family>,
+    /// The source the routing table picks per destination, remembered, since
+    /// every port of a host asks the same question. Cleared when it grows past
+    /// [`ROUTE_MEMO_LIMIT`], so a sweep of a large range holds a bounded amount.
+    routes: Mutex<HashMap<IpAddr, Option<IpAddr>>>,
+}
+
+/// The most destinations whose kernel-chosen source is remembered at once.
+const ROUTE_MEMO_LIMIT: usize = 1 << 16;
+
+/// One address family's sockets: the ordinary one, and those pinned to a source.
+struct Family {
+    socket: Arc<Mutex<Socket>>,
+    /// What the family's sockets are opened as, for opening a pinned one.
+    channel: TransportChannelType,
+    /// A socket per source the kernel would not have chosen, opened on first
+    /// use and kept for the handle's life. A scan forces one or two.
+    pinned: Mutex<HashMap<IpAddr, Arc<Mutex<Socket>>>>,
+}
+
+impl Family {
+    fn new(sender: TransportSender, channel: TransportChannelType) -> Self {
+        Self {
+            socket: Socket::new(sender),
+            channel,
+            pinned: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The socket pinned to `source`, opened and pinned on first use.
+    fn pinned(&self, source: IpAddr) -> Result<Arc<Mutex<Socket>>, RawSocketError> {
+        let mut pinned = self.pinned.lock().map_err(|_| RawSocketError::Poisoned)?;
+        if let Some(socket) = pinned.get(&source) {
+            return Ok(socket.clone());
+        }
+        let (sender, _receiver) = open_channel(self.channel)?;
+        pin(&sender, source)?;
+        let socket = Socket::new(sender);
+        pinned.insert(source, socket.clone());
+        Ok(socket)
+    }
 }
 
 /// One raw socket, and the hop limit currently set on it.
@@ -195,6 +247,27 @@ pub enum RawSocketError {
         source: std::io::Error,
     },
 
+    /// A packet was to be sent from an address this host does not hold.
+    ///
+    /// A Layer-4 socket sends only from the host's own addresses: the kernel
+    /// writes the header, and it will not write someone else's address into it.
+    /// A probe that needs a spoofed source has to be framed whole instead.
+    #[error("{address} is not an address this host holds, so no raw socket can send from it")]
+    NotHeld {
+        /// The source that was asked for.
+        address: IpAddr,
+    },
+
+    /// A socket could not be bound to a source address or its interface.
+    #[error("a raw socket could not be pinned to {address}: {source}")]
+    Pin {
+        /// The source it was being pinned to.
+        address: IpAddr,
+        /// What the operating system said.
+        #[source]
+        source: std::io::Error,
+    },
+
     /// The packet could not be written.
     #[error("sending to {destination} failed: {source}")]
     Send {
@@ -216,7 +289,12 @@ pub enum RawSocketError {
 }
 
 impl TransportSenderHandle {
-    /// Sends `packet` to `destination`, expiring after `hop_limit` routers.
+    /// Sends `packet` to `destination` from whichever address the kernel
+    /// chooses, expiring after `hop_limit` routers.
+    ///
+    /// For a packet whose bytes do not depend on its source. A segment carrying
+    /// a checksum over a pseudo-header, which TCP and UDP do, goes through
+    /// [`send_from`](Self::send_from) instead.
     ///
     /// The hop limit is applied to the socket rather than written into the
     /// packet, because a Layer-4 socket has the kernel build the IP header and
@@ -234,33 +312,164 @@ impl TransportSenderHandle {
         zone: Option<u32>,
         hop_limit: u8,
     ) -> Result<usize, RawSocketError> {
-        let socket = match destination {
+        let family = self.family(destination)?;
+        send_on(&family.socket, packet, destination, zone, hop_limit)
+    }
+
+    /// Sends `packet` to `destination` from `source`, as [`send_to`](Self::send_to)
+    /// does otherwise.
+    ///
+    /// Through the family's ordinary socket where the routing table would pick
+    /// `source` for `destination` anyway, and through one pinned to `source`
+    /// where it would not, or has no route at all. See the type's
+    /// documentation.
+    pub fn send_from<T: Packet>(
+        &self,
+        packet: T,
+        source: IpAddr,
+        destination: IpAddr,
+        zone: Option<u32>,
+        hop_limit: u8,
+    ) -> Result<usize, RawSocketError> {
+        let family = self.family(destination)?;
+        let socket = if self.kernel_source(destination) == Some(source) {
+            family.socket.clone()
+        } else {
+            family.pinned(source)?
+        };
+        send_on(&socket, packet, destination, zone, hop_limit)
+    }
+
+    /// The family's sockets for `destination`.
+    fn family(&self, destination: IpAddr) -> Result<&Family, RawSocketError> {
+        match destination {
             IpAddr::V4(_) => self.v4.as_ref(),
             IpAddr::V6(_) => self.v6.as_ref(),
         }
-        .ok_or(RawSocketError::NoSocket { destination })?;
-
-        let mut socket = socket.lock().map_err(|_| RawSocketError::Poisoned)?;
-
-        if socket.hop_limit != Some(hop_limit) {
-            socket
-                .sender
-                .set_ttl(hop_limit)
-                .map_err(|source| RawSocketError::HopLimit { hop_limit, source })?;
-            socket.hop_limit = Some(hop_limit);
-        }
-
-        match (destination, zone) {
-            (IpAddr::V6(v6), Some(zone)) => {
-                send_scoped(socket.sender.socket.fd, packet.packet(), v6, 0, zone)
-            }
-            _ => socket.sender.send_to(packet, destination),
-        }
-        .map_err(|source| RawSocketError::Send {
-            destination,
-            source,
-        })
+        .ok_or(RawSocketError::NoSocket { destination })
     }
+
+    /// The source the routing table picks for `destination`, remembered.
+    ///
+    /// Asked by connecting a UDP socket, which sends nothing. A poisoned memo
+    /// asks afresh rather than failing the send.
+    fn kernel_source(&self, destination: IpAddr) -> Option<IpAddr> {
+        let ask = || {
+            crate::system::interface::probe_route_source(
+                destination,
+                &mut crate::system::interface::ProbeSockets::default(),
+            )
+        };
+        let Ok(mut routes) = self.routes.lock() else {
+            return ask();
+        };
+        if let Some(known) = routes.get(&destination) {
+            return *known;
+        }
+        if routes.len() >= ROUTE_MEMO_LIMIT {
+            routes.clear();
+        }
+        let source = ask();
+        routes.insert(destination, source);
+        source
+    }
+}
+
+/// Sends `packet` through `socket`, setting its hop limit first where it
+/// differs. See [`TransportSenderHandle::send_to`].
+fn send_on<T: Packet>(
+    socket: &Mutex<Socket>,
+    packet: T,
+    destination: IpAddr,
+    zone: Option<u32>,
+    hop_limit: u8,
+) -> Result<usize, RawSocketError> {
+    let mut socket = socket.lock().map_err(|_| RawSocketError::Poisoned)?;
+
+    if socket.hop_limit != Some(hop_limit) {
+        socket
+            .sender
+            .set_ttl(hop_limit)
+            .map_err(|source| RawSocketError::HopLimit { hop_limit, source })?;
+        socket.hop_limit = Some(hop_limit);
+    }
+
+    match (destination, zone) {
+        (IpAddr::V6(v6), Some(zone)) => {
+            send_scoped(socket.sender.socket.fd, packet.packet(), v6, 0, zone)
+        }
+        _ => socket.sender.send_to(packet, destination),
+    }
+    .map_err(|source| RawSocketError::Send {
+        destination,
+        source,
+    })
+}
+
+/// Binds `sender`'s socket to `source` and to the interface holding it.
+///
+/// The address makes the kernel write `source` into the header, so the header
+/// matches the checksum computed over it. The interface makes the packet leave
+/// by the link `source` belongs to, whatever the routing table's default says:
+/// what a forced source is for, and the only place a reply to that address
+/// comes back. A link-local source is bound with its interface as its scope.
+#[cfg(unix)]
+fn pin(sender: &TransportSender, source: IpAddr) -> Result<(), RawSocketError> {
+    use std::os::fd::BorrowedFd;
+
+    let link = crate::system::interface::interfaces()
+        .into_iter()
+        .find(|link| link.addresses().iter().any(|held| held.address() == source))
+        .ok_or(RawSocketError::NotHeld { address: source })?;
+    let failed = |error| RawSocketError::Pin {
+        address: source,
+        source: error,
+    };
+
+    // SAFETY: the descriptor belongs to `sender`, which outlives this borrow,
+    // and is open: `pnet` closes it only when the sender is dropped.
+    let fd = unsafe { BorrowedFd::borrow_raw(sender.socket.fd) };
+    let socket = socket2::SockRef::from(&fd);
+
+    let address = match source {
+        IpAddr::V4(v4) => std::net::SocketAddr::from((v4, 0)),
+        IpAddr::V6(v6) => {
+            let scope = if v6.is_unicast_link_local() {
+                link.index()
+            } else {
+                0
+            };
+            std::net::SocketAddr::V6(std::net::SocketAddrV6::new(v6, 0, 0, scope))
+        }
+    };
+    socket.bind(&address.into()).map_err(failed)?;
+
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    {
+        let index = std::num::NonZeroU32::new(link.index());
+        match source {
+            IpAddr::V4(_) => socket.bind_device_by_index_v4(index),
+            IpAddr::V6(_) => socket.bind_device_by_index_v6(index),
+        }
+        .map_err(failed)?;
+    }
+
+    Ok(())
+}
+
+/// No pinning where the platform's raw sockets are not the scan's send path.
+///
+/// Windows refuses raw TCP outright, and a scan there frames its probes whole,
+/// source address and all; see [`crate::transport::link`].
+#[cfg(not(unix))]
+fn pin(_sender: &TransportSender, source: IpAddr) -> Result<(), RawSocketError> {
+    Err(RawSocketError::Pin {
+        address: source,
+        source: std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "a raw socket is not pinned to a source on this platform",
+        ),
+    })
 }
 
 /// Writes `bytes` to a destination that names the interface it is valid on.
@@ -335,76 +544,37 @@ fn send_scoped(
 /// on macOS) raw-socket receiver.
 pub fn open_sender(transport_type: TransportType) -> Result<TransportSenderHandle, RawSocketError> {
     match transport_type {
-        TransportType::TcpLayer4 => {
-            let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_TCP_V4)?;
-            // IPv6 raw sockets aren't available on every host; TCP scanning
-            // still works over IPv4 alone, so a failure here isn't fatal.
-            let v6 = open_channel(CHANNEL_TYPE_TCP_V6)
-                .ok()
-                .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
-            Ok(TransportSenderHandle {
-                v4: Some(Socket::new(v4_tx)),
-                v6,
-            })
-        }
-        TransportType::UdpLayer4 => {
-            let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_UDP_V4)?;
-            // As for TCP: a host without IPv6 raw sockets still scans UDP over
-            // IPv4, so a failure here narrows the transport rather than ending
-            // it.
-            let v6 = open_channel(CHANNEL_TYPE_UDP_V6)
-                .ok()
-                .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
-            Ok(TransportSenderHandle {
-                v4: Some(Socket::new(v4_tx)),
-                v6,
-            })
-        }
-        TransportType::SctpLayer4 => {
-            let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_SCTP_V4)?;
-            // As for TCP: a host without IPv6 raw sockets still scans SCTP over
-            // IPv4, so a failure here narrows the transport rather than ending
-            // it.
-            let v6 = open_channel(CHANNEL_TYPE_SCTP_V6)
-                .ok()
-                .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
-            Ok(TransportSenderHandle {
-                v4: Some(Socket::new(v4_tx)),
-                v6,
-            })
-        }
+        TransportType::TcpLayer4 => both(CHANNEL_TYPE_TCP_V4, CHANNEL_TYPE_TCP_V6),
+        TransportType::UdpLayer4 => both(CHANNEL_TYPE_UDP_V4, CHANNEL_TYPE_UDP_V6),
+        TransportType::SctpLayer4 => both(CHANNEL_TYPE_SCTP_V4, CHANNEL_TYPE_SCTP_V6),
+        TransportType::IcmpLayer4 => both(CHANNEL_TYPE_ICMP_V4, CHANNEL_TYPE_ICMP_V6),
         TransportType::IpProtocol(number) => {
             let protocol = IpNextHeaderProtocol(number);
-            let (v4_tx, _v4_rx) = open_channel(TransportChannelType::Layer4(
-                TransportProtocol::Ipv4(protocol),
-            ))?;
-            // As for TCP: a host without IPv6 raw sockets still probes over
-            // IPv4, and a kernel that refuses one protocol's socket outright
-            // narrows the pass rather than ending it.
-            let v6 = open_channel(TransportChannelType::Layer4(TransportProtocol::Ipv6(
-                protocol,
-            )))
-            .ok()
-            .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
-            Ok(TransportSenderHandle {
-                v4: Some(Socket::new(v4_tx)),
-                v6,
-            })
-        }
-        TransportType::IcmpLayer4 => {
-            let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_ICMP_V4)?;
-            // Same reasoning as TCP: a host without IPv6 raw sockets can still
-            // be probed over IPv4, so a failure here is a narrower transport
-            // rather than no transport.
-            let v6 = open_channel(CHANNEL_TYPE_ICMP_V6)
-                .ok()
-                .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
-            Ok(TransportSenderHandle {
-                v4: Some(Socket::new(v4_tx)),
-                v6,
-            })
+            both(
+                TransportChannelType::Layer4(TransportProtocol::Ipv4(protocol)),
+                TransportChannelType::Layer4(TransportProtocol::Ipv6(protocol)),
+            )
         }
     }
+}
+
+/// A handle over an IPv4 socket, and an IPv6 one where the host allows it.
+///
+/// IPv6 raw sockets are not available on every host, and one that refuses them,
+/// or refuses one protocol's socket outright, still probes over IPv4: a failure
+/// there narrows the transport rather than ending it. An IPv4 failure is the
+/// privilege refusal, and ends it.
+fn both(
+    v4: TransportChannelType,
+    v6: TransportChannelType,
+) -> Result<TransportSenderHandle, RawSocketError> {
+    let (v4_tx, _v4_rx) = open_channel(v4)?;
+    let v6_tx = open_channel(v6).ok().map(|(v6_tx, _v6_rx)| v6_tx);
+    Ok(TransportSenderHandle {
+        v4: Some(Family::new(v4_tx, v4)),
+        v6: v6_tx.map(|tx| Family::new(tx, v6)),
+        routes: Mutex::new(HashMap::new()),
+    })
 }
 
 /// Opens one raw transport channel, naming this crate's error rather than

@@ -294,6 +294,33 @@ impl Segment {
         IpAddr::V6(peer_v6(self.index))
     }
 
+    /// Gives this process a second address on the segment, and returns it.
+    ///
+    /// The first stays primary, so the routing table never picks this one: a
+    /// probe sent from it is sent from a source the kernel did not choose, which
+    /// is what a forced source is.
+    pub fn add_scanner_address(&self) -> IpAddr {
+        let address = Ipv4Addr::new(10, 99, self.index as u8, 3);
+        ip(&["addr", "add", &format!("{address}/24"), "dev", &self.link()]);
+        IpAddr::V4(address)
+    }
+
+    /// An address held behind the peer and routed to it, and returns it: a
+    /// target this process reaches through a gateway, as it reaches anything
+    /// off its own segment.
+    pub fn routed_peer(&self) -> Ipv4Addr {
+        let address = Ipv4Addr::new(10, 98, self.index as u8, 2);
+        self.there(&["ip", "addr", "add", &format!("{address}/32"), "dev", "lo"]);
+        ip(&[
+            "route",
+            "add",
+            &format!("{address}/32"),
+            "via",
+            &peer_v4(self.index).to_string(),
+        ]);
+        address
+    }
+
     /// The name of the link this process sends from.
     pub fn link(&self) -> String {
         format!("zv{}a", self.index)
@@ -513,7 +540,12 @@ impl Segment {
 
     /// Binds a TCP listener in the peer's namespace and returns its port.
     pub fn listen_tcp(&mut self) -> u16 {
-        let address = peer_v4(self.index);
+        self.listen_tcp_on(peer_v4(self.index))
+    }
+
+    /// Binds a TCP listener on `address` in the peer's namespace and returns
+    /// its port. For an address [`routed_peer`](Self::routed_peer) added.
+    pub fn listen_tcp_on(&mut self, address: Ipv4Addr) -> u16 {
         self.serve(move |stop, tx| {
             let Ok(listener) = TcpListener::bind((address, 0)) else {
                 return;

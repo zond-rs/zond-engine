@@ -340,7 +340,8 @@ firewall gives and the two that need an ICMP error; `segment` for finding the
 right neighbour on the right link, over both address families; `degraded` for
 what survives loss and delay; `techniques` for all seven TCP techniques against
 a kernel rather than a model of one; `characterise` for what kind of filter sits
-in front of a host; `resuming` for what a resumed sitting of a raw scan sends,
+in front of a host; `sourcing` for the address a probe leaves from when the
+scan forces one; `resuming` for what a resumed sitting of a raw scan sends,
 since the sweeps beside a port scan never ask about a loopback target.
 
 `listening` for the watch entry point over a real capture, and `resolving` for
