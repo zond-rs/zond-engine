@@ -50,8 +50,9 @@ use std::time::Duration;
 ///
 /// A refusal has to arrive inside the same budget. Unix stacks report one at
 /// the first reset. Windows resends a refused SYN until its SYN retransmissions
-/// run out, which at its default count outlasts this budget, so there the
-/// connect probe keeps only the one retransmission this value waits for.
+/// run out, which at its default count outlasts this budget, so there every
+/// connection the engine makes keeps only the one retransmission this value
+/// waits for.
 pub const CONNECT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// The initial retransmission timeout a host TCP stack uses for a SYN

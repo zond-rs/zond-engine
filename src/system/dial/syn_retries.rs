@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # How often Windows may resend a connect probe's SYN
+//! # How often Windows may resend a connection's SYN
 //!
 //! A connect probe reads a closed port from the refusal its connect returns,
 //! and on Unix that refusal comes back with the first reset. Windows does not
@@ -17,10 +17,18 @@
 //! [`CONNECT_PROBE_TIMEOUT`](crate::config::limits::CONNECT_PROBE_TIMEOUT), so
 //! every closed port would be recorded as a silent, filtered one.
 //!
+//! Every other connection the engine makes waits on a budget of the same size
+//! and reads a refusal the same way. The service pass dials ports the scan
+//! found open, and one that closed in between has to read as refused rather
+//! than as silence; a TLS enumeration and a detection's exchange end a walk on
+//! a refusal they would otherwise wait out. So the limit goes on every TCP
+//! socket the engine opens, which is why it is set where they are all built.
+//!
 //! The count is the one thing to change, and `SIO_TCP_INITIAL_RTO` sets it per
 //! socket, before the connect, without privilege. The same count also governs
-//! a SYN that is genuinely lost, and that retransmission is the one the probe
-//! budget exists to wait for. So each probe keeps exactly one retransmission:
+//! a SYN that is genuinely lost, and that retransmission is the one the
+//! connect budget exists to wait for. So each connection keeps exactly one
+//! retransmission:
 //! a lost SYN is resent at the stack's first retransmission timeout as it
 //! would be on Unix, the retransmissions given up would all have left after
 //! the budget had expired, and a refusal comes back at the second reset rather
@@ -30,7 +38,7 @@
 //!
 //! The round trip estimate the retransmission timeout is computed from is left
 //! as the host's administrator configured it, since that timeout is the one the
-//! probe budget is set against.
+//! connect budget is set against.
 //!
 //! `TCP_MAXRT`, the other per-socket knob, is the wrong tool: it caps the
 //! connect attempt in whole seconds and ends it as a timeout, so a refused port
@@ -46,8 +54,8 @@ use std::net::IpAddr;
 /// stack a zero asks for the system default.
 const NO_SYN_RETRANSMISSIONS: u8 = 0xFE;
 
-/// How many times the stack may resend a probe's SYN to `target` before it
-/// gives the connect up.
+/// How many times the stack may resend a connection's SYN to `target` before
+/// it gives the connect up.
 fn syn_retransmissions(target: IpAddr) -> u8 {
     if target.to_canonical().is_loopback() {
         0
@@ -67,11 +75,11 @@ fn max_syn_retransmissions(count: u8) -> u8 {
 /// Limits the SYN retransmissions of `socket`, about to connect to `target`,
 /// to the count [`syn_retransmissions`] gives.
 ///
-/// A stack that refuses the request leaves the socket as it was, and the probe
-/// goes ahead on the stack's own count: a connect that reports closed ports as
-/// filtered is still a better answer than none. That is said once per process,
-/// as a decision behind the result, since every probe after the first would
-/// only repeat it.
+/// A stack that refuses the request leaves the socket as it was, and the
+/// connection goes ahead on the stack's own count: a connect that reports
+/// closed ports as filtered is still a better answer than none. That is said
+/// once per process, as a decision behind the result, since every connection
+/// after the first would only repeat it.
 #[cfg(windows)]
 pub(super) fn limit(socket: &socket2::Socket, target: IpAddr) {
     use std::os::windows::io::AsRawSocket;

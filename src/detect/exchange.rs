@@ -37,11 +37,12 @@
 //! and leaves the rest unasked.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::fingerprint::Tunnel;
+use crate::system::dial;
 
 /// The largest datagram a UDP reply is read into, the theoretical maximum
 /// payload of one.
@@ -114,7 +115,7 @@ pub(crate) fn tcp(
     cap: u64,
 ) -> Result<Reply, ExchangeError> {
     let timeout = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
-    let tcp = TcpStream::connect_timeout(&addr, timeout.min(CONNECT_PROBE_TIMEOUT))
+    let tcp = dial::connect_within(addr, timeout.min(CONNECT_PROBE_TIMEOUT))
         .map_err(|error| ExchangeError::of(&error))?;
     tcp.set_read_timeout(Some(remaining(deadline).ok_or(ExchangeError::TimedOut)?))
         .map_err(|error| ExchangeError::of(&error))?;
@@ -260,12 +261,7 @@ pub(crate) fn udp(
     deadline: Instant,
     cap: u64,
 ) -> Result<Reply, ExchangeError> {
-    let bind = if addr.is_ipv6() {
-        "[::]:0"
-    } else {
-        "0.0.0.0:0"
-    };
-    let socket = UdpSocket::bind(bind).map_err(|error| ExchangeError::of(&error))?;
+    let socket = dial::udp_blocking(addr.ip()).map_err(|error| ExchangeError::of(&error))?;
     socket
         .connect(addr)
         .map_err(|error| ExchangeError::of(&error))?;

@@ -112,6 +112,7 @@ use tokio::time::timeout;
 
 use crate::config::ServiceDetection;
 use crate::model::port::{Port, PortState, Protocol, Service};
+use crate::system::dial;
 
 /// How long to wait for a service to speak first (banner grab).
 const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);
@@ -597,12 +598,7 @@ pub async fn probe_udp_with(addr: std::net::SocketAddr, payload: &[u8]) -> Vec<S
 ///
 /// [`None`] when nothing answered.
 pub async fn probe_udp_raw(addr: std::net::SocketAddr, payload: &[u8]) -> Option<Vec<u8>> {
-    let bind = if addr.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    };
-    let socket = tokio::net::UdpSocket::bind(bind).await.ok()?;
+    let socket = dial::udp(addr.ip()).await.ok()?;
     socket.connect(addr).await.ok()?;
     socket.send(payload).await.ok()?;
 
@@ -688,7 +684,7 @@ async fn gather(
 /// The first one succeeded, so this either succeeds immediately or the port has
 /// stopped accepting; see [`CONNECT_RETRY_TIMEOUT`].
 async fn redial(socket: SocketAddr) -> Option<TcpStream> {
-    match timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await {
+    match timeout(CONNECT_RETRY_TIMEOUT, dial::connect(socket)).await {
         Ok(Ok(fresh)) => Some(fresh),
         _ => None,
     }
@@ -1018,7 +1014,7 @@ fn same_host_path(url: &str, peer: SocketAddr) -> Option<String> {
 /// peer has already gone away from is a write that succeeds and a read that
 /// never returns. One round trip, and only on a response that asked for it.
 async fn follow_redirect(socket: SocketAddr, path: &str) -> Option<String> {
-    let mut stream = timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket))
+    let mut stream = timeout(CONNECT_RETRY_TIMEOUT, dial::connect(socket))
         .await
         .ok()?
         .ok()?;

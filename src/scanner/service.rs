@@ -28,8 +28,6 @@
 //! runs on them needs a real conversation with the service. Splitting the two lets
 //! each use the transport that suits it.
 
-use tokio::net::TcpStream;
-
 use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
 use tokio::time::timeout;
@@ -40,6 +38,7 @@ use crate::model::port::{Port, PortState, Protocol};
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Stage};
+use crate::system::dial;
 
 /// Fingerprints every open port currently in the store worth an exchange,
 /// upgrading each port's service in place.
@@ -285,7 +284,7 @@ async fn fingerprint_one(
 
     let (port, about_the_host, banners) = match protocol {
         Protocol::Tcp => {
-            let stream = match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr)).await {
+            let stream = match timeout(CONNECT_PROBE_TIMEOUT, dial::connect(addr)).await {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(e)) => {
                     return Attempt::Unreachable {

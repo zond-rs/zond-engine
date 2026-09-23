@@ -45,7 +45,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use super::analyzer::{Analyzer, PortContext};
@@ -187,7 +186,7 @@ impl Analyzer for SshAnalyzer {
 /// Returns the raw packet payload (message byte onward), or `None` on any I/O
 /// or protocol error, the caller treats that as "not SSH here".
 async fn kexinit_exchange(addr: SocketAddr) -> Option<Vec<u8>> {
-    let stream = TcpStream::connect(addr).await.ok()?;
+    let stream = crate::system::dial::connect(addr).await.ok()?;
     let mut reader = BufReader::new(stream);
 
     // Send our identification string first; the server needs it to proceed.

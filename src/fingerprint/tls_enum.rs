@@ -429,7 +429,8 @@ async fn exchange(addr: SocketAddr, offer: &Offer<'_>) -> Exchange {
     let hello = tls::client_hello(offer);
 
     timeout(EXCHANGE_TIMEOUT, async {
-        let Ok(Ok(mut stream)) = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr)).await
+        let Ok(Ok(mut stream)) =
+            timeout(CONNECT_PROBE_TIMEOUT, crate::system::dial::connect(addr)).await
         else {
             return Exchange::Lost;
         };

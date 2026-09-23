@@ -10,8 +10,9 @@
 //!
 //! The fallback strategy for when raw sockets are not available, whether because
 //! the process is not root, no usable interface exists, or the OS could not route
-//! a target. Everything here is built on ordinary [`TcpStream`] connects, so it
-//! needs no special privileges and works anywhere the async runtime does.
+//! a target. Everything here is built on ordinary
+//! [`TcpStream`](tokio::net::TcpStream) connects, so it needs no special
+//! privileges and works anywhere the async runtime does.
 //!
 //! It answers both scan phases. [`discover`] establishes host presence by probing
 //! a small set of common infrastructure ports and treating any TCP-layer response,
@@ -44,18 +45,14 @@ use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
+use crate::system::dial::{self, Shaping};
 use async_trait::async_trait;
-use socket2::{Domain, Socket, Type};
 use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-
-#[cfg(any(windows, test))]
-mod syn_retries;
 
 /// The evasion an unprivileged connect probe can honour: a source port to leave
 /// from and a hop limit to carry.
@@ -69,23 +66,7 @@ mod syn_retries;
 /// the Ethernet path and never reaches this scanner. The segment shapers,
 /// padding, a corrupt checksum, are absent for a different reason: the kernel
 /// builds the segment a connect sends, so there is nothing here to shape.
-#[derive(Debug, Clone, Copy, Default)]
-struct ConnectShaping {
-    /// The source port every probe binds to, or `None` to let the OS choose one.
-    source_port: Option<u16>,
-    /// The hop limit every probe carries, or `None` to leave the OS default.
-    hop_limit: Option<u8>,
-}
-
-impl ConnectShaping {
-    /// Whether either field departs from what the OS would pick, so a plain
-    /// connect can be taken when it does not.
-    fn is_active(self) -> bool {
-        self.source_port.is_some() || self.hop_limit.is_some()
-    }
-}
-
-impl From<&EvasionProfile> for ConnectShaping {
+impl From<&EvasionProfile> for Shaping {
     fn from(evasion: &EvasionProfile) -> Self {
         Self {
             source_port: evasion.source_port,
@@ -104,7 +85,7 @@ pub struct ConnectScanner {
     /// this explorer is part of.
     ctx: ScanContext,
     /// What each liveness probe changes about the packet it sends. Only the
-    /// source port and hop limit reach the wire from here (see [`ConnectShaping`]).
+    /// source port and hop limit reach the wire from here (see `dial::Shaping`).
     evasion: EvasionProfile,
 }
 
@@ -224,7 +205,7 @@ pub struct ConnectPortScanner {
     /// without them, being seen is the price of the answer.
     detection: ServiceDetection,
     /// What each probe changes about the packet it sends. Only the source port
-    /// and hop limit reach the wire from here (see [`ConnectShaping`]).
+    /// and hop limit reach the wire from here (see `dial::Shaping`).
     evasion: EvasionProfile,
     /// The interface each link-local target was named on, empty for a scan that
     /// named none. A `SocketAddrV6` with a zero scope id will not connect to a
@@ -294,7 +275,7 @@ pub struct ConnectUdpPortScanner {
     ctx: ScanContext,
     concurrency: usize,
     /// What each probe changes about the packet it sends. Only the source port
-    /// and hop limit reach the wire from here (see [`ConnectShaping`]).
+    /// and hop limit reach the wire from here (see `dial::Shaping`).
     evasion: EvasionProfile,
     /// How far the second pass may go to name what answered.
     ///
@@ -375,7 +356,7 @@ impl PortScanner for ConnectUdpPortScanner {
 
     async fn scan(&mut self, mut rx: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         let ctx = self.ctx.clone();
-        let shaping = ConnectShaping::from(&self.evasion);
+        let shaping = Shaping::from(&self.evasion);
         let mut pool = ProbePool::new(
             self.concurrency,
             self.ctx.clone(),
@@ -435,7 +416,7 @@ pub async fn scan(
     evasion: &EvasionProfile,
     zones: &ZoneMap,
 ) -> Result<(), StrategyError> {
-    let shaping = ConnectShaping::from(evasion);
+    let shaping = Shaping::from(evasion);
     let folder = ctx.clone();
     let mut pool = ProbePool::new(
         concurrency_limit,
@@ -602,7 +583,7 @@ fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
 async fn port_prober(
     planned: PlannedTarget,
     detection: ServiceDetection,
-    shaping: ConnectShaping,
+    shaping: Shaping,
     socket_addr: SocketAddr,
 ) -> ProbedPort {
     let target = planned.target;
@@ -615,9 +596,12 @@ async fn port_prober(
 
     let position = planned.position;
 
-    match timeout(CONNECT_PROBE_TIMEOUT, connect_shaped(socket_addr, shaping))
-        .await
-        .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()))
+    match timeout(
+        CONNECT_PROBE_TIMEOUT,
+        dial::connect_shaped(socket_addr, shaping),
+    )
+    .await
+    .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()))
     {
         Ok(stream) => {
             let port = settled(target.port, PortState::Open, Some(ScanResponse::TcpSynAck));
@@ -710,117 +694,6 @@ async fn port_prober(
     }
 }
 
-/// The address a probe socket for a destination in `family`'s address family
-/// binds its source to, carrying `port` (`0` lets the OS pick one).
-///
-/// A socket bound to `0.0.0.0` cannot reach an IPv6 destination - the connect
-/// fails outright - so binding the family the target belongs to is what makes
-/// v6 targets reachable at all rather than silently unprobed.
-fn source_bind(family: IpAddr, port: u16) -> SocketAddr {
-    match family {
-        IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
-        IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
-    }
-}
-
-/// The wildcard, ephemeral-port address a probe socket for `target` binds to
-/// when nothing about its source is being chosen.
-fn wildcard_for(target: IpAddr) -> SocketAddr {
-    source_bind(target, 0)
-}
-
-/// Sets `shaping`'s hop limit on a fresh socket, and, where a source port is
-/// pinned, the address reuse a pinned port needs.
-///
-/// The hop limit goes on with the option the address family uses (`IP_TTL` or
-/// `IPV6_UNICAST_HOPS`), so it is in force before the first byte leaves. Address
-/// reuse is what lets the many probes a scan runs at once each bind the one
-/// pinned source port: every probe still carries a distinct four-tuple through
-/// its destination, so the kernel keeps their replies apart. The bind itself is
-/// left to the caller, because TCP binds only to pin a port while UDP must bind
-/// before it can send at all.
-fn configure_shaping(
-    socket: &Socket,
-    family: IpAddr,
-    shaping: ConnectShaping,
-) -> std::io::Result<()> {
-    if let Some(hops) = shaping.hop_limit {
-        match family {
-            IpAddr::V4(_) => socket.set_ttl_v4(hops.into())?,
-            IpAddr::V6(_) => socket.set_unicast_hops_v6(hops.into())?,
-        }
-    }
-    if shaping.source_port.is_some() {
-        socket.set_reuse_address(true)?;
-        // Unix only, and both supported platforms are: without it a second
-        // socket on the pinned port is refused rather than bound alongside.
-        #[cfg(unix)]
-        socket.set_reuse_port(true)?;
-    }
-    Ok(())
-}
-
-/// A TCP socket set up to honour `shaping`, ready to connect to `target`.
-///
-/// On Windows it also carries the SYN retransmission limit that lets a refusal
-/// arrive within the probe budget (see `syn_retries`), which is why every
-/// Windows probe is built here; elsewhere only an active `shaping` is.
-fn shaped_tcp_socket(target: IpAddr, shaping: ConnectShaping) -> std::io::Result<TcpSocket> {
-    let domain = match target {
-        IpAddr::V4(_) => Domain::IPV4,
-        IpAddr::V6(_) => Domain::IPV6,
-    };
-    let socket = Socket::new(domain, Type::STREAM, Some(socket2::Protocol::TCP))?;
-    configure_shaping(&socket, target, shaping)?;
-    #[cfg(windows)]
-    syn_retries::limit(&socket, target);
-    if let Some(port) = shaping.source_port {
-        socket.bind(&source_bind(target, port).into())?;
-    }
-    socket.set_nonblocking(true)?;
-    Ok(TcpSocket::from_std_stream(std::net::TcpStream::from(
-        socket,
-    )))
-}
-
-/// Connects to `addr`, honouring `shaping`.
-///
-/// With inert shaping on Unix this is exactly a plain [`TcpStream::connect`],
-/// so a scan that chose neither a source port nor a hop limit sends the SYN it
-/// always has, byte for byte. Windows needs an option on every probe socket
-/// before it connects, so there the socket is always built.
-async fn connect_shaped(addr: SocketAddr, shaping: ConnectShaping) -> std::io::Result<TcpStream> {
-    if !shaping.is_active() && cfg!(not(windows)) {
-        return TcpStream::connect(addr).await;
-    }
-    shaped_tcp_socket(addr.ip(), shaping)?.connect(addr).await
-}
-
-/// A UDP socket bound to `family`'s wildcard and honouring `shaping`, ready to
-/// be connected to a peer.
-///
-/// With inert shaping this is the plain ephemeral bind the scanner has always
-/// used. Otherwise the socket carries the chosen hop limit and binds the chosen
-/// source port (or an ephemeral one, so a hop-limit-only scan still has a socket
-/// to send from).
-async fn shaped_udp_socket(
-    family: IpAddr,
-    shaping: ConnectShaping,
-) -> std::io::Result<tokio::net::UdpSocket> {
-    if !shaping.is_active() {
-        return tokio::net::UdpSocket::bind(wildcard_for(family)).await;
-    }
-    let domain = match family {
-        IpAddr::V4(_) => Domain::IPV4,
-        IpAddr::V6(_) => Domain::IPV6,
-    };
-    let socket = Socket::new(domain, Type::DGRAM, Some(socket2::Protocol::UDP))?;
-    configure_shaping(&socket, family, shaping)?;
-    socket.bind(&source_bind(family, shaping.source_port.unwrap_or(0)).into())?;
-    socket.set_nonblocking(true)?;
-    tokio::net::UdpSocket::from_std(std::net::UdpSocket::from(socket))
-}
-
 /// Probes a single [`PlannedTarget`] for UDP using a standard OS `UdpSocket`,
 /// the unprivileged counterpart of
 /// [`UdpPortScanner`](super::ports::UdpPortScanner).
@@ -838,7 +711,7 @@ async fn shaped_udp_socket(
 /// logged and yield no record rather than a guess.
 async fn udp_port_prober(
     planned: PlannedTarget,
-    shaping: ConnectShaping,
+    shaping: Shaping,
     socket_addr: SocketAddr,
 ) -> ProbedPort {
     let target = planned.target;
@@ -880,7 +753,7 @@ async fn udp_port_prober(
     // scanner runs out of sockets is the shortfall a reader cannot see. The
     // outcome is `Unroutable` rather than `Unasked` for the reason the TCP
     // prober gives: this host gave up, which the next sitting may not.
-    let socket = match shaped_udp_socket(target.ip, shaping).await {
+    let socket = match dial::udp_shaped(target.ip, shaping).await {
         Ok(socket) => socket,
         Err(e) => {
             error!(
@@ -995,7 +868,7 @@ pub async fn discover(
     ctx: ScanContext,
     evasion: &EvasionProfile,
 ) -> Result<(), StrategyError> {
-    let shaping = ConnectShaping::from(evasion);
+    let shaping = Shaping::from(evasion);
     // The same list `PortSet::common_discovery` names, taken from there rather
     // than spelled again here. Two copies of five port numbers is two copies to
     // keep in step, and nothing would have reported them drifting apart.
@@ -1120,12 +993,7 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
 /// per address would take five timeouts to wind down rather than one. What has
 /// been asked so far decides how the address is filed: cut off part way through
 /// is not the same as asked and silent, and only the second is a verdict.
-async fn prober(
-    ip: IpAddr,
-    ports: Arc<[u16]>,
-    handle: ScanHandle,
-    shaping: ConnectShaping,
-) -> ProbedHost {
+async fn prober(ip: IpAddr, ports: Arc<[u16]>, handle: ScanHandle, shaping: Shaping) -> ProbedHost {
     let start = Instant::now();
     let mut asked = false;
 
@@ -1143,7 +1011,7 @@ async fn prober(
 
         let attempt = timeout(
             CONNECT_PROBE_TIMEOUT,
-            connect_shaped(SocketAddr::new(ip, port), shaping),
+            dial::connect_shaped(SocketAddr::new(ip, port), shaping),
         )
         .await
         .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()));
@@ -1210,6 +1078,7 @@ fn answered(ip: IpAddr, start: Instant) -> ProbedHost {
 mod tests {
     use super::*;
     use crate::model::target::Target;
+    use std::net::{Ipv4Addr, Ipv6Addr};
     use tokio::net::UdpSocket;
 
     fn udp_target(ip: IpAddr, port: u16) -> PlannedTarget {
@@ -1232,12 +1101,6 @@ mod tests {
         port
     }
 
-    #[test]
-    fn probe_socket_binds_the_target_family() {
-        assert!(wildcard_for(IpAddr::V4(Ipv4Addr::LOCALHOST)).is_ipv4());
-        assert!(wildcard_for(IpAddr::V6(Ipv6Addr::LOCALHOST)).is_ipv6());
-    }
-
     /// A socket bound IPv4-only would make a v6 target fail at `connect` and
     /// vanish without a record or a log. Loopback only, and no privileges
     /// required, so this runs everywhere the suite does.
@@ -1248,7 +1111,7 @@ mod tests {
 
         let probed = udp_port_prober(
             udp_target(ip, port),
-            ConnectShaping::default(),
+            Shaping::default(),
             SocketAddr::new(ip, port),
         )
         .await;
@@ -1267,7 +1130,7 @@ mod tests {
 
         let probed = udp_port_prober(
             udp_target(ip, port),
-            ConnectShaping::default(),
+            Shaping::default(),
             SocketAddr::new(ip, port),
         )
         .await;
@@ -1299,7 +1162,7 @@ mod tests {
 
             let probed = udp_port_prober(
                 udp_target(ip, port),
-                ConnectShaping::default(),
+                Shaping::default(),
                 SocketAddr::new(ip, port),
             )
             .await;
@@ -1330,7 +1193,7 @@ mod tests {
         assert!(
             udp_port_prober(
                 target,
-                ConnectShaping::default(),
+                Shaping::default(),
                 SocketAddr::new(target.ip(), target.port()),
             )
             .await
@@ -1351,93 +1214,11 @@ mod tests {
             ttl: Some(12),
             ..Default::default()
         };
-        let shaping = ConnectShaping::from(&profile);
+        let shaping = Shaping::from(&profile);
 
         assert_eq!(shaping.source_port, Some(53));
         assert_eq!(shaping.hop_limit, Some(12));
         assert!(shaping.is_active());
-        assert!(!ConnectShaping::from(&EvasionProfile::default()).is_active());
-    }
-
-    /// A shaped connect leaves from the chosen source port and carries the chosen
-    /// hop limit: proven where it counts, on the wire, against a peer that reads
-    /// both back.
-    ///
-    /// The peer's view of the source port is the whole chain end to end: profile
-    /// to [`ConnectShaping`] to the bind. A version that ignored the source port
-    /// would show an ephemeral one here; one that skipped the hop limit would
-    /// show the OS default, not `9`.
-    #[tokio::test]
-    async fn a_shaped_connect_pins_its_source_port_and_hop_limit() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback listener");
-        let addr = listener.local_addr().expect("its address");
-
-        const PINNED: u16 = 40_517;
-        const HOPS: u8 = 9;
-        let shaping = ConnectShaping {
-            source_port: Some(PINNED),
-            hop_limit: Some(HOPS),
-        };
-
-        let accept = tokio::spawn(async move { listener.accept().await });
-        let stream = connect_shaped(addr, shaping)
-            .await
-            .expect("the shaped connect completes");
-        let (_accepted, peer) = accept
-            .await
-            .expect("the accept task joins")
-            .expect("an accept");
-
-        assert_eq!(
-            peer.port(),
-            PINNED,
-            "the SYN left from the pinned source port"
-        );
-        assert_eq!(
-            stream.ttl().expect("the socket's hop limit"),
-            u32::from(HOPS),
-            "the SYN carried the chosen hop limit"
-        );
-    }
-
-    /// A shaped UDP probe leaves from the chosen source port, read back off the
-    /// datagram the far side receives.
-    ///
-    /// The UDP socket is built by its own path, so it earns its own guard: one
-    /// that bound an ephemeral port instead of the pinned one would show a
-    /// different source port to the receiver.
-    #[tokio::test]
-    async fn a_shaped_udp_probe_pins_its_source_port() {
-        let server = UdpSocket::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback server");
-        let server_addr = server.local_addr().expect("its address");
-
-        const PINNED: u16 = 40_619;
-        let shaping = ConnectShaping {
-            source_port: Some(PINNED),
-            hop_limit: None,
-        };
-        let socket = shaped_udp_socket(IpAddr::V4(Ipv4Addr::LOCALHOST), shaping)
-            .await
-            .expect("a shaped UDP socket");
-        socket
-            .connect(server_addr)
-            .await
-            .expect("addressing the peer");
-        socket.send(b"probe").await.expect("sending the probe");
-
-        let mut buf = [0u8; 8];
-        let (_read, from) = server
-            .recv_from(&mut buf)
-            .await
-            .expect("the datagram arrives");
-        assert_eq!(
-            from.port(),
-            PINNED,
-            "the datagram left from the pinned source port"
-        );
+        assert!(!Shaping::from(&EvasionProfile::default()).is_active());
     }
 }
