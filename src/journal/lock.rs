@@ -318,30 +318,63 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    /// Empty, deliberately, and both arms of this module are stubs that refuse.
+    /// Empty, deliberately: the process id alone decides on Windows.
     ///
-    /// Windows is not a supported scanning host, so nothing here is exercised.
-    /// What it must not do is appear to work. `GetTickCount64` subtracted from
-    /// the wall clock looks constant within a boot, and it is not: the two are
-    /// read at different instants, the tick counter has a resolution of about
-    /// fifteen milliseconds, and it does not advance across some suspend
-    /// states. A value that moves within one boot reads every lock as
-    /// `RebootedUnder`, and `RebootedUnder` is resumable.
+    /// What the boot identity must be is constant within a boot and different
+    /// across one. `GetTickCount64` subtracted from the wall clock looks
+    /// constant within a boot, and it is not: the two are read at different
+    /// instants, the tick counter has a resolution of about fifteen
+    /// milliseconds, and it does not advance across some suspend states. A value
+    /// that moves within one boot reads every lock as `RebootedUnder`, and
+    /// `RebootedUnder` is resumable.
     ///
-    /// That matters because [`classify`](super::classify) reads the boot
-    /// identity first: a differing one returns before `pid_is_alive` is
-    /// reached, so the stub below could never deliver its refusal. Returning
-    /// the same value every time is what lets it. Two empty identities compare
-    /// equal, the pid decides, and the pid always says a scan may be running.
+    /// [`classify`](super::classify) reads the boot identity first, and two
+    /// empty identities compare equal, so [`pid_is_alive`] decides every lock.
+    /// What that costs is a lock left by a crash before a reboot, whose number
+    /// a different process has taken since: it reads as held and the journal is
+    /// refused, which is the direction a wrong answer has to fall.
     pub fn boot_identity() -> String {
         String::new()
     }
 
-    /// Always alive, which refuses a resume rather than permitting a second
-    /// writer. The safe direction for a stub, and reachable because the boot
-    /// identity above never differs.
-    pub fn pid_is_alive(_pid: u32) -> bool {
-        true
+    /// Whether a process with this id is running, as the unix arm asks it.
+    ///
+    /// Access denied means the process exists and belongs to somebody else,
+    /// which is the ordinary case for an elevated scan inspected from an
+    /// ordinary shell, so it reads as alive as `EPERM` does on unix. A query
+    /// that fails after the process was opened says nothing either way and
+    /// reads as alive too: a resume refused is a scan asked to wait, where a
+    /// resume allowed underneath a writer corrupts its journal.
+    pub fn pid_is_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, ERROR_ACCESS_DENIED, GetLastError, STILL_ACTIVE,
+        };
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // Zero is the idle process, which no scan runs as.
+        if pid == 0 {
+            return false;
+        }
+
+        // SAFETY: `OpenProcess` takes no pointers and returns a null handle
+        // on failure, which is checked before any use.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            // SAFETY: reads the calling thread's last-error value and nothing
+            // else.
+            return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
+        }
+
+        let mut code = 0u32;
+        // SAFETY: `handle` was opened above with the right to query, and `code`
+        // is a live `u32` the call writes the exit code into.
+        let answered = unsafe { GetExitCodeProcess(handle, &mut code) } != 0;
+        // SAFETY: `handle` was opened above and is not used again.
+        unsafe { CloseHandle(handle) };
+
+        !answered || code == STILL_ACTIVE as u32
     }
 }
 
@@ -607,45 +640,27 @@ mod persistence {
     ///
     /// See the argument at the call site. Held across three operations that have
     /// to be one, and dropped as soon as they are done.
-    #[cfg(unix)]
     struct Breaking {
-        /// Held for the descriptor alone: the advisory lock lives on the open
-        /// file, and the kernel releases it when this closes.
+        /// Held for the handle alone: the lock lives on the open file, and the
+        /// system releases it when this closes.
         _file: fs::File,
     }
 
-    #[cfg(unix)]
     impl Breaking {
         fn take(lock: &Path) -> std::io::Result<Self> {
-            use std::os::unix::io::AsRawFd;
-
             // Its own file rather than the lock, which is about to be removed:
-            // an advisory lock follows the open file, and removing the name it
-            // was taken on leaves the next process locking a different inode.
+            // the lock follows the open file, and removing the name it was
+            // taken on leaves the next process locking a different file.
             // Private and link-refusing like everything else a journal writes,
             // but opened rather than created: every racer has to reach the same
-            // inode, so winning the create is not what decides anything here. The
-            // `flock` below is.
+            // file, so winning the create is not what decides anything here. The
+            // lock below is.
             let file = open_or_create_private(&lock.with_extension("break"))?;
 
-            // SAFETY: the descriptor is owned by `file` and open for the call.
-            // `flock` waits for the lock, dereferences nothing, and the kernel
-            // releases it when `file` is closed or this process exits.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
+            // Waits for the exclusive lock: `flock` on unix and `LockFileEx` on
+            // Windows, released when `file` is closed or this process exits.
+            file.lock()?;
             Ok(Self { _file: file })
-        }
-    }
-
-    /// Nothing to serialise against: the platform has no journal to break.
-    #[cfg(not(unix))]
-    struct Breaking;
-
-    #[cfg(not(unix))]
-    impl Breaking {
-        fn take(_lock: &Path) -> std::io::Result<Self> {
-            Ok(Self)
         }
     }
 

@@ -143,8 +143,8 @@ pub(super) fn open_existing(path: &Path) -> std::io::Result<fs::File> {
 /// The one shape neither [`create_private`] nor [`create_staged`] fits: a file
 /// every racer must be able to *open*, where creating it is incidental and
 /// winning the create decides nothing. `journal::lock`'s `break` file is the
-/// only one, an advisory `flock` lives on the open descriptor, so what matters
-/// is that every process ends up on the same inode.
+/// only one: the lock taken on it lives on the open file, so what matters is
+/// that every process ends up on the same one.
 ///
 /// No truncate, because there is nothing in it to empty and a truncate would be
 /// one more thing a racer could do to a file another racer holds. The mode and

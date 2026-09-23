@@ -29,7 +29,7 @@
 //! [`crate::protocols::icmp`] emit whole Ethernet frames and so need a
 //! neighbour.
 
-use std::net::{IpAddr, Ipv6Addr, SocketAddrV6};
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 
 use pnet_packet::{
@@ -282,7 +282,7 @@ fn send_scoped(
     port: u16,
     zone: u32,
 ) -> std::io::Result<usize> {
-    let address = socket2::SockAddr::from(SocketAddrV6::new(destination, port, 0, zone));
+    let address = socket2::SockAddr::from(std::net::SocketAddrV6::new(destination, port, 0, zone));
 
     // SAFETY: the socket outlives the call, `bytes` is a live slice for its
     // length, and the address and its length come from the same `SockAddr`.
