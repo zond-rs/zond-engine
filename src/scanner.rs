@@ -678,15 +678,11 @@ async fn run_discovery(
     sctp_port: Option<u16>,
 ) {
     if caps.privilege.is_raw() {
-        // This host's own addresses are recorded up without being sent
-        // anything, so they are not among what the sweep reaches by connect.
-        let unframed = caps
-            .beyond_frames(&targets, &cfg.send_source, interface::FrameSender::Sweep)
-            .without(&interface::Unframed::Ours);
+        let unframed =
+            caps.beyond_frames(&targets, &cfg.send_source, interface::FrameSender::Sweep);
         let mut plan =
             plan::DiscoveryPlan::build(targets, reach, &cfg.exclusions, &cfg.send_source);
         plan.connect_instead(&unframed.targets);
-        orchestrator::announce_beyond_frames(&unframed, "discovery");
         if let Some(port) = sctp_port {
             plan.also_over_sctp(port);
         }

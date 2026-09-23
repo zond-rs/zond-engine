@@ -162,12 +162,7 @@ impl ScanCapabilities {
             // Which of the two routes carried it, because on macOS the second
             // one is what an unprivileged run gets and a reader who expected to
             // need sudo should see why they did not.
-            if frames_only {
-                success!(
-                    "link-layer access: probing with ARP, ICMPv6 and SYN as self-built frames, \
-                     and by TCP connect where a frame cannot reach"
-                );
-            } else if privilege::can_send_raw() {
+            if privilege::can_send_raw() {
                 success!("raw sockets available: probing with ARP, ICMPv6 and SYN");
             } else {
                 success!(
@@ -241,11 +236,13 @@ fn within_frames<T>(
         .collect()
 }
 
-/// Says once which targets a phase reaches by connect, and why each group is out
-/// of reach of the frames it would otherwise have been sent.
+/// Names the targets the port scan reaches by connect, and why, for a reader
+/// asking for detail.
 ///
-/// `who` is the phase, as the sentence names it.
-pub(super) fn announce_beyond_frames(beyond: &interface::BeyondFrames, who: &str) {
+/// Detail rather than news: the scan answers these ports either way, and the
+/// report's [`reached_by_connect`](crate::report::ScanPhase::reached_by_connect)
+/// is the record of it. One line, with one address named per reason.
+fn announce_beyond_frames(beyond: &interface::BeyondFrames) {
     if beyond.is_empty() {
         return;
     }
@@ -253,14 +250,14 @@ pub(super) fn announce_beyond_frames(beyond: &interface::BeyondFrames, who: &str
         .summary()
         .into_iter()
         .map(|(reason, first, count)| match count {
-            1 => format!("{first} is {reason}"),
-            more => format!("{first} and {} more are {reason}", more - 1),
+            1 => format!("{first} ({reason})"),
+            more => format!("{first} +{} ({reason})", more - 1),
         })
         .collect();
     info!(
-        "{who} asks {} by connect, beyond what self-built frames reach: {}",
-        counted(beyond.targets.len(), "target", "targets"),
-        reasons.join("; ")
+        verbosity = 1,
+        "port scan by connect: {}",
+        reasons.join(", ")
     );
 }
 
@@ -1829,7 +1826,7 @@ pub(super) async fn run_port_phase(
         probed = within(&probed, live);
     }
     let beyond = caps.beyond_frames(&probed, &cfg.send_source, interface::FrameSender::Probe);
-    announce_beyond_frames(&beyond, "the port scan");
+    announce_beyond_frames(&beyond);
     let raw = RawReach::of(&probed, beyond.targets.clone());
     let built = build_port_scanner(plan, ctx, target_count, cfg.probe_tuning(), &zones, &raw);
 

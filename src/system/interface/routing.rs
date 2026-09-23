@@ -381,19 +381,16 @@ pub(crate) enum Unframed {
     Neighbour(String),
 }
 
-/// Written to follow "is" or "are", since a message names one target of a
-/// reason and counts the rest.
+/// A few words, since a message puts one in brackets after the addresses it
+/// covers.
 impl std::fmt::Display for Unframed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Loopback => f.write_str("loopback"),
-            Self::Ours => f.write_str("held by this host"),
-            Self::Tunnel(link) => write!(f, "routed through {link}, which carries no frames"),
-            Self::NoRoute => f.write_str("not routed anywhere from this host"),
-            Self::Neighbour(link) => write!(
-                f,
-                "on {link} over IPv6, which the probe sender has no neighbour discovery for"
-            ),
+            Self::Ours => f.write_str("own address"),
+            Self::Tunnel(link) => write!(f, "via {link}"),
+            Self::NoRoute => f.write_str("no route"),
+            Self::Neighbour(link) => write!(f, "IPv6 on {link}"),
         }
     }
 }
@@ -430,22 +427,6 @@ impl BeyondFrames {
                 Some((reason.clone(), first, targets.len()))
             })
             .collect()
-    }
-
-    /// The same, with every target `reason` covered left out.
-    ///
-    /// For a phase that does something else with one kind of target: a
-    /// discovery sweep records this host's own addresses up without sending
-    /// them anything, so they are not what it reaches by connect.
-    pub(crate) fn without(mut self, reason: &Unframed) -> Self {
-        self.reasons.retain(|(held, _)| held != reason);
-        let mut targets = IpSet::new();
-        for (_, held) in &self.reasons {
-            extend(&mut targets, held);
-        }
-        targets.canonicalize();
-        self.targets = targets;
-        self
     }
 
     /// One reason and the addresses it covers.
@@ -1017,16 +998,6 @@ mod tests {
                 (Unframed::Loopback, ip("127.0.0.1"), 2),
                 (Unframed::Ours, ip("192.0.2.10"), 1),
             ]
-        );
-
-        let swept = beyond.without(&Unframed::Ours);
-        assert!(
-            !swept.targets.contains(&ip("192.0.2.10")),
-            "left out of the set as well as the reasons"
-        );
-        assert_eq!(
-            swept.summary(),
-            vec![(Unframed::Loopback, ip("127.0.0.1"), 2)]
         );
     }
 
