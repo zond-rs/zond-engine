@@ -3374,6 +3374,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::Famil
 pub zond_engine::export::schema::FindingDto::class: &'static str
 pub zond_engine::export::schema::FindingDto::confidence: &'static str
 pub zond_engine::export::schema::FindingDto::content_hash: &'a str
+pub zond_engine::export::schema::FindingDto::cpe: core::option::Option<&'a str>
 pub zond_engine::export::schema::FindingDto::excerpt: core::option::Option<&'a str>
 pub zond_engine::export::schema::FindingDto::id: &'a str
 pub zond_engine::export::schema::FindingDto::references: alloc::vec::Vec<zond_engine::export::schema::ReferenceDto<'a>>
@@ -7825,6 +7826,7 @@ pub fn zond_engine::model::finding::Finding::claim_id(&self) -> zond_engine::mod
 pub fn zond_engine::model::finding::Finding::class(&self) -> zond_engine::model::finding::DetectionClass
 pub fn zond_engine::model::finding::Finding::confidence(&self) -> zond_engine::model::confidence::Confidence
 pub fn zond_engine::model::finding::Finding::corroborate(&mut self, zond_engine::model::finding::Finding) -> bool
+pub fn zond_engine::model::finding::Finding::cpe(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::finding::Finding::detection(&self) -> &zond_engine::model::finding::DetectionId
 pub fn zond_engine::model::finding::Finding::excerpt(&self) -> &zond_engine::model::finding::Excerpt
 pub fn zond_engine::model::finding::Finding::new(zond_engine::model::finding::DetectionId, impl core::convert::Into<alloc::string::String>, zond_engine::model::finding::Severity, zond_engine::model::confidence::Confidence, zond_engine::model::finding::DetectionClass) -> core::result::Result<Self, zond_engine::model::finding::FindingError>
@@ -7832,6 +7834,7 @@ pub fn zond_engine::model::finding::Finding::references(&self) -> impl core::ite
 pub fn zond_engine::model::finding::Finding::remediation(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::finding::Finding::severity(&self) -> zond_engine::model::finding::Severity
 pub fn zond_engine::model::finding::Finding::title(&self) -> &str
+pub fn zond_engine::model::finding::Finding::with_cpe(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::model::finding::Finding::with_excerpt(self, zond_engine::model::finding::Excerpt) -> Self
 pub fn zond_engine::model::finding::Finding::with_reference(self, zond_engine::model::finding::Reference) -> Self
 pub fn zond_engine::model::finding::Finding::with_remediation(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -12841,6 +12844,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::FailureRecord
 pub struct zond_engine::record::FindingRecord
 pub zond_engine::record::FindingRecord::class: alloc::string::String
 pub zond_engine::record::FindingRecord::confidence: alloc::string::String
+pub zond_engine::record::FindingRecord::cpe: core::option::Option<alloc::string::String>
 pub zond_engine::record::FindingRecord::detection: zond_engine::record::DetectionIdRecord
 pub zond_engine::record::FindingRecord::excerpt: core::option::Option<alloc::string::String>
 pub zond_engine::record::FindingRecord::references: alloc::vec::Vec<zond_engine::record::ReferenceRecord>

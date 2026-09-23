@@ -652,6 +652,7 @@ fn hostile_finding() -> Finding {
     .with_excerpt(Excerpt::new(HOSTILE))
     .with_reference(Reference::url(HOSTILE))
     .with_remediation(HOSTILE)
+    .with_cpe(HOSTILE)
 }
 
 fn hostile_host() -> Host {

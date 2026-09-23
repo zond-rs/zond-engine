@@ -890,6 +890,13 @@ pub struct FindingRecord {
     /// advice at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
+    /// The platform identifier a correlation drew it from, if it was drawn
+    /// from one.
+    ///
+    /// Omitted when absent, for the reason `remediation` is, and absent from
+    /// every finding a correlation did not draw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpe: Option<String>,
 }
 
 impl From<&Finding> for FindingRecord {
@@ -903,6 +910,7 @@ impl From<&Finding> for FindingRecord {
             excerpt: (!finding.excerpt().is_empty()).then(|| finding.excerpt().as_str().to_owned()),
             references: finding.references().map(ReferenceRecord::from).collect(),
             remediation: finding.remediation().map(str::to_owned),
+            cpe: finding.cpe().map(str::to_owned),
         }
     }
 }
@@ -934,6 +942,9 @@ impl FindingRecord {
         }
         if let Some(remediation) = &self.remediation {
             finding = finding.with_remediation(remediation.clone());
+        }
+        if let Some(cpe) = &self.cpe {
+            finding = finding.with_cpe(cpe.clone());
         }
         for reference in self.references.iter().filter_map(ReferenceRecord::rebuild) {
             finding = finding.with_reference(reference);
@@ -2578,6 +2589,7 @@ mod tests {
         .with_reference(Reference::cwe(22))
         .with_reference(Reference::url("https://grafana.com/security/"))
         .with_remediation("Upgrade to 8.3.1 or later.")
+        .with_cpe("cpe:/a:grafana:grafana:8.3.0")
     }
 
     #[test]
@@ -2610,6 +2622,7 @@ mod tests {
                 value: "x".into(),
             }],
             remediation: None,
+            cpe: None,
         };
         let finding = softened
             .rebuild()

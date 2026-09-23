@@ -516,6 +516,16 @@ pub struct Finding {
     /// because what produced them is deterministic.
     references: Vec<Reference>,
     remediation: Option<String>,
+    /// The platform identifier the finding was drawn from, for one a
+    /// vulnerability correlation drew from a service's CPE.
+    ///
+    /// Carried as a field rather than left to the excerpt, which quotes it for
+    /// a person. A correlation rests on the identification it matched, and
+    /// [`merge`](crate::merge) has to ask whether a newer scan still backs that
+    /// identification before carrying the finding past it; the excerpt is not
+    /// a parser's to read, and the detection id names a catalogue anybody may
+    /// write rather than the correlator.
+    cpe: Option<String>,
 }
 
 impl Finding {
@@ -546,6 +556,7 @@ impl Finding {
             excerpt: Excerpt::default(),
             references: Vec::new(),
             remediation: None,
+            cpe: None,
         })
     }
 
@@ -570,6 +581,16 @@ impl Finding {
     #[must_use]
     pub fn with_remediation(mut self, remediation: impl Into<String>) -> Self {
         self.remediation = Some(remediation.into());
+        self
+    }
+
+    /// Records the platform identifier the finding was drawn from.
+    ///
+    /// For a correlation, which draws a finding from a CPE a service carries.
+    /// A finding drawn from anything else carries none.
+    #[must_use]
+    pub fn with_cpe(mut self, cpe: impl Into<String>) -> Self {
+        self.cpe = Some(cpe.into());
         self
     }
 
@@ -612,6 +633,13 @@ impl Finding {
     /// The remediation advice, if any. Untrusted; escape before display.
     pub fn remediation(&self) -> Option<&str> {
         self.remediation.as_deref()
+    }
+
+    /// The platform identifier a correlation drew this finding from, or
+    /// `None` for a finding drawn from anything else. Untrusted: a scanned
+    /// host's banner chose it, so escape before display.
+    pub fn cpe(&self) -> Option<&str> {
+        self.cpe.as_deref()
     }
 
     /// The key that decides whether this finding and another are the same claim.
@@ -679,8 +707,11 @@ impl Finding {
     /// [`Service::merge`](crate::model::port::Service::merge) unions CPEs: a
     /// reference is a pointer that applies, not a verdict that competes.
     ///
-    /// The excerpt and the remediation travel with the verdict where there is
-    /// one to take, and fill a gap where there is not.
+    /// The excerpt, the remediation and the platform identifier travel with the
+    /// verdict where there is one to take, and fill a gap where there is not.
+    /// The identifier goes with the excerpt, which quotes it: two accounts of
+    /// one correlation drawn from two identifiers are one claim, and the one
+    /// the finding says it rests on is the one its text names.
     pub fn corroborate(&mut self, other: Finding) -> bool {
         // Destructured rather than reached through `other.…`, so a field added
         // to this struct is a compile error here and not a value that quietly
@@ -694,6 +725,7 @@ impl Finding {
             excerpt,
             references,
             remediation,
+            cpe,
         } = other;
 
         let mut changed = false;
@@ -735,6 +767,10 @@ impl Finding {
                 self.remediation = remediation;
                 changed = true;
             }
+            if cpe.is_some() && cpe != self.cpe {
+                self.cpe = cpe;
+                changed = true;
+            }
         } else {
             // Superseded. What it justified itself with is still better than
             // nothing where nothing is recorded, and cannot displace what is.
@@ -744,6 +780,10 @@ impl Finding {
             }
             if self.remediation.is_none() && remediation.is_some() {
                 self.remediation = remediation;
+                changed = true;
+            }
+            if self.cpe.is_none() && cpe.is_some() {
+                self.cpe = cpe;
                 changed = true;
             }
         }
@@ -1094,6 +1134,44 @@ mod tests {
         let mut carrying = account(Version::new(2, 0, 0)).with_excerpt(Excerpt::new("READONLY"));
         carrying.corroborate(account(Version::new(1, 0, 0)).with_excerpt(Excerpt::new("older")));
         assert_eq!(carrying.excerpt().as_str(), "READONLY");
+    }
+
+    /// The identifier a correlation names goes with the excerpt that quotes
+    /// it: the current reading's where there is one, and a superseded one's
+    /// only where the record names none.
+    #[test]
+    fn a_correlations_identifier_travels_with_the_verdict() {
+        let drawn = |version: Version, cpe: &str| {
+            Finding::new(
+                DetectionId::new("zond:cve-kev", version, "hash").unwrap(),
+                "http_server 2.4.49 has 1 known vulnerability",
+                Severity::Critical,
+                Confidence::Probable,
+                DetectionClass::Passive,
+            )
+            .unwrap()
+            .with_reference(Reference::cve("CVE-2021-41773").unwrap())
+            .with_cpe(cpe)
+        };
+        let january = "cpe:/a:apache:http_server:2.4.49";
+        let june = "cpe:/a:apache:http_server:2.4.50";
+
+        let mut current = drawn(Version::new(1, 0, 0), january);
+        assert!(current.corroborate(drawn(Version::new(1, 0, 0), june)));
+        assert_eq!(current.cpe(), Some(june), "the later reading's identifier");
+
+        let mut newer = drawn(Version::new(2, 0, 0), june);
+        newer.corroborate(drawn(Version::new(1, 0, 0), january));
+        assert_eq!(
+            newer.cpe(),
+            Some(june),
+            "a superseded one does not displace it"
+        );
+
+        let mut bare = drawn(Version::new(2, 0, 0), june);
+        bare.cpe = None;
+        assert!(bare.corroborate(drawn(Version::new(1, 0, 0), january)));
+        assert_eq!(bare.cpe(), Some(january), "but fills the gap");
     }
 
     #[test]

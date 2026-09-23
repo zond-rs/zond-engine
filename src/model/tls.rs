@@ -2011,29 +2011,83 @@ impl TlsSupport {
         }
         let claim = finding.claim_id();
 
-        let rests_on: Vec<TlsVersion> = basis
-            .versions
-            .iter()
-            .filter(|held| {
-                let alone = TlsSupport::new().accepting((*held).clone());
-                alone.claims().contains(&claim)
-            })
-            .map(|held| held.version)
-            .collect();
+        let rests_on = basis.resting(&claim);
         if rests_on.is_empty() {
             return None;
         }
 
         if self.claims().contains(&claim) {
-            return Some(Standing::Upheld);
-        }
-        let unfinished =
-            |version: &TlsVersion| self.unfinished.iter().any(|held| held.version == *version);
-        if self.is_empty() || rests_on.iter().any(unfinished) {
+            Some(Standing::Upheld)
+        } else if rests_on
+            .into_iter()
+            .any(|version| self.leaves_open(version))
+        {
             Some(Standing::Unsettled)
         } else {
             Some(Standing::Overturned)
         }
+    }
+
+    /// The excerpt `finding`, drawn from `basis`, should carry beside this
+    /// record, or `None` where the one it was written with already fits.
+    ///
+    /// A claim's excerpt lists the evidence behind it, the suites carrying a
+    /// fault under every version that accepts one, and carried beside a record
+    /// that holds other evidence it would name what that record does not say.
+    /// Where this record upholds the claim, the excerpt is the one this record
+    /// draws for it. Where it leaves the claim unsettled, it is the one `basis`
+    /// draws from the versions this record left open, since a version this
+    /// record finished has its own answer and a suite `basis` found there is
+    /// no part of why the claim still stands. A claim this record overturned,
+    /// or one with no [`standing`](Self::standing) here, is not this function's
+    /// to word.
+    ///
+    /// `None` too where the excerpt comes out as the one `basis` itself draws,
+    /// which is what makes a finding whose evidence did not move travel as it
+    /// was written, in whatever words the build that wrote it chose.
+    pub(crate) fn restate(&self, finding: &Finding, basis: &TlsSupport) -> Option<Excerpt> {
+        let claim = finding.claim_id();
+        let excerpt = |record: &TlsSupport| {
+            record
+                .findings()
+                .into_iter()
+                .find(|drawn| drawn.claim_id() == claim)
+                .map(|drawn| drawn.excerpt().clone())
+        };
+
+        let restated = match self.standing(finding, basis)? {
+            Standing::Upheld => excerpt(self),
+            Standing::Unsettled => excerpt(&TlsSupport {
+                versions: basis
+                    .versions
+                    .iter()
+                    .filter(|held| self.leaves_open(held.version))
+                    .cloned()
+                    .collect(),
+                unfinished: Vec::new(),
+            }),
+            Standing::Overturned => None,
+        }?;
+        (excerpt(basis).as_ref() != Some(&restated)).then_some(restated)
+    }
+
+    /// The versions a claim drawn from this record rests on: those whose
+    /// accepted suites draw it on their own.
+    fn resting(&self, claim: &ClaimId) -> Vec<TlsVersion> {
+        self.versions
+            .iter()
+            .filter(|held| {
+                let alone = TlsSupport::new().accepting((*held).clone());
+                alone.claims().contains(claim)
+            })
+            .map(|held| held.version)
+            .collect()
+    }
+
+    /// Whether this record left `version` unsettled: its walk there was cut
+    /// short, or this record made no walk at all.
+    fn leaves_open(&self, version: TlsVersion) -> bool {
+        self.is_empty() || self.unfinished.iter().any(|held| held.version == version)
     }
 
     /// Every claim [`findings`](Self::findings) draws from this record.

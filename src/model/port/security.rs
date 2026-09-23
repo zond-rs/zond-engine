@@ -235,6 +235,22 @@ impl Security {
         self.support.standing(finding, &basis.support)
     }
 
+    /// The excerpt `finding`, drawn from `basis`, should carry beside this
+    /// record, or `None` where the one it was written with already fits.
+    ///
+    /// Only a claim drawn from what the endpoint accepts can need one: its
+    /// excerpt lists suites under versions, and this record may hold other
+    /// accounts of those versions than `basis` did. [`TlsSupport::restate`]
+    /// says how it is worded. A posture claim this record upholds rests on the
+    /// same certificate, and its excerpt, drawn from those bytes, already
+    /// fits.
+    pub(crate) fn restate(&self, finding: &Finding, basis: &Security) -> Option<Excerpt> {
+        if finding.detection().id() == CERTIFICATE_DETECTION {
+            return None;
+        }
+        self.support.restate(finding, &basis.support)
+    }
+
     /// Whether the certificate is valid *now*, by this machine's clock.
     ///
     /// For a caller acting on a live scan. Anything reading a scan back

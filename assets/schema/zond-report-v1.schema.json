@@ -1022,6 +1022,10 @@
         "remediation": {
           "description": "Remediation advice, if the detection carried any. Untrusted.",
           "type": "string"
+        },
+        "cpe": {
+          "description": "The platform identifier a vulnerability correlation drew the finding from: the claim rests on the service identification it names. Absent from a finding drawn from anything else. Untrusted.",
+          "type": "string"
         }
       }
     },

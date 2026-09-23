@@ -1517,6 +1517,7 @@ struct FindingDto {
     excerpt: Option<String>,
     references: Vec<ReferenceDto>,
     remediation: Option<String>,
+    cpe: Option<String>,
 }
 
 impl FindingDto {
@@ -1559,6 +1560,7 @@ impl FindingDto {
                 .map(ReferenceDto::record)
                 .collect(),
             remediation: self.remediation,
+            cpe: self.cpe,
         })
     }
 }
@@ -2446,5 +2448,34 @@ mod tests {
             "host findings {hosts_before} -> {hosts_after}, port findings \
              {ports_before} -> {ports_after}"
         );
+    }
+
+    /// A correlation comes back naming the identifier it was drawn from.
+    ///
+    /// Merging archived documents is how a merge usually meets a correlation,
+    /// and it decides whether to carry one past a newer identification by that
+    /// identifier. Read back without it, every correlation in an archive would
+    /// outlive the service version it was drawn from.
+    #[test]
+    fn a_correlation_keeps_the_identifier_it_was_drawn_from() {
+        let (original, restored) = round_trip();
+
+        let identifiers = |report: &ScanReport| -> Vec<(String, String)> {
+            report
+                .hosts()
+                .flat_map(|host| host.ports())
+                .flat_map(|port| port.findings())
+                .filter_map(|finding| {
+                    let cpe = finding.cpe()?;
+                    Some((finding.title().to_owned(), cpe.to_owned()))
+                })
+                .collect()
+        };
+
+        assert!(
+            !identifiers(&original).is_empty(),
+            "the fixture must carry a correlation for this to test anything"
+        );
+        assert_eq!(identifiers(&restored), identifiers(&original));
     }
 }

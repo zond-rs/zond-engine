@@ -38,7 +38,9 @@
 //! So a merge is lossy in one way, stated once. Where two sources give different
 //! answers to the same question, one answer wins and the other is only in the
 //! input file. Everything that accumulates does accumulate: addresses, endpoints,
-//! hardware addresses, CPEs, roles and status reasons.
+//! hardware addresses, roles and status reasons. A service's CPEs are not on
+//! that list. Each one names a version of a product, so it is an answer to
+//! what is running, and it goes with the identification it was read from.
 //!
 //! ## The rule: a later source overrides only where it made a claim
 //!
@@ -73,21 +75,27 @@
 //! detection that did not fire rather than a claim that the subject is clean.
 //! The exception is a finding the newer scan's own evidence refutes, and that
 //! can be seen only where the evidence a finding rests on is in the report
-//! beside it. Two derivations draw from such evidence: what a TLS endpoint
-//! accepts, whose claims rest on the versions whose walk drew them, and the
+//! beside it. Three derivations draw from such evidence: what a TLS endpoint
+//! accepts, whose claims rest on the versions whose walk drew them; the
 //! certificate an endpoint presents, whose posture claims rest on that
-//! certificate. Where the folded record settled what such a claim rests on
-//! and does not draw it, as where a newer walk finished and found TLS 1.0
-//! refused or a newer scan was shown a different certificate, the claim is
-//! dropped. Where the folded record left it unsettled, as where the newer walk
-//! was cut short before it got there, the claim stands.
+//! certificate; and a vulnerability correlation, whose claims rest on the
+//! platform identifier each names. Where the folded record settled what such a
+//! claim rests on and does not draw it, as where a newer walk finished and
+//! found TLS 1.0 refused, a newer scan was shown a different certificate, or a
+//! newer scan identified another version of the service, the claim is dropped.
+//! Where the folded record left it unsettled, as where the newer walk was cut
+//! short before it got there, the claim stands.
+//!
+//! A claim that stands is worded from the folded record. A fault's excerpt
+//! names the suites that carry it, and the folded record may hold one version
+//! from one scan and the next from another, so the words an older scan wrote
+//! can name a suite under a version the merged report says is refused. The
+//! verdict stays the scan's own; the excerpt is restated wherever the evidence
+//! under the claim moved, and nowhere else.
 //!
 //! Every other finding is kept whatever a newer scan found, because nothing in
 //! the report says what it rests on. A detection's finding rests on an exchange
-//! the report keeps no account of. A vulnerability correlation rests on a
-//! service's platform identifiers, and a fold keeps every identifier any
-//! account recorded, so the identifier an older correlation matched is still
-//! on the merged service however the newer scan identified it.
+//! the report keeps no account of.
 //!
 //! ### What a merge does not enforce, and a scan does
 //!
@@ -646,12 +654,14 @@ fn fold_port(accounts: &[&Port]) -> Port {
 
     // As on the host, and for the same reason, less every claim the folded
     // record overturned. That record is what the report will say the endpoint
-    // accepts and presents, and a finding it refutes carried beside it would
-    // have the one port say both.
+    // runs, accepts and presents, and a finding it refutes carried beside it
+    // would have the one port say both. A claim it keeps is worded from it,
+    // for the same reason: an excerpt listing what an older account accepted
+    // would name suites the folded record says are refused.
     for account in accounts {
         for finding in account.findings() {
             if !overturned(finding, account, &port) {
-                port.add_finding(finding.clone());
+                port.add_finding(worded(finding, account, &port));
             }
         }
     }
@@ -666,7 +676,20 @@ fn fold_port(accounts: &[&Port]) -> Port {
 /// drawn from, against the folded one. The fold takes each part of that record
 /// from the newest account that settled it, so what overturns a claim here is
 /// always a newer account that settled what the claim rests on.
+///
+/// A correlation rests on the platform identifier it names, and is overturned
+/// where the account's service carried that identifier and the folded one does
+/// not: [`fold_service`] keeps an identifier only while the identification it
+/// was read from stands. An identifier the account's own service does not
+/// carry is not evidence the report holds, and the claim is left alone.
 fn overturned(finding: &Finding, account: &Port, folded: &Port) -> bool {
+    if let Some(cpe) = finding.cpe() {
+        let carries = |port: &Port| {
+            port.service()
+                .is_some_and(|service| service.cpes().contains(cpe))
+        };
+        return carries(account) && !carries(folded);
+    }
     match (folded.security(), account.security()) {
         (Some(folded), Some(basis)) => {
             folded.standing(finding, basis) == Some(Standing::Overturned)
@@ -675,22 +698,76 @@ fn overturned(finding: &Finding, account: &Port, folded: &Port) -> bool {
     }
 }
 
+/// A finding one account of an endpoint carried, worded for the folded record
+/// it will be carried beside.
+///
+/// The verdict, the provenance and the references are the account's. Only the
+/// excerpt can move, where it lists evidence the folded record holds other
+/// accounts of; [`Security::restate`] says when.
+fn worded(finding: &Finding, account: &Port, folded: &Port) -> Finding {
+    let restated = match (folded.security(), account.security()) {
+        (Some(folded), Some(basis)) => folded.restate(finding, basis),
+        _ => None,
+    };
+    match restated {
+        Some(excerpt) => finding.clone().with_excerpt(excerpt),
+        None => finding.clone(),
+    }
+}
+
 /// The service one endpoint is running, from every account of it.
 ///
 /// The identity moves as a unit. Letting the newest win and filling in what it
 /// left blank would splice an older `Apache` with a newer `nginx` and produce
 /// `nginx 2.4`, a finding nobody made. So name, product, vendor, version, extra
-/// info and confidence all come from the newest account that named a service.
+/// info and confidence all come from the newest account that identified a
+/// service.
+///
+/// Identified, rather than named. A service
+/// [inferred](Service::is_inferred) from the port number is the label every
+/// scan path seeds a classified port with, and one run without service
+/// detection leaves it there: silence wearing a variant, as `Unknown` is for a
+/// host's status, and it names the endpoint only where no account identified
+/// anything. Taken as the newest word, a quick port scan folded over a
+/// thorough one would replace `Apache httpd 2.4.49` with a bare `http` and
+/// retire every correlation drawn from it.
 ///
 /// An older account may still enrich it, on one condition: it has to be talking
 /// about the same service. Where the name and the product agree, its version and
 /// extra info are more detail about one finding and belong.
 ///
-/// CPEs come from every account whatever it named, which is
-/// [`Service::merge`]'s rule kept: a CPE is not a claim about which service this
-/// is, it is a claim that an identifier applies.
+/// CPEs follow the identification, and from an older account only where it
+/// names the same service and no other version than the folded one. A CPE is
+/// a whole identity, vendor and product and version in one string, and the
+/// correlation joins on it, so one read off an identification the newer scan
+/// replaced would have the port matched against the vulnerabilities of
+/// software it no longer runs: Apache's beside `nginx`, or 2.4.49's beside
+/// 2.4.58. That is the false finding the service verdict already refuses to
+/// make within one scan, where a CPE travels only with the product that won.
+/// An older account that stated no version contradicts none, and its
+/// identifiers stand beside the newer ones.
+///
+/// [`Service::merge`] unions every identifier, and that is its rule rather than
+/// this one's. It folds the probes of one scan, which read one listener at one
+/// time; here the accounts are months apart, and the newer is the one that says
+/// what is running.
 fn fold_service(accounts: &[&Port]) -> Option<Service> {
-    let newest = newest_claim_port(accounts, |port| port.service())?;
+    fn identified(port: &Port) -> Option<&Service> {
+        port.service().filter(|service| !service.is_inferred())
+    }
+    let newest = newest_claim_port(accounts, identified)
+        .or_else(|| newest_claim_port(accounts, Port::service))?;
+
+    // Every other identification, newest first. The fold's own is left out by
+    // identity rather than by position, since a newer account may hold a label
+    // the fold passed over.
+    let others = || {
+        accounts
+            .iter()
+            .rev()
+            .filter_map(|account| identified(account))
+            .filter(|other| !std::ptr::eq(*other, newest))
+    };
 
     let mut folded = Service::new(newest.name(), newest.confidence());
     if let Some(product) = newest.product() {
@@ -706,13 +783,7 @@ fn fold_service(accounts: &[&Port]) -> Option<Service> {
         folded = folded.with_extrainfo(extrainfo);
     }
 
-    for older in accounts
-        .iter()
-        .rev()
-        .filter_map(|account| account.service())
-        .skip(1)
-        .filter(|older| same_service(newest, older))
-    {
+    for older in others().filter(|older| same_service(newest, older)) {
         if folded.vendor().is_none()
             && let Some(vendor) = older.vendor()
         {
@@ -730,11 +801,16 @@ fn fold_service(accounts: &[&Port]) -> Option<Service> {
         }
     }
 
-    for cpe in accounts
-        .iter()
-        .filter_map(|account| account.service())
-        .flat_map(Service::cpes)
-    {
+    // Newest first, so the cap, if a banner ever fills it, keeps the
+    // identifiers of the identification the fold reports.
+    let version = folded.version().map(str::to_owned);
+    let agreeing = others().filter(|older| {
+        same_service(newest, older)
+            && older
+                .version()
+                .is_none_or(|stated| version.as_deref() == Some(stated))
+    });
+    for cpe in newest.cpes().iter().chain(agreeing.flat_map(Service::cpes)) {
         folded.add_cpe(Arc::clone(cpe));
     }
 
@@ -757,7 +833,10 @@ fn same_service(newest: &Service, older: &Service) -> bool {
 /// from the newest account that named a system. An older account naming the same
 /// system contributes the kernel, the architecture, the device class, the detail
 /// accuracy and the evidence line where the newer one carried none, and every
-/// account contributes CPEs.
+/// account contributes CPEs. That last part is where the two differ: the
+/// service fold keeps only the identifiers of the identification it reports,
+/// because the vulnerability correlation joins on them, and nothing joins on
+/// an operating system's.
 ///
 /// Identity here is name, family, generation and vendor.
 /// [`diff::host`](crate::diff::host) has a `same_system` of its own that also
@@ -1308,12 +1387,22 @@ mod tests {
         );
     }
 
-    /// A CPE is not a claim about which service this is, it is a claim that an
-    /// identifier applies, so a reading that lost the identity vote can still
-    /// have extracted a valid one. `Service::merge` and `OsFingerprint::merge`
-    /// both make this exception and both record that dropping them cost findings.
+    /// The CPEs host 1's port 80 carries in `report`, ascending.
+    fn cpes_on(report: &ScanReport) -> Vec<String> {
+        service_on(report, 1, 80)
+            .map(|service| service.cpes().iter().map(|cpe| cpe.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// A CPE is a whole identity, and one read off an identification a newer
+    /// scan replaced goes with it.
+    ///
+    /// Kept beside `nginx`, Apache's identifier would have the correlation
+    /// match the port against Apache's vulnerabilities while the report names
+    /// something else, which the service verdict refuses to do within one scan
+    /// and a merge must not do across two.
     #[test]
-    fn a_cpe_from_a_reading_that_lost_the_vote_is_still_recorded() {
+    fn a_cpe_goes_with_the_identification_it_was_read_from() {
         let older = with_port(
             host(1),
             Port::new(80, TCP, PortState::Open).with_service(
@@ -1336,8 +1425,72 @@ mod tests {
             report("newer", day(200), vec![newer]),
         ]);
 
-        let service = service_on(&merged, 1, 80).expect("a service");
-        assert_eq!(service.cpes().len(), 2, "both identifiers apply");
+        assert_eq!(cpes_on(&merged), ["cpe:/a:nginx:nginx"]);
+    }
+
+    /// The positive half. An older reading of the same service that states no
+    /// other version contradicts nothing, so its identifiers stand, and one
+    /// whose version the fold took because the newer reading had none is the
+    /// identification the fold reports.
+    #[test]
+    fn an_older_identifier_of_the_same_service_at_no_other_version_stands() {
+        let apache = |version: Option<&str>, cpe: Option<&str>| {
+            let mut service = Service::new("http", 90).with_product("Apache httpd");
+            if let Some(version) = version {
+                service = service.with_version(version);
+            }
+            if let Some(cpe) = cpe {
+                service = service.with_cpe(cpe);
+            }
+            with_port(
+                host(1),
+                Port::new(80, TCP, PortState::Open).with_service(service),
+            )
+        };
+
+        let versionless_then = merged(vec![
+            report(
+                "older",
+                day(0),
+                vec![apache(None, Some("cpe:/a:apache:http_server"))],
+            ),
+            report(
+                "newer",
+                day(200),
+                vec![apache(
+                    Some("2.4.58"),
+                    Some("cpe:/a:apache:http_server:2.4.58"),
+                )],
+            ),
+        ]);
+        assert_eq!(
+            cpes_on(&versionless_then),
+            [
+                "cpe:/a:apache:http_server",
+                "cpe:/a:apache:http_server:2.4.58"
+            ]
+        );
+
+        let versionless_now = merged(vec![
+            report(
+                "older",
+                day(0),
+                vec![apache(
+                    Some("2.4.1"),
+                    Some("cpe:/a:apache:http_server:2.4.1"),
+                )],
+            ),
+            report("newer", day(200), vec![apache(None, None)]),
+        ]);
+        assert_eq!(
+            service_on(&versionless_now, 1, 80).and_then(|s| s.version().map(str::to_owned)),
+            Some("2.4.1".to_owned())
+        );
+        assert_eq!(
+            cpes_on(&versionless_now),
+            ["cpe:/a:apache:http_server:2.4.1"],
+            "the version the fold reports brings the identifier read with it"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2019,6 +2172,247 @@ mod tests {
             ),
         ]);
         assert!(findings_on(&kept).contains(&self_signed));
+    }
+
+    /// The finding host 1's 443 carries under `title` in `report`.
+    fn finding_on(report: &ScanReport, title: &str) -> Option<crate::model::finding::Finding> {
+        report
+            .hosts()
+            .next()
+            .and_then(|host| host.ports().find(|port| port.number() == 443))
+            .and_then(|port| port.findings().find(|f| f.title() == title).cloned())
+    }
+
+    /// January accepted an RC4 suite under TLS 1.0 and another under TLS 1.2,
+    /// each walk finished.
+    fn rc4_under_ten_and_twelve() -> TlsSupport {
+        TlsSupport::new()
+            .accepting(VersionSupport::new(
+                TlsVersion::Tls10,
+                vec![suite(0x0005)],
+                vec![],
+            ))
+            .accepting(VersionSupport::new(
+                TlsVersion::Tls12,
+                vec![suite(0xC011)],
+                vec![],
+            ))
+    }
+
+    const RC4: &str = "cipher suites accepted with RC4, prohibited by RFC 7465";
+
+    /// **A finding carried beside a folded record says what that record
+    /// holds.**
+    ///
+    /// February finished TLS 1.0 and found it refused, and was cut short in
+    /// TLS 1.2 having found nothing, so the fold takes February's TLS 1.0 and
+    /// January's TLS 1.2. The RC4 claim still stands on TLS 1.2. January's
+    /// text for it lists the suite it accepted under TLS 1.0 as well, and
+    /// carried as it was written, the merged port would name a suite under a
+    /// version its own record says is refused.
+    #[test]
+    fn a_carried_fault_names_only_the_suites_the_folded_record_accepts() {
+        use TlsVersion::{Tls12, Tls13};
+
+        let february = TlsSupport::new()
+            .accepting(VersionSupport::new(Tls13, vec![suite(0x1301)], vec![]))
+            .leaving_unfinished(UnfinishedVersion::new(Tls12, Interruption::Unanswered));
+        let january = rc4_under_ten_and_twelve();
+        assert!(
+            finding_on(
+                &merged(vec![report(
+                    "january",
+                    day(1),
+                    vec![audited(january.clone())]
+                )]),
+                RC4
+            )
+            .is_some_and(|f| f.excerpt().as_str().contains("TLS_RSA_WITH_RC4_128_SHA")),
+            "test premise: January's own text names the TLS 1.0 suite"
+        );
+
+        let merged = merged(vec![
+            report("january", day(1), vec![audited(january)]),
+            report("february", day(2), vec![audited(february)]),
+        ]);
+
+        let support = support_on(&merged);
+        assert!(!support.accepts(TlsVersion::Tls10), "February's TLS 1.0");
+        assert!(support.accepts(Tls12), "January's TLS 1.2");
+
+        let carried = finding_on(&merged, RC4).expect("the claim stands on TLS 1.2");
+        assert_eq!(
+            carried.excerpt().as_str(),
+            "1 of the accepted suites carry this: TLS_ECDHE_RSA_WITH_RC4_128_SHA",
+            "the text names a suite the merged record does not accept"
+        );
+    }
+
+    /// The same where the claim stands only because the fold left it
+    /// unsettled: the text keeps the part of the older account nothing newer
+    /// contradicts.
+    ///
+    /// February was cut short in TLS 1.2 having found a suite January does not
+    /// list, so its walk stands there as the configuration now, and nothing
+    /// in the folded record draws the RC4 claim. It stands because what
+    /// January found under TLS 1.2 lies past where February stopped. Under
+    /// TLS 1.0 February finished and was refused, so January's suite there is
+    /// not part of what keeps the claim.
+    #[test]
+    fn an_unsettled_fault_names_only_the_suites_nothing_newer_refused() {
+        use TlsVersion::{Tls12, Tls13};
+
+        let february = TlsSupport::new()
+            .accepting(VersionSupport::new(Tls12, vec![suite(0xC02F)], vec![]))
+            .leaving_unfinished(UnfinishedVersion::new(Tls12, Interruption::Stopped))
+            .accepting(VersionSupport::new(Tls13, vec![suite(0x1301)], vec![]));
+
+        let merged = merged(vec![
+            report("january", day(1), vec![audited(rc4_under_ten_and_twelve())]),
+            report("february", day(2), vec![audited(february.clone())]),
+        ]);
+
+        assert_eq!(support_on(&merged), february, "February's walk stands");
+        let carried = finding_on(&merged, RC4).expect("the claim is unsettled, so it stands");
+        assert_eq!(
+            carried.excerpt().as_str(),
+            "1 of the accepted suites carry this: TLS_ECDHE_RSA_WITH_RC4_128_SHA",
+        );
+    }
+
+    /// Where nothing moved under a claim, the finding is carried as it was
+    /// written, in the words of whatever build wrote it. A merge of one report
+    /// is that report, and a merge that reworded every finding it carried
+    /// would rewrite a document it had no newer evidence about.
+    #[test]
+    fn a_fault_whose_evidence_did_not_move_is_carried_as_written() {
+        let support = rc4_under_ten_and_twelve();
+        let written = support
+            .findings()
+            .into_iter()
+            .find(|finding| finding.title() == RC4)
+            .expect("the RC4 claim")
+            .with_excerpt(crate::model::finding::Excerpt::new(
+                "RC4 is negotiated under TLS 1.0 and TLS 1.2",
+            ));
+        let mut port = Port::new(443, TCP, PortState::Open)
+            .with_security(Security::new().with_support(support));
+        port.add_finding(written.clone());
+        let account = with_port(host(1), port);
+
+        let merged = merged(vec![
+            report("january", day(1), vec![account.clone()]),
+            report("february", day(2), vec![account]),
+        ]);
+
+        assert_eq!(finding_on(&merged, RC4), Some(written));
+    }
+
+    /// Port 80 of host 1 serving Apache httpd `version`, identified the way
+    /// the service pass names it and correlated against the shipped catalogue
+    /// the way a scan's correlation step does.
+    fn serving_apache(version: &str) -> Host {
+        let service = Service::new("http", 90)
+            .with_product("Apache httpd")
+            .with_version(version)
+            .with_cpe(format!("cpe:/a:apache:http_server:{version}"));
+        let mut host = with_port(
+            host(1),
+            Port::new(80, TCP, PortState::Open).with_service(service),
+        );
+        crate::cve::correlate(&mut host);
+        host
+    }
+
+    fn claims_on_80(report_or_host: impl IntoIterator<Item = Host>) -> Vec<String> {
+        let mut claims: Vec<String> = report_or_host
+            .into_iter()
+            .flat_map(|host| {
+                host.ports()
+                    .filter(|port| port.number() == 80)
+                    .flat_map(|port| port.findings().map(|f| f.title().to_owned()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        claims.sort();
+        claims
+    }
+
+    /// **A correlation goes with the identification it was drawn from.**
+    ///
+    /// January read Apache httpd 2.4.49, the path-traversal release, and the
+    /// correlation drew its vulnerabilities from that identifier. June read
+    /// 2.4.58 on the same port. The merged service is June's, and a January
+    /// identifier kept beside it would have the one port say it runs two
+    /// versions at once and carry the vulnerabilities of the one it no longer
+    /// runs, which is a remediation ticket for a patch that already landed.
+    #[test]
+    fn a_correlation_an_older_identification_drew_is_not_carried_past_a_newer_one() {
+        let january = serving_apache("2.4.49");
+        let june = serving_apache("2.4.58");
+        assert!(
+            claims_on_80([january.clone()])
+                .iter()
+                .any(|title| title.starts_with("http_server 2.4.49")),
+            "test premise: the catalogue draws a finding from 2.4.49: {:?}",
+            claims_on_80([january.clone()])
+        );
+
+        let merged = merged(vec![
+            report("january", day(1), vec![january]),
+            report("june", day(150), vec![june.clone()]),
+        ]);
+
+        let service = service_on(&merged, 1, 80).expect("a service");
+        assert_eq!(service.version(), Some("2.4.58"));
+        assert_eq!(
+            service
+                .cpes()
+                .iter()
+                .map(|cpe| cpe.to_string())
+                .collect::<Vec<_>>(),
+            ["cpe:/a:apache:http_server:2.4.58"],
+            "the merged service carries the identifier its own version backs"
+        );
+        assert_eq!(
+            claims_on_80(merged.hosts().cloned()),
+            claims_on_80([june]),
+            "the merged port carries what 2.4.58 draws and nothing 2.4.49 did"
+        );
+    }
+
+    /// A newer scan that named the port from its number identified nothing,
+    /// and carries neither the older identification nor the correlation drawn
+    /// from it away.
+    ///
+    /// Every scan path seeds a classified port with the label its number is
+    /// registered under, at a confidence of zero, and a scan run without
+    /// service detection leaves it there. Read as the newest identification,
+    /// that label would replace Apache httpd 2.4.49 with a bare `http` and
+    /// retire every vulnerability the older scan correlated, on the word of a
+    /// scan that never asked what was listening.
+    #[test]
+    fn a_service_named_from_its_port_number_does_not_unseat_an_identification() {
+        let january = serving_apache("2.4.49");
+        let tonight = with_port(
+            host(1),
+            Port::new(80, TCP, PortState::Open).with_service(Service::new("http", 0)),
+        );
+
+        let merged = merged(vec![
+            report("january", day(1), vec![january.clone()]),
+            report("tonight", day(150), vec![tonight]),
+        ]);
+
+        assert_eq!(
+            service_on(&merged, 1, 80),
+            january.ports().next().and_then(Port::service).cloned(),
+            "January's identification stands"
+        );
+        assert_eq!(
+            claims_on_80(merged.hosts().cloned()),
+            claims_on_80([january])
+        );
     }
 
     /// A port only ever recorded unasked stays unasked, rather than vanishing or

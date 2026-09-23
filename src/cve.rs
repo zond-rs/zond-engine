@@ -71,6 +71,11 @@
 //! is a caller's to run, the library performs no pass a caller did not ask for,
 //! and it is idempotent, because a finding deduplicates by claim, so a second run
 //! corroborates rather than doubles.
+//!
+//! Every finding records the CPE it was drawn from, as
+//! [`Finding::cpe`]. The claim rests on that identification, and a
+//! [`merge`](crate::merge) that folds in a newer scan identifying another
+//! version has to be able to tell which findings went with the old one.
 
 use std::cmp::Ordering;
 use std::io::BufRead;
@@ -630,7 +635,8 @@ impl Catalogue {
             DetectionClass::Passive,
         )
         .ok()?
-        .with_excerpt(Excerpt::new(excerpt));
+        .with_excerpt(Excerpt::new(excerpt))
+        .with_cpe(cpe);
 
         // Every one of them, because this is the record: a summary that says
         // forty-four and cites twenty is a report a reader cannot reconcile, and
@@ -801,7 +807,8 @@ impl Vulnerability<'_> {
         )
         .ok()?
         .with_reference(Reference::cve(self.cve)?)
-        .with_excerpt(Excerpt::new(excerpt));
+        .with_excerpt(Excerpt::new(excerpt))
+        .with_cpe(cpe);
 
         if let Some(cwe) = self.cwe {
             finding = finding.with_reference(Reference::cwe(cwe));
@@ -1512,5 +1519,27 @@ affected = "== 2.4.49"
         correlate(&mut host);
         let port = host.ports().find(|p| p.number() == 80).unwrap();
         assert_eq!(port.findings().count(), 1);
+    }
+
+    /// A correlation says which identifier it matched, in a field and not only
+    /// in the excerpt, since the claim rests on it and a merge asks whether a
+    /// newer identification still backs it.
+    #[test]
+    fn a_correlation_names_the_identifier_it_was_drawn_from() {
+        use crate::model::host::Host;
+        use crate::model::port::{Port, PortState, Service};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let cpe = "cpe:/a:apache:http_server:2.4.49";
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        host.add_port(
+            Port::new(80, Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("http", 90).with_cpe(cpe)),
+        );
+
+        correlate(&mut host);
+        let port = host.ports().find(|p| p.number() == 80).unwrap();
+        assert!(port.findings().count() > 0, "the release draws findings");
+        assert!(port.findings().all(|finding| finding.cpe() == Some(cpe)));
     }
 }

@@ -1918,6 +1918,10 @@ pub struct FindingDto<'a> {
     /// Remediation advice, if the detection carried any. Untrusted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<&'a str>,
+    /// The platform identifier a vulnerability correlation drew it from.
+    /// Untrusted; absent from a finding drawn from anything else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpe: Option<&'a str>,
 }
 
 impl<'a> FindingDto<'a> {
@@ -1934,6 +1938,7 @@ impl<'a> FindingDto<'a> {
             excerpt: (!finding.excerpt().is_empty()).then(|| finding.excerpt().as_str()),
             references: finding.references().map(ReferenceDto::new).collect(),
             remediation: finding.remediation(),
+            cpe: finding.cpe(),
         }
     }
 }
