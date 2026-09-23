@@ -420,9 +420,18 @@ impl Tracer {
     /// marker written into that sequence comes back one higher. An echo request
     /// draws a reply required to carry its identifier and sequence back
     /// unchanged (RFC 792 §Echo, RFC 4443 §4.2), which is simpler and exact.
+    ///
+    /// **The answer's kind is checked before its fields.** The capture admits
+    /// ICMP whatever the probe is, and sees both directions, so an echo trace's
+    /// own requests come back up it carrying the marker and the distance exactly
+    /// where a reply carries them. Only the type byte tells the two apart, and
+    /// read without it every request the trace sends answers itself.
     fn answered_distance(&self, segment: &CapturedSegment) -> Option<u8> {
         match self.probe {
             TraceProbe::Syn { .. } => {
+                if segment.protocol != IpNextHeaderProtocols::Tcp {
+                    return None;
+                }
                 let reply = TcpPacket::new(&segment.bytes)?;
                 if reply.get_destination() != self.marker {
                     return None;
@@ -434,11 +443,17 @@ impl Tracer {
                 Some((echoed & 0xff) as u8)
             }
             TraceProbe::Echo => {
-                let (identifier, sequence) = icmp::echo_token(&segment.bytes).ok()?;
-                if identifier != self.marker {
-                    return None;
+                // The protocol the message arrived under says which family's
+                // numbering its type is in; the message itself cannot.
+                let over_ipv6 = match segment.protocol {
+                    IpNextHeaderProtocols::Icmp => false,
+                    IpNextHeaderProtocols::Icmpv6 => true,
+                    _ => return None,
+                };
+                match icmp::classify_echo_reply(&segment.bytes, self.marker, over_ipv6) {
+                    icmp::EchoReply::Ours { sequence } => u8::try_from(sequence).ok(),
+                    _ => None,
                 }
-                u8::try_from(sequence).ok()
             }
         }
     }
@@ -724,6 +739,20 @@ impl Tracer {
 
     /// The fallback: one full-distance probe apiece, for hosts whose replies
     /// this scan never read a hop counter from.
+    ///
+    /// **An answer is kept only from a host the round asked, and only once.**
+    /// Whatever this returns is walked, a probe per router, and the capture
+    /// brings up every answer carrying the marker, which rides in every probe
+    /// for anyone who sees one to copy under an address of their choosing.
+    ///
+    /// Held to the hosts it was handed, a trace never learns an address to send
+    /// to, which is why it asks [`ScanContext::may_probe`] nothing. Every
+    /// address it probes is one a caller of [`trace`] named, and a scan names
+    /// the hosts its store holds, which the exclusions keep clean. A gate here
+    /// would stand in front of a round that can only return what it was given.
+    ///
+    /// A host answers each of the probes the round sends it, too, and a second
+    /// answer kept would be a second walk of the same path.
     async fn probe_for_distances(&mut self, group: &[IpAddr]) -> Vec<(IpAddr, u8)> {
         let mut found: Vec<(IpAddr, u8)> = Vec::new();
 
@@ -746,13 +775,17 @@ impl Tracer {
 
             let deadline = Instant::now() + ROUND_TIMEOUT;
             let mut reached: Vec<(IpAddr, u8)> = Vec::new();
-            self.collect(deadline, |_, reply| {
-                if let Reply::Arrived {
-                    target, implied, ..
-                } = reply
+            self.collect(deadline, |_, reply| match reply {
+                Reply::Arrived {
+                    target,
+                    probed: MAX_HOPS,
+                    implied,
+                } if window.contains(&target)
+                    && !reached.iter().any(|(host, _)| *host == target) =>
                 {
                     reached.push((target, implied));
                 }
+                _ => {}
             })
             .await;
 
@@ -950,8 +983,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::model::capture::{IpObservation, Ipv4Observation};
+    use crate::protocols::craft;
     use crate::scanner::session::ScanSession;
-    use crate::transport::probe::{ProbeSender, SendError};
+    use crate::transport::probe::{MockSender, ProbeSender, SendError};
 
     fn ip(last: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, last))
@@ -1292,6 +1326,109 @@ mod tests {
         assert!(
             seen[..5].iter().all(|(_, address)| address.is_none()),
             "the routers that said nothing are recorded as having said nothing: {seen:?}"
+        );
+    }
+
+    // ─── An echo trace, fed by hand ──────────────────────────────────────────
+
+    /// The address an echo trace's probes leave from.
+    const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 50);
+    /// Two hosts an echo trace is asked about, on [`LOCAL`]'s own /24 so a
+    /// source resolves without asking the kernel for a route.
+    const TARGET: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 9);
+    const OTHER_TARGET: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 10);
+    /// An address nobody asked the trace about.
+    const STRANGER: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 77);
+    /// The identifier every probe of an echo trace below carries.
+    const MARKER: u16 = 41_234;
+
+    /// An echo trace from [`LOCAL`], sending into a recorder and reading
+    /// whatever a test pushes into the channel handed back.
+    fn echo_tracer() -> (Tracer, mpsc::Sender<CapturedSegment>) {
+        use crate::system::interface::{Link, LinkAddress};
+
+        let (_session, ctx) = ScanSession::new();
+        let (replies, rx) = mpsc::channel(16);
+        let transport = ProbeTransport::from_parts(Box::new(MockSender::default()), rx);
+        let mut tracer = Tracer::new(ctx, transport, TraceProbe::Echo, MARKER, PathCache::new());
+        tracer.resolver = SourceResolver::from_links(&[
+            Link::new("test0", 0).with_addresses(vec![LinkAddress::new(LOCAL.into(), 24)])
+        ]);
+        (tracer, replies)
+    }
+
+    /// `message` as the capture hands it up: from `source`, arriving with `ttl`.
+    fn captured_echo(message: &craft::Icmpv4, source: Ipv4Addr, ttl: u8) -> CapturedSegment {
+        Network::observed(
+            source.into(),
+            IpNextHeaderProtocols::Icmp,
+            message.to_bytes(),
+            ttl,
+        )
+    }
+
+    /// An echo request carrying the trace's own marker is not an answer to it.
+    ///
+    /// The capture sees both directions, so every request a trace sends comes
+    /// back up it with the marker and a distance in place, and an echo reply
+    /// differs from it only in its type byte. Taken for an answer, the request
+    /// names its own sender a host reached at the distance it was built for.
+    #[test]
+    fn an_echo_request_is_not_an_answer_to_an_echo_trace() {
+        let (mut tracer, _replies) = echo_tracer();
+        let sequence = u16::from(MAX_HOPS);
+
+        let request = craft::Icmpv4::echo_request(MARKER, sequence);
+        assert!(
+            tracer
+                .classify(&captured_echo(&request, LOCAL, MAX_HOPS))
+                .is_none(),
+            "the trace's own request was read as an answer"
+        );
+
+        let reply = craft::Icmpv4::echo_reply(MARKER, sequence);
+        assert!(
+            matches!(
+                tracer.classify(&captured_echo(&reply, TARGET, 60)),
+                Some(Reply::Arrived { target, probed: MAX_HOPS, .. }) if target == IpAddr::from(TARGET)
+            ),
+            "and the reply it draws still is one"
+        );
+    }
+
+    /// The round that measures distances keeps an answer only from a host it
+    /// asked, and only once.
+    ///
+    /// Whatever it keeps, the walk sends a probe per router to. The marker rides
+    /// in every probe, so anyone who can see one can answer under an address
+    /// nobody named, and the capture brings that up beside the trace's own
+    /// requests; either, kept, is an address traced with no exclusion ever
+    /// consulted. A host answers each of the probes the round sends it, too,
+    /// and every answer kept is another walk of the same path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_distance_round_keeps_one_answer_from_each_host_it_asked() {
+        let (mut tracer, replies) = echo_tracer();
+        let sequence = u16::from(MAX_HOPS);
+        let request = craft::Icmpv4::echo_request(MARKER, sequence);
+        let reply = craft::Icmpv4::echo_reply(MARKER, sequence);
+
+        for segment in [
+            captured_echo(&request, LOCAL, MAX_HOPS),
+            captured_echo(&reply, STRANGER, 60),
+            captured_echo(&reply, TARGET, 60),
+            captured_echo(&reply, TARGET, 60),
+            captured_echo(&reply, OTHER_TARGET, 60),
+        ] {
+            replies.try_send(segment).expect("room in the channel");
+        }
+
+        let found = tracer
+            .probe_for_distances(&[TARGET.into(), OTHER_TARGET.into()])
+            .await;
+
+        assert_eq!(
+            found,
+            vec![(IpAddr::from(TARGET), 4), (IpAddr::from(OTHER_TARGET), 4)]
         );
     }
 
