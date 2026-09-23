@@ -86,6 +86,26 @@ const REPLY_GRACE: Duration = Duration::from_millis(250);
 
 /// A name as it came off the wire, already trimmed of its trailing root label.
 type Hostname = String;
+
+/// How a name reached this resolver, which is what decides between two names
+/// for one address. Ordered by trust, so comparing two is the decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Heard {
+    /// Read off the wire, answering somebody else's question. Unauthenticated:
+    /// anyone who can put a datagram from port 53 in front of the capture
+    /// chooses both the address and the name.
+    Overheard,
+    /// A reply to one of this resolver's own queries: from a resolver it asked,
+    /// carrying an ID it issued, about the address it asked about.
+    Answered,
+}
+
+/// A name, with how it was heard.
+#[derive(Debug, Clone)]
+struct Named {
+    hostname: Hostname,
+    heard: Heard,
+}
 /// The transaction id a query carries, and the only thing tying a reply to the
 /// question it answers.
 type TransID = u16;
@@ -119,7 +139,7 @@ pub struct HostnameResolver {
     /// mDNS records collected from sniffed traffic, keyed by IP.
     mdns_cache: HashMap<IpAddr, MdnsHost>,
     /// Hostnames resolved so far, keyed by IP.
-    hostname_map: HashMap<IpAddr, Hostname>,
+    hostname_map: HashMap<IpAddr, Named>,
     /// Addresses seen answering a DNS question, whoever asked it.
     ///
     /// Two sources, and neither costs a probe: a reply to one of this
@@ -373,14 +393,39 @@ impl HostnameResolver {
                 verbosity = 2,
                 "{from} named {ip} after itself ({hostname}), so it has no name"
             ),
-            Some(hostname) => {
-                info!(
-                    incoming,
+            Some(hostname) => match self.hostname_map.entry(ip) {
+                // Two resolvers this scan asked, both checked the same way. The
+                // first stands, so the name does not depend on which reply the
+                // network happened to deliver last.
+                Entry::Occupied(slot) if slot.get().heard == Heard::Answered => info!(
                     verbosity = 2,
-                    "{from} resolved {ip} to {hostname}"
-                );
-                self.hostname_map.entry(ip).or_insert(hostname);
-            }
+                    "{from} resolved {ip} to {hostname}; an earlier answer stands"
+                ),
+                // A name somebody else's lookup carried past is only a
+                // placeholder until an answer arrives, however early it came.
+                Entry::Occupied(mut slot) => {
+                    info!(
+                        incoming,
+                        verbosity = 2,
+                        "{from} resolved {ip} to {hostname}, over a name only overheard"
+                    );
+                    slot.insert(Named {
+                        hostname,
+                        heard: Heard::Answered,
+                    });
+                }
+                Entry::Vacant(slot) => {
+                    info!(
+                        incoming,
+                        verbosity = 2,
+                        "{from} resolved {ip} to {hostname}"
+                    );
+                    slot.insert(Named {
+                        hostname,
+                        heard: Heard::Answered,
+                    });
+                }
+            },
             None => info!(verbosity = 2, "{from} has no name for {ip}"),
         }
     }
@@ -421,22 +466,21 @@ impl HostnameResolver {
     /// costs nothing: [`resolve_hosts`](Self::resolve_hosts) only applies what
     /// matches a host in the store.
     ///
-    /// **It fills a gap and never displaces.** Nothing authenticates a packet
-    /// read off the wire: anyone who can put a datagram with source port 53 in
-    /// front of the capture chooses both the address and the name. That is
-    /// acceptable for an address nothing else has named - an overheard name is
-    /// better than none, and the log line says which it was - and it is not
-    /// acceptable against [`absorb_reply`](Self::absorb_reply), which took a
+    /// **It fills a gap, never displaces, and gives way.** Nothing authenticates
+    /// a packet read off the wire: anyone who can put a datagram with source
+    /// port 53 in front of the capture chooses both the address and the name.
+    /// That is acceptable for an address nothing else has named - an overheard
+    /// name is better than none, and the log line says which it was - and it is
+    /// not acceptable against [`absorb_reply`](Self::absorb_reply), which took a
     /// reply from a resolver it had asked, carrying a transaction ID it had
     /// issued, over a question naming the address it had asked about.
     ///
-    /// This used to `insert`, so the unauthenticated source won, in either
-    /// order, and silently: `insert` returns the previous value, so the log line
-    /// fired only when there was nothing to displace. The engine ranks its
-    /// evidence everywhere else -
+    /// In either order: an answer already held is not displaced, and an answer
+    /// arriving later replaces what was only overheard, so a forged reply sent
+    /// ahead of the real one holds its place only until the real one comes. The
+    /// engine ranks its evidence this way everywhere else:
     /// [`HostStatus`](crate::model::host::HostStatus) is ordered by how strong
-    /// the evidence is and `record_evidence` refuses to lower it - and this was
-    /// the one place ranking it the wrong way round.
+    /// the evidence is and `record_evidence` refuses to lower it.
     fn absorb_sniffed_dns(&mut self, payload: &[u8]) {
         let Ok(response) = dns::parse_ptr_response(payload) else {
             return;
@@ -451,7 +495,10 @@ impl HostnameResolver {
 
         if let Entry::Vacant(slot) = self.hostname_map.entry(ip) {
             info!(verbosity = 2, "overheard {ip} named {hostname}");
-            slot.insert(hostname);
+            slot.insert(Named {
+                hostname,
+                heard: Heard::Overheard,
+            });
         }
     }
 
@@ -508,7 +555,7 @@ impl HostnameResolver {
 
                     // Prefer a hostname learned over unicast DNS.
                     if host.hostname().is_none()
-                        && let Some(hostname) = hostname_map.remove(&ip)
+                        && let Some(Named { hostname, .. }) = hostname_map.remove(&ip)
                     {
                         host.set_hostname(Some(hostname));
                         named = true;
@@ -973,7 +1020,10 @@ mod tests {
 
         resolver.absorb_sniffed_dns(&overheard(ip, "epson928262.lan"));
         assert_eq!(
-            resolver.hostname_map.get(&ip).map(String::as_str),
+            resolver
+                .hostname_map
+                .get(&ip)
+                .map(|named| named.hostname.as_str()),
             Some("epson928262.lan"),
             "a real name overheard for the same address was refused too"
         );
@@ -1028,7 +1078,13 @@ mod tests {
         let mut resolver = resolver_asking(vec![
             "127.0.0.1:53".parse().expect("a valid socket address"),
         ]);
-        resolver.hostname_map.insert(ip, hostname.to_string());
+        resolver.hostname_map.insert(
+            ip,
+            Named {
+                hostname: hostname.to_string(),
+                heard: Heard::Answered,
+            },
+        );
         resolver
     }
 
@@ -1271,9 +1327,76 @@ mod tests {
         );
 
         assert_eq!(
-            resolver.hostname_map.get(&ip).map(String::as_str),
+            resolver
+                .hostname_map
+                .get(&ip)
+                .map(|named| named.hostname.as_str()),
             Some("resolver-confirmed.example.com"),
             "a datagram off the wire outranked a resolver this scan asked"
+        );
+    }
+
+    /// **Nor does it keep its place by arriving first.**
+    ///
+    /// The other order, and the one an attacker chooses: a forged answer sprayed
+    /// across the target range as a scan starts reaches the capture before the
+    /// resolver it imitates has replied. Kept for having arrived, it would block
+    /// the resolver's name for good.
+    #[tokio::test]
+    async fn an_overheard_name_that_arrives_first_gives_way_to_the_resolver() {
+        let ip = v4(192, 168, 0, 42);
+        let server: SocketAddr = "127.0.0.1:53".parse().expect("a valid socket address");
+        let (session, ctx) = ScanSession::new();
+        ctx.update_host(ip, |host| host.set_status(HostStatus::Up));
+
+        let mut resolver = resolver_asking(vec![server]);
+        // The query this scan sent about `ip`, which `named_response` answers.
+        resolver.dns_map.insert(0x1234, ip);
+
+        resolver.absorb_sniffed(
+            &from_port(DNS_PORT, named_response(ip, "attacker-chosen.example.com")),
+            v4(10, 0, 0, 99),
+        );
+        resolver.absorb_reply(
+            &named_response(ip, "resolver-confirmed.example.com"),
+            server,
+        );
+        resolver.resolve_hosts(&ctx);
+
+        assert_eq!(
+            session
+                .hosts()
+                .get(ip)
+                .and_then(|host| host.hostname().map(str::to_owned))
+                .as_deref(),
+            Some("resolver-confirmed.example.com"),
+            "a datagram that merely arrived first outranked the resolver this scan asked"
+        );
+    }
+
+    /// Between two resolvers this scan asked, the first answer stands. Both
+    /// passed the same checks, so neither outranks the other, and keeping the
+    /// first is what keeps the name from depending on which reply the network
+    /// delivered last.
+    #[tokio::test]
+    async fn between_two_resolvers_asked_the_first_answer_stands() {
+        let ip = v4(192, 168, 0, 43);
+        let first: SocketAddr = "127.0.0.1:53".parse().expect("a valid socket address");
+        let second: SocketAddr = "127.0.0.2:53".parse().expect("a valid socket address");
+        let mut resolver = resolver_asking(vec![first, second]);
+
+        for (server, name) in [(first, "first.example.com"), (second, "second.example.com")] {
+            // Each resolver was asked on its own ID; `named_response` answers one.
+            resolver.dns_map.insert(0x1234, ip);
+            resolver.absorb_reply(&named_response(ip, name), server);
+        }
+
+        assert_eq!(
+            resolver
+                .hostname_map
+                .get(&ip)
+                .map(|named| named.hostname.as_str()),
+            Some("first.example.com")
         );
     }
 
@@ -1291,7 +1414,10 @@ mod tests {
         );
 
         assert_eq!(
-            resolver.hostname_map.get(&ip).map(String::as_str),
+            resolver
+                .hostname_map
+                .get(&ip)
+                .map(|named| named.hostname.as_str()),
             Some("overheard.example.com")
         );
     }
