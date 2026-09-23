@@ -253,12 +253,24 @@ impl NeighborResolver {
             }
         };
 
+        // A gateway whose hardware address the OS has not learned reaches this
+        // point as all zeros, `netdev`'s stand-in for "unknown": the neighbour
+        // table has no entry, because the default route was learned over IPv6
+        // while the gateway's MAC is filled from the IPv4 ARP cache alone, or
+        // because the cache had aged the entry out by the time the sender was
+        // built. That address is no destination a frame can carry, so it is not
+        // handed on as one. The gateway takes the same path a cold on-link
+        // neighbour does: its MAC is `None` until an exchange learns it, drawn
+        // from the same cache once it has, and resolved by the sender otherwise.
+        let next_hop_mac = resolved_gateway_mac(gw_mac)
+            .or_else(|| self.cache.get(&(iface.name.clone(), next_hop)).copied());
+
         Some(LinkRoute {
             interface: iface.name.clone(),
             src_ip: anchor,
             src_mac: iface.mac,
             next_hop,
-            next_hop_mac: Some(gw_mac),
+            next_hop_mac,
             on_link: false,
         })
     }
@@ -303,6 +315,20 @@ fn interface_info(iface: netdev::Interface) -> Option<InterfaceInfo> {
         gateway_v4,
         gateway_v6,
     })
+}
+
+/// The gateway MAC a frame can be addressed to, or `None` when it is still
+/// unknown.
+///
+/// `netdev` reports a gateway whose hardware address it has not resolved as all
+/// zeros rather than as absent. That sentinel is the single fact this converts:
+/// an all-zero address names no station on the segment, so a frame built with it
+/// as its destination is broadcast to no one and answered by no one, while the
+/// send reports success and nothing falls back. Read here as "unknown", the
+/// gateway is resolved by the sender before a frame carries it, exactly as an
+/// on-link neighbour's address is.
+fn resolved_gateway_mac(mac: MacAddr) -> Option<MacAddr> {
+    (mac != MacAddr::zero()).then_some(mac)
 }
 
 /// The same six bytes in the type the packet builders take. Two crates spell one
@@ -506,6 +532,73 @@ mod tests {
             kernel_says_tunnel
                 .resolve_from(spoofed, v4(1, 1, 1, 1))
                 .is_none()
+        );
+    }
+
+    /// `netdev` reports a gateway whose MAC it has not learned as all zeros, and
+    /// that address is read as "unknown" rather than carried onto the wire.
+    #[test]
+    fn an_unknown_gateway_mac_is_read_as_unresolved() {
+        assert_eq!(resolved_gateway_mac(MacAddr::zero()), None);
+        assert_eq!(resolved_gateway_mac(GW_MAC), Some(GW_MAC));
+    }
+
+    /// A gateway with no learned MAC does not send the scan's frames to the
+    /// all-zero address `netdev` fills an unresolved neighbour with.
+    ///
+    /// The default route names the gateway but its hardware address is unknown:
+    /// on macOS an IPv6-only default route learns the gateway over IPv6 while
+    /// the MAC comes from the IPv4 ARP cache, and any gateway aged out of that
+    /// cache when the sender is built looks the same. Carried on as a real next
+    /// hop, the zero address is one every frame is addressed to and none is
+    /// answered from, the send reports success, and no fallback runs, so the
+    /// host reads as down. The route instead comes back asking the sender to
+    /// resolve the gateway, the way an on-link neighbour is resolved.
+    #[test]
+    fn an_off_link_gateway_with_an_unknown_mac_is_resolved_not_sent_to_zeros() {
+        let mut iface = ethernet_iface();
+        iface.gateway_v4 = Some((Ipv4Addr::new(192, 0, 2, 1), MacAddr::zero()));
+
+        let route = resolver(vec![iface])
+            .resolve_from(EN0, v4(1, 1, 1, 1))
+            .expect("a gateway exists, only its MAC is unknown");
+
+        assert!(!route.on_link, "the target is still off-link");
+        assert_eq!(
+            route.next_hop,
+            v4(192, 0, 2, 1),
+            "the gateway is the next hop"
+        );
+        assert_eq!(
+            route.next_hop_mac, None,
+            "an unknown gateway MAC is resolved, never framed as 00:00:00:00:00:00"
+        );
+    }
+
+    /// Once the gateway's MAC has been learned it comes back from the cache, so
+    /// an unknown-MAC gateway is resolved once and not on every probe after.
+    #[test]
+    fn a_learned_gateway_mac_is_served_from_the_cache() {
+        let mut iface = ethernet_iface();
+        iface.gateway_v4 = Some((Ipv4Addr::new(192, 0, 2, 1), MacAddr::zero()));
+        let mut resolver = resolver(vec![iface]);
+        let learned = MacAddr::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF);
+
+        assert_eq!(
+            resolver
+                .resolve_from(EN0, v4(1, 1, 1, 1))
+                .unwrap()
+                .next_hop_mac,
+            None
+        );
+        resolver.remember("en0", v4(192, 0, 2, 1), learned);
+        assert_eq!(
+            resolver
+                .resolve_from(EN0, v4(1, 1, 1, 1))
+                .unwrap()
+                .next_hop_mac,
+            Some(learned),
+            "the gateway is resolved once, then read from the cache"
         );
     }
 
