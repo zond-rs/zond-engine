@@ -50,6 +50,26 @@ use crate::transport::probe::{Emission, IpProtocols, ProbeSender, SendError};
 /// How long to wait for an ARP reply before giving up on an on-link target.
 const ARP_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// How long a neighbour that did not answer its address resolution is left
+/// unasked before the sender tries it again.
+///
+/// A dead on-link address, or a gateway that never answered, would otherwise
+/// pay [`ARP_TIMEOUT`] afresh on every probe: each port, and each retry within
+/// a port, re-runs the exchange and blocks for the full timeout because nothing
+/// records that the last one went unanswered. One dead `(host, port)` pair
+/// across a three-attempt sweep costs three timeouts, and a range of dead
+/// addresses across a port list multiplies that by every port. Remembering the
+/// failure collapses the whole of it to a single timeout per address: the first
+/// probe waits, and every probe behind it is turned away at once.
+///
+/// The memory ages out rather than standing for the sender's life so a host that
+/// was down when first probed and has since come up is found on a later sweep of
+/// a long-running scan, and so a MAC learned after a transient failure is not
+/// shadowed by a verdict nothing revisits. It is long enough that a single
+/// scan's repeated probes to one address, and the retries behind them, all reuse
+/// the one failure it records rather than each re-timing the dead neighbour.
+const NEIGHBOR_UNREACHABLE_TTL: Duration = Duration::from_secs(30);
+
 /// Per-interface datalink read timeout, so the ARP receive loop wakes often
 /// enough to honor [`ARP_TIMEOUT`] instead of blocking indefinitely.
 const CHANNEL_READ_TIMEOUT: Duration = Duration::from_millis(50);
@@ -60,11 +80,52 @@ struct InterfaceChannel {
     channel: capture::FrameChannel,
 }
 
+/// The neighbours whose address resolution last went unanswered, so the sender
+/// can decline to ask again until the record ages out. Keyed by
+/// `(interface, next-hop IP)`, the same key the resolver's learned-MAC cache
+/// uses, so a next hop is either known to answer or known not to, never both
+/// consulted at once.
+///
+/// This is the negative half of that cache: it holds not a MAC but the instant
+/// an exchange for one timed out. See [`NEIGHBOR_UNREACHABLE_TTL`] for why an
+/// entry expires. The clock is a parameter rather than read inside so the policy
+/// is a pure function of time and can be tested without waiting on one.
+#[derive(Default)]
+struct UnansweredNeighbors {
+    seen: HashMap<(String, IpAddr), Instant>,
+}
+
+impl UnansweredNeighbors {
+    /// Records that resolution for `next_hop` on `interface` went unanswered at
+    /// `at`.
+    fn note(&mut self, interface: &str, next_hop: IpAddr, at: Instant) {
+        self.seen.insert((interface.to_string(), next_hop), at);
+    }
+
+    /// Forgets any record for `next_hop` on `interface`: a neighbour that has
+    /// since answered is not one to skip.
+    fn clear(&mut self, interface: &str, next_hop: IpAddr) {
+        self.seen.remove(&(interface.to_string(), next_hop));
+    }
+
+    /// Whether `next_hop` on `interface` went unanswered within `ttl` of `now`,
+    /// so the sender should decline to resolve it again yet.
+    fn is_fresh(&self, interface: &str, next_hop: IpAddr, now: Instant, ttl: Duration) -> bool {
+        self.seen
+            .get(&(interface.to_string(), next_hop))
+            .is_some_and(|at| now.saturating_duration_since(*at) < ttl)
+    }
+}
+
 /// A Layer-2 send backend. Interfaces' channels are opened lazily on first
 /// use and reused thereafter.
 pub struct EthernetSender {
     resolver: Mutex<NeighborResolver>,
     channels: Mutex<HashMap<String, InterfaceChannel>>,
+    /// Next hops whose last resolution went unanswered, so a dead address is
+    /// asked once rather than once per probe. See [`UnansweredNeighbors`] and
+    /// [`NEIGHBOR_UNREACHABLE_TTL`].
+    unanswered: Mutex<UnansweredNeighbors>,
     /// The IP protocol numbers to stamp into the headers this sender builds,
     /// one per address family. Fixed per sender because a transport carries one
     /// kind of probe; see [`EthernetSender::from_system`].
@@ -96,12 +157,19 @@ impl EthernetSender {
         Some(Self {
             resolver: Mutex::new(resolver),
             channels: Mutex::new(HashMap::new()),
+            unanswered: Mutex::new(UnansweredNeighbors::default()),
             protocols,
         })
     }
 
     /// Determines the next-hop MAC for `route`, performing (and caching) an
-    /// ARP exchange if it's an on-link target we haven't learned yet.
+    /// ARP exchange for a next hop whose MAC is not already known: an on-link
+    /// target not yet learned, or a gateway the OS gave no hardware address for.
+    ///
+    /// A next hop that went unanswered on a recent exchange is not asked again
+    /// until that record ages out; see [`UnansweredNeighbors`]. Without it every
+    /// probe to a dead address pays [`ARP_TIMEOUT`] over, since nothing else
+    /// remembers that the last attempt heard nothing.
     fn next_hop_mac(&self, route: &LinkRoute) -> Result<MacAddr, SendError> {
         if let Some(mac) = route.next_hop_mac {
             return Ok(mac);
@@ -111,7 +179,7 @@ impl EthernetSender {
             IpAddr::V4(v4) => v4,
             IpAddr::V6(_) => {
                 return Err(SendError::Unsupported(
-                    "on-link IPv6 next-hop resolution (NDP) is not yet implemented",
+                    "IPv6 next-hop resolution (NDP) is not yet implemented",
                 ));
             }
         };
@@ -124,7 +192,10 @@ impl EthernetSender {
             }
         };
 
-        let mac = self.arp_resolve(&route.interface, route.src_mac, src_v4, target_v4)?;
+        let mac =
+            ask_unless_unanswered(&self.unanswered, &route.interface, route.next_hop, || {
+                self.arp_resolve(&route.interface, route.src_mac, src_v4, target_v4)
+            })?;
         self.resolver
             .lock()
             .map_err(|_| poisoned("route resolver"))?
@@ -163,9 +234,7 @@ impl EthernetSender {
                 return Ok(mac);
             }
         }
-        Err(SendError::Unroutable(format!(
-            "no ARP reply for {target} on {interface} within {ARP_TIMEOUT:?}"
-        )))
+        Err(unanswered_neighbor(IpAddr::V4(target), interface))
     }
 
     /// Returns the datalink channel for `interface`, opening it on first use.
@@ -266,6 +335,61 @@ impl ProbeSender for EthernetSender {
 fn poisoned(what: &str) -> SendError {
     SendError::Refused(format!(
         "the {what} lock was poisoned by another thread's panic"
+    ))
+}
+
+/// Runs `exchange`, the address resolution for `next_hop` on `interface`,
+/// unless an exchange for it went unanswered within
+/// [`NEIGHBOR_UNREACHABLE_TTL`], and records how it went.
+///
+/// A timeout is remembered, so the probes behind it are turned away at once
+/// rather than waiting the same timeout again. An answer clears any record, so
+/// a neighbour that has come up is not skipped. A refusal, a channel that would
+/// not open, is not a fact about the neighbour and is not remembered as one.
+///
+/// The record is not held locked while `exchange` waits, since the wait is the
+/// whole of what this exists to avoid paying twice.
+fn ask_unless_unanswered(
+    unanswered: &Mutex<UnansweredNeighbors>,
+    interface: &str,
+    next_hop: IpAddr,
+    exchange: impl FnOnce() -> Result<MacAddr, SendError>,
+) -> Result<MacAddr, SendError> {
+    let record = || {
+        unanswered
+            .lock()
+            .map_err(|_| poisoned("unanswered neighbours"))
+    };
+
+    if record()?.is_fresh(
+        interface,
+        next_hop,
+        Instant::now(),
+        NEIGHBOR_UNREACHABLE_TTL,
+    ) {
+        return Err(unanswered_neighbor(next_hop, interface));
+    }
+    let outcome = exchange();
+    match &outcome {
+        Ok(_) => record()?.clear(interface, next_hop),
+        Err(SendError::Unroutable(_)) => record()?.note(interface, next_hop, Instant::now()),
+        Err(_) => {}
+    }
+    outcome
+}
+
+/// The refusal for a next hop that did not answer its address resolution,
+/// whether the exchange just timed out or a recent one already did.
+///
+/// An [`Unroutable`](SendError::Unroutable) rather than a [`Refused`], because
+/// it is a fact about that address and not about this sender: the neighbour is
+/// not answering, so the address was asked about and not covered. This is the
+/// same class the raw-socket path reports for the identical case, where the
+/// kernel runs the ARP itself and returns `EHOSTUNREACH` when it hears nothing,
+/// so a dead on-link host reads the same whichever backend a scan uses.
+fn unanswered_neighbor(next_hop: IpAddr, interface: &str) -> SendError {
+    SendError::Unroutable(format!(
+        "{next_hop} did not answer address resolution on {interface}"
     ))
 }
 
@@ -377,5 +501,139 @@ mod tests {
         let mut eth = MutableEthernetPacket::new(&mut buf).unwrap();
         eth.set_ethertype(EtherTypes::Ipv4);
         assert_eq!(parse_arp_reply(&buf, Ipv4Addr::new(192, 0, 2, 200)), None);
+    }
+
+    const DEAD: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
+
+    /// A neighbour that never answers is asked once, not on every probe behind
+    /// the first.
+    ///
+    /// The record of the failed exchange stands while it is fresh, so the sender
+    /// turns away every later probe to that address at once rather than waiting
+    /// the whole [`ARP_TIMEOUT`] again. This is the difference between a dead
+    /// address costing one timeout and its costing one per port per attempt.
+    #[test]
+    fn a_neighbour_that_never_answers_is_asked_once() {
+        let mut unanswered = UnansweredNeighbors::default();
+        let t0 = Instant::now();
+        let ttl = NEIGHBOR_UNREACHABLE_TTL;
+
+        // Nothing is skipped until a failure is on record.
+        assert!(!unanswered.is_fresh("en0", DEAD, t0, ttl));
+
+        unanswered.note("en0", DEAD, t0);
+        // The probe right behind the timeout, and the next, are turned away.
+        assert!(unanswered.is_fresh("en0", DEAD, t0, ttl));
+        assert!(unanswered.is_fresh("en0", DEAD, t0 + Duration::from_secs(1), ttl));
+    }
+
+    /// The record is a next hop's, on its own interface: another address, and
+    /// the same address on another link, are unaffected.
+    #[test]
+    fn a_failure_is_remembered_per_next_hop_and_interface() {
+        let mut unanswered = UnansweredNeighbors::default();
+        let t0 = Instant::now();
+        let ttl = NEIGHBOR_UNREACHABLE_TTL;
+        let other: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201));
+
+        unanswered.note("en0", DEAD, t0);
+        assert!(
+            !unanswered.is_fresh("en0", other, t0, ttl),
+            "a different next hop"
+        );
+        assert!(
+            !unanswered.is_fresh("en1", DEAD, t0, ttl),
+            "the same next hop, another link"
+        );
+    }
+
+    /// The record ages out, so a host that was down when first probed and has
+    /// since come up is resolved again on a later sweep rather than shadowed for
+    /// the sender's whole life.
+    #[test]
+    fn an_aged_out_failure_is_asked_again() {
+        let mut unanswered = UnansweredNeighbors::default();
+        let t0 = Instant::now();
+        let ttl = NEIGHBOR_UNREACHABLE_TTL;
+
+        unanswered.note("en0", DEAD, t0);
+        assert!(
+            !unanswered.is_fresh("en0", DEAD, t0 + ttl, ttl),
+            "at the horizon"
+        );
+        assert!(
+            !unanswered.is_fresh("en0", DEAD, t0 + ttl + Duration::from_secs(1), ttl),
+            "past it"
+        );
+    }
+
+    /// The sender's own path, not only the record: a dead neighbour's exchange
+    /// runs once, and every later probe inside the window is refused without
+    /// running it, with the same error the timeout gave.
+    #[test]
+    fn a_dead_neighbour_is_resolved_once_and_refused_after() {
+        let unanswered = Mutex::new(UnansweredNeighbors::default());
+        let exchanges = std::cell::Cell::new(0);
+        let timing_out = || {
+            exchanges.set(exchanges.get() + 1);
+            Err(unanswered_neighbor(DEAD, "en0"))
+        };
+
+        for _ in 0..5 {
+            assert!(matches!(
+                ask_unless_unanswered(&unanswered, "en0", DEAD, timing_out),
+                Err(SendError::Unroutable(_))
+            ));
+        }
+        assert_eq!(exchanges.get(), 1, "one exchange for five probes");
+    }
+
+    /// Only a timeout is a fact about the neighbour. A channel that would not
+    /// open says nothing about it, so the next probe asks again; and an answer
+    /// clears an earlier timeout.
+    #[test]
+    fn only_an_unanswered_exchange_is_remembered() {
+        let unanswered = Mutex::new(UnansweredNeighbors::default());
+        let mac = MacAddr::new(0x02, 0, 0, 0, 0, 0x20);
+        let exchanges = std::cell::Cell::new(0);
+        let count = |result: Result<MacAddr, SendError>| {
+            exchanges.set(exchanges.get() + 1);
+            result
+        };
+
+        let refused = || count(Err(SendError::Refused("no channel".into())));
+        assert!(ask_unless_unanswered(&unanswered, "en0", DEAD, refused).is_err());
+        assert!(ask_unless_unanswered(&unanswered, "en0", DEAD, refused).is_err());
+        assert_eq!(exchanges.get(), 2, "a refusal is asked again");
+
+        // A timeout that has aged out is asked again, and this time answered.
+        let expired = Instant::now()
+            .checked_sub(NEIGHBOR_UNREACHABLE_TTL + Duration::from_secs(1))
+            .expect("a monotonic clock that has run past the window");
+        unanswered.lock().unwrap().note("en0", DEAD, expired);
+        let answering = || count(Ok(mac));
+        assert_eq!(
+            ask_unless_unanswered(&unanswered, "en0", DEAD, answering).ok(),
+            Some(mac)
+        );
+        assert!(
+            unanswered.lock().unwrap().seen.is_empty(),
+            "an answer leaves no record behind"
+        );
+    }
+
+    /// A neighbour that answers after an earlier timeout is no longer skipped:
+    /// its record is cleared, so the learned MAC governs from then on.
+    #[test]
+    fn a_neighbour_that_answers_is_no_longer_skipped() {
+        let mut unanswered = UnansweredNeighbors::default();
+        let t0 = Instant::now();
+        let ttl = NEIGHBOR_UNREACHABLE_TTL;
+
+        unanswered.note("en0", DEAD, t0);
+        assert!(unanswered.is_fresh("en0", DEAD, t0, ttl));
+
+        unanswered.clear("en0", DEAD);
+        assert!(!unanswered.is_fresh("en0", DEAD, t0, ttl));
     }
 }
