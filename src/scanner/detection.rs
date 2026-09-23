@@ -442,12 +442,13 @@ fn detect_hosts(ctx: &ScanContext) {
 ///
 /// A port's flows run several at a time, and every port in the pool does the
 /// same, so the two multiply: without a shared count a busy scan would open
-/// [`CONNECT_CONCURRENCY`] ports times [`DETECTION_FLOW_CONCURRENCY`] flows at
-/// once, hundreds of sockets against a ceiling written for fifty. This holds that
-/// ceiling for the phase as a whole, so the concurrency is spent where the work
-/// is: a host with four web ports gets most of the budget on those four, and a
-/// scan with fifty ports in flight holds no more sockets than one flow per port
-/// would.
+/// [`CONNECT_CONCURRENCY`] ports times
+/// [`DETECTION_FLOW_CONCURRENCY`](crate::config::limits::DETECTION_FLOW_CONCURRENCY)
+/// flows at once, hundreds of sockets against a ceiling written for fifty. This
+/// holds that ceiling for the phase as a whole, so the concurrency is spent
+/// where the work is: a host with four web ports gets most of the budget on
+/// those four, and a scan with fifty ports in flight holds no more sockets than
+/// one flow per port would.
 ///
 /// A permit is taken when a flow's probe is built and given back when the probe
 /// is dropped, which is the flow's whole run. Nothing here waits on a permit while

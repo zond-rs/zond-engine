@@ -116,7 +116,8 @@ pub(super) const ICMPV6_UNRECOGNISED_NEXT_HEADER: Icmpv6Code = Icmpv6Code(1);
 /// `pnet` models ICMPv6 only as the generic type/code/checksum header, so its
 /// payload still has these in front of the quotation. ICMPv4 needs no
 /// equivalent: `pnet` models the Destination Unreachable header itself, so
-/// [`DestinationUnreachablePacket::payload`] already starts at the quotation.
+/// the payload of a `DestinationUnreachablePacket` already starts at the
+/// quotation.
 pub(super) const ICMPV6_UNUSED_LEN: usize = 4;
 
 /// What a Destination Unreachable code says, named by meaning rather than by

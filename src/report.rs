@@ -462,7 +462,8 @@ impl TargetScope {
     ///
     /// Called once a phase is over, because which links its strategies reached
     /// is only knowable then: the scope itself is fixed before a probe goes
-    /// out. See [`PhaseRecorder::finish`].
+    /// out. See
+    /// [`PhaseRecorder::finish`](crate::scanner::recorder::PhaseRecorder::finish).
     pub(crate) fn record_sweeps(&mut self, links: Vec<Zone>) {
         for link in links {
             if !self.links.iter().any(|held| held.name() == link.name()) {

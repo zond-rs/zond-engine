@@ -43,9 +43,10 @@
 //! Over half the shipped signature corpus, 2442 of 4732 rules, already carries
 //! `os.*` metadata, matched against text the service pipeline already collects
 //! from ports it has already opened. No probe here is new. The work is entirely
-//! in *not throwing the metadata away*: a [`Signature`](crate::fingerprinting)
-//! keeping only a rule's service, product, vendor and version would drop
-//! everything else on the floor.
+//! in *not throwing the metadata away*: a
+//! [`Signature`](super::super::matcher::Signature) keeping only a rule's
+//! service, product, vendor and version would drop everything else on the
+//! floor.
 //!
 //! ## Templates
 //!

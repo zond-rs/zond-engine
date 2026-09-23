@@ -63,9 +63,9 @@
 //!                                        [OsEvidence] ─▶ resolve ─▶ OsFingerprint
 //! ```
 //!
-//! [`identify`] is the door: it takes whatever a caller read off the wire, adds
-//! the two sources a host carries about itself, resolves the combination and
-//! merges the result. Every scanner in this crate goes through it.
+//! [`identify()`] is the door: it takes whatever a caller read off the wire,
+//! adds the two sources a host carries about itself, resolves the combination
+//! and merges the result. Every scanner in this crate goes through it.
 //!
 //! ## Two axes: what it runs, and what it is
 //!

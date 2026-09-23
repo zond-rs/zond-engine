@@ -8,7 +8,7 @@
 
 //! # Running a flow
 //!
-//! Walks a [`FlowDetection`](super::schema::FlowDetection)'s steps front to back,
+//! Walks a [`FlowDetection`]'s steps front to back,
 //! once, there is no instruction that revisits a step, exchanging bytes with a
 //! [`Probe`], matching replies, binding variables, and emitting the
 //! [`Finding`]s its findings imply. The bound total probe count and the absence
@@ -25,7 +25,7 @@
 //! ## Guards decide the branches
 //!
 //! Two kinds of `when` clause steer a flow, both written in the [guard
-//! grammar](super::expr) and answered by [`eval`](super::eval). A step's `when`
+//! grammar](super::expr) and answered by [`eval`]. A step's `when`
 //! is checked against the environment before the step runs, a false guard
 //! skips the step and moves on, so a step may be made conditional on what an
 //! earlier one bound. A finding's `when` is checked against the environment and

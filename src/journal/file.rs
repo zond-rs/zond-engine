@@ -15,9 +15,9 @@
 //! A journal holds the addresses an engagement was pointed at, so every file is
 //! `0600` from creation rather than chmod'd after, and when the scan ran under
 //! `sudo` it is given to the user who invoked it rather than left to root.
-//! [`paths`](super::paths) explains why the journal goes to the invoking user's
-//! home; this is the other half of that answer, without which it goes to their
-//! home and stays unreadable to them.
+//! [`paths`](crate::journal::paths) explains why the journal goes to the
+//! invoking user's home; this is the other half of that answer, without which
+//! it goes to their home and stays unreadable to them.
 //!
 //! They live together because separating them costs exactly that. A cursor
 //! writer with its own copy of the mode and none of the ownership would leave
@@ -38,7 +38,8 @@
 //! Taking a lock is the one file this does not open. It has to appear at its name
 //! already holding its record, or a racer reads a lock mid-creation and finds it
 //! empty. See `lock::Lock::create_exclusively`, which stages the content through
-//! [`create_private`] here and links it into place.
+//! [`create_private`](crate::journal::file::create_private) here and links it
+//! into place.
 //!
 //! Directories are opened the same way for the same reason.
 

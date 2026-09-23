@@ -37,7 +37,7 @@
 //! [`Evidence`].
 //!
 //! [`Analyzer`]: super::analyzer::Analyzer
-//! [`Probable`]: super::model::Confidence::Probable
+//! [`Probable`]: crate::model::confidence::Confidence::Probable
 
 use async_trait::async_trait;
 use x509_parser::objects::oid2abbrev;

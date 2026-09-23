@@ -588,9 +588,9 @@ fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
     ctx.record_outcome(Outcome::Unasked);
 }
 
-/// Probes a single [`Target`] over a full TCP connect handshake and classifies
-/// its port. Returns `Some(..)` for a non-closed port and `None` for a closed
-/// port or a target this strategy doesn't handle.
+/// Probes a single [`PlannedTarget`] over a full TCP connect handshake and
+/// classifies its port. Returns `Some(..)` for a non-closed port and `None` for
+/// a closed port or a target this strategy doesn't handle.
 ///
 /// An accepted connection is `Open` and gets fingerprinted over the live stream,
 /// and a refusal is `Closed`. Anything else is `Filtered`, including a timeout,
@@ -806,8 +806,9 @@ async fn shaped_udp_socket(
     tokio::net::UdpSocket::from_std(std::net::UdpSocket::from(socket))
 }
 
-/// Probes a single [`Target`] for UDP using a standard OS `UdpSocket`, the
-/// unprivileged counterpart of [`UdpPortScanner`](super::ports::UdpPortScanner).
+/// Probes a single [`PlannedTarget`] for UDP using a standard OS `UdpSocket`,
+/// the unprivileged counterpart of
+/// [`UdpPortScanner`](super::ports::UdpPortScanner).
 ///
 /// UDP has no handshake to read a verdict from, so this leans on what the local
 /// kernel reports about the datagram it sent. The socket is *connected*, which

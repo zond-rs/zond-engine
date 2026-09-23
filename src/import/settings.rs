@@ -550,7 +550,7 @@ impl Settings {
 /// correction.
 ///
 /// Add a field to [`Settings`] and it goes here and in
-/// [`TEMPLATE`](crate::import::settings::TEMPLATE) too, or a document setting
+/// [`TEMPLATE`] too, or a document setting
 /// it is warned about while the value is quietly applied.
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the

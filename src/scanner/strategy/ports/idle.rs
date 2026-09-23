@@ -134,7 +134,7 @@ pub const OPEN_MIN_DELTA: u16 = SPOOFED_PROBES / 2 + 1;
 ///
 /// A ceiling, not a pace: a responsive zombie answers in a round trip and the
 /// next sample follows at once. It is bounded because two samples further apart
-/// than [`MAX_INTERVAL_FOR_ID`](crate::fingerprint::os::MAX_INTERVAL_FOR_ID)
+/// than the identifier classifier's `MAX_INTERVAL_FOR_ID`, the same half second,
 /// cannot support a counter reading at all, so a zombie slow enough to approach
 /// it is one whose signal has already gone.
 const ZOMBIE_REPLY_TIMEOUT: Duration = Duration::from_millis(500);

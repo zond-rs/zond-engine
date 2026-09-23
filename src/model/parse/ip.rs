@@ -397,7 +397,7 @@ fn parse_scoped(
 ///
 /// Written here as a thin wrapper rather than as a second implementation so
 /// that `10.0.0.1-50` cannot mean one thing through this module and fail to
-/// parse through [`IpRange::from_str`].
+/// parse through [`IpRange`]'s own `from_str`.
 fn parse_range(s: &str) -> Result<IpRange, IpParseError> {
     s.parse::<IpRange>().map_err(|error| match error {
         // "not an address" rather than "a wrong address", which is what tells

@@ -92,9 +92,9 @@ type Ledger = ProbeLedger<IpAddr, ()>;
 /// would have timed has already resolved.
 ///
 /// Slack here is charged to every scan, not just to a retransmit:
-/// [`DEADLINE_CONFIG`] is widened to outlive the longest probe, so a first
-/// timeout set too generously holds every sweep open whether or not any IPv6
-/// neighbour is slow.
+/// [`DEADLINE_CONFIG`](super::DEADLINE_CONFIG) is widened to outlive the
+/// longest probe, so a first timeout set too generously holds every sweep open
+/// whether or not any IPv6 neighbour is slow.
 pub(super) const NDP_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     2,
     Duration::from_millis(800),

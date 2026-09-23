@@ -38,7 +38,7 @@
 //! from an accumulating service guess belongs to whatever plans probes, not to a
 //! port list here.
 //!
-//! [`Strong`]: super::model::Confidence::Strong
+//! [`Strong`]: crate::model::confidence::Confidence::Strong
 
 use std::net::SocketAddr;
 use std::time::Duration;

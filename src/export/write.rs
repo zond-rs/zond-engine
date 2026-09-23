@@ -293,7 +293,7 @@ pub(crate) fn foot(out: &mut dyn Write) -> Result<(), ExportError> {
 /// different destination can fix the first and never the second.
 ///
 /// `format` is the name the caller carries in an
-/// [`ExportError::Render`](crate::export::ExportError::Render).
+/// [`ExportError::Render`].
 #[cfg(any(feature = "export-json", feature = "export-jsonl"))]
 pub(crate) fn render_error(format: &'static str, error: serde_json::Error) -> ExportError {
     if error.is_io() {

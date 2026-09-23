@@ -70,9 +70,10 @@ use crate::{info, success};
 /// before an answer could plausibly have arrived at all.
 ///
 /// A generous budget costs nothing when a scan succeeds, since both loops exit
-/// as soon as every target is resolved ([`RoutedScanner`] once all targets have
-/// responded, [`TcpPortScanner`] once nothing is pending). It is spent only
-/// when something is still missing.
+/// as soon as every target is resolved
+/// ([`RoutedScanner`](super::routed::RoutedScanner) once all targets have
+/// responded, [`TcpPortScanner`](super::ports::TcpPortScanner) once nothing is
+/// pending). It is spent only when something is still missing.
 pub(super) const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(
         Duration::from_millis(2_000),
@@ -103,9 +104,9 @@ pub(super) const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfi
 /// compensating for is not the kind repetition fixes. Sending faster than a path
 /// absorbs costs coverage on every attempt alike, so a scan that answers it with
 /// more attempts pays the full budget on every dead address to buy back what
-/// [`PROBE_RATE_PER_SEC`] gives away for nothing. On a range with nothing on it,
-/// which is the ordinary case, each attempt is the whole range's worth of
-/// packets and recovers no host at all.
+/// [`PROBE_RATE_PER_SEC`](super::routed::PROBE_RATE_PER_SEC) gives away for
+/// nothing. On a range with nothing on it, which is the ordinary case, each
+/// attempt is the whole range's worth of packets and recovers no host at all.
 ///
 /// The floor sits far below the starting timeout, and the gap between them is
 /// the point. Before anything has been measured the network is unknown rather

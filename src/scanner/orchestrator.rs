@@ -16,7 +16,7 @@
 //! Nothing here is public. It is one implementation of the engine's own policy,
 //! and the two entry points above are its only callers. A consumer who wants a
 //! different policy does not need to reach in here: they build a
-//! [`plan`](super::plan), edit it, and run the steps they want, which is the
+//! [`plan`], edit it, and run the steps they want, which is the
 //! second of the three altitudes the [`scanner`](super) module documents.
 //!
 //! ## Why it is a module of its own
@@ -121,9 +121,10 @@ pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
 ///
 /// Both entry points face the same two questions: can the process open raw
 /// sockets, and should it resolve hostnames. Answering them once, up front,
-/// lets [`scan`] and [`discover`] branch on the same facts and keeps the
-/// privileged-versus-unprivileged and DNS-on-versus-off policy from drifting
-/// between phases.
+/// lets [`scan`](crate::scanner::scan) and
+/// [`discover`](crate::scanner::discover) branch on the same facts and keeps
+/// the privileged-versus-unprivileged and DNS-on-versus-off policy from
+/// drifting between phases.
 #[derive(Clone, Copy)]
 pub(super) struct ScanCapabilities {
     /// Which sockets every phase of this scan runs with. At
@@ -261,15 +262,16 @@ fn announce_beyond_frames(beyond: &interface::BeyondFrames) {
     );
 }
 
-/// The privileged host-identification phase, shared by [`discover`] and
-/// [`scan`].
+/// The privileged host-identification phase, shared by
+/// [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan).
 ///
-/// It spawns the strategies discovery uses: per-interface [`LocalScanner`]s
-/// (ARP and ICMPv6, yielding MAC and RTT), a [`RoutedScanner`] for off-link
-/// targets (RTT), and the passive DNS and mDNS [`HostnameResolver`]. All of them
-/// write into the shared store. [`discover`] runs this alone, while [`scan`]
-/// runs it alongside the port scan. Keeping it in one place lets both surface
-/// identical host detail without duplicating the orchestration.
+/// It spawns the strategies discovery uses: per-interface
+/// [`LocalScanner`](strategy::local::LocalScanner)s (ARP and ICMPv6, yielding
+/// MAC and RTT), a [`RoutedScanner`](strategy::routed::RoutedScanner) for
+/// off-link targets (RTT), and the passive DNS and mDNS [`HostnameResolver`].
+/// All of them write into the shared store. `discover` runs this alone, while
+/// `scan` runs it alongside the port scan. Keeping it in one place lets both
+/// surface identical host detail without duplicating the orchestration.
 pub(super) struct Enrichment {
     scanners: Vec<(ScannerKind, JoinHandle<Result<(), StrategyError>>)>,
     resolver: Option<JoinHandle<Option<HostnameResolver>>>,
@@ -365,7 +367,7 @@ fn record_our_own_addresses(ours: &crate::model::ip::set::IpSet, ctx: &ScanConte
     }
 }
 
-/// Turns a [`DiscoveryPlan`] into running tasks.
+/// Turns a [`DiscoveryPlan`](plan::DiscoveryPlan) into running tasks.
 ///
 /// Every refusal the plan carries is recorded before anything is spawned, so the
 /// distinction between "nothing is there" and "nobody looked" survives into the
@@ -2008,10 +2010,12 @@ pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
 /// So they are given what they can use, and a host whose address is meaningless
 /// without an interface is not given at all. `fe80::1` cannot be routed: the
 /// kernel needs a scope id and a raw routed probe has nowhere to put one, which
-/// is the same refusal [`ScopedIp::to_socket_addr`] makes rather than attempting
-/// a send that fails for a reason having nothing to do with the target. Those
-/// hosts are the local scanner's, which reaches them at the link layer and
-/// already holds them under the interface they were read on.
+/// is the same refusal
+/// [`ScopedIp::to_socket_addr`](crate::model::ip::scoped::ScopedIp::to_socket_addr)
+/// makes rather than attempting a send that fails for a reason having nothing
+/// to do with the target. Those hosts are the local scanner's, which reaches
+/// them at the link layer and already holds them under the interface they were
+/// read on.
 ///
 /// It also keeps the store honest. A routed strategy writes its finding back
 /// under the address it probed, and an address that is not the whole key would

@@ -17,7 +17,7 @@
 //! a `OnceLock`, never eagerly for the whole set, never per connection. Which
 //! engine compiles it (the linear `regex` engine, or the bounded `fancy-regex`
 //! backtracking engine for backref/lookaround patterns) is decided by
-//! [`pattern::compile`](super::pattern::compile); see that module for the
+//! [`pattern::compile`]; see that module for the
 //! selection and safety rules. The signature set is validated at build time
 //! (see `build.rs`) with the same logic and size limit, so in a correctly built
 //! binary compilation never fails; the `None` branch is defence in depth and is

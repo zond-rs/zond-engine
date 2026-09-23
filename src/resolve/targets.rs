@@ -72,7 +72,7 @@ pub async fn resolve_names<S: AsRef<str>>(
 /// Parses `exprs` into a [`TargetMap`], resolving any hostnames along the way.
 ///
 /// The asynchronous counterpart to
-/// [`target::to_target_map`](crate::model::parse::target::to_target_map): it
+/// [`target::to_target_map`]: it
 /// resolves first, then builds with a lookup that reads the results, so a name
 /// becomes the addresses it stands for instead of the error an unresolved one
 /// would raise.

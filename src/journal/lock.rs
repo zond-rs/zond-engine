@@ -544,7 +544,7 @@ mod persistence {
         /// is only unique between processes and this is a library. With the pid
         /// alone, two threads of one caller taking the same journal would share
         /// the staged name, and
-        /// [`create_staged`](crate::journal::file::create_staged) removes a name
+        /// [`create_staged`] removes a name
         /// it finds occupied: one thread would delete the file the other was
         /// about to link, which fails the link with `NotFound` and is read here
         /// as an error rather than a lost race, or link an empty file into place,

@@ -19,8 +19,8 @@
 //!
 //! Unlike a [flow](crate::detect::flow), a module is code and must be compiled.
 //! That happens here, once, when the database is first asked for: each body is
-//! loaded through the [`RhaiRuntime`](super::RhaiRuntime), and the runtime and the
-//! compiled set are held together, because the [stage](super::stage) needs both to
+//! loaded through the [`RhaiRuntime`], and the runtime and the
+//! compiled set are held together, because the [stage] needs both to
 //! run them. A body that will not compile aborts the load, the same policy the flow
 //! and host loaders hold on a corpus that will not re-parse: the shipped corpus is
 //! proven to compile by a test, so a failure is a broken build to surface loudly,

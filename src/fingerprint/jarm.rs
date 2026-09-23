@@ -1027,7 +1027,7 @@ fn wants_more(reply: &[u8]) -> bool {
 /// favicon costs one. Three things keep that in proportion.
 ///
 /// The first is the level. This runs only at
-/// [`ServiceDetection::Thorough`](crate::config::ServiceDetection::Thorough),
+/// [`ServiceDetection::Thorough`],
 /// the level whose whole meaning is that the caller has asked for every question
 /// the corpus has. Ten hellos, half of them malformed on purpose, is also a
 /// shape an IDS is written to notice, and a default scan should not wear it.

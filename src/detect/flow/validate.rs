@@ -9,7 +9,7 @@
 //! # Checking a flow before it ships
 //!
 //! The structural half of the flow validator. It walks a parsed
-//! [`FlowDetection`](super::schema::FlowDetection) and reports every way it is
+//! [`FlowDetection`] and reports every way it is
 //! ill-formed, a guard that names a variable no earlier step binds, a `passive`
 //! detection that tries to send, a loop that never ends or never runs, a
 //! detection that can emit no finding at all. A flow that passes is a flow the
@@ -21,7 +21,7 @@
 //!
 //! Like the schema and the guard grammar, this module carries no dependency on
 //! the rest of the crate, only [`std`], its sibling [`schema`](super::schema),
-//! and its sibling [`expr`](super::expr). So `build.rs` loads it with `#[path]`
+//! and its sibling [`expr`]. So `build.rs` loads it with `#[path]`
 //! and runs it over the flow corpus with the same code that would run over a flow
 //! loaded at runtime. Its `#[cfg(test)]` tests are free to reach into the crate
 //! (the build never compiles them), so they check the checker against the real

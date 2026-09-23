@@ -295,10 +295,11 @@ impl SourceIdentity {
     /// second sweep to find one would fold its neighbour's hardware address,
     /// roles and round trips into the first's record.
     ///
-    /// [`ScopedIp::scoped`] drops the zone from every address that does not need
-    /// one, so this is the plain address for an IPv4 neighbour and for a global
-    /// IPv6 one, which is right, since a machine reachable at a global address
-    /// is the same machine through whichever interface it answered.
+    /// [`ScopedIp::scoped`](crate::model::ip::scoped::ScopedIp::scoped) drops
+    /// the zone from every address that does not need one, so this is the plain
+    /// address for an IPv4 neighbour and for a global IPv6 one, which is right,
+    /// since a machine reachable at a global address is the same machine
+    /// through whichever interface it answered.
     fn key_for(&self, addr: std::net::IpAddr) -> crate::model::ip::scoped::ScopedIp {
         crate::model::ip::scoped::ScopedIp::scoped(addr, self.zone.clone())
     }
@@ -821,12 +822,13 @@ impl LocalScanner {
     /// first attempts to go out beside this one, uncounted, `sends_attempted`
     /// would describe the retries and nothing else while reading like a total.
     ///
-    /// [`FrameSink::send_frame`] reports whether the frame left, and an error is
-    /// the only way it did not. Every way a frame can fail to leave, no buffer to
-    /// write into or a write that failed, means the same thing to every caller,
-    /// which is why this says it once. Reading only whether the *packet built*
-    /// would leave `sends_failed` making a claim about this code where a caller
-    /// reads it as a claim about the link.
+    /// [`FrameSink::send_frame`](crate::transport::capture::FrameSink::send_frame)
+    /// reports whether the frame left, and an error is the only way it did not.
+    /// Every way a frame can fail to leave, no buffer to write into or a write
+    /// that failed, means the same thing to every caller, which is why this
+    /// says it once. Reading only whether the *packet built* would leave
+    /// `sends_failed` making a claim about this code where a caller reads it as
+    /// a claim about the link.
     fn emit(&mut self, packet: &[u8], what: &str) -> bool {
         match self.eth_handle.tx.send_frame(packet) {
             Ok(()) => {
@@ -846,8 +848,8 @@ impl LocalScanner {
     ///
     /// Everything the packet iterator emits is one address's own probe, to be
     /// repeated and eventually given up on. The all-nodes echo is not among
-    /// them: it belongs to [`Solicitation`], which records its own sends
-    /// because it has to remember the token each one carried.
+    /// them: it belongs to [`Solicitation`](ipv6::Solicitation), which records
+    /// its own sends because it has to remember the token each one carried.
     fn record_probe(&mut self, ip: IpAddr, now: Instant) {
         if ip.is_ipv6() {
             self.ipv6.record_asked(ip, now);
@@ -874,8 +876,8 @@ impl LocalScanner {
     /// certainly still live, and a solicitation to it is answered by the host
     /// itself rather than overheard.
     ///
-    /// Bounded by [`solicited`](Self::solicited), so an address is asked about
-    /// once however often it advertises itself.
+    /// Bounded by [`solicited`](ipv6::Ipv6Discovery::solicited), so an address
+    /// is asked about once however often it advertises itself.
     ///
     /// The one place a lead becomes a probe, and so where the exclusions are
     /// asked about it. Every caller hands over an address the target list never
@@ -925,8 +927,8 @@ impl LocalScanner {
     /// advertises itself unprompted on a timer measured in minutes, which
     /// outlasts any sweep, so without asking the engine finds the segment's
     /// routers only by luck. The reply is an ordinary advertisement claimed by
-    /// [`RouterAdvertProtocol`], so the router arrives as a host in the same
-    /// breath as being named one.
+    /// [`RouterAdvertProtocol`](frames::RouterAdvertProtocol), so the router
+    /// arrives as a host in the same breath as being named one.
     ///
     /// Sent on any local run, unlike the all-nodes echo. The rule that keeps a
     /// targeted run targeted is about what may be *recorded*, and it is
@@ -968,9 +970,9 @@ impl LocalScanner {
     /// is already on.
     ///
     /// The answer comes back to this host's address, and is read off the
-    /// segment by [`DhcpProtocol`] rather than through a socket: binding UDP/68
-    /// is a privilege this scanner already has a better use for, and the
-    /// capture sees the reply either way.
+    /// segment by [`DhcpProtocol`](frames::DhcpProtocol) rather than through a
+    /// socket: binding UDP/68 is a privilege this scanner already has a better
+    /// use for, and the capture sees the reply either way.
     fn ask_for_configuration(&mut self) {
         let Some(source) = self.identity.ipv4 else {
             return;
@@ -1050,7 +1052,8 @@ impl LocalScanner {
     /// The sender is not credited either. A frame off the segment
     /// does prove its sender exists, but crediting a host to "was chatty on
     /// mDNS" attributes it to a mechanism that did not find it, which is the
-    /// distinction [`Icmpv6EchoProtocol`] is careful about for the same reason.
+    /// distinction [`Icmpv6EchoProtocol`](frames::Icmpv6EchoProtocol) is
+    /// careful about for the same reason.
     ///
     /// Nothing is taken once the sweep has run its course. Each confirmation
     /// holds the run open for a reply, so a segment that keeps talking could

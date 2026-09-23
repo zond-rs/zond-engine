@@ -83,7 +83,9 @@
 //! A 16-bit identifier counter wraps every 65 536 packets. Sampled across a gap
 //! long enough for a busy host to wrap it, a counter and a random number are the
 //! same observation, and the classifier refuses to read one rather than guess:
-//! [`MAX_INTERVAL_FOR_ID`](crate::fingerprint::os::SeriesSample) is the bound.
+//! half a second between samples is the bound
+//! [`read_identifiers`](crate::fingerprint::os::read_identifiers) holds a
+//! series to.
 //!
 //! That is a constraint on this scanner, not just on its rules: **one sweep has
 //! to finish inside the spacing**, or every host in it is reported as unclear

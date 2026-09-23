@@ -543,9 +543,9 @@ pub struct Host {
 
     /// The routers between this machine and this host, when a trace ran.
     ///
-    /// Empty unless [`OsDetection`]-style effort was asked for. A path costs one
-    /// probe per hop per host and nothing else in a scan needs
-    /// one, so it is never gathered as a side effect. See
+    /// Empty unless a trace was asked for. A path costs one probe per hop per
+    /// host and nothing else in a scan needs one, so it is never gathered as a
+    /// side effect. See
     /// [`ZondConfig::traceroute`](crate::config::ZondConfig::traceroute).
     ///
     /// Held here rather than on [`HostTelemetry`] beside the round-trip time,

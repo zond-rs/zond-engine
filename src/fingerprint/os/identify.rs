@@ -27,8 +27,8 @@
 //!
 //! ## The passive sources are free
 //!
-//! [`hardware_evidence`](super::hardware_evidence) reads a vendor out of a MAC
-//! address and [`hostname_evidence`](super::hostname_evidence) reads a family
+//! [`hardware_evidence`] reads a vendor out of a MAC
+//! address and [`hostname_evidence`] reads a family
 //! out of a default hostname. Neither sends a packet, neither needs a port, and
 //! both work on anything a discovery sweep found. That is what makes
 //! [`identify`] worth calling with no observation at all.

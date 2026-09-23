@@ -111,12 +111,12 @@ use crate::transport::probe::{Emission, ProbeTransport};
 
 /// How a **port scan's** probes are retransmitted.
 ///
-/// [`RETRY_POLICY`] with a steeper backoff and a wider spread, and the reason is
-/// specific to what a port scan's retries are recovering from. A sweep's probes
-/// are lost to whatever the path is doing, which is not correlated with the
-/// sweep; a port scan's are lost to the burst the port scan itself is making at
-/// one stack, and a retry sent while that burst is still going is a second
-/// packet into the same congested moment.
+/// [`RETRY_POLICY`](super::raw::RETRY_POLICY) with a steeper backoff and a wider
+/// spread, and the reason is specific to what a port scan's retries are
+/// recovering from. A sweep's probes are lost to whatever the path is doing,
+/// which is not correlated with the sweep; a port scan's are lost to the burst
+/// the port scan itself is making at one stack, and a retry sent while that
+/// burst is still going is a second packet into the same congested moment.
 ///
 /// Measured, against a Raspberry Pi: a quarter of a thousand probes went
 /// unanswered, and with three independent attempts at that loss rate an open

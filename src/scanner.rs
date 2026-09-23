@@ -533,9 +533,10 @@ pub async fn discover_with_journal(
 /// all be numbered.
 ///
 /// The numbering is the same one a journal settles positions against, so a
-/// fraction built from this counts what [`Progress::settled`] counts. A range
-/// too wide to number leaves the plan uncountable, and a scan of one never
-/// finishes anyway.
+/// fraction built from this counts what
+/// [`Progress::settled`](crate::scanner::session::Progress::settled) counts. A
+/// range too wide to number leaves the plan uncountable, and a scan of one
+/// never finishes anyway.
 fn planned_addresses(positions: &Positions) -> Option<u64> {
     positions.unnumbered().is_empty().then(|| positions.total())
 }

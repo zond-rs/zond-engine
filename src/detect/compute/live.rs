@@ -21,7 +21,7 @@
 //! exceed them: an exchange the budget cannot pay for is refused before a packet
 //! leaves, and a reply is capped at the bytes still available. The Tier-1
 //! [socket probe](crate::detect::flow::SocketProbe) a flow speaks through spends
-//! the same budgets over the same [exchange](crate::detect::exchange); what
+//! the same budgets over the same [exchange]; what
 //! differs is the seam, so a module's `speak` returns a typed [`CapError`] it may
 //! catch where a flow's probe reports a bare absence.
 //!
