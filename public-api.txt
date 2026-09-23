@@ -14942,6 +14942,7 @@ pub fn zond_engine::scanner::session::ScanContext::host_expired(&self, core::net
 pub fn zond_engine::scanner::session::ScanContext::host_probed(&self, core::net::ip_addr::IpAddr, std::time::Instant)
 pub fn zond_engine::scanner::session::ScanContext::host_ready_at(&self, core::net::ip_addr::IpAddr, std::time::Instant) -> core::option::Option<std::time::Instant>
 pub fn zond_engine::scanner::session::ScanContext::hosts_snapshot(&self) -> alloc::vec::Vec<zond_engine::model::host::Host>
+pub fn zond_engine::scanner::session::ScanContext::may_probe(&self, &core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::scanner::session::ScanContext::probe_stats_snapshot(&self) -> alloc::vec::Vec<zond_engine::report::ProbeStats>
 pub fn zond_engine::scanner::session::ScanContext::progress(&self) -> zond_engine::scanner::session::ScanProgress
 pub fn zond_engine::scanner::session::ScanContext::read_host<R>(&self, impl core::convert::Into<zond_engine::model::ip::scoped::ScopedIp>, impl core::ops::function::FnOnce(&zond_engine::model::host::Host) -> R) -> core::option::Option<R>

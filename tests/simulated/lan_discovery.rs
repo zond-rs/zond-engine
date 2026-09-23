@@ -56,13 +56,41 @@ async fn sweep_audited(
     targets: &[IpAddr],
     scope: Scope,
 ) -> (ScanSession, zond_engine::scanner::session::ScanContext) {
+    sweep_in(lan, targets, scope, ScanSession::new()).await
+}
+
+/// [`sweep`] under an exclusion policy, reaching the scanner the way a caller's
+/// exclusions do: through the context, since the target list is the half of the
+/// policy the caller already applied.
+async fn sweep_excluding(
+    lan: &FakeLan,
+    targets: &[IpAddr],
+    scope: Scope,
+    excluded: &[IpAddr],
+) -> ScanSession {
+    let mut forbidden = IpSet::new();
+    for ip in excluded {
+        forbidden.insert(*ip);
+    }
+    let built = ScanSession::builder()
+        .excluding(Exclusions::new(forbidden))
+        .build();
+    sweep_in(lan, targets, scope, built).await.0
+}
+
+/// Runs a sweep of `targets` against `lan`, writing into the context given.
+async fn sweep_in(
+    lan: &FakeLan,
+    targets: &[IpAddr],
+    scope: Scope,
+    (session, ctx): (ScanSession, zond_engine::scanner::session::ScanContext),
+) -> (ScanSession, zond_engine::scanner::session::ScanContext) {
     let mut ips = IpSet::new();
     for ip in targets {
         ips.insert(*ip);
     }
     ips.canonicalize();
 
-    let (session, ctx) = ScanSession::new();
     let mut scanner = LocalScanner::with_handle(
         scanner_interface(),
         ips,
@@ -805,6 +833,68 @@ async fn an_address_only_mdns_knows_about_is_asked_about() {
         host.min_rtt().is_some(),
         "one solicitation is unambiguous, so the answer yields a round trip"
     );
+}
+
+/// A lead the sweep takes off the wire is asked about only where the operator
+/// allowed it.
+///
+/// An mDNS record and an advertisement nobody solicited both name an address the
+/// target list never held, so withholding the list cannot reach it, and both
+/// become a solicitation addressed to that one address. The recording gate
+/// still drops the answer, so the report stays clean either way and the packet
+/// is the only trace of the defect: which is why this asserts on the wire and
+/// not on the hosts.
+///
+/// The same two leads, unexcluded, are solicited: see
+/// `an_address_only_mdns_knows_about_is_asked_about` and
+/// `an_overheard_neighbour_is_asked_directly_and_then_measured`. Those are what
+/// keep this one from passing because the scenario never solicited anything.
+#[tokio::test]
+async fn an_excluded_address_learned_mid_sweep_is_not_asked_about() {
+    let announced = Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0x4b);
+    let overheard = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
+    let announcer = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
+
+    let leads = [
+        (
+            "an mDNS record",
+            FakeLan::new()
+                .host(IpAddr::V6(announced), LanHost::at(PEER_B))
+                .announcing_over_mdns("tv.local", announced, announcer),
+            announced,
+        ),
+        (
+            "an unsolicited advertisement",
+            FakeLan::new()
+                .host(IpAddr::V6(overheard), LanHost::at(PEER_B))
+                .advertising_unsolicited(IpAddr::V6(overheard)),
+            overheard,
+        ),
+    ];
+
+    for (lead, lan, excluded) in leads {
+        let session = sweep_excluding(&lan, &[v4(10)], Scope::Sweep, &[IpAddr::V6(excluded)]).await;
+
+        let asked = lan
+            .probes()
+            .iter()
+            .filter(
+                |probe| matches!(probe, LanProbe::Solicit { target, .. } if *target == excluded),
+            )
+            .count();
+        assert_eq!(
+            asked, 0,
+            "{lead} named {excluded}, which is excluded, and the sweep solicited it"
+        );
+        assert!(
+            session.hosts().get(IpAddr::V6(excluded)).is_none()
+                && session
+                    .hosts()
+                    .get(on_segment(IpAddr::V6(excluded)))
+                    .is_none(),
+            "and nothing about it may be recorded either"
+        );
+    }
 }
 
 /// Announcing over mDNS is not what makes the announcer a host.

@@ -1383,6 +1383,23 @@ impl ScanContext {
         self.responses.take(ip, number, protocol)
     }
 
+    /// Whether this scan may address a probe to `address`.
+    ///
+    /// The send-side half of what [`Exclusions`] promises, for the one kind of
+    /// address the up-front withholding cannot reach: one a strategy learns while
+    /// it runs. A segment sweep takes leads off the wire, from mDNS records and
+    /// from advertisements nobody solicited, and asks each one directly. None of
+    /// them was in the target list, so none was withheld from it, and
+    /// [`write_host`](Self::write_host) sees only the answer: it can keep the
+    /// report clean and cannot keep the question off the wire.
+    ///
+    /// Asked by whoever turns a learned address into a probe, at the moment it
+    /// does. A target the caller named has already been withheld and need not
+    /// ask again.
+    pub fn may_probe(&self, address: &IpAddr) -> bool {
+        !self.exclusions.excludes(address)
+    }
+
     /// The single place a host finding enters the store.
     ///
     /// Upserts the host at `ip`, runs `edit` against it while the store guard is

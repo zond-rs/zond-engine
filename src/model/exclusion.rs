@@ -24,11 +24,12 @@
 //!
 //! An exclusion that holds for the list and not for what the sweep discovers is
 //! worse than no exclusion at all, because it is relied upon. So the policy is
-//! enforced twice, and the two enforcements answer different questions:
+//! enforced at three points, and they answer different questions:
 //!
 //! | Where | What it guarantees |
 //! |---|---|
-//! | [`withhold`](Exclusions::withhold) and [`withhold_targets`](Exclusions::withhold_targets), before anything is opened | No probe is *addressed* to an excluded address, and the scope the report states is the scope that was actually walked |
+//! | [`withhold`](Exclusions::withhold) and [`withhold_targets`](Exclusions::withhold_targets), before anything is opened | No probe is *addressed* to an excluded address the caller named, and the scope the report states is the scope that was actually walked |
+//! | [`ScanContext::may_probe`](crate::scanner::session::ScanContext::may_probe), where a strategy turns an address it learned into a probe | No probe is addressed to an excluded address the scan found for itself, which the list never held |
 //! | [`ScanContext::write_host`](crate::scanner::session::ScanContext::write_host), on every finding | Nothing about an excluded address is recorded, whichever path it arrived by |
 //!
 //! Subtracting up front is also what keeps the second cheap. Without it a `/8`

@@ -22,8 +22,13 @@
 //! So it gets the stronger thing instead: an invariant over what a plan actually
 //! contains. Whatever a sweep discovers, and however it discovers it, no step it
 //! produces may carry an excluded address. That catches a path nobody thought to
-//! add to a list, which is the kind that has caused both exclusion findings so
-//! far.
+//! add to a list, which is the kind of path exclusion defects have come through.
+//!
+//! A plan cannot hold everything a scan sends. A sweep takes leads off the wire
+//! while it runs, from mDNS records and unsolicited advertisements, and asks each
+//! one directly; those addresses never pass through a plan, so this invariant
+//! cannot see them. The simulated tier guards that path on the wire, in
+//! `lan_discovery.rs`'s `an_excluded_address_learned_mid_sweep_is_not_asked_about`.
 //!
 //! It sits in this tier because it builds a plan through the library, reading
 //! this host's interface table and opening nothing.

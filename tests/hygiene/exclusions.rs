@@ -13,7 +13,7 @@
 //!
 //! | promise | kept at |
 //! |---|---|
-//! | no probe is *addressed* to an excluded address | `withhold` / `withhold_targets`, before anything is opened |
+//! | no probe is *addressed* to an excluded address | `withhold` / `withhold_targets`, before anything is opened; `ScanContext::may_probe`, for an address a strategy learns while it runs |
 //! | no excluded address appears in the report | `ScanContext::write_host`, on every finding |
 //!
 //! Both were broken, within two targets of each other, by paths added after the

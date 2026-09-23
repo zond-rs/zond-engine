@@ -879,11 +879,23 @@ impl LocalScanner {
     ///
     /// Bounded by [`solicited`](Self::solicited), so an address is asked about
     /// once however often it advertises itself.
+    ///
+    /// The one place a lead becomes a probe, and so where the exclusions are
+    /// asked about it. Every caller hands over an address the target list never
+    /// held, so withholding the list never reached it.
     fn confirm(&mut self, address: IpAddr) {
         if !address.is_ipv6()
             || !matches!(self.scope, Scope::Sweep)
             || self.identity.link_local_ipv6.is_none()
         {
+            return;
+        }
+
+        if !self.ctx.may_probe(&address) {
+            info!(
+                verbosity = 2,
+                "{address} was overheard and is excluded, so it is not asked about"
+            );
             return;
         }
 
