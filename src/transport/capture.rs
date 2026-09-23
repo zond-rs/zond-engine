@@ -527,25 +527,41 @@ impl CaptureGuard {
 
 /// Why a capture could not be started.
 ///
-/// One variant, because there is one way this fails. An interface that cannot be
-/// captured is skipped and logged rather than failing the scan: a host has
-/// several, most of them irrelevant to any given probe, and refusing to scan
-/// because a virtual bridge declined would be wrong. Only every interface
-/// failing leaves the scan with nowhere to hear an answer, and that is this.
+/// An interface that cannot be captured is skipped and logged rather than
+/// failing the scan: a host has several, most of them irrelevant to any given
+/// probe, and refusing to scan because a virtual bridge declined would be
+/// wrong. Only every interface failing leaves the scan with nowhere to hear an
+/// answer, and that is [`NoInterface`](Self::NoInterface), which carries each
+/// link's own refusal.
+///
+/// Privilege is one cause among several and is said only where it is the one.
+/// A root process can be refused a capture by a filter the link cannot
+/// express, a framing nothing here parses, or an adapter the capture driver
+/// will not bind, and a message blaming privilege for those sends somebody who
+/// already holds it looking in the one place the fault is not.
+/// [`is_denied`](Self::is_denied) is the question to ask.
 ///
 /// `#[non_exhaustive]` because the capture layer is where new platform-specific
 /// failures show up first.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {
-    /// No interface could be captured, so no reply could ever be heard. Almost
-    /// always missing privileges: opening a capture needs root on every platform
-    /// this engine supports.
+    /// No link could be captured on, so nothing could be heard.
+    ///
+    /// Carries every link's refusal rather than one verdict for all of them,
+    /// because they need not agree and the reason is what there is to act on.
+    /// Where every one was [`Denied`](Self::Denied) the message says so in one
+    /// sentence, which is the ordinary case of a process without the privilege
+    /// to capture; otherwise it names each link and what refused it.
     #[error(
-        "no interface could be captured for replies, so no answer could be heard \
-         (opening a capture needs root)"
+        "no link could be captured on, so nothing could be heard: {}",
+        refusals_reason(refused)
     )]
-    NoInterface,
+    NoInterface {
+        /// Each link tried, by name, and why it could not be captured on, in the
+        /// order the links were tried.
+        refused: Vec<(String, CaptureError)>,
+    },
     /// Every link opened and not one of them could be given a reader thread.
     ///
     /// A runtime condition rather than a mistake: a process near its thread
@@ -578,8 +594,10 @@ pub enum CaptureError {
 
     /// The filter expression would not compile to a BPF program.
     ///
-    /// A mistake in the expression rather than anything about the host, and the
-    /// expression is named because it is the thing to look at.
+    /// Either a mistake in the expression or a link that cannot express it: an
+    /// Ethernet address means nothing on a tunnel, and `libpcap` refuses to
+    /// compile one for it. The expression is named because in both cases it is
+    /// the thing to look at.
     #[error("the filter `{filter}` would not compile: {}", library_message(.source))]
     Filter {
         /// The expression that was rejected.
@@ -589,11 +607,31 @@ pub enum CaptureError {
         source: pcap::Error,
     },
 
-    /// One named link could not be opened. Unlike `NoInterface` this names the
-    /// link, because a caller asked for that one in particular and there is
-    /// nothing else to fall back to.
+    /// One named link could not be opened, for a reason other than privilege.
+    /// Unlike `NoInterface` this names the link, because a caller asked for
+    /// that one in particular and there is nothing else to fall back to.
     #[error("{interface} could not be opened: {}", library_message(.source))]
     Open {
+        /// The link that refused.
+        interface: String,
+        /// What `libpcap` said.
+        #[source]
+        source: pcap::Error,
+    },
+
+    /// One named link could not be opened because this process may not
+    /// capture on it.
+    ///
+    /// Separate from [`Open`](Self::Open) because it is the one refusal whose
+    /// remedy lies outside the link: root, or wherever the platform grants the
+    /// right to capture short of it, such as membership of `access_bpf` on
+    /// macOS or `cap_net_raw` on Linux. It is decided by the status `libpcap`
+    /// activated the handle with, never by reading its message.
+    #[error(
+        "{interface} could not be opened without privileges this process lacks: {}",
+        library_message(.source)
+    )]
+    Denied {
         /// The link that refused.
         interface: String,
         /// What `libpcap` said.
@@ -603,17 +641,59 @@ pub enum CaptureError {
 }
 
 impl CaptureError {
+    /// Whether this failure is a missing privilege, and nothing else.
+    ///
+    /// True of a link that [`Denied`](Self::Denied) this process, and of a
+    /// capture with no link because every link did. A capture refused on other
+    /// grounds, even alongside some links that denied it, answers false:
+    /// acquiring the privilege would not have made it work.
+    pub fn is_denied(&self) -> bool {
+        match self {
+            Self::Denied { .. } => true,
+            Self::NoInterface { refused } => {
+                !refused.is_empty() && refused.iter().all(|(_, error)| error.is_denied())
+            }
+            _ => false,
+        }
+    }
+
     /// What went wrong, without naming the link it went wrong on, for a line
     /// that names the link its own way.
     fn reason(&self) -> String {
         match self {
             Self::Open { source, .. } => library_message(source).into_owned(),
+            Self::Denied { source, .. } => format!(
+                "this process lacks the privileges to capture on it: {}",
+                library_message(source)
+            ),
             Self::UnsupportedLinkType { dlt, .. } => {
                 format!("it carries data-link type {dlt}, which nothing here parses")
             }
             other => other.to_string(),
         }
     }
+}
+
+/// Why no link could be captured on, from each link's refusal.
+///
+/// One sentence where every link was denied, which is what an unprivileged
+/// process meets on every link it tries and where a list of them all would say
+/// the same thing once per interface. Otherwise each link by name with its own
+/// reason, because then they can differ, and the one that matters may be any of
+/// them.
+fn refusals_reason(refused: &[(String, CaptureError)]) -> String {
+    if refused.is_empty() {
+        return "there was no link to capture on".to_owned();
+    }
+    if refused.iter().all(|(_, error)| error.is_denied()) {
+        return "this process may not capture (opening a capture needs root)".to_owned();
+    }
+
+    refused
+        .iter()
+        .map(|(link, error)| format!("{link}: {}", error.reason()))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// What the capture library said, in its own words.
@@ -858,7 +938,12 @@ where
     if handles.is_empty() {
         return Err(match unstarted {
             Some(source) => CaptureError::NoReader { opened, source },
-            None => CaptureError::NoInterface,
+            None => CaptureError::NoInterface {
+                refused: unheard
+                    .into_iter()
+                    .map(|(zone, error)| (zone.name().to_owned(), error))
+                    .collect(),
+            },
         });
     }
 
@@ -878,7 +963,7 @@ where
 
 /// Says which links could not be captured on, and why: once per link for the
 /// life of the process, and on the default console only where the scan's
-/// answers depend on it.
+/// answers depend on it and no error will say so.
 ///
 /// Every transport opens its own capture on every link, so a link that refuses
 /// one refuses them all, three or four times a scan, and a front end that runs
@@ -937,16 +1022,19 @@ enum Loudness {
 
 /// How loudly a link that could not be captured on is told about.
 ///
-/// Aloud when the scan's answers depend on it. They do when no link could be
-/// captured on at all, since then nothing can be heard and the failures are the
-/// reason why. They do when the link carries the default route, since every
-/// target beyond this machine's own segments is reached through it and answers
-/// through it. Otherwise the link is one of the adapters a host keeps beside
-/// the one it uses, a hypervisor's switch, a VPN's tunnel, a bridge, and a
-/// target only reaches it by sitting on its own segment: quiet, where a reader
-/// asking what went uncovered will find it.
+/// Aloud when the scan's answers depend on it and nothing else will say so.
+/// They depend on a link carrying the default route, since every target beyond
+/// this machine's own segments is reached through it and answers through it,
+/// and while other links were captured on the scan goes on without it, so this
+/// line is the only place its loss is told. Where no link could be captured on
+/// at all the capture fails, and its error names every link and what refused
+/// it: the lines here go quiet rather than say each cause a second time, beside
+/// the error that is already saying it. Otherwise the link is one of the
+/// adapters a host keeps beside the one it uses, a hypervisor's switch, a VPN's
+/// tunnel, a bridge, and a target only reaches it by sitting on its own
+/// segment: quiet, where a reader asking what went uncovered will find it.
 fn loudness(every_link_failed: bool, carries_default_route: bool) -> Loudness {
-    if every_link_failed || carries_default_route {
+    if carries_default_route && !every_link_failed {
         Loudness::Aloud
     } else {
         Loudness::Quiet
@@ -1479,10 +1567,10 @@ mod libpcap {
     const PCAP_WARNING: c_int = 1;
     const PCAP_WARNING_PROMISC_NOTSUP: c_int = 2;
     const PCAP_WARNING_TSTAMP_TYPE_NOTSUP: c_int = 3;
-    const PCAP_ERROR_NO_SUCH_DEVICE: c_int = -5;
-    const PCAP_ERROR_PERM_DENIED: c_int = -8;
+    pub(super) const PCAP_ERROR_NO_SUCH_DEVICE: c_int = -5;
+    pub(super) const PCAP_ERROR_PERM_DENIED: c_int = -8;
     const PCAP_ERROR_IFACE_NOT_UP: c_int = -9;
-    const PCAP_ERROR_PROMISC_PERM_DENIED: c_int = -11;
+    pub(super) const PCAP_ERROR_PROMISC_PERM_DENIED: c_int = -11;
 
     unsafe extern "C" {
         fn pcap_create(source: *const c_char, errbuf: *mut c_char) -> *mut Handle;
@@ -1519,11 +1607,6 @@ mod libpcap {
         link: &str,
         setup: &Setup,
     ) -> Result<(Capture<Active>, Option<String>), CaptureError> {
-        let refused = |message: String| CaptureError::Open {
-            interface: link.to_owned(),
-            source: pcap::Error::PcapError(message),
-        };
-
         let device = CString::new(device_name(link)).map_err(|_| CaptureError::Open {
             interface: link.to_owned(),
             source: pcap::Error::InvalidInputString,
@@ -1538,7 +1621,10 @@ mod libpcap {
             // message into `errbuf`, which was zeroed, so it is terminated
             // either way.
             let message = unsafe { CStr::from_ptr(errbuf.as_ptr()) };
-            return Err(refused(message.to_string_lossy().into_owned()));
+            return Err(CaptureError::Open {
+                interface: link.to_owned(),
+                source: pcap::Error::PcapError(message.to_string_lossy().into_owned()),
+            });
         };
 
         // Adopted before it is activated, so that every path out of this
@@ -1570,7 +1656,29 @@ mod libpcap {
         match status {
             0 => Ok((capture, None)),
             warning if warning > 0 => Ok((capture, Some(message()))),
-            _ => Err(refused(message())),
+            failure => Err(refusal(link, failure, message())),
+        }
+    }
+
+    /// The error a handle that failed to activate with `status` is reported
+    /// as.
+    ///
+    /// Privilege is read from the status and from nothing else. `libpcap`
+    /// reports a missing privilege as its own status, on every platform, while
+    /// its words for it differ between them and between releases, and a check
+    /// that matched the words would come to blame privilege for a failure it
+    /// did not cause, or miss the one it did.
+    pub(super) fn refusal(link: &str, status: c_int, message: String) -> CaptureError {
+        let source = pcap::Error::PcapError(message);
+        match status {
+            PCAP_ERROR_PERM_DENIED | PCAP_ERROR_PROMISC_PERM_DENIED => CaptureError::Denied {
+                interface: link.to_owned(),
+                source,
+            },
+            _ => CaptureError::Open {
+                interface: link.to_owned(),
+                source,
+            },
         }
     }
 
@@ -1644,11 +1752,135 @@ mod tests {
         assert_eq!(refused.reason(), message, "the reason leaves the name out");
     }
 
+    /// A link refused for want of privilege is said to be, and one refused for
+    /// anything else is not.
+    ///
+    /// The status decides it, which is the property: `libpcap` reports a
+    /// missing privilege as a status of its own, and a message blaming
+    /// privilege for a failure it did not cause sends somebody who holds it
+    /// looking in the one place the fault is not.
+    #[test]
+    fn only_a_refusal_libpcap_reports_as_denied_is_blamed_on_privilege() {
+        for status in [
+            libpcap::PCAP_ERROR_PERM_DENIED,
+            libpcap::PCAP_ERROR_PROMISC_PERM_DENIED,
+        ] {
+            let refused =
+                libpcap::refusal("eth0", status, "socket: Operation not permitted".into());
+            assert!(refused.is_denied(), "status {status}");
+            assert!(refused.to_string().contains("privileges"), "{refused}");
+        }
+
+        for status in [libpcap::PCAP_ERROR_NO_SUCH_DEVICE, -1] {
+            let refused = libpcap::refusal("eth0", status, "no such device".into());
+            assert!(!refused.is_denied(), "status {status}");
+            assert!(!refused.to_string().contains("privilege"), "{refused}");
+        }
+    }
+
+    /// A capture no link would take names each link and its reason, and
+    /// blames privilege in one sentence only where privilege refused them all.
+    #[test]
+    fn a_capture_no_link_would_take_says_why_each_refused() {
+        let denied = |link: &str| CaptureError::Denied {
+            interface: link.to_owned(),
+            source: pcap::Error::PcapError("Operation not permitted".into()),
+        };
+        let filter = CaptureError::Filter {
+            filter: "ether dst 02:00:00:00:00:01".into(),
+            source: pcap::Error::PcapError(
+                "ethernet addresses supported only on ethernet/FDDI/token ring".into(),
+            ),
+        };
+
+        let unprivileged = CaptureError::NoInterface {
+            refused: vec![
+                ("eth0".into(), denied("eth0")),
+                ("wg0".into(), denied("wg0")),
+            ],
+        };
+        assert!(unprivileged.is_denied());
+        assert_eq!(
+            unprivileged.to_string(),
+            "no link could be captured on, so nothing could be heard: this process may \
+             not capture (opening a capture needs root)"
+        );
+
+        let root = CaptureError::NoInterface {
+            refused: vec![("wg0".into(), filter)],
+        };
+        assert!(!root.is_denied());
+        let said = root.to_string();
+        assert!(said.contains("wg0: the filter"), "{said}");
+        assert!(said.contains("ethernet addresses"), "{said}");
+        assert!(
+            !said.contains("root") && !said.contains("privilege"),
+            "{said}"
+        );
+
+        let mixed = CaptureError::NoInterface {
+            refused: vec![
+                ("eth0".into(), denied("eth0")),
+                (
+                    "gre1".into(),
+                    CaptureError::UnsupportedLinkType {
+                        interface: "gre1".into(),
+                        dlt: 778,
+                    },
+                ),
+            ],
+        };
+        assert!(
+            !mixed.is_denied(),
+            "privilege would not have made gre1 parseable"
+        );
+        let said = mixed.to_string();
+        assert!(
+            said.contains("eth0: this process lacks the privileges"),
+            "{said}"
+        );
+        assert!(
+            said.contains("gre1: it carries data-link type 778"),
+            "{said}"
+        );
+    }
+
+    /// And through the real opening path: a link that does not exist is
+    /// refused, and the error blames privilege exactly when the refusal was
+    /// one.
+    ///
+    /// Which refusal a machine gives depends on it. An unprivileged Linux
+    /// process is denied before the device is ever looked up, and a macOS user
+    /// in `access_bpf` or a root process is told there is no such device. The
+    /// property holds in both, and the link is named wherever privilege is not
+    /// the whole of the answer.
+    #[test]
+    fn a_capture_that_could_not_open_blames_privilege_only_when_it_was_denied() {
+        let link = Zone::unresolved("zondnone0");
+        let refused = frames(
+            std::slice::from_ref(&link),
+            &CaptureOptions::for_replies("tcp"),
+            1,
+        )
+        .err()
+        .expect("no such link can be captured on");
+        let said = refused.to_string();
+
+        assert_eq!(said.contains("needs root"), refused.is_denied(), "{said}");
+        if !refused.is_denied() {
+            assert!(said.contains("zondnone0"), "{said}");
+            assert!(!said.contains("privilege"), "{said}");
+        }
+    }
+
     /// A link the scan's answers depend on goes to the default console, and
     /// one they do not goes where a reader asking what went uncovered looks.
     /// A host keeps hypervisor, VPN and bridge adapters beside the one it
     /// uses, and a default console telling of each on every scan is noise
     /// about links no target was reached through.
+    ///
+    /// Where no link was heard at all the capture's error names every link and
+    /// its cause, so the lines here would only repeat it.
     #[test]
     fn a_failed_link_is_told_aloud_only_when_answers_depend_on_it() {
         assert_eq!(loudness(false, false), Loudness::Quiet, "a spare adapter");
@@ -1659,8 +1891,13 @@ mod tests {
         );
         assert_eq!(
             loudness(true, false),
-            Loudness::Aloud,
-            "no link heard at all"
+            Loudness::Quiet,
+            "no link heard at all, which the error says"
+        );
+        assert_eq!(
+            loudness(true, true),
+            Loudness::Quiet,
+            "nor the default route's, when the error names it too"
         );
     }
 

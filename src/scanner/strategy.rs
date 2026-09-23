@@ -84,13 +84,15 @@ use crate::scanner::session::ScanContext;
 /// reaches a caller directly when they build and run a strategy themselves.
 ///
 /// The variants are the layers a strategy is assembled from, because that is
-/// what determines whether anything can be done about it. A [`Transport`] or
-/// [`Channel`] failure is almost always missing privileges and the same
-/// unprivileged fallback answers all of them; an [`Interface`] failure is about
+/// what determines whether anything can be done about it. A [`Transport`],
+/// [`Channel`] or [`Capture`] failure is most often missing privileges, which
+/// the same unprivileged fallback answers for a scan, though not always, and
+/// the capture error underneath says which; an [`Interface`] failure is about
 /// one interface and the scan of every other one is unaffected.
 ///
 /// [`Transport`]: StrategyError::Transport
 /// [`Channel`]: StrategyError::Channel
+/// [`Capture`]: StrategyError::Capture
 /// [`Interface`]: StrategyError::Interface
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -102,6 +104,13 @@ pub enum StrategyError {
     /// The link-layer channel a local sweep needs could not be opened.
     #[error(transparent)]
     Channel(#[from] crate::transport::channel::ChannelError),
+
+    /// Nothing could be captured on the links a listener was given.
+    ///
+    /// The capture's own error, whole, because a listener has nothing else to
+    /// fail at and that error already names each link and what refused it.
+    #[error(transparent)]
+    Capture(#[from] crate::transport::capture::CaptureError),
 
     /// The interface this strategy was given cannot be probed from.
     #[error("{interface} cannot be probed from: {reason}")]

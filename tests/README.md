@@ -351,7 +351,8 @@ scan forces one; `tunnelled` for a peer inside a tunnel's own prefix, which
 is routed through the tunnel rather than swept, and for a GRE tunnel, which
 `libpcap` opens only with a warning; `resuming` for what a resumed
 sitting of a raw scan sends, since the sweeps beside a port scan never ask about
-a loopback target.
+a loopback target; `capturing` for what the capture layer says when a link
+refuses it with the privilege to capture.
 
 `listening` for the watch entry point over a real capture, and `resolving` for
 a `.local` name a responder on the segment really answers, including the scope

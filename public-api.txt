@@ -16221,6 +16221,7 @@ impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::t
 pub const zond_engine::scanner::strategy::topology::traceroute::MAX_HOPS: u8
 pub async fn zond_engine::scanner::strategy::topology::traceroute::trace(&zond_engine::scanner::session::ScanContext, alloc::vec::Vec<core::net::ip_addr::IpAddr>)
 #[non_exhaustive] pub enum zond_engine::scanner::strategy::StrategyError
+pub zond_engine::scanner::strategy::StrategyError::Capture(zond_engine::transport::capture::CaptureError)
 pub zond_engine::scanner::strategy::StrategyError::Channel(zond_engine::transport::channel::ChannelError)
 pub zond_engine::scanner::strategy::StrategyError::Interface
 pub zond_engine::scanner::strategy::StrategyError::Interface::interface: alloc::string::String
@@ -16230,6 +16231,8 @@ pub zond_engine::scanner::strategy::StrategyError::Panicked::detail: alloc::stri
 pub zond_engine::scanner::strategy::StrategyError::Panicked::scanner: zond_engine::report::ScannerKind
 pub zond_engine::scanner::strategy::StrategyError::Probe(alloc::string::String)
 pub zond_engine::scanner::strategy::StrategyError::Transport(zond_engine::transport::probe::TransportError)
+impl core::convert::From<zond_engine::transport::capture::CaptureError> for zond_engine::scanner::strategy::StrategyError
+pub fn zond_engine::scanner::strategy::StrategyError::from(zond_engine::transport::capture::CaptureError) -> Self
 impl core::convert::From<zond_engine::transport::channel::ChannelError> for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::from(zond_engine::transport::channel::ChannelError) -> Self
 impl core::convert::From<zond_engine::transport::probe::TransportError> for zond_engine::scanner::strategy::StrategyError
@@ -16764,10 +16767,14 @@ pub fn zond_engine::system::privilege::is_elevated() -> bool
 pub mod zond_engine::transport
 pub mod zond_engine::transport::capture
 #[non_exhaustive] pub enum zond_engine::transport::capture::CaptureError
+pub zond_engine::transport::capture::CaptureError::Denied
+pub zond_engine::transport::capture::CaptureError::Denied::interface: alloc::string::String
+pub zond_engine::transport::capture::CaptureError::Denied::source: pcap::Error
 pub zond_engine::transport::capture::CaptureError::Filter
 pub zond_engine::transport::capture::CaptureError::Filter::filter: alloc::string::String
 pub zond_engine::transport::capture::CaptureError::Filter::source: pcap::Error
 pub zond_engine::transport::capture::CaptureError::NoInterface
+pub zond_engine::transport::capture::CaptureError::NoInterface::refused: alloc::vec::Vec<(alloc::string::String, zond_engine::transport::capture::CaptureError)>
 pub zond_engine::transport::capture::CaptureError::NoReader
 pub zond_engine::transport::capture::CaptureError::NoReader::opened: usize
 pub zond_engine::transport::capture::CaptureError::NoReader::source: core::io::error::Error
@@ -16777,6 +16784,10 @@ pub zond_engine::transport::capture::CaptureError::Open::source: pcap::Error
 pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType
 pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType::dlt: i32
 pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType::interface: alloc::string::String
+impl zond_engine::transport::capture::CaptureError
+pub fn zond_engine::transport::capture::CaptureError::is_denied(&self) -> bool
+impl core::convert::From<zond_engine::transport::capture::CaptureError> for zond_engine::scanner::strategy::StrategyError
+pub fn zond_engine::scanner::strategy::StrategyError::from(zond_engine::transport::capture::CaptureError) -> Self
 impl core::convert::From<zond_engine::transport::capture::CaptureError> for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::from(zond_engine::transport::capture::CaptureError) -> Self
 impl core::error::Error for zond_engine::transport::capture::CaptureError
@@ -17629,6 +17640,7 @@ impl core::marker::UnsafeUnpin for zond_engine::scanner::session::Stage
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::Stage
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::Stage
 #[non_exhaustive] pub enum zond_engine::StrategyError
+pub zond_engine::StrategyError::Capture(zond_engine::transport::capture::CaptureError)
 pub zond_engine::StrategyError::Channel(zond_engine::transport::channel::ChannelError)
 pub zond_engine::StrategyError::Interface
 pub zond_engine::StrategyError::Interface::interface: alloc::string::String
@@ -17638,6 +17650,8 @@ pub zond_engine::StrategyError::Panicked::detail: alloc::string::String
 pub zond_engine::StrategyError::Panicked::scanner: zond_engine::report::ScannerKind
 pub zond_engine::StrategyError::Probe(alloc::string::String)
 pub zond_engine::StrategyError::Transport(zond_engine::transport::probe::TransportError)
+impl core::convert::From<zond_engine::transport::capture::CaptureError> for zond_engine::scanner::strategy::StrategyError
+pub fn zond_engine::scanner::strategy::StrategyError::from(zond_engine::transport::capture::CaptureError) -> Self
 impl core::convert::From<zond_engine::transport::channel::ChannelError> for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::from(zond_engine::transport::channel::ChannelError) -> Self
 impl core::convert::From<zond_engine::transport::probe::TransportError> for zond_engine::scanner::strategy::StrategyError

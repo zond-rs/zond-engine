@@ -530,13 +530,9 @@ impl PassiveListener {
             .with_snaplen(LISTEN_SNAP_LEN)
             .with_buffer_bytes(LISTEN_BUFFER_BYTES);
 
-        let (frames, capture) =
-            capture::frames(links, &options, LISTEN_QUEUE_DEPTH).map_err(|_| {
-                StrategyError::Interface {
-                    interface: links.iter().map(Zone::name).collect::<Vec<_>>().join(", "),
-                    reason: "no link could be captured (listening needs root)",
-                }
-            })?;
+        // The capture's error as it is: it names each link and what refused
+        // it, and blames privilege only where privilege was the refusal.
+        let (frames, capture) = capture::frames(links, &options, LISTEN_QUEUE_DEPTH)?;
 
         let on_link = OnLink::of_links(links);
 

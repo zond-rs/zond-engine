@@ -44,6 +44,7 @@ mod support;
 
 mod netns;
 
+mod capturing;
 mod characterise;
 mod classification;
 mod degraded;
