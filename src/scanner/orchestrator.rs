@@ -1567,8 +1567,10 @@ async fn enumerate_one(
 /// Through [`Host::add_port`](crate::model::host::Host::add_port) rather than by
 /// reaching into the recorded port, so the fold takes the same confidence-driven
 /// path every other pass does. The port carried here holds nothing but the
-/// enumeration: `Security::merge` fills what is missing and displaces nothing,
-/// so the version and certificate the service pass recorded survive intact.
+/// enumeration: `Security::merge` fills what is missing, so the version and
+/// certificate the service pass recorded survive intact, and an enumeration a
+/// resumed sitting restored onto the port gives way, version by version,
+/// wherever this one went further.
 fn record_tls_support(
     ctx: &ScanContext,
     key: crate::model::ip::scoped::ScopedIp,
@@ -3402,6 +3404,53 @@ mod tests {
             progress.stage_done(),
             2,
             "each endpoint counted once its walk ended"
+        );
+    }
+
+    /// A walk an earlier sitting left unfinished is finished by the sitting
+    /// that resumes it.
+    ///
+    /// The journal restores the port with the walk the scan was stopped in,
+    /// and the pass asks the endpoint again. The fold that writes the answer
+    /// back is where it can be lost: an account already on record that stood
+    /// against any other would keep the floor and drop the whole answer the
+    /// resumed sitting went back for.
+    #[tokio::test]
+    async fn a_resumed_sitting_finishes_a_walk_an_earlier_one_left_unfinished() {
+        use crate::model::port::{Port, Security};
+        use crate::model::tls::{
+            CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
+        };
+
+        let addr = tls_endpoint(0xC02F).await;
+        let (_session, ctx) = context_with_tls_port(addr.port(), None);
+        let restored = TlsSupport::new().leaving_unfinished(UnfinishedVersion::new(
+            TlsVersion::Tls12,
+            Interruption::Stopped,
+        ));
+        let address: IpAddr = "127.0.0.1".parse().expect("an address");
+        ctx.update_host(address, |host| {
+            host.add_port(
+                Port::new(addr.port(), Protocol::Tcp, PortState::Open)
+                    .with_security(Security::new().with_support(restored)),
+            );
+        });
+
+        let cfg = crate::config::ZondConfig {
+            tls_enumeration: true,
+            ..Default::default()
+        };
+        run_tls_enumeration(&ctx, &cfg).await;
+
+        let accepted = CipherSuite::from_code(0xC02F).expect("a suite in the registry");
+        assert_eq!(
+            recorded_support(&ctx, addr.port()),
+            Some(TlsSupport::new().accepting(VersionSupport::new(
+                TlsVersion::Tls12,
+                vec![accepted],
+                vec![]
+            ))),
+            "the resumed walk finished, and its answer is the one on record"
         );
     }
 

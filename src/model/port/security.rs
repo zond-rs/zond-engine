@@ -153,12 +153,22 @@ impl Security {
 
     /// Folds another handshake's account of this endpoint into this one.
     ///
-    /// Every field fills a gap and displaces nothing: the version, the cipher
-    /// suite and the certificate are kept where they are already recorded, and
-    /// the ALPN lists union without repeating. That is the module's rule that a
-    /// tie keeps what is on record, applied to a type where there is no
-    /// confidence to break the tie with, since a completed handshake is a
-    /// completed handshake.
+    /// Every field the handshake recorded fills a gap and displaces nothing: the
+    /// version, the cipher suite and the certificate are kept where they are
+    /// already recorded, and the ALPN lists union without repeating. That is
+    /// the module's rule that a tie keeps what is on record, applied to a type
+    /// where there is no confidence to break the tie with, since a completed
+    /// handshake is a completed handshake.
+    ///
+    /// What the endpoint [accepts](Self::support) has something to break the
+    /// tie with, which is whether each version's walk finished. It folds
+    /// version by version, and the account on record stands unless the other is
+    /// the more complete and found every suite this one did: a walk that
+    /// finished over one cut short, or of two cut short, the one that got
+    /// further. A walk on record that found a suite the other does not list was
+    /// answered by a different configuration from the other's, so the two are
+    /// not accounts of one answer and it stands. Each version comes whole from
+    /// one account.
     pub fn merge(&mut self, other: Security) {
         // Destructured rather than reached through `other.…`, so a field added
         // to this struct is a compile error here and not a value that quietly
@@ -177,13 +187,7 @@ impl Security {
         self.cipher_suite = self.cipher_suite.take().or(cipher_suite);
         self.certificate = self.certificate.take().or(certificate);
 
-        // Filled where nothing is recorded, and left alone where something is.
-        // Two enumerations of one endpoint answer the same question, so the
-        // second says nothing the first did not; a partial one folded over a
-        // complete one would lose what the complete one found.
-        if self.support.is_empty() {
-            self.support = support;
-        }
+        self.support.merge(support);
 
         for protocol in alpn {
             if !self.alpn.contains(&protocol) {

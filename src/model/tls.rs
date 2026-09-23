@@ -33,6 +33,7 @@
 //! negotiates one is reported by its number; see
 //! [`CipherSuite::from_code`].
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -1653,6 +1654,87 @@ impl TlsSupport {
         self
     }
 
+    /// Folds another enumeration of this endpoint into this one, version by
+    /// version: this record's account of a version stands unless the other's
+    /// is the more complete of the two and holds every suite this one found.
+    ///
+    /// More complete is a walk that finished over one that was cut short, or of
+    /// two cut short, the one that got further. That alone does not decide it,
+    /// because a walk offers what is left and the server chooses: of one
+    /// configuration, a walk cut short finds part of what a further walk finds
+    /// and nothing else. So where the account on record found a suite the other
+    /// does not list, the two were answered by different configurations rather
+    /// than being two accounts of one, and the one on record stands. A fold
+    /// across scans puts the newer on record, so a server whose configuration
+    /// changed is described as it is now.
+    ///
+    /// A version is taken whole from one account, its suites in the order that
+    /// server chose them and its interruption with them. Spliced from two walks
+    /// of two configurations it would be a list no server accepted.
+    ///
+    /// A record with nothing in it was never asked, and displaces nothing. One
+    /// with anything in it walked every version, so a version it lists nowhere
+    /// was refused, which is a finished walk that found nothing.
+    pub(crate) fn merge(&mut self, other: TlsSupport) {
+        if other.is_empty() {
+            return;
+        }
+        if self.is_empty() {
+            *self = other;
+            return;
+        }
+
+        let named: BTreeSet<TlsVersion> = [&*self, &other]
+            .into_iter()
+            .flat_map(|record| {
+                let accepted = record.versions.iter().map(|held| held.version);
+                let unfinished = record.unfinished.iter().map(|held| held.version);
+                accepted.chain(unfinished)
+            })
+            .collect();
+        let taken: Vec<TlsVersion> = named
+            .into_iter()
+            .filter(|version| other.account(*version).supersedes(&self.account(*version)))
+            .collect();
+
+        // Destructured rather than reached through `other.…`, so a field added
+        // to this struct is a compile error here and not a value that quietly
+        // stops being folded.
+        let TlsSupport {
+            versions,
+            unfinished,
+        } = other;
+        self.versions.retain(|held| !taken.contains(&held.version));
+        self.unfinished
+            .retain(|held| !taken.contains(&held.version));
+        for held in versions {
+            if taken.contains(&held.version) {
+                self.record(held);
+            }
+        }
+        for held in unfinished {
+            if taken.contains(&held.version) {
+                self.record_unfinished(held);
+            }
+        }
+    }
+
+    /// What this record says about `version`, for weighing against another
+    /// record's. Only meaningful for a record that is not empty.
+    fn account(&self, version: TlsVersion) -> Account {
+        let found = self
+            .versions
+            .iter()
+            .find(|held| held.version == version)
+            .map(|held| {
+                let named = held.suites.iter().map(|suite| suite.code());
+                named.chain(held.unrecognised.iter().copied()).collect()
+            })
+            .unwrap_or_default();
+        let finished = !self.unfinished.iter().any(|held| held.version == version);
+        Account { finished, found }
+    }
+
     /// Every version accepted, oldest first.
     pub fn versions(&self) -> &[VersionSupport] {
         &self.versions
@@ -1745,6 +1827,26 @@ impl TlsSupport {
                     .any(|suite| suite.has_fault(*fault))
             })
             .collect()
+    }
+}
+
+/// One record's account of one version: whether its walk finished, and every
+/// suite it found, by number.
+struct Account {
+    finished: bool,
+    found: BTreeSet<u16>,
+}
+
+impl Account {
+    /// Whether this account replaces `standing`, by the rule
+    /// [`TlsSupport::merge`] states.
+    fn supersedes(&self, standing: &Account) -> bool {
+        let further = match (self.finished, standing.finished) {
+            (_, true) => false,
+            (true, false) => true,
+            (false, false) => self.found.len() > standing.found.len(),
+        };
+        further && self.found.is_superset(&standing.found)
     }
 }
 
@@ -2280,6 +2382,98 @@ mod tests {
             assert_eq!(Interruption::from_name(cause.name()), Some(cause));
         }
         assert_eq!(Interruption::from_name("abandoned"), None);
+    }
+
+    // ── Two enumerations of one endpoint ─────────────────────────────────────
+
+    /// TLS 1.2 walked until the server declined, having found `suites`.
+    fn finished(suites: &[u16]) -> TlsSupport {
+        TlsSupport::new().accepting(VersionSupport::new(
+            TlsVersion::Tls12,
+            suites.iter().map(|code| suite(*code)).collect(),
+            vec![],
+        ))
+    }
+
+    /// TLS 1.2 cut short for `why`, having found `suites`.
+    fn cut_short(suites: &[u16], why: Interruption) -> TlsSupport {
+        let support =
+            TlsSupport::new().leaving_unfinished(UnfinishedVersion::new(TlsVersion::Tls12, why));
+        if suites.is_empty() {
+            return support;
+        }
+        support.accepting(VersionSupport::new(
+            TlsVersion::Tls12,
+            suites.iter().map(|code| suite(*code)).collect(),
+            vec![],
+        ))
+    }
+
+    /// `other` folded into `on_record`.
+    fn folded(on_record: &TlsSupport, other: &TlsSupport) -> TlsSupport {
+        let mut folded = on_record.clone();
+        folded.merge(other.clone());
+        folded
+    }
+
+    /// A walk that finished is the whole answer, and one cut short that found
+    /// nothing it lacks is part of that answer, whichever is on record. A
+    /// resumed sitting finishing the walk its predecessor was stopped in is one
+    /// way round, and a merge whose newer scan was stopped is the other.
+    #[test]
+    fn a_finished_walk_stands_over_a_cut_short_one_whichever_is_on_record() {
+        let whole = finished(&[0xC030, 0xC02F, 0x000A]);
+        let floor = cut_short(&[0xC030], Interruption::Stopped);
+
+        assert_eq!(folded(&whole, &floor), whole);
+        assert_eq!(folded(&floor, &whole), whole);
+    }
+
+    /// A walk cut short that found a suite a finished walk does not list was
+    /// answered by a different configuration, and the finished list is no
+    /// answer for it. Taken instead, a server that has since started accepting
+    /// 3DES would be reported as refusing it.
+    #[test]
+    fn a_walk_that_found_what_the_other_does_not_list_is_not_displaced() {
+        let whole = finished(&[0xC030, 0xC02F]);
+        let changed = cut_short(&[0x000A], Interruption::Unanswered);
+
+        assert_eq!(folded(&changed, &whole), changed);
+    }
+
+    /// Two walks of one configuration cut short each found the head of the
+    /// same preference order, and the longer head is the better floor. It
+    /// carries its own interruption, since that is why it ended where it did.
+    #[test]
+    fn of_two_cut_short_walks_the_one_that_got_further_stands() {
+        let short = cut_short(&[0xC030], Interruption::Stopped);
+        let further = cut_short(&[0xC030, 0xC02F], Interruption::Unanswered);
+
+        assert_eq!(folded(&short, &further), further);
+        assert_eq!(folded(&further, &short), further);
+    }
+
+    /// A version an enumeration lists nowhere was walked and refused, which is
+    /// a finished answer. A walk cut short before the server said anything
+    /// about the version is no evidence against it.
+    #[test]
+    fn a_refused_version_stands_over_one_never_settled() {
+        let thirteen = VersionSupport::new(TlsVersion::Tls13, vec![suite(0x1301)], vec![]);
+        let refused = TlsSupport::new().accepting(thirteen.clone());
+        let unsettled = cut_short(&[], Interruption::Unanswered).accepting(thirteen);
+
+        assert_eq!(folded(&unsettled, &refused), refused);
+    }
+
+    /// An empty record is an endpoint nobody enumerated. Read version by
+    /// version it would be five refusals, each a finished answer, so it is set
+    /// aside whole: it neither displaces an enumeration nor stands over one.
+    #[test]
+    fn a_record_nobody_enumerated_displaces_nothing() {
+        let whole = finished(&[0xC030]);
+
+        assert_eq!(folded(&whole, &TlsSupport::new()), whole);
+        assert_eq!(folded(&TlsSupport::new(), &whole), whole);
     }
 
     /// A suite accepted under two versions is one suite, and the faults it

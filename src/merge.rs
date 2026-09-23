@@ -56,6 +56,17 @@
 //! status is backed by a packet. So `Unknown` is silence wearing a variant, and
 //! a newer source's `Unknown` never overrides an older verdict.
 //!
+//! What a TLS endpoint [accepts](crate::model::tls::TlsSupport) is read the same
+//! way, version by version. A walk cut short, by an endpoint that stopped
+//! answering or by the scan's budget, records the suites it reached and says it
+//! did not finish, which is a claim about what it found and silence about the
+//! rest. So where a newer walk was cut short having found nothing the older
+//! account lacks, the older one stands if it went further: a finished walk over
+//! one cut short, or of two cut short, the one that got further. A newer walk
+//! that found a suite the older account does not list saw a configuration that
+//! changed, and one that finished made a claim about all of it; either is the
+//! newer answer.
+//!
 //! ### What a merge does not enforce, and a scan does
 //!
 //! [`Exclusions`](crate::model::exclusion::Exclusions) is not a parameter here,
@@ -586,19 +597,25 @@ fn fold_port(accounts: &[&Port]) -> Port {
     }
 
     // `Security::merge` keeps the incumbent version, cipher and certificate and
-    // unions the ALPN list, so folding newest first is this module's rule
-    // already. A certificate is identified by its fingerprint, so a rotation is
-    // a different certificate and the current one is the newest.
-    let mut security = None;
-    for found in accounts
-        .iter()
-        .rev()
-        .filter_map(|account| account.security())
-    {
-        match security {
-            Some(ref mut existing) => Security::merge(existing, found.clone()),
-            None => security = Some(found.clone()),
+    // unions the ALPN list, so folding the older accounts into each newer one in
+    // turn is this module's rule already. A certificate is identified by its
+    // fingerprint, so a rotation is a different certificate and the current one
+    // is the newest.
+    //
+    // Oldest first rather than newest first, because of what the endpoint
+    // accepts. That folds version by version, and the incumbent gives way to an
+    // account that went further and found everything it did. Folded newest
+    // first, an old finished walk would be weighed against whichever newer
+    // account had survived so far, and could outlive a finished walk between
+    // the two that had already overturned it. Oldest first, a walk that
+    // finished retires every account older than itself.
+    let mut security: Option<Security> = None;
+    for found in accounts.iter().filter_map(|account| account.security()) {
+        let mut newer = found.clone();
+        if let Some(older) = security.take() {
+            newer.merge(older);
         }
+        security = Some(newer);
     }
     if let Some(security) = security {
         port.set_security(security);
@@ -819,6 +836,9 @@ mod tests {
     use crate::model::ip::scoped::Zone;
     use crate::model::ip::set::IpSet;
     use crate::model::port::discovery::{Discovery, ScanResponse};
+    use crate::model::tls::{
+        CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
+    };
     use crate::report::{PhaseParts, ScanKind, ScanSettings, TargetScope};
 
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -1715,6 +1735,108 @@ mod tests {
             Some(PortState::Closed),
             "a later scan that looked is allowed to close a port"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // What an endpoint accepts
+    // -----------------------------------------------------------------------
+
+    fn suite(code: u16) -> CipherSuite {
+        CipherSuite::from_code(code).expect("a suite in the registry")
+    }
+
+    /// Host 1, with 443 carrying `support`.
+    fn enumerated(support: TlsSupport) -> Host {
+        with_port(
+            host(1),
+            Port::new(443, TCP, PortState::Open)
+                .with_security(Security::new().with_support(support)),
+        )
+    }
+
+    /// What the merged report says host 1's 443 accepts.
+    fn support_on(report: &ScanReport) -> TlsSupport {
+        report
+            .hosts()
+            .next()
+            .and_then(|host| host.ports().find(|port| port.number() == 443))
+            .and_then(Port::security)
+            .map(|security| security.support().clone())
+            .expect("443 carries an enumeration")
+    }
+
+    /// **A walk cut short is a floor, not a newer answer.**
+    ///
+    /// The newer scan ran out of budget part way through TLS 1.2 and said so.
+    /// What it reached is the head of the server's own preference order, and
+    /// nothing in it says the server stopped accepting the rest; taken as the
+    /// newer answer, it would erase the older scan's tail, which is where a
+    /// legacy configuration keeps the suites worth reporting. Judged per
+    /// version rather than per endpoint: the same scan finished TLS 1.3 and
+    /// found it changed, and there it is the answer.
+    #[test]
+    fn a_cut_short_walk_does_not_replace_a_complete_one() {
+        use TlsVersion::{Tls12, Tls13};
+
+        let complete = TlsSupport::new()
+            .accepting(VersionSupport::new(
+                Tls12,
+                vec![suite(0xC030), suite(0xC02F), suite(0x000A)],
+                vec![],
+            ))
+            .accepting(VersionSupport::new(Tls13, vec![suite(0x1302)], vec![]));
+        let cut_short = TlsSupport::new()
+            .accepting(VersionSupport::new(Tls12, vec![suite(0xC030)], vec![]))
+            .leaving_unfinished(UnfinishedVersion::new(Tls12, Interruption::Stopped))
+            .accepting(VersionSupport::new(Tls13, vec![suite(0x1301)], vec![]));
+
+        let merged = merged(vec![
+            report("older", day(1), vec![enumerated(complete.clone())]),
+            report("newer", day(2), vec![enumerated(cut_short)]),
+        ]);
+
+        let support = support_on(&merged);
+        assert_eq!(
+            support.versions()[0],
+            complete.versions()[0],
+            "the older walk of TLS 1.2 finished, and the newer found nothing it lacks"
+        );
+        assert!(support.is_complete(), "and so it is the whole answer there");
+        assert_eq!(
+            support.versions()[1].suites(),
+            &[suite(0x1301)],
+            "the newer walk of TLS 1.3 finished, and a finished walk is the newer answer"
+        );
+    }
+
+    /// Oldest first, so a finished walk retires every older answer for good.
+    ///
+    /// January accepted two suites, February finished a walk that found one of
+    /// them, and March was cut short having found the other. Each change is the
+    /// server's, and March's floor is all that is known of it now. Weighed
+    /// newest first, January would be read against March alone, found to hold
+    /// everything March found, and stand as the finished answer that February
+    /// had already overturned.
+    #[test]
+    fn a_finished_walk_retires_every_older_answer() {
+        use TlsVersion::Tls12;
+
+        let finished = |suites: Vec<CipherSuite>| {
+            TlsSupport::new().accepting(VersionSupport::new(Tls12, suites, vec![]))
+        };
+        let january = finished(vec![suite(0xC030), suite(0xC02F)]);
+        let february = finished(vec![suite(0xC02F)]);
+        let march = TlsSupport::new()
+            .accepting(VersionSupport::new(Tls12, vec![suite(0xC030)], vec![]))
+            .leaving_unfinished(UnfinishedVersion::new(Tls12, Interruption::Unanswered));
+
+        let merged = merged(vec![
+            report("january", day(1), vec![enumerated(january)]),
+            report("february", day(2), vec![enumerated(february)]),
+            report("march", day(3), vec![enumerated(march.clone())]),
+        ]);
+
+        assert_eq!(support_on(&merged), march);
     }
 
     /// A port only ever recorded unasked stays unasked, rather than vanishing or
