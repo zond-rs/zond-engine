@@ -442,11 +442,15 @@ pub fn quoted_probe(quoted: &[u8]) -> Option<QuotedProbe> {
 ///
 /// The tag names the exact attempt, but it sits sixteen bytes in, past the common
 /// header and the INIT chunk's own header, so only a sender generous enough to
-/// quote past the guaranteed eight reveals it. A caller that gets
-/// `None` still has the ports from [`quoted_probe`] and should resolve the error
-/// against the probe without claiming to know which attempt, exactly as an
-/// ACK-carrying TCP probe does in
-/// [`tcp::quoted_nonce`](super::tcp::quoted_nonce).
+/// quote past the guaranteed eight reveals it.
+///
+/// A caller that gets `None` has nothing tying the error to an attempt. The
+/// ports from [`quoted_probe`] do not, for the reason
+/// [`tcp::quoted_nonce`](super::tcp::quoted_nonce) gives, and the verification
+/// tag beside them does not either: RFC 4960 §8.5.1 requires it to be zero on
+/// every INIT. The engine's own INIT scan acts on no error that arrives without
+/// the tag, whatever its code, so such an error retires no probe and files
+/// nothing against the host.
 pub fn quoted_init_tag(quoted: &[u8]) -> Option<u32> {
     let head: &[u8; 20] = quoted.first_chunk()?;
     // Byte twelve is the first chunk's type; the Initiate Tag is only where this

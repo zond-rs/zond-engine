@@ -423,8 +423,15 @@ pub fn quoted_probe(quoted: &[u8]) -> Option<QuotedProbe> {
 /// by the guaranteed eight bytes, so an error about one of them can be tied to
 /// the exact attempt it refers to. The two that write it into the acknowledgement
 /// field can only be tied that precisely by a sender generous enough to quote
-/// twelve, and a caller that gets `None` should fall back to resolving the probe
-/// without claiming to know which attempt.
+/// twelve.
+///
+/// A caller that gets `None` holds the probe's ports and nothing else, and the
+/// ports are in every probe a scan sends: the host being scanned has them for
+/// free, and anybody else has one source port to guess. That is no ground for
+/// settling the port. The engine's own scanner reads such an error as no
+/// verdict on the port and leaves the probe to its retry schedule; the one use
+/// it makes of it is a host unreachable, filed against the host only while the
+/// probe it quotes is still outstanding.
 pub fn quoted_nonce(technique: TcpScanTechnique, quoted: &QuotedProbe) -> Option<u32> {
     quoted_nonce_with_flags(probe_flags(technique), quoted)
 }

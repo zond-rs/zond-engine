@@ -47,8 +47,9 @@
 //! An ICMP error is where the two part company. The eight bytes RFC 792
 //! guarantees reach the two ports and the common header's verification tag,
 //! which is a COOKIE-ECHO's nonce and is zero for an INIT. So a COOKIE-ECHO
-//! probe is resolved by the exact attempt an error quotes, and an INIT probe is
-//! named by its ports and resolved without a round trip being claimed.
+//! probe is resolved by the exact attempt an error quotes, and an INIT probe
+//! only by an error whose sender quoted past the guaranteed eight to its
+//! Initiate Tag. An error that stops short names nothing this scan acts on.
 //!
 //! ## What this scan does not do
 //!
@@ -258,15 +259,17 @@ impl SctpPortScanner {
     /// Reads an ICMP error for the probe it quotes.
     ///
     /// Checked as strictly as an SCTP reply: the quotation has to be an SCTP
-    /// packet sent from this scan's own port, aimed at a probe still
-    /// outstanding.
+    /// packet sent from this scan's own port, carrying the nonce of an attempt
+    /// still outstanding.
     ///
-    /// Which attempt it names depends on the technique, because the two put
+    /// Whether it carries one depends on the technique, because the two put
     /// their nonce in different places. A COOKIE-ECHO carries it in the common
     /// header, inside the eight bytes RFC 792 guarantees, so an error names the
-    /// exact attempt and the round trip is credited. An INIT's Initiate Tag sits
-    /// sixteen bytes in, past what a sender has to quote, so the probe is
-    /// usually resolved without a round trip being claimed.
+    /// exact attempt and a refusal credits the round trip. An INIT's Initiate
+    /// Tag sits sixteen bytes in, past what a sender has to quote, so an error
+    /// about one is acted on only where the sender quoted that far. One that
+    /// stopped short is not acted on at all, whatever its code: it retires no
+    /// probe and files nothing against the host.
     fn handle_icmp_error(&mut self, reply: &CapturedSegment, now: Instant) {
         let Some(error) = icmp_error::parse(reply) else {
             return;
@@ -291,7 +294,7 @@ impl SctpPortScanner {
             SctpScanTechnique::CookieEcho => Some(quoted.verification_tag).filter(|tag| *tag != 0),
         };
 
-        // **An error that cannot name the attempt does not retire it.**
+        // **An error that cannot name the attempt is not acted on.**
         //
         // The two techniques differ in where the nonce sits, and only one of
         // them survives a minimal quotation. A COOKIE-ECHO's is the common
@@ -301,22 +304,30 @@ impl SctpPortScanner {
         // sender that quotes only the minimum names an INIT probe's ports and
         // nothing that distinguishes one attempt, or one sender, from another.
         //
-        // Resolving on that was resolving on the ports alone, which anybody who
-        // knows the scan's source port can supply. The source port is in every
-        // probe this scan sends, so the target of the scan has it for free and
-        // an off-path guesser has fourteen bits of it — once, for the whole run.
-        // A forged Port Unreachable then retired the probe as filtered, removed
-        // it from the ledger so no retransmission followed, and recorded
-        // `IcmpProhibited` against the target as the evidence.
+        // Resolving on that would be resolving on the ports alone, which
+        // anybody who knows the scan's source port can supply. The source port
+        // is in every probe this scan sends, so the target of the scan has it
+        // for free and an off-path guesser has fourteen bits of it — once, for
+        // the whole run. A forged Port Unreachable would retire the probe as
+        // filtered, remove it from the ledger so that no retransmission follows,
+        // and record `IcmpProhibited` against the target as the evidence.
         //
         // Refusing costs almost nothing, which is what makes this the right
         // trade rather than a cautious one: an INIT scan already reads silence
         // as filtered, so a probe left outstanding here reaches the *same*
         // verdict by its own retry schedule. What is given up is an earlier
         // resolution and an evidence label, and what is bought is that neither
-        // can be forged. `Unreachable::Host` is deliberately not gated the same
-        // way — it is the shared host-down path, and belongs with the other two
-        // scanners rather than here.
+        // can be forged.
+        //
+        // The gate stands in front of every code, `Unreachable::Host` included.
+        // A missing nonce here does not only mean a short quotation: for a
+        // COOKIE-ECHO it means a quoted tag of zero, and for an INIT a quoted
+        // packet whose first chunk is not an INIT, and both say the quotation is
+        // of nothing this scan sent. So a host unreachable that names no attempt
+        // files nothing against the host either, and that includes one about an
+        // INIT from a sender that quoted only the minimum. There this scanner is
+        // stricter than the TCP and UDP ones, which file a host down on the key
+        // alone when the quotation carries no nonce.
         let Some(nonce) = nonce else {
             self.core.audit.record_reply_without_rtt();
             return;

@@ -416,9 +416,13 @@ impl TcpPortScanner {
     /// as strictly as a TCP reply: it has to be a TCP segment, sent from this
     /// scan's own port, aimed at a probe still outstanding. What it cannot
     /// always carry is *which attempt* - eight quoted bytes reach the sequence
-    /// number and no further - so a technique whose nonce lives in the
-    /// acknowledgement field resolves the probe without claiming a round trip
-    /// rather than inventing one.
+    /// number and no further - so for a technique whose nonce lives in the
+    /// acknowledgement field, a sender quoting only the minimum names the probe
+    /// by its ports alone. That is enough for a host unreachable, which settles
+    /// no port and is filed only while the probe is outstanding. It is not
+    /// enough for a refusal, which would settle one: a refusal that cannot name
+    /// the attempt retires nothing, and the port takes whatever its own retry
+    /// schedule concludes.
     fn handle_icmp_error(&mut self, reply: &CapturedSegment, now: Instant) {
         let Some(error) = icmp_error::parse(reply) else {
             return;
@@ -463,17 +467,17 @@ impl TcpPortScanner {
             // and Maimon, which carries ACK - need twelve quoted bytes, and a
             // sender offering only the minimum leaves `token` as `None`.
             //
-            // That used to resolve the port anyway, on the ports alone, which
+            // Resolving on that would be resolving on the ports alone, which
             // anybody who knows this scan's source port can supply. For an ACK
-            // or window scan it reached the verdict silence reaches, so it cost
+            // or window scan it would reach the verdict silence reaches, costing
             // only a suppressed retry and an invented `IcmpProhibited`. For a
-            // Maimon scan it cost the verdict: `OpenFiltered` became `Filtered`,
-            // and an open port was dismissed.
+            // Maimon scan it would cost the verdict: `OpenFiltered` would become
+            // `Filtered`, and an open port would be dismissed.
             //
-            // So an unattributable refusal now retires nothing, and the port
-            // takes whatever its own retry schedule concludes. See the SCTP
-            // scanner, which reaches the same rule from the other direction: an
-            // INIT's nonce is *never* inside the guaranteed eight.
+            // So an unattributable refusal retires nothing, and the port takes
+            // whatever its own retry schedule concludes. See the SCTP scanner,
+            // which reaches the same rule from the other direction: an INIT's
+            // nonce is *never* inside the guaranteed eight.
             Unreachable::Port | Unreachable::Prohibited | Unreachable::Protocol
                 if token.is_none() =>
             {
