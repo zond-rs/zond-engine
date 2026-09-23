@@ -153,13 +153,27 @@ impl ScanCapabilities {
     /// Reads the runtime capabilities from the environment and config, and
     /// announces the scanning mode they imply once, here, rather than from the
     /// code that later acts on them.
-    pub(super) fn resolve(cfg: &ZondConfig) -> Self {
+    ///
+    /// `probes_udp` is whether the run names a UDP port, which only a port scan
+    /// can: it is what the announcement of the unprivileged mode depends on.
+    pub(super) fn resolve(cfg: &ZondConfig, probes_udp: bool) -> Self {
         let privilege = Privilege::current();
         let mode = cfg.evasion.effective_send_mode(cfg.send_mode);
         let frames_only =
             privilege.is_raw() && mode == SendMode::Auto && !mode.reaches_past_frames();
 
-        if privilege.is_raw() {
+        let caps = Self {
+            privilege,
+            frames_only,
+            dns: !cfg.no_dns,
+        };
+        caps.announce(probes_udp);
+        caps
+    }
+
+    /// Says what the privilege this run holds lets it probe with.
+    fn announce(self, probes_udp: bool) {
+        if self.privilege.is_raw() {
             // Which of the two routes carried it, because on macOS the second
             // one is what an unprivileged run gets and a reader who expected to
             // need sudo should see why they did not.
@@ -170,13 +184,13 @@ impl ScanCapabilities {
                     "link-layer access: probing with ARP, ICMPv6 and SYN as self-built frames"
                 );
             }
+        } else if probes_udp {
+            // The UDP ports go to ordinary sockets, which need no privilege, so
+            // a line saying TCP connect alone would be one saying less than the
+            // run does.
+            warn!("no raw sockets: probing with TCP connect and plain UDP datagrams");
         } else {
             warn!("no raw sockets: probing with TCP connect only");
-        }
-        Self {
-            privilege,
-            frames_only,
-            dns: !cfg.no_dns,
         }
     }
 
@@ -542,7 +556,7 @@ pub(super) fn build_port_scanner(
         &intended,
         tuning.service_detection,
         &tuning.evasion,
-        &beyond,
+        raw,
     );
     refused.extend(coverage.refused);
 
@@ -605,18 +619,23 @@ pub(super) struct Coverage {
 ///
 /// ## The targets the raw strategies cannot reach
 ///
-/// `beyond` is empty unless the raw strategies send frames alone, and then it
-/// is what a frame cannot reach: loopback, this host's own addresses, anything
-/// routed through a tunnel, and an IPv6 neighbour. The raw routes arrive already
-/// handed everything else, so the same question is asked a second time over
-/// these addresses, on the same terms: a protocol whose only strategies are raw
-/// gets its unprivileged one for them alone, or is refused for them alone. What
-/// is reached this way is recorded, since the phase's privilege reads as raw
-/// and the evidence at these addresses is not.
+/// `raw` says what the raw strategies reach, which is every target unless they
+/// send frames alone. Then what they miss is what a frame cannot reach:
+/// loopback, this host's own addresses, anything routed through a tunnel, and
+/// an IPv6 neighbour. The raw routes arrive already handed everything else, so
+/// the same question is asked a second time over these addresses, on the same
+/// terms: a protocol whose only strategies are raw gets its unprivileged one
+/// for them alone, or is refused for them alone. What is reached this way is
+/// recorded, since the phase's privilege reads as raw and the evidence at these
+/// addresses is not.
 ///
 /// A protocol with no strategy at all is not asked about twice. Its fallback
 /// above reaches every address, these included, and its refusal already
-/// covers them.
+/// covers them. Its refusal says why there is none: a process with no raw
+/// socket is told so, and a frames-only one whose raw strategies were never
+/// opened, because no target was within a frame's reach, is told that. The
+/// two call for different things, and the second process already holds the
+/// privilege the first is told it lacks.
 pub(super) fn ensure_coverage(
     mut routes: Vec<(Box<dyn PortScanner>, Reach)>,
     ctx: &ScanContext,
@@ -624,8 +643,12 @@ pub(super) fn ensure_coverage(
     intended: &[Protocol],
     detection: ServiceDetection,
     evasion: &EvasionProfile,
-    beyond: &Arc<IpSet>,
+    raw: &RawReach,
 ) -> Coverage {
+    let beyond = &Arc::new(raw.beyond());
+    // Whether the raw strategies were left unopened because every target is
+    // beyond a frame's reach, rather than asked for and not had.
+    let withheld = matches!(raw, RawReach::Nothing(_));
     let mut refused: Vec<(Protocol, Reach)> = Vec::new();
     let covered: Vec<Protocol> = routes
         .iter()
@@ -660,7 +683,11 @@ pub(super) fn ensure_coverage(
             routes.push((connect_tcp(ctx, detection, evasion), Reach::Any));
             connected = true;
         } else {
-            ctx.record_refusal(plan::RefusedStep::technique_needs_raw_sockets(technique).into());
+            let refusal = match withheld {
+                true => plan::RefusedStep::technique_beyond_frames(technique, beyond.len()),
+                false => plan::RefusedStep::technique_needs_raw_sockets(technique),
+            };
+            ctx.record_refusal(refusal.into());
             refused.push((Protocol::Tcp, Reach::Any));
         }
     }
@@ -674,7 +701,11 @@ pub(super) fn ensure_coverage(
     // to open is reported rather than answered by something that asked a
     // different question, which for SCTP is the whole of what is available.
     if missing(Protocol::Sctp) {
-        ctx.record_refusal(plan::RefusedStep::sctp_needs_raw_sockets().into());
+        let refusal = match withheld {
+            true => plan::RefusedStep::sctp_beyond_frames(beyond.len()),
+            false => plan::RefusedStep::sctp_needs_raw_sockets(),
+        };
+        ctx.record_refusal(refusal.into());
         refused.push((Protocol::Sctp, Reach::Any));
     }
 
@@ -2494,7 +2525,7 @@ mod tests {
             BOTH,
             ServiceDetection::default(),
             &EvasionProfile::default(),
-            &nothing_beyond(),
+            &RawReach::Everything,
         )
         .routes
         .iter()
@@ -2511,12 +2542,6 @@ mod tests {
             .into_iter()
             .map(|scanner| (scanner, Reach::Any))
             .collect()
-    }
-
-    /// No target out of the raw strategies' reach, which is every scan but one
-    /// whose raw strategies send frames alone.
-    fn nothing_beyond() -> Arc<IpSet> {
-        Arc::new(IpSet::new())
     }
 
     /// A scan whose raw strategies reach everything, stated rather than read
@@ -2745,6 +2770,113 @@ mod tests {
         }
     }
 
+    /// Every message emitted while it is the default subscriber, in order.
+    ///
+    /// Enough of a subscriber to read what the engine says and nothing more:
+    /// spans are accepted and ignored, since no line under test is inside one.
+    #[derive(Clone, Default)]
+    struct Heard(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl tracing::Subscriber for Heard {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Message<'a>(&'a mut String);
+            impl tracing::field::Visit for Message<'_> {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        *self.0 = format!("{value:?}");
+                    }
+                }
+            }
+            let mut message = String::new();
+            event.record(&mut Message(&mut message));
+            self.0.lock().expect("an unpoisoned log").push(message);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// The one line a run without raw sockets opens with says what it probes
+    /// with, and a scan naming UDP ports probes them with plain datagrams, so
+    /// "TCP connect only" is a line saying less than happened.
+    #[test]
+    fn an_unprivileged_run_says_it_probes_udp_when_it_does() {
+        let unprivileged = ScanCapabilities {
+            privilege: Privilege::Connect,
+            frames_only: false,
+            dns: false,
+        };
+
+        for (probes_udp, expected) in [
+            (
+                true,
+                "no raw sockets: probing with TCP connect and plain UDP datagrams",
+            ),
+            (false, "no raw sockets: probing with TCP connect only"),
+        ] {
+            let heard = Heard::default();
+            tracing::subscriber::with_default(heard.clone(), || unprivileged.announce(probes_udp));
+
+            let said = heard.0.lock().expect("an unpoisoned log").clone();
+            assert_eq!(said, [expected], "probing udp: {probes_udp}");
+        }
+    }
+
+    /// A frames-only run whose every target is out of a frame's reach refuses
+    /// what nothing stands in for in the words that say so. It holds the link
+    /// layer, and told it has no raw sockets, which is the connect path's
+    /// reason, a reader goes looking for a privilege they already have rather
+    /// than at the targets, which are what no frame reaches.
+    #[test]
+    fn a_frames_only_refusal_names_the_frames_reach_rather_than_privilege() {
+        let cfg = ZondConfig {
+            tcp_technique: TcpScanTechnique::Fin,
+            ..ZondConfig::default()
+        };
+        let (_session, ctx) = ScanSession::new();
+        let mut plan = plan::PortScanPlan::build(&cfg, Privilege::Raw);
+        plan.cover_sctp(Privilege::Raw);
+
+        let _built = build_port_scanner(
+            plan,
+            &[Protocol::Tcp, Protocol::Sctp],
+            &ctx,
+            2,
+            cfg.probe_tuning(),
+            &ZoneMap::new(),
+            &RawReach::Nothing(ip_set(&["127.0.0.1"])),
+        );
+
+        let refusals = ctx.take_refusals();
+        let reasons: Vec<&str> = refusals.iter().map(Refusal::reason).collect();
+        assert_eq!(reasons.len(), 2, "one for each protocol: {reasons:?}");
+        for reason in reasons {
+            assert!(
+                reason.contains("self-built frames") && reason.contains("out of a frame's reach"),
+                "the frames path's reason: {reason}"
+            );
+            assert!(
+                !reason.contains("does not have"),
+                "not the connect path's: {reason}"
+            );
+            assert!(
+                reason.contains("1 target is") && reason.contains("port on it was probed"),
+                "and it counts the one target it names: {reason}"
+            );
+        }
+    }
+
     /// Host enrichment is keyed on whether a raw scan is happening, and a raw
     /// scan is one whatever segment its probes carry. Read off the strategy's
     /// name instead, a FIN scan, not being called `syn_port`, would not count as
@@ -2815,7 +2947,7 @@ mod tests {
             BOTH,
             ServiceDetection::default(),
             &EvasionProfile::default(),
-            &nothing_beyond(),
+            &RawReach::Everything,
         )
         .routes;
         let protocols: Vec<Protocol> = scanners
@@ -2864,7 +2996,7 @@ mod tests {
             BOTH,
             ServiceDetection::default(),
             &EvasionProfile::default(),
-            &nothing_beyond(),
+            &RawReach::Everything,
         )
         .routes;
         // Two scanners in, two scanners out: nothing was added beside them.
@@ -2922,7 +3054,7 @@ mod tests {
             BOTH,
             ServiceDetection::default(),
             &EvasionProfile::default(),
-            &beyond,
+            &RawReach::AllBut(IpSet::clone(&beyond)),
         )
         .routes;
 
@@ -2952,7 +3084,7 @@ mod tests {
             BOTH,
             ServiceDetection::default(),
             &EvasionProfile::default(),
-            &beyond,
+            &RawReach::AllBut(IpSet::clone(&beyond)),
         )
         .routes;
 
@@ -2981,7 +3113,7 @@ mod tests {
             &[Protocol::Sctp],
             ServiceDetection::default(),
             &EvasionProfile::default(),
-            &beyond,
+            &RawReach::AllBut(IpSet::clone(&beyond)),
         )
         .routes;
 
@@ -3006,7 +3138,7 @@ mod tests {
             &[Protocol::Sctp],
             ServiceDetection::default(),
             &EvasionProfile::default(),
-            &loopback_beyond(),
+            &RawReach::AllBut(IpSet::clone(&loopback_beyond())),
         );
 
         let refusals = ctx.take_refusals();
@@ -3032,7 +3164,7 @@ mod tests {
             &[Protocol::Udp],
             ServiceDetection::default(),
             &EvasionProfile::default(),
-            &nothing_beyond(),
+            &RawReach::Everything,
         )
         .routes;
 

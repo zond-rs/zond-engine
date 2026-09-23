@@ -182,8 +182,9 @@ impl RefusedStep {
             reason: format!(
                 "this process can send self-built frames and holds no raw socket, and {} \
                  out of a frame's reach; a connect scan answers a different question than \
-                 the {technique} technique asks - so no TCP port on them was probed",
-                counted(targets, "target is", "targets are")
+                 the {technique} technique asks - so no TCP port on {} was probed",
+                counted(targets, "target is", "targets are"),
+                if targets == 1 { "it" } else { "them" },
             ),
         }
     }
@@ -196,8 +197,9 @@ impl RefusedStep {
             reason: format!(
                 "this process can send self-built frames and holds no raw socket, and {} \
                  out of a frame's reach; there is no unprivileged init probe - so no sctp \
-                 port on them was probed",
-                counted(targets, "target is", "targets are")
+                 port on {} was probed",
+                counted(targets, "target is", "targets are"),
+                if targets == 1 { "it" } else { "them" },
             ),
         }
     }
