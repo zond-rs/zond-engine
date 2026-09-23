@@ -148,7 +148,11 @@ pub enum PortChange {
     /// scan cut one of those walks short, or made none, its silence is the
     /// finding's [`Coverage::Unreached`]: the claim goes under `unsettled`
     /// rather than `resolved`, for the reason an endpoint the scan never
-    /// reached is not a port that closed.
+    /// reached is not a port that closed. One drawn from the certificate's
+    /// posture rests on that certificate, and a current scan that recorded
+    /// none was not shown whether it is still presented, so the claim goes
+    /// under `unsettled` beside the
+    /// [`Withdrawn`](CertificateChange::Withdrawn) that reports the absence.
     Findings {
         /// Findings the current scan claims and the baseline did not.
         appeared: Vec<Finding>,
@@ -157,7 +161,8 @@ pub enum PortChange {
         resolved: Vec<Finding>,
         /// Findings the baseline claimed that the current scan neither claims
         /// nor settled: part of the evidence each rests on is a walk the
-        /// current scan left unfinished or never made.
+        /// current scan left unfinished or never made, or a certificate it
+        /// recorded none of.
         unsettled: Vec<Finding>,
         /// Findings both scans claim, where the severity moved.
         reassessed: Vec<Reassessment>,
@@ -887,6 +892,98 @@ mod tests {
         let (_, resolved, unsettled, _) = findings_change(&changes).expect("a findings change");
         assert!(unsettled.is_empty(), "{:?}", titles(unsettled));
         assert!(titles(resolved).contains(&"TLSv1.0 is still accepted"));
+    }
+
+    /// An endpoint that completed a handshake and was shown a self-signed
+    /// certificate with `fingerprint`, carrying the posture findings the scan
+    /// draws from it, which is how a scan records one.
+    fn presenting(fingerprint: &str) -> Port {
+        let certificate = CertificateInfo::new(
+            "www.example.test",
+            "www.example.test",
+            SystemTime::UNIX_EPOCH,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(365 * 24 * 60 * 60),
+            fingerprint,
+        )
+        .with_public_key("RSA", 2048);
+        let findings = certificate.findings(SystemTime::UNIX_EPOCH);
+        let mut port = port(PortState::Open).with_security(
+            Security::new()
+                .with_tls_version("TLSv1.3")
+                .with_certificate(certificate),
+        );
+        for finding in findings {
+            port.add_finding(finding);
+        }
+        port
+    }
+
+    /// A handshake the current scan did not complete settled nothing about the
+    /// certificate a posture claim rests on, so the claim's absence is not a
+    /// fix.
+    ///
+    /// The certificate side of the cut-short walk above. The service pass
+    /// records no security at all for an endpoint whose handshake failed, and
+    /// no certificate for one whose leaf would not parse, so an endpoint that
+    /// timed out this once would otherwise report its self-signed certificate
+    /// replaced by nothing and the problem fixed.
+    #[test]
+    fn a_posture_finding_the_current_scan_saw_no_certificate_for_is_not_resolved() {
+        let before = presenting("aaaa");
+        let unparsed =
+            port(PortState::Open).with_security(Security::new().with_tls_version("TLSv1.3"));
+        assert_eq!(
+            titles(&before.findings().cloned().collect::<Vec<_>>()),
+            ["TLS certificate is self-signed"],
+            "the baseline's certificate draws the claim this is about"
+        );
+
+        for after in [port(PortState::Open), unparsed] {
+            let changes = changes_between(Some(&before), Some(&after), &clocks());
+            assert!(
+                changes.iter().any(|change| matches!(
+                    change,
+                    PortChange::Security(SecurityChange::Certificate(
+                        CertificateChange::Withdrawn(_)
+                    ))
+                )),
+                "the certificate's absence is still reported as such"
+            );
+            let (_, resolved, unsettled, _) = findings_change(&changes).expect("a findings change");
+            assert!(
+                resolved.is_empty(),
+                "a scan shown no certificate reported {:?} resolved",
+                titles(resolved)
+            );
+            assert_eq!(titles(unsettled), ["TLS certificate is self-signed"]);
+        }
+    }
+
+    /// The counterpart: a scan shown a different certificate settled the
+    /// claim, since the posture belonged to bytes the endpoint no longer
+    /// presents.
+    #[test]
+    fn a_posture_finding_the_current_scan_was_shown_another_certificate_for_is_resolved() {
+        let before = presenting("aaaa");
+        let after = port(PortState::Open).with_security(
+            Security::new()
+                .with_tls_version("TLSv1.3")
+                .with_certificate(
+                    CertificateInfo::new(
+                        "www.example.test",
+                        "Example CA",
+                        SystemTime::UNIX_EPOCH,
+                        SystemTime::UNIX_EPOCH + Duration::from_secs(365 * 24 * 60 * 60),
+                        "bbbb",
+                    )
+                    .with_public_key("RSA", 2048),
+                ),
+        );
+
+        let changes = changes_between(Some(&before), Some(&after), &clocks());
+        let (_, resolved, unsettled, _) = findings_change(&changes).expect("a findings change");
+        assert!(unsettled.is_empty(), "{:?}", titles(unsettled));
+        assert_eq!(titles(resolved), ["TLS certificate is self-signed"]);
     }
 
     /// One side missing is an endpoint that appeared or went away, which the

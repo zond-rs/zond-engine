@@ -208,6 +208,14 @@ impl Security {
     /// the claim while it holds the same certificate and overturned it once it
     /// holds another. A certificate with no fingerprint cannot be told from
     /// another, and a claim resting on one has no standing.
+    ///
+    /// A record holding no certificate it can tell apart leaves the claim
+    /// unsettled, as a record holding no walk does one drawn from what the
+    /// endpoint accepts. The service pass writes no security at all where the
+    /// handshake failed and no certificate where the leaf would not parse, so
+    /// the absence says what this scan was shown, not what the endpoint
+    /// presents: read as a different certificate, one handshake that timed out
+    /// would retire every posture claim on the endpoint.
     pub(crate) fn standing(&self, finding: &Finding, basis: &Security) -> Option<Standing> {
         if finding.detection().id() == CERTIFICATE_DETECTION {
             fn fingerprint(security: &Security) -> Option<&str> {
@@ -217,11 +225,11 @@ impl Security {
                     .map(CertificateInfo::fingerprint_sha256)
                     .filter(|fingerprint| !fingerprint.is_empty())
             }
-            let (now, then) = (fingerprint(self)?, fingerprint(basis)?);
-            return Some(if now == then {
-                Standing::Upheld
-            } else {
-                Standing::Overturned
+            let then = fingerprint(basis)?;
+            return Some(match fingerprint(self) {
+                Some(now) if now == then => Standing::Upheld,
+                Some(_) => Standing::Overturned,
+                None => Standing::Unsettled,
             });
         }
         self.support.standing(finding, &basis.support)

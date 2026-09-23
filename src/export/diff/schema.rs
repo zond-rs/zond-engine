@@ -601,7 +601,8 @@ impl ChangeDto {
     ///
     /// A claim the later scan did not settle is its own kind rather than a
     /// resolution, so a rule written against `finding_resolved` fires on a fix
-    /// and never on a walk the later scan cut short.
+    /// and never on a walk the later scan cut short, or a certificate it was
+    /// not shown.
     fn findings(
         appeared: &[Finding],
         resolved: &[Finding],

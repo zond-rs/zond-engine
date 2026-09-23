@@ -121,7 +121,10 @@
 //! scan's record says whether each of those walks finished. Where one was cut
 //! short, or the current scan made no enumeration at all, the claim's absence
 //! is how far the scan got, and the endpoint's
-//! [`PortChange::Findings`] carries it as unsettled rather than resolved.
+//! [`PortChange::Findings`] carries it as unsettled rather than resolved. A
+//! finding drawn from a certificate's posture rests on that certificate, and a
+//! current scan that recorded none, because its handshake failed or the leaf
+//! would not parse, is unsettled the same way.
 //!
 //! ## Which record continues which
 //!
