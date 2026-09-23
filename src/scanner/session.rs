@@ -576,8 +576,13 @@ impl Progress {
     /// How many units of the current stage are finished.
     ///
     /// The unit is the stage's own: ports for [`Stage::Services`], detection
-    /// runs for [`Stage::Detections`]. Zero for a stage that does not count
-    /// itself.
+    /// runs for [`Stage::Detections`], TLS ports for [`Stage::Tls`]. Zero for a
+    /// stage that does not count itself.
+    ///
+    /// A unit is counted once the stage is done with it, whatever it came to.
+    /// One passed over before it began, because its host had spent its budget
+    /// or the scan was stopped, is not, so a stage can end short of its total,
+    /// and the shortfall is what it never asked.
     pub fn stage_done(&self) -> u64 {
         self.stages.done()
     }

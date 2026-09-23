@@ -1482,6 +1482,11 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
             crate::model::tls::TlsSupport,
         )>,
          _audit| {
+            // Counted as each walk ends, however it ended: one its host's budget
+            // cut short is written down with the versions it left unfinished,
+            // and the pass has nothing more to ask of that endpoint.
+            ctx.stage_advanced();
+
             if let Some((key, number, support)) = found {
                 record_tls_support(ctx, key, number, support);
             }
@@ -3360,6 +3365,44 @@ mod tests {
             },
         )
         .expect("the host is recorded");
+    }
+
+    /// The pass counts each endpoint forward as its walk ends, read through the
+    /// progress a front end holds.
+    ///
+    /// With TLS enumeration switched on this is the slowest pass a scan runs,
+    /// up to eighty connections a version against an endpoint accepting
+    /// everything, and a stage that announces its size and never counts
+    /// towards it reads as nought for all of that time.
+    #[tokio::test]
+    async fn the_pass_counts_each_endpoint_as_its_walk_ends() {
+        use crate::model::port::{Port, Security};
+
+        let first = tls_endpoint(0xC02F).await;
+        let second = tls_endpoint(0xC030).await;
+        let (session, ctx) = context_with_tls_port(first.port(), None);
+        let address: IpAddr = "127.0.0.1".parse().expect("an address");
+        ctx.update_host(address, |host| {
+            host.add_port(
+                Port::new(second.port(), Protocol::Tcp, PortState::Open)
+                    .with_security(Security::new().with_tls_version("TLSv1.2")),
+            );
+        });
+
+        let cfg = crate::config::ZondConfig {
+            tls_enumeration: true,
+            ..Default::default()
+        };
+        run_tls_enumeration(&ctx, &cfg).await;
+
+        let progress = session.progress();
+        assert_eq!(progress.stage(), Stage::Tls);
+        assert_eq!(progress.stage_total(), Some(2), "one unit to an endpoint");
+        assert_eq!(
+            progress.stage_done(),
+            2,
+            "each endpoint counted once its walk ended"
+        );
     }
 
     /// A host that has spent its budget is left alone. This is the most
