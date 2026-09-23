@@ -173,27 +173,45 @@ pub(crate) fn sys_object_id(datagram: &[u8]) -> Option<String> {
 /// Renders a BER object identifier as the dotted decimal a rule is written
 /// against.
 ///
-/// The first byte packs the first two arcs as `40 * x + y`, and every arc after
-/// it is base-128 with the top bit set on all but the last byte. An arc whose
-/// continuation never ends is a truncated identifier and yields nothing.
+/// Every subidentifier is base-128 with the top bit set on all but its last
+/// byte, and one whose continuation never ends is a truncated identifier and
+/// yields nothing. The first packs the first two arcs as `40 * x + y` (X.690
+/// §8.19.4), where `y` stays below forty under the roots 0 and 1 and is
+/// unbounded under 2. So it is unpacked by range rather than split by forty,
+/// and read like any other subidentifier first, since under 2 it runs past a
+/// byte.
 fn object_identifier(encoded: &[u8]) -> Option<String> {
-    let (first, rest) = encoded.split_first()?;
-    let mut arcs = vec![(first / 40).to_string(), (first % 40).to_string()];
-
-    let mut arc: u64 = 0;
+    let mut subidentifiers: Vec<u64> = Vec::new();
+    let mut value: u64 = 0;
     let mut open = false;
-    for byte in rest {
+    for byte in encoded {
         // A value this long is not an arc anybody assigned; refusing it keeps
         // the shift below from wrapping.
-        arc = arc.checked_mul(128)?.checked_add(u64::from(byte & 0x7f))?;
+        value = value
+            .checked_mul(128)?
+            .checked_add(u64::from(byte & 0x7f))?;
         open = byte & 0x80 != 0;
         if !open {
-            arcs.push(arc.to_string());
-            arc = 0;
+            subidentifiers.push(value);
+            value = 0;
         }
     }
+    if open {
+        return None;
+    }
 
-    (!open).then(|| arcs.join("."))
+    let (&packed, rest) = subidentifiers.split_first()?;
+    let (root, second) = match packed {
+        0..40 => (0, packed),
+        40..80 => (1, packed - 40),
+        _ => (2, packed - 80),
+    };
+    let arcs: Vec<String> = [root, second]
+        .into_iter()
+        .chain(rest.iter().copied())
+        .map(|arc| arc.to_string())
+        .collect();
+    Some(arcs.join("."))
 }
 
 /// The variable-binding list of a GetResponse, as a cursor over its bindings.
@@ -443,6 +461,86 @@ mod tests {
                     "{rendered:?} rendered from {encoded:02x?}"
                 );
             }
+        }
+    }
+
+    /// An identifier renders as the arcs it was encoded from, whatever they
+    /// are.
+    ///
+    /// X.690 §8.19.4 packs the first two arcs into one subidentifier as
+    /// `40 * x + y`, and bounds `y` only under the first two roots: under `2` it
+    /// runs on, so the packed value reaches 120 and runs past a byte. Read as
+    /// one byte split by forty, `2.45` would render as `3.5` and `2.999` as
+    /// `3.16.55`, under a root nobody can assign. Encoded here by hand from the
+    /// clause, beside a deterministic run of random ones.
+    #[test]
+    fn an_identifier_renders_as_the_arcs_it_was_encoded_from() {
+        /// X.690 §8.19: base 128, most significant group first, the top bit set
+        /// on every byte of a subidentifier but its last.
+        fn encode(arcs: &[u64]) -> Vec<u8> {
+            let packed = std::iter::once(40 * arcs[0] + arcs[1]).chain(arcs[2..].iter().copied());
+            let mut encoded = Vec::new();
+            for subidentifier in packed {
+                let mut groups = vec![(subidentifier & 0x7f) as u8];
+                let mut rest = subidentifier >> 7;
+                while rest > 0 {
+                    groups.push((rest & 0x7f) as u8 | 0x80);
+                    rest >>= 7;
+                }
+                encoded.extend(groups.iter().rev());
+            }
+            encoded
+        }
+
+        let dotted = |arcs: &[u64]| {
+            arcs.iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+
+        let mut cases: Vec<Vec<u64>> = vec![
+            vec![0, 0],
+            vec![0, 39],
+            vec![1, 3, 6, 1, 4, 1, 8072, 3, 2, 10],
+            vec![1, 39, 1],
+            vec![2, 0],
+            vec![2, 39],
+            vec![2, 40],
+            vec![2, 45],
+            vec![2, 47],
+            vec![2, 48],
+            vec![2, 999, 1],
+            vec![2, 16, 840, 1, 113_883],
+        ];
+
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..2_000 {
+            let root = next() % 3;
+            // Under the first two roots the second arc stays below forty.
+            let second = if root < 2 {
+                next() % 40
+            } else {
+                next() % 1_000_000
+            };
+            let mut arcs = vec![root, second];
+            arcs.extend((0..next() % 6).map(|_| next() >> (next() % 64)));
+            cases.push(arcs);
+        }
+
+        for arcs in cases {
+            let encoded = encode(&arcs);
+            assert_eq!(
+                object_identifier(&encoded).as_deref(),
+                Some(dotted(&arcs).as_str()),
+                "encoded as {encoded:02x?}"
+            );
         }
     }
 
