@@ -708,25 +708,28 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     ///
     /// **`key` must name a probe this scan has outstanding, and this is what
     /// checks it.** [`HostStatus::Down`] is documented as an unreachable
-    /// "quoting a probe this scan sent", and until this check existed nothing
-    /// established the second half of that sentence: the quoted source port was
-    /// the only gate, so an error quoting a destination and port of the sender's
-    /// choosing was believed. Three things followed from that. An address the
-    /// scan never probed was *created* in the store and filed as down. A host
-    /// that had been probed and stayed silent was promoted from `Unknown`, which
-    /// says nothing was heard, to `Down`, which says an intermediary answered
-    /// for it — the difference between a hardened host that drops traffic and an
-    /// address that is not there. And a host already proved up kept its status,
-    /// the promotion rule seeing to that, but still collected the unreachable as
-    /// one of the reasons on its record, which is the evidence trail this module
-    /// exists to keep honest.
+    /// "quoting a probe this scan sent", and the quoted source port alone does
+    /// not establish the second half of that sentence: gated on it, an error
+    /// quoting a destination and port of the sender's choosing is believed.
+    /// Three things would follow. An address the scan never probed would be
+    /// *created* in the store and filed as down. A host that had been probed and
+    /// stayed silent would be promoted from `Unknown`, which says nothing was
+    /// heard, to `Down`, which says an intermediary answered for it — the
+    /// difference between a hardened host that drops traffic and an address that
+    /// is not there. And a host already proved up would keep its status, the
+    /// promotion rule seeing to that, but still collect the unreachable as one of
+    /// the reasons on its record, which is the evidence trail this module exists
+    /// to keep honest.
     ///
     /// `token` is checked where the quotation carried one. Where it did not, the
-    /// key alone is the evidence, and the key is now worth something: it has to
-    /// name a live probe.
+    /// key alone is the evidence, and it has to name a live probe.
     ///
-    /// Returns whether anything was recorded, so a caller can count a message it
-    /// could not attribute.
+    /// Returns whether the verdict is now on the host's record, so a caller can
+    /// tell a message that became evidence from one that did not. `false` means
+    /// the message named no probe this scan has outstanding, which the audit
+    /// counts as off-target, or named an address the scan's exclusions forbid,
+    /// which [`ScanContext::write_host`] drops. Whether the host was already in
+    /// the store makes no difference to the answer.
     pub fn record_host_down(
         &mut self,
         key: &ProbeTarget,
@@ -738,13 +741,19 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             return false;
         }
 
+        // Set by the edit rather than read off `update_host`, whose answer is
+        // whether the host was created. The edit runs exactly when the store
+        // accepts the address, which is the question asked here.
+        let mut recorded = false;
         self.ctx.update_host(key.0, |host| {
             host.record_evidence(
                 HostStatus::Down,
                 StatusReason::new(StatusProtocol::IcmpUnreachable, "destination unreachable")
                     .from_source(sender),
             );
-        })
+            recorded = true;
+        });
+        recorded
     }
 
     /// Closes out a run: reports probes that never reached the wire, then files
@@ -1801,5 +1810,48 @@ mod tests {
             "a host that talks and then goes quiet is being outrun"
         );
         assert_eq!(core.window.in_flight(), 0, "and the slot still went back");
+    }
+
+    /// **A host verdict answers whether it was recorded**, and the usual case
+    /// is a host already in the store.
+    ///
+    /// A port scan mostly probes hosts an earlier phase found, so the host an
+    /// unreachable names is ordinarily there before the unreachable arrives.
+    /// Whether this call happened to create it is a fact about the store's
+    /// history, and answering that would report the ordinary case as a message
+    /// that went nowhere.
+    #[test]
+    fn a_host_down_filed_against_a_host_already_known_reports_it_was_recorded() {
+        let (mut core, session) = core();
+        let router: IpAddr = "198.51.100.1".parse().expect("a literal address");
+        core.ctx.update_host(TARGET, |_| {});
+        core.ledger.arm(TARGET, (TARGET, 80), (), 0, Instant::now());
+
+        assert!(
+            core.record_host_down(&(TARGET, 80), Some(()), router),
+            "an unreachable naming a live probe is on the host's record"
+        );
+        assert_eq!(
+            session.hosts().get(TARGET).map(|host| host.status()),
+            Some(HostStatus::Down)
+        );
+    }
+
+    /// And `false` means nothing reached the store: an address the scan's
+    /// exclusions forbid is dropped there, whatever probe the message names.
+    #[test]
+    fn a_host_down_about_an_excluded_address_reports_nothing_recorded() {
+        let (mut core, _) = core();
+        let mut excluded = crate::model::ip::set::IpSet::new();
+        excluded.insert_range("192.0.2.0/24".parse().expect("a valid range"));
+        let (session, ctx) = ScanSession::builder()
+            .excluding(crate::model::exclusion::Exclusions::new(excluded))
+            .build();
+        core.ctx = ctx;
+        let router: IpAddr = "198.51.100.1".parse().expect("a literal address");
+        core.ledger.arm(TARGET, (TARGET, 80), (), 0, Instant::now());
+
+        assert!(!core.record_host_down(&(TARGET, 80), Some(()), router));
+        assert!(session.hosts().get(TARGET).is_none());
     }
 }
