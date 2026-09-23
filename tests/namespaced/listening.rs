@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use crate::netns::{Segment, available};
+use crate::netns::{Segment, available, zone_holding};
 use crate::support::test_config;
 use zond_engine::scanner::{self, ListenScope};
 
@@ -89,5 +89,55 @@ async fn a_bounded_watch_ends_without_being_aborted() {
     assert!(
         report.elapsed() >= Duration::from_millis(500),
         "the watch should have run for about its span, not returned at once"
+    );
+}
+
+/// A watch on a tunnel hears the handshakes it carries.
+///
+/// A tunnel has no Ethernet header, so the clauses of a listener's filter that
+/// name hardware addresses cannot be compiled for it. Compiled whole, the
+/// filter refused the link and the watch failed before it began; narrowed to
+/// what the link can express, it keeps TCP, and a server answering through the
+/// tunnel is recorded by its address.
+#[tokio::test]
+async fn a_watch_on_a_tunnel_hears_a_handshake_through_it() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let peer = segment.tunnel();
+    let open = segment.listen_tcp_on(peer);
+    let tunnel = zone_holding(std::net::Ipv4Addr::from(u32::from(peer) - 1));
+
+    let scope = ListenScope::on(vec![tunnel]).for_at_most(Duration::from_secs(3));
+    let (session, task) = scanner::listen(scope, &test_config())
+        .await
+        .expect("a watch starts on a tunnel");
+
+    // As in the watch above: a frame put on the wire before the capture is
+    // listening is not seen.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let address = std::net::SocketAddr::from((peer, open));
+    tokio::task::spawn_blocking(move || {
+        std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2))
+            .expect("the peer accepts through the tunnel")
+    })
+    .await
+    .expect("the connection is made");
+
+    let report = task.await.expect("the watch ends when its span does");
+    assert!(
+        report.failures().next().is_none(),
+        "the watch should have opened on the tunnel"
+    );
+
+    let heard = session
+        .hosts()
+        .get(std::net::IpAddr::V4(peer))
+        .expect("the server behind the tunnel should have been heard");
+    assert!(
+        heard.ports().any(|port| port.number() == open),
+        "the handshake it answered should have recorded port {open}"
     );
 }

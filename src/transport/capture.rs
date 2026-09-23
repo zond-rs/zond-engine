@@ -119,9 +119,9 @@ const _: () = assert!(
 #[must_use]
 #[derive(Debug, Clone)]
 pub struct CaptureOptions {
-    /// A `libpcap` filter expression, in `tcpdump` syntax, compiled to a kernel
-    /// BPF program. Only matching frames are copied into this process.
-    filter: String,
+    /// What the kernel admits, compiled for each link to a BPF program. Only
+    /// matching frames are copied into this process.
+    filter: CaptureFilter,
     /// How many bytes of each matching frame to keep. The rest is discarded by
     /// the kernel and never reaches this process.
     snaplen: u32,
@@ -149,7 +149,7 @@ impl CaptureOptions {
     /// The kernel's default buffer. These arrivals are bounded by the probes this
     /// host sent, so there is a rate above which nothing comes, and the default
     /// has been sufficient for it.
-    pub fn for_replies(filter: impl Into<String>) -> Self {
+    pub fn for_replies(filter: impl Into<CaptureFilter>) -> Self {
         Self {
             filter: filter.into(),
             snaplen: REPLY_SNAP_LEN,
@@ -173,7 +173,7 @@ impl CaptureOptions {
     /// the filter decides what is copied into this process. Widening the first
     /// while keeping the second tight is how a capture sees what it needs and
     /// carries what it does not need nowhere at all.
-    pub fn for_link_traffic(filter: impl Into<String>) -> Self {
+    pub fn for_link_traffic(filter: impl Into<CaptureFilter>) -> Self {
         Self {
             promiscuous: true,
             ..Self::for_replies(filter)
@@ -222,6 +222,153 @@ impl CaptureOptions {
     pub fn with_buffer_bytes(mut self, bytes: u32) -> Self {
         self.buffer_bytes = Some(bytes);
         self
+    }
+}
+
+/// What a capture admits, in `libpcap`'s filter syntax, the syntax `tcpdump`
+/// takes.
+///
+/// Two shapes, because a filter is compiled once per link and links differ in
+/// what they can express. An [`expression`](Self::expression) is compiled as
+/// written, and a link that cannot compile it is not captured on. A set of
+/// alternatives, [`any_of`](Self::any_of), admits a frame any one of them
+/// admits, and each link compiles the ones it can express and leaves the rest
+/// out.
+///
+/// # Why leaving a clause out is sound, and when it is not allowed
+///
+/// A clause a link cannot express is one naming something the link does not
+/// carry. `ether dst` names a hardware address, and a tunnel, a PPP link or a
+/// loopback without an Ethernet header has none, so `libpcap` refuses to
+/// compile it there: no frame on that link could have matched it. Leaving it
+/// out loses nothing that link could have delivered, while refusing the whole
+/// filter loses everything the other clauses would have admitted, which on a
+/// tunnel is every IP packet it carries.
+///
+/// That argument holds for a clause the link cannot express, and not for one
+/// nothing can: a clause with a typo in it is a mistake, and dropping it
+/// silently would hide one. So a clause a link refuses is compiled once more
+/// for Ethernet, the link that expresses the most, and only where that
+/// succeeds is it left out. Otherwise the capture fails with
+/// [`CaptureError::Filter`] naming it.
+///
+/// Alternatives suit a capture reading several unrelated kinds of traffic, as a
+/// listener does. A scan's reply filter is an expression, since every part of it
+/// is needed for the scan to hear its answers, and a link that can express only
+/// some of it should be refused and said to be rather than captured on in part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureFilter {
+    shape: FilterShape,
+}
+
+/// The two shapes a [`CaptureFilter`] takes, kept private so that a filter is
+/// built through the constructors that say which one is meant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FilterShape {
+    /// Compiled as written, on every link or on none.
+    Expression(String),
+    /// Joined by `or`, each link taking the clauses it can express.
+    AnyOf(Vec<String>),
+}
+
+impl CaptureFilter {
+    /// A filter compiled as written, on every link or on none.
+    pub fn expression(expression: impl Into<String>) -> Self {
+        Self {
+            shape: FilterShape::Expression(expression.into()),
+        }
+    }
+
+    /// A filter admitting a frame any of `clauses` admits, each link taking the
+    /// clauses it can express.
+    ///
+    /// Each clause is a complete expression, joined to the others by `or`, so
+    /// it must parenthesise anything that would not survive that.
+    pub fn any_of<I, S>(clauses: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            shape: FilterShape::AnyOf(clauses.into_iter().map(Into::into).collect()),
+        }
+    }
+
+    /// The expression to compile on the link `capture` is open on, with the
+    /// clauses left out of it to express it there.
+    ///
+    /// Asks `libpcap`, through the capture itself, rather than deciding from
+    /// the link type here: which clauses a data-link type can express is
+    /// `libpcap`'s knowledge, and a table of it kept in this crate would be a
+    /// second copy of that knowledge, and wrong the first time the two
+    /// disagreed.
+    pub(crate) fn for_link<T: pcap::Activated + ?Sized>(
+        &self,
+        capture: &Capture<T>,
+    ) -> Result<(String, Vec<String>), CaptureError> {
+        let clauses = match &self.shape {
+            FilterShape::Expression(expression) => return Ok((expression.clone(), Vec::new())),
+            FilterShape::AnyOf(clauses) => clauses,
+        };
+
+        let mut kept = Vec::new();
+        let mut left_out = Vec::new();
+        let mut refused = None;
+        for clause in clauses {
+            match capture.compile(clause, true) {
+                Ok(_) => kept.push(clause.as_str()),
+                Err(source) => {
+                    if let Err(malformed) = compiles_for_ethernet(clause) {
+                        return Err(CaptureError::Filter {
+                            filter: clause.clone(),
+                            source: malformed,
+                        });
+                    }
+                    left_out.push(clause.clone());
+                    refused = Some(source);
+                }
+            }
+        }
+
+        match refused {
+            Some(source) if kept.is_empty() => Err(CaptureError::Filter {
+                filter: self.to_string(),
+                source,
+            }),
+            _ => Ok((kept.join(" or "), left_out)),
+        }
+    }
+}
+
+/// Whether `clause` compiles for Ethernet, the link expressing the most, and
+/// what `libpcap` said where it does not.
+///
+/// A handle opened dead, with no device behind it: compiling needs a link type
+/// and nothing else, so this asks nothing of the host and no privilege.
+fn compiles_for_ethernet(clause: &str) -> Result<(), pcap::Error> {
+    Capture::dead(pcap::Linktype::ETHERNET)?.compile(clause, true)?;
+    Ok(())
+}
+
+impl std::fmt::Display for CaptureFilter {
+    /// The filter as written, every alternative included.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.shape {
+            FilterShape::Expression(expression) => f.write_str(expression),
+            FilterShape::AnyOf(clauses) => f.write_str(&clauses.join(" or ")),
+        }
+    }
+}
+
+impl From<String> for CaptureFilter {
+    fn from(expression: String) -> Self {
+        Self::expression(expression)
+    }
+}
+
+impl From<&str> for CaptureFilter {
+    fn from(expression: &str) -> Self {
+        Self::expression(expression)
     }
 }
 
@@ -904,6 +1051,7 @@ where
                 capture,
                 link,
                 warning,
+                left_out,
             }) => {
                 match warning {
                     Some(warning) => info!(
@@ -912,6 +1060,13 @@ where
                          opened with a warning: {warning}"
                     ),
                     None => info!(verbosity = 3, "capturing on {name} (link type {link:?})"),
+                }
+                if !left_out.is_empty() {
+                    info!(
+                        verbosity = 3,
+                        "capturing on {name} without the filter clauses it cannot express: {}",
+                        left_out.join(" or ")
+                    );
                 }
                 opened += 1;
 
@@ -1176,6 +1331,9 @@ struct Opened {
     /// The warning `libpcap` activated it under, if it gave one. See
     /// [`libpcap`].
     warning: Option<String>,
+    /// The clauses of its filter this link could not express, and so does not
+    /// admit. See [`CaptureFilter`].
+    left_out: Vec<String>,
 }
 
 /// Opens and activates a single filtered capture, returning it alongside the
@@ -1219,17 +1377,16 @@ fn open(name: &str, options: &CaptureOptions) -> Result<Opened, CaptureError> {
         });
     }
 
+    let (filter, left_out) = options.filter.for_link(&capture)?;
     capture
-        .filter(&options.filter, true)
-        .map_err(|source| CaptureError::Filter {
-            filter: options.filter.clone(),
-            source,
-        })?;
+        .filter(&filter, true)
+        .map_err(|source| CaptureError::Filter { filter, source })?;
 
     Ok(Opened {
         capture,
         link,
         warning,
+        left_out,
     })
 }
 
@@ -1879,6 +2036,87 @@ mod tests {
             assert!(said.contains("zondnone0"), "{said}");
             assert!(!said.contains("privilege"), "{said}");
         }
+    }
+
+    /// A dead capture of `dlt`, which compiles filters for that link type with
+    /// no device behind it.
+    fn link_of(dlt: i32) -> Capture<pcap::Dead> {
+        Capture::dead(pcap::Linktype(dlt)).expect("a dead capture")
+    }
+
+    /// `DLT_RAW`, how a WireGuard or IP-in-IP tunnel comes up on Linux.
+    const RAW: i32 = 12;
+
+    /// Of a set of alternatives, a link keeps the ones it can express and
+    /// leaves out the ones it cannot, and says which it left out.
+    #[test]
+    fn alternatives_are_narrowed_to_what_a_link_can_express() {
+        let filter = CaptureFilter::any_of(["(ether dst 01:00:0c:cc:cc:cc)", "(tcp)"]);
+
+        let (expression, left_out) = filter.for_link(&link_of(RAW)).expect("tcp compiles");
+        assert_eq!(expression, "(tcp)");
+        assert_eq!(left_out, ["(ether dst 01:00:0c:cc:cc:cc)"]);
+
+        let (expression, left_out) = filter
+            .for_link(&link_of(1))
+            .expect("Ethernet expresses both");
+        assert_eq!(expression, "(ether dst 01:00:0c:cc:cc:cc) or (tcp)");
+        assert!(left_out.is_empty());
+    }
+
+    /// A clause nothing can express is a mistake, and is refused rather than
+    /// left out.
+    ///
+    /// Leaving a clause out is sound only because the link could not have
+    /// carried what it matches. A typo matches nothing anywhere, and dropping
+    /// it silently would turn a mistake in the filter into traffic that is
+    /// never seen, on every link, with nothing said.
+    #[test]
+    fn a_clause_no_link_can_express_is_refused_rather_than_left_out() {
+        let filter = CaptureFilter::any_of(["(tcp)", "(ether dts 01:00:0c:cc:cc:cc)"]);
+
+        for dlt in [RAW, 1] {
+            match filter.for_link(&link_of(dlt)) {
+                Err(CaptureError::Filter { filter, .. }) => {
+                    assert_eq!(filter, "(ether dts 01:00:0c:cc:cc:cc)");
+                }
+                other => panic!("a malformed clause was accepted on {dlt}: {other:?}"),
+            }
+        }
+    }
+
+    /// A link that can express none of the alternatives is refused, naming the
+    /// filter whole.
+    #[test]
+    fn a_link_that_can_express_no_alternative_is_refused() {
+        let filter =
+            CaptureFilter::any_of(["(ether dst 01:00:0c:cc:cc:cc)", "(ether proto 0x88cc)"]);
+
+        match filter.for_link(&link_of(RAW)) {
+            Err(CaptureError::Filter { filter: named, .. }) => {
+                assert_eq!(named, filter.to_string());
+            }
+            other => panic!("a filter admitting nothing was accepted: {other:?}"),
+        }
+    }
+
+    /// An expression is compiled whole, never narrowed. A scan's reply filter
+    /// is one, since every part of it is needed to hear the answers, and a link
+    /// that can express only some of it is refused rather than captured on in
+    /// part.
+    #[test]
+    fn an_expression_is_never_narrowed() {
+        let written = "tcp and ether src 02:00:00:00:00:01";
+        let (expression, left_out) = CaptureFilter::from(written)
+            .for_link(&link_of(RAW))
+            .expect("an expression is handed on as written");
+
+        assert_eq!(expression, written);
+        assert!(left_out.is_empty());
+        assert!(
+            link_of(RAW).compile(&expression, true).is_err(),
+            "and the link then refuses it whole"
+        );
     }
 
     /// A link the scan's answers depend on goes to the default console, and

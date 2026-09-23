@@ -182,6 +182,22 @@ pub fn available() -> bool {
     }
 }
 
+/// The link holding `address`, as the engine names it.
+///
+/// For a link a test built without a name it can see, such as the near end of
+/// a [`Segment::tunnel`], found by the address the fixture gave it.
+pub fn zone_holding(address: Ipv4Addr) -> zond_engine::model::ip::scoped::Zone {
+    zond_engine::system::interface::interfaces()
+        .into_iter()
+        .find(|link| {
+            link.addresses()
+                .iter()
+                .any(|held| held.address() == IpAddr::V4(address))
+        })
+        .map(|link| link.zone())
+        .unwrap_or_else(|| panic!("the engine can see the link holding {address}"))
+}
+
 /// Numbers each segment, so two built at once get different links and subnets.
 static NEXT: AtomicU32 = AtomicU32::new(1);
 

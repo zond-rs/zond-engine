@@ -83,10 +83,11 @@ use crate::report::{Attachment, AttachmentSource};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::frames::{self, DiscoveryProtocol, ProtocolMatch};
-use crate::transport::capture::{self, CaptureOptions, CapturedFrame, FrameStream};
-use crate::transport::frame::LinkType;
+use crate::transport::capture::{self, CaptureFilter, CaptureOptions, CapturedFrame, FrameStream};
+use crate::transport::frame::{self as transport_frame, LinkType};
 use crate::transport::mac::IntoCoreMac;
 use crate::{info, warn};
+use pnet_packet::ethernet::EtherTypes;
 
 /// How much of each frame the kernel keeps for a listener.
 ///
@@ -158,33 +159,41 @@ const MAX_RECORDED_HOSTS: usize = 65_536;
 /// least urgently and works least well.
 const ABORT_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// The TCP segment inside `frame`, where it carries one.
+/// The TCP segment inside an IP packet, and the address that sent it, where
+/// the packet carries one.
+///
+/// Takes the packet rather than the frame around it, because a TCP segment is
+/// read the same way whatever link it came off: behind an Ethernet header, a
+/// cooked one, or none at all on a tunnel.
 ///
 /// Reads the fixed header's protocol field rather than walking an IPv6
 /// extension chain, so a segment behind one is reported as not-TCP. That is the
 /// safe direction: it declines a frame it cannot read rather than reading an
 /// option header as a port number.
-fn tcp_segment<'a>(frame: &Frame<'a>) -> Option<&'a [u8]> {
-    use pnet_packet::ethernet::EtherTypes;
+fn tcp_segment(packet: &[u8]) -> Option<(IpAddr, &[u8])> {
     use pnet_packet::ip::IpNextHeaderProtocols;
 
-    let packet = frame.payload();
-    let (header_len, next) = match frame.ethertype() {
-        EtherTypes::Ipv4 => {
+    let (source, header_len, next) = match packet.first()? >> 4 {
+        4 => {
             let ipv4 = pnet_packet::ipv4::Ipv4Packet::new(packet)?;
             (
+                IpAddr::V4(ipv4.get_source()),
                 usize::from(ipv4.get_header_length()) * 4,
                 ipv4.get_next_level_protocol(),
             )
         }
-        EtherTypes::Ipv6 => (
-            crate::protocols::sizes::IP_V6_HDR_LEN,
-            pnet_packet::ipv6::Ipv6Packet::new(packet)?.get_next_header(),
-        ),
+        6 => {
+            let ipv6 = pnet_packet::ipv6::Ipv6Packet::new(packet)?;
+            (
+                IpAddr::V6(ipv6.get_source()),
+                crate::protocols::sizes::IP_V6_HDR_LEN,
+                ipv6.get_next_header(),
+            )
+        }
         _ => return None,
     };
 
-    (next == IpNextHeaderProtocols::Tcp).then(|| packet.get(header_len..))?
+    (next == IpNextHeaderProtocols::Tcp).then(|| Some((source, packet.get(header_len..)?)))?
 }
 
 /// The address ranges a listener's links carry.
@@ -526,9 +535,7 @@ impl PassiveListener {
         recording: Recording,
         ctx: ScanContext,
     ) -> Result<Self, StrategyError> {
-        let options = CaptureOptions::for_link_traffic(Self::filter())
-            .with_snaplen(LISTEN_SNAP_LEN)
-            .with_buffer_bytes(LISTEN_BUFFER_BYTES);
+        let options = Self::capture_options();
 
         // The capture's error as it is: it names each link and what refused
         // it, and blames privilege only where privilege was the refusal.
@@ -667,6 +674,15 @@ impl PassiveListener {
         self
     }
 
+    /// How a listener's capture is opened: promiscuous, narrowed by
+    /// [`filter`](Self::filter), and bounded by [`LISTEN_SNAP_LEN`] and
+    /// [`LISTEN_BUFFER_BYTES`].
+    fn capture_options() -> CaptureOptions {
+        CaptureOptions::for_link_traffic(Self::filter())
+            .with_snaplen(LISTEN_SNAP_LEN)
+            .with_buffer_bytes(LISTEN_BUFFER_BYTES)
+    }
+
     /// What a listener's capture admits.
     ///
     /// Everything the readers below can use, and nothing else. Wider than a
@@ -674,7 +690,14 @@ impl PassiveListener {
     /// and still a filter rather than the whole wire, because a capture that
     /// admits everything copies a link into this process to discard almost all
     /// of it.
-    fn filter() -> String {
+    ///
+    /// Alternatives rather than one expression, because a listener is pointed
+    /// at whatever links somebody names, and not all of them are Ethernet. A
+    /// tunnel, a PPP link or a loopback carries no hardware address, so the
+    /// clauses naming one cannot be compiled for it; as one expression they
+    /// would refuse the whole link, and with it the TCP it does carry. See
+    /// [`CaptureFilter::any_of`].
+    fn filter() -> CaptureFilter {
         let mut clauses: Vec<&'static str> = frames::sweep_protocols()
             .iter()
             .map(|protocol| protocol.capture_clause())
@@ -689,13 +712,13 @@ impl PassiveListener {
             "(udp port 53)",
             // The handshakes that say an endpoint served a real client. Only
             // the server's half of one establishes a listener; see
-            // `read_tcp`.
+            // `read_endpoint`.
             "(tcp)",
         ]);
 
         clauses.sort_unstable();
         clauses.dedup();
-        clauses.join(" or ")
+        CaptureFilter::any_of(clauses)
     }
 
     /// Reads one frame for everything it proves.
@@ -704,7 +727,14 @@ impl PassiveListener {
     /// stopping at the first would make what is recorded depend on the order
     /// they happen to be written in.
     fn read(&mut self, captured: &CapturedFrame) {
+        // A link with no Ethernet header carries no hardware address, no
+        // announcement and none of the link-layer exchanges the presence
+        // readers know. What it carries is IP, and the reading of IP that
+        // needs nothing beneath it is a TCP segment's.
         if captured.link != LinkType::Ethernet {
+            if let Some(packet) = transport_frame::strip_to_ip(captured.link, &captured.bytes) {
+                self.read_endpoint(packet, None, captured);
+            }
             return;
         }
         let Ok(frame) = ethernet::parse(&captured.bytes) else {
@@ -716,7 +746,10 @@ impl PassiveListener {
         }
         self.read_forwarding(&frame);
 
-        if self.read_endpoint(&frame, captured) {
+        let carries_ip = matches!(frame.ethertype(), EtherTypes::Ipv4 | EtherTypes::Ipv6);
+        if carries_ip
+            && self.read_endpoint(frame.payload(), Some(frame.source().into_core()), captured)
+        {
             return;
         }
         self.read_client(&frame, &captured.zone);
@@ -828,11 +861,20 @@ impl PassiveListener {
     /// its own that went unanswered. If this ever learns to record a non-open
     /// state, the rule that lets a listen report merge safely into a scanned one
     /// stops holding.
-    fn read_endpoint(&mut self, frame: &Frame<'_>, captured: &CapturedFrame) -> bool {
-        let Some(segment) = tcp_segment(frame) else {
-            return false;
-        };
-        let Ok(source) = crate::protocols::source_address(frame) else {
+    ///
+    /// # On a link with no hardware address
+    ///
+    /// `source_mac` is `None` for a frame off a tunnel, a PPP link or a
+    /// loopback. Such a link carries no hardware address, so the host is
+    /// recorded by its address alone, which is the only thing there that names
+    /// it, and nothing is guessed in the place of the one it lacks.
+    fn read_endpoint(
+        &mut self,
+        packet: &[u8],
+        source_mac: Option<MacAddr>,
+        captured: &CapturedFrame,
+    ) -> bool {
+        let Some((source, segment)) = tcp_segment(packet) else {
             return false;
         };
         let Ok(parsed) = tcp::parse(segment) else {
@@ -857,8 +899,11 @@ impl PassiveListener {
         //
         // Where the link's addressing is unknown the question has no answer, and
         // no address is recorded rather than one guessed at.
-        if self.on_link.is_stated() && self.on_link.contains(source) {
-            host.record_mac(frame.source().into_core());
+        if let Some(mac) = source_mac
+            && self.on_link.is_stated()
+            && self.on_link.contains(source)
+        {
+            host.record_mac(mac);
         }
 
         // The listener side, where the segment is the server's half of a
@@ -889,7 +934,7 @@ impl PassiveListener {
         self.record(host, &captured.zone);
         // After the host exists, since this edits a record rather than making
         // one: a stack reading is never itself evidence that anything is there.
-        self.read_stack(frame, source);
+        self.read_stack(packet, source);
         true
     }
 
@@ -973,12 +1018,12 @@ impl PassiveListener {
     ///
     /// Reading one properly means a second rule set keyed on requests. That is a
     /// corpus rather than a parser, and it is left alone until there is one.
-    fn read_stack(&self, frame: &Frame<'_>, source: IpAddr) {
+    fn read_stack(&self, packet: &[u8], source: IpAddr) {
         if matches!(self.os, OsDetection::Off) {
             return;
         }
 
-        let Some(observed) = os::StackObservation::from_ip_packet(frame.payload()) else {
+        let Some(observed) = os::StackObservation::from_ip_packet(packet) else {
             return;
         };
         if !observed.is_syn_ack() && !observed.is_reset() {
@@ -1348,9 +1393,16 @@ mod tests {
     /// own.
     #[test]
     fn the_listen_filter_admits_every_frame_a_listener_can_read() {
-        let filter = PassiveListener::filter();
-        let program = pcap::Capture::dead(pcap::Linktype::ETHERNET)
-            .expect("a dead capture")
+        let ethernet = pcap::Capture::dead(pcap::Linktype::ETHERNET).expect("a dead capture");
+        let (filter, left_out) = PassiveListener::filter()
+            .for_link(&ethernet)
+            .unwrap_or_else(|e| panic!("the listen filter does not compile: {e}"));
+        assert_eq!(
+            left_out,
+            Vec::<String>::new(),
+            "Ethernet expresses every clause"
+        );
+        let program = ethernet
             .compile(&filter, true)
             .unwrap_or_else(|e| panic!("the listen filter `{filter}` does not compile: {e}"));
 
@@ -1408,6 +1460,113 @@ mod tests {
                  one: {filter}"
             );
         }
+    }
+
+    /// The data-link types a listener meets on links without an Ethernet
+    /// header, by their `libpcap` numbers: a cooked Linux capture, which is how
+    /// a PPP link and a GRE tunnel come up; raw IP, which is how WireGuard and
+    /// an IP-in-IP tunnel do; the address-family word of a BSD loopback or
+    /// `utun`, in both of its spellings; and PPP's own.
+    const LINKS_WITHOUT_ETHERNET: [(i32, &str); 5] = [
+        (113, "a cooked Linux link"),
+        (12, "a raw IP link"),
+        (0, "a BSD loopback or utun"),
+        (108, "an OpenBSD loopback"),
+        (9, "a PPP link"),
+    ];
+
+    /// A listener pointed at a link with no Ethernet header opens on it, with
+    /// the part of its filter that link can express.
+    ///
+    /// The whole filter names hardware addresses, which such a link does not
+    /// carry, and `libpcap` refuses to compile it there. Compiled as one
+    /// expression it refused the link outright, so a watch on a tunnel or a
+    /// PPP link heard nothing, not even the TCP those links do carry.
+    #[test]
+    fn a_listener_compiles_what_a_link_without_ethernet_can_express() {
+        for (dlt, what) in LINKS_WITHOUT_ETHERNET {
+            let link = pcap::Capture::dead(pcap::Linktype(dlt)).expect("a dead capture");
+            let (filter, left_out) = PassiveListener::filter()
+                .for_link(&link)
+                .unwrap_or_else(|e| panic!("a listener refused {what}: {e}"));
+
+            link.compile(&filter, true)
+                .unwrap_or_else(|e| panic!("`{filter}` does not compile for {what}: {e}"));
+            assert!(filter.contains("(tcp)"), "{what} keeps TCP: {filter}");
+            assert!(
+                !filter.contains("ether dst"),
+                "{what} names no hardware address: {filter}"
+            );
+            assert!(
+                left_out.iter().any(|clause| clause.contains("ether dst")),
+                "{what} leaves the hardware address out: {left_out:?}"
+            );
+        }
+    }
+
+    /// And the real opening path takes the same narrowing, on the one link
+    /// without an Ethernet header every machine has: macOS captures its
+    /// loopback as `DLT_NULL`.
+    ///
+    /// Opening needs the right to capture, which a process without it does not
+    /// have; that refusal is the capture layer's to test, and this test has
+    /// nothing to say about it. Linux captures its loopback as Ethernet, where
+    /// every clause compiles, so there it only shows the listener opens.
+    #[test]
+    fn a_listener_opens_on_a_loopback_link() {
+        let Some(loopback) = crate::system::interface::interfaces()
+            .into_iter()
+            .find(|link| link.is_loopback())
+        else {
+            return;
+        };
+
+        match capture::frames(
+            std::slice::from_ref(&loopback.zone()),
+            &PassiveListener::capture_options(),
+            1,
+        ) {
+            Ok(_) => {}
+            Err(refused) if refused.is_denied() => {}
+            Err(refused) => panic!("a listener refused {}: {refused}", loopback.name()),
+        }
+    }
+
+    /// A handshake heard on a link without a hardware address records the
+    /// endpoint that served it, by address alone.
+    ///
+    /// The one reading a tunnel's traffic supports: a TCP segment is read the
+    /// same way behind no link header as behind an Ethernet one. There is no
+    /// hardware address to record, and none is invented.
+    #[test]
+    fn a_handshake_heard_on_a_tunnel_records_the_endpoint_that_served_it() {
+        use crate::protocols::tcp::flags;
+
+        let server = Ipv4Addr::new(198, 51, 100, 5);
+        let client = Ipv4Addr::new(198, 51, 100, 9);
+        let datagram = crate::protocols::craft::Packet::new()
+            .push(crate::protocols::craft::Ipv4::new(server, client))
+            .push(crate::protocols::craft::Tcp::new(443, 51234).with_flags(flags::SYN | flags::ACK))
+            .build()
+            .expect("a test datagram");
+
+        let (mut listener, ctx) = listening_on_a_known_link(Recording::Attached);
+        listener.read(&CapturedFrame {
+            zone: zone(),
+            link: LinkType::Raw,
+            bytes: datagram,
+            observed_at: SystemTime::UNIX_EPOCH,
+        });
+
+        let host = ctx
+            .hosts_snapshot()
+            .into_iter()
+            .next()
+            .expect("the server was heard");
+        assert_eq!(host.primary_ip(), IpAddr::V4(server));
+        assert_eq!(host.mac(), None, "a tunnel carries no hardware address");
+        let port = host.ports().next().expect("an endpoint was recorded");
+        assert_eq!((port.number(), port.state()), (443, PortState::Open));
     }
 
     /// A frame is credited to the machine that sent it, and to no address the

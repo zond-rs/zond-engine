@@ -16803,6 +16803,31 @@ impl core::marker::Unpin for zond_engine::transport::capture::CaptureError
 impl core::marker::UnsafeUnpin for zond_engine::transport::capture::CaptureError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::CaptureError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::CaptureError
+pub struct zond_engine::transport::capture::CaptureFilter
+impl zond_engine::transport::capture::CaptureFilter
+pub fn zond_engine::transport::capture::CaptureFilter::any_of<I, S>(I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::Into<alloc::string::String>
+pub fn zond_engine::transport::capture::CaptureFilter::expression(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for zond_engine::transport::capture::CaptureFilter
+pub fn zond_engine::transport::capture::CaptureFilter::clone(&self) -> zond_engine::transport::capture::CaptureFilter
+impl core::cmp::Eq for zond_engine::transport::capture::CaptureFilter
+impl core::cmp::PartialEq for zond_engine::transport::capture::CaptureFilter
+pub fn zond_engine::transport::capture::CaptureFilter::eq(&self, &zond_engine::transport::capture::CaptureFilter) -> bool
+impl core::convert::From<&str> for zond_engine::transport::capture::CaptureFilter
+pub fn zond_engine::transport::capture::CaptureFilter::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for zond_engine::transport::capture::CaptureFilter
+pub fn zond_engine::transport::capture::CaptureFilter::from(alloc::string::String) -> Self
+impl core::fmt::Debug for zond_engine::transport::capture::CaptureFilter
+pub fn zond_engine::transport::capture::CaptureFilter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::transport::capture::CaptureFilter
+pub fn zond_engine::transport::capture::CaptureFilter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::transport::capture::CaptureFilter
+impl core::marker::Freeze for zond_engine::transport::capture::CaptureFilter
+impl core::marker::Send for zond_engine::transport::capture::CaptureFilter
+impl core::marker::Sync for zond_engine::transport::capture::CaptureFilter
+impl core::marker::Unpin for zond_engine::transport::capture::CaptureFilter
+impl core::marker::UnsafeUnpin for zond_engine::transport::capture::CaptureFilter
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::CaptureFilter
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::CaptureFilter
 pub struct zond_engine::transport::capture::CaptureGuard
 impl zond_engine::transport::capture::CaptureGuard
 pub fn zond_engine::transport::capture::CaptureGuard::counts(&self) -> core::option::Option<zond_engine::model::capture::CaptureCounts>
@@ -16817,8 +16842,8 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::captur
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::CaptureGuard
 pub struct zond_engine::transport::capture::CaptureOptions
 impl zond_engine::transport::capture::CaptureOptions
-pub fn zond_engine::transport::capture::CaptureOptions::for_link_traffic(impl core::convert::Into<alloc::string::String>) -> Self
-pub fn zond_engine::transport::capture::CaptureOptions::for_replies(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn zond_engine::transport::capture::CaptureOptions::for_link_traffic(impl core::convert::Into<zond_engine::transport::capture::CaptureFilter>) -> Self
+pub fn zond_engine::transport::capture::CaptureOptions::for_replies(impl core::convert::Into<zond_engine::transport::capture::CaptureFilter>) -> Self
 pub fn zond_engine::transport::capture::CaptureOptions::with_buffer_bytes(self, u32) -> Self
 pub fn zond_engine::transport::capture::CaptureOptions::with_promiscuous(self, bool) -> Self
 pub fn zond_engine::transport::capture::CaptureOptions::with_snaplen(self, u32) -> Self

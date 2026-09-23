@@ -354,7 +354,9 @@ sitting of a raw scan sends, since the sweeps beside a port scan never ask about
 a loopback target; `capturing` for what the capture layer says when a link
 refuses it with the privilege to capture.
 
-`listening` for the watch entry point over a real capture, and `resolving` for
+`listening` for the watch entry point over a real capture, on a segment and
+on a tunnel, whose link carries no hardware address for the listener's filter
+to name, and `resolving` for
 a `.local` name a responder on the segment really answers, including the scope
 that names one. The tests in `resolving` hold a mutex for their whole length and
 cannot be made to run beside each other: a responder lives in its own namespace,

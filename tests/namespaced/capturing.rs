@@ -13,24 +13,10 @@
 //! the namespace provides and no other tier has: whether a capture that fails
 //! with the privilege to capture says why rather than blaming privilege.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
-use crate::netns::{Segment, available};
-use zond_engine::model::ip::scoped::Zone;
+use crate::netns::{Segment, available, zone_holding};
 use zond_engine::transport::capture::{self, CaptureOptions};
-
-/// The link holding `address`, as the engine names it.
-fn link_holding(address: Ipv4Addr) -> Zone {
-    zond_engine::system::interface::interfaces()
-        .into_iter()
-        .find(|link| {
-            link.addresses()
-                .iter()
-                .any(|held| held.address() == IpAddr::V4(address))
-        })
-        .map(|link| link.zone())
-        .unwrap_or_else(|| panic!("the engine can see the link holding {address}"))
-}
 
 /// A capture that fails for a reason other than privilege says what the reason
 /// was, and does not say privilege.
@@ -49,7 +35,7 @@ fn a_capture_refused_for_a_reason_other_than_privilege_names_that_reason() {
 
     let segment = Segment::new();
     let peer = segment.tunnel();
-    let tunnel = link_holding(Ipv4Addr::from(u32::from(peer) - 1));
+    let tunnel = zone_holding(Ipv4Addr::from(u32::from(peer) - 1));
 
     let refused = capture::frames(
         std::slice::from_ref(&tunnel),
