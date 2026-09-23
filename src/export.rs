@@ -252,8 +252,9 @@ impl ExportOptions {
 /// The formats this build can write.
 ///
 /// Front ends pick a format from a file extension rather than from a flag, since
-/// `-o report.json` already says what the user wants. It lives in the engine so
-/// every front end resolves the same extension to the same format.
+/// an output path such as `report.json` already says what the user wants. It
+/// lives in the engine so every front end resolves the same extension to the
+/// same format.
 ///
 /// Which variants exist depends on the cargo features the crate was built with.
 #[non_exhaustive]

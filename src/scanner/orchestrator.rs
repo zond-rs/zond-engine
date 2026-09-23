@@ -951,10 +951,11 @@ pub(super) async fn run_active_os_series(
 /// # Why it does not simply add a port to the scan
 ///
 /// Because a detection *level* and a port *list* are different dials, and
-/// crossing them would mean `--ports 80 -O` sending probes to a port the caller
-/// excluded. It would also be slower for no gain: establishing UDP port state
-/// means waiting on ICMP unreachables, which targets rate-limit, and this phase
-/// needs no port state at all. It asks a question and reads the answer.
+/// crossing them would mean a scan of port 80 with active OS detection sending
+/// probes to a port the caller excluded. It would also be slower for no gain:
+/// establishing UDP port state means waiting on ICMP unreachables, which
+/// targets rate-limit, and this phase needs no port state at all. It asks a
+/// question and reads the answer.
 ///
 /// # It does record the port
 ///
@@ -968,10 +969,10 @@ pub(super) async fn run_active_os_series(
 /// [`ScanResponse::UdpResponse`], so a report can distinguish it from one the
 /// port scan established and never has to pretend it was asked for.
 ///
-/// This is the *opposite* of widening `--ports`, not an exception to it. The
-/// objection there is to sending traffic nobody requested; the traffic here was
-/// requested, by `-O`, and what is at stake is only whether the answer is
-/// reported or discarded.
+/// This is the *opposite* of widening the port list, not an exception to it.
+/// The objection there is to sending traffic nobody requested; the traffic here
+/// was requested, by the OS detection level, and what is at stake is only
+/// whether the answer is reported or discarded.
 ///
 /// # Who is asked
 ///
@@ -2892,8 +2893,9 @@ mod tests {
     ///
     /// The other way to build it is to discard the answer, on the reasoning
     /// that 161 is not a port the caller asked to scan. That confuses two
-    /// things: the objection to widening `--ports` is to sending traffic nobody
-    /// requested, and this traffic *was* requested: by the detection level.
+    /// things: the objection to widening the port list is to sending traffic
+    /// nobody requested, and this traffic *was* requested: by the detection
+    /// level.
     /// Once it is sent, all that remains is whether the answer is reported or
     /// thrown away, and an open agent answering the default community is a
     /// finding in its own right.

@@ -13,7 +13,7 @@
 //!
 //! ## Why it is always on
 //!
-//! Nmap's `--resume` requires `-oN` or `-oG` to have been passed at launch, which
+//! A resume that works only for a scan started with a record already asked for
 //! is a bet a user has to place before the information needed to place it exists.
 //! Nobody knows at the start of a six-hour scan whether the SSH session will
 //! survive it, and by the time the feature is wanted it was needed an hour ago.

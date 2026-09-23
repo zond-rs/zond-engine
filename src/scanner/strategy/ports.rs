@@ -197,7 +197,8 @@ const TCP_PORT_UNRESOLVED: usize = 8_192;
 /// it is set far above any rate a correct scan reaches: at this rate a
 /// thousand-port scan emits in fifty milliseconds, which is already faster than
 /// the round trips it is waiting on. A caller who wants a real rate limit sets
-/// `--max-probe-rate`, which replaces this.
+/// [`ZondConfig::max_probe_rate`](crate::config::ZondConfig::max_probe_rate),
+/// which replaces this.
 const TCP_PORT_RATE_CEILING: NonZeroU32 = NonZeroU32::new(20_000).expect("a non-zero rate");
 
 /// The fastest a **UDP** port scan puts probes on the wire, in probes per

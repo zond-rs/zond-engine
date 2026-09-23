@@ -106,10 +106,10 @@ pub trait DiffExporter {
 /// The comparison formats this build can write.
 ///
 /// The counterpart of [`ExportFormat`](crate::export::ExportFormat), down to the
-/// extension rule: a front end resolves `-o changes.json` to a format rather
-/// than taking a second flag. A front end offering the user a choice reads
-/// [`all`](Self::all) rather than naming the exporters itself, so a build
-/// without one of them lists what it can actually write.
+/// extension rule: a front end resolves an output path such as `changes.json`
+/// to a format rather than taking a second flag. A front end offering the user
+/// a choice reads [`all`](Self::all) rather than naming the exporters itself,
+/// so a build without one of them lists what it can actually write.
 ///
 /// Which variants exist depends on the cargo features the crate was built with.
 #[non_exhaustive]

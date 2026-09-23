@@ -275,8 +275,8 @@ async fn redacting_a_real_report_changes_nothing_but_the_masked_fields() {
     }
 }
 
-/// Every format a front end can resolve from `-o report.<ext>` has to be one
-/// the engine writes, or the two disagree about what an extension means.
+/// Every format a front end can resolve from an output path's extension has to
+/// be one the engine writes, or the two disagree about what an extension means.
 #[test]
 fn every_extension_resolves_to_the_format_that_claims_it() {
     use std::path::Path;

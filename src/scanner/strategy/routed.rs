@@ -442,7 +442,7 @@ impl HostScanner for RoutedScanner {
         // named was not covered, and nothing else in the output would tell them
         // so. Nothing is wrong with the scan, so it carries neither an error
         // prefix nor the operating system's errno, that is a diagnostic detail
-        // and it is on the `-v` line beside the send that failed.
+        // and it is on the verbose line beside the send that failed.
         //
         // The address and nothing else. That it went unscanned follows from
         // there being no route to it, and saying so out loud is a line of

@@ -340,7 +340,7 @@ pub enum OsDetection {
     ///
     /// None of them touches the port list. A detection level says how hard to
     /// look at a host, not which ports to scan, and a level that quietly widened
-    /// `--ports` would send probes at a port the caller excluded.
+    /// the port list would send probes at a port the caller excluded.
     ///
     /// The traffic is unremarkable in shape but it is extra, and it is addressed
     /// at hosts the caller may only have meant to enumerate. It is spent where
@@ -1006,13 +1006,13 @@ pub struct ZondConfig {
     ///
     /// A segment sweep sends the ICMPv6 all-nodes echo, which every IPv6
     /// neighbour may answer, and records the ones that do even though nobody
-    /// named them. That is the right behaviour for `zond lan`, where the caller
-    /// asked about a network and an IPv6 neighbour with no address in the IPv4
-    /// range is found through this and nothing else. It is the wrong behaviour
-    /// for
-    /// `zond <address>`: scanning one host should not wake its neighbours, and a
-    /// report listing eight machines when one was asked about is both surprising
-    /// and, on someone else's network, indiscreet.
+    /// named them. That is the right behaviour for a sweep of `lan`, where
+    /// the caller asked about a network and an IPv6 neighbour with no address
+    /// in the IPv4 range is found through this and nothing else. It is the
+    /// wrong behaviour for a scan of one named address: scanning one host
+    /// should not wake its neighbours, and a report listing eight machines
+    /// when one was asked about is both surprising and, on someone else's
+    /// network, indiscreet.
     ///
     /// Off by default, so the surprising behaviour is the one that has to be
     /// asked for. Only the front end knows which the user meant, since the engine

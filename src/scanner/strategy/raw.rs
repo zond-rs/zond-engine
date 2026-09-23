@@ -432,8 +432,8 @@ pub(super) fn send_syn(
                 // which is exactly right for a scan that broke and exactly
                 // wrong for a machine that has no IPv6.
                 //
-                // The operating system's own words are kept for `-v`, where
-                // somebody is asking why rather than being told.
+                // The operating system's own words are kept for the verbose
+                // line, where somebody is asking why rather than being told.
                 if faults.unroutable.is_none() {
                     info!(verbosity = 2, "no route to {dst_addr}: {e:#}");
                 }

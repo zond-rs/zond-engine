@@ -548,7 +548,7 @@ impl DiscoveryPlan {
     /// takes candidate addresses from the host's IPv6 neighbour table, which is
     /// the only source the engine has for an IPv6 address nobody named.
     /// [`Scope::Targeted`] does neither: probing addresses nobody asked about is
-    /// defensible for `lan` and surprising for `zond <address>`.
+    /// defensible for `lan` and surprising for a scan of one named address.
     ///
     /// `exclusions` is what a sweep's own discoveries are held to. The target
     /// list has already been withheld against them by the time it arrives here,

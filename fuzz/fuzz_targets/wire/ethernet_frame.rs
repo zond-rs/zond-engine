@@ -7,8 +7,8 @@
 //! This is the deepest entry point the engine has into somebody else's bytes: a
 //! listening phase reads whatever crosses the segment, so each of these is
 //! called on frames whose whole content is under the control of anyone on the
-//! wire. `tests/wire_parsers.rs` covers the same ground with shaped generators;
-//! this is the half that finds the shape nobody thought of.
+//! wire. `tests/portable/wire_parsers.rs` covers the same ground with shaped
+//! generators; this is the half that finds the shape nobody thought of.
 //!
 //! ## The oracles
 //!

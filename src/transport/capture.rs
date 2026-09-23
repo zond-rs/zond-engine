@@ -765,9 +765,9 @@ where
     // Named here and counted, in one line beside the per-interface ones. A scan
     // opens a capture on every interface that is up, twenty-six on an ordinary
     // laptop with a VPN and a hypervisor, and does it once per transport, so
-    // both belong with the engine's working at `-vvv`, where somebody asking
-    // whether it captured at all, and on which links with which filter, finds
-    // them.
+    // both belong with the engine's working at verbosity 3, where somebody
+    // asking whether it captured at all, and on which links with which filter,
+    // finds them.
     let mut opened = 0usize;
     // Why the last reader thread refused to start, for the case where none did.
     let mut unstarted: Option<std::io::Error> = None;

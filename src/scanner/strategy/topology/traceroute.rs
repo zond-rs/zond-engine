@@ -339,8 +339,9 @@ impl Tracer {
                 // At the first level of detail, not the second. A probe that
                 // never reached the wire and a probe nobody answered look
                 // identical in an empty path, and only one of them is about the
-                // network: logging the difference at `-vv` hid the answer to
-                // exactly the question a reader with an empty path is asking.
+                // network: logging the difference any deeper would hide the
+                // answer to exactly the question a reader with an empty path is
+                // asking.
                 warn!(
                     verbosity = 2,
                     "trace probe to {target} was not sent: {error:#}"

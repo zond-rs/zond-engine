@@ -33,8 +33,9 @@
 //!
 //! ## What each `verbosity` holds
 //!
-//! A front end maps its `-v` count onto the field, so each level is a promise
-//! about what is found there, and a line goes to the level its reader is at:
+//! A front end maps its own verbosity setting onto the field, so each level is
+//! a promise about what is found there, and a line goes to the level its reader
+//! is at:
 //!
 //! | `verbosity` | Holds | For example |
 //! |---|---|---|

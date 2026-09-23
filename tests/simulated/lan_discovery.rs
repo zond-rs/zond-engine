@@ -656,8 +656,8 @@ async fn two_machines_are_recorded_separately() {
 ///
 /// A sweep records every IPv6 neighbour that answers the all-nodes echo, target
 /// set or not, which is what makes `lan` find IPv6-only devices. Applied to
-/// every discovery it would make `zond <one-address>` report eight machines —
-/// surprising on your own network and indiscreet on somebody else's. So the
+/// every discovery it would make a scan of one address report eight machines
+/// — surprising on your own network and indiscreet on somebody else's. So the
 /// behaviour has to be asked for.
 #[tokio::test]
 async fn discovery_of_one_address_does_not_report_the_whole_segment() {

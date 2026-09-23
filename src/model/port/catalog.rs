@@ -48,7 +48,8 @@
 //!
 //! Ranks 1 to 100 are ordered. Those hundred are hand-ranked against each
 //! other, so a caller asking for the top ten gets the ten that answer most
-//! often, and `--top-ports 100` is a considered scan rather than a truncation.
+//! often, and a scan of the top hundred is a considered scan rather than a
+//! truncation.
 //!
 //! Past 100, the tier is the claim and the position inside it is not. Each
 //! tier below holds ports of comparable likelihood, sorted numerically so the
