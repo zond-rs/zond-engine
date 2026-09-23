@@ -39,7 +39,7 @@ use crate::model::port::set::COMMON_DISCOVERY_PORTS;
 use crate::model::port::{PortSet, Protocol, TCP_BY_PREVALENCE};
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols as protocol;
-use crate::scanner::pacing::deadline::AdaptiveDeadline;
+use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{ProbeLedger, Resolution, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::system::interface::RoutedTarget;
@@ -536,86 +536,61 @@ impl HostScanner for RoutedScanner {
             }
         };
 
-        // What the sweep did not earn a verdict for, so a resumed one asks again
-        // rather than skipping it. None of these carries a position: a probe
-        // still mid-schedule was cut off rather than spent, one still queued was
-        // never sent, and one with no route was never asked.
-        let outstanding = self.sweep.ledger.drain_unresolved().len() as u64;
-        self.ctx
-            .record_many_outcomes(Outcome::Interrupted, outstanding);
-        self.ctx
-            .record_many_outcomes(Outcome::Unasked, self.pending.len() as u64);
-        // Distinct addresses rather than failed sends: a target with no route
-        // fails on every retry, and counting each of those would report more
-        // unreached addresses than the sweep had.
-        self.ctx
-            .record_many_outcomes(Outcome::Unroutable, self.faults.addresses.len() as u64);
-
-        // A sweep whose probes never left is not a sweep that found nothing, and
-        // the difference is invisible in every number a caller reads: the host
-        // count is zero either way, no strategy errored, and the audit line that
-        // does say so is a log at verbosity 1. So it is recorded as a failure,
-        // which is the one channel a library consumer sees without opting in.
-        //
-        // Reported once with the first cause rather than once per probe. Sixteen
-        // identical lines say nothing the first does not, and a sweep of a large
-        // range would bury everything else in the report.
-        //
-        // **Only the failures that are about this host.** An address with no
-        // route is not a strategy that did not run: the strategy ran, and that
-        // address is not reachable from here. Recorded as a failure it would
-        // make every scan of a dual-stack name on an IPv4-only network report
-        // itself as partial, which is the surest way to teach a reader to
-        // ignore the warning that matters. It is recorded against the address
-        // instead, just below.
-        if let Some(reason) = &self.faults.broken {
-            let broken = self.sweep.audit.sends_failed - self.faults.unroutable_count;
-            self.ctx.record_failure(
-                ScannerKind::Routed,
-                format!(
-                    "{broken} of {} probes could not be sent: {reason}",
-                    self.sweep.audit.sends_attempted,
-                ),
-            );
-        }
-
-        // Said once, at the level a person watching a scan sees: an address they
-        // named was not covered, and nothing else in the output would tell them
-        // so. Nothing is wrong with the scan, so it carries neither an error
-        // prefix nor the operating system's errno, that is a diagnostic detail
-        // and it is on the verbose line beside the send that failed.
-        //
-        // The address and nothing else. That it went unscanned follows from
-        // there being no route to it, and saying so out loud is a line of
-        // output that tells a reader what they have just read.
-        for address in &self.faults.addresses {
-            self.ctx.record_unroutable(*address);
-        }
-
-        // Addresses rather than failed sends, since an attempt at one address
-        // is a packet per port and each of them fails.
-        if let Some((address, _)) = &self.faults.unroutable {
-            match self.faults.addresses.len().saturating_sub(1) {
-                0 => info!("no route to {address}"),
-                1 => info!("no route to {address} and 1 other address"),
-                more => info!("no route to {address} and {more} other addresses"),
-            }
-        }
-
-        // Read before the transport is dropped, since the counters live with
-        // the capture threads it keeps alive.
-        let capture = self.transport.capture_counts();
-        let targets = self.ips.len();
-        self.sweep.report(
-            &self.ctx,
-            "routed-discovery",
-            ScannerKind::Routed,
-            targets,
-            reason,
-            capture,
-        );
+        self.finish(reason);
         Ok(())
     }
+}
+
+/// How much longer than its pacing needs a sweep is allowed to send for.
+///
+/// A multiple rather than a fixed margin because the shortfall it covers
+/// grows with the sweep: the send ticker skips no tick it missed, it delays
+/// the next one, so every stretch the loop spends on replies pushes the whole
+/// remaining schedule back. A half again is room for a loop kept busy a third
+/// of the time. Only a sweep that is still sending when it runs out ever
+/// spends it.
+const SEND_SLACK: f64 = 1.5;
+
+/// How a sweep of `target_count` addresses asking `probe` paces its sends, and
+/// the deadline it runs under: the send ticker's interval, how many addresses
+/// each tick releases, and the deadline's configuration.
+fn schedule(
+    target_count: usize,
+    probe: SweepProbe,
+    retry: &RetryPolicy,
+    rate_per_sec: NonZeroU32,
+) -> (Duration, usize, AdaptiveDeadlineConfig) {
+    // The rate is in packets, because a policer counts packets, and an
+    // attempt at one address is as many packets as the probe asks ports.
+    // The ticker releases addresses, so it runs at that fraction of it.
+    let addresses_per_sec = NonZeroU32::new(rate_per_sec.get() / probe.packets_per_attempt())
+        .unwrap_or(NonZeroU32::MIN);
+    let (send_tick, batch) = pacing_for(addresses_per_sec);
+
+    // The sweep has to outlive both of the limits it sets itself: its own
+    // retry schedule, or probes are given up on having never been fully
+    // asked, and its own send rate, or the sweep is cut off mid-send. The
+    // second fails invisibly, since an address never probed is
+    // indistinguishable from one with nothing on it, which is why it is
+    // derived here rather than left to a constant that has to be remembered.
+    //
+    // The send rate is the one that grows with the range, and it is counted
+    // in every attempt rather than the first: a retry leaves through the same
+    // ticker as a first attempt, so a silent range takes the ticker's time
+    // once per attempt. Handed to the deadline as a pace per address, so the
+    // ceiling is raised to cover the range rather than left to clamp it; see
+    // `ScanBudget::covering`. The slack is for the ticker falling behind, which
+    // it does whenever the loop is busy with replies and never makes up, and
+    // it costs a sweep that finishes nothing, since the sweep stops the moment
+    // its attempts are spent.
+    let per_address = Duration::from_secs_f64(
+        SEND_SLACK * f64::from(retry.max_attempts) / f64::from(addresses_per_sec.get()),
+    );
+    let deadline_config = DEADLINE_CONFIG
+        .allowing_for(retry.worst_case_probe_lifetime())
+        .allowing_pace_of(per_address, target_count);
+
+    (send_tick, batch, deadline_config)
 }
 
 impl RoutedScanner {
@@ -800,23 +775,8 @@ impl RoutedScanner {
 
         let target_count = sources.len();
 
-        // The sweep has to outlive both of the limits it sets itself: its own
-        // retry schedule, or probes are given up on having never been fully
-        // asked, and its own send rate, or the sweep is cut off mid-send. The
-        // second fails invisibly - an address never probed is indistinguishable
-        // from one with nothing on it - which is why it is derived here rather
-        // than left to a constant that has to be remembered.
-        //
-        // The rate is in packets, because a policer counts packets, and an
-        // attempt at one address is as many packets as the probe asks ports.
-        // The ticker releases addresses, so it runs at that fraction of it.
-        let addresses_per_sec = NonZeroU32::new(rate_per_sec.get() / probe.packets_per_attempt())
-            .unwrap_or(NonZeroU32::MIN);
-        let (send_tick, batch) = pacing_for(addresses_per_sec);
-        let send_duration =
-            Duration::from_secs_f64(target_count as f64 / f64::from(addresses_per_sec.get()));
-        let deadline_config =
-            DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime() + send_duration);
+        let (send_tick, batch, deadline_config) =
+            schedule(target_count, probe, &retry, rate_per_sec);
 
         Self {
             ctx,
@@ -835,6 +795,114 @@ impl RoutedScanner {
             batch,
             faults: SendFaults::default(),
         }
+    }
+
+    /// Files what the sweep leaves behind once its loop has stopped for
+    /// `reason`: the addresses it reached no verdict on and why, the sends that
+    /// failed, and its audit.
+    fn finish(&mut self, reason: StopReason) {
+        // What the sweep did not earn a verdict for, so a resumed one asks again
+        // rather than skipping it. None of these carries a position: a probe
+        // still mid-schedule was cut off rather than spent, one still queued was
+        // never sent, and one with no route was never asked.
+        let interrupted = self.sweep.ledger.drain_unresolved();
+        let unasked: Vec<IpAddr> = self.pending.by_ref().collect();
+        self.ctx
+            .record_many_outcomes(Outcome::Interrupted, interrupted.len() as u64);
+        self.ctx
+            .record_many_outcomes(Outcome::Unasked, unasked.len() as u64);
+        // And which addresses they were, since neither kind says anything is
+        // absent: a port scan's liveness filter reads this before it skips a host
+        // the sweep did not find.
+        for address in interrupted.iter().chain(&unasked) {
+            self.ctx.record_unswept(*address);
+        }
+
+        // Addresses never asked leave the result narrower than the caller asked
+        // for, which is what a failure says, and the number is the part a reader
+        // can act on. Only where the sweep stopped itself: a caller who aborted
+        // the scan or set its budget knows why it ended, and every strategy
+        // running when it did was cut short alike.
+        if !unasked.is_empty() && !matches!(reason, StopReason::Aborted | StopReason::TimedOut) {
+            self.ctx.record_failure(
+                self.kind(),
+                format!(
+                    "{} of {} addresses were never asked: {reason} with them \
+                     still queued",
+                    unasked.len(),
+                    self.sources.len(),
+                ),
+            );
+        }
+        // Distinct addresses rather than failed sends: a target with no route
+        // fails on every retry, and counting each of those would report more
+        // unreached addresses than the sweep had.
+        self.ctx
+            .record_many_outcomes(Outcome::Unroutable, self.faults.addresses.len() as u64);
+
+        // A sweep whose probes never left is not a sweep that found nothing, and
+        // the difference is invisible in every number a caller reads: the host
+        // count is zero either way, no strategy errored, and the audit line that
+        // does say so is a log at verbosity 1. So it is recorded as a failure,
+        // which is the one channel a library consumer sees without opting in.
+        //
+        // Reported once with the first cause rather than once per probe. Sixteen
+        // identical lines say nothing the first does not, and a sweep of a large
+        // range would bury everything else in the report.
+        //
+        // **Only the failures that are about this host.** An address with no
+        // route is not a strategy that did not run: the strategy ran, and that
+        // address is not reachable from here. Recorded as a failure it would
+        // make every scan of a dual-stack name on an IPv4-only network report
+        // itself as partial, which is the surest way to teach a reader to
+        // ignore the warning that matters. It is recorded against the address
+        // instead, just below.
+        if let Some(reason) = &self.faults.broken {
+            let broken = self.sweep.audit.sends_failed - self.faults.unroutable_count;
+            self.ctx.record_failure(
+                ScannerKind::Routed,
+                format!(
+                    "{broken} of {} probes could not be sent: {reason}",
+                    self.sweep.audit.sends_attempted,
+                ),
+            );
+        }
+
+        // Said once, at the level a person watching a scan sees: an address they
+        // named was not covered, and nothing else in the output would tell them
+        // so. Nothing is wrong with the scan, so it carries neither an error
+        // prefix nor the operating system's errno, that is a diagnostic detail
+        // and it is on the verbose line beside the send that failed.
+        //
+        // The address and nothing else. That it went unscanned follows from
+        // there being no route to it, and saying so out loud is a line of
+        // output that tells a reader what they have just read.
+        for address in &self.faults.addresses {
+            self.ctx.record_unroutable(*address);
+        }
+
+        // Addresses rather than failed sends, since an attempt at one address
+        // is a packet per port and each of them fails.
+        if let Some((address, _)) = &self.faults.unroutable {
+            match self.faults.addresses.len().saturating_sub(1) {
+                0 => info!("no route to {address}"),
+                1 => info!("no route to {address} and 1 other address"),
+                more => info!("no route to {address} and {more} other addresses"),
+            }
+        }
+
+        // Read before the transport is dropped, since the counters live with
+        // the capture threads it keeps alive.
+        let capture = self.transport.capture_counts();
+        let targets = self.ips.len();
+        self.sweep.report(
+            &self.ctx,
+            "routed-discovery",
+            ScannerKind::Routed,
+            targets,
+            reason,
+            capture,
+        );
     }
 
     /// Records a captured reply as evidence its sender is alive, if it answers
@@ -1048,9 +1116,10 @@ mod tests {
         IcmpCodes, MutableDestinationUnreachablePacket,
     };
 
+    use crate::config::RetryConfig;
     use crate::model::technique::SctpReply;
     use crate::protocols::craft::{self, Field};
-    use crate::scanner::session::ScanSession;
+    use crate::scanner::session::{ScanContext, ScanSession};
     use crate::transport::probe::MockSender;
 
     /// The ports a scan of `spec` has its liveness pass ask.
@@ -1108,6 +1177,162 @@ mod tests {
     #[test]
     fn a_scan_port_among_the_common_five_is_asked_once() {
         assert_eq!(asked_for("22,443"), COMMON_DISCOVERY_PORTS);
+    }
+
+    /// The hard deadline a sweep of `targets` addresses runs under.
+    fn hard_deadline(targets: usize, retry: RetryConfig, rate: NonZeroU32) -> Duration {
+        let (_, _, deadline) = schedule(
+            targets,
+            SweepProbe::syn(None),
+            &RETRY_POLICY.configured(retry),
+            rate,
+        );
+        deadline.max_budget.for_target_count(targets)
+    }
+
+    /// What a silent range of `targets` costs to put on the wire at `rate`,
+    /// worked out from the numbers rather than from the sweep: every attempt
+    /// at every address, one packet per port.
+    fn every_packet_sent(targets: usize, attempts: u8, rate: u32) -> Duration {
+        let packets = targets * usize::from(attempts) * SynPorts::common().len();
+        Duration::from_secs_f64(packets as f64 / f64::from(rate))
+    }
+
+    /// A sweep is given at least the time its own pacing needs to ask every
+    /// address as often as its schedule says, retries included, however large
+    /// the range, however slow the rate and however many attempts.
+    ///
+    /// A deadline shorter than that stops the sweep with addresses never
+    /// asked, and an address never asked looks exactly like one with nothing
+    /// on it. Each case is one the fixed ceiling cut short.
+    #[test]
+    fn a_sweep_outlasts_the_time_its_pacing_needs_to_send_every_attempt() {
+        const SLASH_16: usize = 1 << 16;
+        let default_rate = PROBE_RATE_PER_SEC;
+        let thorough = RetryConfig {
+            effort: crate::config::ScanEffort::Thorough,
+            ..RetryConfig::default()
+        };
+        let cases = [
+            (
+                "a /16 by default",
+                SLASH_16,
+                RetryConfig::default(),
+                3,
+                default_rate,
+            ),
+            ("a /16 at thorough", SLASH_16, thorough, 5, default_rate),
+            (
+                "a /16 at 1000 packets a second",
+                SLASH_16,
+                RetryConfig::default(),
+                3,
+                NonZeroU32::new(1_000).expect("non-zero"),
+            ),
+            (
+                "a /15 by default",
+                2 * SLASH_16,
+                RetryConfig::default(),
+                3,
+                default_rate,
+            ),
+        ];
+
+        for (case, targets, retry, attempts, rate) in cases {
+            let needed = every_packet_sent(targets, attempts, rate.get());
+            let given = hard_deadline(targets, retry, rate);
+            assert!(
+                given >= needed,
+                "{case}: needs {needed:?} to send every attempt and is given {given:?}"
+            );
+        }
+    }
+
+    /// A SYN sweep of `targets` over a sender that takes everything, with
+    /// `asked` of them given a first attempt, and the context it files into.
+    fn sweep_with_first_attempts(
+        targets: &[Ipv4Addr],
+        asked: usize,
+    ) -> (RoutedScanner, ScanContext) {
+        let (_session, ctx) = ScanSession::new();
+        let (_replies, rx) = tokio::sync::mpsc::channel(8);
+        let mut scanner = RoutedScanner::with_transport(
+            targets
+                .iter()
+                .map(|&target| RoutedTarget {
+                    target: target.into(),
+                    source: LOCAL.into(),
+                })
+                .collect(),
+            ctx.clone(),
+            None,
+            ProbeTransport::from_parts(Box::new(MockSender::default()), rx),
+        );
+        for _ in 0..asked {
+            let next = scanner.pending.next().expect("a target still queued");
+            scanner.probe(next, Instant::now());
+        }
+        (scanner, ctx)
+    }
+
+    const THREE: [Ipv4Addr; 3] = [
+        Ipv4Addr::new(198, 51, 100, 1),
+        Ipv4Addr::new(198, 51, 100, 2),
+        Ipv4Addr::new(198, 51, 100, 3),
+    ];
+
+    /// A sweep that stops itself with addresses still queued says how many it
+    /// never asked, where a caller reads whether a result is partial, and names
+    /// every address it reached no verdict on, so a liveness filter does not
+    /// read them as hosts that are not there.
+    #[test]
+    fn a_sweep_cut_short_reports_what_it_never_asked() {
+        let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, 1);
+
+        scanner.finish(StopReason::DeadlineExpired);
+
+        let failures: Vec<String> = ctx
+            .take_failures()
+            .iter()
+            .map(|failure| failure.reason().to_owned())
+            .collect();
+        assert_eq!(
+            failures,
+            ["2 of 3 addresses were never asked: deadline expired with them still queued"],
+            "the result is partial and says by how much"
+        );
+        let unswept: Vec<IpAddr> = THREE.iter().map(|&address| address.into()).collect();
+        assert_eq!(
+            ctx.unswept(),
+            unswept,
+            "the one still mid-schedule has no verdict either"
+        );
+    }
+
+    /// A caller who stopped the scan knows why it ended, so the sweep files no
+    /// failure of its own. The addresses still have no verdict, and say so.
+    #[test]
+    fn a_sweep_the_caller_stopped_names_what_it_never_asked_without_failing() {
+        let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, 0);
+
+        scanner.finish(StopReason::Aborted);
+
+        assert!(ctx.take_failures().is_empty());
+        assert_eq!(ctx.unswept().len(), THREE.len());
+    }
+
+    /// A sweep that asked everything and heard nothing has nothing to report:
+    /// every address was asked as often as the schedule says, and silence is
+    /// its verdict.
+    #[test]
+    fn a_sweep_that_spent_its_attempts_reports_nothing_unasked() {
+        let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, THREE.len());
+        scanner.sweep.ledger.drain_unresolved();
+
+        scanner.finish(StopReason::AttemptsSpent);
+
+        assert!(ctx.take_failures().is_empty());
+        assert!(ctx.unswept().is_empty());
     }
 
     /// The address every probe leaves from.

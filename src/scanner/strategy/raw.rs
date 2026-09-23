@@ -62,9 +62,11 @@ use crate::{info, success};
 /// - **Hard budget.** The base gives a distant target room for several round
 ///   trips; the per-target term covers the send burst and the spread of
 ///   arrivals behind it. The ceiling bounds a scan whose pace nobody derived:
-///   it is *not* what bounds the port scanners, which tell it their size and
-///   their pacing floor and so cannot be clamped by it. Clamped, a 65 535-port
-///   scan would be truncated at 60 seconds of the 104 it had earned.
+///   it is *not* what bounds the port scanners or the routed sweep, which tell
+///   it their size and their pace and so cannot be clamped by it. Clamped, a
+///   65 535-port scan would be truncated at 60 seconds of the 104 it had
+///   earned, and a silent `/16` swept by default at 60 of the 246 its own
+///   pacing needs.
 ///
 /// The minimum runtime exists so silence is never the reason a scan stops
 /// before an answer could plausibly have arrived at all.

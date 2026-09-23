@@ -211,12 +211,12 @@ pub(crate) enum FrameRejected {
 /// values assume a local segment, where round trips are usually well under a
 /// millisecond.
 ///
-/// The hard ceiling carries a constraint the other values do not. This scanner
-/// paces its own sends at [`SEND_INTERVAL`], so a sweep needs at least
-/// `target_count * SEND_INTERVAL` simply to emit its probes. A ceiling below
-/// that stops the sweep mid-send, and does so invisibly: an address that was
-/// never probed is indistinguishable from one with nothing on it. Keep this
-/// well above `SEND_INTERVAL` times the largest range worth sweeping.
+/// The hard ceiling bounds only a range small enough that nothing else does.
+/// This scanner paces its own sends at [`SEND_INTERVAL`], so a sweep needs at
+/// least that interval per address per attempt simply to emit its probes, and
+/// a ceiling below that stops it mid-send, invisibly: an address never probed
+/// is indistinguishable from one with nothing on it. So the sweep raises the
+/// ceiling to what its range and its schedule need; see [`deadline_for`].
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(
         Duration::from_millis(2_000),
@@ -251,6 +251,34 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 /// only comparable within one block; and the number to judge it on is hosts
 /// found and hosts timed *per second of scan*, not first-attempt rate.
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
+
+/// The deadline a sweep of `target_count` addresses runs under when its ARP
+/// requests are retried on `retry`.
+///
+/// It has to outlive two things the sweep commits to, and it is derived from
+/// both rather than left to [`DEADLINE_CONFIG`]'s ceiling, which a large
+/// enough range outgrows invisibly.
+fn deadline_for(target_count: usize, retry: &RetryPolicy) -> AdaptiveDeadlineConfig {
+    // The schedule it commits each probe to, or addresses are given up on
+    // having never been fully asked. The longer of the two schedules, because
+    // the sweep has to outlive whichever probe it commits to last. Sized from
+    // ARP alone, it ends while solicitations are still legitimately
+    // outstanding, which is the shape of the bug `ipv6::NDP_RETRY_POLICY`
+    // exists to fix, arriving one layer up.
+    let probe_lifetime = retry
+        .worst_case_probe_lifetime()
+        .max(ipv6::NDP_RETRY_POLICY.worst_case_probe_lifetime());
+
+    // And its own pacing, or it stops mid-send. Every frame leaves through one
+    // ticker at `SEND_INTERVAL`, a repeat as much as a first attempt, so an
+    // address nothing answers costs an interval per attempt, and a range costs
+    // that many times its size. Handed over as a pace per address, which
+    // raises the ceiling to cover the range rather than leave it to clamp it.
+    let attempts = retry.max_attempts.max(ipv6::NDP_RETRY_POLICY.max_attempts);
+    DEADLINE_CONFIG
+        .allowing_for(probe_lifetime)
+        .allowing_pace_of(SEND_INTERVAL * u32::from(attempts), target_count)
+}
 
 /// How much of the segment a [`LocalScanner`] run touches.
 ///
@@ -367,16 +395,12 @@ struct ProbeCorrelation {
 
 /// What one turn of the send ticker put on the wire.
 ///
-/// A first attempt is the only one the sweep counts, because it is the only
-/// one that draws an address out of the packet iterator: everything else is
-/// either a repeat of a question already asked or a question put to the whole
-/// segment.
+/// Only whether the packet iterator is empty matters to the loop: everything
+/// else is a frame sent, whether a first attempt, a repeat, or a question put
+/// to the whole segment.
 enum Dispatched {
-    /// A repeat, a confirmation, or the all-nodes solicitation, none of which
-    /// is a new address.
-    Again,
-    /// The next address the iterator held.
-    FirstAttempt,
+    /// A frame, of whichever kind was owed first.
+    Sent,
     /// The iterator is empty, so every address the sweep was handed has been
     /// asked at least once.
     Drained,
@@ -508,10 +532,6 @@ impl HostScanner for LocalScanner {
         self.ask_for_configuration();
 
         let mut sending_finished = false;
-        // What the packet iterator has handed out, so what it still holds can be
-        // counted as unasked without draining it: building those packets is the
-        // work the sweep was stopped to avoid.
-        let mut dispatched: u128 = 0;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL);
         // Without this, an interval that went unpolled while the loop waited on
         // replies hands back every tick it missed at once, and the pacing this
@@ -554,9 +574,8 @@ impl HostScanner for LocalScanner {
                 _ = send_interval.tick(), if sending => {
                     let now = Instant::now();
                     match self.send_next(&mut packet_iter, sending_finished, now) {
-                        Dispatched::FirstAttempt => dispatched += 1,
                         Dispatched::Drained => sending_finished = true,
-                        Dispatched::Again | Dispatched::Nothing => {}
+                        Dispatched::Sent | Dispatched::Nothing => {}
                     }
                 }
 
@@ -564,7 +583,15 @@ impl HostScanner for LocalScanner {
             }
         };
 
-        self.report_outcome(reason, dispatched);
+        // What the iterator still holds was never asked. Built into frames to
+        // be read, which is work only a sweep cut short pays for, and the
+        // one reading that names the addresses rather than counting them.
+        let unasked: Vec<IpAddr> = if sending_finished {
+            Vec::new()
+        } else {
+            packet_iter.map(|(_, ip)| ip).collect()
+        };
+        self.report_outcome(reason, &unasked);
         Ok(())
     }
 }
@@ -647,18 +674,7 @@ impl LocalScanner {
         // possible budget. `ScanBudget::unclamped` saturates its own cast for
         // the same reason one layer down.
         let target_count = usize::try_from(ip_set.len()).unwrap_or(usize::MAX);
-        // The sweep has to outlive the schedule it commits each probe to, or
-        // addresses are given up on having never been fully asked.
-        // The longer of the two schedules, because the sweep has to outlive
-        // whichever probe it commits to last. Sized from ARP alone, it ends
-        // while solicitations are still legitimately outstanding - which is the
-        // shape of the bug `ipv6::NDP_RETRY_POLICY` exists to fix, arriving one layer
-        // up.
-        let probe_lifetime = retry
-            .worst_case_probe_lifetime()
-            .max(ipv6::NDP_RETRY_POLICY.worst_case_probe_lifetime());
-        let deadline_config = DEADLINE_CONFIG.allowing_for(probe_lifetime);
-        let deadline = AdaptiveDeadline::new(deadline_config, target_count);
+        let deadline = AdaptiveDeadline::new(deadline_for(target_count, &retry), target_count);
 
         Ok(Self {
             ctx,
@@ -718,13 +734,13 @@ impl LocalScanner {
     ) -> Dispatched {
         if let Some(target) = self.sweep.retries.pop_front() {
             self.send_probe(target, now);
-            Dispatched::Again
+            Dispatched::Sent
         } else if let Some(target) = self.ipv6.next_confirmation() {
             self.send_confirmation(target, now);
-            Dispatched::Again
+            Dispatched::Sent
         } else if self.ipv6.solicitation().is_due(now) {
             self.send_solicitation(now);
-            Dispatched::Again
+            Dispatched::Sent
         } else if !sending_finished {
             match packet_iter.next() {
                 Some((packet, ip)) => {
@@ -735,7 +751,7 @@ impl LocalScanner {
                     if self.emit(&packet, "first attempt") {
                         self.record_probe(ip, Instant::now());
                     }
-                    Dispatched::FirstAttempt
+                    Dispatched::Sent
                 }
                 None => Dispatched::Drained,
             }
@@ -748,19 +764,41 @@ impl LocalScanner {
     /// never settled, the questions that went unanswered, the frames that never
     /// left, and the counters a later phase reads.
     ///
-    /// `dispatched` is how many first attempts the packet iterator gave out.
-    fn report_outcome(&mut self, reason: StopReason, dispatched: u128) {
+    /// `unasked` is every address the sweep never sent a first attempt to.
+    fn report_outcome(&mut self, reason: StopReason, unasked: &[IpAddr]) {
         // What the sweep did not earn a verdict for, so a resumed one asks again
         // rather than skipping it. None of these carries a position: a probe
         // still mid-schedule was cut off rather than spent, and one the iterator
-        // still holds was never built, let alone sent.
-        let outstanding = self.sweep.ledger.drain_unresolved().len() as u64;
+        // still held was never sent.
+        let interrupted = self.sweep.ledger.drain_unresolved();
         self.ctx
-            .record_many_outcomes(Outcome::Interrupted, outstanding);
-        self.ctx.record_many_outcomes(
-            Outcome::Unasked,
-            u64::try_from(self.ip_set.len().saturating_sub(dispatched)).unwrap_or(u64::MAX),
-        );
+            .record_many_outcomes(Outcome::Interrupted, interrupted.len() as u64);
+        self.ctx
+            .record_many_outcomes(Outcome::Unasked, unasked.len() as u64);
+        // And which addresses they were, since neither kind says anything is
+        // absent: a port scan's liveness filter reads this before it skips a
+        // host the sweep did not find.
+        for address in interrupted.iter().chain(unasked) {
+            self.ctx.record_unswept(*address);
+        }
+
+        // Addresses never asked leave the result narrower than the caller asked
+        // for, which is what a failure says, and the number is the part a
+        // reader can act on. Only where the sweep stopped itself, as the routed
+        // sweep decides it: a caller who aborted the scan or set its budget
+        // knows why it ended.
+        if !unasked.is_empty() && !matches!(reason, StopReason::Aborted | StopReason::TimedOut) {
+            self.ctx.record_failure(
+                ScannerKind::Local,
+                format!(
+                    "{} of {} addresses on {} were never asked: {reason} with them \
+                     still queued",
+                    unasked.len(),
+                    self.ip_set.len(),
+                    self.identity.zone,
+                ),
+            );
+        }
 
         // What the confirmations bought, which is only visible from here. An
         // entry still in the map is a solicitation that went out and was never
@@ -1753,6 +1791,34 @@ mod tests {
     };
     use pnet_base::MacAddr;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// A sweep of a segment is given at least the time its own ticker needs to
+    /// ask every address as often as its schedule says, however large the
+    /// range: an address never asked looks exactly like one with nothing on
+    /// it. The need is worked out from the numbers, a frame per address per
+    /// attempt at [`SEND_INTERVAL`], rather than read from the sweep.
+    #[test]
+    fn a_segment_sweep_outlasts_the_time_its_ticker_needs_to_send_every_attempt() {
+        const SLASH_16: usize = 1 << 16;
+        let thorough = RetryConfig {
+            effort: crate::config::ScanEffort::Thorough,
+            ..RetryConfig::default()
+        };
+
+        for (case, retry, attempts) in [
+            ("by default", RetryConfig::default(), 3),
+            ("at thorough", thorough, 5),
+        ] {
+            let needed = SEND_INTERVAL * (SLASH_16 as u32) * attempts;
+            let given = deadline_for(SLASH_16, &RETRY_POLICY.configured(retry))
+                .max_budget
+                .for_target_count(SLASH_16);
+            assert!(
+                given >= needed,
+                "a /16 {case}: needs {needed:?} to send every attempt and is given {given:?}"
+            );
+        }
+    }
 
     /// The sweep's capture narrows in the kernel, so a frame the filter does not
     /// admit is one no [`DiscoveryProtocol`] is ever offered, and it fails

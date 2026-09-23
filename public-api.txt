@@ -15118,12 +15118,14 @@ pub fn zond_engine::scanner::session::ScanContext::record_reached_by_connect(&se
 pub fn zond_engine::scanner::session::ScanContext::record_refusal(&self, zond_engine::report::Refusal)
 pub fn zond_engine::scanner::session::ScanContext::record_sweep(&self, zond_engine::model::ip::scoped::Zone)
 pub fn zond_engine::scanner::session::ScanContext::record_unroutable(&self, core::net::ip_addr::IpAddr)
+pub fn zond_engine::scanner::session::ScanContext::record_unswept(&self, core::net::ip_addr::IpAddr)
 pub fn zond_engine::scanner::session::ScanContext::refusals_snapshot(&self) -> alloc::vec::Vec<zond_engine::report::Refusal>
 pub fn zond_engine::scanner::session::ScanContext::restore_hosts(&self, &[zond_engine::model::host::Host])
 pub fn zond_engine::scanner::session::ScanContext::settle_address(&self, core::net::ip_addr::IpAddr, zond_engine::journal::settle::Settled)
 pub fn zond_engine::scanner::session::ScanContext::settlements(&self) -> &zond_engine::journal::settle::Settlements
 pub fn zond_engine::scanner::session::ScanContext::stage_advanced(&self)
 pub fn zond_engine::scanner::session::ScanContext::take_changed_hosts(&self) -> alloc::vec::Vec<zond_engine::model::host::Host>
+pub fn zond_engine::scanner::session::ScanContext::unswept(&self) -> alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub fn zond_engine::scanner::session::ScanContext::update_host(&self, impl core::convert::Into<zond_engine::model::ip::scoped::ScopedIp>, impl core::ops::function::FnOnce(&mut zond_engine::model::host::Host)) -> bool
 pub fn zond_engine::scanner::session::ScanContext::write_host(&self, impl core::convert::Into<zond_engine::model::ip::scoped::ScopedIp>, impl core::ops::function::FnOnce(&mut zond_engine::model::host::Host) -> bool) -> bool
 impl core::clone::Clone for zond_engine::scanner::session::ScanContext

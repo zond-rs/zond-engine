@@ -19,13 +19,16 @@
 
 use std::net::IpAddr;
 
+use crate::support::fake_lan::FakeLan;
 use crate::support::fake_net::{FakeNet, Layer4, Policy};
 use crate::support::*;
 use zond_engine::model::host::Host;
+use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::{PortSet, PortState};
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
+use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
 use zond_engine::scanner::strategy::ports::TcpPortScanner;
 use zond_engine::scanner::strategy::routed::{RoutedScanner, SweepProbe, SynPorts};
 use zond_engine::system::interface::RoutedTarget;
@@ -132,4 +135,50 @@ async fn every_port_is_asked_on_every_attempt_at_a_silent_address() {
             "port {port} was not asked on every attempt"
         );
     }
+}
+
+/// A segment sweep stopped with addresses it never asked names every one of
+/// them, so a port scan's liveness filter can tell an address nobody asked
+/// about from one that answered nothing.
+///
+/// Stopped by the caller, so the sweep files no failure of its own; the
+/// addresses are still without a verdict, and that is what is asserted.
+#[tokio::test]
+async fn a_segment_sweep_stopped_early_names_the_addresses_it_never_asked() {
+    // A quarter of a second of first attempts at a frame a millisecond, so a
+    // stop at a fifth of that lands mid-send.
+    let range: IpSet = "192.0.2.0/24".parse().expect("a range");
+    let lan = FakeLan::new();
+    let (session, ctx) = ScanSession::new();
+    let handle = session.handle().clone();
+
+    let mut scanner = LocalScanner::with_handle(
+        scanner_interface(),
+        range.clone(),
+        ctx.clone(),
+        None,
+        Scope::Targeted,
+        lan.handle(),
+    )
+    .expect("the scanner builds over the simulated segment");
+    let sweeping = tokio::spawn(async move { scanner.discover_hosts().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    handle.abort();
+    sweeping
+        .await
+        .expect("the sweep winds down")
+        .expect("the sweep runs");
+
+    let unswept = ctx.unswept();
+    assert!(
+        unswept.len() > range.len() as usize / 2,
+        "{} of {} addresses named, where most were never asked",
+        unswept.len(),
+        range.len()
+    );
+    assert!(
+        unswept.iter().all(|address| range.contains(address)),
+        "only addresses the sweep was handed are named"
+    );
+    assert!(ctx.failures_snapshot().is_empty());
 }
