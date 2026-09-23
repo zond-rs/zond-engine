@@ -447,7 +447,8 @@ fn ask_unless_unanswered(
 /// The refusal for a next hop that did not answer its address resolution,
 /// whether the exchange just timed out or a recent one already did.
 ///
-/// An [`Unresolved`](SendError::Unresolved) rather than a [`Refused`], because
+/// An [`Unresolved`](SendError::Unresolved) rather than a
+/// [`Refused`](SendError::Refused), because
 /// it is a fact about that address and not about this sender: the neighbour is
 /// not answering, so the address was asked about and not covered. A scan reads
 /// it as it reads no route, and it is the class the raw-socket path reports for

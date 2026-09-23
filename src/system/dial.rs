@@ -30,7 +30,7 @@
 //! retransmissions run out, which outlasts every connect budget this engine
 //! sets, so on Windows every TCP socket needs its retransmissions limited
 //! before the connect, whoever is connecting and whatever it wants to learn;
-//! see [`syn_retries`].
+//! see `dial/syn_retries.rs`, compiled for Windows and for the tests only.
 //!
 //! A caller that opened its own socket would be the one that forgot either.
 //! What a caller does choose is [`Shaping`]: a source port and a hop limit,

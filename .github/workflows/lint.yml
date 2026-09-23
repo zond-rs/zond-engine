@@ -116,6 +116,15 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --all-features
 
+      # Again with the private items, which is where most of this crate's
+      # rationale lives and most of its intra-doc links point. The public build
+      # never reads them, so a link a rename leaves behind in a private module
+      # passes it and points at nothing.
+      - name: Build documentation with private items
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features --document-private-items
+
   # The crate ships 13 cargo features and justifies each of them individually in
   # `Cargo.toml`. That is a 13-dimensional promise, and building the default set
   # and `--all-features` checks two points on it. `cargo hack` checks the rest:
