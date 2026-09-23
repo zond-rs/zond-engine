@@ -779,10 +779,24 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         }
 
         if self.unasked_unsent > 0 {
+            // Seeing a probe leave takes the capture that would also have heard
+            // its answer. A capture that stopped early sees neither, so a probe
+            // never seen leaving then says nothing about whether it was sent,
+            // and blaming this machine for it would be a guess presented as a
+            // finding. The ports are unasked either way; only the cause differs.
+            let deaf = self
+                .transport
+                .capture_counts()
+                .is_some_and(|counts| counts.stopped_early > 0);
+            let cause = if deaf {
+                "a capture stopped early, so their probes may have left unseen"
+            } else {
+                "this machine accepted their probes and never put them on the wire"
+            };
             self.ctx.record_failure(
                 kind,
                 format!(
-                    "{} recorded unasked rather than {silence_verdict}: this machine accepted                      their probes and never put them on the wire",
+                    "{} recorded unasked rather than {silence_verdict}: {cause}",
                     crate::logging::counted(u128::from(self.unasked_unsent), "port", "ports"),
                 ),
             );
@@ -1422,6 +1436,56 @@ mod tests {
             held: std::collections::BinaryHeap::new(),
         };
         (core, session)
+    }
+
+    /// The one failure `finish` files for ports never seen leaving.
+    fn unsent_failure(core: &mut RawProbeScan<()>) -> String {
+        core.unasked_unsent = 2;
+        core.finish(
+            ScannerKind::SynPort,
+            "syn-port",
+            "filtered",
+            2,
+            StopReason::AllResponded,
+        );
+        let failures = core.ctx.failures_snapshot();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        failures[0].reason().to_owned()
+    }
+
+    /// Ports never seen leaving are blamed on this machine only where the
+    /// capture that would have seen them was still listening.
+    ///
+    /// Seeing a probe leave takes the same capture that hears its answer. A
+    /// reader that died sees neither, so every port after it looked unsent, and
+    /// the report said this machine swallowed probes that may well have gone
+    /// out: a claim about the host that the evidence could not support.
+    #[test]
+    fn ports_unseen_after_a_capture_died_are_not_blamed_on_sending() {
+        let (mut core, _session) = core();
+        let (_tx, rx) = tokio::sync::mpsc::channel(1024);
+        core.transport = ProbeTransport::from_parts_deaf(Box::new(NullSender), rx);
+
+        let reason = unsent_failure(&mut core);
+        assert!(
+            reason.contains("a capture stopped early"),
+            "the dead capture goes unnamed: {reason}"
+        );
+        assert!(!reason.contains("never put them on the wire"), "{reason}");
+    }
+
+    /// With every capture listening, a probe never seen leaving is one this
+    /// machine did not send, and the report says so in one readable sentence.
+    #[test]
+    fn ports_unseen_with_every_capture_listening_are_blamed_on_sending() {
+        let (mut core, _session) = core();
+
+        let reason = unsent_failure(&mut core);
+        assert!(reason.contains("never put them on the wire"), "{reason}");
+        assert!(
+            !reason.contains("  "),
+            "the sentence carries a run of spaces from its source: {reason:?}"
+        );
     }
 
     /// [`core`] with a gap between probes at one host, for the tests that are

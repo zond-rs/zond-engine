@@ -948,6 +948,17 @@ impl ProbeTransport {
             capture: CaptureGuard::noop(),
         }
     }
+
+    /// [`from_parts`](Self::from_parts) with a capture already stopped, for a
+    /// test of what a scanner makes of a receive path that went deaf.
+    #[cfg(test)]
+    pub(crate) fn from_parts_deaf(tx: Box<dyn ProbeSender>, rx: CaptureStream) -> Self {
+        Self {
+            tx,
+            rx,
+            capture: CaptureGuard::stopped_early(),
+        }
+    }
 }
 
 /// The interfaces a capture should listen on: every interface that's up, and

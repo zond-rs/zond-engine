@@ -454,30 +454,12 @@ impl Drop for CaptureGuard {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
 
-        // Paired with their counters, which `spawn_captures` pushes in lockstep,
-        // so a thread that died can be said to have died on a particular link.
+        // A reader that panicked has already marked its capture and said so, as
+        // it unwound; see `spawn_reader`. What is left here is only the wait.
         let handles = std::mem::take(&mut self.handles);
-        let stats = self.stats.clone();
         let wait = move || {
-            for (handle, counters) in handles.into_iter().zip(stats) {
-                // **A reader that panicked is a link that went deaf, and the
-                // record has to say so.**
-                //
-                // `reader_loop` sets `stopped_early` itself when pcap ends the
-                // link, and the reasoning there covers this exactly: the thread
-                // is the only thing reading its interface, so every reply that
-                // would have arrived on it becomes silence a scanner cannot tell
-                // from a host that did not answer, and a log line is not the
-                // record. A panic reaches the same end by a different route and
-                // used to be discarded here — `let _ = handle.join()` — so the
-                // counters said the capture ran to the end of the scan.
-                if handle.join().is_err() {
-                    counters.stopped_early.store(true, Ordering::Relaxed);
-                    error!(
-                        "a capture thread panicked; replies arriving on its link \
-                         are lost from here on"
-                    );
-                }
+            for handle in handles {
+                let _ = handle.join();
             }
         };
 
@@ -501,6 +483,19 @@ impl CaptureGuard {
             stop: Arc::new(AtomicBool::new(true)),
             handles: Vec::new(),
             stats: Vec::new(),
+        }
+    }
+
+    /// A guard over one capture that has already stopped early, with no thread
+    /// behind it.
+    #[cfg(test)]
+    pub(crate) fn stopped_early() -> Self {
+        let counters = CaptureStats::default();
+        counters.stopped_early.store(true, Ordering::Relaxed);
+        Self {
+            stop: Arc::new(AtomicBool::new(true)),
+            handles: Vec::new(),
+            stats: vec![Arc::new(counters)],
         }
     }
 
@@ -767,14 +762,12 @@ where
     let mut handles = Vec::new();
     let mut stats = Vec::new();
 
-    // Named here and counted, rather than a line per interface as this once
-    // logged. A scan opens a capture on every interface that is up, twenty-six
-    // on an ordinary laptop with a VPN and a hypervisor, and does it once per
-    // transport, so the per-interface line put a hundred lines of scaffolding
-    // between the caller and their results at the *first* level of detail. The
-    // count is what a person is checking at `-v` ("did it capture at all, and on
-    // roughly the right number of things"); which interface got which filter is
-    // a question for `-vvv`, and it is still there when asked.
+    // Named here and counted, in one line beside the per-interface ones. A scan
+    // opens a capture on every interface that is up, twenty-six on an ordinary
+    // laptop with a VPN and a hypervisor, and does it once per transport, so
+    // both belong with the engine's working at `-vvv`, where somebody asking
+    // whether it captured at all, and on which links with which filter, finds
+    // them.
     let mut opened = 0usize;
     // Why the last reader thread refused to start, for the case where none did.
     let mut unstarted: Option<std::io::Error> = None;
@@ -792,10 +785,9 @@ where
                 stats.push(counters.clone());
                 let name = name.to_owned();
 
-                match thread::Builder::new()
-                    .name(format!("capture-{name}"))
-                    .spawn(move || reader_loop(capture, &stop, &name, &counters, deliver))
-                {
+                match spawn_reader(&name.clone(), counters, move |counters| {
+                    reader_loop(capture, &stop, &name, counters, deliver)
+                }) {
                     Ok(handle) => handles.push(handle),
                     // The same trade the open failure above takes. A host near
                     // its thread limit still captures on the links it managed,
@@ -830,6 +822,55 @@ where
         handles,
         stats,
     })
+}
+
+/// Starts the thread that reads one capture, marking the capture stopped early
+/// if that thread dies.
+///
+/// **A reader that panicked is a link that went deaf, and the record has to say
+/// so while the scan can still read it.** The thread is the only thing reading
+/// its interface, so every reply that would have arrived on it becomes silence a
+/// scanner cannot tell from a host that did not answer, and a log line is not
+/// the record: [`reader_loop`] sets the same flag when pcap ends the link, for
+/// the same reason. The mark is made in the unwind, by the dying thread, because
+/// every scanner reads its capture counts with the guard still alive. Set when
+/// the guard joined its threads, it would be set after the only read.
+///
+/// Every reader goes through here, so no path starts one without the mark.
+fn spawn_reader(
+    name: &str,
+    counters: Arc<CaptureStats>,
+    read: impl FnOnce(&CaptureStats) + Send + 'static,
+) -> std::io::Result<JoinHandle<()>> {
+    let link = name.to_owned();
+    thread::Builder::new()
+        .name(format!("capture-{name}"))
+        .spawn(move || {
+            let _mark = DeafOnUnwind {
+                counters: &counters,
+                link: &link,
+            };
+            read(&counters);
+        })
+}
+
+/// Marks a capture stopped early when its reader unwinds. See [`spawn_reader`].
+struct DeafOnUnwind<'a> {
+    counters: &'a CaptureStats,
+    link: &'a str,
+}
+
+impl Drop for DeafOnUnwind<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.counters.stopped_early.store(true, Ordering::Relaxed);
+            error!(
+                "the capture on {} failed and will hear nothing further; replies \
+                 arriving on this link are lost from here on",
+                self.link
+            );
+        }
+    }
 }
 
 /// When the kernel says it saw this frame.
@@ -1377,33 +1418,31 @@ mod tests {
         );
     }
 
-    /// **A capture thread that panicked is a link that went deaf, and the counts
-    /// say so.**
-    ///
-    /// `reader_loop` records `stopped_early` when pcap ends a link, and argues
-    /// why: the thread is the only thing reading that interface, so every reply
-    /// which would have arrived on it becomes silence a scanner cannot tell from
-    /// a host that did not answer — and a log line is not the record.
-    ///
-    /// A panic reaches the same end by another route. The guard used to join
-    /// with `let _ = handle.join()`, so the counters reported a capture that ran
-    /// to the end of the scan.
+    /// The flag is read while the guard is alive, which is when every scanner
+    /// reads it: the counts go into the scan's own report before the transport
+    /// is dropped. So a reader that panics has to say so before the guard joins
+    /// it, and the counters here are the guard's own, with no clone held outside
+    /// it to read them through.
     #[test]
-    fn a_capture_thread_that_panicked_is_recorded_as_one_that_stopped() {
+    fn a_panicked_reader_is_visible_in_the_counts_while_the_guard_is_alive() {
         let counters = Arc::new(CaptureStats::default());
+        let handle = spawn_reader("test0", Arc::clone(&counters), |_| {
+            panic!("a reader died the way a defect kills one")
+        })
+        .expect("a thread starts");
         let guard = CaptureGuard {
             stop: Arc::new(AtomicBool::new(false)),
-            handles: vec![std::thread::spawn(|| {
-                panic!("a reader died the way a defect kills one")
-            })],
-            stats: vec![Arc::clone(&counters)],
+            handles: vec![handle],
+            stats: vec![counters],
         };
 
-        assert!(!counters.stopped_early.load(Ordering::Relaxed));
-        drop(guard);
-        assert!(
-            counters.stopped_early.load(Ordering::Relaxed),
-            "a panicked reader has to reach the counts, not only stderr"
+        while !guard.handles[0].is_finished() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            guard.counts().expect("one capture").stopped_early,
+            1,
+            "a dead reader is reported only once nobody is reading any more"
         );
     }
 
@@ -1414,7 +1453,9 @@ mod tests {
         let counters = Arc::new(CaptureStats::default());
         let guard = CaptureGuard {
             stop: Arc::new(AtomicBool::new(false)),
-            handles: vec![std::thread::spawn(|| {})],
+            handles: vec![
+                spawn_reader("test0", Arc::clone(&counters), |_| {}).expect("a thread starts"),
+            ],
             stats: vec![Arc::clone(&counters)],
         };
 
