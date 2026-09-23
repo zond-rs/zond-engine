@@ -515,6 +515,164 @@ async fn a_probe_outstanding_at_the_stop_is_asked_again() {
     assert_eq!(settlements.checkpoint(), Checkpoint::default());
 }
 
+// ─── A liveness pass settles a host only where it heard silence ──────────────
+
+/// A port plan over `address`, on `count` loopback ports nothing listens on.
+async fn closed_ports_at(
+    address: std::net::IpAddr,
+    count: usize,
+) -> zond_engine::model::target::TargetMap {
+    use zond_engine::model::port::PortSet;
+    use zond_engine::model::target::{TargetMap, TargetSet};
+
+    let mut ports = Vec::new();
+    for _ in 0..count {
+        ports.push(closed_loopback_port().await.to_string());
+    }
+
+    let mut plan = TargetMap::new();
+    plan.add_unit(TargetSet::new(
+        IpSet::from(address),
+        ports.join(",").parse::<PortSet>().expect("ports"),
+    ));
+    plan
+}
+
+/// **A host the liveness pass never asked about is asked on the resume.**
+///
+/// A port scan's liveness pass that stops before it has asked about an address
+/// has no finding about it. Settling that address's ports as a host found down
+/// would mark them covered in the journal, and the resumed sitting would have
+/// nothing left to ask: a live host reported as silent, by a scan that never
+/// put the question.
+///
+/// Stopped by a budget that has run out before the scan starts, which is the
+/// deterministic form of a stop arriving mid-pass. A resume without the budget
+/// must then find the host and its ports.
+#[tokio::test]
+async fn a_host_the_liveness_pass_never_asked_about_is_asked_on_the_resume() {
+    use zond_engine::Exclusions;
+    use zond_engine::journal::Journal;
+    use zond_engine::journal::manifest::Plan;
+    use zond_engine::model::technique::TcpScanTechnique;
+
+    if is_privileged() {
+        eprintln!("SKIP: drives the unprivileged connect path");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("zond-unasked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+
+    let plan = closed_ports_at(LOOPBACK, 2).await;
+    let recorded = Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn);
+
+    // First sitting, with no time to ask anything.
+    let mut cut_short = test_config();
+    cut_short.scan_timeout = Some(std::time::Duration::from_nanos(1));
+
+    let journal =
+        Journal::create(&root, &recorded, Privilege::Connect, "loopback").expect("creates");
+    let directory = journal.directory().to_path_buf();
+    let (_session, task) = zond_engine::scanner::scan_with_journal(
+        plan.clone(),
+        &cut_short,
+        Detections::embedded(),
+        journal,
+    )
+    .await
+    .expect("the scan starts");
+    let _cut_short = task.join().await.expect("the scan winds down");
+
+    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    assert_eq!(
+        listed[0].settled(),
+        Some(0),
+        "nothing was asked, so nothing may be settled"
+    );
+    assert!(
+        !listed[0].is_complete(),
+        "a sitting that asked nothing is not complete"
+    );
+
+    // Second sitting, with the time to finish.
+    let (journal, _checkpoint) =
+        Journal::resume(&directory, &recorded, Privilege::Connect).expect("resumes");
+    let (_session, task) = zond_engine::scanner::scan_with_journal(
+        plan.clone(),
+        &test_config(),
+        Detections::embedded(),
+        journal,
+    )
+    .await
+    .expect("the second sitting starts");
+    let report = task.join().await.expect("it finishes");
+
+    let host = report
+        .hosts()
+        .next()
+        .expect("the resume asked the host the first sitting never reached");
+    assert_eq!(host.port_count(), 2, "and scanned both of its ports");
+
+    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    assert!(
+        listed[0].is_complete(),
+        "the job is finished once both sittings ran"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **A host the liveness pass asked and heard nothing from is settled.**
+///
+/// The other half of the rule above, and the reason a resume is worth having:
+/// silence the scan asked for is a finding, so its ports are settled rather
+/// than left for the next sitting to ask again.
+#[tokio::test]
+async fn a_host_the_liveness_pass_heard_nothing_from_is_settled_as_down() {
+    let Some(silent) = silent_loopback() else {
+        eprintln!("SKIP: this machine answers the whole loopback range");
+        return;
+    };
+    if is_privileged() {
+        eprintln!("SKIP: drives the unprivileged connect path");
+        return;
+    }
+
+    use zond_engine::Exclusions;
+    use zond_engine::journal::Journal;
+    use zond_engine::journal::manifest::Plan;
+    use zond_engine::model::technique::TcpScanTechnique;
+
+    let root = std::env::temp_dir().join(format!("zond-silent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+
+    let plan = closed_ports_at(silent, 2).await;
+    let recorded = Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn);
+    let journal = Journal::create(&root, &recorded, Privilege::Connect, "silent").expect("creates");
+    let (_session, task) = zond_engine::scanner::scan_with_journal(
+        plan,
+        &test_config(),
+        Detections::embedded(),
+        journal,
+    )
+    .await
+    .expect("the scan starts");
+    let report = task.join().await.expect("it finishes");
+
+    assert_eq!(report.hosts().count(), 0, "nothing answers there");
+    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    assert_eq!(
+        listed[0].settled(),
+        Some(2),
+        "both ports of a host asked and found silent are settled"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
 // ─── Sweeps settle addresses, and only where a sweep is what is running ──────
 
 /// The addresses a sweep is counted in, written the way a plan is.

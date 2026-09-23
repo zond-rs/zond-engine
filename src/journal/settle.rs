@@ -26,9 +26,10 @@
 //! |---|---|---|
 //! | [`Answered`](Outcome::Answered) | `ledger.resolve(..) -> Some` | yes |
 //! | [`Exhausted`](Outcome::Exhausted) | `Due::Exhausted` | yes |
-//! | [`Skipped`](Outcome::Skipped) | the liveness pass found no host | yes |
+//! | [`Skipped`](Outcome::Skipped) | the liveness pass heard silence | yes |
 //! | [`Interrupted`](Outcome::Interrupted) | `ledger.drain_unresolved()` | no |
 //! | [`Unasked`](Outcome::Unasked) | no probe was sent | no |
+//! | [`Undecided`](Outcome::Undecided) | the liveness pass reached no verdict | no |
 //! | [`Unroutable`](Outcome::Unroutable) | no scanner for the protocol, or no route | no |
 //!
 //! Unsettled outcomes are counted, not stored. Their total is worth reporting;
@@ -95,10 +96,12 @@ pub enum Outcome {
     /// Its host answered nothing in the liveness pass, so no probe was owed.
     ///
     /// Settled, and the one settled outcome no probe was sent for. The evidence
-    /// is still earned: the scan asked whether the host was there and heard
-    /// nothing, so declining to spend a probe per port on it is work decided
-    /// against rather than work missed. That is the difference between this and
-    /// [`Unasked`](Outcome::Unasked).
+    /// is still earned: the scan asked whether the host was there as many
+    /// times as its policy allows and heard nothing, so declining to spend a
+    /// probe per port on it is work decided against rather than work missed.
+    /// That is the difference between this and
+    /// [`Undecided`](Outcome::Undecided), where the pass never reached that
+    /// verdict.
     ///
     /// So a resumed scan does not revisit those ports even if the host answers
     /// next time. A resume continues one job, and that job's finding about the
@@ -125,6 +128,16 @@ pub enum Outcome {
     /// privilege rather than a fact about the target, and privileges can differ
     /// between sittings.
     Unroutable,
+
+    /// The liveness pass reached no verdict on its host, so it was neither
+    /// probed nor written off.
+    ///
+    /// The pass stopped before it asked, stopped while it was still asking, had
+    /// no strategy that could ask, or was refused the range. None of those is
+    /// silence, and settling one as [`Skipped`](Outcome::Skipped) would have a
+    /// resume skip a host nobody asked about and report it down. Unsettled, so
+    /// the next sitting's liveness pass asks about the host again.
+    Undecided,
 }
 
 impl Outcome {
@@ -135,7 +148,9 @@ impl Outcome {
             Outcome::Answered { position }
             | Outcome::Exhausted { position }
             | Outcome::Skipped { position } => Some(position),
-            Outcome::Interrupted | Outcome::Unasked | Outcome::Unroutable => None,
+            Outcome::Interrupted | Outcome::Unasked | Outcome::Unroutable | Outcome::Undecided => {
+                None
+            }
         }
     }
 
@@ -153,6 +168,7 @@ impl Outcome {
             Outcome::Interrupted => "interrupted",
             Outcome::Unasked => "unasked",
             Outcome::Unroutable => "unroutable",
+            Outcome::Undecided => "undecided",
         }
     }
 }
@@ -171,6 +187,7 @@ pub struct Settlements {
     interrupted: AtomicU64,
     unasked: AtomicU64,
     unroutable: AtomicU64,
+    undecided: AtomicU64,
 }
 
 impl Settlements {
@@ -231,6 +248,7 @@ impl Settlements {
             Outcome::Interrupted => &self.interrupted,
             Outcome::Unasked => &self.unasked,
             Outcome::Unroutable => &self.unroutable,
+            Outcome::Undecided => &self.undecided,
         }
     }
 
@@ -267,7 +285,12 @@ mod tests {
 
         assert_eq!(Outcome::Skipped { position: 7 }.settled_position(), Some(7));
 
-        for assigned in [Outcome::Interrupted, Outcome::Unasked, Outcome::Unroutable] {
+        for assigned in [
+            Outcome::Interrupted,
+            Outcome::Unasked,
+            Outcome::Unroutable,
+            Outcome::Undecided,
+        ] {
             assert_eq!(assigned.settled_position(), None, "{}", assigned.name());
             assert!(!assigned.is_settled());
         }

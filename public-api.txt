@@ -7170,6 +7170,7 @@ pub zond_engine::journal::settle::Outcome::Interrupted
 pub zond_engine::journal::settle::Outcome::Skipped
 pub zond_engine::journal::settle::Outcome::Skipped::position: u64
 pub zond_engine::journal::settle::Outcome::Unasked
+pub zond_engine::journal::settle::Outcome::Undecided
 pub zond_engine::journal::settle::Outcome::Unroutable
 impl zond_engine::journal::settle::Outcome
 pub fn zond_engine::journal::settle::Outcome::is_settled(self) -> bool
@@ -14436,9 +14437,9 @@ pub mod zond_engine::scanner::dispatcher
 pub struct zond_engine::scanner::dispatcher::Dispatcher
 impl zond_engine::scanner::dispatcher::Dispatcher
 pub fn zond_engine::scanner::dispatcher::Dispatcher::new(zond_engine::model::target::TargetMap) -> Self
-pub fn zond_engine::scanner::dispatcher::Dispatcher::only_live(self, zond_engine::model::ip::set::IpSet) -> Self
 pub fn zond_engine::scanner::dispatcher::Dispatcher::resuming(self, zond_engine::journal::cursor::Checkpoint) -> Self
 pub fn zond_engine::scanner::dispatcher::Dispatcher::run(self, &zond_engine::scanner::session::ScanContext) -> tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>
+pub fn zond_engine::scanner::dispatcher::Dispatcher::screened(self, zond_engine::model::ip::set::IpSet, zond_engine::model::ip::set::IpSet) -> Self
 pub fn zond_engine::scanner::dispatcher::Dispatcher::with_batch_size(self, usize) -> Self
 impl core::marker::Freeze for zond_engine::scanner::dispatcher::Dispatcher
 impl core::marker::Send for zond_engine::scanner::dispatcher::Dispatcher

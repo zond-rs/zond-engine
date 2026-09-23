@@ -956,6 +956,62 @@ impl TimedOutLog {
     }
 }
 
+/// Addresses a port scan's liveness pass asked as many times as its policy
+/// allows and heard nothing from.
+///
+/// The port phase reads this to tell a host found down from one the pass never
+/// reached a verdict on: only the first is settled as
+/// [`Skipped`](crate::journal::settle::Outcome::Skipped). A host missing from
+/// the live set proves neither, since a pass that stopped early, had no
+/// strategy for a range or was refused it leaves hosts out of that set too.
+///
+/// Positive evidence rather than a list of what went wrong, so a way of failing
+/// to ask that nobody thought to record still fails in the safe direction: the
+/// host is asked again on a resume rather than written off.
+///
+/// One range per address until merged, so it is merged whenever what was added
+/// since the last merge outgrows what that merge left. A pass walking a
+/// permutation settles addresses far apart and merges little until it is
+/// nearly done, which bounds this at one range per silent address and no more.
+#[derive(Debug, Default)]
+pub(crate) struct SilenceLog {
+    entries: Mutex<Silence>,
+}
+
+/// The set behind [`SilenceLog`], and what decides when it is next merged.
+#[derive(Debug, Default)]
+struct Silence {
+    set: IpSet,
+    /// How many ranges the last merge left, which is what the next one waits
+    /// for the additions to outgrow.
+    merged: usize,
+    added: usize,
+}
+
+impl SilenceLog {
+    /// The fewest additions worth a merge, so a small pass is merged once, on
+    /// the way out, rather than every few addresses.
+    const MERGE_AFTER: usize = 4096;
+
+    fn insert(&self, address: IpAddr) {
+        let mut silence = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        silence.set.insert(address);
+        silence.added += 1;
+        if silence.added >= Self::MERGE_AFTER.max(silence.merged) {
+            silence.set.canonicalize();
+            silence.merged = silence.set.v4().len() + silence.set.v6().len();
+            silence.added = 0;
+        }
+    }
+
+    fn drain(&self) -> IpSet {
+        let mut silence = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut taken = std::mem::take(&mut *silence).set;
+        taken.canonicalize();
+        taken
+    }
+}
+
 /// Addresses a raw phase reached by TCP connect, gathered across it.
 ///
 /// Held as ranges rather than addresses, because what fills it is a whole group
@@ -1318,6 +1374,8 @@ pub struct ScanContext {
     pub(crate) unswept: Arc<UnsweptLog>,
     /// Addresses a raw phase reached by TCP connect instead.
     pub(crate) reached_by_connect: Arc<ConnectLog>,
+    /// Addresses a port scan's liveness pass found silent.
+    pub(crate) silent: Arc<SilenceLog>,
     /// When each host's budget started, for a scan that set one.
     pub(crate) clocks: Arc<HostClocks>,
     pub(crate) spacing: Arc<HostSpacing>,
@@ -1952,16 +2010,41 @@ impl ScanContext {
     /// caller does not need to know: a strategy knows it asked an address and
     /// what came back, and this turns that into a position a resume can skip.
     ///
-    /// Nothing is recorded in two cases, and both are correct. A scan not
+    /// Nothing is settled in two cases, and both are correct. A scan not
     /// counted in addresses has no numbering, so a port scan's liveness pass
     /// settles nothing. And an address the plan does not name has no position:
     /// a sweep finds neighbours it was never asked about, and those are findings
     /// rather than plan targets. Either way the address is asked again on the
     /// next sitting, which is the direction this has to fail in.
+    ///
+    /// The first case still keeps its silence. A port scan's liveness pass
+    /// settles nothing itself, but the port phase after it settles the ports of
+    /// a host it found down, and silence the pass asked for is what earns that.
+    /// See [`Outcome::Skipped`].
     pub fn settle_address(&self, ip: IpAddr, settled: Settled) {
         if let Some(position) = self.positions.find(ip) {
             self.record_outcome(settled.at(position));
+        } else if settled == Settled::Exhausted && self.counts_no_addresses() {
+            self.silent.insert(ip);
         }
+    }
+
+    /// Whether this scan is counted in something other than addresses, which is
+    /// every port scan. A sweep that numbered nothing because its plan was too
+    /// wide still counts addresses, and has no port phase to read its silence.
+    fn counts_no_addresses(&self) -> bool {
+        self.positions.is_empty() && self.positions.unnumbered().is_empty()
+    }
+
+    /// The addresses a port scan's liveness pass asked as many times as its
+    /// policy allows and heard nothing from, merged and taken.
+    ///
+    /// Only these may have their ports settled as
+    /// [`Skipped`](crate::journal::settle::Outcome::Skipped). An address the
+    /// pass never reached a verdict on is not here, whatever kept it from
+    /// one. See [`Dispatcher::screened`](crate::scanner::dispatcher::Dispatcher::screened).
+    pub(crate) fn take_silent(&self) -> IpSet {
+        self.silent.drain()
     }
 
     /// How far the scan has got, and what became of what it did not settle.
@@ -2325,6 +2408,7 @@ impl SessionBuilder {
             timed_out: Arc::new(TimedOutLog::default()),
             unswept: Arc::new(UnsweptLog::default()),
             reached_by_connect: Arc::new(ConnectLog::default()),
+            silent: Arc::new(SilenceLog::default()),
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,
                 started: DashMap::new(),

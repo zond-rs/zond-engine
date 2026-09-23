@@ -178,13 +178,25 @@ pub struct Dispatcher {
     /// subset, and renumbering it would give position 0 to whatever happens to
     /// be left. The two sittings would then be counting different things.
     settled: Checkpoint,
-    /// The addresses the liveness pass found something at, when one ran.
+    /// What the liveness pass found, when one ran.
     ///
     /// Filtered here rather than by narrowing the plan, for the same reason
     /// `settled` is. Which hosts answer is a property of the network on the day,
     /// so a plan narrowed to them is a different plan every sitting, and a
     /// position counted in one of those means a different target in the next.
-    live: Option<IpSet>,
+    screen: Option<Screen>,
+}
+
+/// What a liveness pass established, in the two halves the port phase reads.
+struct Screen {
+    /// The addresses it found something at, which are probed.
+    live: IpSet,
+    /// The addresses it asked as many times as its policy allows and heard
+    /// nothing from, whose targets are settled without a probe.
+    ///
+    /// Not every address outside `live`. The rest are the ones the pass never
+    /// reached a verdict on, and those are left for the next sitting.
+    silent: IpSet,
 }
 
 impl Dispatcher {
@@ -194,7 +206,7 @@ impl Dispatcher {
             target_map,
             batch_size: DEFAULT_BATCH,
             settled: Checkpoint::default(),
-            live: None,
+            screen: None,
         }
     }
 
@@ -208,21 +220,28 @@ impl Dispatcher {
         self
     }
 
-    /// Emits only the targets whose address is in `live`, settling the rest as
-    /// [`Skipped`](crate::journal::settle::Outcome::Skipped).
+    /// Emits only the targets whose address is in `live`, settling those whose
+    /// address is in `silent` as
+    /// [`Skipped`](crate::journal::settle::Outcome::Skipped) and recording the
+    /// rest as [`Undecided`](crate::journal::settle::Outcome::Undecided).
     ///
     /// For the port phase of a scan that established which hosts are there
-    /// first. A target whose host answered nothing is not one the scan failed
-    /// to ask about: the scan asked whether the host was there, heard nothing,
-    /// and declined to spend a probe on each of its ports. That decision is
-    /// evidence, and a resume that had to re-derive it would ask the network a
-    /// question it already answered.
+    /// first. A target whose host was asked and answered nothing is not one the
+    /// scan failed to ask about: the scan asked whether the host was there,
+    /// heard nothing, and declined to spend a probe on each of its ports. That
+    /// decision is evidence, and a resume that had to re-derive it would ask the
+    /// network a question it already answered.
+    ///
+    /// A host in neither set has no such evidence behind it. The pass stopped
+    /// before it reached a verdict, or never could, and settling its ports would
+    /// have a resume skip a host nobody asked about. So `silent` is what
+    /// settles, and an address merely absent from `live` does not.
     ///
     /// Without this the plan would have to be narrowed to the live hosts before
     /// numbering, which would make a position mean something different in every
     /// sitting.
-    pub fn only_live(mut self, live: IpSet) -> Self {
-        self.live = Some(live);
+    pub fn screened(mut self, live: IpSet, silent: IpSet) -> Self {
+        self.screen = Some(Screen { live, silent });
         self
     }
 
@@ -286,11 +305,22 @@ impl Dispatcher {
                 // known here and nowhere downstream, and a target dropped
                 // without one would stall the watermark on it for the rest of
                 // the job.
-                if let Some(live) = &self.live
-                    && !live.contains(&planned.target.ip)
+                if let Some(screen) = &self.screen
+                    && !screen.live.contains(&planned.target.ip)
                 {
-                    ctx.record_outcome(Outcome::Skipped {
-                        position: planned.position,
+                    // Checked here as well as on a send, because a scan whose
+                    // liveness pass was stopped has few hosts to emit and would
+                    // otherwise walk the rest of the plan before noticing. What
+                    // it leaves is unsettled, and is asked again.
+                    if scan_handle.should_stop() {
+                        return;
+                    }
+                    ctx.record_outcome(if screen.silent.contains(&planned.target.ip) {
+                        Outcome::Skipped {
+                            position: planned.position,
+                        }
+                    } else {
+                        Outcome::Undecided
                     });
                     continue;
                 }
@@ -528,7 +558,10 @@ mod tests {
 
         let (_session, ctx) = context();
         let mut rx = Dispatcher::new(map)
-            .only_live("192.0.2.4".parse::<IpSet>().expect("a range"))
+            .screened(
+                "192.0.2.4".parse::<IpSet>().expect("a range"),
+                "192.0.2.1-192.0.2.3".parse::<IpSet>().expect("a range"),
+            )
             .run(&ctx);
 
         let mut emitted = 0;
@@ -546,6 +579,80 @@ mod tests {
             ctx.settlements().checkpoint().watermark,
             3,
             "and their positions are the ones below the live host"
+        );
+    }
+
+    /// **Only silence the liveness pass heard settles a target.** A host
+    /// missing from the live set that the pass never reached a verdict on, one
+    /// it stopped before asking, had no strategy for or was refused, is left
+    /// for the next sitting. Settled as down, a resume would skip a host
+    /// nobody asked about and report it silent.
+    #[tokio::test]
+    async fn a_host_the_liveness_pass_reached_no_verdict_on_is_left_unsettled() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1-192.0.2.4".parse::<IpSet>().expect("a range"),
+            "80,443".parse::<PortSet>().expect("ports"),
+        ));
+
+        let (_session, ctx) = context();
+        // .1 answered, .2 was asked and stayed silent, .3 and .4 were never
+        // asked.
+        let mut rx = Dispatcher::new(map)
+            .screened(
+                "192.0.2.1".parse::<IpSet>().expect("an address"),
+                "192.0.2.2".parse::<IpSet>().expect("an address"),
+            )
+            .run(&ctx);
+
+        let mut emitted = Vec::new();
+        while let Some(planned) = rx.recv().await {
+            emitted.push(planned.target.ip);
+        }
+
+        let first: IpAddr = "192.0.2.1".parse().expect("an address");
+        assert_eq!(emitted, vec![first, first], "only the live host is probed");
+        let settlements = ctx.settlements();
+        assert_eq!(
+            settlements.count(Outcome::Skipped { position: 0 }),
+            2,
+            "the silent host's two ports are settled"
+        );
+        assert_eq!(
+            settlements.count(Outcome::Undecided),
+            4,
+            "the two hosts never asked about keep their four ports unsettled"
+        );
+        assert_eq!(
+            settlements.checkpoint().watermark,
+            0,
+            "the live host's ports were emitted rather than settled here"
+        );
+        assert_eq!(
+            settlements.settled_count(),
+            2,
+            "and nothing but the silent host's ports is settled"
+        );
+    }
+
+    /// A stop arriving during the liveness pass leaves the port phase few hosts
+    /// to emit, so the walk has to notice it between skipped targets as well as
+    /// on a send, or it walks the rest of a wide plan after the caller asked it
+    /// to stop.
+    #[tokio::test]
+    async fn a_stopped_scan_stops_walking_targets_it_would_skip() {
+        let (session, ctx) = context();
+        session.handle().abort();
+
+        let mut rx = Dispatcher::new(wide(24))
+            .screened(IpSet::new(), "192.0.2.0/24".parse().expect("a prefix"))
+            .run(&ctx);
+        while rx.recv().await.is_some() {}
+
+        assert_eq!(
+            ctx.settlements().count(Outcome::Skipped { position: 0 }),
+            0,
+            "a stopped scan walked on through targets nothing would probe"
         );
     }
 
@@ -777,7 +884,7 @@ mod tests {
         let (_session, ctx) = context();
         let mut dispatcher = Dispatcher::new(map);
         if let Some(live) = live {
-            dispatcher = dispatcher.only_live(live);
+            dispatcher = dispatcher.screened(live, IpSet::new());
         }
 
         let mut rx = dispatcher.run(&ctx);

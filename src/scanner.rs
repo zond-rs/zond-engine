@@ -130,7 +130,7 @@ use crate::report::ScanPhase;
 use crate::report::ScannerKind;
 use crate::report::{ScanKind, ScanReport, TargetScope};
 use crate::scanner::orchestrator::{
-    Enrichment, ScanCapabilities, finish_enrichment, live_addresses, probed_subset, run_port_phase,
+    Enrichment, Liveness, ScanCapabilities, finish_enrichment, probed_subset, run_port_phase,
 };
 use crate::scanner::recorder::PhaseRecorder;
 use crate::scanner::session::{ScanContext, ScanSession, Stage};
@@ -1143,9 +1143,10 @@ fn spawn_scan(
         // Phase one: which of these addresses has anything at it.
         //
         // The answer narrows what is *probed*, never what is counted: the plan
-        // stays whole, and the targets of a host that answered nothing are
-        // settled at their own positions by the dispatcher. See
-        // `Outcome::Skipped`.
+        // stays whole, and the targets of a host it asked and heard nothing
+        // from are settled at their own positions by the dispatcher. See
+        // `Outcome::Skipped`, and `Outcome::Undecided` for a host it never
+        // reached a verdict on.
         let (liveness, live) = if cfg.assume_up {
             (None, None)
         } else {
@@ -1170,7 +1171,7 @@ fn spawn_scan(
 
             orchestrator::run_correlation(&ctx, cfg.service_detection);
             let report = recorder.finish(&ctx);
-            (Some(report), Some(live_addresses(&ctx)))
+            (Some(report), Some(Liveness::of(&ctx)))
         };
 
         // Phase two: the ports. The exclusion policy is applied again rather
@@ -1184,7 +1185,7 @@ fn spawn_scan(
         // Two questions, and they were one number until a resume needed them
         // apart.
         let mut covered = match &live {
-            Some(live) => probed_subset(&target_map, live),
+            Some(live) => probed_subset(&target_map, &live.live),
             None => target_map.clone(),
         };
         let scope = TargetScope::from_target_map(&mut covered, &cfg.exclusions);

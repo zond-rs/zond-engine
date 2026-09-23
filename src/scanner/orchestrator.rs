@@ -1921,7 +1921,7 @@ fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) -> 
 /// would report for no reason.
 pub(super) async fn run_port_phase(
     mut target_map: TargetMap,
-    live: Option<IpSet>,
+    liveness: Option<Liveness>,
     ctx: &ScanContext,
     caps: ScanCapabilities,
     cfg: &ZondConfig,
@@ -1959,8 +1959,8 @@ pub(super) async fn run_port_phase(
     // phase ran: an address it found down is sent nothing here, and was reached
     // by nothing.
     let mut probed = unsettled_ips(&target_map, &settled);
-    if let Some(live) = &live {
-        probed = within(&probed, live);
+    if let Some(liveness) = &liveness {
+        probed = within(&probed, &liveness.live);
     }
     let beyond = caps.beyond_frames(&probed, &cfg.send_source, interface::FrameSender::Probe);
     let raw = RawReach::of(&probed, beyond.targets.clone());
@@ -2018,8 +2018,8 @@ pub(super) async fn run_port_phase(
     // filters run after the numbering, because both of them are properties of
     // this sitting and the numbering is a property of the job.
     let mut dispatcher = super::dispatcher::Dispatcher::new(target_map).resuming(settled);
-    if let Some(live) = live {
-        dispatcher = dispatcher.only_live(live);
+    if let Some(Liveness { live, silent }) = liveness {
+        dispatcher = dispatcher.screened(live, silent);
     }
     let rx = dispatcher.run(ctx);
 
@@ -2095,6 +2095,26 @@ pub(super) fn sctp_discovery_port(map: &TargetMap) -> Option<u16> {
     })
 }
 
+/// What a port scan's liveness pass found, for the port phase to act on.
+pub(super) struct Liveness {
+    /// Where it found a host, from [`live_addresses`].
+    pub(super) live: IpSet,
+    /// Where it asked as many times as its policy allows and heard nothing,
+    /// from [`ScanContext::take_silent`]. Not the complement of `live`: an
+    /// address in neither is one it reached no verdict on.
+    pub(super) silent: IpSet,
+}
+
+impl Liveness {
+    /// Reads what the pass that just ran on `ctx` found.
+    pub(super) fn of(ctx: &ScanContext) -> Self {
+        Self {
+            live: live_addresses(ctx),
+            silent: ctx.take_silent(),
+        }
+    }
+}
+
 /// Every address the liveness pass found a host at.
 ///
 /// A set rather than a narrowed plan. Were the port phase handed a `TargetMap`
@@ -2102,7 +2122,7 @@ pub(super) fn sctp_discovery_port(map: &TargetMap) -> Option<u16> {
 /// be counted in a plan that depends on which hosts happened to answer, and two
 /// sittings of one job could disagree about what position 400 means. The
 /// addresses travel to
-/// [`Dispatcher::only_live`](crate::scanner::dispatcher::Dispatcher::only_live)
+/// [`Dispatcher::screened`](crate::scanner::dispatcher::Dispatcher::screened)
 /// instead, which filters after numbering.
 ///
 /// Every address of a host is included, not only the one it is filed under. A
