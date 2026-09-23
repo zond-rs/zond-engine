@@ -109,7 +109,7 @@ impl NeighborResolver {
     pub fn from_system() -> Self {
         let mut interfaces = Vec::new();
         let mut unframed = Vec::new();
-        for iface in netdev::get_interfaces() {
+        for iface in crate::system::interface::host_table() {
             let held: Vec<IpAddr> = iface
                 .ipv4
                 .iter()

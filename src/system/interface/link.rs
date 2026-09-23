@@ -413,10 +413,169 @@ impl Addressing {
 /// and what stops a second enumeration appearing with a second library's
 /// opinion of what is up.
 pub fn interfaces() -> Vec<Link> {
-    netdev::get_interfaces()
-        .into_iter()
-        .map(Link::from_netdev)
-        .collect()
+    host_table().into_iter().map(Link::from_netdev).collect()
+}
+
+/// The host's interface table as `netdev` reads it, with the one fact it reads
+/// wrong put right.
+///
+/// Every part of the crate that needs something [`Link`] does not carry, such
+/// as a gateway's hardware address, reads the table through here rather than
+/// from `netdev` directly, so a correction made here holds everywhere. A
+/// census in `tests/hygiene/architecture.rs` keeps it that way.
+///
+/// The correction is to a point-to-point link's own address on Linux. `netdev`
+/// reads each address from netlink and keeps the first of the message's
+/// `IFA_ADDRESS` and `IFA_LOCAL`. On every other link the two are one address.
+/// On a point-to-point link configured with a peer, which is every link pppd
+/// brings up and OpenVPN's tunnel in its p2p and net30 topologies, the kernel
+/// sends `IFA_ADDRESS` first and it names the far end. Taken as it comes, the
+/// table says this host holds the peer's address: the VPN's gateway is then
+/// reported as this machine, up without being asked, and a probe pinned to that
+/// address as its source cannot be sent, while the tunnel's real address is
+/// missing as a source altogether.
+pub(crate) fn host_table() -> Vec<netdev::Interface> {
+    let mut table = netdev::get_interfaces();
+    let peers = point_to_point_peers();
+    if !peers.is_empty() {
+        for interface in &mut table {
+            own_addresses_for_peers(interface, &peers);
+        }
+    }
+    table
+}
+
+/// A point-to-point link's peer, paired with the address this host holds on
+/// that link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PeerAddress {
+    /// The link's name, which is what `netdev` and the C library both key it by.
+    link: String,
+    /// The far end, as `IFA_ADDRESS` names it.
+    peer: IpAddr,
+    /// This host's own address on the link, `IFA_LOCAL`.
+    local: IpAddr,
+}
+
+/// Puts this host's own address wherever `interface` lists a peer in its place.
+///
+/// Each prefix is kept. The kernel reports one prefix for the pair, and it is
+/// the prefix the table already carries.
+fn own_addresses_for_peers(interface: &mut netdev::Interface, peers: &[PeerAddress]) {
+    let local_for = |peer: IpAddr| {
+        peers
+            .iter()
+            .find(|pair| pair.link == interface.name && pair.peer == peer)
+            .map(|pair| pair.local)
+    };
+
+    let replaced_v4: Vec<_> = interface
+        .ipv4
+        .iter()
+        .map(|net| match local_for(IpAddr::V4(net.addr())) {
+            Some(IpAddr::V4(local)) => {
+                netdev::ipnet::Ipv4Net::new(local, net.prefix_len()).unwrap_or(*net)
+            }
+            _ => *net,
+        })
+        .collect();
+    let replaced_v6: Vec<_> = interface
+        .ipv6
+        .iter()
+        .map(|net| match local_for(IpAddr::V6(net.addr())) {
+            Some(IpAddr::V6(local)) => {
+                netdev::ipnet::Ipv6Net::new(local, net.prefix_len()).unwrap_or(*net)
+            }
+            _ => *net,
+        })
+        .collect();
+    interface.ipv4 = replaced_v4;
+    interface.ipv6 = replaced_v6;
+}
+
+/// Every point-to-point link's peer and the address this host holds opposite
+/// it, from the C library's `getifaddrs`.
+///
+/// `getifaddrs` is the reading `netdev` itself uses on macOS and the BSDs, and
+/// on Linux glibc and musl both fill it from the same netlink message the right
+/// way round: `IFA_LOCAL` as the interface's address and `IFA_ADDRESS` as its
+/// destination. Only the pairs where the two differ are returned, which is
+/// exactly the set `netdev` reads wrong.
+#[cfg(target_os = "linux")]
+fn point_to_point_peers() -> Vec<PeerAddress> {
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `getifaddrs` writes a list head into the pointer it is handed
+    // and returns non-zero without touching it on failure.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return Vec::new();
+    }
+
+    let mut pairs = Vec::new();
+    let mut entry = head;
+    while !entry.is_null() {
+        // SAFETY: `entry` is a node of the list `getifaddrs` returned, which
+        // stays valid until `freeifaddrs` below.
+        let node = unsafe { &*entry };
+        entry = node.ifa_next;
+
+        if node.ifa_flags & libc::IFF_POINTOPOINT as u32 == 0 {
+            continue;
+        }
+        // SAFETY: both are null or point at a socket address whose family says
+        // how much of it may be read; `ip_of` reads no further than that.
+        let (Some(local), Some(peer)) = (unsafe { ip_of(node.ifa_addr) }, unsafe {
+            ip_of(node.ifa_ifu)
+        }) else {
+            continue;
+        };
+        if local == peer {
+            continue;
+        }
+        // SAFETY: `ifa_name` is a NUL-terminated string owned by the list.
+        let link = unsafe { std::ffi::CStr::from_ptr(node.ifa_name) }
+            .to_string_lossy()
+            .into_owned();
+        pairs.push(PeerAddress { link, peer, local });
+    }
+
+    // SAFETY: `head` came from `getifaddrs` and is freed exactly once, after
+    // the last read of any node.
+    unsafe { libc::freeifaddrs(head) };
+    pairs
+}
+
+/// Elsewhere `netdev` reads `getifaddrs` itself, and there is nothing to put
+/// right.
+#[cfg(not(target_os = "linux"))]
+fn point_to_point_peers() -> Vec<PeerAddress> {
+    Vec::new()
+}
+
+/// The address in a socket address of either IP family.
+///
+/// # Safety
+///
+/// `address` must be null or point at a socket address at least as large as
+/// its family's structure.
+#[cfg(target_os = "linux")]
+unsafe fn ip_of(address: *const libc::sockaddr) -> Option<IpAddr> {
+    if address.is_null() {
+        return None;
+    }
+    // SAFETY: non-null, and every socket address starts with its family.
+    match i32::from(unsafe { (*address).sa_family }) {
+        libc::AF_INET => {
+            // SAFETY: the family says this is a `sockaddr_in`.
+            let v4 = unsafe { &*address.cast::<libc::sockaddr_in>() };
+            Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(v4.sin_addr.s_addr))))
+        }
+        libc::AF_INET6 => {
+            // SAFETY: the family says this is a `sockaddr_in6`.
+            let v6 = unsafe { &*address.cast::<libc::sockaddr_in6>() };
+            Some(IpAddr::V6(Ipv6Addr::from(v6.sin6_addr.s6_addr)))
+        }
+        _ => None,
+    }
 }
 
 impl Link {
@@ -569,6 +728,69 @@ fn carries_traffic(
 #[cfg(test)]
 mod tests {
     use crate::model::ip::range::IpRange;
+
+    /// A point-to-point link as Linux reports it through `netdev`: the peer
+    /// where this host's own address belongs, in both families, beside an
+    /// address that is this host's own and must be left alone.
+    fn misread_ppp() -> netdev::Interface {
+        let mut interface = netdev::Interface::dummy();
+        interface.name = "ppp0".to_string();
+        interface.ipv4 = vec![
+            "203.0.113.2/32".parse().expect("a network"),
+            "198.51.100.9/24".parse().expect("a network"),
+        ];
+        interface.ipv6 = vec!["2001:db8::2/128".parse().expect("a network")];
+        interface
+    }
+
+    fn peer(link: &str, peer: &str, local: &str) -> PeerAddress {
+        PeerAddress {
+            link: link.to_string(),
+            peer: peer.parse().expect("an address"),
+            local: local.parse().expect("an address"),
+        }
+    }
+
+    /// The link holds this host's address, at the prefix the pair was given,
+    /// and the peer is no longer claimed as this host's own.
+    #[test]
+    fn a_point_to_point_link_holds_its_own_address_and_not_its_peers() {
+        let mut interface = misread_ppp();
+        own_addresses_for_peers(
+            &mut interface,
+            &[
+                peer("ppp0", "203.0.113.2", "203.0.113.1"),
+                peer("ppp0", "2001:db8::2", "2001:db8::1"),
+            ],
+        );
+
+        let held: Vec<String> = Link::from_netdev(interface)
+            .addresses()
+            .iter()
+            .map(|held| format!("{}/{}", held.address(), held.prefix()))
+            .collect();
+        assert_eq!(
+            held,
+            ["203.0.113.1/32", "198.51.100.9/24", "2001:db8::1/128"]
+        );
+    }
+
+    /// A pair belongs to its own link. Another link that happens to list the
+    /// same address is not rewritten by it.
+    #[test]
+    fn a_peer_is_corrected_on_its_own_link_only() {
+        let mut interface = misread_ppp();
+        interface.name = "eth0".to_string();
+        own_addresses_for_peers(
+            &mut interface,
+            &[peer("ppp0", "203.0.113.2", "203.0.113.1")],
+        );
+
+        assert_eq!(
+            interface.ipv4[0],
+            "203.0.113.2/32".parse::<netdev::ipnet::Ipv4Net>().unwrap()
+        );
+    }
 
     fn link(name: &str, kind: LinkKind) -> Link {
         Link::new(name, 1)

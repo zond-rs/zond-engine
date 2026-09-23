@@ -746,7 +746,7 @@ fn dns_server_candidates() -> Vec<SocketAddr> {
         Err(e) => warn!("could not read the system resolver configuration: {e}"),
     }
 
-    for gateway in netdev::get_interfaces()
+    for gateway in crate::system::interface::host_table()
         .into_iter()
         .filter_map(|i| i.gateway)
     {

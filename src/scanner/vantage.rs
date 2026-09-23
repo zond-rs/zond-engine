@@ -56,6 +56,7 @@ use std::net::IpAddr;
 use crate::model::host::{Host, NetworkRole};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::scanner::session::ScanContext;
+use crate::system::interface::host_table;
 
 /// One interface's addressing, reduced to what a role can be read from.
 ///
@@ -113,7 +114,7 @@ pub(super) struct Vantage {
 impl Vantage {
     /// Reads this machine's interfaces and routing table.
     pub(super) fn from_system() -> Self {
-        Self::from_interfaces(netdev::get_interfaces().into_iter().map(|iface| {
+        Self::from_interfaces(host_table().into_iter().map(|iface| {
             let mut addresses: Vec<IpAddr> = iface
                 .ipv4
                 .iter()

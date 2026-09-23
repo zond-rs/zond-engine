@@ -333,43 +333,64 @@ impl Segment {
     /// to the engine the two are the same kind of link, point-to-point,
     /// without a MAC, in an operational state Linux reports as unknown.
     pub fn tunnel(&self) -> Ipv4Addr {
-        let (near, far) = (format!("zt{}a", self.index), format!("zt{}b", self.index));
-        let (scanner, peer) = (scanner_v4(self.index), peer_v4(self.index));
         let (ours, theirs) = (
             Ipv4Addr::new(10, 97, self.index as u8, 1),
             Ipv4Addr::new(10, 97, self.index as u8, 2),
         );
+        self.join_by_tunnel("zt", &[&format!("{ours}/24")], &[&format!("{theirs}/24")]);
+        theirs
+    }
+
+    /// [`tunnel`](Self::tunnel), addressed the way pppd and OpenVPN's p2p
+    /// topology address a link: each end holds one address and names the
+    /// other as its peer, with no subnet between them. Returns the peer's.
+    ///
+    /// Linux reports such an address as a pair, the peer first, which is the
+    /// order that makes a reader keeping only one of them keep the wrong one.
+    pub fn peer_tunnel(&self) -> Ipv4Addr {
+        let (ours, theirs) = (
+            Ipv4Addr::new(10, 96, self.index as u8, 1),
+            Ipv4Addr::new(10, 96, self.index as u8, 2),
+        );
+        let (ours, theirs_s) = (ours.to_string(), theirs.to_string());
+        self.join_by_tunnel(
+            "zp",
+            &[&ours, "peer", &theirs_s],
+            &[&theirs_s, "peer", &ours],
+        );
+        theirs
+    }
+
+    /// An IP-in-IP link between the two ends of the segment, named `<stem>Na`
+    /// here and `<stem>Nb` over there, each end given `ip addr add` with the
+    /// arguments for its side.
+    fn join_by_tunnel(&self, stem: &str, near_address: &[&str], far_address: &[&str]) {
+        let (near, far) = (
+            format!("{stem}{}a", self.index),
+            format!("{stem}{}b", self.index),
+        );
+        let (scanner, peer) = (
+            scanner_v4(self.index).to_string(),
+            peer_v4(self.index).to_string(),
+        );
 
         ip(&[
-            "link",
-            "add",
-            &near,
-            "type",
-            "ipip",
-            "local",
-            &scanner.to_string(),
-            "remote",
-            &peer.to_string(),
+            "link", "add", &near, "type", "ipip", "local", &scanner, "remote", &peer,
         ]);
-        ip(&["addr", "add", &format!("{ours}/24"), "dev", &near]);
+        let mut add = vec!["addr", "add"];
+        add.extend_from_slice(near_address);
+        add.extend_from_slice(&["dev", &near]);
+        ip(&add);
         ip(&["link", "set", &near, "up"]);
 
         self.there(&[
-            "ip",
-            "link",
-            "add",
-            &far,
-            "type",
-            "ipip",
-            "local",
-            &peer.to_string(),
-            "remote",
-            &scanner.to_string(),
+            "ip", "link", "add", &far, "type", "ipip", "local", &peer, "remote", &scanner,
         ]);
-        self.there(&["ip", "addr", "add", &format!("{theirs}/24"), "dev", &far]);
+        let mut add = vec!["ip", "addr", "add"];
+        add.extend_from_slice(far_address);
+        add.extend_from_slice(&["dev", &far]);
+        self.there(&add);
         self.there(&["ip", "link", "set", &far, "up"]);
-
-        theirs
     }
 
     /// The name of the link this process sends from.

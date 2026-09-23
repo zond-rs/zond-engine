@@ -241,6 +241,41 @@ fn modules_named(text: &str) -> Vec<String> {
     names
 }
 
+/// **The host's interface table is read in one place.**
+///
+/// `netdev` reads a Linux point-to-point link's peer as this host's own
+/// address, and `system::interface::host_table` puts that right. A reader that
+/// asks `netdev` for the table directly gets it back uncorrected, and with it a
+/// VPN's gateway reported as this machine, so the correction holds only while
+/// nothing goes around it.
+#[test]
+fn the_interface_table_is_read_only_through_the_interface_module() {
+    const READER: &str = "src/system/interface/link.rs";
+    const ASKS: [&str; 2] = ["get_interfaces", "get_default_interface"];
+
+    let mut files = Vec::new();
+    rust_files(Path::new("src"), &mut files);
+
+    let mut around: Vec<String> = files
+        .iter()
+        .filter(|path| {
+            let text = fs::read_to_string(path).expect("a source file is readable");
+            let source = production_source(&text);
+            ASKS.iter().any(|ask| source.contains(ask))
+        })
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .filter(|path| path != READER)
+        .collect();
+    around.sort();
+
+    assert!(
+        around.is_empty(),
+        "these read the interface table from netdev directly: {around:?}\n\nRead it \
+         through `crate::system::interface::host_table` (or `interfaces` for `Link`s), \
+         which corrects the addresses netdev misreads on a Linux point-to-point link."
+    );
+}
+
 #[test]
 fn no_module_depends_on_one_declared_after_it() {
     let rank: BTreeMap<&str, usize> = ORDER.iter().enumerate().map(|(i, m)| (*m, i)).collect();

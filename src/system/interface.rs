@@ -46,6 +46,9 @@ pub(crate) use lan::lan_link_with;
 pub use link::{
     Addressing, Link, LinkAddress, LinkKind, interfaces, is_layer_2_capable, is_on_link,
 };
+// Not published: the raw table for the few readers that need what a `Link`
+// does not carry, a gateway's hardware address among them. See `host_table`.
+pub(crate) use link::host_table;
 pub use resolve::{resolve_keyword, resolve_zone};
 pub use routing::{
     MAX_ENUMERABLE_ADDRESSES, RoutedTarget, RoutedTargets, is_enumerable, map_ips_to_interfaces,

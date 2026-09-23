@@ -44,3 +44,26 @@ async fn a_peer_on_a_tunnels_own_subnet_is_found_and_scanned_through_it() {
     );
     assert_eq!(outcome.port_state(target, open), Some(PortState::Open));
 }
+
+/// The far end of a point-to-point link, named as its peer the way pppd and
+/// OpenVPN's p2p topology name it, is scanned through the link.
+///
+/// Linux reports such a link's address with the peer first. Read as it comes,
+/// the peer is taken for this host's own address: reported up without being
+/// asked, and a probe sourced from it that the kernel will not send, so the
+/// port behind it never reads open.
+#[tokio::test]
+async fn the_peer_of_a_point_to_point_link_is_scanned_rather_than_taken_for_this_host() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let peer = segment.peer_tunnel();
+    let open = segment.listen_tcp_on(peer);
+    let target = IpAddr::V4(peer);
+
+    let outcome = run_scan(target_map(target, &open.to_string()), &test_config()).await;
+
+    assert_eq!(outcome.port_state(target, open), Some(PortState::Open));
+}
