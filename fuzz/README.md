@@ -177,7 +177,7 @@ moved, or OSS-Fuzz beginning with nothing — and that is when it earns its plac
 | target | what it reads | why |
 |---|---|---|
 | `wire_ethernet_frame` | `ethernet::parse` and every reader behind it | a listening phase reads whatever crosses the segment |
-| `wire_buffer` | TCP, SCTP, ICMP, DNS and mDNS from a bare buffer | reached without a frame in front of them |
+| `wire_buffer` | TCP, SCTP, ICMP, DNS and mDNS from a bare buffer, and a captured frame through every link type's strip and the IP parse | reached without a frame in front of them, or behind a link header that is not Ethernet's |
 | `protocols_craft` | `craft`, the builder every probe goes through | the one target that writes rather than reads: a header whose declared length disagrees with the bytes behind it is dropped by the receiver, and the scan reads that as a firewall |
 | `import_targets` | the list, CSV, JSON, JSON Lines and nmap readers behind `ImportFormat`, and the sniff that picks between them | these decide what gets probed; a reader that mangles one produces a scan of something else |
 | `import_report` | this engine's own report, both JSON shapes | a document it wrote is still a document somebody can edit, and `diff` takes one from wherever it was kept |

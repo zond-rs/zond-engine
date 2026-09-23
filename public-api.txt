@@ -16973,6 +16973,8 @@ pub const zond_engine::transport::exchange::MAX_REPLIES: usize
 pub mod zond_engine::transport::frame
 #[non_exhaustive] pub enum zond_engine::transport::frame::LinkType
 pub zond_engine::transport::frame::LinkType::Ethernet
+pub zond_engine::transport::frame::LinkType::LinuxSll
+pub zond_engine::transport::frame::LinkType::LinuxSll2
 pub zond_engine::transport::frame::LinkType::NullLoop
 pub zond_engine::transport::frame::LinkType::Raw
 pub zond_engine::transport::frame::LinkType::Unsupported(i32)

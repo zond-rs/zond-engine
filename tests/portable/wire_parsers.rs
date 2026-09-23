@@ -38,11 +38,12 @@ use proptest::prelude::*;
 
 use pnet_base::MacAddr;
 use pnet_packet::ethernet::EtherType;
-use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use zond_engine::protocols::ethernet::Frame;
 use zond_engine::protocols::{cdp, craft, dhcp, dns, ethernet, icmp, lldp, mdns, ndp, sctp, tcp};
+use zond_engine::transport::frame::{self, IpSegment, LinkType};
 
 /// Ethertypes the readers below branch on, plus a few they should decline.
 const ETHERTYPES: &[u16] = &[
@@ -228,6 +229,96 @@ fn any_dhcp_frame() -> impl Strategy<Value = Vec<u8>> {
     })
 }
 
+/// Every link type a capture comes up as and this crate reads.
+const LINKS: &[LinkType] = &[
+    LinkType::Ethernet,
+    LinkType::NullLoop,
+    LinkType::Raw,
+    LinkType::LinuxSll,
+    LinkType::LinuxSll2,
+];
+
+/// A frame as a link of each type captures one: that link's own header, naming
+/// IP three times in four, in front of an IP header of either family whose
+/// next-header field and everything after it are arbitrary.
+///
+/// The header is what makes this shaped. Uniform bytes on a cooked link name IP
+/// in one frame in thirty thousand, so the IP parse behind the strip, and the
+/// IPv6 extension walk behind that, would be under test in none of them.
+fn any_captured_frame() -> impl Strategy<Value = (LinkType, Vec<u8>)> {
+    const NEXT: &[u8] = &[0, 6, 17, 43, 44, 51, 58, 59, 60];
+
+    let names_ip = prop_oneof![3 => Just(true), 1 => Just(false)];
+    let next = prop_oneof![proptest::sample::select(NEXT), any::<u8>()];
+    (
+        proptest::sample::select(LINKS),
+        any::<bool>(),
+        names_ip,
+        any::<u16>(),
+        next,
+        any_bytes(),
+    )
+        .prop_map(|(link, v6, names_ip, other, next, rest)| {
+            let len = rest.len() as u16;
+            let (ethertype, mut packet) = if v6 {
+                let header = craft::Ipv6 {
+                    next_header: craft::Field::Exact(IpNextHeaderProtocol(next)),
+                    ..craft::Ipv6::new(Ipv6Addr::UNSPECIFIED, Ipv6Addr::UNSPECIFIED)
+                };
+                (0x86ddu16, header.header_bytes(len))
+            } else {
+                let header = craft::Ipv4 {
+                    protocol: craft::Field::Exact(IpNextHeaderProtocol(next)),
+                    ..craft::Ipv4::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
+                };
+                let bytes = header
+                    .header_bytes(len)
+                    .expect("an IPv4 header over a bounded payload");
+                (0x0800u16, bytes)
+            };
+            packet.extend_from_slice(&rest);
+
+            let protocol = if names_ip { ethertype } else { other };
+            // AF_INET, and AF_INET6 as Linux numbers it; the tunnel arm's own
+            // tests hold it to the other platforms' numbers.
+            let family: u32 = match (names_ip, v6) {
+                (true, true) => 10,
+                (true, false) => 2,
+                (false, _) => u32::from(other),
+            };
+            let mut frame = match link {
+                LinkType::Ethernet => return (link, frame_around(protocol, packet)),
+                LinkType::NullLoop => family.to_ne_bytes().to_vec(),
+                LinkType::Raw => Vec::new(),
+                // Packet type, hardware type, address length, eight bytes of
+                // address, protocol.
+                LinkType::LinuxSll => {
+                    let mut header = vec![0, 0, 0x02, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                    header.extend_from_slice(&protocol.to_be_bytes());
+                    header
+                }
+                // Protocol, reserved, interface index, hardware type, packet
+                // type, address length, eight bytes of address.
+                LinkType::LinuxSll2 => {
+                    let mut header = protocol.to_be_bytes().to_vec();
+                    header.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0x02, 0x00, 0, 0]);
+                    header.extend_from_slice(&[0; 8]);
+                    header
+                }
+                other => unreachable!("{other:?} is not in LINKS"),
+            };
+            frame.extend_from_slice(&packet);
+            (link, frame)
+        })
+}
+
+/// A captured frame's segment never lends out more than the frame it came from.
+fn segment_is_within_its_frame(segment: &IpSegment<'_>, frame: &[u8]) -> bool {
+    let range = frame.as_ptr_range();
+    let payload = segment.payload.as_ptr_range();
+    segment.payload.is_empty() || (range.start <= payload.start && payload.end <= range.end)
+}
+
 /// A parsed frame never lends out more than it was built from.
 fn frame_is_within_its_buffer(frame: &Frame<'_>, buffer: &[u8]) -> bool {
     let range = buffer.as_ptr_range();
@@ -256,6 +347,28 @@ proptest! {
     fn reading_arbitrary_bytes_as_a_frame_returns(bytes in any_bytes()) {
         if let Ok(frame) = ethernet::parse(&bytes) {
             prop_assert!(frame_is_within_its_buffer(&frame, &bytes));
+        }
+    }
+
+    /// What every reply a scan hears passes through: the link header stripped
+    /// by whichever link it came off, then the IP header and any extension
+    /// chain behind it, every length in both chosen by the sender.
+    #[test]
+    fn reading_a_captured_frame_returns_and_lends_only_what_it_was_given(
+        (link, bytes) in any_captured_frame(),
+    ) {
+        if let Some((segment, _)) = frame::parse_captured(link, &bytes) {
+            prop_assert!(segment_is_within_its_frame(&segment, &bytes));
+        }
+    }
+
+    /// And on bytes with no header at all, read as every link type in turn.
+    #[test]
+    fn reading_arbitrary_bytes_as_a_captured_frame_returns(bytes in any_bytes()) {
+        for &link in LINKS {
+            if let Some((segment, _)) = frame::parse_captured(link, &bytes) {
+                prop_assert!(segment_is_within_its_frame(&segment, &bytes));
+            }
         }
     }
 
@@ -418,4 +531,14 @@ fn the_generators_reach_the_parsers_they_are_written_for() {
         }),
         0.03,
     );
+    for &link in LINKS {
+        reached(
+            &format!("a captured {link:?} frame"),
+            rate(
+                any_captured_frame().prop_filter("one link", move |(l, _)| *l == link),
+                |(link, bytes)| frame::parse_captured(*link, bytes).is_some(),
+            ),
+            0.20,
+        );
+    }
 }

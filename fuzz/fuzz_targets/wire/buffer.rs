@@ -2,8 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The readers that take a bare buffer: a segment off a capture, or a datagram a
-//! resolver drew.
+//! The readers that take a bare buffer: a segment off a capture, a datagram a
+//! resolver drew, or a whole captured frame read as each link type a capture
+//! comes up as, which puts the IP parse and its extension-header walk behind
+//! every one of them.
 //!
 //! Separate from the frame target because these are reached without an Ethernet
 //! header in front of them, so a fuzzer spending its budget on framing would
@@ -26,6 +28,16 @@
 
 use libfuzzer_sys::fuzz_target;
 use zond_engine::protocols::{dns, icmp, mdns, sctp, tcp};
+use zond_engine::transport::frame::{self, LinkType};
+
+/// Every link type a capture comes up as and the engine reads.
+const LINKS: [LinkType; 5] = [
+    LinkType::Ethernet,
+    LinkType::NullLoop,
+    LinkType::Raw,
+    LinkType::LinuxSll,
+    LinkType::LinuxSll2,
+];
 
 fuzz_target!(|data: &[u8]| {
     // The identifier an echo scan matches on: taken from the input so the
@@ -98,6 +110,20 @@ fuzz_target!(|data: &[u8]| {
     // The INIT scan's nonce, which lives past the eight bytes RFC 792
     // guarantees and so is the field a short quotation does not reach.
     let _ = sctp::quoted_init_tag(data);
+
+    // What every reply a scan hears passes through: the link header stripped,
+    // then the IP header and any extension chain behind it, every length in
+    // both chosen by the sender.
+    for link in LINKS {
+        if let Some((segment, _)) = frame::parse_captured(link, data) {
+            let frame = data.as_ptr_range();
+            let lent = segment.payload.as_ptr_range();
+            assert!(
+                segment.payload.is_empty() || (frame.start <= lent.start && lent.end <= frame.end),
+                "a captured {link:?} frame lent a segment from outside the frame"
+            );
+        }
+    }
 });
 
 /// The prefixes of a packet of `len` bytes worth re-reading.

@@ -16,10 +16,11 @@
 //!
 //! A `pcap` capture hands back whatever the interface's *data-link type*
 //! (DLT) prescribes: a 14-byte Ethernet header on `en0`/`eth0`, a 4-byte
-//! address-family word on a VPN `utun`/`tun` or loopback link, or nothing at
-//! all on a raw-IP link. [`strip_to_ip`] normalizes all of these down to the
-//! IP packet, and [`parse_ip_segment`] then extracts the source address and
-//! the Layer-4 payload the scanners actually care about.
+//! address-family word on a VPN `utun`/`tun` or loopback link, a 16-byte
+//! pseudo-header Linux writes on a PPP link, or nothing at all on a raw-IP
+//! link. [`strip_to_ip`] normalizes all of these down to the IP packet, and
+//! [`parse_ip_segment`] then extracts the source address and the Layer-4
+//! payload the scanners actually care about.
 //!
 //! Crucially, once the link header is stripped, the IP version is read from
 //! the packet itself (the version nibble) rather than trusting the link
@@ -44,7 +45,7 @@
 use std::net::IpAddr;
 
 use pnet_base::MacAddr;
-use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::ethernet::{EtherType, EtherTypes};
 use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet_packet::ipv4::Ipv4Packet;
 use pnet_packet::ipv6::Ipv6Packet;
@@ -70,6 +71,20 @@ pub enum LinkType {
     NullLoop,
     /// `DLT_RAW`: the captured buffer *is* the IP packet, with no link header.
     Raw,
+    /// `DLT_LINUX_SLL`: a 16-byte pseudo-header Linux writes in place of a link
+    /// header it will not hand over, naming what follows by EtherType.
+    ///
+    /// What `libpcap` opens a PPP link as, which is how a PPP VPN's tunnel is
+    /// captured, and what it falls back to for any link whose hardware type it
+    /// has no mapping for, GRE and IPv6 tunnels among them.
+    LinuxSll,
+    /// `DLT_LINUX_SLL2`: the 20-byte successor to [`LinuxSll`](Self::LinuxSll),
+    /// the same fields reordered with the interface's index added.
+    ///
+    /// What `tcpdump -i any` writes. A capture of one named link comes up as
+    /// [`LinuxSll`](Self::LinuxSll) unless it asks for this, so it reaches this
+    /// crate in a capture somebody else took rather than in one of its own.
+    LinuxSll2,
     /// A data-link type this crate can't parse; the numeric DLT is preserved
     /// for diagnostics.
     Unsupported(i32),
@@ -79,6 +94,16 @@ pub enum LinkType {
 /// single 32-bit address-family word.
 const NULL_LOOP_HDR_LEN: usize = 4;
 
+/// The width of the pseudo-header a `DLT_LINUX_SLL` link prepends.
+///
+/// Public to the crate for the capture's snapshot floor, which has to leave
+/// room for the deepest link header this module strips.
+pub(crate) const SLL_HDR_LEN: usize = 16;
+
+/// The width of the pseudo-header a `DLT_LINUX_SLL2` link prepends. See
+/// [`SLL_HDR_LEN`].
+pub(crate) const SLL2_HDR_LEN: usize = 20;
+
 // libpcap data-link type numbers. Kept local rather than pulled from a
 // dependency so the mapping is auditable in one place.
 const DLT_NULL: i32 = 0;
@@ -86,6 +111,8 @@ const DLT_EN10MB: i32 = 1;
 const DLT_LOOP: i32 = 108;
 const DLT_RAW_BSD: i32 = 12;
 const DLT_RAW_LINKTYPE: i32 = 101;
+const DLT_LINUX_SLL: i32 = 113;
+const DLT_LINUX_SLL2: i32 = 276;
 
 impl LinkType {
     /// Maps a raw libpcap DLT number (as returned by `Capture::get_datalink`)
@@ -95,6 +122,8 @@ impl LinkType {
             DLT_EN10MB => LinkType::Ethernet,
             DLT_NULL | DLT_LOOP => LinkType::NullLoop,
             DLT_RAW_BSD | DLT_RAW_LINKTYPE => LinkType::Raw,
+            DLT_LINUX_SLL => LinkType::LinuxSll,
+            DLT_LINUX_SLL2 => LinkType::LinuxSll2,
             other => LinkType::Unsupported(other),
         }
     }
@@ -113,16 +142,105 @@ const IPV4_MORE_FRAGMENTS: u8 = 0b001;
 /// payload (ARP on an Ethernet link, a non-IP address family on a tunnel), or
 /// rides an unsupported link type.
 ///
-/// Both link types that carry a protocol label are held to it. The Ethernet arm
-/// reads the EtherType and the tunnel arm reads the address-family word. Skipped,
-/// the word would let a `DLT_NULL` frame carrying something else through as an
-/// IP packet, refused only if its first nibble happened not to be 4 or 6.
+/// Every link type that carries a protocol label is held to it. The Ethernet
+/// arm reads the EtherType, the tunnel arm reads the address-family word, and
+/// the cooked arms read the protocol field. Skipped, the word would let a
+/// `DLT_NULL` frame carrying something else through as an IP packet, refused
+/// only if its first nibble happened not to be 4 or 6.
 pub fn strip_to_ip(link: LinkType, frame: &[u8]) -> Option<&[u8]> {
     match link {
         LinkType::Ethernet => strip_ethernet(frame),
         LinkType::NullLoop => strip_null_loop(frame),
         LinkType::Raw => Some(frame),
+        LinkType::LinuxSll => Cooked::sll(frame)?.ip_packet(),
+        LinkType::LinuxSll2 => Cooked::sll2(frame)?.ip_packet(),
         LinkType::Unsupported(_) => None,
+    }
+}
+
+/// What a Linux cooked pseudo-header says, from either version of it.
+///
+/// Linux writes one of these in place of a link header `libpcap` has no use
+/// for, as on a PPP link. The two versions carry the same fields in different
+/// places and at different widths, so each is read by its own constructor and
+/// everything after that reads this.
+///
+/// # What is not read
+///
+/// The packet-type field, which says whether the frame arrived or left. A probe
+/// this host sent is captured leaving on a cooked link just as it is on every
+/// other link, and that is wanted rather than tolerated. A port scan admits
+/// both directions and counts its own probes leaving, which is how it tells a
+/// port that stayed silent from one whose probe never reached the wire, and it
+/// tells the two directions apart by address. Discarding outgoing frames here
+/// would make every probe through a PPP link look unsent.
+struct Cooked<'a> {
+    /// What the payload is. An EtherType on every link that carries IP.
+    protocol: u16,
+    /// The kernel's `ARPHRD_` value for the link, which is what says what kind
+    /// of address [`address`](Self::address) holds.
+    hardware_type: u16,
+    /// How long the sender's address is, which may be more than the eight
+    /// bytes the header has room for, or none at all.
+    address_len: usize,
+    /// The sender's address, padded or cut to eight bytes.
+    address: &'a [u8; 8],
+    /// Everything after the pseudo-header.
+    payload: &'a [u8],
+}
+
+/// The kernel's `ARPHRD_` value for an Ethernet link: the one hardware type
+/// whose address a cooked header's address field holds as a hardware address
+/// this crate reads.
+const ARPHRD_ETHER: u16 = 1;
+
+impl<'a> Cooked<'a> {
+    /// Reads a `DLT_LINUX_SLL` header: packet type, hardware type, address
+    /// length, eight bytes of address, then the protocol, all in network order.
+    fn sll(frame: &'a [u8]) -> Option<Self> {
+        let (header, payload) = frame.split_first_chunk::<SLL_HDR_LEN>()?;
+        Some(Self {
+            hardware_type: u16::from_be_bytes([header[2], header[3]]),
+            address_len: usize::from(u16::from_be_bytes([header[4], header[5]])),
+            address: header[6..].first_chunk()?,
+            protocol: u16::from_be_bytes([header[14], header[15]]),
+            payload,
+        })
+    }
+
+    /// Reads a `DLT_LINUX_SLL2` header: the protocol first, two reserved bytes,
+    /// the interface index, the hardware type, then a one-byte packet type and
+    /// a one-byte address length ahead of the same eight bytes of address.
+    fn sll2(frame: &'a [u8]) -> Option<Self> {
+        let (header, payload) = frame.split_first_chunk::<SLL2_HDR_LEN>()?;
+        Some(Self {
+            protocol: u16::from_be_bytes([header[0], header[1]]),
+            hardware_type: u16::from_be_bytes([header[8], header[9]]),
+            address_len: usize::from(header[11]),
+            address: header[12..].first_chunk()?,
+            payload,
+        })
+    }
+
+    /// The IP packet behind the header, if the protocol field says it is one.
+    fn ip_packet(&self) -> Option<&'a [u8]> {
+        match EtherType(self.protocol) {
+            EtherTypes::Ipv4 | EtherTypes::Ipv6 => Some(self.payload),
+            _ => None,
+        }
+    }
+
+    /// The sender's hardware address, where the header says it holds one.
+    ///
+    /// Only an Ethernet link's six bytes are one. A PPP link or a tunnel reports
+    /// no address at all, and any other hardware type's address is that link's
+    /// own notion of one, which six bytes read as a MAC would misname.
+    fn hardware_address(&self) -> Option<MacAddr> {
+        if self.hardware_type != ARPHRD_ETHER || self.address_len != 6 {
+            return None;
+        }
+        let [a, b, c, d, e, f, _, _] = *self.address;
+        Some(MacAddr::new(a, b, c, d, e, f))
     }
 }
 
@@ -194,9 +312,9 @@ fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
 ///
 /// `None` where there is genuinely nothing to read: a `DLT_NULL`/`DLT_LOOP`
 /// tunnel or loopback link prepends an address-family word and no addresses at
-/// all, a `DLT_RAW` link prepends nothing, and a frame too short to hold an
-/// Ethernet header describes nothing. `None` never means "the sender had no
-/// hardware address".
+/// all, a `DLT_RAW` link prepends nothing, a cooked header names a hardware
+/// address only for an Ethernet link, and a frame too short to hold its header
+/// describes nothing. `None` never means "the sender had no hardware address".
 pub fn source_mac(link: LinkType, frame: &[u8]) -> Option<MacAddr> {
     match link {
         // Offsets 0..6 destination, 6..12 source, then the EtherType. A VLAN tag
@@ -212,6 +330,8 @@ pub fn source_mac(link: LinkType, frame: &[u8]) -> Option<MacAddr> {
             *frame.get(10)?,
             *frame.get(11)?,
         )),
+        LinkType::LinuxSll => Cooked::sll(frame)?.hardware_address(),
+        LinkType::LinuxSll2 => Cooked::sll2(frame)?.hardware_address(),
         LinkType::NullLoop | LinkType::Raw | LinkType::Unsupported(_) => None,
     }
 }
@@ -623,6 +743,8 @@ mod tests {
         assert_eq!(LinkType::from_dlt(108), LinkType::NullLoop);
         assert_eq!(LinkType::from_dlt(12), LinkType::Raw);
         assert_eq!(LinkType::from_dlt(101), LinkType::Raw);
+        assert_eq!(LinkType::from_dlt(113), LinkType::LinuxSll);
+        assert_eq!(LinkType::from_dlt(276), LinkType::LinuxSll2);
         assert_eq!(LinkType::from_dlt(999), LinkType::Unsupported(999));
     }
 
@@ -1054,6 +1176,254 @@ mod tests {
     fn unsupported_link_yields_nothing() {
         let frame = [0u8; 32];
         assert!(parse_captured_segment(LinkType::Unsupported(42), &frame).is_none());
+    }
+
+    // ─── Linux cooked capture ────────────────────────────────────────────────
+
+    /// The data-link types `libpcap` reports for a cooked capture, as
+    /// `pcap/dlt.h` numbers them. Written out here rather than borrowed from the
+    /// module, so a wrong constant there fails against these.
+    const DLT_SLL: i32 = 113;
+    const DLT_SLL2: i32 = 276;
+
+    /// The packet types a cooked header carries, from `pcap/sll.h`, which
+    /// takes them from the kernel's `PACKET_` values.
+    const TO_US: u8 = 0;
+    const FROM_US: u8 = 4;
+
+    /// Hardware types, the kernel's `ARPHRD_` values: an Ethernet link, a PPP
+    /// link, and a GRE tunnel.
+    const ARPHRD_ETHER: u16 = 1;
+    const ARPHRD_PPP: u16 = 512;
+    const ARPHRD_IPGRE: u16 = 778;
+
+    /// An IPv4 packet from 203.0.113.1 to 203.0.113.2 carrying an empty TCP
+    /// payload, laid out by hand.
+    const COOKED_V4: [u8; 20] = [
+        0x45, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 203, 0, 113, 1, 203, 0, 113, 2,
+    ];
+
+    /// An IPv6 packet from 2001:db8::1 to 2001:db8::2 carrying an empty TCP
+    /// payload, laid out by hand.
+    const COOKED_V6: [u8; 40] = [
+        0x60, 0, 0, 0, 0, 0, 6, 64, // version, no payload length, TCP, hop limit
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, // source
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, // destination
+    ];
+
+    /// A cooked frame of either version carrying `payload`, with its header laid
+    /// out by hand from `pcap/sll.h` rather than by anything in this crate.
+    ///
+    /// The two versions hold the same fields in different places and at
+    /// different widths, which is the whole reason there are two:
+    ///
+    /// ```text
+    /// SLL,  16 bytes: packet type (2) · hardware type (2) · address length (2)
+    ///                 · address (8) · protocol (2)
+    /// SLL2, 20 bytes: protocol (2) · reserved (2) · interface index (4)
+    ///                 · hardware type (2) · packet type (1)
+    ///                 · address length (1) · address (8)
+    /// ```
+    ///
+    /// Every multi-byte field is in network order. The address is padded to
+    /// eight bytes whatever its length says.
+    fn cooked(
+        dlt: i32,
+        packet_type: u8,
+        hardware_type: u16,
+        address: &[u8],
+        protocol: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut padded = [0u8; 8];
+        padded[..address.len()].copy_from_slice(address);
+        let address_len = address.len() as u8;
+
+        let mut frame = Vec::new();
+        match dlt {
+            DLT_SLL => {
+                frame.extend_from_slice(&u16::from(packet_type).to_be_bytes());
+                frame.extend_from_slice(&hardware_type.to_be_bytes());
+                frame.extend_from_slice(&u16::from(address_len).to_be_bytes());
+                frame.extend_from_slice(&padded);
+                frame.extend_from_slice(&protocol.to_be_bytes());
+                assert_eq!(frame.len(), 16);
+            }
+            DLT_SLL2 => {
+                frame.extend_from_slice(&protocol.to_be_bytes());
+                frame.extend_from_slice(&[0, 0]);
+                frame.extend_from_slice(&7u32.to_be_bytes());
+                frame.extend_from_slice(&hardware_type.to_be_bytes());
+                frame.push(packet_type);
+                frame.push(address_len);
+                frame.extend_from_slice(&padded);
+                assert_eq!(frame.len(), 20);
+            }
+            other => panic!("{other} is not a cooked data-link type"),
+        }
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// A PPP or tunnel link hands `libpcap` no header it can use, so Linux
+    /// writes one of its own, and behind it is the IP packet the protocol field
+    /// names, in both families and both versions of the header.
+    #[test]
+    fn a_cooked_frame_yields_the_ip_packet_its_protocol_field_names() {
+        for dlt in [DLT_SLL, DLT_SLL2] {
+            let link = LinkType::from_dlt(dlt);
+            for (protocol, packet, source) in [
+                (0x0800, &COOKED_V4[..], IpAddr::from([203, 0, 113, 1])),
+                (0x86DD, &COOKED_V6[..], "2001:db8::1".parse().unwrap()),
+            ] {
+                let frame = cooked(dlt, TO_US, ARPHRD_PPP, &[], protocol, packet);
+                assert_eq!(
+                    strip_to_ip(link, &frame),
+                    Some(packet),
+                    "data-link type {dlt} did not yield the packet behind protocol {protocol:#06x}"
+                );
+                let segment = parse_captured_segment(link, &frame).expect("a segment");
+                assert_eq!(segment.source, source);
+            }
+        }
+    }
+
+    /// A probe this host sent is read off a cooked link exactly as an answer
+    /// arriving on it is, which is the same thing every other link does.
+    ///
+    /// The packet-type field would let the capture drop its own traffic, and
+    /// dropping it would be a defect rather than a tidying. A port scan admits
+    /// both directions on purpose and counts its own probes leaving: that is how
+    /// it tells a port that stayed silent from one whose probe this machine
+    /// never put on the wire. Discarded here, every probe through a PPP link
+    /// would look unsent and every port behind it would be recorded unasked.
+    #[test]
+    fn a_probe_leaving_a_cooked_link_is_read_like_an_answer_arriving() {
+        for dlt in [DLT_SLL, DLT_SLL2] {
+            let link = LinkType::from_dlt(dlt);
+            let arriving = cooked(dlt, TO_US, ARPHRD_PPP, &[], 0x0800, &COOKED_V4);
+            let leaving = cooked(dlt, FROM_US, ARPHRD_PPP, &[], 0x0800, &COOKED_V4);
+
+            assert_eq!(strip_to_ip(link, &leaving), Some(&COOKED_V4[..]));
+            assert_eq!(
+                parse_captured(link, &leaving),
+                parse_captured(link, &arriving)
+            );
+        }
+    }
+
+    /// The protocol field is read, as the EtherType and the address-family word
+    /// are on the other links, so a cooked frame carrying something other than
+    /// IP is refused rather than passed on because its first nibble happens to
+    /// be 4 or 6. And a frame too short for its header describes nothing.
+    #[test]
+    fn a_cooked_frame_carrying_anything_but_ip_is_refused() {
+        for dlt in [DLT_SLL, DLT_SLL2] {
+            let link = LinkType::from_dlt(dlt);
+
+            // ARP, an 802.2 frame without an EtherType, and nothing at all. Each
+            // carries a well-formed IPv4 packet, so only the field refuses it.
+            let sender = [0x02, 0, 0, 0, 0, 1];
+            for protocol in [0x0806, 0x0004, 0x0000] {
+                let frame = cooked(dlt, TO_US, ARPHRD_ETHER, &sender, protocol, &COOKED_V4);
+                assert_eq!(
+                    strip_to_ip(link, &frame),
+                    None,
+                    "data-link type {dlt} read protocol {protocol:#06x} as IP"
+                );
+            }
+
+            let whole = cooked(dlt, TO_US, ARPHRD_PPP, &[], 0x0800, &[]);
+            assert!(strip_to_ip(link, &whole).is_some());
+            for cut in 0..whole.len() {
+                assert_eq!(
+                    strip_to_ip(link, &whole[..cut]),
+                    None,
+                    "data-link type {dlt} read a {cut}-byte header"
+                );
+            }
+        }
+    }
+
+    /// A cooked header names the address the frame came from, and names what
+    /// kind of address it is. Only an Ethernet link's six bytes are a hardware
+    /// address. A PPP link has none, and an address any other hardware type
+    /// reports is that link's own kind, which six bytes read as a MAC would
+    /// misname.
+    #[test]
+    fn a_cooked_frame_names_a_hardware_address_only_where_its_header_says_it_holds_one() {
+        let sender = [0x02, 0, 0, 0, 0, 0x2A];
+        for dlt in [DLT_SLL, DLT_SLL2] {
+            let link = LinkType::from_dlt(dlt);
+
+            let ethernet = cooked(dlt, TO_US, ARPHRD_ETHER, &sender, 0x0800, &COOKED_V4);
+            assert_eq!(
+                source_mac(link, &ethernet),
+                Some(MacAddr::new(0x02, 0, 0, 0, 0, 0x2A)),
+                "data-link type {dlt} lost an Ethernet sender's address"
+            );
+            let (_, mac) = parse_captured(link, &ethernet).expect("a segment");
+            assert_eq!(mac, source_mac(link, &ethernet));
+
+            for (hardware_type, address) in [
+                (ARPHRD_PPP, &[][..]),
+                (ARPHRD_IPGRE, &[198, 51, 100, 1][..]),
+                // An Ethernet link claiming an address of the wrong length is
+                // not one to read six bytes of.
+                (ARPHRD_ETHER, &[0x02, 0, 0, 0, 0, 0x2A, 0, 0][..]),
+            ] {
+                let frame = cooked(dlt, TO_US, hardware_type, address, 0x0800, &COOKED_V4);
+                assert_eq!(
+                    source_mac(link, &frame),
+                    None,
+                    "data-link type {dlt} read hardware type {hardware_type} as an Ethernet address"
+                );
+            }
+
+            assert_eq!(source_mac(link, &ethernet[..11]), None);
+        }
+    }
+
+    /// The instrument for the tests above, checked against something outside
+    /// this crate.
+    ///
+    /// The frames those tests build are hand-laid from `pcap/sll.h`, and a
+    /// parser agreeing with a fixture written by the same understanding proves
+    /// only that the two agree. `libpcap` compiles `ip` and `ip6` for a cooked
+    /// link to a read of the protocol field at the offset it knows, so its own
+    /// program admitting each frame for the family it carries, and refusing it
+    /// for the other, pins the layout to the library that writes these headers.
+    /// The PPP header is pinned to the wire as well, against bytes a real link
+    /// was captured writing.
+    #[test]
+    fn libpcap_reads_the_protocol_where_these_cooked_frames_put_it() {
+        for dlt in [DLT_SLL, DLT_SLL2] {
+            let capture = pcap::Capture::dead(pcap::Linktype(dlt)).expect("a dead capture");
+            let admits = |filter: &str, frame: &[u8]| {
+                capture
+                    .compile(filter, true)
+                    .unwrap_or_else(|e| panic!("compiling `{filter}` for {dlt}: {e}"))
+                    .filter(frame)
+            };
+
+            let v4 = cooked(dlt, TO_US, ARPHRD_PPP, &[], 0x0800, &COOKED_V4);
+            let v6 = cooked(dlt, TO_US, ARPHRD_PPP, &[], 0x86DD, &COOKED_V6);
+            assert!(admits("ip", &v4) && !admits("ip6", &v4), "{dlt}: IPv4");
+            assert!(admits("ip6", &v6) && !admits("ip", &v6), "{dlt}: IPv6");
+            assert!(
+                admits("src host 203.0.113.1", &v4),
+                "{dlt}: libpcap found the IPv4 header somewhere other than behind the pseudo-header"
+            );
+        }
+
+        // And the header built for a PPP link is, byte for byte, the one a
+        // Linux PPP link was captured writing ahead of an IPv6 packet leaving
+        // it: sent by this host, hardware type 512, no address.
+        let captured = [0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x86, 0xDD];
+        assert_eq!(
+            cooked(DLT_SLL, FROM_US, ARPHRD_PPP, &[], 0x86DD, &[]),
+            captured
+        );
     }
 
     // ─── IPv6 extension headers ──────────────────────────────────────────────

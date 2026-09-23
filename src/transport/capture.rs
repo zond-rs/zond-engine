@@ -63,7 +63,8 @@ pub const REPLY_SNAP_LEN: u32 = 65_535;
 /// it has an answer is an Ethernet header with two VLAN tags, the larger of the
 /// two IP headers, and a TCP header with its full options. A capture snapped
 /// below that truncates the reply it was opened for, and reports the resulting
-/// silence as a network that said nothing.
+/// silence as a network that said nothing. Every other link header this crate
+/// strips is shorter than the tagged Ethernet one.
 ///
 /// It is a floor and not a default. [`CaptureOptions::with_snaplen`] raises
 /// anything lower to it, which is also what keeps a zero from reaching
@@ -75,9 +76,9 @@ pub const MIN_SNAP_LEN: u32 =
 /// describe.
 const TCP_MAX_HDR_LEN: usize = 60;
 
-// Both halves of the floor's argument, held at compile time because both sides
-// are constants: a test could only restate what the compiler already knows, and
-// a build is where a wrong one should stop.
+// The floor's argument, held at compile time because every side of it is a
+// constant: a test could only restate what the compiler already knows, and a
+// build is where a wrong one should stop.
 const _: () = assert!(
     MIN_SNAP_LEN as usize >= ETH_HDR_LEN + 2 * VLAN_TAG_LEN + IP_V6_HDR_LEN + TCP_MAX_HDR_LEN,
     "the snapshot floor is below a header stack this crate parses"
@@ -85,6 +86,11 @@ const _: () = assert!(
 const _: () = assert!(
     REPLY_SNAP_LEN > MIN_SNAP_LEN,
     "the snapshot length a scanner takes unchanged is below the floor"
+);
+const _: () = assert!(
+    frame::SLL_HDR_LEN <= ETH_HDR_LEN + 2 * VLAN_TAG_LEN
+        && frame::SLL2_HDR_LEN <= ETH_HDR_LEN + 2 * VLAN_TAG_LEN,
+    "a cooked link header is deeper than the one the snapshot floor was sized for"
 );
 
 /// How a capture is opened: what the kernel admits, how much of each frame it
@@ -291,8 +297,8 @@ pub struct CapturedSegment {
     /// address and looks no different from here. See
     /// [`frame::source_mac`] for the full argument.
     ///
-    /// `None` on a tunnel, loopback or raw-IP link, which prepend no addresses,
-    /// and on a synthetic stream. Never "the sender had none".
+    /// `None` on a tunnel, PPP, loopback or raw-IP link, which carry no hardware
+    /// address, and on a synthetic stream. Never "the sender had none".
     pub source_mac: Option<MacAddr>,
 
     /// When the capture thread took delivery of this segment.

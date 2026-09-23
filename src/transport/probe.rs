@@ -1285,11 +1285,16 @@ mod filter_conformance {
     /// A dead capture is a compiler with no interface behind it, so this needs
     /// neither privileges nor a network.
     fn admits(filter: &str, frame: &[u8]) -> bool {
-        let capture = pcap::Capture::dead(pcap::Linktype::ETHERNET)
-            .expect("opening a dead capture for the Ethernet link type");
+        admits_on(pcap::Linktype::ETHERNET, filter, frame)
+    }
+
+    /// Whether `filter`, compiled for a link of type `link`, admits `frame`.
+    fn admits_on(link: pcap::Linktype, filter: &str, frame: &[u8]) -> bool {
+        let capture = pcap::Capture::dead(link)
+            .unwrap_or_else(|e| panic!("opening a dead capture for {link:?}: {e}"));
         let program = capture
             .compile(filter, true)
-            .unwrap_or_else(|e| panic!("compiling `{filter}`: {e}"));
+            .unwrap_or_else(|e| panic!("compiling `{filter}` for {link:?}: {e}"));
         program.filter(frame)
     }
 
@@ -1642,6 +1647,98 @@ mod filter_conformance {
         assert!(
             !admits(&filter, &sctp_frame(SRC_V4, DST_V4, 2905, REPLY_PORT + 1)),
             "a packet to a port this scan never sent from belongs to somebody else"
+        );
+    }
+
+    // ─── Cooked links ────────────────────────────────────────────────────────
+
+    /// The data-link type `libpcap` opens a PPP link as, `DLT_LINUX_SLL`.
+    const LINUX_SLL: pcap::Linktype = pcap::Linktype(113);
+
+    /// `frame`, an Ethernet frame, as a PPP link captures the same packet: the
+    /// Ethernet header replaced by the pseudo-header Linux writes there, laid
+    /// out from `pcap/sll.h` and naming the same EtherType.
+    fn as_cooked(frame: &[u8]) -> Vec<u8> {
+        let (ethernet, packet) = frame.split_at(crate::protocols::sizes::ETH_HDR_LEN);
+        let mut cooked = vec![
+            0x00, 0x00, // packet type: addressed to this host
+            0x02, 0x00, // hardware type: ARPHRD_PPP
+            0x00, 0x00, // address length: a PPP link has none
+            0, 0, 0, 0, 0, 0, 0, 0, // the address, unused
+        ];
+        cooked.extend_from_slice(&ethernet[12..14]);
+        cooked.extend_from_slice(packet);
+        cooked
+    }
+
+    /// Every filter judges a packet arriving over PPP as it judges the same
+    /// packet arriving over Ethernet.
+    ///
+    /// A filter is compiled for the link it is opened on, and on a cooked link
+    /// `libpcap` finds the protocol and the IP header at offsets of its own. An
+    /// expression reaching below IP, through an `ether` qualifier or an offset
+    /// counted from the start of the frame, would compile to something else
+    /// there or fail to compile, and a scan through a PPP VPN would hear
+    /// nothing through it. Only `DLT_LINUX_SLL` is compiled for, being what a
+    /// capture of one named link comes up as.
+    #[test]
+    fn every_filter_judges_a_packet_on_a_cooked_link_as_it_does_on_ethernet() {
+        const REPLY_PORT: u16 = 40_000;
+        let kinds = [
+            ProbeKind::TcpSyn,
+            ProbeKind::TcpProbe {
+                reply_port: SCAN_PORT,
+                icmp_errors: false,
+            },
+            ProbeKind::TcpProbe {
+                reply_port: SCAN_PORT,
+                icmp_errors: true,
+            },
+            ProbeKind::UdpResolve,
+            ProbeKind::UdpProbe {
+                reply_port: REPLY_PORT,
+            },
+            ProbeKind::Sctp {
+                reply_port: REPLY_PORT,
+            },
+            ProbeKind::IcmpEcho { identifier: 4242 },
+            ProbeKind::IpProtocol { number: 47 },
+        ];
+        let frames = [
+            tcp_frame(SRC_V4, DST_V4, SYN | ACK),
+            tcp_frame(SRC_V6, DST_V6, SYN | ACK),
+            tcp_frame(SRC_V4, DST_V4, ACK),
+            tcp_frame(SRC_V6, DST_V6, ACK),
+            tcp_frame_to(SRC_V4, DST_V4, RST | ACK, SCAN_PORT + 1),
+            udp_frame(SRC_V4, DST_V4, 53, REPLY_PORT),
+            udp_frame(SRC_V6, DST_V6, 53, REPLY_PORT),
+            udp_frame(SRC_V6, DST_V6, 12_345, REPLY_PORT + 1),
+            sctp_frame(SRC_V4, DST_V4, 2905, REPLY_PORT),
+            sctp_frame(SRC_V6, DST_V6, 2905, REPLY_PORT),
+            icmpv6_error_frame(SRC_V6, DST_V6),
+        ];
+
+        let (mut admitted, mut refused) = (0, 0);
+        for kind in kinds {
+            let filter = kind.filter();
+            for frame in &frames {
+                let over_ethernet = admits(&filter, frame);
+                assert_eq!(
+                    admits_on(LINUX_SLL, &filter, &as_cooked(frame)),
+                    over_ethernet,
+                    "`{filter}` judged a packet differently over PPP than over Ethernet"
+                );
+                if over_ethernet {
+                    admitted += 1;
+                } else {
+                    refused += 1;
+                }
+            }
+        }
+        // Agreement means nothing if every verdict was the same one.
+        assert!(
+            admitted > 0 && refused > 0,
+            "{admitted} admitted, {refused} refused"
         );
     }
 }
