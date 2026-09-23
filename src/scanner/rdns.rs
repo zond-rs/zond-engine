@@ -136,7 +136,8 @@ pub struct HostnameResolver {
     /// IPs already queried, so a host reported by more than one scanning strategy
     /// is asked about once rather than once per report.
     queried: HashSet<IpAddr>,
-    /// mDNS records collected from sniffed traffic, keyed by IP.
+    /// mDNS records collected from sniffed traffic, each under every address
+    /// it names. See [`file_mdns`](Self::file_mdns).
     mdns_cache: HashMap<IpAddr, MdnsHost>,
     /// Hostnames resolved so far, keyed by IP.
     hostname_map: HashMap<IpAddr, Named>,
@@ -502,23 +503,45 @@ impl HostnameResolver {
         }
     }
 
-    /// Caches the hosts an sniffed mDNS message names.
+    /// Caches the hosts a sniffed mDNS message names.
     ///
-    /// A message may speak for several hosts, and each is filed under a single
-    /// preferred address (see [`preferred_ip`]) so a later lookup by any of that
-    /// host's known IPs has a consistent key to find.
+    /// A message may speak for several hosts, and each is filed on its own by
+    /// [`file_mdns`](Self::file_mdns).
     fn absorb_sniffed_mdns(&mut self, payload: &[u8]) {
         let Ok(hosts) = mdns::extract_hosts(payload) else {
             return;
         };
 
         for host in hosts {
-            let Some(ip) = preferred_ip(&host) else {
-                continue;
-            };
+            self.file_mdns(host);
+        }
+    }
 
-            info!(verbosity = 2, "mDNS names {ip} as {}", host.hostname);
-            self.mdns_cache.insert(ip, host);
+    /// Files what one mDNS record says under every address it names.
+    ///
+    /// Every one of them, because which of a device's addresses the store knows
+    /// it by is not something the record can predict. The scan may have reached
+    /// it at one address and never at another, or its exclusions may forbid one,
+    /// and an excluded address never joins a host's record. Filed under only one
+    /// of them, the name would be lost whenever that one is not among the
+    /// host's, and the device reported at its other addresses without the name
+    /// it announced for all of them.
+    ///
+    /// A later record naming an address replaces an earlier one there, since
+    /// the latest announcement is the device's current word about it.
+    fn file_mdns(&mut self, host: MdnsHost) {
+        info!(
+            verbosity = 2,
+            "mDNS names {} as {}",
+            host.ips
+                .iter()
+                .map(IpAddr::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            host.hostname
+        );
+        for ip in &host.ips {
+            self.mdns_cache.insert(*ip, host.clone());
         }
     }
 
@@ -528,6 +551,13 @@ impl HostnameResolver {
     /// the caches hold for them: a DNS hostname when the host has none yet, and
     /// any mDNS record, which can supply a hostname and additional IPs.
     /// Consumed entries are removed from the caches as they are applied.
+    ///
+    /// Every address is asked for a DNS name before any is asked for an mDNS
+    /// record, so a name unicast DNS gave the host is preferred whichever of its
+    /// addresses the record was found at. A record is filed under every address
+    /// it names, and in a single pass one found at an address that sorts first
+    /// would name the host before a resolver's answer about another address was
+    /// read.
     ///
     /// Written through [`ScanContext::write_host`] like every other finding, so
     /// a name reaches the event stream as well as the store. Applied by
@@ -544,25 +574,28 @@ impl HostnameResolver {
 
             ctx.write_host(key, |host| {
                 let mut named = false;
+                let ips = host.ips().clone();
 
-                for ip in host.ips().clone() {
+                for ip in &ips {
                     // Not `else`-chained with the names below: a resolver that
                     // answers about other hosts and has no name of its own is
                     // the ordinary case for a router.
-                    if name_servers.contains(&ip) {
+                    if name_servers.contains(ip) {
                         named |= host.add_network_role(NetworkRole::DnsServer);
                     }
 
                     // Prefer a hostname learned over unicast DNS.
                     if host.hostname().is_none()
-                        && let Some(Named { hostname, .. }) = hostname_map.remove(&ip)
+                        && let Some(Named { hostname, .. }) = hostname_map.remove(ip)
                     {
                         host.set_hostname(Some(hostname));
                         named = true;
                     }
+                }
 
+                for ip in &ips {
                     // An mDNS record can fill in a missing hostname and extra IPs.
-                    if let Some(mdns_host) = mdns_cache.remove(&ip) {
+                    if let Some(mdns_host) = mdns_cache.remove(ip) {
                         if host.hostname().is_none() {
                             host.set_hostname(Some(mdns_host.hostname));
                         }
@@ -616,23 +649,6 @@ async fn recv_reply(socket: &Option<Arc<UdpSocket>>) -> (Vec<u8>, SocketAddr) {
             std::future::pending().await
         }
     }
-}
-
-/// The address an mDNS host is filed under: IPv4 first, then a link-local IPv6
-/// address, then whatever else it advertised. Any single one will do, so long as
-/// the choice is the same every time.
-fn preferred_ip(host: &MdnsHost) -> Option<IpAddr> {
-    host.ips
-        .iter()
-        .find(|ip| ip.is_ipv4())
-        .or_else(|| {
-            host.ips.iter().find(|ip| match ip {
-                IpAddr::V6(v6) => v6.is_unicast_link_local(),
-                IpAddr::V4(_) => false,
-            })
-        })
-        .or_else(|| host.ips.iter().next())
-        .copied()
 }
 
 /// Binds a query socket for each address family `servers` spans and pairs every
@@ -1194,6 +1210,76 @@ mod tests {
             "test premise: the record applied"
         );
         assert!(!ips.contains(&excluded), "{ips:?}");
+    }
+
+    /// A device whose IPv4 address the scan may not report is still named at
+    /// the addresses it may.
+    ///
+    /// The excluded address is the forbidden fact, not the name the device
+    /// announced beside it. A record is found by any address it names, so the
+    /// one the policy keeps out of the store cannot take the name with it, and
+    /// the policy still keeps that address off the host the name lands on.
+    #[tokio::test]
+    async fn a_device_named_at_an_excluded_address_keeps_its_name_at_the_others() {
+        use crate::model::exclusion::Exclusions;
+
+        let excluded = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 60));
+        let link_local: IpAddr = "fe80::60".parse().expect("literal");
+
+        let mut forbidden = crate::model::ip::set::IpSet::new();
+        forbidden.insert(excluded);
+        let (_session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(forbidden))
+            .build();
+        ctx.update_host(link_local, |host| host.set_status(HostStatus::Up));
+
+        let mut resolver = resolver_asking(vec![
+            "127.0.0.1:53".parse().expect("a valid socket address"),
+        ]);
+        resolver.file_mdns(mdns::MdnsHost {
+            hostname: "tv.local".to_string(),
+            ips: [excluded, link_local].into_iter().collect(),
+        });
+        resolver.resolve_hosts(&ctx);
+
+        let (hostname, ips) = ctx
+            .read_host(link_local, |host| {
+                (host.hostname().map(str::to_owned), host.ips().clone())
+            })
+            .expect("the host is in the store");
+        assert_eq!(hostname.as_deref(), Some("tv.local"));
+        assert!(!ips.contains(&excluded), "{ips:?}");
+    }
+
+    /// A name unicast DNS gave a host is preferred to one its mDNS responder
+    /// announced, whichever of the host's addresses each was found at.
+    ///
+    /// A record is found at every address it names, so it can turn up at an
+    /// address that sorts before the one a resolver answered about. Read
+    /// address by address in a single pass, the order the addresses sort in
+    /// would decide which name the host keeps.
+    #[tokio::test]
+    async fn a_resolved_name_is_preferred_to_an_announced_one_at_any_address() {
+        let announced_at = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 61));
+        let resolved_at = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 62));
+
+        let (_session, ctx) = ScanSession::new();
+        ctx.update_host(announced_at, |host| {
+            host.add_ip(resolved_at);
+            host.set_status(HostStatus::Up);
+        });
+
+        let mut resolver = resolver_holding(resolved_at, "tv.example");
+        resolver.file_mdns(mdns::MdnsHost {
+            hostname: "tv.local".to_string(),
+            ips: [announced_at].into_iter().collect(),
+        });
+        resolver.resolve_hosts(&ctx);
+
+        let hostname = ctx
+            .read_host(announced_at, |host| host.hostname().map(str::to_owned))
+            .expect("the host is in the store");
+        assert_eq!(hostname.as_deref(), Some("tv.example"));
     }
 
     /// The reply to our own reverse query proves the same thing, and only from
