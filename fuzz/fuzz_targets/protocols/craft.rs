@@ -390,8 +390,9 @@ fuzz_target!(|recipe: Recipe| {
     // Options past what four bits of words can describe have to be refused. A
     // header written anyway would claim a length running into its own payload.
     let describable = recipe.layers.iter().all(|spec| {
-        spec.options()
-            .is_none_or(|options| options.len() <= LARGEST_OPTIONS && options.len().is_multiple_of(4))
+        spec.options().is_none_or(|options| {
+            options.len() <= LARGEST_OPTIONS && options.len().is_multiple_of(4)
+        })
     });
 
     let Ok(bytes) = assemble(None).build() else {

@@ -11,20 +11,20 @@
 //! What a local sweep holds: somewhere to put Ethernet frames, and the frames
 //! that arrived on the same link.
 //!
-//! ## The two halves come from different places, and should
+//! ## Two handles on one library
 //!
-//! The send half is a `pnet` link-layer channel, because emitting a frame this
-//! crate built byte for byte is what it is for. The receive half is a
-//! [`capture`], because everything that makes a
-//! receive path trustworthy lives there: a BPF filter the *kernel* applies, the
-//! counters saying what the kernel discarded anyway, and a stop flag every
-//! reader thread checks so that dropping the handle ends them.
+//! The send half is a [`capture::FrameSender`], a `libpcap` handle that puts
+//! on the wire a frame this crate built byte for byte. The receive half is a
+//! [`capture`], because everything that makes a receive path trustworthy lives
+//! there: a BPF filter the *kernel* applies, the counters saying what the kernel
+//! discarded anyway, and a stop flag every reader thread checks so that
+//! dropping the handle ends them.
 //!
-//! It was one channel doing both until this was split. That channel copied every
-//! frame on the segment into this process to throw nearly all of them away, could
-//! not say what it had lost, and its reader thread had no way to be told to stop.
-//! All three are properties of the receive side alone, and all three were already
-//! solved one module over.
+//! Two handles, because a reader thread parked waiting for frames cannot share
+//! a borrow with whoever is sending, and the filter, the counters and the stop
+//! flag are properties of the receive side alone. One library, because a
+//! second one opened on the same link to send would come with a receiver of its
+//! own, and a receiver nobody reads is a kernel buffer nobody drains.
 
 use crate::system::interface::Link;
 

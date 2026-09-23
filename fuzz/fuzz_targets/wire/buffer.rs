@@ -133,5 +133,7 @@ fuzz_target!(|data: &[u8]| {
 /// near the end, where a chunk is split rather than removed.
 fn sctp_cuts(len: usize) -> impl Iterator<Item = usize> {
     const CUTS: usize = 16;
-    (1..=CUTS).filter_map(move |step| len.checked_sub(step)).filter(|cut| *cut >= 12)
+    (1..=CUTS)
+        .filter_map(move |step| len.checked_sub(step))
+        .filter(|cut| *cut >= 12)
 }

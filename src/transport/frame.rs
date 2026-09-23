@@ -279,10 +279,12 @@ const IP_ADDRESS_FAMILIES: [u32; 5] = [2, 30, 28, 10, 24];
 /// Walks an Ethernet header, transparently skipping any VLAN tags, and returns
 /// the payload only if the EtherType marks it as IPv4 or IPv6.
 ///
-/// The tag walk is [`ethernet::parse`]'s rather than a second copy of it. It used
-/// to be a copy here, and the copy understood one tag where the original
-/// understands a stack, which is the ordinary way two implementations of one
-/// rule come to disagree.
+/// The tag walk is [`ethernet::parse`]'s rather than a second copy of it. Two
+/// implementations of one rule come to disagree in the ordinary course of
+/// things, and here the disagreement would be silent: a copy that understood
+/// one tag where the original understands a stack would find a second tag
+/// where it expected an IP EtherType, and discard every reply that arrived
+/// double-tagged as though no reply had come.
 fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
     let parsed = ethernet::parse(frame).ok()?;
     match parsed.ethertype() {

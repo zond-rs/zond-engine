@@ -17,6 +17,7 @@ on:
     paths:
       - "src/**"
       - "tests/**"
+      - "fuzz/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "clippy.toml"
@@ -26,6 +27,7 @@ on:
     paths:
       - "src/**"
       - "tests/**"
+      - "fuzz/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "clippy.toml"
@@ -60,6 +62,14 @@ jobs:
 
       - name: Check Formatting
         run: cargo fmt --all -- --check
+
+      # The fuzz harnesses are a workspace of their own, detached so that a
+      # plain build never reaches libFuzzer, and `cargo fmt --all` stops at a
+      # workspace boundary, so the step above never sees them. Named here
+      # instead. It costs seconds: formatting builds nothing, and needs neither
+      # the nightly toolchain nor the sanitizer a fuzzing run does.
+      - name: Check Formatting of the fuzz harnesses
+        run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
 
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
