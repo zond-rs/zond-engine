@@ -40,8 +40,10 @@ use crate::scanner::pacing::deadline::AdaptiveDeadline;
 use crate::scanner::pacing::retry::{ProbeLedger, Resolution, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::system::interface::RoutedTarget;
+use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use async_trait::async_trait;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::report::ScannerKind;
@@ -188,18 +190,37 @@ impl SweepProbe {
         }
     }
 
-    /// Whether `bytes` answers a probe of this kind at all.
+    /// The IP protocol an answer to this probe arrives under, over either
+    /// family: the one the probe left under, since a SYN is answered in TCP and
+    /// an INIT in SCTP.
+    const fn answered_under(self) -> IpNextHeaderProtocol {
+        match self {
+            Self::Syn { .. } => IpNextHeaderProtocols::Tcp,
+            Self::Init { .. } => IpNextHeaderProtocols::Sctp,
+        }
+    }
+
+    /// Whether `reply` answers a probe of this kind at all.
     ///
     /// The capture filter has already narrowed what arrives, but it is a
     /// performance boundary rather than a guarantee: over IPv6 the TCP half
-    /// cannot be narrowed on flags at all, and a transport can be built with no
-    /// filter. This is what holds both families to one standard.
-    fn answers(self, bytes: &[u8]) -> bool {
+    /// cannot be narrowed on flags at all, the INIT sweep's filter admits every
+    /// ICMP message for the SCTP port scan that shares it, and a transport can
+    /// be built with no filter. This is what holds all of them to one standard.
+    ///
+    /// The protocol is checked before a byte is parsed, because a Layer-4
+    /// header does not say what it is. An ICMP error read as SCTP puts its first
+    /// chunk on the quoted IPv4 identification, which spells an INIT-ACK or an
+    /// ABORT often enough to credit a host with an answer it never sent.
+    fn answers(self, reply: &CapturedSegment) -> bool {
+        if reply.protocol != self.answered_under() {
+            return false;
+        }
         match self {
-            Self::Syn { .. } => answers_a_syn_probe(bytes),
+            Self::Syn { .. } => answers_a_syn_probe(&reply.bytes),
             // Either chunk an INIT can draw, and nothing else. A packet from an
             // association this sweep is not part of carries neither.
-            Self::Init { .. } => protocol::sctp::parse(bytes)
+            Self::Init { .. } => protocol::sctp::parse(&reply.bytes)
                 .ok()
                 .and_then(|packet| protocol::sctp::classify_probe_response(&packet))
                 .is_some(),
@@ -356,7 +377,7 @@ impl HostScanner for RoutedScanner {
                     match res {
                         Some(reply) => {
                             self.sweep.audit.record_segment();
-                            self.handle_discovery_reply(reply.source, &reply.bytes, Instant::now());
+                            self.handle_discovery_reply(&reply, Instant::now());
                         }
                         None => break StopReason::StreamClosed,
                     }
@@ -651,10 +672,11 @@ impl RoutedScanner {
         }
     }
 
-    /// Records a raw TCP reply from `ip` as evidence the host is alive,
-    /// crediting it with a round-trip time if the reply's acknowledgement
-    /// number matches an outstanding probe.
-    fn handle_discovery_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
+    /// Records a captured reply as evidence its sender is alive, if it answers
+    /// this sweep's probe, crediting it with a round-trip time if it names an
+    /// outstanding attempt.
+    fn handle_discovery_reply(&mut self, reply: &CapturedSegment, now: Instant) {
+        let ip = reply.source;
         if !self.ips.contains(&ip) {
             self.sweep.audit.record_off_target();
             return;
@@ -670,7 +692,7 @@ impl RoutedScanner {
         // dropped the rest; without the same test, an ACK from an IPv6 host the
         // user happens to be connected to would credit a discovery this scan did
         // not make, on evidence the IPv4 path has never accepted.
-        if !self.probe.answers(bytes) {
+        if !self.probe.answers(reply) {
             self.sweep.audit.record_off_target();
             return;
         }
@@ -678,7 +700,7 @@ impl RoutedScanner {
         // The address answered, which is a verdict however the reply was timed.
         self.ctx.settle_address(ip, Settled::Answered);
 
-        let resolution = self.resolve_probe(ip, bytes, now);
+        let resolution = self.resolve_probe(ip, &reply.bytes, now);
         let rtt = resolution.and_then(|resolution| resolution.rtt);
         if rtt.is_none() {
             self.sweep.audit.record_reply_without_rtt();
@@ -825,5 +847,128 @@ impl RoutedScanner {
             self.ctx.host_probed(target, now);
             self.sweep.ledger.arm(target, target, token, (), now);
         }
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    use pnet_packet::icmp::IcmpTypes;
+    use pnet_packet::icmp::destination_unreachable::{
+        IcmpCodes, MutableDestinationUnreachablePacket,
+    };
+
+    use crate::model::technique::SctpReply;
+    use crate::protocols::craft::{self, Field};
+    use crate::scanner::session::ScanSession;
+    use crate::transport::probe::MockSender;
+
+    /// The address every probe leaves from.
+    const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+    /// The one address the sweep asks about.
+    const TARGET: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 7);
+    /// The port every INIT leaves from.
+    const SCAN_PORT: u16 = 50_000;
+
+    /// An INIT sweep of [`TARGET`] with its first probe out, and that probe as
+    /// it reached the wire.
+    fn init_sweep_with_a_probe_out() -> (RoutedScanner, ScanSession, Vec<u8>) {
+        let (session, ctx) = ScanSession::new();
+        let (_replies, rx) = tokio::sync::mpsc::channel(8);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let mut scanner = RoutedScanner::with_transport_asking(
+            vec![RoutedTarget {
+                target: TARGET.into(),
+                source: LOCAL.into(),
+            }],
+            ctx,
+            None,
+            ProbeTransport::from_parts(Box::new(sender), rx),
+            SweepProbe::init(SCAN_PORT, 3868),
+        );
+        scanner.probe(TARGET.into(), Instant::now());
+
+        let (probe, _, _) = sent.lock().unwrap().first().cloned().expect("an INIT");
+        (scanner, session, probe)
+    }
+
+    /// What a host with no SCTP stack answers an INIT with: a protocol
+    /// unreachable from its own address, quoting `probe` under an IPv4 header
+    /// that carries don't-fragment and `identification`, as this engine's own
+    /// probes do.
+    fn protocol_unreachable(probe: &[u8], identification: u16) -> CapturedSegment {
+        let header = craft::Ipv4 {
+            identification: Field::Exact(identification),
+            protocol: Field::Exact(IpNextHeaderProtocols::Sctp),
+            ..craft::Ipv4::new(LOCAL, TARGET)
+        }
+        .header_bytes(probe.len() as u16)
+        .expect("an IPv4 header");
+        let quoted = [header.as_slice(), probe].concat();
+
+        let mut bytes =
+            vec![0u8; MutableDestinationUnreachablePacket::minimum_packet_size() + quoted.len()];
+        {
+            let mut icmp =
+                MutableDestinationUnreachablePacket::new(&mut bytes).expect("an ICMP buffer");
+            icmp.set_icmp_type(IcmpTypes::DestinationUnreachable);
+            icmp.set_icmp_code(IcmpCodes::DestinationProtocolUnreachable);
+            icmp.set_payload(&quoted);
+        }
+        CapturedSegment::synthetic(TARGET.into(), IpNextHeaderProtocols::Icmp, bytes)
+    }
+
+    /// An ICMP error from a swept address is never read as an SCTP answer,
+    /// however its bytes fall.
+    ///
+    /// The capture an INIT sweep reads admits every ICMP message, and an error
+    /// read as an SCTP packet puts its first chunk header on the quoted IPv4
+    /// identification. Under don't-fragment and a random identification two of
+    /// every 256 such errors spell an INIT-ACK or an ABORT. Read that way, each
+    /// files its host as found by an SCTP answer nobody sent and retires the
+    /// probe, so the retry that might draw a real one never leaves.
+    #[test]
+    fn an_icmp_error_is_not_read_as_an_sctp_answer() {
+        let (mut scanner, session, probe) = init_sweep_with_a_probe_out();
+        // ABORT's chunk type in the identification's high byte.
+        let error = protocol_unreachable(&probe, 0x0600);
+        assert_eq!(
+            protocol::sctp::parse(&error.bytes)
+                .ok()
+                .and_then(|packet| protocol::sctp::classify_probe_response(&packet)),
+            Some(SctpReply::Abort),
+            "the fixture no longer spells the chunk it exists to spell"
+        );
+
+        scanner.handle_discovery_reply(&error, Instant::now());
+
+        let credited_to_sctp = session
+            .hosts()
+            .get(IpAddr::from(TARGET))
+            .is_some_and(|host| {
+                host.reasons()
+                    .iter()
+                    .any(|reason| reason.protocol == StatusProtocol::Sctp)
+            });
+        assert!(
+            !credited_to_sctp,
+            "an ICMP error was credited as an SCTP reply"
+        );
+        assert!(
+            scanner.sweep.ledger.contains(&IpAddr::from(TARGET)),
+            "the probe was retired by an answer it never drew"
+        );
     }
 }
