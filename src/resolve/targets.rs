@@ -54,15 +54,18 @@ const MAX_CONCURRENT_LOOKUPS: usize = 16;
 /// A name nothing answered for is absent from the map rather than present with
 /// an empty list, so a caller can tell "resolved to nothing" from "resolved" by
 /// membership alone. This is the pass to run when a caller wants to build the
-/// [`TargetMap`] itself, or to move the work across threads: the returned map is
-/// owned, where the [`TargetContext`] this reads borrows the caller's keyword
-/// and zone resolvers and so cannot cross a thread boundary.
+/// [`TargetMap`] itself, or to move the work across threads: it borrows nothing
+/// but its arguments and returns an owned map, where the [`TargetContext`] the
+/// build reads borrows the caller's keyword and zone resolvers and so cannot
+/// cross a thread boundary.
+///
+/// No keyword or zone is looked up here. What is a name is decided by how it is
+/// written, not by what the host's lookups answer; see `collect_names`.
 pub async fn resolve_names<S: AsRef<str>>(
     exprs: &[S],
-    ctx: &TargetContext<'_>,
     resolver: &Resolver,
 ) -> HashMap<String, Vec<IpAddr>> {
-    let names = collect_names(exprs, ctx);
+    let names = collect_names(exprs);
     resolve_all(names, resolver).await
 }
 
@@ -84,7 +87,7 @@ pub async fn to_target_map<S: AsRef<str>>(
     ctx: &TargetContext<'_>,
     resolver: &Resolver,
 ) -> Result<TargetMap, TargetParseError> {
-    let resolved = resolve_names(exprs, ctx, resolver).await;
+    let resolved = resolve_names(exprs, resolver).await;
 
     // Read by the builder's second pass; owns its addresses so it outlives no
     // borrow of the map.
@@ -381,7 +384,14 @@ pub async fn for_exclusion_with<S: AsRef<str>>(
 /// `192.168.0.300` was sent to a resolver here and refused as a mistyped address
 /// there. Asking the same function is what makes the two passes agree, rather
 /// than a comment saying they do.
-fn collect_names<S: AsRef<str>>(exprs: &[S], ctx: &TargetContext<'_>) -> Vec<String> {
+///
+/// The grammar is asked without the host's keyword and zone lookups. Neither can
+/// make a token `Malformed` or stop it being so: a keyword or a zoned address is
+/// refused as something else when its lookup is missing, and parsed when it is
+/// present, so the answer here is the same either way. Passing them would only
+/// resolve `lan` into a set this throws away, a read of the interface table the
+/// build pass then repeats, and one more chance for the two reads to disagree.
+fn collect_names<S: AsRef<str>>(exprs: &[S]) -> Vec<String> {
     let mut names = Vec::new();
     let mut seen = HashSet::new();
 
@@ -393,7 +403,7 @@ fn collect_names<S: AsRef<str>>(exprs: &[S], ctx: &TargetContext<'_>) -> Vec<Str
         for address in expr.addresses() {
             let mut throwaway = IpSet::new();
             if let Err(IpParseError::Malformed(_)) =
-                insert_expression(address, &mut throwaway, ctx.keywords, ctx.zones)
+                insert_expression(address, &mut throwaway, None, None)
                 && target::host_name(address) == target::HostName::Yes
                 && seen.insert(address.to_string())
             {
@@ -496,19 +506,13 @@ mod tests {
     /// prevent.
     #[test]
     fn a_token_the_builder_will_refuse_is_never_put_on_the_network() {
-        let ctx = TargetContext {
-            keywords: None,
-            zones: None,
-            hosts: None,
-        };
-
         let refused = [
             "192.168.0.300",   // an octet out of range
             "999.999.999.999", // every octet out of range
             "10.0.0",          // too few octets
         ];
         assert_eq!(
-            collect_names(&refused, &ctx),
+            collect_names(&refused),
             Vec::<String>::new(),
             "a mistyped address was collected as a name to look up"
         );
@@ -521,7 +525,7 @@ mod tests {
 
         // A real name is still collected, or the check above proves nothing.
         assert_eq!(
-            collect_names(&["nas.local", "example.com"], &ctx),
+            collect_names(&["nas.local", "example.com"]),
             vec!["nas.local".to_string(), "example.com".to_string()]
         );
     }
@@ -532,15 +536,9 @@ mod tests {
     /// be two entries and two round trips.
     #[test]
     fn a_name_written_two_ways_is_looked_up_once() {
-        let ctx = TargetContext {
-            keywords: None,
-            zones: None,
-            hosts: None,
-        };
-
         // Collection keeps every spelling, since the build pass looks a name up
         // by the token the expression carried.
-        let collected = collect_names(&["NAS", "nas", "Nas"], &ctx);
+        let collected = collect_names(&["NAS", "nas", "Nas"]);
         assert_eq!(collected.len(), 3);
 
         // What must not be three is the number of names resolution asks for.
@@ -560,6 +558,31 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    /// A keyword is resolved once per call, by the pass that builds the set.
+    ///
+    /// Resolving `lan` reads the whole interface table, and every read is a
+    /// chance for the answer to differ from the one the set was built from. The
+    /// pass that picks out hostnames has no use for the answer: a keyword is
+    /// never a name, whatever it expands to.
+    #[tokio::test]
+    async fn a_keyword_is_resolved_once_per_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let counting = |keyword: Keyword, set: &mut IpSet| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            keywords(keyword, set)
+        };
+        let resolver = Resolver::from_system();
+
+        let set = to_set(&["lan", "192.0.2.1"], Some(&counting), None, &resolver)
+            .await
+            .expect("the keyword resolver answers");
+
+        assert_eq!(set.len(), 2);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     /// The distinction the addresses cannot carry. Both of these resolve to the
@@ -633,8 +656,6 @@ mod tests {
     /// alone.
     #[test]
     fn only_the_hostnames_in_a_mixed_list_are_collected() {
-        let ctx = TargetContext::new().with_keywords(&keywords);
-
         let exprs = [
             "192.168.1.10",
             "example.com:443",
@@ -645,7 +666,7 @@ mod tests {
         ];
 
         assert_eq!(
-            collect_names(&exprs, &ctx),
+            collect_names(&exprs),
             vec!["example.com".to_string(), "raspberrypi.local".to_string()]
         );
     }
@@ -654,24 +675,17 @@ mod tests {
     /// first-seen so a run over the same input resolves in the same order.
     #[test]
     fn a_repeated_name_is_collected_once() {
-        let ctx = TargetContext::new();
-
         let exprs = ["host.example:80", "host.example:443", "host.example"];
 
-        assert_eq!(
-            collect_names(&exprs, &ctx),
-            vec!["host.example".to_string()]
-        );
+        assert_eq!(collect_names(&exprs), vec!["host.example".to_string()]);
     }
 
     /// The comma-separated address half is split before classification, so a
     /// single token naming a literal and a name yields just the name.
     #[test]
     fn names_are_found_inside_a_comma_list() {
-        let ctx = TargetContext::new();
-
         assert_eq!(
-            collect_names(&["10.0.0.1,db.internal:5432"], &ctx),
+            collect_names(&["10.0.0.1,db.internal:5432"]),
             vec!["db.internal".to_string()]
         );
     }
@@ -681,8 +695,7 @@ mod tests {
     /// resolver that would report "no such host" for it.
     #[test]
     fn a_keyword_without_a_resolver_is_not_taken_for_a_name() {
-        let ctx = TargetContext::new();
-        assert!(collect_names(&["lan"], &ctx).is_empty());
+        assert!(collect_names(&["lan"]).is_empty());
     }
 
     /// An empty list resolves to an empty map with no tasks spawned, so the
