@@ -16,29 +16,43 @@
 //! and SNMP agents.
 //!
 //! One place because what a socket has to carry before it connects is not a
-//! property of the caller. Windows resends a refused SYN until its SYN
+//! property of the caller, and there are two such things.
+//!
+//! **Where it leaves from.** A scan forced to a source, to leave by a LAN
+//! interface when a VPN holds the default route, has its raw probes sent from
+//! that source and by the link that holds it. Its connections have to leave
+//! the same way, or the probe finds a port by one link and every conversation
+//! that follows goes out by the other, from another address, through the
+//! tunnel the scan was pinned out of. Which connections that applies to is an
+//! [`Egress`], decided per destination by the scan's [`ForcedSources`].
+//!
+//! **What Windows needs set.** Windows resends a refused SYN until its SYN
 //! retransmissions run out, which outlasts every connect budget this engine
 //! sets, so on Windows every TCP socket needs its retransmissions limited
 //! before the connect, whoever is connecting and whatever it wants to learn;
-//! see [`syn_retries`]. A caller that opened its own socket would be the one
-//! that forgot.
+//! see [`syn_retries`].
 //!
+//! A caller that opened its own socket would be the one that forgot either.
 //! What a caller does choose is [`Shaping`]: a source port and a hop limit,
-//! which only the connect scanner's probes carry. With nothing chosen, and on a
-//! platform that needs nothing set, a connect is exactly a plain
-//! [`TcpStream::connect`] and a datagram socket a plain ephemeral bind, so the
-//! kernel sees what it would have seen from any other program.
+//! which only the connect scanner's probes carry. With nothing forced, nothing
+//! chosen, and on a platform that needs nothing set, a connect is exactly a
+//! plain [`TcpStream::connect`] and a datagram socket a plain ephemeral bind,
+//! so the kernel sees what it would have seen from any other program.
 //!
 //! `tests/hygiene/dialling.rs` holds the rest of the crate to this: a TCP or
 //! UDP socket opened anywhere else has to say why it is not a connection to a
 //! target.
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use socket2::{Domain, Socket, Type};
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
+
+use crate::logging::info;
+use crate::system::interface::{Link, LinkAddress};
 
 #[cfg(any(windows, test))]
 mod syn_retries;
@@ -66,69 +80,311 @@ impl Shaping {
     }
 }
 
-/// Connects to `addr` as any other program would.
-pub(crate) async fn connect(addr: SocketAddr) -> io::Result<TcpStream> {
-    connect_shaped(addr, Shaping::default()).await
-}
-
-/// Connects to `addr`, honouring `shaping`.
+/// The sources a scan forced, and what they apply to.
 ///
-/// With inert shaping on Unix this is exactly [`TcpStream::connect`], so a
-/// connection that chose nothing sends the SYN it always would, byte for byte.
-/// Windows needs an option on every TCP socket before it connects, so there
-/// the socket is always built.
-pub(crate) async fn connect_shaped(addr: SocketAddr, shaping: Shaping) -> io::Result<TcpStream> {
-    if tcp_is_plain(shaping) {
-        return TcpStream::connect(addr).await;
-    }
-    let socket = socket(addr.ip(), Protocol::Tcp, shaping)?;
-    socket.set_nonblocking(true)?;
-    TcpSocket::from_std_stream(std::net::TcpStream::from(socket))
-        .connect(addr)
-        .await
-}
-
-/// Connects to `addr` on the calling thread, giving up after `timeout`.
+/// A forced source is for a target the routing table would send out by the
+/// wrong link. So it applies where the scan's plan applies it (see
+/// `map_ips_to_interfaces_forced`), and nowhere else: not to loopback or this
+/// host's own addresses, which no link reaches; not to an IPv4 address written
+/// inside IPv6, which no wire carries; not to a link-local address, which is
+/// on the link its zone names; and not to a target inside a prefix a link here
+/// holds, which that link reaches directly, a segment by its neighbours and a
+/// tunnel's prefix through the tunnel. A connection to any of those is the
+/// routing table's, as the probe before it was.
 ///
-/// For a caller that holds a blocking socket, which is a detection running on
-/// the blocking pool. The same socket [`connect`] would build, connected the
-/// way [`std::net::TcpStream::connect_timeout`] connects one.
-pub(crate) fn connect_within(
-    addr: SocketAddr,
-    timeout: Duration,
-) -> io::Result<std::net::TcpStream> {
-    if tcp_is_plain(Shaping::default()) {
-        return std::net::TcpStream::connect_timeout(&addr, timeout);
-    }
-    let socket = socket(addr.ip(), Protocol::Tcp, Shaping::default())?;
-    socket.connect_timeout(&addr.into(), timeout)?;
-    Ok(socket.into())
-}
-
-/// A UDP socket bound to an ephemeral port of `peer`'s address family, ready
-/// to be connected to it.
-pub(crate) async fn udp(peer: IpAddr) -> io::Result<UdpSocket> {
-    udp_shaped(peer, Shaping::default()).await
-}
-
-/// A UDP socket for `peer`'s address family honouring `shaping`, ready to be
-/// connected to it.
+/// One source per family, and a source speaks for its own family only. A
+/// target of a family the scan forced nothing for is left to the routing table
+/// here as it is in the plan, since a v4 source cannot carry a v6 connection,
+/// and refusing the target would make a connection behave differently from
+/// the probe it follows.
 ///
-/// With inert shaping this is the plain ephemeral bind. Otherwise the socket
-/// carries the chosen hop limit and binds the chosen source port, or an
-/// ephemeral one, so a hop-limit-only socket still has somewhere to send from.
-pub(crate) async fn udp_shaped(peer: IpAddr, shaping: Shaping) -> io::Result<UdpSocket> {
-    if !shaping.is_active() {
-        return UdpSocket::bind(wildcard(peer, 0)).await;
-    }
-    let socket = socket(peer, Protocol::Udp, shaping)?;
-    socket.set_nonblocking(true)?;
-    UdpSocket::from_std(std::net::UdpSocket::from(socket))
+/// Read from the host once, when the scan starts, as the plan is. Empty, which
+/// is every scan that forced nothing, it reads nothing at all and every
+/// connection is the routing table's.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ForcedSources {
+    /// One pin per family the scan forced a source for.
+    pins: Vec<Pin>,
+    /// Every address a link that could carry a connection holds, whose prefixes
+    /// are reached directly and never by a forced source.
+    held: Vec<LinkAddress>,
 }
 
-/// [`udp`], for a caller holding a blocking socket.
-pub(crate) fn udp_blocking(peer: IpAddr) -> io::Result<std::net::UdpSocket> {
-    std::net::UdpSocket::bind(wildcard(peer, 0))
+impl ForcedSources {
+    /// The sources in `forced`, one per family at most, as they apply to the
+    /// links this host has now.
+    pub(crate) fn new(forced: &[IpAddr]) -> Self {
+        if forced.is_empty() {
+            return Self::default();
+        }
+        let sources = Self::with_links(forced, &crate::system::interface::interfaces());
+        for pin in &sources.pins {
+            match pin.interface {
+                Some(index) => info!(
+                    verbosity = 1,
+                    "connections to routed targets leave from {} on interface {index}", pin.source
+                ),
+                None => info!(
+                    verbosity = 1,
+                    "no interface holds {}, so connections forced to it will fail", pin.source
+                ),
+            }
+        }
+        sources
+    }
+
+    /// [`new`](Self::new) against an interface table the caller supplies.
+    fn with_links(forced: &[IpAddr], links: &[Link]) -> Self {
+        let mut pins: Vec<Pin> = Vec::new();
+        for &source in forced {
+            if pins
+                .iter()
+                .any(|pin| pin.source.is_ipv4() == source.is_ipv4())
+            {
+                continue;
+            }
+            let interface = links
+                .iter()
+                .find(|link| link.addresses().iter().any(|held| held.address() == source))
+                .and_then(|link| NonZeroU32::new(link.index()));
+            pins.push(Pin { source, interface });
+        }
+
+        // The links the plan classifies against: up, not loopback, and holding
+        // an address. A prefix on a link that is down reaches nothing.
+        let held = links
+            .iter()
+            .filter(|link| link.is_up() && !link.is_loopback())
+            .flat_map(|link| link.addresses().iter().copied())
+            .collect();
+
+        Self { pins, held }
+    }
+
+    /// Where a connection to `target` leaves from.
+    pub(crate) fn toward(&self, target: IpAddr) -> Egress {
+        let Some(pin) = self
+            .pins
+            .iter()
+            .find(|pin| pin.source.is_ipv4() == target.is_ipv4())
+        else {
+            return Egress::KERNEL;
+        };
+        let reached_directly = target.is_loopback()
+            || matches!(target, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some()
+                || v6.is_unicast_link_local())
+            || self.held.iter().any(|held| held.contains(&target));
+        if reached_directly {
+            return Egress::KERNEL;
+        }
+        Egress { pin: Some(*pin) }
+    }
+}
+
+/// Where one connection leaves from: where the routing table says, or pinned
+/// to a forced source.
+///
+/// A pinned socket is bound to the source address, so the kernel writes that
+/// address into every packet, and to the interface holding it, so the packets
+/// leave by that link whatever the default route says. The address alone is
+/// not enough on Linux or macOS, which pick the outgoing link by destination
+/// and would send a packet carrying the LAN address down the tunnel. Windows
+/// picks the link from the source address, so there the address is all it
+/// takes. Bound to an interface, Linux and macOS look the route up among that
+/// link's routes alone, which finds the LAN's own gateway: a VPN that takes
+/// the default route over leaves that one beneath its own.
+///
+/// Copied into every phase that dials, so the choice made once for a
+/// destination travels with it to every connection made there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Egress {
+    pin: Option<Pin>,
+}
+
+/// A forced source, and the interface that holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pin {
+    source: IpAddr,
+    /// `None` where no interface here holds the source, which leaves the bind
+    /// to fail and the connection to be reported as one this host could not
+    /// make, rather than made from somewhere else.
+    interface: Option<NonZeroU32>,
+}
+
+impl Egress {
+    /// Wherever the routing table sends it.
+    pub(crate) const KERNEL: Self = Self { pin: None };
+
+    /// Connects to `addr`.
+    pub(crate) async fn connect(self, addr: SocketAddr) -> io::Result<TcpStream> {
+        self.connect_shaped(addr, Shaping::default()).await
+    }
+
+    /// Connects to `addr`, honouring `shaping`.
+    ///
+    /// Unpinned, unshaped and on Unix this is exactly [`TcpStream::connect`],
+    /// so a connection that chose nothing sends the SYN it always would, byte
+    /// for byte. Windows needs an option on every TCP socket before it
+    /// connects, so there the socket is always built.
+    pub(crate) async fn connect_shaped(
+        self,
+        addr: SocketAddr,
+        shaping: Shaping,
+    ) -> io::Result<TcpStream> {
+        if self.tcp_is_plain(shaping) {
+            return TcpStream::connect(addr).await;
+        }
+        let socket = self.socket(addr.ip(), Protocol::Tcp, shaping)?;
+        socket.set_nonblocking(true)?;
+        TcpSocket::from_std_stream(std::net::TcpStream::from(socket))
+            .connect(addr)
+            .await
+    }
+
+    /// Connects to `addr` on the calling thread, giving up after `timeout`.
+    ///
+    /// For a caller that holds a blocking socket, which is a detection running
+    /// on the blocking pool. The same socket [`connect`](Self::connect) would
+    /// build, connected the way [`std::net::TcpStream::connect_timeout`]
+    /// connects one.
+    pub(crate) fn connect_within(
+        self,
+        addr: SocketAddr,
+        timeout: Duration,
+    ) -> io::Result<std::net::TcpStream> {
+        if self.tcp_is_plain(Shaping::default()) {
+            return std::net::TcpStream::connect_timeout(&addr, timeout);
+        }
+        let socket = self.socket(addr.ip(), Protocol::Tcp, Shaping::default())?;
+        socket.connect_timeout(&addr.into(), timeout)?;
+        Ok(socket.into())
+    }
+
+    /// A UDP socket bound for `peer`, ready to be connected to it.
+    pub(crate) async fn udp(self, peer: IpAddr) -> io::Result<UdpSocket> {
+        self.udp_shaped(peer, Shaping::default()).await
+    }
+
+    /// A UDP socket bound for `peer` and honouring `shaping`, ready to be
+    /// connected to it.
+    ///
+    /// Unpinned and unshaped, this is the plain ephemeral bind. Otherwise the
+    /// socket carries its pin, the chosen hop limit, and the chosen source port
+    /// or an ephemeral one.
+    pub(crate) async fn udp_shaped(self, peer: IpAddr, shaping: Shaping) -> io::Result<UdpSocket> {
+        if self.pin.is_none() && !shaping.is_active() {
+            return UdpSocket::bind(wildcard(peer, 0)).await;
+        }
+        let socket = self.socket(peer, Protocol::Udp, shaping)?;
+        socket.set_nonblocking(true)?;
+        UdpSocket::from_std(std::net::UdpSocket::from(socket))
+    }
+
+    /// [`udp`](Self::udp), for a caller holding a blocking socket.
+    pub(crate) fn udp_blocking(self, peer: IpAddr) -> io::Result<std::net::UdpSocket> {
+        if self.pin.is_none() {
+            return std::net::UdpSocket::bind(wildcard(peer, 0));
+        }
+        Ok(self.socket(peer, Protocol::Udp, Shaping::default())?.into())
+    }
+
+    /// Whether a TCP socket carrying `shaping` can be left to
+    /// [`TcpStream::connect`] to open, because nothing has to be set on it
+    /// first.
+    ///
+    /// Never on Windows, where every TCP socket carries the SYN retransmission
+    /// limit.
+    fn tcp_is_plain(self, shaping: Shaping) -> bool {
+        self.pin.is_none() && !shaping.is_active() && cfg!(not(windows))
+    }
+
+    /// Opens a socket towards `target` and sets on it everything that has to
+    /// be in force before its first packet: the pin, `shaping`, and on
+    /// Windows, for TCP, the SYN retransmission limit.
+    ///
+    /// Bound where something about its source was chosen, since TCP binds only
+    /// to pin an address or a port and UDP must bind before it can send at
+    /// all. Left blocking; an async caller switches it before handing it to
+    /// the runtime.
+    ///
+    /// The hop limit goes on with the option the address family uses (`IP_TTL`
+    /// or `IPV6_UNICAST_HOPS`). Address reuse is what lets the many probes a
+    /// scan runs at once each bind one pinned source port: every one still
+    /// carries a distinct four-tuple through its destination, so the kernel
+    /// keeps their replies apart.
+    fn socket(self, target: IpAddr, protocol: Protocol, shaping: Shaping) -> io::Result<Socket> {
+        let domain = match target {
+            IpAddr::V4(_) => Domain::IPV4,
+            IpAddr::V6(_) => Domain::IPV6,
+        };
+        let socket = match protocol {
+            Protocol::Tcp => Socket::new(domain, Type::STREAM, Some(socket2::Protocol::TCP))?,
+            Protocol::Udp => Socket::new(domain, Type::DGRAM, Some(socket2::Protocol::UDP))?,
+        };
+
+        if let Some(hops) = shaping.hop_limit {
+            match target {
+                IpAddr::V4(_) => socket.set_ttl_v4(hops.into())?,
+                IpAddr::V6(_) => socket.set_unicast_hops_v6(hops.into())?,
+            }
+        }
+        if shaping.source_port.is_some() {
+            socket.set_reuse_address(true)?;
+            // Unix only, and both supported platforms are: without it a second
+            // socket on the pinned port is refused rather than bound alongside.
+            #[cfg(unix)]
+            socket.set_reuse_port(true)?;
+        }
+
+        #[cfg(windows)]
+        if protocol == Protocol::Tcp {
+            syn_retries::limit(&socket, target);
+        }
+
+        let port = shaping.source_port.unwrap_or(0);
+        match self.pin {
+            Some(pin) => pin.bind(&socket, target, port)?,
+            None if protocol == Protocol::Udp || shaping.source_port.is_some() => {
+                socket.bind(&wildcard(target, port).into())?;
+            }
+            None => {}
+        }
+        Ok(socket)
+    }
+}
+
+impl Pin {
+    /// Binds `socket`, about to reach `target`, to this pin's source and
+    /// `port`, and to the interface holding the source.
+    ///
+    /// A link-local source is bound with its interface as its scope, the only
+    /// way a bare `fe80::` names one address.
+    fn bind(self, socket: &Socket, target: IpAddr, port: u16) -> io::Result<()> {
+        if self.source.is_ipv4() != target.is_ipv4() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("a connection to {target} cannot leave from {}", self.source),
+            ));
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+        match self.source {
+            IpAddr::V4(_) => socket.bind_device_by_index_v4(self.interface)?,
+            IpAddr::V6(_) => socket.bind_device_by_index_v6(self.interface)?,
+        }
+
+        let address = match self.source {
+            IpAddr::V4(v4) => SocketAddr::from((v4, port)),
+            IpAddr::V6(v6) => {
+                let scope = match (v6.is_unicast_link_local(), self.interface) {
+                    (true, Some(index)) => index.get(),
+                    _ => 0,
+                };
+                SocketAddr::V6(SocketAddrV6::new(v6, port, 0, scope))
+            }
+        };
+        socket.bind(&address.into())
+    }
 }
 
 /// The two transports a socket here speaks.
@@ -136,64 +392,6 @@ pub(crate) fn udp_blocking(peer: IpAddr) -> io::Result<std::net::UdpSocket> {
 enum Protocol {
     Tcp,
     Udp,
-}
-
-/// Whether a TCP socket carrying `shaping` can be left to
-/// [`TcpStream::connect`] to open, because nothing has to be set on it first.
-///
-/// Never on Windows, where every TCP socket carries the SYN retransmission
-/// limit.
-fn tcp_is_plain(shaping: Shaping) -> bool {
-    !shaping.is_active() && cfg!(not(windows))
-}
-
-/// Opens a socket towards `target` and sets on it everything that has to be in
-/// force before its first packet: `shaping`, and on Windows, for TCP, the SYN
-/// retransmission limit.
-///
-/// Bound where something about its source was chosen, since TCP binds only to
-/// pin a port and UDP must bind before it can send at all. Left blocking; an
-/// async caller switches it before handing it to the runtime.
-///
-/// The hop limit goes on with the option the address family uses (`IP_TTL` or
-/// `IPV6_UNICAST_HOPS`). Address reuse is what lets the many probes a scan
-/// runs at once each bind one pinned source port: every one still carries a
-/// distinct four-tuple through its destination, so the kernel keeps their
-/// replies apart.
-fn socket(target: IpAddr, protocol: Protocol, shaping: Shaping) -> io::Result<Socket> {
-    let domain = match target {
-        IpAddr::V4(_) => Domain::IPV4,
-        IpAddr::V6(_) => Domain::IPV6,
-    };
-    let socket = match protocol {
-        Protocol::Tcp => Socket::new(domain, Type::STREAM, Some(socket2::Protocol::TCP))?,
-        Protocol::Udp => Socket::new(domain, Type::DGRAM, Some(socket2::Protocol::UDP))?,
-    };
-
-    if let Some(hops) = shaping.hop_limit {
-        match target {
-            IpAddr::V4(_) => socket.set_ttl_v4(hops.into())?,
-            IpAddr::V6(_) => socket.set_unicast_hops_v6(hops.into())?,
-        }
-    }
-    if shaping.source_port.is_some() {
-        socket.set_reuse_address(true)?;
-        // Unix only, and both supported platforms are: without it a second
-        // socket on the pinned port is refused rather than bound alongside.
-        #[cfg(unix)]
-        socket.set_reuse_port(true)?;
-    }
-
-    #[cfg(windows)]
-    if protocol == Protocol::Tcp {
-        syn_retries::limit(&socket, target);
-    }
-
-    if protocol == Protocol::Udp || shaping.source_port.is_some() {
-        let port = shaping.source_port.unwrap_or(0);
-        socket.bind(&wildcard(target, port).into())?;
-    }
-    Ok(socket)
 }
 
 /// The unspecified address of `family`'s address family, carrying `port`
@@ -233,15 +431,28 @@ mod tests {
     /// exception, and the reason this module exists.
     #[test]
     fn an_unshaped_connect_is_left_to_the_kernel_except_on_windows() {
-        assert_eq!(tcp_is_plain(Shaping::default()), cfg!(not(windows)));
-        assert!(!tcp_is_plain(Shaping {
+        assert_eq!(
+            Egress::KERNEL.tcp_is_plain(Shaping::default()),
+            cfg!(not(windows))
+        );
+        assert!(!Egress::KERNEL.tcp_is_plain(Shaping {
             source_port: Some(53),
             hop_limit: None,
         }));
-        assert!(!tcp_is_plain(Shaping {
+        assert!(!Egress::KERNEL.tcp_is_plain(Shaping {
             source_port: None,
             hop_limit: Some(12),
         }));
+        let pinned = Egress {
+            pin: Some(Pin {
+                source: v4(192, 0, 2, 10),
+                interface: NonZeroU32::new(2),
+            }),
+        };
+        assert!(
+            !pinned.tcp_is_plain(Shaping::default()),
+            "a pinned connection was left to the kernel, which would source it"
+        );
     }
 
     /// A shaped connect leaves from the chosen source port and carries the
@@ -266,7 +477,8 @@ mod tests {
         };
 
         let accept = tokio::spawn(async move { listener.accept().await });
-        let stream = connect_shaped(addr, shaping)
+        let stream = Egress::KERNEL
+            .connect_shaped(addr, shaping)
             .await
             .expect("the shaped connect completes");
         let (_accepted, peer) = accept
@@ -304,7 +516,8 @@ mod tests {
             source_port: Some(PINNED),
             hop_limit: None,
         };
-        let socket = udp_shaped(IpAddr::V4(Ipv4Addr::LOCALHOST), shaping)
+        let socket = Egress::KERNEL
+            .udp_shaped(IpAddr::V4(Ipv4Addr::LOCALHOST), shaping)
             .await
             .expect("a shaped UDP socket");
         socket
@@ -335,9 +548,295 @@ mod tests {
         ] {
             let listener = std::net::TcpListener::bind((ip, 0)).expect("a loopback listener");
             let addr = listener.local_addr().expect("its address");
-            let stream =
-                connect_within(addr, Duration::from_secs(1)).expect("the connect completes");
+            let stream = Egress::KERNEL
+                .connect_within(addr, Duration::from_secs(1))
+                .expect("the connect completes");
             assert_eq!(stream.peer_addr().expect("a peer"), addr, "{ip}");
         }
+    }
+
+    fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    fn v6(text: &str) -> IpAddr {
+        text.parse().expect("an IPv6 literal")
+    }
+
+    fn pinned(source: IpAddr, interface: u32) -> Egress {
+        Egress {
+            pin: Some(Pin {
+                source,
+                interface: NonZeroU32::new(interface),
+            }),
+        }
+    }
+
+    /// A laptop on a LAN, a WireGuard tunnel up beside it, a loopback, and a
+    /// link that is down.
+    fn laptop() -> Vec<Link> {
+        use crate::system::interface::LinkKind;
+        vec![
+            Link::new("lo", 1)
+                .with_kind(LinkKind::Loopback)
+                .with_link_up(true)
+                .with_addresses(vec![LinkAddress::new(v4(127, 0, 0, 1), 8)]),
+            Link::new("eth0", 2).with_link_up(true).with_addresses(vec![
+                LinkAddress::new(v4(192, 0, 2, 10), 24),
+                LinkAddress::new(v6("2001:db8:1::10"), 64),
+            ]),
+            Link::new("wg0", 5)
+                .with_link_up(true)
+                .with_addresses(vec![LinkAddress::new(v4(198, 51, 100, 2), 24)]),
+            Link::new("eth9", 9).with_addresses(vec![LinkAddress::new(v4(203, 0, 113, 1), 24)]),
+        ]
+    }
+
+    /// A forced source carries a connection to a target only the routing table
+    /// could have sent the wrong way, and leaves every other to it, as the plan
+    /// leaves the probes before them.
+    ///
+    /// Each case is a way to get this wrong: pinning a neighbour on the LAN to
+    /// the LAN is harmless, but pinning a tunnel peer to the LAN takes it off
+    /// the only link that reaches it, and pinning loopback to a LAN interface
+    /// reaches nothing.
+    #[test]
+    fn a_forced_source_carries_only_what_no_link_here_reaches_directly() {
+        let sources =
+            ForcedSources::with_links(&[v4(192, 0, 2, 10), v6("2001:db8:1::10")], &laptop());
+        let lan_v4 = pinned(v4(192, 0, 2, 10), 2);
+        let lan_v6 = pinned(v6("2001:db8:1::10"), 2);
+
+        for (target, expected, why) in [
+            (v4(198, 18, 0, 1), lan_v4, "a routed target"),
+            (v6("2001:db8:ffff::1"), lan_v6, "a routed IPv6 target"),
+            (
+                v4(203, 0, 113, 50),
+                lan_v4,
+                "a target in the prefix of a link that is down",
+            ),
+            (v4(192, 0, 2, 77), Egress::KERNEL, "a neighbour on the LAN"),
+            (v4(192, 0, 2, 10), Egress::KERNEL, "this host's own address"),
+            (
+                v4(198, 51, 100, 1),
+                Egress::KERNEL,
+                "a peer inside the tunnel",
+            ),
+            (v4(127, 0, 0, 1), Egress::KERNEL, "IPv4 loopback"),
+            (v6("::1"), Egress::KERNEL, "IPv6 loopback"),
+            (
+                v6("::ffff:198.18.0.1"),
+                Egress::KERNEL,
+                "an IPv4 host written inside IPv6",
+            ),
+            (v6("fe80::1"), Egress::KERNEL, "a link-local neighbour"),
+        ] {
+            assert_eq!(sources.toward(target), expected, "{why}: {target}");
+        }
+    }
+
+    /// A source speaks for its own family, and a scan that forced none for a
+    /// family leaves that family's connections where the plan leaves its
+    /// probes: to the routing table.
+    #[test]
+    fn a_forced_source_speaks_for_its_own_family_only() {
+        let only_v4 = ForcedSources::with_links(&[v4(192, 0, 2, 10)], &laptop());
+        assert_eq!(only_v4.toward(v6("2001:db8:ffff::1")), Egress::KERNEL);
+
+        let only_v6 = ForcedSources::with_links(&[v6("2001:db8:1::10")], &laptop());
+        assert_eq!(only_v6.toward(v4(198, 18, 0, 1)), Egress::KERNEL);
+
+        // One per family: the first named is the one used.
+        let two = ForcedSources::with_links(&[v4(192, 0, 2, 10), v4(198, 51, 100, 2)], &laptop());
+        assert_eq!(two.toward(v4(198, 18, 0, 1)), pinned(v4(192, 0, 2, 10), 2));
+
+        assert_eq!(
+            ForcedSources::with_links(&[], &laptop()).toward(v4(198, 18, 0, 1)),
+            Egress::KERNEL
+        );
+    }
+
+    /// The same rule the probes were planned by, asked of this machine's own
+    /// interfaces: a connection is pinned exactly where the plan paired its
+    /// target with the forced source.
+    ///
+    /// The rule is written twice, there in the classifier and here, and this
+    /// is what keeps the two from drifting. Skipped on a host holding no IPv4
+    /// address outside loopback, which has nothing to force.
+    #[test]
+    fn a_connection_is_pinned_exactly_where_the_plan_pinned_its_probe() {
+        use crate::model::ip::set::IpSet;
+        use crate::system::interface::{interfaces, map_ips_to_interfaces_forced};
+
+        let Some(held) = interfaces()
+            .into_iter()
+            .filter(|link| link.is_up() && !link.is_loopback())
+            .flat_map(|link| link.addresses().to_vec())
+            .find(|held| {
+                matches!(held.address(), IpAddr::V4(a) if !a.is_loopback() && !a.is_link_local())
+                    && held.prefix() <= 30
+            })
+        else {
+            return;
+        };
+        let forced = held.address();
+        let IpAddr::V4(own) = forced else {
+            unreachable!("filtered to IPv4 above");
+        };
+        let neighbour = [1u32, 2]
+            .into_iter()
+            .map(|offset| {
+                let network = u32::from(own) & (u32::MAX << (32 - held.prefix()));
+                IpAddr::V4(Ipv4Addr::from(network + offset))
+            })
+            .find(|candidate| *candidate != forced)
+            .expect("a /30 or wider holds a second address");
+
+        let sources = ForcedSources::new(&[forced]);
+        for target in [
+            v4(198, 18, 0, 1),
+            v4(127, 0, 0, 1),
+            forced,
+            neighbour,
+            v6("::ffff:198.18.0.1"),
+        ] {
+            let mut set = IpSet::new();
+            set.insert(target);
+            let planned = map_ips_to_interfaces_forced(set, &[forced])
+                .routed
+                .iter()
+                .any(|routed| routed.target == target && routed.source == forced);
+            assert_eq!(
+                sources.toward(target).pin.is_some(),
+                planned,
+                "{target}: the plan {} its probe to {forced}",
+                if planned { "pinned" } else { "did not pin" }
+            );
+        }
+    }
+
+    /// A source no interface here holds is kept as asked, and the connection
+    /// fails to bind rather than going out from an address the routing table
+    /// picked instead.
+    #[tokio::test]
+    async fn a_source_this_host_does_not_hold_fails_the_connection_rather_than_moving_it() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("its address");
+
+        let sources = ForcedSources::with_links(&[v4(192, 0, 2, 99)], &laptop());
+        let egress = sources.toward(v4(198, 18, 0, 1));
+        assert_eq!(egress, pinned(v4(192, 0, 2, 99), 0));
+
+        assert!(
+            egress.connect(addr).await.is_err(),
+            "a connection forced to an address this host does not hold went out anyway"
+        );
+    }
+
+    /// The loopback interface, and an address on it to leave from that the
+    /// routing table would not have picked for a connection to `127.0.0.1`,
+    /// where the host has one.
+    ///
+    /// Linux answers for the whole of `127.0.0.0/8`. macOS holds `127.0.0.1`
+    /// alone unless somebody added an alias, and there the source is the
+    /// kernel's own choice and only the interface can be told apart.
+    fn loopback_pin() -> (Egress, u32) {
+        let lo = crate::system::interface::interfaces()
+            .into_iter()
+            .find(Link::is_loopback)
+            .expect("a loopback interface");
+        let second = lo
+            .addresses()
+            .iter()
+            .map(LinkAddress::address)
+            .find(|address| address.is_ipv4() && *address != v4(127, 0, 0, 1));
+        let source = if cfg!(target_os = "linux") {
+            v4(127, 0, 0, 2)
+        } else {
+            second.unwrap_or(v4(127, 0, 0, 1))
+        };
+        (pinned(source, lo.index()), lo.index())
+    }
+
+    /// A pinned connection leaves from its source and is bound to its
+    /// interface, read back where each is visible: the source off the peer's
+    /// accept, the interface off the socket itself.
+    ///
+    /// The unpinned connection beside it is the control. Where the host has a
+    /// second loopback address the two sources differ, so the pin is what
+    /// moved it; everywhere, only the pinned socket is bound to a device.
+    #[tokio::test]
+    async fn a_pinned_connection_leaves_from_its_source_and_by_its_interface() {
+        let (egress, index) = loopback_pin();
+        let source = egress.pin.expect("a pin").source;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("its address");
+
+        let accept = tokio::spawn(async move {
+            let (_, first) = listener.accept().await.expect("the pinned connection");
+            let (_, second) = listener.accept().await.expect("the plain connection");
+            (first, second)
+        });
+        let pinned = egress.connect(addr).await.expect("the pinned connect");
+        let plain = Egress::KERNEL
+            .connect(addr)
+            .await
+            .expect("the plain connect");
+        let (first, second) = accept.await.expect("the accept task joins");
+
+        assert_eq!(first.ip(), source, "the pinned connection's source");
+        assert_eq!(
+            second.ip(),
+            v4(127, 0, 0, 1),
+            "the plain connection's source"
+        );
+
+        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        {
+            let bound = |stream: &TcpStream| {
+                socket2::SockRef::from(stream)
+                    .device_index_v4()
+                    .expect("the socket's interface")
+            };
+            assert_eq!(bound(&pinned), NonZeroU32::new(index));
+            assert_eq!(bound(&plain), None);
+        }
+        // Elsewhere the interface a socket is bound to cannot be read back.
+        #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+        let _ = (pinned, plain, index);
+    }
+
+    /// The datagram and the blocking connection are built by their own paths,
+    /// so each earns its own guard: one that skipped the pin would show the
+    /// kernel's source to the peer.
+    #[tokio::test]
+    async fn a_pinned_datagram_and_blocking_connection_leave_from_the_source() {
+        let (egress, _) = loopback_pin();
+        let source = egress.pin.expect("a pin").source;
+
+        let server = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP server");
+        let server_addr = server.local_addr().expect("its address");
+        let socket = egress.udp(server_addr.ip()).await.expect("a pinned socket");
+        socket
+            .connect(server_addr)
+            .await
+            .expect("addressing the peer");
+        socket.send(b"probe").await.expect("sending");
+        let mut buf = [0u8; 8];
+        let (_, from) = server.recv_from(&mut buf).await.expect("the datagram");
+        assert_eq!(from.ip(), source, "the datagram's source");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
+        let addr = listener.local_addr().expect("its address");
+        let handle = std::thread::spawn(move || listener.accept().map(|(_, from)| from));
+        let _stream = egress
+            .connect_within(addr, Duration::from_secs(1))
+            .expect("the blocking connect");
+        let from = handle.join().expect("the accept joins").expect("an accept");
+        assert_eq!(from.ip(), source, "the blocking connection's source");
     }
 }

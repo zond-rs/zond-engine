@@ -10,18 +10,25 @@
 //!
 //! `src/system/dial.rs` is where the engine opens the ordinary TCP and UDP
 //! sockets it speaks to a scanned host through, and where each is given what
-//! has to be set on it before it connects. On Windows that is a limit on the
-//! SYN retransmissions of every TCP socket, without which a refused port waits
-//! out the connect budget and reads as filtered.
+//! has to be set on it before it connects: the forced source and interface of
+//! a scan pinned to one, and on Windows a limit on the SYN retransmissions of
+//! every TCP socket, without which a refused port waits out the connect
+//! budget and reads as filtered.
 //!
-//! The rule is kept by the callers, and a caller that opens its own socket is
-//! the one that breaks it without anything noticing: on Linux and macOS its
-//! connection behaves exactly as before, and the difference shows up only on a
-//! platform nobody ran it on. Opening a socket is a thing a grep can see, so
-//! this is a census in the shape of `exclusions.rs`: every other production
-//! file that opens a TCP or UDP socket is listed with why it is not a
-//! connection to a target, and a new one fails the test until somebody writes
-//! that line.
+//! The rule is kept by the callers, and a caller that breaks it does so without
+//! anything noticing: its connection behaves exactly as before on an ordinary
+//! run, and the difference shows up only under a forced source or on a
+//! platform nobody ran it on. Two ways to break it are things a grep can see,
+//! so these are censuses in the shape of `exclusions.rs`:
+//!
+//! - **A socket opened somewhere else.** Every other production file that
+//!   opens a TCP or UDP socket is listed with why it is not a connection to a
+//!   target.
+//! - **A connection that ignores the scan's egress.** Every file that dials by
+//!   the routing table's own choice is listed with the public ways in it
+//!   offers, and nothing else in the crate may call them.
+//!
+//! A new one of either fails the test until somebody writes that line.
 //!
 //! What it cannot see is a socket a dependency opens on the engine's behalf.
 //! The one such dependency is `hickory-resolver`, which asks the host's own
@@ -60,6 +67,61 @@ const OTHER_SOCKETS: &[(&str, &str)] = &[
          reaches the target at all.",
     ),
 ];
+
+/// The files that dial by the routing table's choice rather than by the
+/// egress a scan chose, the public ways in each offers that do, and why no
+/// scan goes through them.
+///
+/// A forced source reaches a connection only as an `Egress` its caller was
+/// handed, so a phase that dials through one of these instead leaves by the
+/// routing table's link while the probe before it left by the forced one. That
+/// is exactly how a service pass came to go out through the VPN a scan was
+/// pinned out of, and it looks like correct code from anywhere but a capture.
+///
+/// **Adding a file here is the point of this census.** Choosing the routing
+/// table is right for a caller outside a scan, and has to say so; the scan's
+/// own phases call the form that takes an egress.
+const KERNEL_EGRESS: &[(&str, &[&str], &str)] = &[
+    (
+        "src/fingerprint.rs",
+        &[
+            "fingerprint_tcp(",
+            "fingerprint_tcp_detailed(",
+            "fingerprint_udp_detailed(",
+            "probe_udp_with(",
+            "probe_udp_raw(",
+        ],
+        "the public ways to fingerprint a port a caller reached on their own, which \
+         dial again as the routing table says. The scan's passes call the `_via` form \
+         of each with the egress `ScanContext::egress_toward` gave them. An analyzer \
+         driven directly through `analyze_with` dials the same way, since it runs \
+         outside any fingerprint's collection and so outside its egress.",
+    ),
+    (
+        "src/fingerprint/tls_enum.rs",
+        &["enumerate_tls("],
+        "`enumerate_tls` is the public way to enumerate an endpoint outside a scan. \
+         The scan's own pass calls `enumerate_tls_while` with the endpoint's egress.",
+    ),
+    (
+        "src/detect/flow/socket.rs",
+        &[],
+        "`SocketProbe::new` builds a probe dialling as the routing table says, for a \
+         caller driving a detection outside a scan. The scan's detection phase pins it \
+         with `via` before a byte is sent; a call that stops at `new` is not caught \
+         here, because the pin is a second call on the same line.",
+    ),
+    (
+        "src/detect/compute/live.rs",
+        &[],
+        "`LiveCapabilities::new` is the same as `SocketProbe::new` for a compute \
+         module: the routing table's choice for a caller outside a scan, pinned with \
+         `via` by the detection phase.",
+    ),
+];
+
+/// How a file chooses the routing table over a scan's egress.
+const KERNEL: &str = "Egress::KERNEL";
 
 /// What opening a TCP or UDP socket looks like, through `std`, `tokio` and
 /// `socket2` alike. `socket2` names the socket type rather than a constructor
@@ -119,9 +181,85 @@ fn every_socket_outside_the_dialler_has_said_why_it_is_not_a_connection_to_a_tar
     );
 }
 
+/// **Every connection that ignores a scan's forced source has said why, and
+/// nothing in a scan calls it.**
+#[test]
+fn every_connection_that_leaves_by_the_routing_table_has_said_why() {
+    let mut found = BTreeSet::new();
+    let mut production = Vec::new();
+    for path in sources() {
+        let text = fs::read_to_string(&path).expect("a source file is readable");
+        let code = without_comments(&without_tests(&text));
+        let path = path.to_string_lossy().replace('\\', "/");
+        if path != DIALLER && code.contains(KERNEL) {
+            found.insert(path.clone());
+        }
+        production.push((path, code));
+    }
+
+    let listed: BTreeSet<String> = KERNEL_EGRESS
+        .iter()
+        .map(|(path, _, _)| (*path).to_string())
+        .collect();
+
+    let unlisted: Vec<&String> = found.difference(&listed).collect();
+    assert!(
+        unlisted.is_empty(),
+        "these dial by the routing table's choice and are not in KERNEL_EGRESS: \
+         {unlisted:?}\n\n\
+         A scan forced to a source pins every connection it opens to that source and its \
+         interface, through the `Egress` `ScanContext::egress_toward` gives. `{KERNEL}` \
+         ignores it, so a connection made with it leaves by whatever link the routing \
+         table picks, which under a full-tunnel VPN is the tunnel the scan was pinned \
+         out of.\n\n\
+         Pass the scan's egress down instead, or, for a public way in used outside a \
+         scan, add the file to KERNEL_EGRESS in tests/hygiene/dialling.rs saying so."
+    );
+
+    let stale: Vec<&String> = listed.difference(&found).collect();
+    assert!(
+        stale.is_empty(),
+        "these are in KERNEL_EGRESS but no longer dial by the routing table: {stale:?}\n\n\
+         Remove them, so the list stays a census rather than a wish."
+    );
+
+    for (owner, entries, _) in KERNEL_EGRESS {
+        for entry in *entries {
+            let callers: Vec<&str> = production
+                .iter()
+                .filter(|(path, code)| path != owner && calls(code, entry))
+                .map(|(path, _)| path.as_str())
+                .collect();
+            assert!(
+                callers.is_empty(),
+                "{callers:?} call `{entry}`, which {owner} offers for a caller outside a \
+                 scan and which dials by the routing table's choice. Inside the engine, \
+                 call the form that takes the scan's egress."
+            );
+        }
+    }
+}
+
+/// Whether `code` calls `entry` by its own name rather than by a longer one
+/// ending the same way.
+fn calls(code: &str, entry: &str) -> bool {
+    code.match_indices(entry).any(|(at, _)| {
+        !code[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|before| before.is_alphanumeric() || before == '_')
+    })
+}
+
 /// Nobody explains themselves in a blank line.
 #[test]
 fn every_other_socket_says_something() {
+    for (path, _, why) in KERNEL_EGRESS {
+        assert!(
+            why.len() > 60,
+            "{path}'s note is too short to be an answer: {why:?}"
+        );
+    }
     for (path, why) in OTHER_SOCKETS {
         assert!(
             why.len() > 60,
@@ -149,6 +287,15 @@ fn the_census_reads_code_and_not_prose_or_tests() {
 
     let text = "fn engine() { let s = UdpSocket::bind(addr); }\n";
     assert!(without_comments(&without_tests(text)).contains("UdpSocket::bind"));
+
+    // A call by name is a call; a longer name ending the same way is another
+    // function.
+    assert!(calls(
+        "x = fingerprint::probe_udp_raw(a, b)",
+        "probe_udp_raw("
+    ));
+    assert!(!calls("x = probe_udp_raw_via(a, b, e)", "probe_udp_raw("));
+    assert!(!calls("x = my_probe_udp_raw(a, b)", "probe_udp_raw("));
 }
 
 /// The files whose contents describe how the engine behaves, which is every

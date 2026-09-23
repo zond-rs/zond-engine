@@ -82,6 +82,7 @@ use crate::model::tls::{
     CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
 };
 use crate::protocols::tls::{self, Offer, RECORD_HEADER_LEN, ServerResponse};
+use crate::system::dial::Egress;
 use crate::{info, warn};
 
 /// The most offers put to one endpoint under one version.
@@ -140,8 +141,11 @@ const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(250), Duration::from_
 /// A version whose walk the endpoint cut short, by going on not answering when
 /// asked again, is listed under [`TlsSupport::unfinished`], and whatever it had
 /// accepted by then is kept.
+///
+/// Every connection goes where the routing table sends it. A scan forced to a
+/// source enumerates through the same walk with its connections pinned there.
 pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
-    enumerate_tls_while(addr, || true).await
+    enumerate_tls_while(addr, Egress::KERNEL, || true).await
 }
 
 /// [`enumerate_tls`], asking `may_probe` before every connection and ending
@@ -153,8 +157,11 @@ pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
 /// it. What was learned before the answer turned is kept, since every suite in
 /// it was named by the server, and each version it cut short is listed as
 /// [`Interruption::Stopped`].
+///
+/// Every connection leaves by `egress`.
 pub(crate) async fn enumerate_tls_while(
     addr: SocketAddr,
+    egress: Egress,
     may_probe: impl Fn() -> bool,
 ) -> TlsSupport {
     let may_probe = &may_probe;
@@ -165,11 +172,11 @@ pub(crate) async fn enumerate_tls_while(
     // Fixed at five, so the versions are joined rather than spawned: what they
     // share is borrowed from this frame, and none of them outlives this call.
     let (ssl30, tls10, tls11, tls12, tls13) = tokio::join!(
-        walk(addr, TlsVersion::Ssl30, control, may_probe),
-        walk(addr, TlsVersion::Tls10, control, may_probe),
-        walk(addr, TlsVersion::Tls11, control, may_probe),
-        walk(addr, TlsVersion::Tls12, control, may_probe),
-        walk(addr, TlsVersion::Tls13, control, may_probe),
+        walk(addr, egress, TlsVersion::Ssl30, control, may_probe),
+        walk(addr, egress, TlsVersion::Tls10, control, may_probe),
+        walk(addr, egress, TlsVersion::Tls11, control, may_probe),
+        walk(addr, egress, TlsVersion::Tls12, control, may_probe),
+        walk(addr, egress, TlsVersion::Tls13, control, may_probe),
     );
 
     let mut support = TlsSupport::new();
@@ -193,6 +200,7 @@ pub(crate) async fn enumerate_tls_while(
 /// endpoint had declined anything, where it did.
 async fn walk(
     addr: SocketAddr,
+    egress: Egress,
     version: TlsVersion,
     control: &OnceLock<Control>,
     may_probe: &impl Fn() -> bool,
@@ -227,7 +235,7 @@ async fn walk(
             server_name: None,
         };
 
-        let (named, suite, retry) = match ask(addr, &offer, control, may_probe).await {
+        let (named, suite, retry) = match ask(addr, egress, &offer, control, may_probe).await {
             Answer::Hello {
                 version,
                 suite,
@@ -355,6 +363,7 @@ enum Answer {
 /// `may_probe` is asked before every connection, the control's included.
 async fn ask(
     addr: SocketAddr,
+    egress: Egress,
     offer: &Offer<'_>,
     control: &OnceLock<Control>,
     may_probe: &impl Fn() -> bool,
@@ -366,7 +375,7 @@ async fn ask(
         if !may_probe() {
             return Answer::Interrupted(Interruption::Stopped);
         }
-        match exchange(addr, offer).await {
+        match exchange(addr, egress, offer).await {
             Exchange::Answered(ServerResponse::Hello {
                 version,
                 suite,
@@ -388,7 +397,7 @@ async fn ask(
                     return Answer::Interrupted(Interruption::Stopped);
                 }
                 if let Exchange::Answered(ServerResponse::Hello { .. }) =
-                    exchange(addr, &control.offer()).await
+                    exchange(addr, egress, &control.offer()).await
                 {
                     return Answer::Declined;
                 }
@@ -424,14 +433,12 @@ enum Exchange {
 ///
 /// The connection is dropped as soon as the answer is read. Nothing is
 /// completed, so the endpoint sees a client that opened a connection, asked what
-/// it would accept, and left.
-async fn exchange(addr: SocketAddr, offer: &Offer<'_>) -> Exchange {
+/// it would accept, and left. It leaves by `egress`.
+async fn exchange(addr: SocketAddr, egress: Egress, offer: &Offer<'_>) -> Exchange {
     let hello = tls::client_hello(offer);
 
     timeout(EXCHANGE_TIMEOUT, async {
-        let Ok(Ok(mut stream)) =
-            timeout(CONNECT_PROBE_TIMEOUT, crate::system::dial::connect(addr)).await
-        else {
+        let Ok(Ok(mut stream)) = timeout(CONNECT_PROBE_TIMEOUT, egress.connect(addr)).await else {
             return Exchange::Lost;
         };
         if stream.write_all(&hello).await.is_err() {

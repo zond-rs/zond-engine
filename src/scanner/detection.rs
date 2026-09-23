@@ -188,8 +188,10 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         if ctx.host_expired(target.address.addr()) {
             continue;
         }
+        let egress = ctx.egress_toward(target.address.addr());
         pool.admit(detect_one(
             target,
+            egress,
             ctx.detections.clone(),
             detection,
             envelope,
@@ -267,9 +269,11 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
 }
 
 /// Runs one port's detections on the blocking pool and returns the findings, or
-/// [`None`] if the port yielded nothing or has no reachable address.
+/// [`None`] if the port yielded nothing or has no reachable address. Every
+/// connection a detection opens leaves by `egress`, as the scan's probe did.
 async fn detect_one(
     target: PortTarget,
+    egress: crate::system::dial::Egress,
     detections: crate::detect::Detections,
     detection: ServiceDetection,
     envelope: DetectionEnvelope,
@@ -305,7 +309,7 @@ async fn detect_one(
             protocol,
             |caps| {
                 Some(Box::new(Pooled {
-                    inner: SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps)),
+                    inner: SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps)).via(egress),
                     _permit: gate.acquire(),
                 }) as Box<dyn Probe>)
             },
@@ -339,7 +343,7 @@ async fn detect_one(
                 // out of the flow's own time budget.
                 let permit = gate.acquire();
                 Some(Box::new(Permitted {
-                    inner: LiveCapabilities::new(addr, protocol, tunnel, &grant.budget),
+                    inner: LiveCapabilities::new(addr, protocol, tunnel, &grant.budget).via(egress),
                     _permit: permit,
                 }) as Box<dyn Capabilities>)
             },

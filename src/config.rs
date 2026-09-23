@@ -893,6 +893,12 @@ pub struct ProbeTuning {
     /// table would choose. One per family at most is used. Empty means the host
     /// decides. Set to send from a chosen interface when the default route is a
     /// VPN the link-layer path cannot traverse.
+    ///
+    /// The connections a scan opens follow its probes: the connect scan, the
+    /// service pass, a TLS enumeration and the detections all leave a routed
+    /// target's connection from the forced source and by the interface holding
+    /// it. A target that a link here reaches directly, and one of a family
+    /// nothing was forced for, is left to the routing table by both.
     pub send_source: Vec<IpAddr>,
 }
 

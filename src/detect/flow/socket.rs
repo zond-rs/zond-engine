@@ -19,6 +19,7 @@ use crate::detect::compute::Budget;
 use crate::detect::exchange;
 use crate::fingerprint::Tunnel;
 use crate::model::port::Protocol;
+use crate::system::dial::Egress;
 
 use super::{Probe, ProbeRefusal};
 
@@ -55,6 +56,8 @@ pub struct SocketProbe {
     /// The tunnel the port answered inside, if any: a flow speaks TLS to an
     /// `ssl/*` service and plaintext to the rest, over the same exchange.
     tunnel: Option<Tunnel>,
+    /// Where each of the flow's connections leaves from.
+    egress: Egress,
     /// Bytes still available across this flow's remaining sends and replies.
     bytes_left: u64,
     /// When the flow's time budget runs out.
@@ -82,6 +85,9 @@ impl SocketProbe {
     /// `max_memory` bound a compute module's execution and a flow executes
     /// nothing, so they are ignored here as they are in
     /// [`LiveCapabilities`](crate::detect::compute::LiveCapabilities).
+    ///
+    /// Its connections go where the routing table sends them. A scan forced to
+    /// a source builds its own with every connection pinned there.
     pub fn new(
         addr: SocketAddr,
         protocol: Protocol,
@@ -92,12 +98,21 @@ impl SocketProbe {
             addr,
             protocol,
             tunnel,
+            egress: Egress::KERNEL,
             bytes_left: budget.max_bytes,
             deadline: Instant::now() + budget.deadline,
             connections_left: budget.max_connections,
             last_refusal: None,
             last_complete: false,
         }
+    }
+
+    /// The same probe, with every connection leaving by `egress`: the way the
+    /// scan reached the port, so a detection speaks to it from where the probe
+    /// did.
+    pub(crate) fn via(mut self, egress: Egress) -> Self {
+        self.egress = egress;
+        self
     }
 }
 
@@ -128,12 +143,19 @@ impl Probe for SocketProbe {
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
                 self.addr,
+                self.egress,
                 self.tunnel,
                 bytes,
                 self.deadline,
                 self.bytes_left,
             ),
-            Protocol::Udp => exchange::udp(self.addr, bytes, self.deadline, self.bytes_left),
+            Protocol::Udp => exchange::udp(
+                self.addr,
+                self.egress,
+                bytes,
+                self.deadline,
+                self.bytes_left,
+            ),
             // An SCTP port is scanned without a client stack, so there is
             // nothing here for a detection to hold a conversation over.
             Protocol::Sctp => return None,

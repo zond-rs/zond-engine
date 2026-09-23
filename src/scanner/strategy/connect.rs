@@ -45,7 +45,7 @@ use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
-use crate::system::dial::{self, Shaping};
+use crate::system::dial::{Egress, Shaping};
 use async_trait::async_trait;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
@@ -382,7 +382,9 @@ impl PortScanner for ConnectUdpPortScanner {
             }
             pool.audit().record_send(true);
             let endpoint = self.zones.endpoint(target.ip(), target.port());
-            pool.admit(udp_port_prober(target, shaping, endpoint)).await;
+            let egress = self.ctx.egress_toward(target.ip());
+            pool.admit(udp_port_prober(target, shaping, egress, endpoint))
+                .await;
         }
 
         // Anything still queued was never sent, and carries no position to
@@ -444,7 +446,8 @@ pub async fn scan(
         }
         pool.audit().record_send(true);
         let endpoint = zones.endpoint(target.ip(), target.port());
-        pool.admit(port_prober(target, detection, shaping, endpoint))
+        let egress = ctx.egress_toward(target.ip());
+        pool.admit(port_prober(target, detection, shaping, egress, endpoint))
             .await;
     }
 
@@ -580,10 +583,14 @@ fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
 /// a refusal is `Closed`, and a timeout is `Filtered`, the usual signature of a
 /// firewall drop. A connect that fails before anything leaves this machine is
 /// `Unasked`. Only TCP is supported, so UDP targets are skipped.
+///
+/// The connection, and every one the fingerprint makes after it, leaves by
+/// `egress`.
 async fn port_prober(
     planned: PlannedTarget,
     detection: ServiceDetection,
     shaping: Shaping,
+    egress: Egress,
     socket_addr: SocketAddr,
 ) -> ProbedPort {
     let target = planned.target;
@@ -598,7 +605,7 @@ async fn port_prober(
 
     match timeout(
         CONNECT_PROBE_TIMEOUT,
-        dial::connect_shaped(socket_addr, shaping),
+        egress.connect_shaped(socket_addr, shaping),
     )
     .await
     .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()))
@@ -611,7 +618,7 @@ async fn port_prober(
             // read without dialling again: the responses a passive detection
             // needs, and what the same bytes said about the machine.
             let (port, about_the_host, responses) =
-                crate::fingerprint::fingerprint_tcp_detailed(stream, port, detection).await;
+                crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await;
             Some(Probed {
                 ip: target.ip,
                 port: Some(port),
@@ -709,9 +716,12 @@ async fn port_prober(
 /// the same three verdicts the raw scanner reaches, by a different route.
 /// Errors that say nothing about the target (no local socket, no route) are
 /// logged and yield no record rather than a guess.
+///
+/// The datagram leaves by `egress`.
 async fn udp_port_prober(
     planned: PlannedTarget,
     shaping: Shaping,
+    egress: Egress,
     socket_addr: SocketAddr,
 ) -> ProbedPort {
     let target = planned.target;
@@ -753,7 +763,7 @@ async fn udp_port_prober(
     // scanner runs out of sockets is the shortfall a reader cannot see. The
     // outcome is `Unroutable` rather than `Unasked` for the reason the TCP
     // prober gives: this host gave up, which the next sitting may not.
-    let socket = match dial::udp_shaped(target.ip, shaping).await {
+    let socket = match egress.udp_shaped(target.ip, shaping).await {
         Ok(socket) => socket,
         Err(e) => {
             error!(
@@ -899,8 +909,15 @@ pub async fn discover(
         }
         probes += 1;
         pool.audit().record_send(true);
-        pool.admit(prober(ip, Arc::clone(&ports), ctx.handle.clone(), shaping))
-            .await;
+        let egress = ctx.egress_toward(ip);
+        pool.admit(prober(
+            ip,
+            Arc::clone(&ports),
+            ctx.handle.clone(),
+            shaping,
+            egress,
+        ))
+        .await;
     }
 
     // Anything still queued was never asked, and carries no position to settle.
@@ -993,7 +1010,15 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
 /// per address would take five timeouts to wind down rather than one. What has
 /// been asked so far decides how the address is filed: cut off part way through
 /// is not the same as asked and silent, and only the second is a verdict.
-async fn prober(ip: IpAddr, ports: Arc<[u16]>, handle: ScanHandle, shaping: Shaping) -> ProbedHost {
+///
+/// Every connect leaves by `egress`.
+async fn prober(
+    ip: IpAddr,
+    ports: Arc<[u16]>,
+    handle: ScanHandle,
+    shaping: Shaping,
+    egress: Egress,
+) -> ProbedHost {
     let start = Instant::now();
     let mut asked = false;
 
@@ -1011,7 +1036,7 @@ async fn prober(ip: IpAddr, ports: Arc<[u16]>, handle: ScanHandle, shaping: Shap
 
         let attempt = timeout(
             CONNECT_PROBE_TIMEOUT,
-            dial::connect_shaped(SocketAddr::new(ip, port), shaping),
+            egress.connect_shaped(SocketAddr::new(ip, port), shaping),
         )
         .await
         .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()));
@@ -1112,6 +1137,7 @@ mod tests {
         let probed = udp_port_prober(
             udp_target(ip, port),
             Shaping::default(),
+            Egress::KERNEL,
             SocketAddr::new(ip, port),
         )
         .await;
@@ -1131,6 +1157,7 @@ mod tests {
         let probed = udp_port_prober(
             udp_target(ip, port),
             Shaping::default(),
+            Egress::KERNEL,
             SocketAddr::new(ip, port),
         )
         .await;
@@ -1163,6 +1190,7 @@ mod tests {
             let probed = udp_port_prober(
                 udp_target(ip, port),
                 Shaping::default(),
+                Egress::KERNEL,
                 SocketAddr::new(ip, port),
             )
             .await;
@@ -1194,6 +1222,7 @@ mod tests {
             udp_port_prober(
                 target,
                 Shaping::default(),
+                Egress::KERNEL,
                 SocketAddr::new(target.ip(), target.port()),
             )
             .await

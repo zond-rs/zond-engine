@@ -366,7 +366,7 @@ async fn fetch_text(addr: std::net::SocketAddr, path: &str) -> Option<String> {
 
 /// One request and the response it draws, whole and bounded.
 async fn exchange(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
-    let mut stream = crate::system::dial::connect(addr).await.ok()?;
+    let mut stream = super::analyzer_connect(addr).await.ok()?;
     stream.write_all(&request(path)).await.ok()?;
 
     let mut response = Vec::new();

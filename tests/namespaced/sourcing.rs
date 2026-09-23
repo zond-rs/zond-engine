@@ -54,3 +54,127 @@ async fn a_forced_source_is_the_source_a_probe_carries() {
         Some(PortState::Open)
     );
 }
+
+/// Every connection a scan opens after its probe leaves from the forced source
+/// and by the link that holds it, as the probe did.
+///
+/// Two segments reach one target: the first by the routing table's own route,
+/// the second by a route standing behind it. The scan is forced to the second
+/// segment's address, which is how a scan leaves by a LAN interface when a
+/// VPN holds the default route. The probe finds the port open by the second
+/// segment, and then the service pass dials it, the fingerprint engine dials
+/// it again, and the detections speak to it. A connection that took the
+/// routing table's word would reach the target by the first segment, from
+/// that segment's address, and the first peer counts whatever arrives there.
+#[tokio::test]
+async fn every_connection_a_scan_opens_leaves_by_the_forced_source() {
+    if !available() {
+        return;
+    }
+
+    let default = Segment::new();
+    let mut forced_link = Segment::new();
+    let target = default.routed_peer();
+    forced_link.also_routes(target, 100);
+    let (open, seen) = forced_link.listen_http_recording_on(target);
+    default.count_tcp(open);
+    let forced = forced_link.scanner();
+
+    let mut cfg = test_config();
+    cfg.send_source = vec![forced];
+    cfg.assume_up = true;
+
+    let outcome = run_scan(
+        target_map(std::net::IpAddr::V4(target), &open.to_string()),
+        &cfg,
+    )
+    .await;
+
+    assert_eq!(
+        outcome.port_state(std::net::IpAddr::V4(target), open),
+        Some(PortState::Open),
+        "the probe reached the target by the forced link"
+    );
+    assert_eq!(
+        default.count_of(open),
+        0,
+        "something reached the target by the routing table's own link"
+    );
+    let seen = seen.lock().expect("the record").clone();
+    assert!(
+        !seen.is_empty(),
+        "the service pass never connected by the forced link"
+    );
+    assert!(
+        seen.iter().all(|source| *source == forced),
+        "a connection came from somewhere other than {forced}: {seen:?}"
+    );
+}
+
+/// A connect scan honours a forced source too: its probe, and the fingerprint
+/// it takes over the connection that probe opened, leave by the forced link.
+///
+/// The connect scan is what a scan without raw sockets runs on, and what
+/// stands in for a raw probe a frame cannot carry. Driven directly here, since
+/// a process with raw sockets never plans one for a routed target. Without the
+/// pin its SYN leaves by the routing table's link, which reaches a target with
+/// nothing listening, and the port reads closed.
+#[tokio::test]
+async fn a_connect_scan_leaves_by_the_forced_source() {
+    use zond_engine::config::ServiceDetection;
+    use zond_engine::model::target::{PlannedTarget, Target};
+    use zond_engine::scanner::session::ScanSession;
+
+    if !available() {
+        return;
+    }
+
+    let default = Segment::new();
+    let mut forced_link = Segment::new();
+    let target = default.routed_peer();
+    forced_link.also_routes(target, 100);
+    let (open, seen) = forced_link.listen_http_recording_on(target);
+    default.count_tcp(open);
+    let forced = forced_link.scanner();
+
+    let (session, ctx) = ScanSession::builder().send_source(vec![forced]).build();
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(PlannedTarget::new(
+        0,
+        Target {
+            ip: std::net::IpAddr::V4(target),
+            port: open,
+            protocol: zond_engine::model::port::Protocol::Tcp,
+        },
+    ))
+    .await
+    .expect("queue");
+    drop(tx);
+
+    zond_engine::scanner::strategy::connect::scan(
+        rx,
+        1,
+        ctx,
+        ServiceDetection::default(),
+        &zond_engine::EvasionProfile::default(),
+        &zond_engine::ZoneMap::new(),
+    )
+    .await
+    .expect("the connect scan runs");
+
+    assert_eq!(
+        crate::support::port_state(&session, std::net::IpAddr::V4(target), open),
+        Some(PortState::Open),
+        "the connect reached the target by the forced link"
+    );
+    assert_eq!(
+        default.count_of(open),
+        0,
+        "something reached the target by the routing table's own link"
+    );
+    let seen = seen.lock().expect("the record").clone();
+    assert!(
+        !seen.is_empty() && seen.iter().all(|source| *source == forced),
+        "a connection came from somewhere other than {forced}: {seen:?}"
+    );
+}

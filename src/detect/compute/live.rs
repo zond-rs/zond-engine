@@ -37,6 +37,7 @@ use std::time::Instant;
 use crate::detect::exchange::{self, ExchangeError};
 use crate::fingerprint::Tunnel;
 use crate::model::port::Protocol;
+use crate::system::dial::Egress;
 
 use super::budget::Budget;
 use super::capability::{CapError, Capabilities, ScanInstant};
@@ -50,6 +51,8 @@ pub struct LiveCapabilities {
     /// The tunnel the port answered inside, if any: a module speaks TLS to an
     /// `ssl/*` service and plaintext to the rest, over the same `speak`.
     tunnel: Option<Tunnel>,
+    /// Where each of the run's connections leaves from.
+    egress: Egress,
     /// Bytes still available across this run's remaining exchanges.
     bytes_left: u64,
     /// When the run's time budget runs out.
@@ -65,6 +68,9 @@ impl LiveCapabilities {
     /// the port answered inside, so a module's `speak` reaches an `ssl/*` service
     /// through a handshake. The clock starts now, so [`now`](Capabilities::now)
     /// reports the time since the run began.
+    ///
+    /// Its connections go where the routing table sends them. A scan forced to
+    /// a source builds its own with every connection pinned there.
     pub fn new(
         addr: SocketAddr,
         protocol: Protocol,
@@ -75,11 +81,20 @@ impl LiveCapabilities {
             addr,
             protocol,
             tunnel,
+            egress: Egress::KERNEL,
             bytes_left: budget.max_bytes,
             deadline: Instant::now() + budget.deadline,
             connections_left: budget.max_connections,
             clock: Instant::now(),
         }
+    }
+
+    /// The same capabilities, with every connection leaving by `egress`: the
+    /// way the scan reached the port, so a module speaks to it from where the
+    /// probe did.
+    pub(crate) fn via(mut self, egress: Egress) -> Self {
+        self.egress = egress;
+        self
     }
 }
 
@@ -103,14 +118,21 @@ impl Capabilities for LiveCapabilities {
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
                 self.addr,
+                self.egress,
                 self.tunnel,
                 bytes,
                 self.deadline,
                 self.bytes_left,
             )
             .map_err(CapError::from),
-            Protocol::Udp => exchange::udp(self.addr, bytes, self.deadline, self.bytes_left)
-                .map_err(CapError::from),
+            Protocol::Udp => exchange::udp(
+                self.addr,
+                self.egress,
+                bytes,
+                self.deadline,
+                self.bytes_left,
+            )
+            .map_err(CapError::from),
             Protocol::Sctp => Err(CapError::Denied(
                 "a detection cannot speak to an SCTP port: the engine scans SCTP without a client \
                  stack to hold an association open"

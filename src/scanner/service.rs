@@ -38,7 +38,7 @@ use crate::model::port::{Port, PortState, Protocol};
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Stage};
-use crate::system::dial;
+use crate::system::dial::Egress;
 
 /// Fingerprints every open port currently in the store worth an exchange,
 /// upgrading each port's service in place.
@@ -109,7 +109,8 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
         if ctx.host_expired(target.addr()) {
             continue;
         }
-        pool.admit(fingerprint_one(target, port, protocol, detection))
+        let egress = ctx.egress_toward(target.addr());
+        pool.admit(fingerprint_one(target, port, protocol, detection, egress))
             .await;
     }
 
@@ -263,11 +264,14 @@ struct Identified {
 /// address at all, and is skipped with a word about why. Attempting the
 /// connection anyway would fail with an error describing the network, which is a
 /// claim about the neighbour rather than about what this host knows.
+///
+/// Every connection it makes to the port leaves by `egress`.
 async fn fingerprint_one(
     target: ScopedIp,
     port_number: u16,
     protocol: Protocol,
     detection: ServiceDetection,
+    egress: Egress,
 ) -> Attempt {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
@@ -284,7 +288,7 @@ async fn fingerprint_one(
 
     let (port, about_the_host, banners) = match protocol {
         Protocol::Tcp => {
-            let stream = match timeout(CONNECT_PROBE_TIMEOUT, dial::connect(addr)).await {
+            let stream = match timeout(CONNECT_PROBE_TIMEOUT, egress.connect(addr)).await {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(e)) => {
                     return Attempt::Unreachable {
@@ -301,11 +305,11 @@ async fn fingerprint_one(
                     };
                 }
             };
-            crate::fingerprint::fingerprint_tcp_detailed(stream, port, detection).await
+            crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await
         }
         // Silence is not a failure here: a UDP port that says nothing has told
         // the scan what it had to.
-        Protocol::Udp => match crate::fingerprint::fingerprint_udp_detailed(addr, port).await {
+        Protocol::Udp => match crate::fingerprint::fingerprint_udp_via(addr, port, egress).await {
             Some(fingerprinted) => fingerprinted,
             None => return Attempt::Quiet,
         },

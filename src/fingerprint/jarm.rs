@@ -973,7 +973,7 @@ pub async fn fingerprint(addr: SocketAddr, host: &str) -> Option<String> {
 /// reference makes. What has arrived when the peer stops or the budget runs
 /// out is handed on, and the reader refuses it if it is short of a hello.
 async fn exchange(addr: SocketAddr, probe: &Probe, host: &str) -> Option<Vec<u8>> {
-    let mut stream = timeout(PROBE_TIMEOUT, crate::system::dial::connect(addr))
+    let mut stream = timeout(PROBE_TIMEOUT, super::analyzer_connect(addr))
         .await
         .ok()?
         .ok()?;

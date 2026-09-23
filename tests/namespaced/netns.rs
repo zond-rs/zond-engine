@@ -341,6 +341,27 @@ impl Segment {
         address
     }
 
+    /// Holds `address` behind this segment's peer too, and routes it there at
+    /// `metric`, so a second segment offers another way to a target another
+    /// one already reaches.
+    ///
+    /// With the first route at the kernel's default metric, the routing table
+    /// sends the target out by the first segment and this one stands behind
+    /// it: reached only by a socket bound to this segment's link, which is
+    /// what a forced source is.
+    pub fn also_routes(&self, address: Ipv4Addr, metric: u32) {
+        self.there(&["ip", "addr", "add", &format!("{address}/32"), "dev", "lo"]);
+        ip(&[
+            "route",
+            "add",
+            &format!("{address}/32"),
+            "via",
+            &peer_v4(self.index).to_string(),
+            "metric",
+            &metric.to_string(),
+        ]);
+    }
+
     /// Joins the two ends with a tunnel carried over the segment, gives each
     /// end an address in one `/24` on it, and returns the peer's.
     ///
@@ -660,6 +681,46 @@ impl Segment {
         })
     }
 
+    /// Binds an HTTP listener on `address` in the peer's namespace, and returns
+    /// its port and the source address of every connection it accepted.
+    ///
+    /// It answers each request with a page, so a scan's service pass finds a
+    /// web server and goes on to do everything it does to one: dial again for
+    /// its later questions, fetch the icon, run the detections. Every one of
+    /// those connections is recorded, which is what makes the list a record
+    /// of where a scan's connections came from rather than of its first.
+    pub fn listen_http_recording_on(
+        &mut self,
+        address: Ipv4Addr,
+    ) -> (u16, Arc<std::sync::Mutex<Vec<IpAddr>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let port = self.serve(move |stop, tx| {
+            let Ok(listener) = TcpListener::bind((address, 0)) else {
+                return;
+            };
+            let Ok(local) = listener.local_addr() else {
+                return;
+            };
+            if listener.set_nonblocking(true).is_err() || tx.send(local.port()).is_err() {
+                return;
+            }
+            while !stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, from)) => {
+                        record.lock().expect("the record").push(from.ip());
+                        answer_http(&mut stream);
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+        (port, seen)
+    }
+
     /// A TCP listener on the peer's IPv6 address.
     pub fn listen_tcp_v6(&mut self) -> u16 {
         let address = peer_v6(self.index);
@@ -797,6 +858,31 @@ impl Drop for Segment {
         let _ = self.peer.kill();
         let _ = self.peer.wait();
     }
+}
+
+/// Reads what a client sent, briefly, and answers it with a small page.
+///
+/// Whatever was asked gets the same answer, since what is being tested is where
+/// the question came from rather than what it was.
+fn answer_http(stream: &mut std::net::TcpStream) {
+    use std::io::{Read, Write};
+
+    if stream.set_nonblocking(false).is_err()
+        || stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .is_err()
+    {
+        return;
+    }
+    let mut request = [0u8; 2048];
+    let _ = stream.read(&mut request);
+    let body = "<html><head><title>zond</title></head><body>ok</body></html>";
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nServer: zond-test\r\nContent-Type: text/html\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
 }
 
 /// A socket on the mDNS group, in whichever namespace the caller is in.

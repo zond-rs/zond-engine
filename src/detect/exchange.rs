@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::fingerprint::Tunnel;
-use crate::system::dial;
+use crate::system::dial::Egress;
 
 /// The largest datagram a UDP reply is read into, the theoretical maximum
 /// payload of one.
@@ -96,8 +96,8 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
         .filter(|left| !left.is_zero())
 }
 
-/// Connects, sends `bytes`, and reads the reply until it is whole, the port
-/// falls silent, the connection closes, or `cap` bytes have been read.
+/// Connects by `egress`, sends `bytes`, and reads the reply until it is whole,
+/// the port falls silent, the connection closes, or `cap` bytes have been read.
 ///
 /// A `tunnel` wraps the connected socket in the transport the port answered
 /// inside before a byte of the probe is sent, so an `ssl/*` service is reached
@@ -109,13 +109,15 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
 /// to the caller.
 pub(crate) fn tcp(
     addr: SocketAddr,
+    egress: Egress,
     tunnel: Option<Tunnel>,
     bytes: &[u8],
     deadline: Instant,
     cap: u64,
 ) -> Result<Reply, ExchangeError> {
     let timeout = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
-    let tcp = dial::connect_within(addr, timeout.min(CONNECT_PROBE_TIMEOUT))
+    let tcp = egress
+        .connect_within(addr, timeout.min(CONNECT_PROBE_TIMEOUT))
         .map_err(|error| ExchangeError::of(&error))?;
     tcp.set_read_timeout(Some(remaining(deadline).ok_or(ExchangeError::TimedOut)?))
         .map_err(|error| ExchangeError::of(&error))?;
@@ -251,17 +253,20 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// Sends one datagram and reads one reply, capped at `cap` bytes.
+/// Sends one datagram by `egress` and reads one reply, capped at `cap` bytes.
 ///
 /// A datagram is one whole message, so a reply that arrives is complete. Silence
 /// is an empty reply, as it is over TCP.
 pub(crate) fn udp(
     addr: SocketAddr,
+    egress: Egress,
     bytes: &[u8],
     deadline: Instant,
     cap: u64,
 ) -> Result<Reply, ExchangeError> {
-    let socket = dial::udp_blocking(addr.ip()).map_err(|error| ExchangeError::of(&error))?;
+    let socket = egress
+        .udp_blocking(addr.ip())
+        .map_err(|error| ExchangeError::of(&error))?;
     socket
         .connect(addr)
         .map_err(|error| ExchangeError::of(&error))?;

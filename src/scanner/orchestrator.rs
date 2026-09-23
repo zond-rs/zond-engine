@@ -1093,7 +1093,8 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         if ctx.handle.should_stop() {
             break;
         }
-        pool.admit(ask_for_kernel(target)).await;
+        let egress = ctx.egress_toward(target.addr());
+        pool.admit(ask_for_kernel(target, egress)).await;
     }
     pool.drain().await;
 
@@ -1170,7 +1171,9 @@ pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetect
         if ctx.handle.should_stop() {
             break;
         }
-        pool.admit(ask_what_hardware(target, hostname)).await;
+        let egress = ctx.egress_toward(target.addr());
+        pool.admit(ask_what_hardware(target, hostname, egress))
+            .await;
     }
     pool.drain().await;
 
@@ -1189,10 +1192,15 @@ const MDNS_PORT: u16 = 5353;
 /// Asks a host what it calls itself, by the reverse name of its own address.
 ///
 /// One datagram, and it is what makes the device-info query possible at all on a
-/// host the scan reached by address and never resolved a name for.
-async fn own_name(addr: std::net::SocketAddr, ip: IpAddr) -> Option<String> {
+/// host the scan reached by address and never resolved a name for. It leaves
+/// by `egress`.
+async fn own_name(
+    addr: std::net::SocketAddr,
+    ip: IpAddr,
+    egress: crate::system::dial::Egress,
+) -> Option<String> {
     let query = crate::protocols::mdns::build_reverse_query(ip).ok()?;
-    let reply = crate::fingerprint::probe_udp_raw(addr, &query).await?;
+    let reply = crate::fingerprint::probe_udp_raw_via(addr, &query, egress).await?;
 
     crate::protocols::mdns::extract_hosts(&reply)
         .ok()?
@@ -1206,9 +1214,11 @@ async fn own_name(addr: std::net::SocketAddr, ip: IpAddr) -> Option<String> {
 ///
 /// Sent to the host rather than to the multicast group: a scan is asking one host
 /// about itself, and the answer is attributable only if the question was.
+/// Both datagrams leave by `egress`.
 async fn ask_what_hardware(
     target: crate::model::ip::scoped::ScopedIp,
     hostname: Option<String>,
+    egress: crate::system::dial::Egress,
 ) -> Option<(crate::model::ip::scoped::ScopedIp, Vec<OsEvidence>)> {
     let addr = target.to_socket_addr(MDNS_PORT)?;
 
@@ -1220,12 +1230,12 @@ async fn ask_what_hardware(
     let question = |name: &str| crate::protocols::mdns::build_device_info_query(name)?.ok();
     let query = match hostname.as_deref().and_then(question) {
         Some(query) => query,
-        None => question(&own_name(addr, target.addr()).await?)?,
+        None => question(&own_name(addr, target.addr(), egress).await?)?,
     };
 
     // Each `key=value` is its own claim: the model and the Darwin release are
     // two facts about one machine, and a rule reads one of them.
-    let evidence: Vec<OsEvidence> = crate::fingerprint::probe_udp_with(addr, &query)
+    let evidence: Vec<OsEvidence> = crate::fingerprint::probe_udp_with_via(addr, &query, egress)
         .await
         .iter()
         .filter_map(|text| {
@@ -1249,8 +1259,11 @@ const SNMP_PORT: u16 = 161;
 /// A link-local address with no interface recorded against it yields no socket
 /// address at all and is skipped: dialling it anyway would fail with an error
 /// describing this host's routing rather than anything about the target.
+///
+/// The request leaves by `egress`.
 async fn ask_for_kernel(
     target: crate::model::ip::scoped::ScopedIp,
+    egress: crate::system::dial::Egress,
 ) -> Option<(
     crate::model::ip::scoped::ScopedIp,
     Port,
@@ -1259,7 +1272,7 @@ async fn ask_for_kernel(
     let addr = target.to_socket_addr(SNMP_PORT)?;
 
     let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);
-    let (port, evidence, _) = crate::fingerprint::fingerprint_udp_detailed(addr, port).await?;
+    let (port, evidence, _) = crate::fingerprint::fingerprint_udp_via(addr, port, egress).await?;
 
     // Recorded with what found it, so a report can tell this port from one the
     // port scan established, and never has to imply it was asked for.
@@ -1614,7 +1627,7 @@ async fn enumerate_one(
 )> {
     let socket = address.to_socket_addr(number)?;
     let ip = address.addr();
-    let support = crate::fingerprint::enumerate_tls_while(socket, || {
+    let support = crate::fingerprint::enumerate_tls_while(socket, ctx.egress_toward(ip), || {
         !ctx.handle.should_stop() && !ctx.host_expired(ip)
     })
     .await;

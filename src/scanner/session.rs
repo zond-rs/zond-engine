@@ -1362,9 +1362,21 @@ pub struct ScanContext {
     /// their own on the config. Cheap to clone: the compiled tiers sit behind
     /// `Arc`s.
     pub(crate) detections: crate::detect::Detections,
+    /// The sources the scan forced, which decide where each connection it
+    /// opens leaves from. Empty for a scan that forced none.
+    pub(crate) forced: Arc<crate::system::dial::ForcedSources>,
 }
 
 impl ScanContext {
+    /// Where a connection this scan opens to `target` leaves from.
+    ///
+    /// Asked by every phase that dials, once per destination, and handed to
+    /// each connection it makes there, so a port the scan's probe reached from
+    /// a forced source is spoken to from that source too.
+    pub(crate) fn egress_toward(&self, target: IpAddr) -> crate::system::dial::Egress {
+        self.forced.toward(target)
+    }
+
     /// Records the responses the service phase gathered for one port, for the
     /// detection phase to hand a passive detection.
     pub(crate) fn record_responses(
@@ -2074,6 +2086,7 @@ pub struct SessionBuilder {
     scan_timeout: Option<Duration>,
     host_probe_interval: Option<Duration>,
     order_seed: Option<u64>,
+    send_source: Vec<IpAddr>,
 }
 
 impl SessionBuilder {
@@ -2217,6 +2230,20 @@ impl SessionBuilder {
         self
     }
 
+    /// The source addresses the connections this scan opens are forced to, one
+    /// per family.
+    ///
+    /// A caller orchestrating their own scan sets this to have the same pinning
+    /// [`scan`](crate::scanner::scan) applies from
+    /// [`ZondConfig::send_source`](crate::config::ZondConfig::send_source):
+    /// every connection to a routed target, the connect scan's and the service
+    /// pass's alike, leaves from the forced source and by the interface holding
+    /// it, as the raw probes before them do.
+    pub fn send_source(mut self, sources: Vec<IpAddr>) -> Self {
+        self.send_source = sources;
+        self
+    }
+
     /// Opens the session and the context.
     ///
     /// This is where a scan's own clock starts, so a caller holding a builder
@@ -2271,6 +2298,7 @@ impl SessionBuilder {
             responses: Arc::new(Responses::default()),
             tapes: Arc::new(Tapes::default()),
             detections: self.detections,
+            forced: Arc::new(crate::system::dial::ForcedSources::new(&self.send_source)),
         };
 
         (session, ctx)

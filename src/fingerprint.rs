@@ -112,7 +112,7 @@ use tokio::time::timeout;
 
 use crate::config::ServiceDetection;
 use crate::model::port::{Port, PortState, Protocol, Service};
-use crate::system::dial;
+use crate::system::dial::Egress;
 
 /// How long to wait for a service to speak first (banner grab).
 const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);
@@ -403,10 +403,25 @@ pub async fn fingerprint_tcp(stream: TcpStream, port: Port, detection: ServiceDe
 /// The gathered responses are returned as a third value, for a caller that runs a
 /// later detection over them rather than redrawing them; it is empty when nothing
 /// was read.
+///
+/// Every further connection it makes to the port, for a later question or an
+/// active analyzer, goes where the routing table sends it. A scan forced to a
+/// source reaches the same engine with its connections pinned there instead.
 pub async fn fingerprint_tcp_detailed(
+    stream: TcpStream,
+    port: Port,
+    detection: ServiceDetection,
+) -> (Port, AboutTheHost, Vec<String>) {
+    fingerprint_tcp_via(stream, port, detection, Egress::KERNEL).await
+}
+
+/// [`fingerprint_tcp_detailed`], with every further connection to the port
+/// leaving by `egress`, which is how `stream` was reached.
+pub(crate) async fn fingerprint_tcp_via(
     stream: TcpStream,
     mut port: Port,
     detection: ServiceDetection,
+    egress: Egress,
 ) -> (Port, AboutTheHost, Vec<String>) {
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target.
@@ -414,8 +429,11 @@ pub async fn fingerprint_tcp_detailed(
     // Every stage inside `gather` is bounded and their sum is nobody's property;
     // see [`COLLECTION_BUDGET`]. A port that runs out of it is left exactly as
     // the scan recorded it, which is what a port that said nothing gets.
-    let Ok((responses, tunnel)) =
-        timeout(COLLECTION_BUDGET, gather(stream, port.number(), detection)).await
+    let Ok((responses, tunnel)) = timeout(
+        COLLECTION_BUDGET,
+        gather(stream, port.number(), detection, egress),
+    )
+    .await
     else {
         return (port, AboutTheHost::default(), Vec::new());
     };
@@ -438,16 +456,23 @@ pub async fn fingerprint_tcp_detailed(
     let fallback = first_printable(&responses.banners);
     let banners = responses.banners.clone();
     let mut about_the_host = AboutTheHost::default();
-    match analyze(
-        port.number(),
-        Protocol::Tcp,
-        addr,
-        responses,
-        tunnel,
-        detection,
-    )
-    .await
-    {
+    // The analyzers dial through the port's egress. They are handed a context
+    // whose shape is public and cannot carry it, so it reaches them as the
+    // scope their collection runs in; see `ANALYZING`.
+    let verdict = ANALYZING
+        .scope(
+            egress,
+            analyze(
+                port.number(),
+                Protocol::Tcp,
+                addr,
+                responses,
+                tunnel,
+                detection,
+            ),
+        )
+        .await;
+    match verdict {
         Some(verdict) if !verdict.is_empty() => {
             // Taken from the whole retained evidence set rather than from the
             // winning service alone: a host running two identifiable services
@@ -500,11 +525,23 @@ pub async fn fingerprint_tcp_detailed(
 /// withheld, so nothing distinguishes a filtered port from one with nothing
 /// behind it. A caller that dialled a port on its own account uses this to tell
 /// whether it found anything at all.
+///
+/// The datagram leaves where the routing table sends it; a scan forced to a
+/// source sends it from there instead.
 pub async fn fingerprint_udp_detailed(
     addr: std::net::SocketAddr,
-    mut port: Port,
+    port: Port,
 ) -> Option<(Port, AboutTheHost, Vec<String>)> {
-    let texts = probe_udp(addr).await?;
+    fingerprint_udp_via(addr, port, Egress::KERNEL).await
+}
+
+/// [`fingerprint_udp_detailed`], with the datagram leaving by `egress`.
+pub(crate) async fn fingerprint_udp_via(
+    addr: std::net::SocketAddr,
+    mut port: Port,
+    egress: Egress,
+) -> Option<(Port, AboutTheHost, Vec<String>)> {
+    let texts = probe_udp(addr, egress).await?;
     let responses = ResponseSet::from_banners(texts);
     let banners = responses.banners.clone();
 
@@ -558,9 +595,9 @@ pub async fn fingerprint_udp_detailed(
 /// So each registered probe is tried in turn and the first that yields text
 /// wins. A port registering one probe, which is nearly all of them, costs
 /// exactly what it did before.
-async fn probe_udp(addr: std::net::SocketAddr) -> Option<Vec<String>> {
+async fn probe_udp(addr: std::net::SocketAddr, egress: Egress) -> Option<Vec<String>> {
     for payload in SignatureDb::global().udp_probe_payloads(addr.port()) {
-        let texts = probe_udp_with(addr, payload).await;
+        let texts = probe_udp_with_via(addr, payload, egress).await;
         if !texts.is_empty() {
             return Some(texts);
         }
@@ -582,7 +619,16 @@ async fn probe_udp(addr: std::net::SocketAddr) -> Option<Vec<String>> {
 ///
 /// Empty when nothing answered or nothing could be read from what did.
 pub async fn probe_udp_with(addr: std::net::SocketAddr, payload: &[u8]) -> Vec<String> {
-    match probe_udp_raw(addr, payload).await {
+    probe_udp_with_via(addr, payload, Egress::KERNEL).await
+}
+
+/// [`probe_udp_with`], with the datagram leaving by `egress`.
+pub(crate) async fn probe_udp_with_via(
+    addr: std::net::SocketAddr,
+    payload: &[u8],
+    egress: Egress,
+) -> Vec<String> {
+    match probe_udp_raw_via(addr, payload, egress).await {
         Some(reply) => extract::from_datagram(addr.port(), &reply),
         None => Vec::new(),
     }
@@ -598,7 +644,16 @@ pub async fn probe_udp_with(addr: std::net::SocketAddr, payload: &[u8]) -> Vec<S
 ///
 /// [`None`] when nothing answered.
 pub async fn probe_udp_raw(addr: std::net::SocketAddr, payload: &[u8]) -> Option<Vec<u8>> {
-    let socket = dial::udp(addr.ip()).await.ok()?;
+    probe_udp_raw_via(addr, payload, Egress::KERNEL).await
+}
+
+/// [`probe_udp_raw`], with the datagram leaving by `egress`.
+pub(crate) async fn probe_udp_raw_via(
+    addr: std::net::SocketAddr,
+    payload: &[u8],
+    egress: Egress,
+) -> Option<Vec<u8>> {
+    let socket = egress.udp(addr.ip()).await.ok()?;
     socket.connect(addr).await.ok()?;
     socket.send(payload).await.ok()?;
 
@@ -626,10 +681,13 @@ pub async fn probe_udp_raw(addr: std::net::SocketAddr, payload: &[u8]) -> Option
 /// Whenever a handshake succeeds the collection re-runs *inside* the tunnel, so
 /// the protocol carried by TLS is fingerprinted too, and the returned [`Tunnel`]
 /// records that it was.
+///
+/// Every connection after the first leaves by `egress`, as the first did.
 async fn gather(
     mut stream: TcpStream,
     port: u16,
     detection: ServiceDetection,
+    egress: Egress,
 ) -> (ResponseSet, Option<Tunnel>) {
     // Identify nothing. Reached only from the unprivileged path, where the
     // connection is how the port's state was established and so exists whether
@@ -654,7 +712,7 @@ async fn gather(
     // name for a handshake, so the socket in hand is asked in the clear and that
     // is the whole of it.
     let Ok(socket) = stream.peer_addr() else {
-        return (plaintext(&mut stream, port, None).await, None);
+        return (plaintext(&mut stream, port, None, egress).await, None);
     };
 
     // The first rung inherits the connection the caller opened. Every rung after
@@ -664,13 +722,13 @@ async fn gather(
     for rung in Rung::ladder(port) {
         let stream = match opened.take() {
             Some(stream) => stream,
-            None => match redial(socket).await {
+            None => match redial(socket, egress).await {
                 Some(fresh) => fresh,
                 None => return (ResponseSet::default(), None),
             },
         };
 
-        let (responses, tunnel) = rung.ask(stream, port, socket, detection).await;
+        let (responses, tunnel) = rung.ask(stream, port, socket, detection, egress).await;
         if !responses.is_empty() {
             return (responses, tunnel);
         }
@@ -682,9 +740,10 @@ async fn gather(
 /// A second connection to a port already reached once.
 ///
 /// The first one succeeded, so this either succeeds immediately or the port has
-/// stopped accepting; see [`CONNECT_RETRY_TIMEOUT`].
-async fn redial(socket: SocketAddr) -> Option<TcpStream> {
-    match timeout(CONNECT_RETRY_TIMEOUT, dial::connect(socket)).await {
+/// stopped accepting; see [`CONNECT_RETRY_TIMEOUT`]. It leaves by `egress`, the
+/// way the first one did.
+async fn redial(socket: SocketAddr, egress: Egress) -> Option<TcpStream> {
+    match timeout(CONNECT_RETRY_TIMEOUT, egress.connect(socket)).await {
         Ok(Ok(fresh)) => Some(fresh),
         _ => None,
     }
@@ -753,6 +812,7 @@ impl Rung {
         port: u16,
         socket: SocketAddr,
         detection: ServiceDetection,
+        egress: Egress,
     ) -> (ResponseSet, Option<Tunnel>) {
         match self {
             Rung::Tls => tunneled(tls::handshake(stream, socket.ip()).await, port).await,
@@ -760,8 +820,14 @@ impl Rung {
                 tunneled(tls::speculative_handshake(stream, socket.ip()).await, port).await
             }
             Rung::LegacyTls => (legacy_tls(stream).await, None),
-            Rung::Plaintext => (plaintext(&mut stream, port, Some(socket)).await, None),
-            Rung::LastResort => (last_resort(stream, socket, port, detection).await, None),
+            Rung::Plaintext => (
+                plaintext(&mut stream, port, Some(socket), egress).await,
+                None,
+            ),
+            Rung::LastResort => (
+                last_resort(stream, socket, port, detection, egress).await,
+                None,
+            ),
         }
     }
 }
@@ -788,6 +854,7 @@ async fn last_resort(
     socket: SocketAddr,
     port: u16,
     detection: ServiceDetection,
+    egress: Egress,
 ) -> ResponseSet {
     let probes =
         SignatureDb::global().universal_tcp_probe_payloads(port, detection.probe_intensity());
@@ -797,7 +864,7 @@ async fn last_resort(
     for payload in probes {
         let Some(mut stream) = (match opened.take() {
             Some(stream) => Some(stream),
-            None => redial(socket).await,
+            None => redial(socket, egress).await,
         }) else {
             break;
         };
@@ -824,7 +891,12 @@ async fn last_resort(
 /// A reply that is a TLS record is reported as nothing rather than as a banner,
 /// on either shape. The port spoke, but not in this rung's language, and the
 /// ladder has a rung that can read it.
-async fn plaintext(stream: &mut TcpStream, port: u16, socket: Option<SocketAddr>) -> ResponseSet {
+async fn plaintext(
+    stream: &mut TcpStream,
+    port: u16,
+    socket: Option<SocketAddr>,
+    egress: Egress,
+) -> ResponseSet {
     let probes = SignatureDb::global().tcp_probe_payloads(port);
     if !probes.is_empty() {
         let banners = collect_responses(stream, port, probes).await;
@@ -840,7 +912,7 @@ async fn plaintext(stream: &mut TcpStream, port: u16, socket: Option<SocketAddr>
         return ResponseSet::from_banners(banners);
     }
 
-    match ask_generically(stream, socket).await {
+    match ask_generically(stream, socket, egress).await {
         GenericReply::Spoke(banners) => ResponseSet::from_banners(banners),
         GenericReply::Tls | GenericReply::Silent => ResponseSet::default(),
     }
@@ -873,7 +945,11 @@ enum GenericReply {
 /// unidentified port. Measured against one ordinary home server, that was seven
 /// of its eleven open ports, to learn nothing about any of them. An HTTP request
 /// answers in a round trip and names most of them.
-async fn ask_generically(stream: &mut TcpStream, socket: Option<SocketAddr>) -> GenericReply {
+async fn ask_generically(
+    stream: &mut TcpStream,
+    socket: Option<SocketAddr>,
+    egress: Egress,
+) -> GenericReply {
     for payload in SignatureDb::global().generic_tcp_probe_payloads() {
         if stream.write_all(payload).await.is_err() {
             break;
@@ -893,7 +969,7 @@ async fn ask_generically(stream: &mut TcpStream, socket: Option<SocketAddr>) -> 
     // many self-hosted applications it is the only thing the root serves. See
     // `redirect_path`.
     let followed = match (socket, redirect_path(&first, socket)) {
-        (Some(socket), Some(path)) => follow_redirect(socket, &path).await,
+        (Some(socket), Some(path)) => follow_redirect(socket, &path, egress).await,
         _ => None,
     };
 
@@ -1012,9 +1088,10 @@ fn same_host_path(url: &str, peer: SocketAddr) -> Option<String> {
 /// A new connection rather than the one in hand: the response carrying the
 /// redirect may well have closed it, and a follow-up written into a socket the
 /// peer has already gone away from is a write that succeeds and a read that
-/// never returns. One round trip, and only on a response that asked for it.
-async fn follow_redirect(socket: SocketAddr, path: &str) -> Option<String> {
-    let mut stream = timeout(CONNECT_RETRY_TIMEOUT, dial::connect(socket))
+/// never returns. One round trip, and only on a response that asked for it,
+/// leaving by `egress` as the connection that drew the redirect did.
+async fn follow_redirect(socket: SocketAddr, path: &str, egress: Egress) -> Option<String> {
+    let mut stream = timeout(CONNECT_RETRY_TIMEOUT, egress.connect(socket))
         .await
         .ok()?
         .ok()?;
@@ -1122,6 +1199,33 @@ where
     }
 
     banners
+}
+
+tokio::task_local! {
+    /// The egress the analyzers of the port being fingerprinted dial through.
+    ///
+    /// A scope rather than an argument because an analyzer is handed a
+    /// [`PortContext`], which is public, non-exhaustive, and built by struct
+    /// literal throughout the crate; what an analyzer dials through is the
+    /// engine's business and not a field a caller outside it could fill. Set
+    /// around `analyze`, whose collection runs inline on the task that set it:
+    /// the one task it spawns is the CPU phase, which dials nothing, so no
+    /// analyzer dials from where the scope cannot reach.
+    static ANALYZING: Egress;
+}
+
+/// Connects to `addr` for an analyzer, the way the port it is examining was
+/// reached.
+///
+/// Outside a fingerprint's collection, which is an analyzer driven directly
+/// through [`analyze_with`], the routing table decides, as it does for any
+/// public entry point here.
+pub(crate) async fn analyzer_connect(addr: SocketAddr) -> std::io::Result<TcpStream> {
+    ANALYZING
+        .try_with(|egress| *egress)
+        .unwrap_or(Egress::KERNEL)
+        .connect(addr)
+        .await
 }
 
 /// The analyzer registry. New evidence sources (HTTP, JARM, SNMP, nerva binary
@@ -1829,7 +1933,8 @@ mod tests {
         // branch without binding a privileged port.
         let stream = TcpStream::connect(addr).await.expect("connects");
         let port = baseline_port(443, Protocol::Tcp, PortState::Open);
-        let (responses, tunnel) = gather(stream, 443, ServiceDetection::Probe).await;
+        let (responses, tunnel) =
+            gather(stream, 443, ServiceDetection::Probe, Egress::KERNEL).await;
         server.abort();
         let _ = port;
 

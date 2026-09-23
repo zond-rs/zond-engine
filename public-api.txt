@@ -15193,6 +15193,7 @@ pub fn zond_engine::scanner::session::SessionBuilder::ordering(self, core::optio
 pub fn zond_engine::scanner::session::SessionBuilder::planning(self, zond_engine::scanner::session::Stage, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::scan_timeout(self, core::option::Option<core::time::Duration>) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::send_source(self, alloc::vec::Vec<core::net::ip_addr::IpAddr>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::staging(self, alloc::vec::Vec<zond_engine::scanner::session::Stage>) -> Self
 impl core::default::Default for zond_engine::scanner::session::SessionBuilder
 pub fn zond_engine::scanner::session::SessionBuilder::default() -> zond_engine::scanner::session::SessionBuilder

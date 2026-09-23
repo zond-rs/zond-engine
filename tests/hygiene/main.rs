@@ -16,13 +16,14 @@
 //! obligations a module states and its callers keep are written down where the
 //! next caller will meet them.
 //!
-//! Those obligations are kept by five censuses. Every reader of an ICMP error
+//! Those obligations are kept by six censuses. Every reader of an ICMP error
 //! says how it ties one to a probe; every file opening a capture that admits
 //! ICMP says where it checks the protocol before it parses a byte; every
 //! writer into the host store says how it is held to the exclusions; every
-//! file naming a port's sender says how an excluded one stays out; and every
-//! file opening a TCP or UDP socket outside the one place connections to a
-//! target are opened says why its socket is not one. Each
+//! file naming a port's sender says how an excluded one stays out; every file
+//! opening a TCP or UDP socket outside the one place connections to a target
+//! are opened says why its socket is not one; and every file dialling past the
+//! source a scan forced says why no scan goes through it. Each
 //! census also holds itself to account: an entry has to say something, every
 //! probe kind has to be placed by whether its capture admits ICMP, and the way
 //! the ICMP censuses find a file is tried against the spellings it has to see
