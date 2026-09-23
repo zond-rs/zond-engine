@@ -18,10 +18,10 @@
 //! describes it and the iterator produces them one at a time.
 //!
 //! [`TargetMap`] is several of those, since one scan can ask different questions
-//! of different hosts: `10.0.0.1:22` and `10.0.0.0/24:80` are one job with two
-//! shapes. Each unit is a set of addresses paired with a set of ports, which is
-//! why the counts here are gross rather than net. Two units naming one address
-//! are two questions about it, and both get asked.
+//! of different hosts: `192.0.2.1:22` and `192.0.2.0/24:80` are one job with
+//! two shapes. Each unit is a set of addresses paired with a set of ports,
+//! which is why the counts here are gross rather than net. Two units naming one
+//! address are two questions about it, and both get asked.
 
 use crate::model::ip::range::IpRange;
 use crate::model::ip::set::{IpSet, Positions};
@@ -704,7 +704,7 @@ mod tests {
     /// against before anything is sent.
     #[test]
     fn a_sets_target_count_is_its_addresses_times_its_ports() {
-        let ts = TargetSet::new(ips("192.168.1.0/24"), ports("80, 443"));
+        let ts = TargetSet::new(ips("192.0.2.0/24"), ports("80, 443"));
         assert_eq!(ts.total_targets().unwrap(), 256 * 2);
     }
 
@@ -713,8 +713,8 @@ mod tests {
     /// the failure that makes this matter, so that is what it checks.
     #[test]
     fn a_target_set_merges_its_addresses_on_construction() {
-        let mut overlapping = ips("192.168.1.0/24");
-        overlapping.insert_range("192.168.1.128/25".parse().expect("valid range"));
+        let mut overlapping = ips("192.0.2.0/24");
+        overlapping.insert_range("192.0.2.128/25".parse().expect("valid range"));
 
         let ts = TargetSet::new(overlapping, ports("80"));
 
@@ -728,7 +728,7 @@ mod tests {
     /// produce the same total. This pins the triples.
     #[test]
     fn a_set_yields_every_address_paired_with_every_port() {
-        let ts = TargetSet::new(ips("10.0.0.1-10.0.0.2"), ports("80, u:53"));
+        let ts = TargetSet::new(ips("192.0.2.1-192.0.2.2"), ports("80, u:53"));
 
         let mut targets: Vec<(String, u16, Protocol)> = ts
             .iter()
@@ -739,10 +739,10 @@ mod tests {
         assert_eq!(
             targets,
             vec![
-                ("10.0.0.1".to_string(), 53, Protocol::Udp),
-                ("10.0.0.1".to_string(), 80, Protocol::Tcp),
-                ("10.0.0.2".to_string(), 53, Protocol::Udp),
-                ("10.0.0.2".to_string(), 80, Protocol::Tcp),
+                ("192.0.2.1".to_string(), 53, Protocol::Udp),
+                ("192.0.2.1".to_string(), 80, Protocol::Tcp),
+                ("192.0.2.2".to_string(), 53, Protocol::Udp),
+                ("192.0.2.2".to_string(), 80, Protocol::Tcp),
             ]
         );
     }
@@ -752,8 +752,8 @@ mod tests {
     #[test]
     fn a_map_iterates_its_units_in_the_order_they_were_added() {
         let mut map = TargetMap::new();
-        map.add_unit(TargetSet::new(ips("10.0.0.1"), ports("80")));
-        map.add_unit(TargetSet::new(ips("10.0.0.2"), ports("u:53")));
+        map.add_unit(TargetSet::new(ips("192.0.2.1"), ports("80")));
+        map.add_unit(TargetSet::new(ips("192.0.2.2"), ports("u:53")));
 
         let targets: Vec<(String, u16, Protocol)> = map
             .iter()
@@ -763,8 +763,8 @@ mod tests {
         assert_eq!(
             targets,
             vec![
-                ("10.0.0.1".to_string(), 80, Protocol::Tcp),
-                ("10.0.0.2".to_string(), 53, Protocol::Udp),
+                ("192.0.2.1".to_string(), 80, Protocol::Tcp),
+                ("192.0.2.2".to_string(), 53, Protocol::Udp),
             ]
         );
     }
@@ -790,7 +790,7 @@ mod tests {
     #[test]
     fn a_maps_total_is_the_sum_of_its_units() {
         let mut map = TargetMap::new();
-        map.add_unit(TargetSet::new(ips("10.0.0.1-10.0.0.5"), ports("80,443")));
+        map.add_unit(TargetSet::new(ips("192.0.2.1-192.0.2.5"), ports("80,443")));
         assert_eq!(map.gross_targets().unwrap(), 10);
     }
 }

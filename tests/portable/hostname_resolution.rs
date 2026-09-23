@@ -28,9 +28,9 @@ use zond_engine::scanner::session::{HostStore, ScanSession};
 use zond_engine::transport::capture::CapturedSegment;
 use zond_engine::transport::probe::{Emission, ProbeSender, ProbeTransport, SendError};
 
-const ROUTER: &str = "192.168.0.1";
-const PRINTER: &str = "192.168.0.30";
-const PI: &str = "192.168.0.150";
+const ROUTER: &str = "192.0.2.1";
+const PRINTER: &str = "192.0.2.30";
+const PI: &str = "192.0.2.150";
 
 /// The bug this whole path exists to avoid: the first resolver a host is
 /// configured with need not be one that will answer for the network being
@@ -41,7 +41,7 @@ const PI: &str = "192.168.0.150";
 #[tokio::test]
 async fn a_resolver_that_declines_a_reverse_zone_cannot_hide_a_name() {
     let declining = FakeResolver::spawn(Answer::NoSuchName).await;
-    let gateway = FakeResolver::spawn(Answer::Name("kabelbox.local")).await;
+    let gateway = FakeResolver::spawn(Answer::Name("router.local")).await;
 
     let store = resolve(
         vec![declining.addr, gateway.addr],
@@ -50,15 +50,15 @@ async fn a_resolver_that_declines_a_reverse_zone_cannot_hide_a_name() {
     )
     .await;
 
-    assert_eq!(hostname(&store, ROUTER), Some("kabelbox.local".to_string()));
+    assert_eq!(hostname(&store, ROUTER), Some("router.local".to_string()));
     assert_eq!(
         declining.questions(),
-        vec!["1.0.168.192.in-addr.arpa".to_string()],
+        vec!["1.2.0.192.in-addr.arpa".to_string()],
         "the declining resolver should still have been asked"
     );
     assert_eq!(
         gateway.questions(),
-        vec!["1.0.168.192.in-addr.arpa".to_string()],
+        vec!["1.2.0.192.in-addr.arpa".to_string()],
     );
 }
 
@@ -77,7 +77,7 @@ async fn a_host_no_resolver_has_a_name_for_stays_unnamed() {
 /// costs one query per resolver rather than one per report.
 #[tokio::test]
 async fn a_host_reported_twice_is_queried_once() {
-    let resolver = FakeResolver::spawn(Answer::Name("kabelbox.local")).await;
+    let resolver = FakeResolver::spawn(Answer::Name("router.local")).await;
 
     let store = resolve(
         vec![resolver.addr],
@@ -86,7 +86,7 @@ async fn a_host_reported_twice_is_queried_once() {
     )
     .await;
 
-    assert_eq!(hostname(&store, ROUTER), Some("kabelbox.local".to_string()));
+    assert_eq!(hostname(&store, ROUTER), Some("router.local".to_string()));
     assert_eq!(resolver.questions().len(), 1);
 }
 
@@ -101,7 +101,7 @@ async fn a_stranger_reusing_our_transaction_id_renames_nothing() {
     // IDs are handed out from zero, so the very first query the resolver sends
     // carries ID 0 - which is exactly what an unrelated response is most likely
     // to collide with.
-    let intruder = ptr_response(0, "150.0.168.192.in-addr.arpa", Some("raspberrypi.local"));
+    let intruder = ptr_response(0, "150.2.0.192.in-addr.arpa", Some("raspberrypi.local"));
 
     let store = resolve(
         vec![silent.addr],
@@ -127,7 +127,7 @@ async fn a_stranger_reusing_our_transaction_id_renames_nothing() {
 #[tokio::test]
 async fn a_reverse_lookup_overheard_on_the_wire_names_its_host() {
     let silent = FakeResolver::spawn(Answer::Nothing).await;
-    let overheard = ptr_response(0x4321, "30.0.168.192.in-addr.arpa", Some("epson.local"));
+    let overheard = ptr_response(0x4321, "30.2.0.192.in-addr.arpa", Some("epson.local"));
 
     let store = resolve(vec![silent.addr], &[], vec![sniffed_dns(&overheard)]).await;
 
@@ -147,7 +147,7 @@ async fn an_mdns_response_names_the_owner_of_the_address_not_the_service() {
         "_airplay._tcp.local",
         Rdata::Ptr("Study._airplay._tcp.local"),
     );
-    write_record(&mut message, "appletv.local", Rdata::A([192, 168, 0, 150]));
+    write_record(&mut message, "appletv.local", Rdata::A([192, 0, 2, 150]));
 
     let store = resolve(vec![silent.addr], &[], vec![sniffed_mdns(&message)]).await;
 
@@ -345,7 +345,7 @@ fn sniffed(source_port: u16, payload: &[u8]) -> CapturedSegment {
     bytes.extend_from_slice(&0u16.to_be_bytes()); // checksum, unchecked here
     bytes.extend_from_slice(payload);
 
-    CapturedSegment::synthetic(ip("192.168.0.1"), IpNextHeaderProtocols::Udp, bytes)
+    CapturedSegment::synthetic(ip("192.0.2.1"), IpNextHeaderProtocols::Udp, bytes)
 }
 
 /// A PTR response as it would appear on the wire, with its question intact.

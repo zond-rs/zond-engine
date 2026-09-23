@@ -298,7 +298,7 @@ pub async fn for_discovery_with<S: AsRef<str>>(
 /// and [`discover`](crate::scanner::discover) will honour.
 ///
 /// The counterpart of [`for_discovery`], and the same grammar. An exclusion is
-/// written the way a target is, so `10.0.5.0/24`, `192.168.1.10-20`,
+/// written the way a target is, so `198.51.100.0/24`, `192.0.2.10-20`,
 /// `db.internal`, `lan` and `fe80::1%en0` all work, because a person reading a
 /// scope document transcribes both halves of it and a scanner that accepted CIDR
 /// for
@@ -329,7 +329,7 @@ pub async fn for_discovery_with<S: AsRef<str>>(
 /// // ... a settings document has already contributed its own ...
 ///
 /// let resolver = Resolver::from_system();
-/// let from_arguments = resolve::for_exclusion(&["10.0.5.0/24"], Some(&resolver)).await?;
+/// let from_arguments = resolve::for_exclusion(&["192.0.2.0/24"], Some(&resolver)).await?;
 /// cfg.exclusions.extend(&from_arguments);
 /// # Ok(())
 /// # }
@@ -381,7 +381,7 @@ pub async fn for_exclusion_with<S: AsRef<str>>(
 ///
 /// The second half used to be missing, and `Malformed` alone is not the
 /// builder's rule: it applies two more tests before it consults the lookup, so
-/// `192.168.0.300` was sent to a resolver here and refused as a mistyped address
+/// `192.0.2.300` was sent to a resolver here and refused as a mistyped address
 /// there. Asking the same function is what makes the two passes agree, rather
 /// than a comment saying they do.
 ///
@@ -507,9 +507,9 @@ mod tests {
     #[test]
     fn a_token_the_builder_will_refuse_is_never_put_on_the_network() {
         let refused = [
-            "192.168.0.300",   // an octet out of range
+            "192.0.2.300",     // an octet out of range
             "999.999.999.999", // every octet out of range
-            "10.0.0",          // too few octets
+            "192.0.2",         // too few octets
         ];
         assert_eq!(
             collect_names(&refused),
@@ -554,7 +554,7 @@ mod tests {
     fn keywords(keyword: Keyword, set: &mut IpSet) -> Result<(), IpParseError> {
         match keyword {
             Keyword::Lan => {
-                set.insert("192.168.1.1".parse().expect("a valid address"));
+                set.insert("192.0.2.1".parse().expect("a valid address"));
                 Ok(())
             }
         }
@@ -577,7 +577,7 @@ mod tests {
         };
         let resolver = Resolver::from_system();
 
-        let set = to_set(&["lan", "192.0.2.1"], Some(&counting), None, &resolver)
+        let set = to_set(&["lan", "203.0.113.1"], Some(&counting), None, &resolver)
             .await
             .expect("the keyword resolver answers");
 
@@ -596,7 +596,7 @@ mod tests {
         assert!(keyword.segment_sweep());
         assert_eq!(keyword.ips().len(), 1);
 
-        let spelled_out = for_discovery_with(&["192.168.1.1"], None, Some(&keywords), None)
+        let spelled_out = for_discovery_with(&["192.0.2.1"], None, Some(&keywords), None)
             .await
             .expect("a literal address");
         assert!(!spelled_out.segment_sweep());
@@ -607,7 +607,7 @@ mod tests {
     /// that is where a person writes it when mixing it with something else.
     #[tokio::test]
     async fn the_keyword_is_found_alongside_other_targets() {
-        let mixed = for_discovery_with(&["lan,10.1.0.0/30"], None, Some(&keywords), None)
+        let mixed = for_discovery_with(&["lan,198.51.100.0/30"], None, Some(&keywords), None)
             .await
             .expect("the keyword resolver answers");
         assert!(mixed.segment_sweep());
@@ -643,7 +643,7 @@ mod tests {
     /// cost a caller the rest of their target list.
     #[tokio::test]
     async fn addresses_still_resolve_with_no_name_resolver() {
-        let targets = for_discovery_with(&["10.0.0.0/30", "2001:db8::1"], None, None, None)
+        let targets = for_discovery_with(&["198.51.100.0/30", "2001:db8::1"], None, None, None)
             .await
             .expect("literals need nothing looked up");
         assert_eq!(targets.ips().len(), 5);
@@ -657,11 +657,11 @@ mod tests {
     #[test]
     fn only_the_hostnames_in_a_mixed_list_are_collected() {
         let exprs = [
-            "192.168.1.10",
+            "192.0.2.10",
             "example.com:443",
-            "10.0.0.0/24",
+            "198.51.100.0/24",
             "raspberrypi.local",
-            "10.0.0.1-10",
+            "198.51.100.1-10",
             "lan",
         ];
 
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn names_are_found_inside_a_comma_list() {
         assert_eq!(
-            collect_names(&["10.0.0.1,db.internal:5432"]),
+            collect_names(&["198.51.100.1,db.internal:5432"]),
             vec!["db.internal".to_string()]
         );
     }
@@ -716,7 +716,7 @@ mod tests {
         let resolver = Resolver::from_system();
 
         let set = to_set(
-            &["10.0.0.1:80", "10.0.0.2:443", "2001:db8::1"],
+            &["198.51.100.1:80", "198.51.100.2:443", "2001:db8::1"],
             None,
             None,
             &resolver,
@@ -725,8 +725,8 @@ mod tests {
         .expect("literals resolve without a lookup");
 
         assert_eq!(set.len(), 3);
-        assert!(set.contains(&"10.0.0.1".parse().unwrap()));
-        assert!(set.contains(&"10.0.0.2".parse().unwrap()));
+        assert!(set.contains(&"198.51.100.1".parse().unwrap()));
+        assert!(set.contains(&"198.51.100.2".parse().unwrap()));
         assert!(set.contains(&"2001:db8::1".parse().unwrap()));
     }
 }

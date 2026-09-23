@@ -1068,13 +1068,13 @@ mod tests {
     const RST: u8 = 1 << 2;
     const PSH: u8 = 1 << 3;
     const ACK: u8 = 1 << 4;
-    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
     /// This host's address on [`on_link_interface`], which its probes leave from.
-    const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 50);
+    const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 50);
     const LOCAL_IP: IpAddr = IpAddr::V4(LOCAL);
     /// A router between here and [`TARGET`], which reports errors under its own
     /// address rather than the target's.
-    const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+    const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
 
     /// An interface whose /24 contains [`TARGET`], so source resolution
     /// answers on-link without a kernel route probe.
@@ -1082,7 +1082,7 @@ mod tests {
         use crate::system::interface::{Link, LinkAddress};
         use std::net::{Ipv4Addr, Ipv6Addr};
         Link::new("test0", 0).with_addresses(vec![
-            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)), 24),
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)), 24),
             LinkAddress::new(
                 IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 50)),
                 64,
@@ -1385,7 +1385,7 @@ mod tests {
     fn own_probe_leaving(bytes: Vec<u8>) -> CapturedSegment {
         CapturedSegment {
             received_at: Instant::now(),
-            source: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
+            source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
             destination: Some(TARGET),
             protocol: IpNextHeaderProtocols::Tcp,
             bytes,
@@ -2162,7 +2162,7 @@ mod tests {
         CapturedSegment::synthetic(ROUTER, IpNextHeaderProtocols::Icmp, bytes)
     }
 
-    const TARGET_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 200);
+    const TARGET_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 200);
 
     /// **An address this scan never probed is not a host this scan may report.**
     ///

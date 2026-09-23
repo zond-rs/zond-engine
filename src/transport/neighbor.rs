@@ -280,11 +280,11 @@ mod tests {
             name: "en0".to_string(),
             mac: IFACE_MAC,
             v4: vec![LinkAddress::new(
-                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)),
+                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)),
                 24,
             )],
             v6: vec![],
-            gateway_v4: Some((Ipv4Addr::new(192, 168, 1, 1), GW_MAC)),
+            gateway_v4: Some((Ipv4Addr::new(192, 0, 2, 1), GW_MAC)),
             gateway_v6: None,
         }
     }
@@ -293,12 +293,12 @@ mod tests {
     fn on_link_target_routes_to_itself_and_needs_arp() {
         let resolver = NeighborResolver::from_interfaces(vec![ethernet_iface()]);
         let route = resolver
-            .resolve(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200)))
+            .resolve(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200)))
             .unwrap();
 
         assert!(route.on_link);
-        assert_eq!(route.next_hop, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200)));
-        assert_eq!(route.src_ip, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
+        assert_eq!(route.next_hop, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200)));
+        assert_eq!(route.src_ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)));
         assert_eq!(route.src_mac, IFACE_MAC);
         assert_eq!(route.next_hop_mac, None); // must be ARP-resolved
     }
@@ -329,15 +329,15 @@ mod tests {
             .unwrap();
 
         assert!(!route.on_link);
-        assert_eq!(route.next_hop, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        assert_eq!(route.next_hop, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
         assert_eq!(route.next_hop_mac, Some(GW_MAC));
-        assert_eq!(route.src_ip, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
+        assert_eq!(route.src_ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)));
     }
 
     #[test]
     fn cached_on_link_mac_is_returned() {
         let mut resolver = NeighborResolver::from_interfaces(vec![ethernet_iface()]);
-        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
         let learned = MacAddr::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF);
 
         assert_eq!(resolver.resolve(target).unwrap().next_hop_mac, None);
@@ -354,7 +354,10 @@ mod tests {
         let gatewayless = InterfaceInfo {
             name: "en1".to_string(),
             mac: MacAddr(0x02, 0, 0, 0, 0, 0x02),
-            v4: vec![LinkAddress::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 24)],
+            v4: vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)),
+                24,
+            )],
             v6: vec![],
             gateway_v4: None,
             gateway_v6: None,
@@ -387,7 +390,7 @@ mod tests {
     #[test]
     fn an_off_link_v6_probe_is_sourced_from_a_routable_address() {
         let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
-        let global = Ipv6Addr::new(0x2a02, 0x908, 0, 0, 0, 0, 0, 0xb1a0);
+        let global = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0);
         let unique_local = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
 
         let iface = InterfaceInfo {

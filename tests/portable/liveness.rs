@@ -122,8 +122,8 @@ async fn a_live_host_is_still_port_scanned() {
 }
 
 /// Each unit keeps the ports it was given. A target may name its own —
-/// `10.0.0.1:8080` — so a gate that rebuilt one set against one port list would
-/// answer a different question from the one that was asked.
+/// `192.0.2.1:8080` — so a gate that rebuilt one set against one port list
+/// would answer a different question from the one that was asked.
 #[tokio::test]
 async fn the_gate_keeps_each_unit_its_own_ports() {
     if is_privileged() {

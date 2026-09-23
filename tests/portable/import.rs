@@ -58,17 +58,17 @@ use zond_engine::report::ScanReport;
 /// A list of the kind a person types or a ticket carries.
 const TARGET_LIST: &str = "\
 # staging, 2026-02
-192.168.0.1
-10.0.0.0/30:8080
+203.0.113.1
+192.0.2.0/30:8080
 [2001:db8::1]:443    # the load balancer
-192.168.0.20 192.168.0.21
+203.0.113.20 203.0.113.21
 ";
 
 /// A table with this engine's own header on it, one row per host and port.
 const TARGET_TABLE: &str = "\
 ip,hostname,status,port,protocol,state
-10.0.0.1,gateway,up,22,tcp,open
-10.0.0.1,gateway,up,53,udp,open
+192.0.2.1,gateway,up,22,tcp,open
+192.0.2.1,gateway,up,53,udp,open
 2001:db8::1,edge,up,443,tcp,open
 198.51.100.7,quiet,up,,,
 ";
@@ -79,9 +79,9 @@ const REPORT_DOCUMENT: &str = r#"{
   "schema_version": 1,
   "engine": {"name": "zond-engine", "version": "0.13.0"},
   "hosts": [
-    {"primary_ip": "10.0.0.1", "ips": ["10.0.0.1", "2001:db8::1"],
+    {"primary_ip": "192.0.2.1", "ips": ["192.0.2.1", "2001:db8::1"],
      "ports": [{"port": 22, "protocol": "tcp"}, {"port": 53, "protocol": "udp"}]},
-    {"primary_ip": "10.0.0.9"}
+    {"primary_ip": "192.0.2.9"}
   ]
 }"#;
 
@@ -89,10 +89,10 @@ const REPORT_DOCUMENT: &str = r#"{
 const REPORT_RECORDS: &str = concat!(
     r#"{"type":"report","schema_version":1,"engine":{"name":"zond-engine"}}"#,
     "\n",
-    r#"{"type":"host","primary_ip":"10.0.0.1","ips":["10.0.0.1","2001:db8::1"],"#,
+    r#"{"type":"host","primary_ip":"192.0.2.1","ips":["192.0.2.1","2001:db8::1"],"#,
     r#""ports":[{"port":22,"protocol":"tcp"},{"port":53,"protocol":"udp"}]}"#,
     "\n",
-    r#"{"type":"host","primary_ip":"10.0.0.9"}"#,
+    r#"{"type":"host","primary_ip":"192.0.2.9"}"#,
     "\n",
 );
 
@@ -103,7 +103,7 @@ const NMAP_DOCUMENT: &str = concat!(
     "<nmaprun scanner=\"nmap\" args=\"nmap -oX out.xml\" start=\"1786468167\" version=\"7.94\">\n",
     "<host>\n",
     "<status state=\"up\" reason=\"echo-reply\" reason_ttl=\"64\"/>\n",
-    "<address addr=\"10.0.0.1\" addrtype=\"ipv4\"/>\n",
+    "<address addr=\"192.0.2.1\" addrtype=\"ipv4\"/>\n",
     "<address addr=\"aa:bb:cc:dd:ee:ff\" addrtype=\"mac\" vendor=\"Arris\"/>\n",
     "<ports>\n",
     "<port protocol=\"tcp\" portid=\"22\"><state state=\"open\" reason=\"syn-ack\"/>",
@@ -210,7 +210,7 @@ fn endpoints(report: &ScanReport) -> BTreeSet<(String, u16, String)> {
 /// A report built by hand, so a round trip is held against values that never
 /// went through a serializer.
 fn hand_built_report() -> ScanReport {
-    let mut gateway = Host::new("10.0.0.1".parse::<IpAddr>().expect("an address"));
+    let mut gateway = Host::new("192.0.2.1".parse::<IpAddr>().expect("an address"));
     gateway.set_status(HostStatus::Up);
     gateway.set_hostname(Some("gateway.example".to_string()));
     gateway.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
@@ -356,7 +356,7 @@ fn a_table_on_disk_becomes_the_hosts_and_ports_its_columns_name() {
     assert_eq!(imported.tokens, 4, "the header is not a row");
     assert_eq!(
         imported.addresses, 4,
-        "10.0.0.1 lands in two units and is counted in each"
+        "192.0.2.1 lands in two units and is counted in each"
     );
 
     let units = &imported.map.units;
@@ -461,7 +461,7 @@ fn an_nmap_document_on_disk_becomes_the_hosts_and_ports_it_found() {
 
 #[test]
 fn a_list_with_a_typo_in_it_names_the_line_the_typo_is_on() {
-    let file = "10.0.0.1\n10.0.0.2\n10.0.0.300\n10.0.0.4\n";
+    let file = "192.0.2.1\n192.0.2.2\n192.0.2.300\n192.0.2.4\n";
 
     let error = read_targets("list-typo", ImportFormat::List, file, &options())
         .expect_err("the third line is not an address");
@@ -471,7 +471,7 @@ fn a_list_with_a_typo_in_it_names_the_line_the_typo_is_on() {
             origin, ref token, ..
         } => {
             assert_eq!(origin, ImportOrigin::line(3));
-            assert_eq!(token, "10.0.0.300");
+            assert_eq!(token, "192.0.2.300");
         }
         other => panic!("expected a refused target, got {other:?}"),
     }
@@ -541,7 +541,7 @@ fn a_record_per_line_report_names_the_record_that_is_not_one() {
     let file = concat!(
         r#"{"type":"report","schema_version":1}"#,
         "\n",
-        r#"{"type":"host","primary_ip":"10.0.0.1"}"#,
+        r#"{"type":"host","primary_ip":"192.0.2.1"}"#,
         "\n",
         "not a record at all\n",
     );
@@ -563,7 +563,7 @@ fn an_nmap_document_with_an_unreadable_port_names_the_line_it_is_on() {
     let file = concat!(
         "<nmaprun>\n",
         "<host>\n",
-        "<address addr=\"10.0.0.1\" addrtype=\"ipv4\"/>\n",
+        "<address addr=\"192.0.2.1\" addrtype=\"ipv4\"/>\n",
         "<ports>\n",
         "<port protocol=\"tcp\" portid=\"ssh\"><state state=\"open\"/></port>\n",
         "</ports>\n",
@@ -596,8 +596,8 @@ fn an_nmap_document_with_an_unreadable_port_names_the_line_it_is_on() {
 /// the limit has to read whichever way it ends.
 #[test]
 fn a_line_at_the_byte_limit_reads_and_one_byte_past_it_is_refused() {
-    const AT_LIMIT: &str = "192.168.100.100:8080";
-    const PAST_LIMIT: &str = "192.168.100.100:18080";
+    const AT_LIMIT: &str = "203.0.113.100:8080";
+    const PAST_LIMIT: &str = "203.0.113.100:18080";
     assert_eq!(PAST_LIMIT.len(), AT_LIMIT.len() + 1, "one byte apart");
 
     let options = options().with_limits(ImportLimits::new().with_max_line_bytes(AT_LIMIT.len()));
@@ -609,7 +609,7 @@ fn a_line_at_the_byte_limit_reads_and_one_byte_past_it_is_refused() {
         assert_eq!(imported.addresses, 1, "{terminator:?}");
     }
 
-    let file = format!("10.0.0.1\n{PAST_LIMIT}\n");
+    let file = format!("192.0.2.1\n{PAST_LIMIT}\n");
     let error = read_targets("line-limit-past", ImportFormat::List, &file, &options)
         .expect_err("one byte past the limit is past the limit");
 
@@ -631,7 +631,7 @@ fn an_import_at_the_token_limit_reads_and_one_expression_past_it_is_refused() {
     let imported = read_targets(
         "token-limit",
         ImportFormat::List,
-        "10.0.0.1 10.0.0.2\n10.0.0.3 10.0.0.4\n",
+        "192.0.2.1 192.0.2.2\n192.0.2.3 192.0.2.4\n",
         &options,
     )
     .expect("four expressions is not more than four");
@@ -640,7 +640,7 @@ fn an_import_at_the_token_limit_reads_and_one_expression_past_it_is_refused() {
     let error = read_targets(
         "token-limit-past",
         ImportFormat::List,
-        "10.0.0.1 10.0.0.2\n10.0.0.3 10.0.0.4 10.0.0.5\n",
+        "192.0.2.1 192.0.2.2\n192.0.2.3 192.0.2.4 192.0.2.5\n",
         &options,
     )
     .expect_err("five expressions is");
@@ -660,7 +660,7 @@ fn an_import_at_the_address_limit_reads_and_one_address_past_it_is_refused() {
     let imported = read_targets(
         "address-limit",
         ImportFormat::List,
-        "10.0.0.0/24\n",
+        "192.0.2.0/24\n",
         &options,
     )
     .expect("a /24 is 256 addresses, which is not more than 256");
@@ -669,7 +669,7 @@ fn an_import_at_the_address_limit_reads_and_one_address_past_it_is_refused() {
     let error = read_targets(
         "address-limit-past",
         ImportFormat::List,
-        "10.0.0.0/24\n10.1.0.1\n",
+        "192.0.2.0/24\n198.51.100.1\n",
         &options,
     )
     .expect_err("one address more is more");
@@ -682,7 +682,7 @@ fn an_import_at_the_address_limit_reads_and_one_address_past_it_is_refused() {
         } => {
             assert_eq!(limit, 256);
             assert_eq!(origin, ImportOrigin::line(2));
-            assert_eq!(token, "10.1.0.1");
+            assert_eq!(token, "198.51.100.1");
         }
         other => panic!("expected an address refusal, got {other:?}"),
     }
@@ -698,7 +698,7 @@ fn the_address_limit_counts_a_block_named_twice_twice() {
     let error = read_targets(
         "address-limit-overlap",
         ImportFormat::List,
-        "10.0.0.0/24\n10.0.0.0/24\n",
+        "192.0.2.0/24\n192.0.2.0/24\n",
         &options,
     )
     .expect_err("the running sum reaches 512 even though the merged set is 256");
@@ -713,7 +713,7 @@ fn the_address_limit_counts_a_block_named_twice_twice() {
     let imported = read_targets(
         "address-limit-merged",
         ImportFormat::List,
-        "10.0.0.0/24\n10.0.0.0/24\n",
+        "192.0.2.0/24\n192.0.2.0/24\n",
         &options.with_limits(ImportLimits::new().with_max_addresses(512)),
     )
     .expect("512 is the running sum, and it is within the raised limit");
@@ -727,7 +727,7 @@ fn a_report_element_past_the_byte_limit_is_refused() {
         concat!(
             "<nmaprun version=\"7.94\"><host note=\"{}\">",
             "<status state=\"up\" reason=\"echo-reply\"/>",
-            "<address addr=\"10.0.0.1\" addrtype=\"ipv4\"/>",
+            "<address addr=\"192.0.2.1\" addrtype=\"ipv4\"/>",
             "</host></nmaprun>"
         ),
         "x".repeat(4 * 1024)
@@ -772,7 +772,7 @@ fn one_bad_line_in_a_long_list_aborts_by_default_and_is_collected_on_request() {
     let mut file = String::new();
     for line in 1..=LINES {
         if line == BAD {
-            file.push_str("10.0.0.300\n");
+            file.push_str("192.0.2.300\n");
         } else {
             file.push_str(&format!("10.0.{}.{}\n", line / 256, line % 256));
         }
@@ -803,7 +803,7 @@ fn one_bad_line_in_a_long_list_aborts_by_default_and_is_collected_on_request() {
 
     let refusal = &imported.refusals[0];
     assert_eq!(refusal.origin, ImportOrigin::line(BAD as u64));
-    assert_eq!(refusal.token, "10.0.0.300");
+    assert_eq!(refusal.token, "192.0.2.300");
     assert!(
         refusal.to_string().starts_with("line 2500:"),
         "a caller has to be able to print what it is disregarding: {refusal}"
@@ -919,7 +919,7 @@ fn an_nmap_document_on_disk_reads_back_as_the_scan_it_records() {
     assert_eq!(report.host_count(), 2);
 
     let host = report
-        .host(&"10.0.0.1".parse::<IpAddr>().expect("an address"))
+        .host(&"192.0.2.1".parse::<IpAddr>().expect("an address"))
         .expect("the host that answered");
     assert_eq!(host.status(), HostStatus::Up);
     assert_eq!(host.port_count(), 2);
@@ -967,7 +967,7 @@ fn an_nmap_report_with_an_address_nmap_could_not_have_written_names_its_line() {
         "<nmaprun version=\"7.94\">\n",
         "<host>\n",
         "<status state=\"up\" reason=\"echo-reply\"/>\n",
-        "<address addr=\"10.0.0.999\" addrtype=\"ipv4\"/>\n",
+        "<address addr=\"192.0.2.999\" addrtype=\"ipv4\"/>\n",
         "</host>\n",
         "</nmaprun>\n",
     );
@@ -978,7 +978,7 @@ fn an_nmap_report_with_an_address_nmap_could_not_have_written_names_its_line() {
         file,
         ReportOptions::new(),
     )
-    .expect_err("10.0.0.999 is not an address");
+    .expect_err("192.0.2.999 is not an address");
 
     match error {
         ImportError::Malformed {
@@ -988,7 +988,7 @@ fn an_nmap_report_with_an_address_nmap_could_not_have_written_names_its_line() {
         } => {
             assert_eq!(format, "nmap XML");
             assert_eq!(origin, ImportOrigin::line(4));
-            assert!(message.contains("10.0.0.999"), "{message}");
+            assert!(message.contains("192.0.2.999"), "{message}");
         }
         other => panic!("expected a malformed document, got {other:?}"),
     }

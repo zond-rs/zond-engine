@@ -56,7 +56,7 @@ use crate::system::privilege::Privilege;
 
 /// An address on the fixture's network.
 fn ip(last: u8) -> IpAddr {
-    IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+    IpAddr::V4(Ipv4Addr::new(203, 0, 113, last))
 }
 
 /// The gateway: everything the schema can say about a host, said about one.
@@ -65,7 +65,7 @@ fn router() -> Host {
     host.set_hostname(Some("router.local".to_string()));
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
-    host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
+    host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01));
 
     let mut os = OsFingerprint::new("Linux", 95)
         .with_family("Unix-like")
@@ -94,7 +94,7 @@ fn router() -> Host {
     ));
     host.record_hop(Hop::silent(2));
     host.record_hop(
-        Hop::answered(1, IpAddr::V4(Ipv4Addr::new(192, 168, 0, 254)), None).as_inferred(),
+        Hop::answered(1, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 254)), None).as_inferred(),
     );
 
     // Added out of ascending order, so the document's ordering guarantee is
@@ -277,13 +277,13 @@ pub(crate) fn report() -> ScanReport {
         .build();
 
     let mut targets = IpSet::new();
-    targets.insert_range("192.168.0.0/24".parse().expect("a valid range"));
+    targets.insert_range("203.0.113.0/24".parse().expect("a valid range"));
 
     // Half the range withheld by policy, so the exported scope carries an
     // exclusion that overlapped rather than one that did nothing. Every host
     // below sits in the half that was kept.
     let mut excluded = IpSet::new();
-    excluded.insert_range("192.168.0.128/25".parse().expect("a valid range"));
+    excluded.insert_range("203.0.113.128/25".parse().expect("a valid range"));
 
     // This phase evaded something, so the document carries an evasion record
     // and every writer is held to what one looks like. The port-scan phase
@@ -344,7 +344,7 @@ pub(crate) fn report() -> ScanReport {
         .with_device_name("core-sw-02")
         .with_port("GigabitEthernet1/0/14")
         .with_native_vlan(40)
-        .with_management_address(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))),
+        .with_management_address(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2))),
     );
 
     // A host the phase gave up on, filed the way a strategy files one: by
@@ -423,7 +423,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
 
     let mut targets = TargetMap::new();
     let mut addresses = IpSet::new();
-    addresses.insert_range("192.168.0.0/25".parse().expect("a valid range"));
+    addresses.insert_range("203.0.113.0/25".parse().expect("a valid range"));
     targets.add_unit(TargetSet::new(
         addresses,
         PortSet::try_from(COMPARED_PORTS).expect("a valid port set"),
@@ -470,7 +470,7 @@ fn compared_router(later: bool) -> Host {
     let mut host = Host::new(ip(1));
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
-    host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
+    host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01));
     host.set_hostname(Some(
         if later {
             "gateway.local"
@@ -735,7 +735,7 @@ pub(crate) fn hostile() -> ScanReport {
     let (_session, ctx) = ScanSession::new();
 
     let mut targets = IpSet::new();
-    targets.insert_range("192.168.0.0/24".parse().expect("a valid range"));
+    targets.insert_range("203.0.113.0/24".parse().expect("a valid range"));
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,

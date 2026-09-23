@@ -295,7 +295,7 @@ async fn drive(mut session: ScanSession, task: ScanTask) -> Outcome {
 pub const SCANNER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
 
 /// The simulated scanner host's own addresses.
-pub const SCANNER_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 50);
+pub const SCANNER_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 50);
 pub const SCANNER_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x50);
 /// The link-local address, which is what local discovery probes from and what
 /// an ICMPv6 neighbour must address its reply to.
@@ -303,7 +303,7 @@ pub const SCANNER_LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0,
 
 /// The target every simulated scan is pointed at, on-link with the addresses
 /// above so a source always resolves.
-pub const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+pub const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
 pub const TARGET_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x200));
 
 /// The interface the simulated scanner host probes from.

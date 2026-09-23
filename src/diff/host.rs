@@ -516,7 +516,7 @@ mod tests {
     use crate::model::finding::{DetectionClass, DetectionId, Reference, Severity, Version};
 
     fn host(last: u8) -> Host {
-        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, last)));
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, last)));
         host.set_status(HostStatus::Up);
         host
     }

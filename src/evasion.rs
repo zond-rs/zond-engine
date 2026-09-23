@@ -547,7 +547,7 @@ mod tests {
         assert!(EvasionProfile::default().with_fragment(28).is_active());
         assert!(
             EvasionProfile::default()
-                .with_decoys(vec!["10.0.0.9".parse().unwrap()])
+                .with_decoys(vec!["198.51.100.9".parse().unwrap()])
                 .is_active()
         );
     }
@@ -562,14 +562,17 @@ mod tests {
             .with_bad_tcp_checksum(true)
             .with_spoof_mac(mac)
             .with_fragment(28)
-            .with_decoys(vec!["10.0.0.9".parse().unwrap()]);
+            .with_decoys(vec!["198.51.100.9".parse().unwrap()]);
         assert_eq!(profile.source_port, Some(53));
         assert_eq!(profile.ttl, Some(32));
         assert_eq!(profile.padding, Some(16));
         assert!(profile.bad_tcp_checksum);
         assert_eq!(profile.spoof_mac, Some(mac));
         assert_eq!(profile.fragment, Some(28));
-        assert_eq!(profile.decoys, vec!["10.0.0.9".parse::<IpAddr>().unwrap()]);
+        assert_eq!(
+            profile.decoys,
+            vec!["198.51.100.9".parse::<IpAddr>().unwrap()]
+        );
     }
 
     #[test]
@@ -787,7 +790,7 @@ mod tests {
         // so they force the link layer as well.
         assert_eq!(
             EvasionProfile::default()
-                .with_decoys(vec!["10.0.0.9".parse().unwrap()])
+                .with_decoys(vec!["198.51.100.9".parse().unwrap()])
                 .effective_send_mode(SendMode::Auto),
             SendMode::Ethernet
         );

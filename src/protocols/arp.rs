@@ -157,7 +157,7 @@ mod tests {
             arp_pkt.set_sender_hw_addr(MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06));
             arp_pkt.set_sender_proto_addr(sender_ip);
             arp_pkt.set_target_hw_addr(MacAddr::zero());
-            arp_pkt.set_target_proto_addr(Ipv4Addr::new(192, 168, 1, 1));
+            arp_pkt.set_target_proto_addr(Ipv4Addr::new(192, 0, 2, 1));
         }
 
         [eth_buffer, arp_buffer].concat()
@@ -169,8 +169,8 @@ mod tests {
     #[test]
     fn a_broadcast_request_asks_the_segment_and_names_nobody() {
         let src_mac = MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06);
-        let src_addr = Ipv4Addr::new(192, 168, 1, 10);
-        let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
+        let src_addr = Ipv4Addr::new(192, 0, 2, 10);
+        let dst_addr = Ipv4Addr::new(192, 0, 2, 1);
 
         let buffer = build_request(src_mac, src_addr, dst_addr);
         assert_eq!(buffer.len(), MIN_ETH_FRAME_NO_FCS);
@@ -209,8 +209,8 @@ mod tests {
     fn a_unicast_request_reaches_one_host_and_a_broadcast_one_reaches_all() {
         let src_mac = MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06);
         let dst_mac = MacAddr::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF);
-        let src_addr = Ipv4Addr::new(192, 168, 1, 10);
-        let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
+        let src_addr = Ipv4Addr::new(192, 0, 2, 10);
+        let dst_addr = Ipv4Addr::new(192, 0, 2, 1);
 
         let unicast = build_unicast_request(src_mac, dst_mac, src_addr, dst_addr);
         let eth = super::super::ethernet::parse(&unicast).expect("a frame");
@@ -233,7 +233,7 @@ mod tests {
     /// lived in this test module, so they passed whatever the real one did.
     #[test]
     fn a_well_formed_frame_is_credited_to_its_sender() {
-        let expected = Ipv4Addr::new(192, 168, 1, 123);
+        let expected = Ipv4Addr::new(192, 0, 2, 123);
         let buffer = build_mock_arp_packet(expected, ARP_LEN);
         let parsed = super::super::ethernet::parse(&buffer).expect("a frame");
 
@@ -266,7 +266,7 @@ mod tests {
     /// `craft::Arp` exists so that exactly this packet can be built.
     #[test]
     fn an_arp_packet_about_another_protocol_credits_nobody() {
-        let mut buffer = build_mock_arp_packet(Ipv4Addr::new(10, 0, 0, 1), ARP_LEN);
+        let mut buffer = build_mock_arp_packet(Ipv4Addr::new(198, 51, 100, 1), ARP_LEN);
         {
             let mut arp = MutableArpPacket::new(&mut buffer[ETH_HDR_LEN..]).expect("an ARP packet");
             arp.set_protocol_type(EtherTypes::Ipv6);
@@ -280,11 +280,11 @@ mod tests {
         ));
 
         // The same frame with its own fields telling the truth is still read.
-        let honest = build_mock_arp_packet(Ipv4Addr::new(10, 0, 0, 1), ARP_LEN);
+        let honest = build_mock_arp_packet(Ipv4Addr::new(198, 51, 100, 1), ARP_LEN);
         let parsed = super::super::ethernet::parse(&honest).expect("a frame");
         assert_eq!(
             crate::protocols::source_address(&parsed).expect("an ARP sender"),
-            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))
         );
     }
 

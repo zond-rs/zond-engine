@@ -63,7 +63,7 @@ use crate::system::privilege::Privilege;
 /// // Recorded before the targets move into a strategy, since what a scan was
 /// // asked to cover is only knowable here. `targets` comes back narrowed by
 /// // whatever the policy forbids, and the scope records what that cost.
-/// let mut targets = to_set(&["192.168.1.0/24"], None, None)?;
+/// let mut targets = to_set(&["192.0.2.0/24"], None, None)?;
 /// let scope = TargetScope::from_ip_set(&mut targets, &cfg.exclusions);
 /// let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
 ///
@@ -186,7 +186,7 @@ mod tests {
     /// A scope over two addresses, since `TargetScope` is built from a target
     /// set rather than defaulted.
     fn scope() -> TargetScope {
-        let mut targets = IpSet::from_str("192.168.0.1-192.168.0.2").expect("a valid range");
+        let mut targets = IpSet::from_str("203.0.113.1-203.0.113.2").expect("a valid range");
         TargetScope::from_ip_set(&mut targets, &Exclusions::none())
     }
 
@@ -256,7 +256,7 @@ mod tests {
     use std::time::Duration;
 
     fn ip(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, last))
     }
 
     /// A caller running strategies themselves has to be able to produce the
@@ -278,7 +278,7 @@ mod tests {
         let cfg = ZondConfig::default();
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
 
-        let mut targets = IpSet::from_str("192.168.0.1-192.168.0.2").expect("a valid range");
+        let mut targets = IpSet::from_str("203.0.113.1-203.0.113.2").expect("a valid range");
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
         let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
 
@@ -304,7 +304,7 @@ mod tests {
         let cfg = ZondConfig::default();
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
 
-        let mut targets = IpSet::from_str("192.168.0.1-192.168.0.4").expect("a valid range");
+        let mut targets = IpSet::from_str("203.0.113.1-203.0.113.4").expect("a valid range");
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
         let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
 

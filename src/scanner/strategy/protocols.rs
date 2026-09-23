@@ -552,8 +552,8 @@ mod tests {
     use crate::scanner::strategy::icmp_error::ICMPV6_UNRECOGNISED_NEXT_HEADER;
     use crate::transport::capture::CapturedSegment;
 
-    const LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
-    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+    const LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
+    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
     const STRANGER: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9));
     /// The IPv6 halves of the two above, for a pass that probes both families.
     const LOCAL_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x50));

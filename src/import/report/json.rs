@@ -2005,7 +2005,7 @@ mod tests {
     /// A file that names no scan is not a report, whichever shape it arrives in.
     #[test]
     fn a_record_per_line_file_with_no_report_record_is_refused() {
-        let error = read_lines(r#"{"type":"host","primary_ip":"10.0.0.1"}"#)
+        let error = read_lines(r#"{"type":"host","primary_ip":"198.51.100.1"}"#)
             .expect_err("a file of hosts alone describes no scan");
 
         assert!(matches!(error, ImportError::Malformed { .. }));

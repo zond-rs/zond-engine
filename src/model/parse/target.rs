@@ -22,15 +22,15 @@
 //!
 //! | Written | Address | Ports |
 //! |---|---|---|
-//! | `192.168.1.1` | `192.168.1.1` | the caller's default |
-//! | `192.168.1.1:80,443` | `192.168.1.1` | `80,443` |
-//! | `10.0.0.0/24:1-1024` | `10.0.0.0/24` | `1-1024` |
+//! | `192.0.2.1` | `192.0.2.1` | the caller's default |
+//! | `192.0.2.1:80,443` | `192.0.2.1` | `80,443` |
+//! | `198.51.100.0/24:1-1024` | `198.51.100.0/24` | `1-1024` |
 //! | `2001:db8::1` | `2001:db8::1` | the caller's default |
 //! | `[2001:db8::1]:443` | `2001:db8::1` | `443` |
 //! | `fe80::1%en0` | `fe80::1%en0` | the caller's default |
 //! | `[fe80::1%en0]:22` | `fe80::1%en0` | `22` |
 //! | `scanme.example:22` | `scanme.example` | `22` |
-//! | `192.168.1.1:u:53` | `192.168.1.1` | `u:53` (UDP) |
+//! | `192.0.2.1:u:53` | `192.0.2.1` | `u:53` (UDP) |
 //!
 //! The address half is handed to [`crate::model::parse::ip`], which already
 //! understands literals, ranges, CIDR blocks, zones and keywords. This module
@@ -48,13 +48,13 @@
 //!    optionally followed by `:` and a port specification.
 //! 2. **A dot before the first colon means the first colon separates.** No IPv6
 //!    address can have one: every dotted IPv6 form puts its dots in the last 32
-//!    bits, after at least one colon. So `192.168.1.1:u:53` and
+//!    bits, after at least one colon. So `192.0.2.1:u:53` and
 //!    `db.internal:u:53` are an address and its ports, however many colons
 //!    follow.
 //! 3. Otherwise, one colon separates and two or more are an IPv6 address.
 //!
 //! Rule 2 is what lets a UDP port be written without brackets. Without it,
-//! `192.168.1.1:u:53` has two colons and would be read as an address - and `u:`
+//! `192.0.2.1:u:53` has two colons and would be read as an address - and `u:`
 //! is this engine's own invention, so the collision is its own to resolve
 //! rather than the user's to work around.
 //!
@@ -276,7 +276,7 @@ pub enum TargetParseError {
     /// Digits and dots that are not an address.
     ///
     /// Reported instead of treating it as a hostname, because a top-level
-    /// domain cannot be entirely numeric: `192.168.0.300` is a typo, and
+    /// domain cannot be entirely numeric: `192.0.2.300` is a typo, and
     /// calling it an unresolvable name would send its author to look at their
     /// DNS.
     #[error("'{0}': not a valid address, and too numeric to be a hostname")]
@@ -350,8 +350,8 @@ impl<'a> TargetExpr<'a> {
     /// ```
     /// use zond_engine::model::parse::target::TargetExpr;
     ///
-    /// let bare = TargetExpr::parse("192.168.1.1").unwrap();
-    /// assert_eq!(bare.address, "192.168.1.1");
+    /// let bare = TargetExpr::parse("192.0.2.1").unwrap();
+    /// assert_eq!(bare.address, "192.0.2.1");
     /// assert_eq!(bare.ports, None);
     ///
     /// let with_ports = TargetExpr::parse("[2001:db8::1]:443").unwrap();
@@ -398,13 +398,13 @@ impl<'a> TargetExpr<'a> {
         let colons = token.matches(':').count();
 
         // A dot before the first colon settles it: no IPv6 address can have
-        // one. Every dotted form IPv6 has - `::ffff:192.168.0.1` and its
+        // one. Every dotted form IPv6 has - `::ffff:192.0.2.1` and its
         // relatives - puts the dots in the last 32 bits, after at least one
         // colon. So a dot first means IPv4, or a dotted hostname, and every
         // colon after the first belongs to the ports.
         //
         // This is what lets a UDP port be written without brackets.
-        // `192.168.0.1:u:53` has two colons and is not an address; without this
+        // `192.0.2.1:u:53` has two colons and is not an address; without this
         // rule it would be read as one, and `u:` is this engine's own spelling
         // so the collision is its own to resolve.
         let dotted_first = match (token.find('.'), token.find(':')) {
@@ -439,8 +439,8 @@ impl<'a> TargetExpr<'a> {
     ///
     /// A comma is a separator in the address half and part of the specification
     /// in the port half, and the ambiguity resolves itself once the two are
-    /// apart: `10.0.0.1:80,443` is one host on two ports, while
-    /// `10.0.0.1,10.0.0.2:80` is two hosts on one. Both readings are what the
+    /// apart: `192.0.2.1:80,443` is one host on two ports, while
+    /// `192.0.2.1,192.0.2.2:80` is two hosts on one. Both readings are what the
     /// author of either expression meant, and neither is reachable by a rule
     /// applied to the token as a whole.
     ///
@@ -763,7 +763,7 @@ pub(crate) fn host_name(token: &str) -> HostName {
     }
 
     // Neither is a token made only of digits and dots: a top-level domain cannot
-    // be entirely numeric, so `192.168.0.300` is a mistyped address rather than
+    // be entirely numeric, so `192.0.2.300` is a mistyped address rather than
     // a host to look up. Reporting it as an unresolvable name would send its
     // author to check their DNS over a typo.
     if !token.is_empty() && token.chars().all(|c| c.is_ascii_digit() || c == '.') {
@@ -883,11 +883,11 @@ mod tests {
     #[test]
     fn a_single_colon_separates_ports() {
         let cases = [
-            ("192.168.1.1:80", "192.168.1.1", Some("80")),
-            ("10.0.0.0/24:1-1024", "10.0.0.0/24", Some("1-1024")),
-            ("10.0.0.1-50:80,443", "10.0.0.1-50", Some("80,443")),
+            ("192.0.2.1:80", "192.0.2.1", Some("80")),
+            ("198.51.100.0/24:1-1024", "198.51.100.0/24", Some("1-1024")),
+            ("198.51.100.1-50:80,443", "198.51.100.1-50", Some("80,443")),
             ("scanme.example:22", "scanme.example", Some("22")),
-            ("  192.168.1.1:80  ", "192.168.1.1", Some("80")),
+            ("  192.0.2.1:80  ", "192.0.2.1", Some("80")),
         ];
 
         for (token, address, port_spec) in cases {
@@ -909,9 +909,13 @@ mod tests {
     #[test]
     fn a_udp_port_needs_no_brackets_on_an_address_that_has_a_dot() {
         let cases = [
-            ("192.168.0.1:u:53", "192.168.0.1", Some("u:53")),
-            ("192.168.0.1:u:53,u:161", "192.168.0.1", Some("u:53,u:161")),
-            ("10.0.0.0/24:80,u:53", "10.0.0.0/24", Some("80,u:53")),
+            ("192.0.2.1:u:53", "192.0.2.1", Some("u:53")),
+            ("192.0.2.1:u:53,u:161", "192.0.2.1", Some("u:53,u:161")),
+            (
+                "198.51.100.0/24:80,u:53",
+                "198.51.100.0/24",
+                Some("80,u:53"),
+            ),
             ("db.internal:u:53", "db.internal", Some("u:53")),
         ];
 
@@ -922,7 +926,7 @@ mod tests {
         }
 
         // And the rule it must not break: an IPv6 address is still whole.
-        for token in ["2001:db8::1", "::ffff:192.168.0.1", "2001:db8::192.168.0.1"] {
+        for token in ["2001:db8::1", "::ffff:192.0.2.1", "2001:db8::192.0.2.1"] {
             let expr = TargetExpr::parse(token).expect("parses");
             assert_eq!(expr.address, token, "{token} was split");
             assert_eq!(expr.ports, None, "{token} acquired ports");
@@ -952,12 +956,12 @@ mod tests {
     }
 
     /// A malformed expression has to be refused rather than silently read as
-    /// something narrower - `192.168.1.1:` scanning the default ports would be
+    /// something narrower - `192.0.2.1:` scanning the default ports would be
     /// a scan the user did not ask for.
     #[test]
     fn a_separator_without_a_port_specification_is_refused() {
         assert!(matches!(
-            TargetExpr::parse("192.168.1.1:"),
+            TargetExpr::parse("192.0.2.1:"),
             Err(TargetParseError::EmptyPorts(_))
         ));
         assert!(matches!(
@@ -1009,7 +1013,7 @@ mod tests {
         let ctx = TargetContext::new();
 
         for octet in 0..=255u8 {
-            let target = format!("192.168.1.{octet}");
+            let target = format!("192.0.2.{octet}");
             builder.push(&target, &ctx).expect("parses");
         }
 
@@ -1028,16 +1032,16 @@ mod tests {
         let mut builder = TargetMapBuilder::new(ports("80"));
         let ctx = TargetContext::new();
 
-        builder.push("10.0.0.1:22", &ctx).unwrap();
-        builder.push("10.0.0.2:443", &ctx).unwrap();
-        builder.push("10.0.0.3:22", &ctx).unwrap();
-        builder.push("10.0.0.4", &ctx).unwrap();
+        builder.push("198.51.100.1:22", &ctx).unwrap();
+        builder.push("198.51.100.2:443", &ctx).unwrap();
+        builder.push("198.51.100.3:22", &ctx).unwrap();
+        builder.push("198.51.100.4", &ctx).unwrap();
 
         assert_eq!(builder.group_count(), 3, "22, 443, and the default 80");
 
         let map = builder.build();
         assert_eq!(map.units[0].ports(), &ports("22"));
-        assert_eq!(map.units[0].ips().len(), 2, "10.0.0.1 and 10.0.0.3");
+        assert_eq!(map.units[0].ips().len(), 2, "198.51.100.1 and 198.51.100.3");
         assert_eq!(map.units[1].ports(), &ports("443"));
         assert_eq!(map.units[2].ports(), &ports("80"));
     }
@@ -1049,9 +1053,9 @@ mod tests {
         let mut builder = TargetMapBuilder::new(ports("80"));
         let ctx = TargetContext::new();
 
-        builder.push("10.0.0.1:80,443", &ctx).unwrap();
-        builder.push("10.0.0.2:443,80", &ctx).unwrap();
-        builder.push("10.0.0.3:80-81,443", &ctx).unwrap();
+        builder.push("198.51.100.1:80,443", &ctx).unwrap();
+        builder.push("198.51.100.2:443,80", &ctx).unwrap();
+        builder.push("198.51.100.3:80-81,443", &ctx).unwrap();
 
         assert_eq!(
             builder.group_count(),
@@ -1115,10 +1119,10 @@ mod tests {
     #[test]
     fn a_hostname_resolves_through_the_callers_lookup() {
         let lookup = |name: &str| match name {
-            "one.example" => Some(vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))]),
+            "one.example" => Some(vec![IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))]),
             "two.example" => Some(vec![
-                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
-                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)),
+                IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)),
+                IpAddr::V4(Ipv4Addr::new(198, 51, 100, 3)),
             ]),
             _ => None,
         };
@@ -1138,7 +1142,7 @@ mod tests {
     }
 
     /// An address that is wrong is not a hostname. Falling through to a lookup
-    /// would turn a typo'd prefix into a DNS query for `192.168.1.1/33`.
+    /// would turn a typo'd prefix into a DNS query for `192.0.2.1/33`.
     #[test]
     fn a_malformed_address_is_reported_as_an_address() {
         let lookup = |_: &str| -> Option<Vec<IpAddr>> {
@@ -1147,7 +1151,7 @@ mod tests {
         let ctx = TargetContext::new().with_hosts(&lookup);
 
         let mut builder = TargetMapBuilder::new(ports("80"));
-        let err = builder.push("192.168.1.1/33", &ctx).expect_err("refused");
+        let err = builder.push("192.0.2.1/33", &ctx).expect_err("refused");
 
         assert!(matches!(
             err,
@@ -1162,7 +1166,7 @@ mod tests {
     fn a_malformed_port_specification_is_reported_as_ports() {
         let mut builder = TargetMapBuilder::new(ports("80"));
         let err = builder
-            .push("10.0.0.1:http", &TargetContext::new())
+            .push("198.51.100.1:http", &TargetContext::new())
             .expect_err("refused");
 
         assert!(matches!(err, TargetParseError::Ports { .. }));
@@ -1222,11 +1226,11 @@ mod tests {
         let mut builder = TargetMapBuilder::new(ports("80"));
 
         for target in [
-            "10.0.0.0/24",
-            "10.0.0.5",
-            "192.168.1.1:22",
+            "198.51.100.0/24",
+            "198.51.100.5",
+            "192.0.2.1:22",
             "2001:db8::/120",
-            "172.16.0.1,172.16.0.2,172.16.0.3",
+            "203.0.113.1,203.0.113.2,203.0.113.3",
             "[fe80::1]:443",
         ] {
             builder.push(target, &ctx).expect("parses");
@@ -1266,17 +1270,18 @@ mod tests {
         let ctx = TargetContext::new();
 
         let mut hosts = TargetMapBuilder::new(ports("80"));
-        hosts.push("10.0.0.1,10.0.0.2:443", &ctx).unwrap();
+        hosts.push("198.51.100.1,198.51.100.2:443", &ctx).unwrap();
         assert_eq!(hosts.address_count(), 2);
         assert_eq!(hosts.build().units[0].ports(), &ports("443"));
 
         let mut services = TargetMapBuilder::new(ports("80"));
-        services.push("10.0.0.1:80,443", &ctx).unwrap();
+        services.push("198.51.100.1:80,443", &ctx).unwrap();
         assert_eq!(services.address_count(), 1);
         assert_eq!(services.build().units[0].ports(), &ports("80,443"));
 
         let mut bare = TargetMapBuilder::new(ports("80"));
-        bare.push("10.0.0.1, 10.0.0.2 ,10.0.0.3", &ctx).unwrap();
+        bare.push("198.51.100.1, 198.51.100.2 ,198.51.100.3", &ctx)
+            .unwrap();
         assert_eq!(bare.address_count(), 3);
     }
 

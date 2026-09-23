@@ -55,7 +55,7 @@
 //! use zond_engine::model::port::PortSet;
 //! use zond_engine::import::{ImportFormat, ImportOptions};
 //!
-//! let file = "# staging\n192.168.1.1\n10.0.0.0/30:8080\n";
+//! let file = "# staging\n192.0.2.1\n198.51.100.0/30:8080\n";
 //! let mut input = Cursor::new(file);
 //!
 //! let options = ImportOptions::new(PortSet::try_from("80").unwrap());
@@ -409,7 +409,7 @@ impl Imported {
     /// use zond_engine::model::port::PortSet;
     /// use zond_engine::import::{ImportFormat, ImportOptions};
     ///
-    /// let list = "192.168.0.1\n192.168.0.100\n192.168.0.20\n";
+    /// let list = "192.0.2.1\n192.0.2.100\n192.0.2.20\n";
     /// let options = ImportOptions::new(PortSet::try_from("80").unwrap());
     ///
     /// let targets = ImportFormat::List
@@ -581,9 +581,9 @@ pub(crate) fn skip_bom(input: &mut dyn BufRead) -> Result<(), ImportError> {
 /// explaining the same thing.
 ///
 /// The address is bracketed whenever ports follow it. An IPv6 address must be, to
-/// carry ports at all. An IPv4 one need not be and is anyway: `10.0.0.1:u:53` is
-/// a token with two colons in it, which the grammar reads as an IPv6 address.
-/// Bracketing unconditionally means no reader has to work out which
+/// carry ports at all. An IPv4 one need not be and is anyway: `192.0.2.1:u:53`
+/// is a token with two colons in it, which the grammar reads as an IPv6
+/// address. Bracketing unconditionally means no reader has to work out which
 /// family it is holding.
 ///
 /// An empty `ports` names no ports, so the expression is the bare address and
@@ -789,7 +789,7 @@ impl ImportFormat {
     /// Two guesses are not made. A leading `[` is not taken as a JSON array,
     /// since `[2001:db8::1]:443` is an ordinary first line of a target list and
     /// this crate's own JSON is an object. A comma is never evidence of CSV,
-    /// since `192.168.1.1,192.168.1.2` is a
+    /// since `192.0.2.1,192.0.2.2` is a
     /// list line that means something quite different read as a table.
     ///
     /// A caller who knows what it has should name the format and skip all of
@@ -1012,7 +1012,7 @@ mod tests {
     #[test]
     fn reading_by_path_matches_reading_by_format() {
         let opts = options("80");
-        let mut input = Cursor::new("10.0.0.1\n");
+        let mut input = Cursor::new("198.51.100.1\n");
 
         let imported = read_from(Path::new("targets.txt"), &mut input, &opts)
             .expect("the extension names a format")
@@ -1029,13 +1029,16 @@ mod tests {
     /// to say which line to go and look at.
     #[test]
     fn a_refused_expression_aborts_and_names_its_line() {
-        let err = read("10.0.0.1\n10.0.0.300\n10.0.0.2\n", &options("80"))
-            .expect_err("the second line is not an address");
+        let err = read(
+            "198.51.100.1\n198.51.100.300\n198.51.100.2\n",
+            &options("80"),
+        )
+        .expect_err("the second line is not an address");
 
         match err {
             ImportError::Target { origin, token, .. } => {
                 assert_eq!(origin, ImportOrigin::line(2));
-                assert_eq!(token, "10.0.0.300");
+                assert_eq!(token, "198.51.100.300");
             }
             other => panic!("expected a refused target, got {other:?}"),
         }
@@ -1047,8 +1050,11 @@ mod tests {
     fn collecting_keeps_the_good_targets_and_reports_the_bad_ones() {
         let opts = options("80").with_refusal_policy(OnRefusal::Collect);
 
-        let imported = read("10.0.0.1\n10.0.0.300\nnot-an-address\n10.0.0.2\n", &opts)
-            .expect("collecting does not fail the import");
+        let imported = read(
+            "198.51.100.1\n198.51.100.300\nnot-an-address\n198.51.100.2\n",
+            &opts,
+        )
+        .expect("collecting does not fail the import");
 
         assert_eq!(imported.addresses, 2, "both good targets survived");
         assert_eq!(imported.refusals.len(), 2);
@@ -1081,7 +1087,7 @@ mod tests {
             ..ImportLimits::default()
         });
         assert!(matches!(
-            read("10.0.0.0/24\n", &strict),
+            read("198.51.100.0/24\n", &strict),
             Err(ImportError::TooManyAddresses { .. })
         ));
 
@@ -1090,7 +1096,7 @@ mod tests {
             ..ImportLimits::default()
         });
         assert!(matches!(
-            read("10.0.0.1\n10.0.0.2\n10.0.0.3\n", &few),
+            read("198.51.100.1\n198.51.100.2\n198.51.100.3\n", &few),
             Err(ImportError::TooManyTokens { limit: 2 })
         ));
     }
@@ -1099,7 +1105,7 @@ mod tests {
     /// probed, which is not the running total the limit is checked against.
     #[test]
     fn the_reported_address_count_merges_overlapping_targets() {
-        let imported = read("10.0.0.0/24\n10.0.0.5\n", &options("80")).expect("imports");
+        let imported = read("198.51.100.0/24\n198.51.100.5\n", &options("80")).expect("imports");
 
         assert_eq!(imported.addresses, 256, "the same block, named twice");
         assert_eq!(imported.tokens, 2);
@@ -1113,11 +1119,11 @@ mod tests {
     #[test]
     fn a_hand_written_list_of_addresses_feeds_both_entry_points() {
         let list = "\
-192.168.0.1
-192.168.0.100
-192.168.0.20
-192.168.0.53
-192.168.0.151
+192.0.2.1
+192.0.2.100
+192.0.2.20
+192.0.2.53
+192.0.2.151
 ";
 
         let imported = read(list, &options("22,80")).expect("a list of addresses imports");
@@ -1134,7 +1140,7 @@ mod tests {
         // The discovery entry point: the same five addresses, no ports.
         let targets = imported.into_ip_set();
         assert_eq!(targets.len(), 5);
-        for address in ["192.168.0.1", "192.168.0.20", "192.168.0.151"] {
+        for address in ["192.0.2.1", "192.0.2.20", "192.0.2.151"] {
             assert!(
                 targets.contains(&address.parse().unwrap()),
                 "{address} did not survive"
@@ -1147,8 +1153,11 @@ mod tests {
     /// what the scan view keeps apart.
     #[test]
     fn converting_to_addresses_merges_what_the_units_kept_apart() {
-        let imported =
-            read("10.0.0.1:22\n10.0.0.1:443\n10.0.0.2:22\n", &options("80")).expect("imports");
+        let imported = read(
+            "198.51.100.1:22\n198.51.100.1:443\n198.51.100.2:22\n",
+            &options("80"),
+        )
+        .expect("imports");
 
         assert_eq!(imported.map.units.len(), 2, "two port specifications");
         assert_eq!(imported.addresses, 3, "counted once per unit");
@@ -1163,7 +1172,7 @@ mod tests {
     /// without taking, so whatever runs next reads the whole document.
     #[test]
     fn sniffing_leaves_the_input_where_it_found_it() {
-        let file = "10.0.0.1\n10.0.0.2\n10.0.0.3\n";
+        let file = "198.51.100.1\n198.51.100.2\n198.51.100.3\n";
         let mut input = Cursor::new(file);
 
         let format = ImportFormat::sniff(&mut input).expect("sniffs");
@@ -1181,7 +1190,7 @@ mod tests {
             // A bracketed IPv6 target, which is not a JSON array.
             "[2001:db8::1]:443\n",
             // Comma-separated addresses, which are not a table.
-            "192.168.1.1,192.168.1.2\n",
+            "192.0.2.1,192.0.2.2\n",
             // A table this crate did not write, which is refused loudly by the
             // list grammar rather than guessed at here.
             "Server,Location\nweb01,rack 4\n",
@@ -1281,7 +1290,7 @@ mod tests {
     fn a_byte_order_mark_costs_no_format_its_document() {
         /// The same document each format would carry, as short as it can be.
         fn documents() -> Vec<(ImportFormat, String)> {
-            let mut all = vec![(ImportFormat::List, "10.0.0.1\n".to_string())];
+            let mut all = vec![(ImportFormat::List, "198.51.100.1\n".to_string())];
 
             // The header in full, because recognising a table means recognising
             // this crate's own; the row can stop after the address, since a
@@ -1289,11 +1298,11 @@ mod tests {
             #[cfg(feature = "import-csv")]
             all.push((
                 ImportFormat::Csv,
-                format!("{}\n10.0.0.1\n", crate::format::csv::COLUMNS.join(",")),
+                format!("{}\n198.51.100.1\n", crate::format::csv::COLUMNS.join(",")),
             ));
             #[cfg(feature = "import-json")]
             {
-                let hosts = r#"{"primary_ip":"10.0.0.1","ips":["10.0.0.1"],"ports":[]}"#;
+                let hosts = r#"{"primary_ip":"198.51.100.1","ips":["198.51.100.1"],"ports":[]}"#;
                 all.push((
                     ImportFormat::Json,
                     format!(r#"{{"schema_version":1,"hosts":[{hosts}]}}"#),
@@ -1309,7 +1318,7 @@ mod tests {
             #[cfg(feature = "import-nmap")]
             all.push((
                 ImportFormat::NmapXml,
-                r#"<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/></host></nmaprun>"#
+                r#"<nmaprun><host><address addr="198.51.100.1" addrtype="ipv4"/></host></nmaprun>"#
                     .to_string(),
             ));
 
@@ -1345,7 +1354,7 @@ mod tests {
     /// that says nothing falls through to the bytes rather than failing.
     #[test]
     fn a_path_decides_the_format_and_a_silent_one_defers_to_the_input() {
-        let mut input = Cursor::new("10.0.0.1\n");
+        let mut input = Cursor::new("198.51.100.1\n");
 
         assert_eq!(
             ImportFormat::resolve(Some(Path::new("scope.txt")), &mut input).unwrap(),

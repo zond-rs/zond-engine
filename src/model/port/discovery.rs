@@ -204,7 +204,7 @@ mod tests {
     /// builders have to compose without any of them displacing another.
     #[test]
     fn the_optional_evidence_composes_without_displacing_the_reason() {
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
         let rtt = Duration::from_millis(45);
 
         let discovery = Discovery::new(ScanResponse::TcpRst)

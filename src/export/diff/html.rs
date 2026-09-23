@@ -603,9 +603,9 @@ mod tests {
         use crate::model::host::{Host, HostStatus};
         use std::net::{IpAddr, Ipv4Addr};
 
-        // The report fixture walks 192.168.0.0/25 and is forbidden the rest, so
+        // The report fixture walks 203.0.113.0/25 and is forbidden the rest, so
         // a host in the upper half was ground it was told not to look at.
-        let mut withheld = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 200)));
+        let mut withheld = Host::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 200)));
         withheld.set_status(HostStatus::Up);
 
         let later = ScanReport::recorded("test", Vec::new(), vec![withheld]);
@@ -699,7 +699,7 @@ mod tests {
             "a hostname survived: {page}"
         );
         assert!(
-            !page.contains("2c:cf:67:f2:51:e3"),
+            !page.contains("2c:cf:67:00:00:01"),
             "a MAC survived: {page}"
         );
     }

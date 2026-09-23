@@ -52,7 +52,7 @@ const MACHINE: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 const PEER: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);
 
 /// The segment being listened to, which every address below is on.
-const SEGMENT: &str = "10.0.0.0/24";
+const SEGMENT: &str = "192.0.2.0/24";
 
 fn zone() -> Zone {
     Zone::new(7, "sim0")
@@ -69,7 +69,7 @@ fn on_link() -> OnLink {
 /// A TCP segment as a mirror port sees one, from `mac` at `from:sport`.
 fn tcp_frame(mac: MacAddr, from: Ipv4Addr, sport: u16, dport: u16, flags: u8) -> CapturedFrame {
     let datagram = craft::Packet::new()
-        .push(craft::Ipv4::new(from, Ipv4Addr::new(10, 0, 0, 9)))
+        .push(craft::Ipv4::new(from, Ipv4Addr::new(192, 0, 2, 9)))
         .push(craft::Tcp::new(sport, dport).with_flags(flags))
         .build()
         .expect("a test datagram");
@@ -138,8 +138,8 @@ async fn a_watch_reads_its_segment_and_stops_when_the_segment_does() {
     watch(
         &ctx,
         vec![
-            served(MACHINE, Ipv4Addr::new(10, 0, 0, 5), 443),
-            served(MACHINE, Ipv4Addr::new(10, 0, 0, 5), 22),
+            served(MACHINE, Ipv4Addr::new(192, 0, 2, 5), 443),
+            served(MACHINE, Ipv4Addr::new(192, 0, 2, 5), 22),
         ],
     )
     .await;
@@ -165,8 +165,8 @@ async fn a_watch_reads_its_segment_and_stops_when_the_segment_does() {
 /// This is the failure the whole feature exists to prevent, at the level it
 /// actually happens: a sitting keys each machine by the first address it hears
 /// it at, so a second sitting that begins knowing nothing re-keys everything it
-/// hears. The laptop recorded last night under `10.0.0.5` and heard tonight
-/// from `10.0.0.6` becomes a second record, and a listener left up for a week
+/// hears. The laptop recorded last night under `192.0.2.5` and heard tonight
+/// from `192.0.2.6` becomes a second record, and a listener left up for a week
 /// across three restarts reports one machine as four — which is exactly what
 /// resuming was supposed to stop.
 ///
@@ -176,8 +176,8 @@ async fn a_watch_reads_its_segment_and_stops_when_the_segment_does() {
 #[tokio::test]
 async fn a_watch_resumed_from_its_record_is_one_watch() {
     let root = scratch("resume");
-    let first = Ipv4Addr::new(10, 0, 0, 5);
-    let second = Ipv4Addr::new(10, 0, 0, 6);
+    let first = Ipv4Addr::new(192, 0, 2, 5);
+    let second = Ipv4Addr::new(192, 0, 2, 6);
 
     // Last night: the machine is heard at one of its addresses and written down.
     let mut journal = record_of_a_watch(&root, Privilege::Connect);
@@ -295,7 +295,7 @@ async fn a_restored_host_from_off_the_link_pairs_with_nothing() {
     let (_session, ctx) = ScanSession::new();
     ctx.restore_hosts(journal.restored());
 
-    watch(&ctx, vec![served(MACHINE, Ipv4Addr::new(10, 0, 0, 5), 22)]).await;
+    watch(&ctx, vec![served(MACHINE, Ipv4Addr::new(192, 0, 2, 5), 22)]).await;
 
     let hosts = ctx.hosts_snapshot();
     assert_eq!(
@@ -305,7 +305,7 @@ async fn a_restored_host_from_off_the_link_pairs_with_nothing() {
     );
     let on_this_link = hosts
         .iter()
-        .find(|host| host.primary_ip() == IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)))
+        .find(|host| host.primary_ip() == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)))
         .expect("the machine on the link has its own record");
     assert!(
         !on_this_link.ips().contains(&elsewhere),
@@ -343,7 +343,7 @@ async fn a_silent_link_records_nobody_and_is_not_a_failure() {
 async fn a_listener_built_from_parts_keeps_the_link_addressing_it_was_given() {
     let (_session, ctx) = ScanSession::new();
 
-    watch(&ctx, vec![served(MACHINE, Ipv4Addr::new(10, 0, 0, 5), 22)]).await;
+    watch(&ctx, vec![served(MACHINE, Ipv4Addr::new(192, 0, 2, 5), 22)]).await;
 
     let hosts = ctx.hosts_snapshot();
     assert_eq!(

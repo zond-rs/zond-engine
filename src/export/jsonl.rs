@@ -31,8 +31,8 @@
 //!
 //! ```text
 //! {"type":"report","schema_version":1,"engine":{…},"summary":{…},"phases":[…]}
-//! {"type":"host","primary_ip":"192.168.0.1",…}
-//! {"type":"host","primary_ip":"192.168.0.2",…}
+//! {"type":"host","primary_ip":"203.0.113.1",…}
+//! {"type":"host","primary_ip":"203.0.113.2",…}
 //! ```
 //!
 //! Strip `type` from a `host` line and it is byte-identical to an element of the
@@ -188,8 +188,8 @@ mod tests {
         for record in &records[1..] {
             assert_eq!(record["type"], "host");
         }
-        assert_eq!(records[1]["primary_ip"], "192.168.0.1");
-        assert_eq!(records[3]["primary_ip"], "192.168.0.9");
+        assert_eq!(records[1]["primary_ip"], "203.0.113.1");
+        assert_eq!(records[3]["primary_ip"], "203.0.113.9");
     }
 
     /// Strip the tag from a host line and it must be exactly what the JSON

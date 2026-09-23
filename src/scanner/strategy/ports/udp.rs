@@ -734,13 +734,13 @@ mod tests {
     use crate::scanner::session::ScanSession;
     use crate::transport::probe::{MockSender, ProbeTransport};
 
-    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
     const TARGET_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 200));
     /// A router between us and the target, which reports errors under its own
     /// address rather than the target's.
-    const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+    const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
     /// This host's addresses, as the scanner's source resolver reports them.
-    const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
+    const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
     const LOCAL_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 50));
     /// The fixed source port the scanner under test probes from.
     const SCAN_SRC_PORT: u16 = 54_321;
@@ -748,7 +748,7 @@ mod tests {
     fn on_link_interface() -> crate::system::interface::Link {
         use crate::system::interface::{Link, LinkAddress};
         Link::new("test0", 0).with_addresses(vec![
-            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)), 24),
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)), 24),
             LinkAddress::new(
                 IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 50)),
                 64,

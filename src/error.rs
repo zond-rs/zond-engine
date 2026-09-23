@@ -340,7 +340,7 @@ mod tests {
 
         assert_eq!(
             TargetParseError::Ports {
-                expression: "10.0.0.1:x".into(),
+                expression: "198.51.100.1:x".into(),
                 source: PortSetParseError::MalformedSpec("x".into()),
             }
             .code(),

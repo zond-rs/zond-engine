@@ -619,8 +619,8 @@ impl PassiveListener {
     /// machine by the first address it hears that machine at, and which address
     /// that is depends only on which frame happened to arrive first. Starting a
     /// second sitting with an empty pairing means the same laptop, restored
-    /// under `10.0.0.5` and heard tonight from `fe80::…`, gets a second record,
-    /// and a watch resumed three times reports one machine as four.
+    /// under `198.51.100.5` and heard tonight from `fe80::…`, gets a second
+    /// record, and a watch resumed three times reports one machine as four.
     ///
     /// Which is the failure [`record`](Self::record) was shaped to avoid within
     /// a sitting. Seeding here extends the same rule across them: the pairing
@@ -1321,11 +1321,11 @@ mod tests {
         over(recording, OnLink::default())
     }
 
-    /// A listener that knows what `10.0.0.0/24` is, which is what makes any
+    /// A listener that knows what `198.51.100.0/24` is, which is what makes any
     /// other source address evidence of forwarding.
     fn listening_on_a_known_link(recording: Recording) -> (PassiveListener, ScanContext) {
         let mut ranges = IpSet::new();
-        ranges.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+        ranges.insert_range("198.51.100.0/24".parse().expect("a valid range"));
         over(recording, OnLink::of(ranges))
     }
 
@@ -1366,7 +1366,10 @@ mod tests {
         );
 
         let readable: [(&str, Vec<u8>); 5] = [
-            ("an ARP frame", arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2))),
+            (
+                "an ARP frame",
+                arp_reply_frame(Ipv4Addr::new(198, 51, 100, 2)),
+            ),
             (
                 "a neighbour advertisement",
                 ndp_frame(&advertisement_body(
@@ -1376,7 +1379,7 @@ mod tests {
             ),
             (
                 "a DHCP server reply",
-                dhcp_reply_frame(Ipv4Addr::new(192, 168, 1, 1), None),
+                dhcp_reply_frame(Ipv4Addr::new(192, 0, 2, 1), None),
             ),
             ("an LLDP advertisement", lldp),
             (
@@ -1384,8 +1387,8 @@ mod tests {
                 {
                     let datagram = crate::protocols::craft::Packet::new()
                         .push(crate::protocols::craft::Ipv4::new(
-                            Ipv4Addr::new(10, 0, 0, 5),
-                            Ipv4Addr::new(10, 0, 0, 9),
+                            Ipv4Addr::new(198, 51, 100, 5),
+                            Ipv4Addr::new(198, 51, 100, 9),
                         ))
                         .push(crate::protocols::craft::Tcp::new(443, 51234))
                         .build()
@@ -1441,8 +1444,8 @@ mod tests {
         // And the same for a relayed DHCP answer, where the sender is the relay
         // and the message names a server on another segment.
         let (mut listener, ctx) = listening(Recording::Everything);
-        let relay = Ipv4Addr::new(192, 168, 1, 1);
-        let elsewhere = Ipv4Addr::new(10, 0, 0, 53);
+        let relay = Ipv4Addr::new(192, 0, 2, 1);
+        let elsewhere = Ipv4Addr::new(198, 51, 100, 53);
         listener.read(&captured(dhcp_reply_frame(elsewhere, Some(relay))));
 
         let hosts = ctx.hosts_snapshot();
@@ -1460,10 +1463,10 @@ mod tests {
     #[test]
     fn a_recording_filter_keeps_out_what_the_link_carries_anyway() {
         let mut wanted = IpSet::new();
-        wanted.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)));
+        wanted.insert(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
 
         let (mut listener, ctx) = listening(Recording::Only(wanted));
-        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2))));
+        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(198, 51, 100, 2))));
 
         assert_eq!(
             ctx.host_count(),
@@ -1471,7 +1474,7 @@ mod tests {
             "the frame was heard, and recording it was declined"
         );
 
-        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(10, 0, 0, 7))));
+        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(198, 51, 100, 7))));
         assert_eq!(ctx.host_count(), 1, "and the one in scope was kept");
     }
 
@@ -1517,8 +1520,8 @@ mod tests {
     fn only_the_server_half_of_a_handshake_establishes_a_listener() {
         use crate::protocols::tcp::flags;
 
-        let client = Ipv4Addr::new(10, 0, 0, 9);
-        let server = Ipv4Addr::new(10, 0, 0, 5);
+        let client = Ipv4Addr::new(198, 51, 100, 9);
+        let server = Ipv4Addr::new(198, 51, 100, 5);
 
         // The client's SYN to a port nothing is listening on.
         let (mut listener, ctx) = listening(Recording::Everything);
@@ -1566,8 +1569,8 @@ mod tests {
     fn a_refusal_records_no_port_in_either_direction() {
         use crate::protocols::tcp::flags;
 
-        let server = Ipv4Addr::new(10, 0, 0, 5);
-        let client = Ipv4Addr::new(10, 0, 0, 9);
+        let server = Ipv4Addr::new(198, 51, 100, 5);
+        let client = Ipv4Addr::new(198, 51, 100, 9);
 
         let (mut listener, ctx) = listening(Recording::Everything);
         listener.read(&captured(tcp_frame(
@@ -1603,15 +1606,12 @@ mod tests {
 
         let (mut listener, ctx) = listening(Recording::Everything);
         listener.read(&captured(fixtures::renewal_frame(
-            Ipv4Addr::new(192, 168, 1, 74),
+            Ipv4Addr::new(192, 0, 2, 74),
             "office-printer-3",
         )));
 
         let host = ctx.hosts_snapshot().remove(0);
-        assert_eq!(
-            host.primary_ip(),
-            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 74))
-        );
+        assert_eq!(host.primary_ip(), IpAddr::V4(Ipv4Addr::new(192, 0, 2, 74)));
         assert_eq!(host.hostname(), Some("office-printer-3"));
 
         // The same client before it holds anything.
@@ -1638,9 +1638,9 @@ mod tests {
         use crate::protocols::tcp::flags;
 
         const ROUTER_MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
-        let router = Ipv4Addr::new(10, 0, 0, 1);
+        let router = Ipv4Addr::new(198, 51, 100, 1);
         let elsewhere = Ipv4Addr::new(93, 184, 216, 34);
-        let local = Ipv4Addr::new(10, 0, 0, 9);
+        let local = Ipv4Addr::new(198, 51, 100, 9);
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
 
@@ -1698,10 +1698,13 @@ mod tests {
         // An ordinary ARP frame from a host on the segment. Its address is
         // on-link in fact, and unknowable as such with no ranges to check it
         // against.
-        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(10, 0, 0, 1))));
+        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(198, 51, 100, 1))));
 
         let host = ctx.hosts_snapshot().remove(0);
-        assert_eq!(host.primary_ip(), IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        assert_eq!(
+            host.primary_ip(),
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))
+        );
         assert!(
             !host.network_roles().contains(&NetworkRole::Router),
             "with no link addressing known, off-link is not a question with an answer"
@@ -1719,7 +1722,7 @@ mod tests {
     fn the_default_records_this_links_machines_and_not_what_merely_crosses_it() {
         use crate::protocols::tcp::flags;
 
-        let local = Ipv4Addr::new(10, 0, 0, 5);
+        let local = Ipv4Addr::new(198, 51, 100, 5);
         let elsewhere = Ipv4Addr::new(93, 184, 216, 34);
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Attached);
@@ -1728,7 +1731,7 @@ mod tests {
         listener.read(&captured(tcp_frame(
             local,
             443,
-            Ipv4Addr::new(10, 0, 0, 9),
+            Ipv4Addr::new(198, 51, 100, 9),
             51234,
             flags::SYN | flags::ACK,
         )));
@@ -1737,7 +1740,7 @@ mod tests {
         listener.read(&captured(tcp_frame(
             elsewhere,
             443,
-            Ipv4Addr::new(10, 0, 0, 9),
+            Ipv4Addr::new(198, 51, 100, 9),
             51235,
             flags::SYN | flags::ACK,
         )));
@@ -1754,7 +1757,7 @@ mod tests {
         listener.read(&captured(tcp_frame(
             elsewhere,
             443,
-            Ipv4Addr::new(10, 0, 0, 9),
+            Ipv4Addr::new(198, 51, 100, 9),
             51235,
             flags::SYN | flags::ACK,
         )));
@@ -1775,7 +1778,7 @@ mod tests {
     fn a_link_with_no_addressing_of_its_own_records_what_it_hears() {
         let (mut listener, ctx) = listening(Recording::Attached);
 
-        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(10, 0, 0, 1))));
+        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(198, 51, 100, 1))));
 
         assert_eq!(ctx.host_count(), 1);
     }
@@ -1801,8 +1804,8 @@ mod tests {
                 pnet_packet::ethernet::EtherTypes::Ipv4,
             );
             bytes.extend_from_slice(&[
-                0x45, 0x00, 0x00, 0x3c, 0xbe, 0xef, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0x0a, 0x00,
-                0x00, 0x05, 0x0a, 0x00, 0x00, 0x09, 0x01, 0xbb, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x01,
+                0x45, 0x00, 0x00, 0x3c, 0xbe, 0xef, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc6, 0x33,
+                0x64, 0x05, 0xc6, 0x33, 0x64, 0x09, 0x01, 0xbb, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x01,
                 0x00, 0x00, 0x00, 0x02, 0xa0, 0x12, 0xfa, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x02, 0x04,
                 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
                 0x01, 0x03, 0x03, 0x07,
@@ -1879,15 +1882,15 @@ mod tests {
         use crate::protocols::tcp::flags;
 
         const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
-        let peer = Ipv4Addr::new(10, 0, 0, 9);
+        let peer = Ipv4Addr::new(198, 51, 100, 9);
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
 
         // The same machine answering at two of its addresses, on two frames,
         // which is the only way a listener ever sees it, and the shape that
         // used to produce two records.
-        let first = Ipv4Addr::new(10, 0, 0, 5);
-        let second = Ipv4Addr::new(10, 0, 0, 6);
+        let first = Ipv4Addr::new(198, 51, 100, 5);
+        let second = Ipv4Addr::new(198, 51, 100, 6);
 
         listener.read(&captured(tcp_frame_from(
             MAC,
@@ -1937,7 +1940,7 @@ mod tests {
     fn a_listener_never_lowers_a_claim_already_on_the_record() {
         let (mut listener, ctx) = listening(Recording::Everything);
 
-        let address = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let address = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
         let mut known = Host::new(address);
         known.set_status(HostStatus::Up);
         known.set_hostname(Some("already-known".to_owned()));
@@ -1946,7 +1949,7 @@ mod tests {
             true
         });
 
-        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2))));
+        listener.read(&captured(arp_reply_frame(Ipv4Addr::new(198, 51, 100, 2))));
 
         let host = ctx
             .hosts_snapshot()
@@ -1966,9 +1969,9 @@ mod tests {
     /// A sitting keys each machine by the first address it hears it at, and
     /// which address that is depends only on which frame happened to arrive
     /// first. So a second sitting starting with an empty pairing re-keys every
-    /// machine it hears, and the laptop restored under `10.0.0.5` and heard
-    /// tonight from `10.0.0.6` becomes a second record, with a third waiting
-    /// for the next restart.
+    /// machine it hears, and the laptop restored under `198.51.100.5` and heard
+    /// tonight from `198.51.100.6` becomes a second record, with a third
+    /// waiting for the next restart.
     ///
     /// Which is `one_machine_answering_at_several_addresses_is_one_host` again,
     /// reintroduced across sittings by the one feature that exists to prevent
@@ -1979,9 +1982,9 @@ mod tests {
         use crate::protocols::tcp::flags;
 
         const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
-        let peer = Ipv4Addr::new(10, 0, 0, 9);
-        let first = Ipv4Addr::new(10, 0, 0, 5);
-        let second = Ipv4Addr::new(10, 0, 0, 6);
+        let peer = Ipv4Addr::new(198, 51, 100, 9);
+        let first = Ipv4Addr::new(198, 51, 100, 5);
+        let second = Ipv4Addr::new(198, 51, 100, 6);
 
         // What an earlier sitting wrote down, restored into the store before
         // this one starts, which is what `listen_with_journal` does, and the
@@ -2000,7 +2003,7 @@ mod tests {
 
         let (_tx, rx) = tokio::sync::mpsc::channel(16);
         let mut ranges = IpSet::new();
-        ranges.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+        ranges.insert_range("198.51.100.0/24".parse().expect("a valid range"));
         let mut listener = PassiveListener::over(
             rx,
             capture::CaptureGuard::noop(),
@@ -2077,9 +2080,9 @@ mod tests {
         use crate::protocols::tcp::flags;
 
         const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
-        let excluded = Ipv4Addr::new(10, 0, 0, 5);
-        let ordinary = Ipv4Addr::new(10, 0, 0, 6);
-        let peer = Ipv4Addr::new(10, 0, 0, 9);
+        let excluded = Ipv4Addr::new(198, 51, 100, 5);
+        let ordinary = Ipv4Addr::new(198, 51, 100, 6);
+        let peer = Ipv4Addr::new(198, 51, 100, 9);
 
         let mut forbidden = IpSet::new();
         forbidden.insert(IpAddr::V4(excluded));
@@ -2089,7 +2092,7 @@ mod tests {
 
         let (_tx, rx) = tokio::sync::mpsc::channel(16);
         let mut ranges = IpSet::new();
-        ranges.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+        ranges.insert_range("198.51.100.0/24".parse().expect("a valid range"));
         let mut listener = PassiveListener::over(
             rx,
             capture::CaptureGuard::noop(),
@@ -2146,9 +2149,9 @@ mod tests {
         use crate::protocols::tcp::flags;
 
         const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
-        let excluded = Ipv4Addr::new(10, 0, 0, 5);
-        let ordinary = Ipv4Addr::new(10, 0, 0, 6);
-        let peer = Ipv4Addr::new(10, 0, 0, 9);
+        let excluded = Ipv4Addr::new(198, 51, 100, 5);
+        let ordinary = Ipv4Addr::new(198, 51, 100, 6);
+        let peer = Ipv4Addr::new(198, 51, 100, 9);
 
         let mut forbidden = IpSet::new();
         forbidden.insert(IpAddr::V4(excluded));
@@ -2158,7 +2161,7 @@ mod tests {
 
         let (_tx, rx) = tokio::sync::mpsc::channel(16);
         let mut ranges = IpSet::new();
-        ranges.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+        ranges.insert_range("198.51.100.0/24".parse().expect("a valid range"));
         let mut listener = PassiveListener::over(
             rx,
             capture::CaptureGuard::noop(),
@@ -2204,8 +2207,8 @@ mod tests {
         const STRANGER_MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xBB);
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
-        let peer = Ipv4Addr::new(10, 0, 0, 9);
-        let known = Ipv4Addr::new(10, 0, 0, 5);
+        let peer = Ipv4Addr::new(198, 51, 100, 9);
+        let known = Ipv4Addr::new(198, 51, 100, 5);
 
         // One machine on record, then already full: without standing up
         // sixty-five thousand hosts to get there. What is under test is the
@@ -2224,7 +2227,7 @@ mod tests {
         // A machine it has never heard of, which needs a record of its own.
         listener.read(&captured(tcp_frame_from(
             STRANGER_MAC,
-            Ipv4Addr::new(10, 0, 0, 200),
+            Ipv4Addr::new(198, 51, 100, 200),
             22,
             peer,
             51235,
@@ -2319,7 +2322,7 @@ mod tests {
             );
             assert_eq!(
                 attachment.management_address(),
-                Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))),
+                Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2))),
                 "{spoken}: where the device is managed"
             );
 
@@ -2329,7 +2332,7 @@ mod tests {
             let host = ctx
                 .hosts_snapshot()
                 .into_iter()
-                .find(|host| host.primary_ip() == IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)))
+                .find(|host| host.primary_ip() == IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)))
                 .unwrap_or_else(|| panic!("{spoken}: the device named an address of its own"));
             let roles = host.network_roles();
             assert!(

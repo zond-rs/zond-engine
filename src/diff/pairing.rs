@@ -356,7 +356,7 @@ mod tests {
     use crate::model::mac::MacAddr;
 
     fn v4(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, last))
     }
 
     fn host(primary: IpAddr) -> Host {
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn hardware_identity_pairs_a_host_that_changed_address() {
-        let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3);
+        let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01);
 
         let mut before = host(v4(1));
         before.record_mac(mac);

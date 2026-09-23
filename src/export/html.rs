@@ -1799,7 +1799,7 @@ mod tests {
     fn the_page_shows_what_the_scan_found() {
         let page = default_page();
 
-        assert!(page.contains("192.168.0.1"));
+        assert!(page.contains("203.0.113.1"));
         assert!(page.contains("router.local"));
         assert!(page.contains("22/tcp"));
         assert!(page.contains("OpenSSH"));
@@ -1932,7 +1932,7 @@ mod tests {
     fn a_host_with_no_ports_still_appears() {
         let page = default_page();
 
-        assert!(page.contains("192.168.0.9"));
+        assert!(page.contains("203.0.113.9"));
         assert!(page.contains("no ports recorded"));
     }
 

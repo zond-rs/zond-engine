@@ -441,9 +441,9 @@ mod tests {
     /// gained.
     #[test]
     fn standard_redaction_keeps_the_oui_and_drops_the_device() {
-        let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3);
+        let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01);
 
-        assert_eq!(Redaction::None.mac(&mac), "2c:cf:67:f2:51:e3");
+        assert_eq!(Redaction::None.mac(&mac), "2c:cf:67:00:00:01");
         assert_eq!(Redaction::Standard.mac(&mac), "2c:cf:67:XX:XX:XX");
     }
 

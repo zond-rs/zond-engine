@@ -713,13 +713,13 @@ mod tests {
     use crate::scanner::session::ScanSession;
     use crate::transport::probe::{MockSender, SentProbe};
 
-    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
     /// This host's address on [`on_link_interface`], which its probes leave
     /// from.
-    const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 50);
+    const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 50);
     /// A router between here and [`TARGET`], which reports errors under its own
     /// address rather than the target's.
-    const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+    const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
 
     /// The chunk types a reply carries, written out from RFC 4960 §3.2 rather
     /// than read from [`sctp::chunk_type`], so a wrong number in the engine

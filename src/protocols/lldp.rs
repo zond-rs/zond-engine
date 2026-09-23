@@ -596,7 +596,7 @@ pub(crate) mod tests {
 
     /// A complete advertisement from a managed switch that is also routing:
     /// named `core-sw-02`, on port `GigabitEthernet1/0/14`, untagged traffic in
-    /// VLAN 40, managed at `10.0.0.2`.
+    /// VLAN 40, managed at `198.51.100.2`.
     ///
     /// Shared with the listener's tests, which read this protocol and CDP
     /// through one normalising step and need a frame of each carrying the same
@@ -619,7 +619,7 @@ pub(crate) mod tests {
             ),
             tlv(
                 TLV_MANAGEMENT_ADDRESS,
-                &[5, AFN_IPV4, 10, 0, 0, 2, 0x03, 0, 0, 0, 1, 0],
+                &[5, AFN_IPV4, 198, 51, 100, 2, 0x03, 0, 0, 0, 1, 0],
             ),
         ])
     }
@@ -650,7 +650,7 @@ pub(crate) mod tests {
             // Management address: length covers the family byte and the address.
             tlv(
                 TLV_MANAGEMENT_ADDRESS,
-                &[5, AFN_IPV4, 10, 0, 0, 2, 0x03, 0, 0, 0, 1, 0],
+                &[5, AFN_IPV4, 198, 51, 100, 2, 0x03, 0, 0, 0, 1, 0],
             ),
         ]);
 
@@ -672,7 +672,7 @@ pub(crate) mod tests {
         assert_eq!(advertisement.port_vlan, Some(40));
         assert_eq!(
             advertisement.management_address,
-            Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)))
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)))
         );
         assert!(addressed_to_a_bridge_group(frame.destination()));
     }

@@ -779,7 +779,7 @@ fn a_redacted_comparison_masks_what_a_redacted_report_masks() {
         "a hostname survived redaction into the comparison"
     );
     assert!(
-        !rendered.contains("2c:cf:67:f2:51:e3"),
+        !rendered.contains("2c:cf:67:00:00:01"),
         "a hardware address survived redaction into the comparison"
     );
 }

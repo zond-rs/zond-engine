@@ -273,8 +273,8 @@ mod tests {
     fn lan() -> Interface {
         Interface {
             index: LAN,
-            addresses: vec![ip("192.168.1.50"), ip("fe80::50")],
-            gateways: vec![ip("192.168.1.1"), ip("fe80::1")],
+            addresses: vec![ip("203.0.113.50"), ip("fe80::50")],
+            gateways: vec![ip("203.0.113.1"), ip("fe80::1")],
         }
     }
 
@@ -288,16 +288,16 @@ mod tests {
     fn this_machine_and_its_gateway_are_named_from_the_routing_table() {
         let vantage = Vantage::from_interfaces([lan()]);
 
-        let mut ourselves = host_at("192.168.1.50");
+        let mut ourselves = host_at("203.0.113.50");
         assert!(vantage.attribute(&mut ourselves));
         assert!(ourselves.network_roles().contains(&NetworkRole::Origin));
         assert!(!ourselves.network_roles().contains(&NetworkRole::Router));
 
-        let mut gateway = host_at("192.168.1.1");
+        let mut gateway = host_at("203.0.113.1");
         assert!(vantage.attribute(&mut gateway));
         assert!(gateway.network_roles().contains(&NetworkRole::Router));
 
-        let mut neighbour = host_at("192.168.1.20");
+        let mut neighbour = host_at("203.0.113.20");
         assert!(!vantage.attribute(&mut neighbour));
         assert!(neighbour.network_roles().is_empty());
     }
@@ -310,7 +310,7 @@ mod tests {
         let vantage = Vantage::from_interfaces([lan()]);
 
         let mut dual_stack = host_at("2001:db8::1");
-        dual_stack.add_ip(ip("192.168.1.1"));
+        dual_stack.add_ip(ip("203.0.113.1"));
 
         assert!(vantage.attribute(&mut dual_stack));
         assert!(dual_stack.network_roles().contains(&NetworkRole::Router));
@@ -345,11 +345,11 @@ mod tests {
     fn a_scan_run_from_the_router_reports_the_address_as_both() {
         let vantage = Vantage::from_interfaces([Interface {
             index: LAN,
-            addresses: vec![ip("192.168.1.1")],
-            gateways: vec![ip("192.168.1.1")],
+            addresses: vec![ip("203.0.113.1")],
+            gateways: vec![ip("203.0.113.1")],
         }]);
 
-        let mut host = host_at("192.168.1.1");
+        let mut host = host_at("203.0.113.1");
         assert!(vantage.attribute(&mut host));
         assert!(host.network_roles().contains(&NetworkRole::Origin));
         assert!(host.network_roles().contains(&NetworkRole::Router));

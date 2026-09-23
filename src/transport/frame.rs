@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn a_tunnel_frame_is_held_to_the_family_it_names() {
         let packet = [
-            0x45u8, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+            0x45u8, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 203, 0, 113, 1, 203, 0, 113, 2,
         ];
 
         // AF_INET is 2 on every platform, and a tunnel writes the word in
@@ -600,7 +600,7 @@ mod tests {
             0x08, 0x00, // IPv4
         ];
         frame.extend_from_slice(&[
-            0x45, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+            0x45, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 203, 0, 113, 1, 203, 0, 113, 2,
         ]);
 
         let (segment, mac) = parse_captured(LinkType::Ethernet, &frame).expect("a segment");
@@ -806,7 +806,7 @@ mod tests {
     /// packet, so it is rejected rather than trusted.
     #[test]
     fn implausible_ipv4_header_length_is_rejected() {
-        let mut packet = ipv4_packet(Ipv4Addr::new(10, 0, 0, 1), &[1, 2, 3, 4]);
+        let mut packet = ipv4_packet(Ipv4Addr::new(203, 0, 113, 1), &[1, 2, 3, 4]);
         // Version 4, IHL 3 (12 bytes - shorter than the fixed header).
         packet[0] = 0x43;
         assert!(parse_ip_segment(&packet).is_none());
@@ -815,13 +815,13 @@ mod tests {
     #[test]
     fn null_loop_link_strips_four_byte_family_word() {
         let payload = [9, 9, 9, 9];
-        let packet = ipv4_packet(Ipv4Addr::new(10, 0, 0, 1), &payload);
+        let packet = ipv4_packet(Ipv4Addr::new(203, 0, 113, 1), &payload);
         // macOS AF_INET word (host byte order), immaterial to the parser.
         let mut framed = vec![2, 0, 0, 0];
         framed.extend_from_slice(&packet);
 
         let parsed = parse_captured_segment(LinkType::NullLoop, &framed).unwrap();
-        assert_eq!(parsed.source, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        assert_eq!(parsed.source, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)));
         assert_eq!(parsed.payload, &payload);
     }
 
@@ -1033,7 +1033,7 @@ mod tests {
     /// than by reading six bytes of somebody's IP header.
     #[test]
     fn a_link_without_hardware_addresses_reports_none() {
-        let packet = ipv4_packet(Ipv4Addr::new(10, 0, 0, 1), &[1, 2, 3, 4]);
+        let packet = ipv4_packet(Ipv4Addr::new(203, 0, 113, 1), &[1, 2, 3, 4]);
 
         // A tunnel or loopback link prepends a four-byte address-family word.
         let mut framed = vec![2, 0, 0, 0];

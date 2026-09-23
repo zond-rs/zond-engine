@@ -225,7 +225,7 @@
 # time. Pass those on the command line instead, where they are resolved at the
 # moment they are used.
 #
-# exclude = ["10.0.5.0/24", "192.168.1.10-20", "2001:db8:dead::/48"]
+# exclude = ["198.51.100.0/24", "192.0.2.10-20", "2001:db8:dead::/48"]
 
 
 # ─── Profiles ─────────────────────────────────────────────────────────────────

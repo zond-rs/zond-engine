@@ -14,8 +14,8 @@
 //! covers the targets, which a settings file has no business naming.
 //!
 //! ```toml
-//! targets = ["10.0.0.0/24", "db.internal"]
-//! exclude = ["10.0.0.7"]
+//! targets = ["192.0.2.0/24", "db.internal"]
+//! exclude = ["192.0.2.7"]
 //! ports = "1-1024,8080"
 //!
 //! service_detection = "thorough"
@@ -645,7 +645,7 @@ mod tests {
     #[tokio::test]
     async fn resolving_adds_exclusions_to_what_the_configuration_already_forbids() {
         let mut already = IpSet::new();
-        already.insert_range("172.16.0.0/16".parse().expect("a valid range"));
+        already.insert_range("198.51.100.0/24".parse().expect("a valid range"));
 
         let mut config = ZondConfig {
             exclusions: Exclusions::new(already),
@@ -659,7 +659,7 @@ mod tests {
 
         resolved.apply_to(&mut config);
 
-        for excluded in ["172.16.0.1", "192.0.2.7"] {
+        for excluded in ["198.51.100.1", "192.0.2.7"] {
             assert!(
                 config
                     .exclusions

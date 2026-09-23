@@ -56,7 +56,7 @@
 //! // One call: the address grammar, this host's interface table for `lan` and
 //! // `%en0`, any hostnames, and whether a segment sweep was asked for.
 //! let resolver = Resolver::from_system();
-//! let targets = resolve::for_discovery(&["192.168.1.0/24"], Some(&resolver)).await?;
+//! let targets = resolve::for_discovery(&["192.0.2.0/24"], Some(&resolver)).await?;
 //!
 //! let mut cfg = ZondConfig::default();
 //! targets.apply_to(&mut cfg);

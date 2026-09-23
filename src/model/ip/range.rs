@@ -21,10 +21,10 @@
 //! do not care which family they were handed.
 //!
 //! The two families are never comparable. A v4 address is not in a v6 range
-//! whatever the numbers say, and `::ffff:10.0.0.1` is an IPv6 address here even
-//! though it names an IPv4 one. Membership across families is `false` rather
-//! than an error, because the callers are filtering received packets and a
-//! packet of the wrong family is simply not one they asked about.
+//! whatever the numbers say, and `::ffff:192.0.2.1` is an IPv6 address here
+//! even though it names an IPv4 one. Membership across families is `false`
+//! rather than an error, because the callers are filtering received packets and
+//! a packet of the wrong family is simply not one they asked about.
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -469,8 +469,8 @@ impl FromStr for IpRange {
     /// Parses an IP range from a string.
     ///
     /// Supports:
-    /// - CIDR notation: `192.168.1.0/24`, `2001:db8::/32`
-    /// - Hyphenated ranges: `10.0.0.1-10.0.0.5`, `::1-::f`
+    /// - CIDR notation: `192.0.2.0/24`, `2001:db8::/32`
+    /// - Hyphenated ranges: `198.51.100.1-198.51.100.5`, `::1-::f`
     /// - Shortened IPv4 ranges, where the end continues the start's octets:
     ///   `10.0.0.1-50`, `192.168.1.1-2.254`
     /// - Single IPs: `1.1.1.1`, `::1`
@@ -490,8 +490,8 @@ impl FromStr for IpRange {
 
         // Handle hyphenated range
         if let Some(pos) = s.find('-') {
-            // Not trimmed around the separator, so `10.0.0.1 - 10.0.0.5` is not
-            // a range here either. It was, and nothing that reads a written
+            // Not trimmed around the separator, so `192.0.2.1 - 192.0.2.5` is
+            // not a range here either. It was, and nothing that reads a written
             // range through this crate could express it: `IpSet` splits its
             // input on spaces as well as commas, so that spelling arrived as
             // three tokens and the middle one was a bare `-`. The module
@@ -573,7 +573,7 @@ fn octet(part: &str) -> Option<u8> {
 /// use zond_engine::model::ip::range::{cidr_range, IpRange};
 /// use std::net::IpAddr;
 ///
-/// let range = cidr_range("192.168.1.5".parse().unwrap(), 24).unwrap();
+/// let range = cidr_range("192.0.2.5".parse().unwrap(), 24).unwrap();
 /// assert_eq!(range.len(), 256);
 /// ```
 pub fn cidr_range(ip: IpAddr, prefix: u8) -> Result<IpRange, IpError> {
@@ -639,12 +639,15 @@ mod tests {
     /// did.
     #[test]
     fn a_range_holds_both_its_bounds_and_nothing_outside_them() {
-        let v4 =
-            Ipv4Range::new(Ipv4Addr::new(172, 16, 0, 10), Ipv4Addr::new(172, 16, 0, 20)).unwrap();
-        assert!(v4.contains(&Ipv4Addr::new(172, 16, 0, 10)));
-        assert!(v4.contains(&Ipv4Addr::new(172, 16, 0, 20)));
-        assert!(!v4.contains(&Ipv4Addr::new(172, 16, 0, 9)));
-        assert!(!v4.contains(&Ipv4Addr::new(172, 16, 0, 21)));
+        let v4 = Ipv4Range::new(
+            Ipv4Addr::new(203, 0, 113, 10),
+            Ipv4Addr::new(203, 0, 113, 20),
+        )
+        .unwrap();
+        assert!(v4.contains(&Ipv4Addr::new(203, 0, 113, 10)));
+        assert!(v4.contains(&Ipv4Addr::new(203, 0, 113, 20)));
+        assert!(!v4.contains(&Ipv4Addr::new(203, 0, 113, 9)));
+        assert!(!v4.contains(&Ipv4Addr::new(203, 0, 113, 21)));
 
         let v6 = Ipv6Range::new(Ipv6Addr::from(100), Ipv6Addr::from(200)).unwrap();
         assert_eq!(v6.len(), 101, "inclusive at both ends");
@@ -713,10 +716,10 @@ mod tests {
     fn every_written_form_names_the_range_it_says_it_does() {
         for (written, first, last) in [
             ("8.8.8.8", "8.8.8.8", "8.8.8.8"),
-            ("10.0.0.0/24", "10.0.0.0", "10.0.0.255"),
-            ("192.168.1.5/24", "192.168.1.0", "192.168.1.255"),
+            ("198.51.100.0/24", "198.51.100.0", "198.51.100.255"),
+            ("192.0.2.5/24", "192.0.2.0", "192.0.2.255"),
             ("1.1.1.1-1.1.1.5", "1.1.1.1", "1.1.1.5"),
-            ("10.0.0.1-50", "10.0.0.1", "10.0.0.50"),
+            ("198.51.100.1-50", "198.51.100.1", "198.51.100.50"),
             ("192.168.1.1-2.254", "192.168.1.1", "192.168.2.254"),
             ("::1", "::1", "::1"),
             ("::1/120", "::", "::ff"),
@@ -740,11 +743,11 @@ mod tests {
     #[test]
     fn both_halves_of_a_range_read_octets_the_same_way() {
         for spelling in [
-            "010.0.0.1",         // as a start
-            "10.0.0.1-010",      // and as an end
-            "10.0.0.1-0.0.0.50", // in a longer suffix
-            "10.0.0.1-+50",      // a sign is not an octet either
-            "10.0.0.1- 50",      // nor is one with space around it
+            "010.0.0.1",             // as a start
+            "198.51.100.1-010",      // and as an end
+            "198.51.100.1-0.0.0.50", // in a longer suffix
+            "198.51.100.1-+50",      // a sign is not an octet either
+            "198.51.100.1- 50",      // nor is one with space around it
         ] {
             assert!(
                 spelling.parse::<IpRange>().is_err(),
@@ -754,8 +757,8 @@ mod tests {
 
         // A single zero is a zero, and the forms that always worked still do.
         for (spelling, last) in [
-            ("10.0.0.0-0", "10.0.0.0"),
-            ("10.0.0.1-50", "10.0.0.50"),
+            ("198.51.100.0-0", "198.51.100.0"),
+            ("198.51.100.1-50", "198.51.100.50"),
             ("192.168.1.1-2.254", "192.168.2.254"),
         ] {
             let range: IpRange = spelling
@@ -768,19 +771,22 @@ mod tests {
     /// A range has no spaces in it, whichever door it arrives through.
     ///
     /// `IpRange::from_str` trimmed around the separator and `IpSet::from_str`
-    /// splits its input on spaces as well as commas, so `10.0.0.1 - 10.0.0.5`
-    /// was a range through one entry point and three tokens through the other.
+    /// splits its input on spaces as well as commas, so
+    /// `198.51.100.1 - 198.51.100.5` was a range through one entry point and
+    /// three tokens through the other.
     /// The module documentation says there is one grammar and no two entry
     /// points that accept different spellings of the same thing.
     #[test]
     fn a_range_written_with_spaces_is_not_a_range() {
-        assert!("10.0.0.1 - 10.0.0.5".parse::<IpRange>().is_err());
-        assert!("10.0.0.1 -10.0.0.5".parse::<IpRange>().is_err());
+        assert!("198.51.100.1 - 198.51.100.5".parse::<IpRange>().is_err());
+        assert!("198.51.100.1 -198.51.100.5".parse::<IpRange>().is_err());
 
         // The whole token is still trimmed, which is a different question: a
         // caller that split a file on newlines has trailing whitespace and no
         // second dialect.
-        let padded: IpRange = "  10.0.0.1-10.0.0.5  ".parse().expect("trimmed as a whole");
+        let padded: IpRange = "  198.51.100.1-198.51.100.5  "
+            .parse()
+            .expect("trimmed as a whole");
         assert_eq!(padded.len(), 5);
     }
 
@@ -881,8 +887,8 @@ mod tests {
     /// read the same value differently.
     #[test]
     fn a_range_can_only_be_built_in_order() {
-        let low = Ipv4Addr::new(10, 0, 0, 1);
-        let high = Ipv4Addr::new(10, 0, 0, 5);
+        let low = Ipv4Addr::new(198, 51, 100, 1);
+        let high = Ipv4Addr::new(198, 51, 100, 5);
 
         assert!(matches!(
             Ipv4Range::new(high, low),
@@ -903,15 +909,18 @@ mod tests {
     /// what keeps it unable to invert the range it is called on.
     #[test]
     fn extending_a_range_never_inverts_it() {
-        let mut range =
-            Ipv4Range::new(Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 5)).unwrap();
+        let mut range = Ipv4Range::new(
+            Ipv4Addr::new(198, 51, 100, 1),
+            Ipv4Addr::new(198, 51, 100, 5),
+        )
+        .unwrap();
 
-        range.extend_end_to(Ipv4Addr::new(10, 0, 0, 9));
-        assert_eq!(range.end_addr(), Ipv4Addr::new(10, 0, 0, 9));
+        range.extend_end_to(Ipv4Addr::new(198, 51, 100, 9));
+        assert_eq!(range.end_addr(), Ipv4Addr::new(198, 51, 100, 9));
 
         // A shorter end is not an instruction to shrink.
-        range.extend_end_to(Ipv4Addr::new(10, 0, 0, 2));
-        assert_eq!(range.end_addr(), Ipv4Addr::new(10, 0, 0, 9));
+        range.extend_end_to(Ipv4Addr::new(198, 51, 100, 2));
+        assert_eq!(range.end_addr(), Ipv4Addr::new(198, 51, 100, 9));
         assert!(range.end_addr() >= range.start_addr());
         assert_eq!(range.iter().count() as u64, range.len());
     }

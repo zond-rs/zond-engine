@@ -35,7 +35,7 @@ use crate::model::mac::MacAddr;
 /// ```
 /// use zond_engine::export::redact;
 ///
-/// assert_eq!(redact::hostname("kabelbox.local"), "kaXXXXXal");
+/// assert_eq!(redact::hostname("gateway.local"), "gaXXXXXal");
 /// assert_eq!(redact::hostname("workstation"), "woXXXXXon");
 /// assert_eq!(redact::hostname("router"), "roXXXXXer");
 /// assert_eq!(redact::hostname("modem"), "XXXXX");
@@ -75,7 +75,7 @@ pub fn hostname(name: &str) -> String {
 /// use zond_engine::model::mac::MacAddr;
 /// use zond_engine::export::redact;
 ///
-/// let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3);
+/// let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01);
 /// assert_eq!(redact::mac_addr(&mac), "2c:cf:67:XX:XX:XX");
 /// ```
 pub fn mac_addr(mac: &MacAddr) -> String {

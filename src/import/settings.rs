@@ -402,7 +402,7 @@ pub struct Settings {
     /// Written as a list of literal addresses, ranges and CIDR blocks:
     ///
     /// ```toml
-    /// exclude = ["10.0.5.0/24", "192.168.1.10-20", "2001:db8::/64"]
+    /// exclude = ["198.51.100.0/24", "192.0.2.10-20", "2001:db8::/64"]
     /// ```
     ///
     /// Parsed on the way in, unlike [`default_ports`](Self::default_ports). A
@@ -1117,10 +1117,10 @@ mod tests {
         let mut administrator = document(
             r#"
             [defaults]
-            exclude = ["10.0.5.0/24"]
+            exclude = ["198.51.100.0/24"]
 
             [profiles.audit]
-            exclude = ["10.0.9.0/24"]
+            exclude = ["203.0.113.0/24"]
             "#,
         )
         .document;
@@ -1128,7 +1128,7 @@ mod tests {
         let user = document(
             r#"
             [defaults]
-            exclude = ["192.168.1.50"]
+            exclude = ["192.0.2.50"]
             "#,
         )
         .document;
@@ -1139,7 +1139,7 @@ mod tests {
         let mut config = ZondConfig::default();
         settings.apply_to(&mut config);
 
-        for excluded in ["10.0.5.7", "192.168.1.50", "10.0.9.1"] {
+        for excluded in ["198.51.100.7", "192.0.2.50", "203.0.113.1"] {
             assert!(
                 config
                     .exclusions
@@ -1150,7 +1150,7 @@ mod tests {
         assert!(
             !config
                 .exclusions
-                .excludes(&"10.0.6.7".parse().expect("literal"))
+                .excludes(&"192.0.2.51".parse().expect("literal"))
         );
     }
 
@@ -1159,7 +1159,7 @@ mod tests {
     #[test]
     fn applying_a_document_keeps_the_exclusions_the_caller_already_had() {
         let mut from_the_command_line = IpSet::new();
-        from_the_command_line.insert_range("172.16.0.0/16".parse().expect("a valid range"));
+        from_the_command_line.insert_range("203.0.113.0/24".parse().expect("a valid range"));
 
         let mut config = ZondConfig {
             exclusions: Exclusions::new(from_the_command_line),
@@ -1169,7 +1169,7 @@ mod tests {
         document(
             r#"
             [defaults]
-            exclude = ["10.0.5.0/24"]
+            exclude = ["198.51.100.0/24"]
             "#,
         )
         .document
@@ -1179,12 +1179,12 @@ mod tests {
         assert!(
             config
                 .exclusions
-                .excludes(&"172.16.4.4".parse().expect("literal"))
+                .excludes(&"203.0.113.4".parse().expect("literal"))
         );
         assert!(
             config
                 .exclusions
-                .excludes(&"10.0.5.7".parse().expect("literal"))
+                .excludes(&"198.51.100.7".parse().expect("literal"))
         );
     }
 
@@ -1198,7 +1198,7 @@ mod tests {
     /// `lan` and hostnames, which this file is the wrong place for.
     #[test]
     fn a_malformed_exclusion_refuses_the_document() {
-        for written in ["lan", "db.internal", "10.0.5.0/33"] {
+        for written in ["lan", "db.internal", "198.51.100.0/33"] {
             let error = parse(&format!(
                 r#"
                 [defaults]

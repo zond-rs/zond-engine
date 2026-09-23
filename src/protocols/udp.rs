@@ -105,8 +105,8 @@ mod tests {
     use pnet_packet::Packet;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    const V4_SRC: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
-    const V4_DST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+    const V4_SRC: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
+    const V4_DST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
     const V6_SRC: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 50));
     const V6_DST: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 200));
 

@@ -367,8 +367,8 @@ mod tests {
 
     use crate::protocols::{ip, udp};
 
-    const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
-    const TARGET_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+    const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
+    const TARGET_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
     const LOCAL_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 50));
     const TARGET_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 200));
 

@@ -2324,7 +2324,7 @@ mod tests {
     #[test]
     fn a_discovery_scope_has_no_probe_count() {
         let mut ips = IpSet::new();
-        ips.insert_range("192.168.0.0/24".parse().expect("a valid range"));
+        ips.insert_range("203.0.113.0/24".parse().expect("a valid range"));
 
         let scope = ScopeDto::new(&TargetScope::from_ip_set(&mut ips, &Exclusions::none()));
 
@@ -2333,14 +2333,14 @@ mod tests {
         assert!(scope.protocols.is_empty());
         assert_eq!(scope.ranges.len(), 1);
         assert_eq!(scope.ranges[0].family, "ipv4");
-        assert_eq!(scope.ranges[0].start, "192.168.0.0");
-        assert_eq!(scope.ranges[0].end, "192.168.0.255");
+        assert_eq!(scope.ranges[0].start, "203.0.113.0");
+        assert_eq!(scope.ranges[0].end, "203.0.113.255");
     }
 
     #[test]
     fn a_port_scan_scope_carries_the_probe_count() {
         let mut ips = IpSet::new();
-        ips.insert_range("10.0.0.1-10.0.0.4".parse().expect("a valid range"));
+        ips.insert_range("198.51.100.1-198.51.100.4".parse().expect("a valid range"));
 
         let mut targets = TargetMap::new();
         targets.add_unit(TargetSet::new(

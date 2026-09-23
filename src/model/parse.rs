@@ -80,7 +80,7 @@ mod tests {
     /// still groups them by port specification.
     #[test]
     fn the_facade_builds_a_map_from_targets_that_need_no_resolver() {
-        let targets = ["10.0.0.1:22".to_string(), "10.0.0.2".to_string()];
+        let targets = ["198.51.100.1:22".to_string(), "198.51.100.2".to_string()];
         let map = to_target_map(&targets, PortSet::try_from("80").unwrap(), None)
             .expect("literal addresses need nothing resolved");
 

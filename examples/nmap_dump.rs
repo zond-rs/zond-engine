@@ -59,7 +59,7 @@ fn main() {
 
 /// A report with one of each shape the exported document has an element for.
 fn report() -> ScanReport {
-    let mut gateway = Host::new("192.168.0.1".parse::<IpAddr>().expect("an address"));
+    let mut gateway = Host::new("203.0.113.1".parse::<IpAddr>().expect("an address"));
     gateway.set_status(HostStatus::Up);
     gateway.set_hostname(Some("gateway.example".to_string()));
     gateway.add_port(
@@ -72,7 +72,7 @@ fn report() -> ScanReport {
     gateway.add_port(Port::new(53, Protocol::Udp, PortState::Open));
     gateway.add_port(Port::new(8080, Protocol::Tcp, PortState::Closed));
 
-    let mut quiet = Host::new("192.168.0.7".parse::<IpAddr>().expect("an address"));
+    let mut quiet = Host::new("203.0.113.7".parse::<IpAddr>().expect("an address"));
     quiet.set_status(HostStatus::Filtered);
     quiet.add_port(Port::new(25, Protocol::Tcp, PortState::Filtered));
 

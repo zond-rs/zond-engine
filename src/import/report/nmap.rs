@@ -1253,7 +1253,7 @@ mod tests {
     }
 
     fn ip(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, last))
     }
 
     /// A timestamp no clock can name is a field to drop, not a process to end.
@@ -1270,7 +1270,7 @@ mod tests {
                 r#"<nmaprun scanner="nmap" start="{seconds}" version="7.94">
 <host starttime="{seconds}" endtime="{seconds}">
 <status state="up" reason="arp-response" reason_ttl="0"/>
-<address addr="192.168.0.10" addrtype="ipv4"/>
+<address addr="192.0.2.10" addrtype="ipv4"/>
 </host>
 </nmaprun>"#
             );
@@ -1292,8 +1292,8 @@ mod tests {
 <scaninfo type="syn" protocol="tcp" numservices="1000" services="1-1024"/>
 <host starttime="1690000001" endtime="1690000009">
 <status state="up" reason="arp-response" reason_ttl="0"/>
-<address addr="192.168.0.10" addrtype="ipv4"/>
-<address addr="2C:CF:67:F2:51:E3" addrtype="mac" vendor="Raspberry Pi"/>
+<address addr="192.0.2.10" addrtype="ipv4"/>
+<address addr="2C:CF:67:00:00:01" addrtype="mac" vendor="Raspberry Pi"/>
 <hostnames><hostname name="pi.local" type="PTR"/></hostnames>
 <ports>
 <extraports state="closed" count="998"><extrareasons reason="resets" count="998"/></extraports>
@@ -1315,7 +1315,7 @@ mod tests {
 </host>
 <host starttime="1690000001" endtime="1690000009">
 <status state="down" reason="no-response" reason_ttl="0"/>
-<address addr="192.168.0.11" addrtype="ipv4"/>
+<address addr="192.0.2.11" addrtype="ipv4"/>
 </host>
 <runstats><finished time="1690000010" elapsed="9.42"/></runstats>
 </nmaprun>"#;
@@ -1332,7 +1332,7 @@ mod tests {
         assert_eq!(host.hostname(), Some("pi.local"));
         assert_eq!(
             host.mac(),
-            Some(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3))
+            Some(MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01))
         );
 
         let ssh = host.ports().find(|port| port.number() == 22).expect("22");
@@ -1457,7 +1457,7 @@ mod tests {
         // it back, having sent nothing.
         let document = r#"<nmaprun scanner="nmap" start="1690000000" version="7.94">
 <host><status state="up" reason="user-set"/>
-<address addr="192.168.0.11" addrtype="ipv4"/>
+<address addr="192.0.2.11" addrtype="ipv4"/>
 <ports><port protocol="tcp" portid="80">
 <state state="filtered" reason="no-response"/>
 </port></ports></host></nmaprun>"#;
@@ -1474,7 +1474,7 @@ mod tests {
     fn a_port_that_answered_proves_the_host_is_up_whatever_discovery_said() {
         let document = r#"<nmaprun scanner="nmap" start="1690000000" version="7.94">
 <host><status state="up" reason="user-set"/>
-<address addr="192.168.0.11" addrtype="ipv4"/>
+<address addr="192.0.2.11" addrtype="ipv4"/>
 <ports><port protocol="tcp" portid="443">
 <state state="open" reason="syn-ack"/>
 </port></ports></host></nmaprun>"#;
@@ -1509,7 +1509,7 @@ mod tests {
     fn a_document_of_nothing_but_live_hosts_claims_no_scope() {
         let document = r#"<nmaprun scanner="nmap" start="1690000000" version="7.94">
 <host><status state="up" reason="echo-reply"/>
-<address addr="192.168.0.10" addrtype="ipv4"/></host></nmaprun>"#;
+<address addr="192.0.2.10" addrtype="ipv4"/></host></nmaprun>"#;
 
         let report = read(document).expect("a readable document");
         assert!(
@@ -1540,7 +1540,7 @@ mod tests {
 
     #[test]
     fn a_port_state_this_engine_has_no_verdict_for_is_refused() {
-        let document = r#"<nmaprun><host><address addr="192.168.0.10" addrtype="ipv4"/>
+        let document = r#"<nmaprun><host><address addr="192.0.2.10" addrtype="ipv4"/>
 <ports><port protocol="tcp" portid="80"><state state="perhaps"/></port></ports>
 </host></nmaprun>"#;
 
@@ -1558,7 +1558,7 @@ mod tests {
     fn an_entity_declaration_is_refused_here_too() {
         let document = r#"<?xml version="1.0"?>
 <!DOCTYPE nmaprun [<!ENTITY x "boom">]>
-<nmaprun><host><address addr="192.168.0.10" addrtype="ipv4"/></host></nmaprun>"#;
+<nmaprun><host><address addr="192.0.2.10" addrtype="ipv4"/></host></nmaprun>"#;
 
         let error = read(document).expect_err("refused");
         assert!(error.to_string().contains("DOCTYPE"), "{error}");

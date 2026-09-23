@@ -146,11 +146,11 @@ impl fmt::Display for ScanKind {
 /// them are the whole reason this is not a bare `Option<PortSet>`.
 ///
 /// [`Every`](Self::Every) against [`Mixed`](Self::Mixed): a phase can be given
-/// different ports for different addresses: `10.0.0.0/24:80,443` alongside
-/// `10.0.1.0/24:8080` is one job with two units, and there is no single set
+/// different ports for different addresses: `192.0.2.0/24:80,443` alongside
+/// `198.51.100.0/24:8080` is one job with two units, and there is no single set
 /// that is true of every address in it. Publishing the union as though there
-/// were would have a consumer conclude that `10.0.0.5` was probed on 8080, which
-/// nothing did. So the union is published as a union and labelled one.
+/// were would have a consumer conclude that `192.0.2.5` was probed on 8080,
+/// which nothing did. So the union is published as a union and labelled one.
 ///
 /// [`NoPorts`](Self::NoPorts) against [`Unstated`](Self::Unstated): a discovery
 /// sweep walked no ports, which is a fact, and a record that does not say which
@@ -2210,7 +2210,7 @@ impl ScanReport {
     /// use zond_engine::model::parse::ip::to_set;
     ///
     /// let cfg = ZondConfig::default();
-    /// let (_, sweep) = discover(to_set(&["192.168.1.0/24"], None, None)?, &cfg).await?;
+    /// let (_, sweep) = discover(to_set(&["192.0.2.0/24"], None, None)?, &cfg).await?;
     /// let mut report = sweep.join().await?;
     ///
     /// // The sweep already established these hosts answer, so the scan is told
@@ -2585,8 +2585,8 @@ mod tests {
         };
 
         let mut same = TargetMap::new();
-        same.add_unit(unit("10.0.0.0/30", "80,443"));
-        same.add_unit(unit("10.0.1.0/30", "80,443"));
+        same.add_unit(unit("192.0.2.0/30", "80,443"));
+        same.add_unit(unit("198.51.100.0/30", "80,443"));
         let scope = TargetScope::from_target_map(&mut same, &Exclusions::none());
         assert_eq!(
             scope.ports().covers(443, Protocol::Tcp),
@@ -2596,8 +2596,8 @@ mod tests {
         assert_eq!(scope.ports().covers(8080, Protocol::Tcp), Some(false));
 
         let mut differing = TargetMap::new();
-        differing.add_unit(unit("10.0.0.0/30", "80,443"));
-        differing.add_unit(unit("10.0.1.0/30", "8080"));
+        differing.add_unit(unit("192.0.2.0/30", "80,443"));
+        differing.add_unit(unit("198.51.100.0/30", "8080"));
         let scope = TargetScope::from_target_map(&mut differing, &Exclusions::none());
         assert_eq!(
             scope.ports().covers(8080, Protocol::Tcp),
@@ -2615,7 +2615,7 @@ mod tests {
     /// than an absence of one.
     #[test]
     fn a_discovery_sweep_walked_no_ports_and_says_so() {
-        let mut ips = crate::model::parse::ip::to_set(&["10.0.0.0/30"], None, None).unwrap();
+        let mut ips = crate::model::parse::ip::to_set(&["192.0.2.0/30"], None, None).unwrap();
         let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
 
         assert_eq!(*scope.ports(), PortScope::NoPorts);
@@ -2629,7 +2629,7 @@ mod tests {
     use std::str::FromStr;
 
     fn ip(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, last))
     }
 
     fn phase(kind: ScanKind) -> ScanPhase {
@@ -2693,8 +2693,8 @@ mod tests {
 
     #[test]
     fn scope_merges_overlapping_ranges_before_counting() {
-        let mut ips = ip_set("192.168.0.0/24");
-        ips.insert_range(IpRange::from_str("192.168.0.128/25").expect("valid range"));
+        let mut ips = ip_set("203.0.113.0/24");
+        ips.insert_range(IpRange::from_str("203.0.113.128/25").expect("valid range"));
 
         let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
 
@@ -2715,7 +2715,7 @@ mod tests {
         ]);
 
         let mut targets = TargetMap::new();
-        targets.add_unit(TargetSet::new(ip_set("10.0.0.1-10.0.0.4"), ports));
+        targets.add_unit(TargetSet::new(ip_set("192.0.2.1-192.0.2.4"), ports));
 
         let scope = TargetScope::from_target_map(&mut targets, &Exclusions::none());
 
@@ -2934,7 +2934,7 @@ mod tests {
 
     #[test]
     fn scope_ranges_cover_both_families() {
-        let mut ips = ip_set("10.0.0.0/30");
+        let mut ips = ip_set("192.0.2.0/30");
         ips.insert_range(IpRange::from_str("fe80::/126").expect("valid range"));
 
         let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
@@ -2948,7 +2948,7 @@ mod tests {
     fn ipv4_range_scope_reports_its_own_bounds() {
         let mut ips = IpSet::new();
         ips.push_v4_range(
-            Ipv4Range::new(Ipv4Addr::new(10, 0, 0, 5), Ipv4Addr::new(10, 0, 0, 9))
+            Ipv4Range::new(Ipv4Addr::new(192, 0, 2, 5), Ipv4Addr::new(192, 0, 2, 9))
                 .expect("valid range"),
         );
 
@@ -2957,7 +2957,7 @@ mod tests {
         assert_eq!(scope.addresses(), 5);
         assert_eq!(
             scope.ranges()[0].start_addr(),
-            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5))
         );
     }
 

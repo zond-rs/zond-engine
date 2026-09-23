@@ -14,8 +14,8 @@
 //!
 //! ```text
 //! # staging, 2026-02
-//! 192.168.1.1
-//! 10.0.0.0/24:1-1024
+//! 192.0.2.1
+//! 198.51.100.0/24:1-1024
 //! [2001:db8::1]:443    # the load balancer
 //! db.internal:5432
 //! ```
@@ -23,8 +23,8 @@
 //! ## What separates two targets
 //!
 //! Newlines and runs of whitespace, never commas. A comma belongs to the
-//! expression it is inside, where it separates ports in `10.0.0.1:80,443` and
-//! addresses in `10.0.0.1,10.0.0.2`, and only
+//! expression it is inside, where it separates ports in `192.0.2.1:80,443` and
+//! addresses in `192.0.2.1,192.0.2.2`, and only
 //! [`TargetExpr`](crate::model::parse::target::TargetExpr) knows which half it
 //! landed in. Splitting on commas out here would take the first of those apart
 //! into a host and a stray `443`.
@@ -210,12 +210,12 @@ mod tests {
         let file = concat!(
             "\u{feff}# staging, 2026-02\r\n",
             "\r\n",
-            "   192.168.1.1   \r\n",
-            "10.0.0.1 10.0.0.2\t10.0.0.3\n",
+            "   192.0.2.1   \r\n",
+            "198.51.100.1 198.51.100.2\t198.51.100.3\n",
             "   # a whole line of comment\n",
-            "10.0.0.4   # and a trailing one\n",
+            "198.51.100.4   # and a trailing one\n",
             "\n",
-            "10.0.0.5",
+            "198.51.100.5",
         );
 
         let imported = read(file);
@@ -229,14 +229,14 @@ mod tests {
     /// editor is refused and every other line works.
     #[test]
     fn a_byte_order_mark_does_not_cost_the_first_target() {
-        assert_eq!(read("\u{feff}10.0.0.1\n10.0.0.2\n").addresses, 2);
+        assert_eq!(read("\u{feff}198.51.100.1\n198.51.100.2\n").addresses, 2);
     }
 
     /// A comma is never a separator out here. Splitting on it would take
-    /// `10.0.0.1:80,443` apart into a host and a stray `443`.
+    /// `198.51.100.1:80,443` apart into a host and a stray `443`.
     #[test]
     fn a_comma_stays_inside_the_expression_it_was_written_in() {
-        let imported = read("10.0.0.1:80,443\n10.0.0.2,10.0.0.3:22\n");
+        let imported = read("198.51.100.1:80,443\n198.51.100.2,198.51.100.3:22\n");
 
         assert_eq!(imported.tokens, 2);
         assert_eq!(imported.addresses, 3);
@@ -248,8 +248,8 @@ mod tests {
     /// drop a target with nothing to show for it.
     #[test]
     fn a_last_line_without_a_terminator_is_still_a_target() {
-        assert_eq!(read("10.0.0.1\n10.0.0.2").addresses, 2);
-        assert_eq!(read("10.0.0.1").addresses, 1);
+        assert_eq!(read("198.51.100.1\n198.51.100.2").addresses, 2);
+        assert_eq!(read("198.51.100.1").addresses, 1);
     }
 
     #[test]
@@ -312,7 +312,7 @@ mod tests {
     /// address into something that parses as a hostname.
     #[test]
     fn invalid_utf8_is_refused_rather_than_replaced() {
-        let mut input = Cursor::new(b"10.0.0.1\n10.0.0.\xff\xfe2\n".to_vec());
+        let mut input = Cursor::new(b"198.51.100.1\n198.51.100.\xff\xfe2\n".to_vec());
         let options = ImportOptions::new(PortSet::try_from("80").unwrap());
 
         let err = ImportFormat::List
@@ -330,7 +330,7 @@ mod tests {
     /// A comment cannot hide a target and a target cannot hide in a comment.
     #[test]
     fn a_comment_runs_to_the_end_of_its_line_and_no_further() {
-        let imported = read("10.0.0.1 # 10.0.0.99 10.0.0.98\n10.0.0.2\n");
+        let imported = read("198.51.100.1 # 198.51.100.99 198.51.100.98\n198.51.100.2\n");
 
         assert_eq!(imported.tokens, 2);
         assert_eq!(imported.addresses, 2);

@@ -1640,9 +1640,9 @@ impl LocalScanner {
                 // the zone its *key* carries, and a key carries one only where
                 // the address needs it: a machine whose IPv4 answered before its
                 // link-local was created unscoped, and its link-local was then
-                // reported bare. `fe80::41a:992a:fb73:5c91` names a different
-                // machine on every segment, so which of two addresses replied
-                // first decided whether the record was usable. `set_zone` keeps
+                // reported bare. `fe80::aa` names a different machine on every
+                // segment, so which of two addresses replied first decided
+                // whether the record was usable. `set_zone` keeps
                 // the first it is given, so repeating this is free.
                 host.set_zone(zone.clone());
 
@@ -1793,7 +1793,10 @@ mod tests {
         };
 
         let readable: [(&str, Vec<u8>); 7] = [
-            ("an ARP frame", arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2))),
+            (
+                "an ARP frame",
+                arp_reply_frame(Ipv4Addr::new(198, 51, 100, 2)),
+            ),
             (
                 "a neighbour advertisement",
                 ndp_frame(&advertisement_body(
@@ -1807,7 +1810,7 @@ mod tests {
             ),
             (
                 "a DHCP server reply",
-                dhcp_reply_frame(Ipv4Addr::new(192, 168, 1, 1), None),
+                dhcp_reply_frame(Ipv4Addr::new(192, 0, 2, 1), None),
             ),
             ("an mDNS response", mdns_frame()),
             ("an LLDP advertisement", lldp),
@@ -1836,8 +1839,8 @@ mod tests {
         let ordinary_tcp = {
             let datagram = crate::protocols::craft::Packet::new()
                 .push(crate::protocols::craft::Ipv4::new(
-                    Ipv4Addr::new(192, 168, 1, 50),
-                    Ipv4Addr::new(192, 168, 1, 60),
+                    Ipv4Addr::new(192, 0, 2, 50),
+                    Ipv4Addr::new(192, 0, 2, 60),
                 ))
                 .push(crate::protocols::craft::Udp::new(4444, 8080).with_payload(vec![0u8; 16]))
                 .build()

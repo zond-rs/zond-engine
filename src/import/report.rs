@@ -440,7 +440,7 @@ mod tests {
         let mut xml = Cursor::new(b"<?xml version=\"1.0\"?><nmaprun/>".as_slice());
         assert_eq!(ReportFormat::sniff(&mut xml).unwrap(), ReportFormat::Nmap);
 
-        let mut neither = Cursor::new(b"192.168.0.1\n".as_slice());
+        let mut neither = Cursor::new(b"192.0.2.1\n".as_slice());
         assert!(ReportFormat::sniff(&mut neither).is_err());
     }
 

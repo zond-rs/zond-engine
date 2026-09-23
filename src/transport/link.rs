@@ -330,14 +330,14 @@ mod tests {
             a.set_operation(ArpOperations::Reply);
             a.set_sender_hw_addr(sender_mac);
             a.set_sender_proto_addr(sender_ip);
-            a.set_target_proto_addr(Ipv4Addr::new(192, 168, 1, 50));
+            a.set_target_proto_addr(Ipv4Addr::new(192, 0, 2, 50));
         }
         buf
     }
 
     #[test]
     fn parses_matching_arp_reply() {
-        let ip = Ipv4Addr::new(192, 168, 1, 200);
+        let ip = Ipv4Addr::new(192, 0, 2, 200);
         let mac = MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
         assert_eq!(parse_arp_reply(&arp_reply(ip, mac), ip), Some(mac));
     }
@@ -363,11 +363,8 @@ mod tests {
     #[test]
     fn ignores_arp_reply_from_other_ip() {
         let mac = MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
-        let reply = arp_reply(Ipv4Addr::new(192, 168, 1, 201), mac);
-        assert_eq!(
-            parse_arp_reply(&reply, Ipv4Addr::new(192, 168, 1, 200)),
-            None
-        );
+        let reply = arp_reply(Ipv4Addr::new(192, 0, 2, 201), mac);
+        assert_eq!(parse_arp_reply(&reply, Ipv4Addr::new(192, 0, 2, 200)), None);
     }
 
     #[test]
@@ -375,6 +372,6 @@ mod tests {
         let mut buf = vec![0u8; 42];
         let mut eth = MutableEthernetPacket::new(&mut buf).unwrap();
         eth.set_ethertype(EtherTypes::Ipv4);
-        assert_eq!(parse_arp_reply(&buf, Ipv4Addr::new(192, 168, 1, 200)), None);
+        assert_eq!(parse_arp_reply(&buf, Ipv4Addr::new(192, 0, 2, 200)), None);
     }
 }

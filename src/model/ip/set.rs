@@ -1203,15 +1203,15 @@ mod tests {
     fn every_kind_of_overlap_collapses_to_one_range() {
         let mut set = IpSet::new();
         // Insert: [10-20]
-        set.insert_range("10.0.0.10-10.0.0.20".parse().unwrap());
+        set.insert_range("198.51.100.10-198.51.100.20".parse().unwrap());
         // Insert: [5-15] (overlap start)
-        set.insert_range("10.0.0.5-10.0.0.15".parse().unwrap());
+        set.insert_range("198.51.100.5-198.51.100.15".parse().unwrap());
         // Insert: [15-25] (overlap end)
-        set.insert_range("10.0.0.15-10.0.0.25".parse().unwrap());
+        set.insert_range("198.51.100.15-198.51.100.25".parse().unwrap());
         // Insert: [30-40] (disjoint)
-        set.insert_range("10.0.0.30-10.0.0.40".parse().unwrap());
+        set.insert_range("198.51.100.30-198.51.100.40".parse().unwrap());
         // Insert: [0-50] (subsume all)
-        set.insert_range("10.0.0.0-10.0.0.50".parse().unwrap());
+        set.insert_range("198.51.100.0-198.51.100.50".parse().unwrap());
 
         set.canonicalize();
         assert_eq!(set.len(), 51);
@@ -1302,8 +1302,9 @@ mod tests {
     /// that has to be counted once.
     #[test]
     fn a_written_set_may_mix_both_families_and_still_counts_distinctly() {
-        let set = IpSet::from_str("1.1.1.1/32, 1.1.1.1, ::1-::1, 10.0.0.1-10.0.0.2").unwrap();
-        // 1.1.1.1 (v4) + ::1 (v6) + 10.0.0.1, 10.0.0.2 (v4)
+        let set =
+            IpSet::from_str("1.1.1.1/32, 1.1.1.1, ::1-::1, 198.51.100.1-198.51.100.2").unwrap();
+        // 1.1.1.1 (v4) + ::1 (v6) + 198.51.100.1, 198.51.100.2 (v4)
         assert_eq!(set.len(), 4);
     }
 
@@ -1402,15 +1403,18 @@ mod tests {
     /// `assert_eq!` on two sets answered a question about bookkeeping.
     #[test]
     fn two_sets_holding_the_same_addresses_are_equal_however_they_were_built() {
-        let canonical = IpSet::try_from("10.0.0.1-10.0.0.2, ::1").expect("parses");
+        let canonical = IpSet::try_from("198.51.100.1-198.51.100.2, ::1").expect("parses");
 
         let mut piecemeal = IpSet::new();
         piecemeal.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
-        piecemeal.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
-        piecemeal.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        piecemeal.insert(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)));
+        piecemeal.insert(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)));
 
         assert_eq!(canonical, piecemeal, "same addresses, different order");
-        assert_ne!(canonical, IpSet::try_from("10.0.0.1, ::1").expect("parses"));
+        assert_ne!(
+            canonical,
+            IpSet::try_from("198.51.100.1, ::1").expect("parses")
+        );
     }
 
     /// Refusing to merge across zones leaves ranges that *overlap* as well as
@@ -1732,8 +1736,8 @@ mod property_tests {
     // ─── Set difference ──────────────────────────────────────────────────────
 
     /// Builds a v4 set from `[start, end]` pairs written as last octets of
-    /// `10.0.0.0/24`, which is enough address space to arrange every overlap a
-    /// difference has to handle and short enough to read.
+    /// `198.51.100.0/24`, which is enough address space to arrange every
+    /// overlap a difference has to handle and short enough to read.
     /// A canonical set of both families, small enough to walk in a test and
     /// varied enough to put more than one range in each family, and to put the
     /// same IPv6 address on more than one interface, which is the shape that
@@ -1769,8 +1773,11 @@ mod property_tests {
         let mut set = IpSet::new();
         for &(start, end) in spans {
             set.push_v4_range(
-                Ipv4Range::new(Ipv4Addr::new(10, 0, 0, start), Ipv4Addr::new(10, 0, 0, end))
-                    .expect("start <= end"),
+                Ipv4Range::new(
+                    Ipv4Addr::new(198, 51, 100, start),
+                    Ipv4Addr::new(198, 51, 100, end),
+                )
+                .expect("start <= end"),
             );
         }
         set.canonicalize();
@@ -1794,7 +1801,7 @@ mod property_tests {
     #[test]
     fn a_cut_takes_exactly_what_it_covers() {
         /// A target, what is cut from it, and what should be left: last octets
-        /// of `10.0.0.0/24`, which is enough room for every arrangement and
+        /// of `198.51.100.0/24`, which is enough room for every arrangement and
         /// short enough to read down the column.
         type Case = (
             &'static [(u8, u8)],
@@ -2036,7 +2043,7 @@ mod property_tests {
             after.subtract(&cut_set);
 
             for probe in 0..=65u8 {
-                let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, probe));
+                let ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, probe));
                 prop_assert_eq!(
                     after.contains(&ip),
                     before.contains(&ip) && !cut_set.contains(&ip),

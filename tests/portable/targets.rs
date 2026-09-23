@@ -34,15 +34,16 @@ fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
 /// A prefix and a range become the union of the two, counted once.
 #[tokio::test]
 async fn a_prefix_and_a_range_become_one_set() {
-    let targets = resolve::for_discovery(&["10.0.5.0/30", "10.0.5.2-10.0.5.5"], NO_NAMES)
-        .await
-        .expect("both expressions are well formed");
+    let targets =
+        resolve::for_discovery(&["198.51.100.0/30", "198.51.100.2-198.51.100.5"], NO_NAMES)
+            .await
+            .expect("both expressions are well formed");
 
     // /30 is .0 through .3, the range is .2 through .5, so the union is .0-.5.
     assert_eq!(targets.ips().len(), 6, "the overlap should be counted once");
-    assert!(targets.ips().contains(&v4(10, 0, 5, 0)));
-    assert!(targets.ips().contains(&v4(10, 0, 5, 5)));
-    assert!(!targets.ips().contains(&v4(10, 0, 5, 6)));
+    assert!(targets.ips().contains(&v4(198, 51, 100, 0)));
+    assert!(targets.ips().contains(&v4(198, 51, 100, 5)));
+    assert!(!targets.ips().contains(&v4(198, 51, 100, 6)));
 }
 
 /// A scope written in addresses is not a segment sweep.
@@ -106,7 +107,7 @@ async fn an_empty_exclusion_list_excludes_nothing() {
         .expect("nothing is well formed");
 
     assert!(exclusions.is_empty());
-    assert!(!exclusions.excludes(&v4(10, 0, 0, 1)));
+    assert!(!exclusions.excludes(&v4(198, 51, 100, 1)));
 }
 
 /// With no keyword or zone resolver, an expression needing one is refused
@@ -128,11 +129,11 @@ async fn an_expression_needing_a_resolver_that_is_absent_is_refused() {
 /// An expression that is not an address, a range or a name is refused.
 #[tokio::test]
 async fn nonsense_is_refused_with_the_token_that_caused_it() {
-    let refused = resolve::for_discovery(&["10.0.0.0/33"], NO_NAMES).await;
+    let refused = resolve::for_discovery(&["198.51.100.0/33"], NO_NAMES).await;
 
     let error = refused.expect_err("a /33 does not exist").to_string();
     assert!(
-        error.contains("10.0.0.0/33"),
+        error.contains("198.51.100.0/33"),
         "the refusal should name what was written: {error}"
     );
 }

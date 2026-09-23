@@ -40,7 +40,7 @@ const PEER_A: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 const PEER_B: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);
 
 fn v4(host: u8) -> IpAddr {
-    IpAddr::V4(Ipv4Addr::new(192, 168, 1, host))
+    IpAddr::V4(Ipv4Addr::new(192, 0, 2, host))
 }
 
 /// Runs one sweep of `lan` over `targets` and returns the session to assert
@@ -117,8 +117,8 @@ async fn sweep_in(
 /// carries one only where the address needs it — so a machine whose IPv4 replied
 /// before its link-local was created unscoped, and the link-local it advertised
 /// a moment later was then reported bare. Two runs of the same sweep against the
-/// same phone printed `fe80::41a:992a:fb73:5c91%en1` and
-/// `fe80::41a:992a:fb73:5c91`, decided by nothing but which reply arrived first.
+/// same phone printed `fe80::aa%en1` and `fe80::aa`, decided by nothing but
+/// which reply arrived first.
 #[tokio::test]
 async fn a_link_local_carries_its_interface_even_when_ipv4_answered_first() {
     let peer_v6 = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
@@ -1192,7 +1192,7 @@ async fn a_sweep_asks_the_segment_for_its_routers_and_names_the_one_that_answers
 /// the protocol is built on broadcast, so no address can be asked the question.
 #[tokio::test]
 async fn a_sweep_asks_the_segment_who_configures_it() {
-    let server = Ipv4Addr::new(192, 168, 1, 1);
+    let server = Ipv4Addr::new(192, 0, 2, 1);
     let lan = FakeLan::new().serving_dhcp(server, PEER_B);
 
     let session = sweep(&lan, &[v4(1), v4(10)], Scope::Sweep).await;
@@ -1281,8 +1281,8 @@ async fn a_switch_announcing_itself_does_not_become_a_host() {
 /// frame is no evidence about.
 #[tokio::test]
 async fn a_relayed_answer_names_nobody_a_dhcp_server() {
-    let relay = Ipv4Addr::new(192, 168, 1, 1);
-    let elsewhere = Ipv4Addr::new(10, 0, 0, 53);
+    let relay = Ipv4Addr::new(192, 0, 2, 1);
+    let elsewhere = Ipv4Addr::new(198, 51, 100, 53);
     let lan = FakeLan::new().serving_dhcp_as(relay, elsewhere, PEER_B);
 
     let session = sweep(&lan, &[v4(1), v4(10)], Scope::Sweep).await;
@@ -1318,7 +1318,7 @@ async fn a_relayed_answer_names_nobody_a_dhcp_server() {
 async fn a_targeted_run_asks_the_segment_and_records_only_what_it_asked_about() {
     // One machine, as a home network has: the router at .1 is also the segment's
     // IPv6 router and its DHCP server.
-    let gateway = Ipv4Addr::new(192, 168, 1, 1);
+    let gateway = Ipv4Addr::new(192, 0, 2, 1);
     let lan = FakeLan::new()
         .host(v4(1), LanHost::at(PEER_A))
         .routing(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), PEER_A)

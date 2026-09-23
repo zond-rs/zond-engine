@@ -412,7 +412,7 @@ pub(crate) mod tests {
 
     /// A complete announcement from a Cisco switch that is also routing: named
     /// `core-sw-02`, on port `GigabitEthernet1/0/14`, untagged traffic in VLAN
-    /// 40, reachable at `10.0.0.2`.
+    /// 40, reachable at `198.51.100.2`.
     ///
     /// The same four facts as
     /// [`lldp::tests::switch_announcement`](crate::protocols::lldp::tests::switch_announcement),
@@ -452,7 +452,7 @@ pub(crate) mod tests {
                 &(Capabilities::SWITCH | Capabilities::ROUTER).to_be_bytes(),
             ),
             record(RECORD_NATIVE_VLAN, &40u16.to_be_bytes()),
-            ipv4_address_record(Ipv4Addr::new(10, 0, 0, 2)),
+            ipv4_address_record(Ipv4Addr::new(198, 51, 100, 2)),
         ])
     }
 
@@ -470,7 +470,7 @@ pub(crate) mod tests {
             record(RECORD_PLATFORM, b"cisco WS-C2960X-48TS-L"),
             record(RECORD_NATIVE_VLAN, &40u16.to_be_bytes()),
             record(RECORD_DUPLEX, &[1]),
-            ipv4_address_record(Ipv4Addr::new(10, 0, 0, 2)),
+            ipv4_address_record(Ipv4Addr::new(198, 51, 100, 2)),
         ]);
 
         let frame = ethernet::parse(&bytes).expect("an Ethernet frame");
@@ -487,7 +487,7 @@ pub(crate) mod tests {
         assert_eq!(announcement.full_duplex, Some(true));
         assert_eq!(
             announcement.address,
-            Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)))
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)))
         );
 
         let capabilities = announcement.capabilities.expect("capabilities");

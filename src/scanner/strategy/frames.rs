@@ -469,10 +469,12 @@ pub(crate) mod tests {
 
         assert!(is_assignable("fe80::1".parse().expect("a valid address")));
         assert!(is_assignable(
-            "fe80::ca52:61ff:fec7:594".parse().expect("a valid address")
+            "fe80::a8bb:ccff:fedd:eeff"
+                .parse()
+                .expect("a valid address")
         ));
         assert!(is_assignable(
-            "2a02:908:8c1:b880::1".parse().expect("a valid address")
+            "2001:db8::1".parse().expect("a valid address")
         ));
     }
     use super::*;
@@ -488,7 +490,7 @@ pub(crate) mod tests {
     pub(crate) const ICMPV6_ECHO_LEN: usize = 8;
 
     pub(crate) fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
-        arp::build_request(PEER_MAC, sender_ip, Ipv4Addr::new(10, 0, 0, 1))
+        arp::build_request(PEER_MAC, sender_ip, Ipv4Addr::new(198, 51, 100, 1))
     }
 
     /// An Ethernet-framed IPv6 packet to `destination`, carrying `body` as
@@ -559,7 +561,7 @@ pub(crate) mod tests {
     /// what entitles the scanner to retire exactly that probe.
     #[test]
     fn arp_protocol_claims_arp_frames_as_solicited() {
-        let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 168, 1, 50));
+        let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 0, 2, 50));
         let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         let result = ArpProtocol.interpret(&frame).unwrap();
@@ -569,7 +571,7 @@ pub(crate) mod tests {
 
     #[test]
     fn icmpv6_protocol_ignores_non_ipv6_frames() {
-        let frame_bytes = arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2));
+        let frame_bytes = arp_reply_frame(Ipv4Addr::new(198, 51, 100, 2));
         let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         let result = Icmpv6EchoProtocol.interpret(&frame);
@@ -751,7 +753,7 @@ pub(crate) mod tests {
     /// nothing about. It proves the relay is there, and that is all.
     #[test]
     fn a_dhcp_answer_names_a_server_only_where_the_server_answered() {
-        let server = Ipv4Addr::new(192, 168, 1, 1);
+        let server = Ipv4Addr::new(192, 0, 2, 1);
 
         let itself = dhcp_reply_frame(server, Some(server));
         let frame = crate::protocols::ethernet::parse(&itself).unwrap();
@@ -761,7 +763,7 @@ pub(crate) mod tests {
 
         // The same message forwarded by a relay, which is where the address in
         // the packet and the address in the message part company.
-        let relayed = dhcp_reply_frame(server, Some(Ipv4Addr::new(10, 0, 0, 254)));
+        let relayed = dhcp_reply_frame(server, Some(Ipv4Addr::new(198, 51, 100, 254)));
         let frame = crate::protocols::ethernet::parse(&relayed).unwrap();
         let reading = DhcpProtocol.interpret(&frame).unwrap();
         assert!(matches!(reading.matched, ProtocolMatch::Unsolicited));
@@ -771,7 +773,7 @@ pub(crate) mod tests {
         );
 
         // A client's own broadcast, which every machine on the segment sends.
-        let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 168, 1, 20));
+        let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 0, 2, 20));
         let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
         assert!(matches!(
             DhcpProtocol.interpret(&frame).unwrap().matched,
@@ -797,7 +799,7 @@ pub(crate) mod tests {
         let datagram = crate::protocols::craft::Packet::new()
             .push(crate::protocols::craft::Ipv4::new(
                 from.unwrap_or(server_id),
-                Ipv4Addr::new(192, 168, 1, 50),
+                Ipv4Addr::new(192, 0, 2, 50),
             ))
             .push(
                 crate::protocols::craft::Udp::new(dhcp::SERVER_PORT, dhcp::CLIENT_PORT)
@@ -818,7 +820,7 @@ pub(crate) mod tests {
     pub(crate) fn mdns_frame() -> Vec<u8> {
         let datagram = crate::protocols::craft::Packet::new()
             .push(crate::protocols::craft::Ipv4::new(
-                Ipv4Addr::new(192, 168, 1, 50),
+                Ipv4Addr::new(192, 0, 2, 50),
                 Ipv4Addr::new(224, 0, 0, 251),
             ))
             .push(

@@ -85,12 +85,12 @@ fn addresses_of(step: &DiscoveryStep) -> Vec<IpAddr> {
 #[test]
 fn no_plan_step_carries_an_excluded_address() {
     let forbidden =
-        to_set(&["192.168.1.64/26", "10.0.5.0/24"], None, None).expect("a parseable range");
+        to_set(&["192.0.2.64/26", "198.51.100.0/24"], None, None).expect("a parseable range");
     let exclusions = Exclusions::new(forbidden);
 
     for scope in [Scope::Sweep, Scope::Targeted] {
         let mut targets =
-            to_set(&["192.168.1.0/24", "10.0.5.0/24"], None, None).expect("a parseable range");
+            to_set(&["192.0.2.0/24", "198.51.100.0/24"], None, None).expect("a parseable range");
         let before = targets.len();
 
         // What a caller does before building a plan, and the whole of the

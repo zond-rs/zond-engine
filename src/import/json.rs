@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn a_host_is_rescanned_on_the_ports_it_was_found_on() {
         let file = document(
-            r#"{"primary_ip":"10.0.0.1","ips":["10.0.0.1"],
+            r#"{"primary_ip":"198.51.100.1","ips":["198.51.100.1"],
                 "ports":[{"port":22,"protocol":"tcp"},{"port":53,"protocol":"udp"}]}"#,
         );
 
@@ -564,7 +564,7 @@ mod tests {
     /// hosts it found rather than as nothing.
     #[test]
     fn a_host_with_no_ports_takes_the_default_ports() {
-        let file = document(r#"{"primary_ip":"10.0.0.1"},{"primary_ip":"10.0.0.2"}"#);
+        let file = document(r#"{"primary_ip":"198.51.100.1"},{"primary_ip":"198.51.100.2"}"#);
 
         let imported = read(ImportFormat::Json, &file).expect("imports");
 
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn every_address_of_a_host_becomes_a_target() {
         let file = document(
-            r#"{"primary_ip":"10.0.0.1","ips":["10.0.0.1","2001:db8::1"],
+            r#"{"primary_ip":"198.51.100.1","ips":["198.51.100.1","2001:db8::1"],
                 "ports":[{"port":443,"protocol":"tcp"}]}"#,
         );
 
@@ -596,7 +596,7 @@ mod tests {
             .with_context(crate::model::parse::target::TargetContext::new().with_zones(&zones));
 
         let file = document(
-            r#"{"primary_ip":"fe80::aa","ips":["fe80::aa","10.0.0.1"],"zone":"en0",
+            r#"{"primary_ip":"fe80::aa","ips":["fe80::aa","198.51.100.1"],"zone":"en0",
                 "ports":[{"port":22,"protocol":"tcp"}]}"#,
         );
 
@@ -619,7 +619,7 @@ mod tests {
             "schema_version":1,
             "engine":{"name":"zond-engine","version":"9.9.9"},
             "summary":{"hosts_total":1,"anything":{"nested":[1,2,3]}},
-            "hosts":[{"primary_ip":"10.0.0.1","telemetry":{"rtt_median_us":1234},
+            "hosts":[{"primary_ip":"198.51.100.1","telemetry":{"rtt_median_us":1234},
                       "invented_field":true,
                       "ports":[{"port":22,"protocol":"tcp","state":"open","service":{"name":"ssh"}}]}],
             "trailing_unknown":[{"a":1}]
@@ -633,7 +633,8 @@ mod tests {
     /// A transport this build does scan reads back as itself, prefix and all.
     #[test]
     fn an_sctp_port_reads_back_as_an_sctp_port() {
-        let file = document(r#"{"primary_ip":"10.0.0.1","ports":[{"port":9,"protocol":"sctp"}]}"#);
+        let file =
+            document(r#"{"primary_ip":"198.51.100.1","ports":[{"port":9,"protocol":"sctp"}]}"#);
 
         let imported = read(ImportFormat::Json, &file).expect("imports");
         let ports = imported.map.units[0].ports();
@@ -645,7 +646,8 @@ mod tests {
     /// Reading it as TCP would probe something else and report success.
     #[test]
     fn an_unknown_transport_is_refused_rather_than_assumed() {
-        let file = document(r#"{"primary_ip":"10.0.0.1","ports":[{"port":9,"protocol":"dccp"}]}"#);
+        let file =
+            document(r#"{"primary_ip":"198.51.100.1","ports":[{"port":9,"protocol":"dccp"}]}"#);
 
         let err = read(ImportFormat::Json, &file).expect_err("dccp cannot be probed");
 
@@ -674,7 +676,7 @@ mod tests {
         let file = concat!(
             r#"{"type":"report","schema_version":1,"engine":{"name":"zond-engine"}}"#,
             "\n",
-            r#"{"type":"host","primary_ip":"10.0.0.1","ports":[{"port":22,"protocol":"tcp"}]}"#,
+            r#"{"type":"host","primary_ip":"198.51.100.1","ports":[{"port":22,"protocol":"tcp"}]}"#,
             "\n",
         );
 
@@ -692,13 +694,13 @@ mod tests {
 
     #[test]
     fn a_newer_schema_version_is_refused_and_a_missing_one_is_not_a_report() {
-        let newer = r#"{"schema_version":9999,"hosts":[{"primary_ip":"10.0.0.1"}]}"#;
+        let newer = r#"{"schema_version":9999,"hosts":[{"primary_ip":"198.51.100.1"}]}"#;
         assert!(matches!(
             read(ImportFormat::Json, newer),
             Err(ImportError::Malformed { .. })
         ));
 
-        let anonymous = r#"{"hosts":[{"primary_ip":"10.0.0.1"}]}"#;
+        let anonymous = r#"{"hosts":[{"primary_ip":"198.51.100.1"}]}"#;
         let err = read(ImportFormat::Json, anonymous)
             .expect_err("JSON with a hosts key is not necessarily a report");
         assert!(matches!(err, ImportError::Malformed { .. }));
@@ -709,9 +711,9 @@ mod tests {
         let file = concat!(
             r#"{"type":"report","schema_version":1,"engine":{"name":"zond-engine"}}"#,
             "\n",
-            r#"{"type":"host","primary_ip":"10.0.0.1","ports":[{"port":22,"protocol":"tcp"}]}"#,
+            r#"{"type":"host","primary_ip":"198.51.100.1","ports":[{"port":22,"protocol":"tcp"}]}"#,
             "\n",
-            r#"{"type":"host","primary_ip":"10.0.0.2","ports":[{"port":22,"protocol":"tcp"}]}"#,
+            r#"{"type":"host","primary_ip":"198.51.100.2","ports":[{"port":22,"protocol":"tcp"}]}"#,
             "\n",
         );
 
@@ -727,7 +729,7 @@ mod tests {
         let file = concat!(
             r#"{"type":"report","schema_version":1}"#,
             "\n",
-            r#"{"type":"host","primary_ip":"10.0.0.1"}"#,
+            r#"{"type":"host","primary_ip":"198.51.100.1"}"#,
             "\n",
         );
 
@@ -744,7 +746,7 @@ mod tests {
             "\n",
             r#"{"type":"finding","severity":"high","note":"something new"}"#,
             "\n",
-            r#"{"type":"host","primary_ip":"10.0.0.1"}"#,
+            r#"{"type":"host","primary_ip":"198.51.100.1"}"#,
             "\n",
         );
 

@@ -299,12 +299,12 @@ mod tests {
         let document = format!(
             "{REAL_PREAMBLE}{}",
             concat!(
-                r#"<nmaprun scanner="nmap" args="nmap -oX out.xml 10.0.0.0/24" start="1786468167" version="7.99" xmloutputversion="1.05">"#,
+                r#"<nmaprun scanner="nmap" args="nmap -oX out.xml 198.51.100.0/24" start="1786468167" version="7.99" xmloutputversion="1.05">"#,
                 "\n<scaninfo type=\"syn\" protocol=\"tcp\" numservices=\"1000\" services=\"1,3-4,6-7,9,13,17,19-26\"/>\n",
                 "<verbose level=\"0\"/>\n<debugging level=\"0\"/>\n",
                 "<host starttime=\"1\" endtime=\"2\">\n",
                 "<status state=\"up\" reason=\"echo-reply\" reason_ttl=\"64\"/>\n",
-                "<address addr=\"10.0.0.1\" addrtype=\"ipv4\"/>\n",
+                "<address addr=\"198.51.100.1\" addrtype=\"ipv4\"/>\n",
                 "<address addr=\"aa:bb:cc:dd:ee:ff\" addrtype=\"mac\" vendor=\"Arris\"/>\n",
                 "<hostnames>\n<hostname name=\"router.lan\" type=\"PTR\"/>\n</hostnames>\n",
                 "<ports>\n",
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn the_preamble_nmap_actually_writes_is_accepted() {
         let document = format!(
-            "{REAL_PREAMBLE}<nmaprun><host><address addr=\"10.0.0.1\" addrtype=\"ipv4\"/></host></nmaprun>"
+            "{REAL_PREAMBLE}<nmaprun><host><address addr=\"198.51.100.1\" addrtype=\"ipv4\"/></host></nmaprun>"
         );
 
         assert_eq!(read(&document).expect("accepted").addresses, 1);
@@ -385,11 +385,11 @@ mod tests {
             ),
             concat!(
                 r#"<!DOCTYPE nmaprun SYSTEM "http://example.invalid/evil.dtd">"#,
-                r#"<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/></host></nmaprun>"#,
+                r#"<nmaprun><host><address addr="198.51.100.1" addrtype="ipv4"/></host></nmaprun>"#,
             ),
             concat!(
                 r#"<!DOCTYPE nmaprun PUBLIC "-//x//y" "http://example.invalid/evil.dtd">"#,
-                r#"<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/></host></nmaprun>"#,
+                r#"<nmaprun><host><address addr="198.51.100.1" addrtype="ipv4"/></host></nmaprun>"#,
             ),
         ] {
             let error = read(document).expect_err("refused");
@@ -507,8 +507,8 @@ mod tests {
     #[test]
     fn a_multi_homed_host_with_a_long_port_list_still_reads() {
         let addresses = concat!(
-            "<address addr=\"10.0.0.1\" addrtype=\"ipv4\"/>",
-            "<address addr=\"10.0.0.2\" addrtype=\"ipv4\"/>",
+            "<address addr=\"198.51.100.1\" addrtype=\"ipv4\"/>",
+            "<address addr=\"198.51.100.2\" addrtype=\"ipv4\"/>",
             "<address addr=\"2001:db8::1\" addrtype=\"ipv6\"/>",
         );
         let ports: String = (1..=4096)
@@ -531,7 +531,7 @@ mod tests {
         let services: String = (1..2000).map(|port| format!("{port},")).collect();
         let document = format!(
             "<nmaprun><scaninfo services=\"{services}\"/>\
-             <host><address addr=\"10.0.0.1\" addrtype=\"ipv4\"/></host></nmaprun>"
+             <host><address addr=\"198.51.100.1\" addrtype=\"ipv4\"/></host></nmaprun>"
         );
 
         assert_eq!(read(&document).expect("reads").addresses, 1);
@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn an_unknown_transport_is_refused() {
         let document = concat!(
-            r#"<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/>"#,
+            r#"<nmaprun><host><address addr="198.51.100.1" addrtype="ipv4"/>"#,
             r#"<ports><port protocol="dccp" portid="9"><state state="open"/></port></ports>"#,
             r#"</host></nmaprun>"#,
         );
@@ -569,7 +569,7 @@ mod tests {
     /// file nmap produced:
     ///
     /// ```text
-    /// nmap -oX /tmp/real.xml -sV -p 1-1000 192.168.0.1
+    /// nmap -oX /tmp/real.xml -sV -p 1-1000 <host>
     /// ZOND_NMAP_XML=/tmp/real.xml cargo test --features import-nmap \
     ///   a_file_nmap_itself_wrote -- --ignored --nocapture
     /// ```

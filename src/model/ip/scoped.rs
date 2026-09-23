@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn ipv4_never_carries_a_zone() {
-        let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
         assert!(!ScopedIp::needs_zone(&v4));
         assert!(ScopedIp::scoped(v4, en0()).zone().is_none());
     }
@@ -683,8 +683,8 @@ mod tests {
     #[test]
     fn an_endpoint_brackets_ipv6_and_keeps_the_zone_inside() {
         assert_eq!(
-            ScopedIp::unscoped(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 160))).endpoint(80),
-            "192.168.0.160:80"
+            ScopedIp::unscoped(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 160))).endpoint(80),
+            "192.0.2.160:80"
         );
         assert_eq!(
             ScopedIp::unscoped(global()).endpoint(80),

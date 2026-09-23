@@ -30,7 +30,7 @@
 //! # fn main() -> std::io::Result<()> {
 //! let mut file = BufReader::new(File::open("targets.txt")?);       // a file
 //! let mut piped = std::io::stdin().lock();                          // a pipe
-//! let mut uploaded = std::io::Cursor::new(b"192.168.0.1".to_vec()); // a body
+//! let mut uploaded = std::io::Cursor::new(b"192.0.2.1".to_vec()); // a body
 //! # Ok(())
 //! # }
 //! ```
@@ -82,13 +82,13 @@ fn main() {
 fn a_list_of_addresses() {
     let file = "\
 # staging, 2026-02
-192.168.0.1
-192.168.0.20
-192.168.0.53
+192.0.2.1
+192.0.2.20
+192.0.2.53
 
 # the whole management block
-10.0.0.0/28
-10.1.0.1-10.1.0.5
+198.51.100.0/28
+203.0.113.1-203.0.113.5
 ";
 
     // The ports a target that names none is scanned on.
@@ -112,10 +112,10 @@ fn a_list_of_addresses() {
 /// `[2001:db8::1]:80` is how a port is meant.
 fn ports_per_target() {
     let file = "\
-192.168.0.1:22,443          # two TCP ports
-192.168.0.2:1-1024          # a range
-192.168.0.3:u:53,u:161      # UDP, with the u: prefix
-10.0.0.0/29:8080            # every address in the block, one port
+192.0.2.1:22,443            # two TCP ports
+192.0.2.2:1-1024            # a range
+192.0.2.3:u:53,u:161        # UDP, with the u: prefix
+198.51.100.0/29:8080        # every address in the block, one port
 [2001:db8::1]:443           # IPv6 needs brackets to carry ports
 2001:db8::2                 # ...and without them it is just an address
 ";
@@ -147,7 +147,7 @@ fn ports_per_target() {
 /// `into_ip_set` is the bridge, and it merges: a host named under two different
 /// port specifications is two pieces of work to scan and one host to sweep.
 fn both_entry_points() {
-    let file = "192.168.0.1:22\n192.168.0.1:443\n192.168.0.2:22\n";
+    let file = "192.0.2.1:22\n192.0.2.1:443\n192.0.2.2:22\n";
     let options = ImportOptions::new(ports("80"));
 
     let imported = ImportFormat::List
@@ -183,11 +183,11 @@ fn both_entry_points() {
 /// the scan silently shrinks.
 fn surviving_a_bad_line() {
     let file = "\
-192.168.0.1
-192.168.0.300
-192.168.0.2
+192.0.2.1
+192.0.2.300
+192.0.2.2
 not-a-host-or-an-address
-192.168.0.3
+192.0.2.3
 ";
 
     // The default: stop and say where.
@@ -265,13 +265,13 @@ fn bounding_untrusted_input() {
 /// and nothing more, and anything ambiguous is a list, since a list is the format
 /// that cannot be wrong about a bare address. A leading `[` is not taken as JSON,
 /// since `[2001:db8::1]:443` is an ordinary first line, and a comma is never
-/// evidence of CSV, since `192.168.0.1,192.168.0.2` means something quite
+/// evidence of CSV, since `192.0.2.1,192.0.2.2` means something quite
 /// different read as a table.
 fn working_out_the_format() {
     for (name, document) in [
-        ("a plain list", "192.168.0.1\n192.168.0.2\n"),
+        ("a plain list", "192.0.2.1\n192.0.2.2\n"),
         ("a bracketed IPv6 target", "[2001:db8::1]:443\n"),
-        ("comma-separated addresses", "192.168.0.1,192.168.0.2\n"),
+        ("comma-separated addresses", "192.0.2.1,192.0.2.2\n"),
         ("something XML-shaped", "<?xml version=\"1.0\"?><nmaprun/>"),
         ("something JSON-shaped", "{\"schema_version\":1}"),
     ] {
@@ -298,11 +298,11 @@ fn rescanning_a_report() {
         "schema_version": 1,
         "engine": { "name": "zond-engine", "version": "0.10.0" },
         "hosts": [
-            { "primary_ip": "192.168.0.1",
-              "ips": ["192.168.0.1"],
+            { "primary_ip": "192.0.2.1",
+              "ips": ["192.0.2.1"],
               "ports": [ { "port": 22, "protocol": "tcp", "state": "open" },
                          { "port": 53, "protocol": "udp", "state": "open" } ] },
-            { "primary_ip": "192.168.0.9", "ips": ["192.168.0.9"], "ports": [] }
+            { "primary_ip": "192.0.2.9", "ips": ["192.0.2.9"], "ports": [] }
         ]
     }"#;
 
@@ -351,7 +351,7 @@ fn reading_an_nmap_file() {
         "<?xml-stylesheet href=\"file:///usr/share/nmap/nmap.xsl\" type=\"text/xsl\"?>\n",
         "<nmaprun scanner=\"nmap\" version=\"7.99\" xmloutputversion=\"1.05\">\n",
         "<host><status state=\"up\" reason=\"echo-reply\"/>\n",
-        "<address addr=\"192.168.0.1\" addrtype=\"ipv4\"/>\n",
+        "<address addr=\"192.0.2.1\" addrtype=\"ipv4\"/>\n",
         "<address addr=\"aa:bb:cc:dd:ee:ff\" addrtype=\"mac\" vendor=\"Arris\"/>\n",
         "<ports><port protocol=\"tcp\" portid=\"22\"><state state=\"open\"/></port>\n",
         "<port protocol=\"tcp\" portid=\"80\"><state state=\"open\"/></port></ports>\n",

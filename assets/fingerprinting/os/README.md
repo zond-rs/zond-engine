@@ -127,7 +127,7 @@ The other half is simply the CLI, which runs the same phases through the same
 entry point:
 
 ```
-sudo zond scan 192.168.64.0/24 -p 22,80,443 --os-detection aggressive -v
+sudo zond scan <target> -p 22,80,443 --os-detection aggressive -v
 ```
 
 `-v` puts the working under each finding — the `read:` line carrying the stack

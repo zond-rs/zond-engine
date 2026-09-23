@@ -493,11 +493,11 @@ pub(crate) mod tests {
     const SERVER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
 
     fn src_addr() -> Ipv4Addr {
-        Ipv4Addr::new(192, 168, 1, 50)
+        Ipv4Addr::new(192, 0, 2, 50)
     }
 
     fn server_addr() -> Ipv4Addr {
-        Ipv4Addr::new(192, 168, 1, 1)
+        Ipv4Addr::new(192, 0, 2, 1)
     }
 
     /// A server's message: a BOOTP reply carrying the options a server sets.
@@ -737,7 +737,7 @@ pub(crate) mod tests {
                 (OPT_HOSTNAME, b"office-printer-3".to_vec()),
                 (OPT_VENDOR_CLASS, b"HP JetDirect".to_vec()),
                 (OPT_PARAMETER_REQUEST, vec![1, 3, 6, 15, 119, 252]),
-                (OPT_REQUESTED_ADDRESS, vec![192, 168, 1, 74]),
+                (OPT_REQUESTED_ADDRESS, vec![192, 0, 2, 74]),
             ],
         );
         let frame = super::super::ethernet::parse(&bytes).expect("an ethernet frame");
@@ -747,7 +747,7 @@ pub(crate) mod tests {
         assert_eq!(request.vendor_class, Some("HP JetDirect"));
         assert_eq!(
             request.requested_address,
-            Some(Ipv4Addr::new(192, 168, 1, 74))
+            Some(Ipv4Addr::new(192, 0, 2, 74))
         );
         assert_eq!(
             request.client_mac,
@@ -782,8 +782,8 @@ pub(crate) mod tests {
     #[test]
     fn a_server_reply_carries_what_the_network_hands_out() {
         let mut extra = vec![
-            (OPT_ROUTER, vec![192, 168, 1, 1]),
-            (OPT_DOMAIN_NAME_SERVER, vec![192, 168, 1, 1, 9, 9, 9, 9]),
+            (OPT_ROUTER, vec![192, 0, 2, 1]),
+            (OPT_DOMAIN_NAME_SERVER, vec![192, 0, 2, 1, 9, 9, 9, 9]),
             (OPT_DOMAIN_NAME, b"corp.example.net".to_vec()),
         ];
         extra.sort_by_key(|(code, _)| *code);
@@ -796,11 +796,11 @@ pub(crate) mod tests {
         assert_eq!(reply.domain, Some("corp.example.net"));
         assert_eq!(
             reply.routers().collect::<Vec<_>>(),
-            vec![Ipv4Addr::new(192, 168, 1, 1)]
+            vec![Ipv4Addr::new(192, 0, 2, 1)]
         );
         assert_eq!(
             reply.resolvers().collect::<Vec<_>>(),
-            vec![Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(9, 9, 9, 9)],
+            vec![Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(9, 9, 9, 9)],
             "in the order the server listed them, which is the order a client tries"
         );
     }
@@ -835,7 +835,7 @@ pub(crate) mod tests {
         let bytes = reply_frame_with(
             DHCPACK,
             Some(server_addr()),
-            &[(OPT_DOMAIN_NAME_SERVER, vec![10, 0, 0, 1, 10, 0])],
+            &[(OPT_DOMAIN_NAME_SERVER, vec![198, 51, 100, 1, 198, 51])],
         );
         let frame = super::super::ethernet::parse(&bytes).expect("an ethernet frame");
 
@@ -844,7 +844,7 @@ pub(crate) mod tests {
                 .expect("a server reply")
                 .resolvers()
                 .collect::<Vec<_>>(),
-            vec![Ipv4Addr::new(10, 0, 0, 1)]
+            vec![Ipv4Addr::new(198, 51, 100, 1)]
         );
     }
 
@@ -873,7 +873,7 @@ pub(crate) mod tests {
         assert_eq!(read, vec![(OPT_MESSAGE_TYPE, [DHCPACK].as_slice())]);
 
         // An option claiming four bytes with two behind it.
-        let truncated = [OPT_SERVER_ID, 4, 192, 168];
+        let truncated = [OPT_SERVER_ID, 4, 192, 0];
         assert_eq!(walk_options(&truncated).count(), 0);
 
         // No end option: the walk stops when the bytes do.

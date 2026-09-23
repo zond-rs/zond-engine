@@ -1092,8 +1092,8 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::num::NonZeroU8;
 
-    const HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
-    const OTHER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 201));
+    const HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
+    const OTHER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201));
 
     /// Three attempts, no jitter and no backoff, so a schedule is exactly
     /// predictable and a test can assert on instants rather than ranges.
@@ -1180,8 +1180,8 @@ mod tests {
         )
         .without_cross_host_estimate();
 
-        let fast: IpAddr = "10.0.0.1".parse().unwrap();
-        let unmeasured: IpAddr = "10.0.0.2".parse().unwrap();
+        let fast: IpAddr = "192.0.2.1".parse().unwrap();
+        let unmeasured: IpAddr = "192.0.2.2".parse().unwrap();
         let start = Instant::now();
 
         let mut ledger = ledger(policy);
@@ -1219,8 +1219,8 @@ mod tests {
             None,
         );
 
-        let fast: IpAddr = "10.0.0.1".parse().unwrap();
-        let unmeasured: IpAddr = "10.0.0.2".parse().unwrap();
+        let fast: IpAddr = "192.0.2.1".parse().unwrap();
+        let unmeasured: IpAddr = "192.0.2.2".parse().unwrap();
         let start = Instant::now();
 
         let mut ledger = ledger(policy);

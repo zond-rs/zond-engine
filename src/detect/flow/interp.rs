@@ -639,7 +639,7 @@ mod tests {
             ),
             (
                 "zookeeper-4lw",
-                b"Zookeeper version: 3.8.0-abc, built on 2024-01-01\nClients:\n /10.0.0.9:52111[1]\nMode: standalone\n",
+                b"Zookeeper version: 3.8.0-abc, built on 2024-01-01\nClients:\n /192.0.2.9:52111[1]\nMode: standalone\n",
                 Severity::Medium,
             ),
             (

@@ -1059,7 +1059,7 @@ mod tests {
         let (reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         let mut transport = ProbeTransport::from_parts(Box::new(mock), reply_rx);
 
-        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let src = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
         let dst = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
         transport
             .tx
@@ -1147,8 +1147,8 @@ mod tests {
         socket: &dyn ProbeSender,
         emission: Emission,
     ) -> Result<(), SendError> {
-        let src = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
-        let dst = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 9));
+        let src = IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1));
+        let dst = IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 9));
         let framed = link.send(&[0xAA], src, dst, None, emission);
         if framed.is_ok() || emission.requires_link_layer() {
             return framed;

@@ -151,7 +151,7 @@ impl Element {
     ///
     /// A duplicated attribute answers with the first. XML makes a repeated
     /// attribute a fatal error and this parser stores both, so `<address
-    /// addr="10.0.0.2" addr="10.0.0.1"/>` reads as `10.0.0.2` rather than
+    /// addr="192.0.2.2" addr="192.0.2.1"/>` reads as `192.0.2.2` rather than
     /// refusing the document. Deliberate, and cheap to change if the argument
     /// moves: first-wins is a rule, it is the same rule every time, and the
     /// values are byte-compared against fixed names rather than merged, so

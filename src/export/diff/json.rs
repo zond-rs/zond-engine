@@ -275,10 +275,10 @@ mod tests {
         let found = changes(&document());
 
         for expected in [
-            r#"192.168.0.1 - hostname "router.local" "gateway.local""#,
-            r#"192.168.0.1 - os "Linux 5.15.0" "Linux 6.1.0""#,
-            r#"192.168.0.1 22/tcp service_version "8.9p1" "9.6p1""#,
-            r#"192.168.0.1 80/tcp port_state "open" "closed""#,
+            r#"203.0.113.1 - hostname "router.local" "gateway.local""#,
+            r#"203.0.113.1 - os "Linux 5.15.0" "Linux 6.1.0""#,
+            r#"203.0.113.1 22/tcp service_version "8.9p1" "9.6p1""#,
+            r#"203.0.113.1 80/tcp port_state "open" "closed""#,
         ] {
             assert!(
                 found.iter().any(|c| c == expected),
@@ -311,7 +311,7 @@ mod tests {
             .as_array()
             .expect("hosts")
             .iter()
-            .find(|host| host["address"] == "192.168.0.4")
+            .find(|host| host["address"] == "203.0.113.4")
             .expect("the host whose certificate is running out");
 
         let change = &host["ports"][0]["changes"][0];
@@ -335,7 +335,7 @@ mod tests {
 
         let arrived = hosts
             .iter()
-            .find(|host| host["address"] == "192.168.0.7")
+            .find(|host| host["address"] == "203.0.113.7")
             .expect("the host that arrived");
         assert_eq!(arrived["presence"], "added");
         assert_eq!(arrived["coverage"], "covered");
@@ -346,7 +346,7 @@ mod tests {
 
         let gone = hosts
             .iter()
-            .find(|host| host["address"] == "192.168.0.9")
+            .find(|host| host["address"] == "203.0.113.9")
             .expect("the host that went");
         assert_eq!(gone["presence"], "removed");
         assert_eq!(gone["confirmed"], true);
@@ -354,7 +354,7 @@ mod tests {
         // A port both scans walked, that only one found, is likewise a finding.
         let router = hosts
             .iter()
-            .find(|host| host["address"] == "192.168.0.1")
+            .find(|host| host["address"] == "203.0.113.1")
             .expect("the gateway");
         let opened = router["ports"]
             .as_array()

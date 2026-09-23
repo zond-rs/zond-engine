@@ -472,8 +472,8 @@ async fn a_framing_technique_reaches_every_probe_as_a_link_layer_requirement() {
 #[tokio::test]
 async fn a_scan_among_decoys_sends_every_probe_and_resolves_the_port_from_the_real_one() {
     let decoys: Vec<IpAddr> = vec![
-        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 61)),
-        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 62)),
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 61)),
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 62)),
     ];
     let profile = EvasionProfile::default().with_decoys(decoys.clone());
     let (session, net) = udp_scan(&profile, &[(53, Policy::open())]).await;
@@ -522,7 +522,7 @@ async fn a_scan_among_decoys_sends_every_probe_and_resolves_the_port_from_the_re
 /// address it cannot reach.
 #[tokio::test]
 async fn a_decoy_is_only_used_against_a_target_of_its_own_family() {
-    let usable: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 61));
+    let usable: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 61));
     let profile = EvasionProfile::default()
         .with_decoys(vec![usable, "2001:db8::61".parse().expect("a v6 decoy")]);
     let (_session, net) = udp_scan(&profile, &[(53, Policy::open())]).await;

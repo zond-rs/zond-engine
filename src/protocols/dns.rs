@@ -394,11 +394,11 @@ pub(crate) mod tests {
     #[test]
     fn a_reverse_name_round_trips_through_the_address_it_names() {
         for address in [
-            ip("192.168.0.1"),
-            ip("10.0.0.255"),
+            ip("203.0.113.1"),
+            ip("198.51.100.255"),
             ip("0.0.0.0"),
             ip("255.255.255.255"),
-            ip("2a02:908:8c1:b880:ca52:61ff:fec7:594"),
+            ip("2001:db8:85a3:8d3:1319:8a2e:370:7348"),
             ip("fe80::1"),
             ip("::"),
         ] {
@@ -414,8 +414,8 @@ pub(crate) mod tests {
     #[test]
     fn reverse_names_are_spelled_out_backwards_under_their_zone() {
         assert_eq!(
-            reverse_pointer_name(ip("192.168.0.1")),
-            "1.0.168.192.in-addr.arpa"
+            reverse_pointer_name(ip("203.0.113.1")),
+            "1.113.0.203.in-addr.arpa"
         );
         assert_eq!(
             reverse_pointer_name(ip("2001:db8::1")),
@@ -428,8 +428,8 @@ pub(crate) mod tests {
     #[test]
     fn a_reverse_name_is_read_regardless_of_case() {
         assert_eq!(
-            address_from_pointer_name("1.0.168.192.IN-ADDR.ARPA."),
-            Some(ip("192.168.0.1"))
+            address_from_pointer_name("1.113.0.203.IN-ADDR.ARPA."),
+            Some(ip("203.0.113.1"))
         );
         assert_eq!(
             address_from_pointer_name(
@@ -447,10 +447,10 @@ pub(crate) mod tests {
         for name in [
             "example.com",
             "in-addr.arpa",
-            "1.0.168.in-addr.arpa",
-            "1.0.168.192.0.in-addr.arpa",
-            "256.0.168.192.in-addr.arpa",
-            "x.0.168.192.in-addr.arpa",
+            "1.113.0.in-addr.arpa",
+            "1.113.0.203.0.in-addr.arpa",
+            "256.113.0.203.in-addr.arpa",
+            "x.113.0.203.in-addr.arpa",
             "1.0.0.2.ip6.arpa",
             "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.zz.ip6.arpa",
         ] {
@@ -464,8 +464,8 @@ pub(crate) mod tests {
     fn a_response_reports_the_address_asked_about_and_the_name_returned() {
         let response = parse_ptr_response(&ptr_response(
             0x1234,
-            "1.0.168.192.in-addr.arpa",
-            Some("kabelbox.local"),
+            "1.113.0.203.in-addr.arpa",
+            Some("router.local"),
         ))
         .unwrap();
 
@@ -473,8 +473,8 @@ pub(crate) mod tests {
             response,
             PtrResponse {
                 id: 0x1234,
-                subject: Some(ip("192.168.0.1")),
-                hostname: Some("kabelbox.local".to_string()),
+                subject: Some(ip("203.0.113.1")),
+                hostname: Some("router.local".to_string()),
             }
         );
     }
@@ -485,10 +485,10 @@ pub(crate) mod tests {
     #[test]
     fn a_negative_response_still_names_the_address_it_answers_for() {
         let response =
-            parse_ptr_response(&ptr_response(7, "30.0.168.192.in-addr.arpa", None)).unwrap();
+            parse_ptr_response(&ptr_response(7, "30.0.0.10.in-addr.arpa", None)).unwrap();
 
         assert_eq!(response.id, 7);
-        assert_eq!(response.subject, Some(ip("192.168.0.30")));
+        assert_eq!(response.subject, Some(ip("10.0.0.30")));
         assert_eq!(response.hostname, None);
     }
 
@@ -522,8 +522,8 @@ pub(crate) mod tests {
 
         // Zero is still an octet, and its one spelling is a single digit.
         assert_eq!(
-            address_from_pointer_name("1.0.0.10.in-addr.arpa"),
-            Some(ip("10.0.0.1"))
+            address_from_pointer_name("1.113.0.203.in-addr.arpa"),
+            Some(ip("203.0.113.1"))
         );
     }
 
@@ -541,7 +541,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_query_is_not_a_response() {
-        let query = build_ptr_packet(ip("192.168.0.1"), 9);
+        let query = build_ptr_packet(ip("203.0.113.1"), 9);
         assert!(parse_ptr_response(&query).is_err());
     }
 

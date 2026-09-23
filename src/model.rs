@@ -14,7 +14,7 @@
 //! ([`CaptureCounts`](capture::CaptureCounts)).
 //!
 //! [`parse`] is the way in. It holds the grammars that turn written targets such
-//! as `192.168.1.0/24` or `[fe80::1%en0]:22` into the values above.
+//! as `192.0.2.0/24` or `[fe80::1%en0]:22` into the values above.
 //!
 //! # Usable on its own
 //!

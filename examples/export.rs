@@ -263,7 +263,7 @@ fn choosing_a_format(report: &ScanReport) {
 /// the old EUI-64 way embeds the hardware address that is masked elsewhere, so a
 /// report from such a network carries hardware identifiers however this is set.
 fn masking_identifiers(report: &ScanReport) {
-    let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3);
+    let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01);
 
     for policy in [Redaction::None, Redaction::Standard] {
         println!("{policy:?} (masks anything: {}):", policy.is_active());
@@ -285,7 +285,7 @@ fn masking_identifiers(report: &ScanReport) {
             format.extension(),
             survives(&document, "router.local"),
             survives(&document, "Raspberry Pi"),
-            survives(&document, "192.168.0.1"),
+            survives(&document, "203.0.113.1"),
         );
     }
 }
@@ -556,7 +556,7 @@ fn somebody_elses_pipeline(report: &ScanReport) {
     }
 
     println!();
-    println!("192.168.0.7 is `filtered` in the report and `up` here, with the");
+    println!("203.0.113.7 is `filtered` in the report and `up` here, with the");
     println!("distinction kept in the reason.");
 }
 
@@ -768,7 +768,7 @@ fn phase() -> ScanPhase {
         addresses: 256,
         withheld: 0,
         probes: Some(1_024),
-        ranges: vec!["192.168.0.0/24".parse().expect("a well formed range")],
+        ranges: vec!["203.0.113.0/24".parse().expect("a well formed range")],
         excluded: Vec::new(),
         links: Vec::new(),
         listened: Vec::new(),
@@ -805,7 +805,7 @@ fn gateway() -> Host {
     host.set_status(HostStatus::Up);
     host.set_hostname(Some("router.local".to_string()));
     host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
-    host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
+    host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01));
     host.add_rtt(Duration::from_micros(1_200));
     host.add_rtt(Duration::from_micros(1_800));
 
@@ -899,7 +899,7 @@ fn hostile_report() -> ScanReport {
 // ---------------------------------------------------------------------------
 
 fn ip(last: u8) -> IpAddr {
-    IpAddr::from([192, 168, 0, last])
+    IpAddr::from([203, 0, 113, last])
 }
 
 /// Exports into memory, which is what makes this file runnable anywhere.

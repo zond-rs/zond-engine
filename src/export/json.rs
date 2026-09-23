@@ -216,7 +216,7 @@ mod tests {
             .iter()
             .map(|host| host["primary_ip"].as_str().expect("an address"))
             .collect();
-        assert_eq!(addresses, vec!["192.168.0.1", "192.168.0.2", "192.168.0.9"]);
+        assert_eq!(addresses, vec!["203.0.113.1", "203.0.113.2", "203.0.113.9"]);
 
         let ports: Vec<u64> = hosts[0]["ports"]
             .as_array()
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(plain["hosts"][0]["hostname"], "router.local");
         assert_eq!(masked["hosts"][0]["hostname"], "roXXXXXal");
 
-        assert_eq!(plain["hosts"][0]["hardware"]["mac"], "2c:cf:67:f2:51:e3");
+        assert_eq!(plain["hosts"][0]["hardware"]["mac"], "2c:cf:67:00:00:01");
         assert_eq!(masked["hosts"][0]["hardware"]["mac"], "2c:cf:67:XX:XX:XX");
 
         // The vendor comes from the OUI, which masking preserves, so hiding it

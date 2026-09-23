@@ -2432,7 +2432,7 @@ mod tests {
             evidence: "ssh banner".to_string(),
         });
 
-        host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
+        host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01));
         host.record_mac(MacAddr::new(0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e));
         host.set_zone(Zone::new(7, "eth0"));
 

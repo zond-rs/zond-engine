@@ -78,15 +78,15 @@ const SWEEP_PORT: u16 = 443;
 const PORTS: &str = "22,80";
 
 /// The machine that is there both times.
-const STAYED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+const STAYED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
 /// The machine the second scan does not hear from.
-const WENT_QUIET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+const WENT_QUIET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11));
 /// The machine only the second scan hears from.
-const ARRIVED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 12));
+const ARRIVED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 12));
 /// The lease the machine on the segment held first, and the one it holds
 /// after that lease rotated.
-const RELEASED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
-const RENEWED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 60));
+const RELEASED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+const RENEWED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 60));
 
 const LEASE_HOLDER: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 

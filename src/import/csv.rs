@@ -619,7 +619,7 @@ mod tests {
     /// less than the operator handed over, and nothing said so.
     #[test]
     fn a_row_with_no_address_is_refused_rather_than_dropped() {
-        let file = "ip,port\n10.0.0.1,80\n\n,443\n10.0.0.2,80\n";
+        let file = "ip,port\n198.51.100.1,80\n\n,443\n198.51.100.2,80\n";
 
         let aborted = ImportFormat::Csv
             .read(&mut Cursor::new(file), &options())
@@ -651,7 +651,7 @@ mod tests {
     /// something.
     #[test]
     fn a_blank_row_is_still_skipped_without_a_word() {
-        let imported = read("ip,port\n10.0.0.1,80\n\n   \n10.0.0.2,80\n");
+        let imported = read("ip,port\n198.51.100.1,80\n\n   \n198.51.100.2,80\n");
 
         assert_eq!(imported.addresses, 2);
         assert_eq!(imported.refusals.len(), 0);
@@ -663,7 +663,7 @@ mod tests {
     /// not know would otherwise read every UDP row as TCP, silently.
     #[test]
     fn a_caller_can_name_the_transport_column() {
-        let file = "Node,Service,Transport\n10.0.0.1,53,UDP\n10.0.0.2,80,tcp\n";
+        let file = "Node,Service,Transport\n198.51.100.1,53,UDP\n198.51.100.2,80,tcp\n";
 
         let importer = CsvImporter::new(ImportLimits::default())
             .with_address_column(CsvColumn::Named("Node".to_string()))
@@ -697,8 +697,8 @@ mod tests {
     fn a_report_this_engine_wrote_reads_back_as_its_own_targets() {
         let file = concat!(
             "ip,hostname,status,port,protocol,state\n",
-            "10.0.0.1,gateway,up,22,tcp,open\n",
-            "10.0.0.1,gateway,up,53,udp,open\n",
+            "198.51.100.1,gateway,up,22,tcp,open\n",
+            "198.51.100.1,gateway,up,53,udp,open\n",
             "2001:db8::1,edge,up,443,tcp,open\n",
         );
 
@@ -707,7 +707,7 @@ mod tests {
         assert_eq!(imported.tokens, 3);
         assert_eq!(
             imported.addresses, 3,
-            "10.0.0.1 lands in two units and is counted in each"
+            "198.51.100.1 lands in two units and is counted in each"
         );
 
         let units = &imported.map.units;
@@ -723,7 +723,7 @@ mod tests {
     /// back as a plain list of hosts rather than as nothing at all.
     #[test]
     fn rows_with_no_port_take_the_default_ports() {
-        let imported = read("ip,hostname,port,protocol\n10.0.0.1,gateway,,\n10.0.0.2,,,\n");
+        let imported = read("ip,hostname,port,protocol\n198.51.100.1,gateway,,\n198.51.100.2,,,\n");
 
         assert_eq!(imported.addresses, 2);
         assert_eq!(imported.map.units.len(), 1, "both took the default");
@@ -734,7 +734,7 @@ mod tests {
     /// header, and the first column is the address.
     #[test]
     fn a_file_with_no_recognised_header_reads_its_first_column() {
-        let imported = read("10.0.0.1,web\n10.0.0.2,db\n");
+        let imported = read("198.51.100.1,web\n198.51.100.2,db\n");
 
         assert_eq!(imported.tokens, 2);
         assert_eq!(imported.addresses, 2);
@@ -762,7 +762,7 @@ mod tests {
 
         // And the way out of it, for a caller who knows the shape of the file.
         let imported = read_with(
-            "Server,Location\n10.0.0.1,rack 4\n",
+            "Server,Location\n198.51.100.1,rack 4\n",
             &CsvImporter::default().with_header(true),
         )
         .expect("a stated header is skipped");
@@ -773,7 +773,7 @@ mod tests {
     /// name would have nothing to match against.
     #[test]
     fn a_named_column_is_read_and_a_missing_one_is_an_error() {
-        let file = "name,mgmt_ip,site\nweb01,10.0.0.1,ams\nweb02,10.0.0.2,ams\n";
+        let file = "name,mgmt_ip,site\nweb01,198.51.100.1,ams\nweb02,198.51.100.2,ams\n";
 
         let imported = read_with(
             file,
@@ -795,10 +795,10 @@ mod tests {
     fn quoted_fields_carry_commas_quotes_and_line_breaks() {
         let file = concat!(
             "ip,note\n",
-            "10.0.0.1,\"comma, inside\"\n",
-            "10.0.0.2,\"a \"\"quoted\"\" word\"\n",
-            "10.0.0.3,\"two\nlines\"\n",
-            "10.0.0.4,plain\n",
+            "198.51.100.1,\"comma, inside\"\n",
+            "198.51.100.2,\"a \"\"quoted\"\" word\"\n",
+            "198.51.100.3,\"two\nlines\"\n",
+            "198.51.100.4,plain\n",
         );
 
         let imported = read(file);
@@ -813,7 +813,7 @@ mod tests {
     fn a_line_break_inside_a_field_is_counted_but_does_not_end_the_record() {
         let file = concat!(
             "ip,note\n",          // line 1
-            "10.0.0.1,\"two\n",   // line 2
+            "192.0.2.1,\"two\n",  // line 2
             "lines\"\n",          // line 3
             "not-an-address,x\n", // line 4
         );
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn a_carriage_return_is_a_terminator_only_where_it_terminates() {
         let mut collector = TargetCollector::new(options());
-        let file = "ip,note\r\n10.0.0.1,\"carriage\rreturn\"\r\n";
+        let file = "ip,note\r\n198.51.100.1,\"carriage\rreturn\"\r\n";
         CsvImporter::default()
             .import(&mut Cursor::new(file), &mut collector)
             .expect("imports");
@@ -857,7 +857,7 @@ mod tests {
     fn the_shapes_a_spreadsheet_arrives_in_are_all_read_the_same() {
         // A byte-order mark, CRLF throughout, a blank row, and no terminator on
         // the last record.
-        let file = "\u{feff}ip,port\r\n10.0.0.1,22\r\n\r\n10.0.0.2,443";
+        let file = "\u{feff}ip,port\r\n198.51.100.1,22\r\n\r\n198.51.100.2,443";
 
         let imported = read(file);
         assert_eq!(imported.tokens, 2);
@@ -873,7 +873,7 @@ mod tests {
         assert_eq!(unescape("'=cmd|'/c calc'!A1"), "=cmd|'/c calc'!A1");
         assert_eq!(unescape("'-lead"), "-lead");
         assert_eq!(unescape("'quoted"), "'quoted", "not a formula, not a guard");
-        assert_eq!(unescape("10.0.0.1"), "10.0.0.1");
+        assert_eq!(unescape("198.51.100.1"), "198.51.100.1");
     }
 
     /// The bound covers a whole record here, because a quoted field can span

@@ -475,11 +475,11 @@ mod tests {
             );
         }
 
-        assert_eq!(column(&rows[1], "ip"), "192.168.0.1");
+        assert_eq!(column(&rows[1], "ip"), "203.0.113.1");
         assert_eq!(column(&rows[1], "port"), "22");
         assert_eq!(column(&rows[2], "port"), "80");
         assert_eq!(column(&rows[3], "port"), "443");
-        assert_eq!(column(&rows[4], "ip"), "192.168.0.2");
+        assert_eq!(column(&rows[4], "ip"), "203.0.113.2");
     }
 
     /// A discovery sweep finds hosts and no ports. If a port-less host had no
@@ -489,7 +489,7 @@ mod tests {
         let rows = rows(&CsvExporter::new(ExportOptions::new()));
         let bare = rows.last().expect("a final row");
 
-        assert_eq!(column(bare, "ip"), "192.168.0.9");
+        assert_eq!(column(bare, "ip"), "203.0.113.9");
         assert_eq!(column(bare, "status"), "down");
         assert_eq!(column(bare, "port"), "");
         assert_eq!(column(bare, "state"), "");

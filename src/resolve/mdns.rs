@@ -322,14 +322,14 @@ mod tests {
     #[test]
     fn both_families_of_the_named_host_are_collected() {
         let datagram = response(&[
-            ("raspberrypi.local", ip("192.168.0.150")),
+            ("raspberrypi.local", ip("192.0.2.150")),
             ("raspberrypi.local", ip("fe80::1")),
         ]);
 
         let mut found = Vec::new();
         collect_matching(&datagram, "raspberrypi.local", &mut found);
 
-        assert!(found.contains(&ip("192.168.0.150")));
+        assert!(found.contains(&ip("192.0.2.150")));
         assert!(found.contains(&ip("fe80::1")));
         assert_eq!(found.len(), 2);
     }
@@ -340,27 +340,27 @@ mod tests {
     #[test]
     fn a_reply_naming_other_hosts_contributes_only_the_match() {
         let datagram = response(&[
-            ("appletv.local", ip("192.168.0.40")),
-            ("raspberrypi.local", ip("192.168.0.150")),
-            ("printer.local", ip("192.168.0.30")),
+            ("appletv.local", ip("192.0.2.40")),
+            ("raspberrypi.local", ip("192.0.2.150")),
+            ("printer.local", ip("192.0.2.30")),
         ]);
 
         let mut found = Vec::new();
         collect_matching(&datagram, "raspberrypi.local", &mut found);
 
-        assert_eq!(found, vec![ip("192.168.0.150")]);
+        assert_eq!(found, vec![ip("192.0.2.150")]);
     }
 
     /// A responder may store and echo the owner name in any case, so matching
     /// has to ignore it or a host answers and is discarded.
     #[test]
     fn the_name_is_matched_without_regard_to_case() {
-        let datagram = response(&[("Raspberrypi.local", ip("192.168.0.150"))]);
+        let datagram = response(&[("Raspberrypi.local", ip("192.0.2.150"))]);
 
         let mut found = Vec::new();
         collect_matching(&datagram, "raspberrypi.local", &mut found);
 
-        assert_eq!(found, vec![ip("192.168.0.150")]);
+        assert_eq!(found, vec![ip("192.0.2.150")]);
     }
 
     /// The group carries every responder's traffic; a datagram that is not a DNS
@@ -376,11 +376,11 @@ mod tests {
     /// interfaces, must not make it appear twice.
     #[test]
     fn an_address_two_responders_agree_on_is_recorded_once() {
-        let datagram = response(&[("nas.local", ip("192.168.0.5"))]);
+        let datagram = response(&[("nas.local", ip("192.0.2.5"))]);
 
-        let mut found = vec![ip("192.168.0.5")];
+        let mut found = vec![ip("192.0.2.5")];
         collect_matching(&datagram, "nas.local", &mut found);
 
-        assert_eq!(found, vec![ip("192.168.0.5")]);
+        assert_eq!(found, vec![ip("192.0.2.5")]);
     }
 }

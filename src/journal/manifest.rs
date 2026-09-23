@@ -1158,7 +1158,7 @@ mod tests {
     fn a_watch_never_shares_a_fingerprint_with_a_phase_that_walks_targets() {
         let listen = Plan::listen(vec![Zone::unresolved("en0")]);
         let mut ips = IpSet::new();
-        ips.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+        ips.insert_range("192.0.2.0/24".parse().expect("a valid range"));
 
         assert_ne!(
             PlanFingerprint::of(&listen, Privilege::Raw),

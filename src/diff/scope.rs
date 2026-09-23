@@ -193,7 +193,7 @@ mod tests {
     use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings, ScopeParts};
 
     fn ip(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, last))
     }
 
     /// A report stating what it walked and what its policy withheld.
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn an_address_inside_a_walked_range_is_covered() {
-        let index = ScopeIndex::of(&report(&["192.168.0.0/24"], &[], PortScope::NoPorts));
+        let index = ScopeIndex::of(&report(&["203.0.113.0/24"], &[], PortScope::NoPorts));
         assert_eq!(index.address(&ip(7)), Coverage::Covered);
     }
 
@@ -259,8 +259,8 @@ mod tests {
     #[test]
     fn an_address_the_policy_withheld_is_reported_as_withheld() {
         let index = ScopeIndex::of(&report(
-            &["192.168.0.0/24"],
-            &["192.168.0.64/26"],
+            &["203.0.113.0/24"],
+            &["203.0.113.64/26"],
             PortScope::NoPorts,
         ));
         assert_eq!(index.address(&ip(100)), Coverage::Withheld);
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn an_address_outside_a_stated_scope_is_out_of_scope() {
-        let index = ScopeIndex::of(&report(&["192.168.0.0/25"], &[], PortScope::NoPorts));
+        let index = ScopeIndex::of(&report(&["203.0.113.0/25"], &[], PortScope::NoPorts));
         assert_eq!(index.address(&ip(200)), Coverage::OutOfScope);
     }
 
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn an_endpoint_is_no_better_covered_than_its_address() {
-        let index = ScopeIndex::of(&report(&["192.168.0.0/24"], &[], PortScope::NoPorts));
+        let index = ScopeIndex::of(&report(&["203.0.113.0/24"], &[], PortScope::NoPorts));
         assert_eq!(
             index.endpoint(Coverage::OutOfScope, 22, Protocol::Tcp),
             Coverage::OutOfScope,

@@ -636,12 +636,12 @@ mod tests {
     fn emit_among_decoys_sends_every_probe_and_reports_the_real_ones_outcome() {
         use crate::transport::probe::MockSender;
 
-        let real = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let real = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9));
         let real_packet = vec![0xAAu8, 0xBB];
         let decoys = vec![
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), vec![1u8, 1]),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)), vec![2u8, 2]),
+            (IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)), vec![1u8, 1]),
+            (IpAddr::V4(Ipv4Addr::new(198, 51, 100, 3)), vec![2u8, 2]),
         ];
 
         // Every probe reaches the wire, the real one and both decoys, and the

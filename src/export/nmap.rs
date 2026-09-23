@@ -970,7 +970,7 @@ mod tests {
         use crate::model::host::IpProtocolState;
         use std::net::{IpAddr, Ipv4Addr};
 
-        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 11)));
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 11)));
         host.set_status(HostStatus::Up);
         host.record_ip_protocol(47, IpProtocolState::Open);
         host.record_ip_protocol(89, IpProtocolState::Closed);
@@ -1018,7 +1018,7 @@ mod tests {
     fn a_port_nobody_asked_about_is_left_out_of_the_document() {
         use std::net::{IpAddr, Ipv4Addr};
 
-        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 9)));
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)));
         host.set_status(HostStatus::Up);
         host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
         host.add_port(Port::new(23, Protocol::Tcp, PortState::Unasked));
@@ -1041,7 +1041,7 @@ mod tests {
     fn a_host_with_nothing_probed_writes_no_ports_element() {
         use std::net::{IpAddr, Ipv4Addr};
 
-        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 10)));
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)));
         host.set_status(HostStatus::Up);
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Unasked));
 
@@ -1052,10 +1052,10 @@ mod tests {
     ///
     /// It once did not. Nmap has no attribute for which address is the host's,
     /// so a reader takes the first one in the document, and this writer emitted
-    /// them in the set's own ascending order. A host keyed by `192.168.0.10`
-    /// that also held `10.0.0.4` came back keyed by `10.0.0.4`, so a scan
-    /// exported here and read again compared against its own source as one host
-    /// removed and one added.
+    /// them in the set's own ascending order. A host keyed by `203.0.113.10`
+    /// that also held `198.51.100.4` came back keyed by `198.51.100.4`, so a
+    /// scan exported here and read again compared against its own source as one
+    /// host removed and one added.
     ///
     /// Found by the `import_nmap` fuzz target, on a mangled document whose
     /// broken markup put two addresses under one host.
@@ -1066,8 +1066,8 @@ mod tests {
         use crate::import::report::nmap::NmapXmlReportReader;
         use std::net::{IpAddr, Ipv4Addr};
 
-        let keyed = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 10));
-        let lower = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 4));
+        let keyed = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10));
+        let lower = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 4));
 
         let mut host = Host::new(keyed);
         host.add_ip(lower);
@@ -1208,7 +1208,7 @@ mod tests {
             "the fixture has a hardware address to mask"
         );
         assert!(
-            !document.contains("2c:cf:67:f2:51:e3"),
+            !document.contains("2c:cf:67:00:00:01"),
             "an unmasked hardware address survived redaction"
         );
         assert!(
