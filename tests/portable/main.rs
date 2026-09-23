@@ -21,9 +21,11 @@
 //! property this tier is defined by.
 //!
 //! No privileges and no network setup, so this tier runs identically on Linux
-//! and macOS. When the process happens to be root, a scan takes its raw-socket
-//! path rather than the connect fallback; the assertions that depend on the
-//! fallback call `support::is_privileged` and skip rather than flake.
+//! and macOS. Every target is loopback, whose only raw route is a raw socket,
+//! so where the process can open one, as root or on Linux holding
+//! `CAP_NET_RAW`, a scan takes it rather than the connect fallback. The
+//! assertions that depend on the fallback call `support::is_privileged`, which
+//! asks exactly that, and skip rather than flake.
 
 #[path = "../support/mod.rs"]
 mod support;
