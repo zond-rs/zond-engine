@@ -401,37 +401,14 @@ pub fn read_response(bytes: &[u8]) -> Option<ServerResponse> {
 /// └ type        └ length  └ legacy version                    └ suite  └ compression
 /// ```
 fn read_server_hello(body: &[u8]) -> Option<ServerResponse> {
-    if *body.first()? != handshake_type::SERVER_HELLO {
-        return None;
-    }
+    let message = hello_message(body)?;
 
-    // The handshake length, which says whether the whole message is here.
-    //
-    // It used to be skipped, on the reasoning that the record already bounds the
-    // walk. That holds for a record which arrived whole and fails for one that
-    // did not, and a peer decides which it sends: closing the connection part
-    // way through a ServerHello leaves a body containing the version, the
-    // random, the suite and no extensions, which every offset below then reads
-    // successfully. A truncated TLS 1.3 hello was therefore reported as TLS 1.2,
-    // because `supported_versions` had not arrived and the legacy field RFC 8446
-    // §4.1.2 freezes at `0x0303` was taken at face value — the single reading
-    // this module's own documentation exists to prevent.
-    //
-    // `<=` rather than `==`: RFC 8446 §5.1 lets a sender coalesce several
-    // handshake messages into one record, so bytes beyond this message are
-    // somebody else's and not a disagreement.
-    let declared = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]) as usize;
-    let after_header = body.get(4..)?;
-    if declared > after_header.len() {
-        return None;
-    }
-
-    let legacy_version = u16::from_be_bytes([*after_header.first()?, *after_header.get(1)?]);
-    let random: &[u8; 32] = after_header.get(2..34)?.try_into().ok()?;
+    let legacy_version = u16::from_be_bytes([*message.first()?, *message.get(1)?]);
+    let random: &[u8; 32] = message.get(2..34)?.try_into().ok()?;
     let retry = *random == HELLO_RETRY_RANDOM;
 
-    let session_len = usize::from(*after_header.get(34)?);
-    let rest = after_header.get(35 + session_len..)?;
+    let session_len = usize::from(*message.get(34)?);
+    let rest = message.get(35 + session_len..)?;
 
     let suite = u16::from_be_bytes([*rest.first()?, *rest.get(1)?]);
 
@@ -448,6 +425,27 @@ fn read_server_hello(body: &[u8]) -> Option<ServerResponse> {
         suite,
         retry,
     })
+}
+
+/// The ServerHello a handshake record's body opens with, from its legacy
+/// version to the end of its extensions, or `None` where the body opens with
+/// something else or the message has not all arrived.
+///
+/// Exactly as long as the message declares itself, and both bounds carry
+/// weight. Short of it, a peer that closed the connection part way through
+/// its ServerHello leaves the version, the random and the suite and no
+/// extensions, which every offset reads successfully: a TLS 1.3 hello cut
+/// before `supported_versions` would read as the TLS 1.2 its legacy field
+/// says, which is the one reading this module exists to prevent. Past it is
+/// whatever the server coalesced into the same record (RFC 8446 §5.1), and a
+/// hello without extensions is followed directly by the next message, whose
+/// bytes would otherwise be walked as its extensions.
+fn hello_message(body: &[u8]) -> Option<&[u8]> {
+    if *body.first()? != handshake_type::SERVER_HELLO {
+        return None;
+    }
+    let declared = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]) as usize;
+    body.get(4..)?.get(..declared)
 }
 
 /// The version a ServerHello's `supported_versions` extension names, or `None`
@@ -1094,6 +1092,40 @@ mod tests {
                 suite: 0xC02F,
                 retry: false,
             })
+        );
+    }
+
+    /// And the message's own length is where its extensions end, whatever the
+    /// record holds behind it.
+    ///
+    /// A TLS 1.2 ServerHello may carry no extensions at all, and the bytes after
+    /// its compression method are then the next message's header and body.
+    /// Walked as an extension block they are searched for a
+    /// `supported_versions` that is not there, and the next message decides
+    /// which version is reported. The trailer here is a Certificate built to
+    /// spell TLS 1.3 when misread that way; a real one spells whatever its
+    /// bytes happen to.
+    #[test]
+    fn a_hello_without_extensions_does_not_read_the_next_message_as_them() {
+        let mut record = server_hello(0x0303, 0xC02F, [0u8; 32], None);
+        let body_len = record.len() - RECORD_HEADER_LEN;
+
+        // Read as an extension block: a block length of 0x0B00, then
+        // `supported_versions` naming 0x0304.
+        let mut trailer = vec![0x0B, 0x00, 0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
+        trailer.resize(4 + 0x2B, 0xAA);
+        record.extend_from_slice(&trailer);
+        let widened = (body_len + trailer.len()) as u16;
+        record[3..5].copy_from_slice(&widened.to_be_bytes());
+
+        assert_eq!(
+            read_response(&record),
+            Some(ServerResponse::Hello {
+                version: Some(TlsVersion::Tls12),
+                suite: 0xC02F,
+                retry: false,
+            }),
+            "the hello named 1.2 and carried nothing that says otherwise"
         );
     }
 }
