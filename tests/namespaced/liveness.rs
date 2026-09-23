@@ -105,3 +105,33 @@ async fn a_host_behind_a_drop_policy_is_found_on_the_port_the_scan_names() {
         "the host's one open port was never scanned"
     );
 }
+
+/// An idle scan sends the target nothing from this host.
+///
+/// The zombie is excluded, so the idle scan is refused and nothing is forged;
+/// what is counted is whether anything else asked the target, on the port the
+/// routed sweep asks and on the port the scan names.
+#[tokio::test]
+async fn an_idle_scan_sends_its_target_nothing_from_this_host() {
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    let target = segment.routed_peer();
+    segment.count_tcp(443);
+    segment.count_tcp(1);
+    let zombie: IpAddr = "192.0.2.9".parse().expect("an address");
+    let mut cfg = test_config();
+    cfg.idle_scan = Some(zond_engine::config::IdleScan::new(zombie));
+    cfg.exclusions = zond_engine::Exclusions::new(crate::support::ip_set(zombie));
+
+    let _outcome = run_scan(target_map(IpAddr::V4(target), "1"), &cfg).await;
+
+    assert_eq!(
+        segment.count_of(443),
+        0,
+        "a liveness sweep reached the target"
+    );
+    assert_eq!(segment.count_of(1), 0, "a port probe left from this host");
+}

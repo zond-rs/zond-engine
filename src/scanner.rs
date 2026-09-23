@@ -571,7 +571,7 @@ fn discovery_stages(cfg: &ZondConfig) -> Vec<Stage> {
 fn scan_stages(cfg: &ZondConfig) -> Vec<Stage> {
     let mut stages = Vec::new();
 
-    if !cfg.assume_up {
+    if asks_liveness(cfg) {
         stages.push(Stage::Discovery);
     }
     stages.push(Stage::Ports);
@@ -595,6 +595,19 @@ fn scan_stages(cfg: &ZondConfig) -> Vec<Stage> {
     }
 
     stages
+}
+
+/// Whether a port scan under `cfg` asks its targets whether they are there
+/// before it probes their ports.
+///
+/// Not where the caller declined it with [`ZondConfig::assume_up`], and not
+/// under an [idle scan](ZondConfig::idle_scan). An idle scan forges every probe
+/// from its zombie so that the target never hears from this host, and a
+/// liveness pass is this host asking the target directly. Refused rather than
+/// run from the zombie, because a liveness probe needs its answer, and the
+/// answer to a forged probe goes to the zombie.
+fn asks_liveness(cfg: &ZondConfig) -> bool {
+    !cfg.assume_up && cfg.idle_scan.is_none()
 }
 
 /// How many address-and-port pairs a port scan plans to probe, or `None` where
@@ -1012,7 +1025,9 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
 /// not wake its neighbours. `cfg.segment_sweep` is not consulted here.
 ///
 /// [`ZondConfig::assume_up`] skips the phase and scans every target on trust,
-/// which is what a host behind a firewall that answers no knock needs.
+/// which is what a host behind a firewall that answers no knock needs. An
+/// [idle scan](ZondConfig::idle_scan) skips it too, since the phase would send
+/// the target the packets from this host the technique exists to withhold.
 ///
 /// The [`ScanReport`] carries a phase for each: the liveness pass as
 /// [`ScanKind::Discovery`] and the ports as [`ScanKind::PortScan`], so a reader
@@ -1147,7 +1162,13 @@ fn spawn_scan(
         // from are settled at their own positions by the dispatcher. See
         // `Outcome::Skipped`, and `Outcome::Undecided` for a host it never
         // reached a verdict on.
-        let (liveness, live) = if cfg.assume_up {
+        let (liveness, live) = if !asks_liveness(&cfg) {
+            if !cfg.assume_up {
+                crate::info!(
+                    verbosity = 1,
+                    "no liveness pass: an idle scan sends its targets nothing from this host"
+                );
+            }
             (None, None)
         } else {
             // Over the addresses this sitting still has a target at, so a
@@ -1175,8 +1196,8 @@ fn spawn_scan(
         };
 
         // Phase two: the ports. The exclusion policy is applied again rather
-        // than trusted from above, because `assume_up` skips the phase above
-        // entirely.
+        // than trusted from above, because the phase above does not always
+        // run.
         //
         // The scope is what this phase *covered*, so it is taken over the live
         // subset: a reader compares it against phase one's to see how much of

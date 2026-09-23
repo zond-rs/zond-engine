@@ -110,6 +110,38 @@ async fn assume_up_probes_the_ports_without_asking_first() {
     );
 }
 
+/// **An idle scan asks the target nothing from this host.**
+///
+/// Every probe of an idle scan is forged from the zombie, and the verdict is
+/// read off the zombie's counter, so the target never learns this host exists.
+/// A liveness pass is this host asking the target directly, which is the one
+/// thing the technique is for avoiding, so under an idle scan there is none.
+///
+/// The zombie is excluded, so the idle scan is refused whatever privilege runs
+/// the test and nothing is forged. What is left to observe is whether anything
+/// else asked the target, which the loopback host answers if it is asked.
+#[tokio::test]
+async fn an_idle_scan_runs_no_liveness_pass_against_its_target() {
+    let zombie: IpAddr = "192.0.2.9".parse().expect("an address");
+    let mut cfg = test_config();
+    cfg.idle_scan = Some(zond_engine::config::IdleScan::new(zombie));
+    cfg.exclusions = zond_engine::Exclusions::new(ip_set(zombie));
+
+    let outcome = run_scan(target_map(LOOPBACK, "1,2"), &cfg).await;
+
+    let kinds: Vec<ScanKind> = outcome
+        .report
+        .phases()
+        .iter()
+        .map(|phase| phase.kind())
+        .collect();
+    assert_eq!(kinds, vec![ScanKind::PortScan], "no liveness phase ran");
+    assert!(
+        outcome.host(LOOPBACK).is_none(),
+        "the target heard from this host, and answered it"
+    );
+}
+
 /// A host that is there is scanned exactly as it would be with no gate.
 #[tokio::test]
 async fn a_live_host_is_still_port_scanned() {
