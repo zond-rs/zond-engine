@@ -36,6 +36,33 @@
 //! with a stack reading, or with the hardware vendor, and pushing a verdict
 //! past what one source could support.
 //!
+//! ## Who said it
+//!
+//! A name reaches a host by one of two kinds of route, and they are different
+//! witnesses. A resolver answering a reverse lookup, or the DHCP request a host
+//! broadcast, is a channel of its own, and a default name heard that way stands
+//! beside anything else the host says, as [`OsSource::Hostname`].
+//!
+//! A name in `.local` is not that. Multicast DNS answers for the zone and
+//! nothing else does (RFC 6762 §3), so the name is the host's own Bonjour
+//! responder announcing itself, and the device-info record a scan asks for is
+//! asked for under that very name, of that same responder. Filed beside the
+//! record as a second source, one daemon would count as two witnesses, and a
+//! default name and a model identifier would settle a Mac between them past
+//! the confidence at which the active probe is skipped. So a `.local` name is
+//! filed as [`OsSource::MdnsResponder`], where it counts once with whatever
+//! else the responder says.
+//!
+//! The zone is read rather than the route, because the zone is what survives:
+//! a name carried in from an imported report, a merge or a resumed journal has
+//! no route left to ask about, and the zone is the protocol's own statement of
+//! who answers for a name. What it misfiles is a unicast resolver answering in
+//! `.local`, which the same RFC advises against in its Appendix G and which
+//! home routers do anyway. The error there runs the safe way: a name counted
+//! once where it could have counted twice, and an active probe sent that could
+//! have been skipped. Reading the route instead would err the other way on
+//! every name whose route was lost.
+//!
 //! ## The table declines more than it answers
 //!
 //! Only patterns an operating system *generates by default* are listed, because
@@ -69,6 +96,10 @@ use crate::model::host::OsSource;
 /// have typed, and even a default can survive onto a machine running something
 /// else. It earns its place by agreeing with the wire.
 pub const CONFIDENCE: f32 = 0.35;
+
+/// The zone multicast DNS answers for, and the mark of a name a host's own
+/// responder announced. See the module's "Who said it".
+const MDNS_ZONE: &str = ".local";
 
 /// Naming conventions an operating system applies when nobody overrides them,
 /// and the family each implies.
@@ -271,20 +302,33 @@ impl Pattern {
 /// person's hostname says what the person chose, not what the machine runs, and
 /// a source that treated choice as evidence would be wrong about every
 /// deliberately-named host on the network.
+///
+/// # Filed under whoever stated it
+///
+/// A name in `.local` is one the host's own Bonjour responder announced, since
+/// multicast DNS answers for that zone and nothing else does, and it is filed
+/// as [`OsSource::MdnsResponder`]. The device-info record that responder serves
+/// is filed there too, so the two count as the one witness they are rather than
+/// settling a host between them. Any other name was given by something apart
+/// from that responder, a resolver or the host's DHCP request, and is filed as
+/// [`OsSource::Hostname`].
 pub fn evidence_from(hostname: Option<&str>) -> Option<OsEvidence> {
     let hostname = hostname?;
-    // mDNS answers arrive with `.local` appended, and a bare trailing dot is
-    // FQDN form; neither is part of the name the operating system generated.
-    let trimmed = hostname.strip_suffix(".local").unwrap_or(hostname);
-    let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed);
-    let lowered = trimmed.to_ascii_lowercase();
+    let lowered = hostname.to_ascii_lowercase();
+    // A bare trailing dot is FQDN form, and the zone says who stated the name;
+    // neither is part of the name the operating system generated.
+    let name = lowered.strip_suffix('.').unwrap_or(&lowered);
+    let (name, source) = match name.strip_suffix(MDNS_ZONE) {
+        Some(label) => (label, OsSource::MdnsResponder),
+        None => (name, OsSource::Hostname),
+    };
 
     let (_, family) = DEFAULT_NAMES
         .iter()
-        .find(|(pattern, _)| pattern.matches(&lowered))?;
+        .find(|(pattern, _)| pattern.matches(name))?;
 
     Some(OsEvidence {
-        source: OsSource::Hostname,
+        source,
         family: Some((*family).to_string()),
         device: None,
         vendor: None,
@@ -382,6 +426,38 @@ mod tests {
                 < f32::from(super::super::verdict::MIN_REPORTABLE_ACCURACY),
             "a lone hostname must stay below the floor that reports anything"
         );
+    }
+
+    /// A name in `.local` is its responder's to count, in any spelling DNS
+    /// allows for it, and a name without the zone is a witness of its own.
+    ///
+    /// The zone is the whole of the decision, so it is pinned in both
+    /// directions: filed the other way, a responder's name and its device-info
+    /// record are one daemon counted twice, and a resolver's name loses the
+    /// corroboration it is genuinely worth.
+    #[test]
+    fn a_name_is_filed_under_whoever_stated_it() {
+        let source = |name: &str| evidence_from(Some(name)).map(|evidence| evidence.source);
+
+        for announced in [
+            "MacBook-Pro.local",
+            "MacBook-Pro.LOCAL",
+            "MacBook-Pro.local.",
+            "DESKTOP-A1B2C3D.local",
+        ] {
+            assert_eq!(
+                source(announced),
+                Some(OsSource::MdnsResponder),
+                "`{announced}` is the host's responder speaking"
+            );
+        }
+        for resolved in ["MacBook-Pro", "MacBook-Pro.", "DESKTOP-A1B2C3D"] {
+            assert_eq!(
+                source(resolved),
+                Some(OsSource::Hostname),
+                "`{resolved}` came from somewhere other than the host"
+            );
+        }
     }
 
     /// Constructed fixtures rather than observations, unlike the `DESKTOP-` name

@@ -713,8 +713,8 @@ pub enum OsSource {
     /// appliance it is the firmware build the box is actually executing. See
     /// [`ceiling`](crate::fingerprint::os::ceiling).
     SnmpAgent,
-    /// A Bonjour responder answering for the machine itself, out of an mDNS
-    /// device-info record.
+    /// A Bonjour responder answering for the machine itself: the mDNS
+    /// device-info record it serves, and the `.local` name it announces.
     ///
     /// The same kind of statement as [`SnmpAgent`](Self::SnmpAgent) and worth
     /// the same, for the same reason: `model=Mac16,10` and `osxvers=25` are what
@@ -722,13 +722,21 @@ pub enum OsSource {
     /// with. It also reaches something no other source here can, since macOS and
     /// iOS share a kernel and answer a stack probe identically while their
     /// device-info records name the hardware outright.
+    ///
+    /// One source for both, because both are one daemon speaking: the record is
+    /// asked for under the very name the responder announced. A default name
+    /// heard this way is priced as any default name is, and counts once with the
+    /// record rather than as a second witness beside it.
     MdnsResponder,
     /// The host's own name, where it is one an operating system generates by
-    /// default.
+    /// default and something other than the host's own responder gave it: a
+    /// resolver answering a reverse lookup, or the host's DHCP request.
     ///
-    /// The only source that reaches a host whose firewall drops every probe,
-    /// since a stock Windows desktop still announces `DESKTOP-` over mDNS, which
-    /// is why it exists despite being the weakest of them.
+    /// The weakest source there is, kept because a default name is sometimes
+    /// the only thing a host gives out: a stock Windows desktop drops every
+    /// probe and still names itself `DESKTOP-`. Heard as a `.local` name, that is
+    /// its responder speaking, and it is filed as
+    /// [`MdnsResponder`](Self::MdnsResponder).
     Hostname,
 }
 

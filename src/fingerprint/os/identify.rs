@@ -196,6 +196,53 @@ mod tests {
         assert!(os.accuracy() >= 40, "below the reporting floor: {os}");
     }
 
+    /// One Bonjour responder is one witness, however much it says.
+    ///
+    /// A host no resolver named takes the name it announced over multicast DNS,
+    /// and its device-info record is then asked for under that same name, of
+    /// the same responder. Filed as two sources, a default name and a model
+    /// identifier would fuse to 87 between them, past the 85 at which the active
+    /// probe is skipped as having nothing left to settle, on one daemon's word.
+    ///
+    /// The same name given by a resolver is something other than the host
+    /// speaking, and the last assertion keeps it a witness of its own.
+    #[test]
+    fn one_bonjour_responder_is_one_witness_however_much_it_says() {
+        use crate::fingerprint::SignatureDb;
+        use crate::model::port::Protocol;
+
+        // What the responder says when asked, read the way the active pass
+        // reads it.
+        let record = || {
+            SignatureDb::global()
+                .identify(5353, Protocol::Udp, "model=Mac16,10")
+                .and_then(|evidence| evidence.os)
+                .expect("the corpus reads a Mac's model identifier")
+        };
+        assert_eq!(record().source, OsSource::MdnsResponder, "test premise");
+
+        let mut announced = host();
+        announced.set_hostname(Some("MacBook-Pro.local".to_owned()));
+        assert!(identify(&mut announced, [record()]));
+        let one = announced.os().expect("the record names the host");
+        assert!(
+            !one.is_highly_confident(),
+            "one responder settled the host at {}",
+            one.accuracy()
+        );
+
+        let mut resolved = host();
+        resolved.set_hostname(Some("MacBook-Pro".to_owned()));
+        assert!(identify(&mut resolved, [record()]));
+        let two = resolved.os().expect("the record names the host");
+        assert!(
+            two.accuracy() > one.accuracy(),
+            "a resolver's name is a second witness: {} against {}",
+            two.accuracy(),
+            one.accuracy()
+        );
+    }
+
     /// Evidence only accumulates, so an answer can move either way as it does,
     /// and when it moves to *nothing*, the answer on record has to go with it.
     ///
