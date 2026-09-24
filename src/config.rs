@@ -1398,8 +1398,9 @@ pub struct ZondConfig {
     /// a caller can work out in advance.
     ///
     /// Winding down is not cancelling. What was found is kept, and the ports
-    /// the scan never reached are recorded with its silence verdict rather than
-    /// left off the host.
+    /// the scan reached no verdict on are recorded
+    /// [`Unasked`](crate::model::port::PortState::Unasked) rather than left off
+    /// the host.
     ///
     /// It bounds this call and not the job behind it, so each sitting of a
     /// resumed scan is given the budget afresh. A job that must finish inside

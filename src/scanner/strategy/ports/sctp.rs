@@ -955,7 +955,7 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 2905);
 
-        scanner.resolve_remaining();
+        super::super::run_out(&mut scanner);
 
         assert_eq!(port_state(&session, 2905), Some(PortState::Filtered));
         assert_eq!(scanner.silence_means(), PortState::Filtered);
@@ -1036,7 +1036,7 @@ mod tests {
     fn a_cookie_echo_reads_silence_as_open_or_filtered() {
         let (mut scanner, session, sent) = scanner_probing(SctpScanTechnique::CookieEcho);
         let _ = cookie_probe(&mut scanner, &sent, 2905);
-        scanner.resolve_remaining();
+        super::super::run_out(&mut scanner);
 
         assert_eq!(port_state(&session, 2905), Some(PortState::OpenFiltered));
     }

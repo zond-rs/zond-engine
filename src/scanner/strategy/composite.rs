@@ -186,10 +186,16 @@ impl PortScanner for CompositePortScanner {
         // Route targets from the unified stream to the first scanner that
         // claims support. A target that finds no route, or whose scanner has
         // already stopped listening, is counted rather than dropped in silence:
-        // either means ports the caller asked about are missing from the
-        // results, and a scan that quietly answers a narrower question than it
-        // was asked is worse than one that says so. A target the scan refused
-        // is left unprobed as well, and its refusal is what says so.
+        // either means ports the caller asked about went unprobed, and a scan
+        // that quietly answers a narrower question than it was asked is worse
+        // than one that says so. A target the scan refused is left unprobed as
+        // well, and its refusal is what says so.
+        //
+        // A target whose scanner has stopped is also written down, unasked, on
+        // its host. That is the rest of a plan a scanner stopped short of, by
+        // its own deadline or because its transport died, and it reaches no
+        // scanner to record it: left off the host, a truncated port list reads
+        // the same as a complete one.
         let mut unroutable = 0usize;
         let mut undeliverable = 0usize;
 
@@ -199,9 +205,9 @@ impl PortScanner for CompositePortScanner {
                 route.supported_protocols.contains(&protocol) && route.reach.admits(&ip)
             }) {
                 Some(route) => {
-                    if route.tx.send(target).await.is_err() {
+                    if let Err(returned) = route.tx.send(target).await {
                         undeliverable += 1;
-                        self.ctx.record_outcome(Outcome::Unroutable);
+                        record_unasked(&self.ctx, &returned.0);
                     }
                 }
                 None => {
@@ -218,7 +224,7 @@ impl PortScanner for CompositePortScanner {
         }
 
         // Recorded as a failure rather than logged. Both counts mean ports the
-        // caller asked about are absent from the results, and every other
+        // caller asked about went unprobed, and every other
         // narrowing in the engine reaches the report and the event stream; a
         // warning reaches neither, so a consumer that awaits the scan and reads
         // what came back cannot tell a narrowed scan from an empty network.
@@ -297,31 +303,41 @@ impl PortScanner for CompositePortScanner {
     }
 }
 
+/// Records `target`, which reached no scanner, as a port nobody asked about.
+///
+/// The way every strategy records one, so a port the router could not hand
+/// over reads exactly as one a scanner had queued when it stopped: on the host
+/// as [`PortState::Unasked`](crate::model::port::PortState::Unasked), and owed
+/// to a resume.
+fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
+    let port = crate::fingerprint::baseline_port(
+        target.port(),
+        target.protocol(),
+        crate::model::port::PortState::Unasked,
+    );
+    ctx.update_host(target.ip(), |host| {
+        host.add_port(port);
+    });
+    ctx.record_outcome(Outcome::Unasked);
+}
+
 /// How a router reports the work it could not place.
 ///
 /// Two ways a target goes unprobed, kept apart in the message because they call
 /// for different fixes. Nothing claiming the protocol is a scan assembled
-/// without a strategy for it; a scanner that had already finished is one that
-/// stopped early, most often because its own transport died mid-run.
+/// without a strategy for it, and its targets are missing from the results; a
+/// scanner that had already finished is one that stopped early, by its own
+/// deadline or because its transport died mid-run, and its targets are on
+/// their hosts as unasked.
 fn missed(unroutable: usize, undeliverable: usize) -> String {
-    let mut reasons = Vec::new();
-    if unroutable > 0 {
-        reasons.push(format!("{unroutable} had no scanner for their protocol"));
-    }
-    if undeliverable > 0 {
-        reasons.push(format!(
-            "{undeliverable} arrived after their scanner had finished"
-        ));
-    }
-
+    let reason = match (unroutable, undeliverable) {
+        (_, 0) => "no scanner for their protocol".to_owned(),
+        (0, _) => "their scanner had stopped".to_owned(),
+        _ => format!("{unroutable} had no scanner, {undeliverable} found theirs stopped"),
+    };
     format!(
-        "{} never probed and missing from the results: {}",
-        counted(
-            (unroutable + undeliverable) as u128,
-            "target was",
-            "targets were"
-        ),
-        reasons.join(", ")
+        "{} never probed ({reason})",
+        counted((unroutable + undeliverable) as u128, "target", "targets"),
     )
 }
 
@@ -350,6 +366,9 @@ mod tests {
         Fail(&'static str),
         /// Panic immediately, as a scanner with a bug in it would.
         Panic,
+        /// Stop listening at once and say so, as a scanner that ran out of
+        /// its own deadline does, with the rest of the plan still to come.
+        Stop(Arc<tokio::sync::Notify>),
     }
 
     struct MockPortScanner {
@@ -393,9 +412,14 @@ mod tests {
             &mut self,
             mut targets: mpsc::Receiver<PlannedTarget>,
         ) -> Result<(), StrategyError> {
-            match self.behaviour {
-                Behaviour::Fail(reason) => return Err(StrategyError::Probe(reason.into())),
+            match &self.behaviour {
+                Behaviour::Fail(reason) => return Err(StrategyError::Probe((*reason).into())),
                 Behaviour::Panic => panic!("scanner bug"),
+                Behaviour::Stop(stopped) => {
+                    drop(targets);
+                    stopped.notify_one();
+                    return Ok(());
+                }
                 Behaviour::Collect => {}
             }
 
@@ -654,9 +678,7 @@ mod tests {
         let failures = ctx.take_failures();
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(
-            failures[0]
-                .reason()
-                .starts_with("1 target was never probed"),
+            failures[0].reason().starts_with("1 target never probed"),
             "only the target the refusal does not cover is lost: {}",
             failures[0].reason()
         );
@@ -679,6 +701,63 @@ mod tests {
         composite.scan(rx).await.unwrap();
 
         assert!(ctx.take_failures().is_empty());
+    }
+
+    /// The rest of a plan whose scanner stopped short of it is on its hosts as
+    /// never asked, and owed to a resume.
+    ///
+    /// A scanner that runs out of its own deadline stops reading with targets
+    /// still to come, and those reach no scanner that could record them. Left
+    /// off their hosts, a port list cut short reads the same as a complete
+    /// one, and the report counts ports it never names.
+    #[tokio::test]
+    async fn the_plan_a_stopped_scanner_never_took_is_recorded_unasked() {
+        let (session, ctx) = ScanSession::new();
+        let stopped = Arc::new(tokio::sync::Notify::new());
+        let (scanner, _) = MockPortScanner::with_behaviour(
+            vec![Protocol::Tcp],
+            Behaviour::Stop(Arc::clone(&stopped)),
+        );
+        let mut composite = CompositePortScanner::new(vec![Box::new(scanner)], ctx.clone());
+
+        let (tx, rx) = mpsc::channel(16);
+        let routing = tokio::spawn(async move {
+            composite.scan(rx).await.expect("a narrowing, not an error");
+        });
+        // Only once the scanner has stopped listening, so neither target can
+        // be buffered on its way to it.
+        stopped.notified().await;
+        for (position, port) in [80u16, 443].into_iter().enumerate() {
+            tx.send(PlannedTarget::new(
+                position as u64,
+                target(Protocol::Tcp, port),
+            ))
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        routing.await.expect("the router finishes");
+
+        let host = session
+            .hosts()
+            .get(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .expect("the ports are on their host");
+        for port in [80u16, 443] {
+            assert_eq!(
+                host.ports()
+                    .find(|recorded| recorded.number() == port)
+                    .map(|recorded| recorded.state()),
+                Some(crate::model::port::PortState::Unasked),
+                "port {port}"
+            );
+        }
+        assert_eq!(ctx.settlements().count(Outcome::Unasked), 2);
+        let failures = ctx.take_failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(
+            failures[0].reason(),
+            "2 targets never probed (their scanner had stopped)"
+        );
     }
 
     /// Stopping a scan is not a strategy failing.

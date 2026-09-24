@@ -1688,7 +1688,7 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 161);
 
-        scanner.resolve_remaining();
+        super::super::run_out(&mut scanner);
 
         assert_eq!(
             port_state(&session, TARGET, 161),

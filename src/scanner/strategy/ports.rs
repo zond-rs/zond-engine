@@ -1456,8 +1456,8 @@ pub trait RawPortScan: PortScanner {
     /// A held first attempt was never armed, so nothing else will account for
     /// it: without this it is the port that vanishes from the host entirely,
     /// which is the one shortfall a reader cannot see. A held retry is still
-    /// outstanding on the ledger and takes the scan's silence verdict with
-    /// everything else there, so it is dropped rather than recorded twice.
+    /// outstanding on the ledger and is recorded with everything else there,
+    /// so it is dropped rather than recorded twice.
     ///
     /// Nothing is counted. These targets were counted into the audit's
     /// denominator when they came off the stream, and counting them again would
@@ -1578,15 +1578,21 @@ pub trait RawPortScan: PortScanner {
         core.due.clear();
     }
 
-    /// Gives every probe still outstanding the verdict this scan reads silence
-    /// as.
+    /// Records every probe still outstanding as [`PortState::Unasked`]: no
+    /// verdict was reached for it.
     ///
     /// [`service_retries`](Self::service_retries) retires most probes as their
     /// budgets run out; what reaches here are the ones still mid-schedule when
-    /// the scan itself ended.
+    /// the scan itself ended. Silence is a verdict only once every attempt
+    /// has had its full wait, and these have not, so they do not take the
+    /// verdict this scan reads silence as. The answer to one may be in transit
+    /// at the stop, and an open port whose answer had not yet arrived, filed
+    /// filtered, is a firewall reported where there is none.
+    ///
+    /// Settled as interrupted rather than unasked, since each was asked, and
+    /// either way carries no position, so a resume asks it again.
     fn resolve_remaining(&mut self) {
         self.core_mut().window.release_all();
-        let silence = self.silence_means();
         for (ip, port) in self.core_mut().ledger.drain_unresolved() {
             // Unreachable is known of the address however far this probe's own
             // schedule got. See `RawProbeScan::unreachable`.
@@ -1594,8 +1600,7 @@ pub trait RawPortScan: PortScanner {
                 self.record_unasked_endpoint(ip, port);
                 continue;
             }
-            self.record_port(ip, port, silence, None);
-            // Assigned, not earned: the schedule was cut off rather than spent.
+            self.record_port(ip, port, PortState::Unasked, None);
             self.settle(Outcome::Interrupted);
         }
     }
@@ -1615,12 +1620,10 @@ pub trait RawPortScan: PortScanner {
     /// the host, and it says what happened to it rather than borrowing the
     /// verdict of a port that was probed and stayed quiet.
     ///
-    /// What is already queued, and no more. Waiting for the dispatcher to
-    /// finish emitting would let a scan of a very large range spend longer
-    /// filing verdicts than it spent scanning, and the deadline that stopped it
-    /// is a guarantee of termination that this must not quietly undo. For every
-    /// scan smaller than the dispatcher's buffer, which is every scan whose
-    /// port list a person wrote, the queue is the whole remainder.
+    /// What is already queued, and no more. The rest of the plan never reaches
+    /// this scanner: the router finds it gone and records each of those
+    /// targets unasked in its place. See
+    /// [`CompositePortScanner`](crate::scanner::strategy::composite::CompositePortScanner).
     fn resolve_unasked(&mut self, targets: &mut mpsc::Receiver<PlannedTarget>) -> u128 {
         let mut unasked = 0;
         while let Ok(target) = targets.try_recv() {
@@ -1664,6 +1667,18 @@ pub trait RawPortScan: PortScanner {
             Outcome::Unasked
         };
         self.settle(outcome);
+    }
+}
+
+/// Runs every probe `scanner` has outstanding to the end of its schedule, as a
+/// scan left to finish does, so a test reads the verdict silence earns rather
+/// than the one a stop leaves.
+#[cfg(test)]
+pub(crate) fn run_out<S: RawPortScan>(scanner: &mut S) {
+    let mut now = Instant::now();
+    while !scanner.core().ledger.is_empty() {
+        now += Duration::from_secs(60);
+        scanner.service_retries(now);
     }
 }
 
@@ -1715,11 +1730,12 @@ pub struct AuditLabels {
 /// 3. **Then wait on whichever of three things happens first**: another target
 ///    to probe, a reply to read, or the moment the next probe is due.
 ///
-/// Anything still outstanding when the loop ends takes the scan's silence
-/// verdict, and anything still queued is recorded [`PortState::Unasked`], so a
-/// scan cut short by its own deadline reports the ports it never reached instead
-/// of leaving them off the host entirely, which is the one shortfall a reader
-/// cannot see. See [`RawPortScan::resolve_unasked`] for how far that reaches.
+/// Anything still outstanding when the loop ends, and anything still queued, is
+/// recorded [`PortState::Unasked`], so a scan cut short reports the ports it
+/// reached no verdict on instead of leaving them off the host entirely, which
+/// is the one shortfall a reader cannot see, or filing a probe whose answer
+/// was still on its way as silence. See [`RawPortScan::resolve_remaining`] and
+/// [`RawPortScan::resolve_unasked`].
 pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<PlannedTarget>) {
     // The rate backstop. What paces the scan is `RawProbeScan::window`, which
     // the batch loop below re-checks after every send; this bounds how fast a
@@ -1861,7 +1877,10 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
     scanner.resolve_held();
     // Targets still in the channel when the loop ended. Counted into `probes`
     // so the audit's denominator is what the scan was handed rather than what it
-    // got round to.
+    // got round to. Closed first, so the router cannot slip a target in behind
+    // the drain where nothing would read it: once closed, it finds this scanner
+    // gone and records the target unasked itself.
+    targets.close();
     probes += scanner.resolve_unasked(&mut targets);
 
     let kind = scanner.kind();

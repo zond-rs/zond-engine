@@ -1587,7 +1587,7 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 443);
 
-        scanner.resolve_remaining();
+        super::super::run_out(&mut scanner);
 
         assert_eq!(port_state(&session, 443), Some(PortState::Filtered));
         assert!(scanner.core.ledger.is_empty());
@@ -1710,7 +1710,7 @@ mod tests {
             let (mut scanner, session, sent) = scanner_for(technique);
             probe(&mut scanner, &sent, 443);
 
-            scanner.resolve_remaining();
+            super::super::run_out(&mut scanner);
 
             assert_eq!(port_state(&session, 443), Some(expected), "{technique}");
         }
@@ -1724,7 +1724,7 @@ mod tests {
         let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Xmas);
         probe(&mut scanner, &sent, 443);
 
-        scanner.resolve_remaining();
+        super::super::run_out(&mut scanner);
 
         let host = session.hosts().get(TARGET).expect("the port was recorded");
         assert!(!host.status().is_up());

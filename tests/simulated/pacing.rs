@@ -389,3 +389,60 @@ async fn a_spaced_scan_whose_answers_come_late_settles_every_port() {
         &unsettled[..unsettled.len().min(8)]
     );
 }
+
+/// A probe still waiting for its answer when the scan stops has no verdict,
+/// and reads as never asked rather than as the silence a firewall produces.
+///
+/// Its answer may be in transit at that moment: an open port whose SYN+ACK had
+/// not yet arrived is exactly the port the scan exists to find, and filing it
+/// filtered reports a firewall that is not there. Nothing here filters
+/// anything, so every port that is not open is a verdict the scan did not
+/// earn.
+#[tokio::test]
+async fn a_probe_awaiting_its_answer_when_the_scan_stops_reads_unasked() {
+    // Fewer than the window starts at, so every one is on the wire at once.
+    const PORTS: u16 = 24;
+    let ports: Vec<u16> = (FIRST..FIRST + PORTS).collect();
+
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for &port in &ports {
+        net = net.host(TARGET, port, Policy::open().delay(Duration::from_secs(2)));
+    }
+
+    // Far shorter than the answers take, so the stop comes with every probe
+    // on the wire and none answered.
+    let (session, ctx) = ScanSession::builder()
+        .scan_timeout(Some(Duration::from_millis(150)))
+        .build();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        ports.len(),
+    );
+
+    let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
+    run_port_scanner(&mut scanner, targets).await;
+
+    assert!(
+        net.probes().len() >= usize::from(PORTS),
+        "every port was asked before the stop, so each one's probe was in flight"
+    );
+    let host = session
+        .hosts()
+        .get(TARGET)
+        .expect("every port the scan was given is on the host");
+    for &port in &ports {
+        let state = host
+            .ports()
+            .find(|recorded| recorded.number() == port)
+            .unwrap_or_else(|| panic!("port {port} is absent from the host"))
+            .state();
+        assert_eq!(
+            state,
+            PortState::Unasked,
+            "port {port} was cut off awaiting its answer, and nothing filters it"
+        );
+    }
+}

@@ -138,7 +138,7 @@ impl Protocol {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortState {
-    /// No probe was sent, so nothing was established either way.
+    /// No verdict was reached, so nothing was established either way.
     ///
     /// Every state below is a reading of an answer or of a silence that followed
     /// a question. This one is what a port says when the question was never put:
@@ -146,7 +146,9 @@ pub enum PortState {
     /// host that spent
     /// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout)
     /// before the scan reached this port, a probe the operating system refused
-    /// to send.
+    /// to send. Or when it was put and the scan stopped before its answer had
+    /// the time the retry schedule gives it: that silence is not yet a reading,
+    /// and the answer may have been on its way.
     ///
     /// Such a port stays on the record rather than being left off the host,
     /// because a truncated port list and a complete one look identical and the
