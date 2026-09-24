@@ -663,6 +663,10 @@ async fn a_host_the_liveness_pass_heard_nothing_from_is_settled_as_down() {
     let report = task.join().await.expect("it finishes");
 
     assert_eq!(report.hosts().count(), 0, "nothing answers there");
+    assert!(
+        report.phases()[0].undecided().is_empty(),
+        "an address asked and found silent has its verdict"
+    );
     let listed = zond_engine::journal::store::list(&root).expect("lists");
     assert_eq!(
         listed[0].settled(),
@@ -671,6 +675,59 @@ async fn a_host_the_liveness_pass_heard_nothing_from_is_settled_as_down() {
     );
 
     std::fs::remove_dir_all(&root).ok();
+}
+
+/// **A liveness pass stopped before it asked names every address undecided.**
+///
+/// The report is where a reader learns what a stopped scan did not cover. A
+/// port scan's liveness phase whose scope is four addresses and which found
+/// none of them is otherwise indistinguishable from one that asked all four and
+/// heard nothing, and a front end subtracting the port phase's scope from the
+/// liveness phase's counts all four as having answered no liveness probe.
+///
+/// Stopped by a budget spent before the scan starts, as the test above is.
+#[tokio::test]
+async fn a_liveness_pass_stopped_before_it_asked_names_every_address_undecided() {
+    use zond_engine::model::ip::range::IpRange;
+    use zond_engine::model::port::PortSet;
+    use zond_engine::model::target::{TargetMap, TargetSet};
+    use zond_engine::report::ScanKind;
+
+    if is_privileged() {
+        eprintln!("SKIP: drives the unprivileged connect path");
+        return;
+    }
+
+    let range: IpSet = "127.0.0.1-127.0.0.4".parse().expect("a range");
+    let mut plan = TargetMap::new();
+    plan.add_unit(TargetSet::new(
+        range.clone(),
+        closed_loopback_port()
+            .await
+            .to_string()
+            .parse::<PortSet>()
+            .expect("a port"),
+    ));
+
+    let mut cut_short = test_config();
+    cut_short.scan_timeout = Some(std::time::Duration::from_nanos(1));
+    let (_session, task) = zond_engine::scanner::scan(plan, &cut_short, Detections::embedded())
+        .await
+        .expect("the scan starts");
+    let report = task.join().await.expect("the scan winds down");
+
+    let liveness = &report.phases()[0];
+    assert_eq!(liveness.kind(), ScanKind::Discovery);
+    let expected: Vec<IpRange> = range.v4().iter().copied().map(IpRange::V4).collect();
+    assert_eq!(
+        liveness.undecided(),
+        expected.as_slice(),
+        "nothing was asked, so no address has a verdict"
+    );
+    assert!(
+        report.phases()[1].undecided().is_empty(),
+        "a port phase settles ports, not presence"
+    );
 }
 
 // ─── Sweeps settle addresses, and only where a sweep is what is running ──────

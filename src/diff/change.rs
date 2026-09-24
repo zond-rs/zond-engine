@@ -177,8 +177,9 @@ impl Presence {
 /// [`Unreached`](Self::Unreached) is the one answer that comes from somewhere
 /// else, and it overrules the scope where the two meet: a scope says what a scan
 /// set out to walk, and a port recorded
-/// [`Unasked`](crate::model::port::PortState::Unasked) is the scan saying how far
-/// it actually got.
+/// [`Unasked`](crate::model::port::PortState::Unasked) or an address a phase
+/// names as [`undecided`](crate::report::ScanPhase::undecided) is the scan
+/// saying how far it actually got.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Coverage {
@@ -192,7 +193,10 @@ pub enum Coverage {
     OutOfScope,
     /// The scan named this target, meant to probe it, and ran short before it
     /// did. The record itself says so, by carrying the endpoint at
-    /// [`PortState::Unasked`](crate::model::port::PortState::Unasked).
+    /// [`PortState::Unasked`](crate::model::port::PortState::Unasked), or by
+    /// naming the address among a phase's
+    /// [`undecided`](crate::report::ScanPhase::undecided) ones where no phase
+    /// reached a verdict on it.
     ///
     /// The one answer that is a measurement rather than a reading of intent, and
     /// it is what keeps a scan cut short by its own wall clock from reporting

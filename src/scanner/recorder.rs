@@ -21,6 +21,7 @@ use std::time::{Instant, SystemTime};
 
 use crate::config::ZondConfig;
 use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope};
+use crate::scanner::orchestrator::Liveness;
 use crate::scanner::session::ScanContext;
 use crate::system::privilege::Privilege;
 
@@ -122,12 +123,35 @@ impl PhaseRecorder {
     /// them without closing a phase has
     /// [`ScanContext::failures_snapshot`](crate::scanner::session::ScanContext::failures_snapshot)
     /// and its probe-statistics counterpart.
+    ///
+    /// A [`Discovery`](ScanKind::Discovery) phase also names the addresses in
+    /// its scope it reached no verdict on, read off what its strategies filed:
+    /// see [`ScanPhase::undecided`](crate::report::ScanPhase::undecided).
     pub fn finish(self, ctx: &ScanContext) -> ScanReport {
+        self.close(ctx).0
+    }
+
+    /// [`finish`](Self::finish), handing back as well what a discovery phase
+    /// established about presence, for the port phase that follows it to act
+    /// on. `None` for any other kind of phase.
+    ///
+    /// One reading serves both, so the port phase settles as found down exactly
+    /// the addresses the report does not name as undecided.
+    pub(super) fn close(self, ctx: &ScanContext) -> (ScanReport, Option<Liveness>) {
         // Which links the strategies reached is only knowable now: the scope was
         // fixed before the first probe went out, and a sweep of a segment covers
         // ground no target set named.
         let mut targets = self.targets;
         targets.record_sweeps(ctx.take_swept_links());
+
+        let unroutable = ctx.take_unroutable();
+        // Taken whatever the kind, so a context reused for another phase starts
+        // with no silence it did not hear.
+        let silent = ctx.take_silent();
+        let liveness = (self.kind == ScanKind::Discovery).then(|| Liveness::found(ctx, silent));
+        let undecided = liveness.as_ref().map_or_else(Vec::new, |liveness| {
+            liveness.undecided(&targets, &unroutable)
+        });
 
         let phase = ScanPhase::from_parts(PhaseParts {
             kind: self.kind,
@@ -140,7 +164,7 @@ impl PhaseRecorder {
             settings: self.settings,
             failures: ctx.take_failures(),
             refusals: ctx.take_refusals(),
-            unroutable: ctx.take_unroutable(),
+            unroutable,
             timed_out: ctx.take_timed_out(),
             // Taken whatever the privilege, so a context reused for another
             // phase starts empty, and kept only for a raw phase: one at
@@ -152,6 +176,7 @@ impl PhaseRecorder {
                     Vec::new()
                 }
             },
+            undecided,
             probes: ctx.take_probe_stats(),
             origin: None,
             attachments: ctx.take_attachments(),
@@ -160,7 +185,7 @@ impl PhaseRecorder {
         // Copied rather than taken: the store is shared with the `ScanSession`
         // the caller kept, which goes on answering after this returns.
         let hosts = ctx.store.iter().map(|entry| entry.value().clone());
-        ScanReport::new(phase, hosts)
+        (ScanReport::new(phase, hosts), liveness)
     }
 }
 
@@ -411,6 +436,56 @@ mod tests {
                 .reached_by_connect()
                 .is_empty(),
             "and what the connect phase was handed did not carry over"
+        );
+    }
+
+    /// **A discovery phase names every address it reached no verdict on, and
+    /// only those.** An address that answered and one asked to exhaustion both
+    /// have a verdict, and one with no route is named apart; the fourth was
+    /// never settled either way, which is what a stop, a failed strategy or a
+    /// refusal leaves. Without the list a reader counts it among the silent.
+    #[test]
+    fn a_discovery_phase_names_the_addresses_it_reached_no_verdict_on() {
+        use crate::journal::settle::Settled;
+
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+        let mut targets = IpSet::from_str("203.0.113.1-203.0.113.4").expect("a valid range");
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
+        let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
+
+        ctx.update_host(ip(1), |host| host.set_status(HostStatus::Up));
+        ctx.settle_address(ip(2), Settled::Exhausted);
+        ctx.record_unroutable(ip(3));
+
+        let report = recorder.finish(&ctx);
+        let undecided: Vec<String> = report.phases()[0]
+            .undecided()
+            .iter()
+            .map(|range| format!("{}-{}", range.start_addr(), range.end_addr()))
+            .collect();
+        assert_eq!(undecided, ["203.0.113.4-203.0.113.4"]);
+    }
+
+    /// Silence is a discovery phase's evidence and nobody else's. A port phase
+    /// names no address undecided, and silence a context heard in one phase is
+    /// not carried into the next one's verdicts.
+    #[test]
+    fn only_a_discovery_phase_names_undecided_addresses_and_silence_does_not_carry() {
+        use crate::journal::settle::Settled;
+
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+
+        let ports = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg);
+        ctx.settle_address(ip(1), Settled::Exhausted);
+        assert!(ports.finish(&ctx).phases()[0].undecided().is_empty());
+
+        let sweep = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope(), &cfg);
+        assert_eq!(
+            sweep.finish(&ctx).phases()[0].undecided().len(),
+            1,
+            "the port phase took the silence it was handed, so the sweep decided nothing"
         );
     }
 }

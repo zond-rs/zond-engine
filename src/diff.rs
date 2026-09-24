@@ -96,6 +96,13 @@
 //! [`Presence::is_confirmed`] is the one test that separates a host that went
 //! away from a host nobody asked about.
 //!
+//! A scope is what a phase set out to walk, and a phase stopped partway names
+//! what it walked and never reached a verdict on in
+//! [`ScanPhase::undecided`](crate::report::ScanPhase::undecided). An address
+//! no phase decided answers [`Coverage::Unreached`], as do its endpoints: a
+//! sweep cut short by a stop reports the hosts it never got to as hosts it
+//! never got to, rather than as hosts that went away.
+//!
 //! Ports are a weaker case and say so. A scope records the addresses a phase
 //! walked, not the ports it walked on each, so an endpoint of a covered address
 //! answers `Unstated` too. Where the address itself was withheld or out of scope
@@ -636,6 +643,7 @@ mod tests {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -677,6 +685,7 @@ mod tests {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -715,6 +724,7 @@ mod tests {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });

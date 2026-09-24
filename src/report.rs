@@ -1638,6 +1638,9 @@ pub struct PhaseParts {
     /// Addresses a raw phase reached by TCP connect. See
     /// [`ScanPhase::reached_by_connect`].
     pub reached_by_connect: Vec<IpRange>,
+    /// Addresses in scope the phase reached no verdict on. See
+    /// [`ScanPhase::undecided`].
+    pub undecided: Vec<IpRange>,
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
@@ -1666,6 +1669,7 @@ impl ScanPhase {
             unroutable: parts.unroutable,
             timed_out: parts.timed_out,
             reached_by_connect: parts.reached_by_connect,
+            undecided: parts.undecided,
             probes: parts.probes,
             origin: parts.origin,
             attachments: parts.attachments,
@@ -1722,6 +1726,11 @@ pub struct ScanPhase {
     /// phase qualifying what it covered, not reporting that anything broke. See
     /// [`reached_by_connect`](Self::reached_by_connect).
     reached_by_connect: Vec<IpRange>,
+    /// Addresses in scope whose presence the phase reached no verdict on.
+    ///
+    /// Beside `unroutable` for the reason `timed_out` is: the phase qualifying
+    /// what it covered. See [`undecided`](Self::undecided).
+    undecided: Vec<IpRange>,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<PhaseOrigin>,
@@ -1822,6 +1831,35 @@ impl ScanPhase {
     /// once.
     pub fn reached_by_connect(&self) -> &[IpRange] {
         &self.reached_by_connect
+    }
+
+    /// Addresses in this phase's scope whose presence it reached no verdict on,
+    /// ascending.
+    ///
+    /// A discovery phase settles an address one of two ways: something answered
+    /// it, or it was asked as many times as the phase's policy allows and
+    /// nothing did. An address here is neither. The phase stopped before it
+    /// asked, stopped while the address was still owed attempts, had no
+    /// strategy that could ask, was refused the range, or ran out of the
+    /// address's own time budget. None of those is silence, so none of these
+    /// is a host found down: a port scan leaves their ports unprobed and
+    /// unsettled, and a resumed job asks them again.
+    ///
+    /// What sets the list apart from a scope minus the hosts found is the whole
+    /// reason it is recorded. Without it an address the phase never asked and
+    /// one that stayed silent when asked are the same absence, and a reader
+    /// counts the first as the second.
+    ///
+    /// Disjoint from [`unroutable`](Self::unroutable), which names the addresses
+    /// nothing could be sent to. An address left by its budget can be here and
+    /// in [`timed_out`](Self::timed_out) both, which says why.
+    ///
+    /// Empty for a phase that reached a verdict on everything it was asked
+    /// about, and for every phase that is not a
+    /// [`Discovery`](ScanKind::Discovery): a port scan settles ports rather than
+    /// presence, and a listener covers no address.
+    pub fn undecided(&self) -> &[IpRange] {
+        &self.undecided
     }
 
     /// The strategies in this phase that could not do their job.
@@ -2681,6 +2719,7 @@ mod tests {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         }

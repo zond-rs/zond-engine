@@ -997,6 +997,7 @@ mod tests {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -1730,6 +1731,32 @@ mod tests {
             .collect();
 
         assert_eq!(labels, ["q1.xml", "q2.xml", "q3.xml"]);
+    }
+
+    /// What a source's phase never decided stays with that phase. The merged
+    /// report's coverage is a property of its phase list, so a gap dropped
+    /// here would have a later comparison read every host past a stopped
+    /// sweep's last answer as one that went away.
+    #[test]
+    fn a_merged_report_keeps_what_each_phase_left_undecided() {
+        let source = crate::export::fixture::report();
+        let expected: Vec<Vec<crate::model::ip::range::IpRange>> = source
+            .phases()
+            .iter()
+            .map(|phase| phase.undecided().to_vec())
+            .collect();
+        assert!(
+            expected.iter().any(|undecided| !undecided.is_empty()),
+            "the fixture leaves something undecided, or this proves nothing"
+        );
+
+        let merged = merged(vec![source]);
+        let kept: Vec<Vec<crate::model::ip::range::IpRange>> = merged
+            .phases()
+            .iter()
+            .map(|phase| phase.undecided().to_vec())
+            .collect();
+        assert_eq!(kept, expected);
     }
 
     // -----------------------------------------------------------------------

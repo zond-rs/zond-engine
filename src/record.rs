@@ -1367,6 +1367,14 @@ pub struct PhaseRecord {
     /// happening and not yet written down.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reached_by_connect: Vec<RangeRecord>,
+    /// Addresses in scope the sitting reached no verdict on.
+    ///
+    /// Skipped when empty, which is every sitting that finished its liveness
+    /// question, and defaulted on the way in. A record written before this
+    /// field existed reads back as a sitting that decided everything, which
+    /// overstates it only where that sitting stopped during discovery.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undecided: Vec<RangeRecord>,
     /// What each strategy recorded about its own run.
     #[serde(default)]
     pub probe_stats: Vec<ProbeStatsRecord>,
@@ -1507,6 +1515,7 @@ impl From<&ScanPhase> for PhaseRecord {
                 .iter()
                 .map(RangeRecord::from)
                 .collect(),
+            undecided: phase.undecided().iter().map(RangeRecord::from).collect(),
             probe_stats: phase
                 .probe_stats()
                 .iter()
@@ -1545,6 +1554,13 @@ impl From<&PhaseRecord> for ScanPhase {
             // which addresses the sitting reached this way.
             reached_by_connect: record
                 .reached_by_connect
+                .iter()
+                .filter_map(RangeRecord::rebuild)
+                .collect(),
+            // Dropped on the same terms: a range that does not describe one
+            // names no address, undecided or otherwise.
+            undecided: record
+                .undecided
                 .iter()
                 .filter_map(RangeRecord::rebuild)
                 .collect(),

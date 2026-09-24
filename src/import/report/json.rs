@@ -598,6 +598,7 @@ struct PhaseDto {
     unroutable: Vec<String>,
     timed_out: Vec<String>,
     reached_by_connect: Vec<RangeDto>,
+    undecided: Vec<RangeDto>,
     origin: Option<PhaseOriginDto>,
 }
 
@@ -646,6 +647,11 @@ impl PhaseDto {
                 .collect::<Result<_, _>>()?,
             reached_by_connect: self
                 .reached_by_connect
+                .into_iter()
+                .map(RangeDto::record)
+                .collect::<Result<_, _>>()?,
+            undecided: self
+                .undecided
                 .into_iter()
                 .map(RangeDto::record)
                 .collect::<Result<_, _>>()?,
@@ -2222,6 +2228,11 @@ mod tests {
                 before.reached_by_connect(),
                 "which of a raw phase's evidence is connect evidence is part of what it covered"
             );
+            assert_eq!(
+                after.undecided(),
+                before.undecided(),
+                "what a phase never decided is what keeps it from reading as silence"
+            );
         }
         assert!(
             original
@@ -2229,6 +2240,13 @@ mod tests {
                 .iter()
                 .any(|phase| !phase.reached_by_connect().is_empty()),
             "the fixture reaches something by connect, or the check above proves nothing"
+        );
+        assert!(
+            original
+                .phases()
+                .iter()
+                .any(|phase| !phase.undecided().is_empty()),
+            "the fixture leaves something undecided, or the check above proves nothing"
         );
     }
 

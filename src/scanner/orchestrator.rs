@@ -49,7 +49,7 @@ use crate::evasion::EvasionProfile;
 use crate::fingerprint::os;
 use crate::journal::cursor::Checkpoint;
 use crate::logging::error;
-use crate::model::ip::range::{Ipv4Range, Ipv6Range};
+use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::{Zone, ZoneMap};
 use crate::model::{
     ip::set::IpSet,
@@ -57,7 +57,7 @@ use crate::model::{
     target::{PlannedTarget, TargetIndex, TargetMap, TargetSet},
     technique::TcpScanTechnique,
 };
-use crate::report::ScannerKind;
+use crate::report::{ScannerKind, TargetScope};
 use crate::scanner::pool::ProbePool;
 use crate::scanner::rdns::HostnameResolver;
 use crate::scanner::session::{ScanContext, Stage};
@@ -1999,10 +1999,10 @@ pub(super) async fn run_port_phase(
 /// Not what the dispatcher walks. That is the whole plan, so that a position
 /// means the same target in every sitting. see
 /// [`live_addresses`]. This is what the phase *covered*, which is a different
-/// number and the one a [`TargetScope`](crate::report::TargetScope)
-/// records: a reader compares it against the liveness phase's to see how much of
-/// what they asked about went unprobed, and a scope that claimed the whole plan
-/// would report a scan that covered ground it deliberately skipped.
+/// number and the one a [`TargetScope`] records: a reader compares it against
+/// the liveness phase's to see how much of what they asked about went
+/// unprobed, and a scope that claimed the whole plan would report a scan that
+/// covered ground it deliberately skipped.
 ///
 /// Narrows every unit rather than rebuilding one set against one port list,
 /// because a unit may carry ports no other one does: `192.0.2.1:8080` names its
@@ -2069,12 +2069,43 @@ pub(super) struct Liveness {
 }
 
 impl Liveness {
-    /// Reads what the pass that just ran on `ctx` found.
-    pub(super) fn of(ctx: &ScanContext) -> Self {
+    /// What the pass that just ran on `ctx` found, given the silence it heard
+    /// as [`ScanContext::take_silent`] handed it over.
+    pub(super) fn found(ctx: &ScanContext, silent: IpSet) -> Self {
         Self {
             live: live_addresses(ctx),
-            silent: ctx.take_silent(),
+            silent,
         }
+    }
+
+    /// The addresses of `scope` this pass reached no verdict on, ascending:
+    /// neither found live nor asked to exhaustion, and not among `unroutable`,
+    /// which the phase names apart.
+    ///
+    /// Computed from what the pass established rather than gathered from what
+    /// went wrong, so a way of failing to ask that nothing records still lands
+    /// here. A sweep stopped mid-send, a strategy that never built, a refused
+    /// range and a host whose budget ran out all leave an address in neither
+    /// set, and that is the whole test.
+    ///
+    /// Linear in ranges rather than addresses, as [`IpSet::subtract`] is.
+    pub(super) fn undecided(&self, scope: &TargetScope, unroutable: &[IpAddr]) -> Vec<IpRange> {
+        let mut undecided = IpSet::new();
+        for range in scope.ranges() {
+            undecided.insert_range(*range);
+        }
+        undecided.subtract(&self.live);
+        undecided.subtract(&self.silent);
+        let mut unreachable = IpSet::new();
+        for address in unroutable {
+            unreachable.insert(*address);
+        }
+        undecided.subtract(&unreachable);
+        undecided.canonicalize();
+
+        let v4 = undecided.v4().iter().copied().map(IpRange::V4);
+        let v6 = undecided.v6().iter().copied().map(IpRange::V6);
+        v4.chain(v6).collect()
     }
 }
 

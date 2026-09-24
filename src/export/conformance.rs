@@ -531,6 +531,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // writing an empty list, which is every phase that set no per-host
         // budget.
         ("phase", "timed_out"),
+        // A phase that reached a verdict on every address it was asked about
+        // leaves this out, which is every finished sweep and every port scan.
+        ("phase", "undecided"),
         ("scope", "listened"),
         // A port on a scan that did not enumerate, which is the default.
         ("security", "accepts"),

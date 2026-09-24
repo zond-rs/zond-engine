@@ -866,6 +866,13 @@
             "$ref": "#/$defs/range"
           }
         },
+        "undecided": {
+          "description": "Addresses in this phase's scope whose presence it reached no verdict on, ascending. Absent where there were none, which is every phase that finished its question and every phase that is not a `discovery`. An address here neither answered nor was asked as many times as the phase's policy allows: the phase stopped before it asked or while it still owed attempts, had no strategy that could ask, was refused the range, or ran out of the address's own time budget. None of those is silence, so an address here is not a host found down, and a port scan following the phase left it unprobed rather than written off. Disjoint from `unroutable`; an address may also be in `timed_out`, which then says why.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/range"
+          }
+        },
         "origin": {
           "description": "Which document this phase was folded in from, for a report merged out of several. Absent on a phase the engine that wrote this document measured itself, where the report's own `engine` block is the attribution.",
           "$ref": "#/$defs/origin"

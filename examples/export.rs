@@ -796,6 +796,7 @@ fn phase() -> ScanPhase {
         // Every target reached with the packets the scan chose. Left out of the
         // document too, as `refusals` is.
         reached_by_connect: Vec::new(),
+        undecided: Vec::new(),
     })
 }
 

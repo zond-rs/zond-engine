@@ -130,7 +130,7 @@ use crate::report::ScanPhase;
 use crate::report::ScannerKind;
 use crate::report::{ScanKind, ScanReport, TargetScope};
 use crate::scanner::orchestrator::{
-    Enrichment, Liveness, ScanCapabilities, finish_enrichment, probed_subset, run_port_phase,
+    Enrichment, ScanCapabilities, finish_enrichment, probed_subset, run_port_phase,
 };
 use crate::scanner::recorder::PhaseRecorder;
 use crate::scanner::session::{ScanContext, ScanSession, Stage};
@@ -1195,8 +1195,8 @@ fn spawn_scan(
             run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx, syn_ports, sctp).await;
 
             orchestrator::run_correlation(&ctx, cfg.service_detection);
-            let report = recorder.finish(&ctx);
-            (Some(report), Some(Liveness::of(&ctx)))
+            let (report, liveness) = recorder.close(&ctx);
+            (Some(report), liveness)
         };
 
         // Phase two: the ports. The exclusion policy is applied again rather

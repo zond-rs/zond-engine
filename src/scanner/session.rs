@@ -958,14 +958,17 @@ impl TimedOutLog {
     }
 }
 
-/// Addresses a port scan's liveness pass asked as many times as its policy
-/// allows and heard nothing from.
+/// Addresses a discovery pass asked as many times as its policy allows and
+/// heard nothing from.
 ///
-/// The port phase reads this to tell a host found down from one the pass never
-/// reached a verdict on: only the first is settled as
-/// [`Skipped`](crate::journal::settle::Outcome::Skipped). A host missing from
-/// the live set proves neither, since a pass that stopped early, had no
-/// strategy for a range or was refused it leaves hosts out of that set too.
+/// Read to tell a host found down from one the pass never reached a verdict
+/// on. A port scan's port phase settles only the first as
+/// [`Skipped`](crate::journal::settle::Outcome::Skipped), and every discovery
+/// phase names the second in
+/// [`ScanPhase::undecided`](crate::report::ScanPhase::undecided). A host
+/// missing from the live set proves neither, since a pass that stopped early,
+/// had no strategy for a range or was refused it leaves hosts out of that set
+/// too.
 ///
 /// Positive evidence rather than a list of what went wrong, so a way of failing
 /// to ask that nobody thought to record still fails in the safe direction: the
@@ -1376,7 +1379,7 @@ pub struct ScanContext {
     pub(crate) unswept: Arc<UnsweptLog>,
     /// Addresses a raw phase reached by TCP connect instead.
     pub(crate) reached_by_connect: Arc<ConnectLog>,
-    /// Addresses a port scan's liveness pass found silent.
+    /// Addresses a discovery pass found silent.
     pub(crate) silent: Arc<SilenceLog>,
     /// When each host's budget started, for a scan that set one.
     pub(crate) clocks: Arc<HostClocks>,
@@ -2057,32 +2060,32 @@ impl ScanContext {
     /// rather than plan targets. Either way the address is asked again on the
     /// next sitting, which is the direction this has to fail in.
     ///
-    /// The first case still keeps its silence. A port scan's liveness pass
-    /// settles nothing itself, but the port phase after it settles the ports of
-    /// a host it found down, and silence the pass asked for is what earns that.
-    /// See [`Outcome::Skipped`].
+    /// Silence is kept whichever of those holds, because two readers need it
+    /// that a position cannot serve. The port phase after a liveness pass
+    /// settles the ports of a host found down, and silence the pass asked for
+    /// is what earns that; see [`Outcome::Skipped`]. And every discovery phase
+    /// names the addresses it reached no verdict on, which is its scope less
+    /// what answered and what was asked to exhaustion; see
+    /// [`ScanPhase::undecided`](crate::report::ScanPhase::undecided).
     pub fn settle_address(&self, ip: IpAddr, settled: Settled) {
         if let Some(position) = self.positions.find(ip) {
             self.record_outcome(settled.at(position));
-        } else if settled == Settled::Exhausted && self.counts_no_addresses() {
+        }
+        if settled == Settled::Exhausted {
             self.silent.insert(ip);
         }
     }
 
-    /// Whether this scan is counted in something other than addresses, which is
-    /// every port scan. A sweep that numbered nothing because its plan was too
-    /// wide still counts addresses, and has no port phase to read its silence.
-    fn counts_no_addresses(&self) -> bool {
-        self.positions.is_empty() && self.positions.unnumbered().is_empty()
-    }
-
-    /// The addresses a port scan's liveness pass asked as many times as its
-    /// policy allows and heard nothing from, merged and taken.
+    /// The addresses a discovery pass asked as many times as its policy allows
+    /// and heard nothing from, merged and taken.
     ///
     /// Only these may have their ports settled as
-    /// [`Skipped`](crate::journal::settle::Outcome::Skipped). An address the
-    /// pass never reached a verdict on is not here, whatever kept it from
-    /// one. See [`Dispatcher::screened`](crate::scanner::dispatcher::Dispatcher::screened).
+    /// [`Skipped`](crate::journal::settle::Outcome::Skipped), and only these
+    /// keep an address out of a phase's
+    /// [`undecided`](crate::report::ScanPhase::undecided) list without a host
+    /// found at it. An address the pass never reached a verdict on is not
+    /// here, whatever kept it from one. See
+    /// [`Dispatcher::screened`](crate::scanner::dispatcher::Dispatcher::screened).
     pub(crate) fn take_silent(&self) -> IpSet {
         self.silent.drain()
     }

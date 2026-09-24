@@ -577,6 +577,17 @@ pub struct PhaseDto<'a> {
     /// reach.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reached_by_connect: Vec<RangeDto>,
+    /// Addresses in this phase's scope whose presence it reached no verdict
+    /// on, ascending.
+    ///
+    /// Left out when empty, which is every phase that finished its question
+    /// and every phase that is not a discovery. An address here was neither
+    /// answered nor asked as many times as the policy allows: the phase stopped
+    /// first, had no strategy for it, was refused it, or ran out of its time.
+    /// So it is not a host found down, and a port scan's absence of a record
+    /// there says nothing about the network. Disjoint from `unroutable`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub undecided: Vec<RangeDto>,
     /// What each instrumented scanner observed about its own run. Empty where
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
@@ -671,6 +682,7 @@ impl<'a> PhaseDto<'a> {
                 .iter()
                 .map(RangeDto::new)
                 .collect(),
+            undecided: phase.undecided().iter().map(RangeDto::new).collect(),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
             origin: phase.origin().map(|origin| PhaseOriginDto {
                 label: origin.label(),

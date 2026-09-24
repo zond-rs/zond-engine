@@ -756,6 +756,9 @@ impl Run {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            // The scope holds only addresses the document gave a verdict on, up
+            // or down, so none of it is left undecided.
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });

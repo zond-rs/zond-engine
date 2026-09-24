@@ -30,6 +30,10 @@ use crate::report::{PortScope, ScanReport, TargetScope};
 /// construction and answers by binary search over disjoint ranges.
 pub(crate) struct ScopeIndex {
     covered: IpSet,
+    /// What `covered` holds less each phase's own
+    /// [`undecided`](crate::report::ScanPhase::undecided) addresses: the
+    /// ground some phase walked and reached a verdict on.
+    decided: IpSet,
     withheld: IpSet,
     stated: bool,
     ports: Vec<PortScope>,
@@ -41,14 +45,30 @@ pub(crate) struct ScopeIndex {
 impl ScopeIndex {
     pub(crate) fn of(report: &ScanReport) -> Self {
         let mut covered = IpSet::new();
+        let mut decided = IpSet::new();
         let mut withheld = IpSet::new();
         let mut ports = Vec::new();
         let mut scopes = Vec::new();
 
         for phase in report.phases() {
             let scope = phase.targets();
+            // Per phase, since one phase's gap is another's ground: a resumed
+            // job's second sitting decides what its first left open.
+            let mut walked = IpSet::new();
             for range in scope.ranges() {
                 covered.insert_range(*range);
+                walked.insert_range(*range);
+            }
+            let mut open = IpSet::new();
+            for range in phase.undecided() {
+                open.insert_range(*range);
+            }
+            walked.subtract(&open);
+            for range in walked.v4() {
+                decided.push_v4_range(*range);
+            }
+            for range in walked.v6() {
+                decided.push_v6_range(*range);
             }
             for range in scope.excluded() {
                 withheld.insert_range(*range);
@@ -60,6 +80,7 @@ impl ScopeIndex {
         // Both are searched and never extended again, so the ordering the
         // search needs is established once here.
         covered.canonicalize();
+        decided.canonicalize();
         withheld.canonicalize();
 
         let stated = !covered.is_empty()
@@ -67,6 +88,7 @@ impl ScopeIndex {
             || scopes.iter().any(|scope| !scope.links().is_empty());
         Self {
             covered,
+            decided,
             withheld,
             stated,
             ports,
@@ -120,12 +142,20 @@ impl ScopeIndex {
     /// discovery sweep that walked an address and a port scan that was forbidden
     /// it still means somebody looked.
     ///
+    /// An address every phase that walked it left
+    /// [`undecided`](crate::report::ScanPhase::undecided) answers
+    /// [`Unreached`](Coverage::Unreached) instead. The scan set out to ask it
+    /// and stopped short of an answer, so a host missing there is one nobody
+    /// found out about rather than one that went away.
+    ///
     /// Whether a link was swept is a separate question, asked by
     /// [`of_host`](Self::of_host), since it is about the host rather than about
     /// any one of its addresses.
     pub(crate) fn address(&self, ip: &IpAddr) -> Coverage {
-        if self.covered.contains(ip) {
+        if self.decided.contains(ip) {
             Coverage::Covered
+        } else if self.covered.contains(ip) {
+            Coverage::Unreached
         } else if self.withheld.contains(ip) {
             Coverage::Withheld
         } else if self.stated {
@@ -139,13 +169,14 @@ impl ScopeIndex {
     /// own coverage is `address`.
     ///
     /// An address nothing walked has no endpoint anything walked, so a withheld
-    /// or out-of-scope address carries its answer straight down. Otherwise the
+    /// or out-of-scope address carries its answer straight down, and so does
+    /// one the scan never reached a verdict on. Otherwise the
     /// phases decide and any phase that cannot say vetoes the rest: a job whose
     /// sweep walked no ports and whose port scan did not record which ports it
     /// walked knows nothing about this endpoint, and the sweep's certainty about
     /// its own half is not the job's.
     pub(crate) fn endpoint(&self, address: Coverage, port: u16, protocol: Protocol) -> Coverage {
-        if address.is_excluded() {
+        if address.is_excluded() || address == Coverage::Unreached {
             return address;
         }
 
@@ -188,6 +219,7 @@ mod tests {
     use super::*;
     use crate::config::ZondConfig;
     use crate::model::exclusion::Exclusions;
+    use crate::model::ip::range::IpRange;
     use crate::model::ip::set::IpSet;
     use crate::model::parse::ip::to_set;
     use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings, ScopeParts};
@@ -241,11 +273,83 @@ mod tests {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
 
         ScanReport::recorded("test", vec![phase], Vec::new())
+    }
+
+    /// A discovery phase over `walked` that reached no verdict on `open`.
+    fn phase_leaving(walked: &str, open: &str) -> ScanPhase {
+        let mut targets = to_set(&[walked], None, None).expect("a parseable range");
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
+        let open = to_set(&[open], None, None).expect("a parseable range");
+
+        ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::Discovery,
+            started_at: SystemTime::UNIX_EPOCH,
+            elapsed: Duration::from_secs(1),
+            privilege: Some(Privilege::Raw),
+            targets: scope,
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: open.v4().iter().copied().map(IpRange::V4).collect(),
+            probes: Vec::new(),
+            origin: None,
+        })
+    }
+
+    /// **An address a stopped sweep never decided is unreached, not covered.**
+    /// Its scope says the sweep set out to ask, and its undecided list says it
+    /// never got an answer, so a host last seen there is not one that went
+    /// away. Read as covered, every host past the point a sweep was stopped
+    /// would be reported gone.
+    #[test]
+    fn an_address_a_phase_left_undecided_is_unreached_and_so_are_its_ports() {
+        let report = ScanReport::recorded(
+            "test",
+            vec![phase_leaving("203.0.113.0/24", "203.0.113.128/25")],
+            Vec::new(),
+        );
+        let index = ScopeIndex::of(&report);
+
+        assert_eq!(index.address(&ip(7)), Coverage::Covered, "decided");
+        let open = index.address(&ip(200));
+        assert_eq!(open, Coverage::Unreached, "walked, never decided");
+        assert_eq!(
+            index.endpoint(open, 443, Protocol::Tcp),
+            Coverage::Unreached,
+            "nothing was probed at an address nobody reached"
+        );
+    }
+
+    /// One phase's gap is not the job's when another phase decided it: the
+    /// second sitting of a resumed sweep asks what the first left open.
+    #[test]
+    fn an_address_another_phase_decided_is_covered() {
+        let report = ScanReport::recorded(
+            "test",
+            vec![
+                phase_leaving("203.0.113.0/24", "203.0.113.128/25"),
+                phase_leaving("203.0.113.128/25", "203.0.113.250"),
+            ],
+            Vec::new(),
+        );
+        let index = ScopeIndex::of(&report);
+
+        assert_eq!(index.address(&ip(200)), Coverage::Covered);
+        assert_eq!(
+            index.address(&ip(250)),
+            Coverage::Unreached,
+            "and one neither sitting decided is still open"
+        );
     }
 
     #[test]

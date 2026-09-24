@@ -85,8 +85,8 @@ use std::io::Write;
 use std::time::SystemTime;
 
 use crate::export::schema::{
-    ENGINE_NAME, FindingDto, HostDto, PhaseDto, PortDto, ProbeStatsDto, SCHEMA_VERSION, SummaryDto,
-    host_status_name, port_state_name, scan_kind_name, total_elapsed_us,
+    ENGINE_NAME, FindingDto, HostDto, PhaseDto, PortDto, ProbeStatsDto, RangeDto, SCHEMA_VERSION,
+    SummaryDto, host_status_name, port_state_name, scan_kind_name, total_elapsed_us,
 };
 use crate::export::write::{TONE_FOUND, TONE_INERT, TONE_NONE, TONE_PARTIAL, Text, esc};
 use crate::export::{ExportError, ExportOptions, Exporter, write};
@@ -1298,6 +1298,43 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
+    // Addresses the phase never reached a verdict on. Absent from the hosts
+    // below like the silent ones, and without this line they read as silent.
+    // Capped, since a sweep stopped halfway through a shuffled range leaves
+    // its gaps scattered, and a page of ranges hides the count that matters.
+    if !phase.undecided.is_empty() {
+        const SHOWN: usize = 6;
+        let mut ranges: Vec<String> = phase
+            .undecided
+            .iter()
+            .take(SHOWN)
+            .map(|range| match range.start == range.end {
+                true => esc(&range.start),
+                false => format!("{}–{}", esc(&range.start), esc(&range.end)),
+            })
+            .collect();
+        let more = phase.undecided.len().saturating_sub(SHOWN);
+        if more > 0 {
+            ranges.push(esc(&format!(
+                "and {more} more {}",
+                if more == 1 { "range" } else { "ranges" }
+            )));
+        }
+        let count = addresses_in(&phase.undecided);
+        fact(
+            out,
+            "undecided",
+            &format!(
+                "{}{}",
+                ranges.join(", "),
+                dim(&[esc(&format!(
+                    "{count} {} with no verdict, not found down",
+                    if count == 1 { "address" } else { "addresses" }
+                ))])
+            ),
+        )?;
+    }
+
     // Addresses a privileged phase reached the unprivileged way. Their results
     // sit beside raw ones under a phase headed privileged, and this line is
     // what tells the two apart.
@@ -1659,6 +1696,29 @@ fn fact(out: &mut dyn Write, key: &str, value: &str) -> Result<(), ExportError> 
     Ok(())
 }
 
+/// How many addresses `ranges` hold, read back off their rendered ends.
+///
+/// A range whose ends do not read back as one family's addresses adds
+/// nothing, which undercounts rather than inventing addresses.
+fn addresses_in(ranges: &[RangeDto]) -> u128 {
+    ranges
+        .iter()
+        .filter_map(|range| {
+            let start: std::net::IpAddr = range.start.parse().ok()?;
+            let end: std::net::IpAddr = range.end.parse().ok()?;
+            match (start, end) {
+                (std::net::IpAddr::V4(start), std::net::IpAddr::V4(end)) => {
+                    Some(u128::from(end.to_bits().checked_sub(start.to_bits())?) + 1)
+                }
+                (std::net::IpAddr::V6(start), std::net::IpAddr::V6(end)) => {
+                    end.to_bits().checked_sub(start.to_bits())?.checked_add(1)
+                }
+                _ => None,
+            }
+        })
+        .fold(0u128, u128::saturating_add)
+}
+
 /// The secondary half of a value: present, but not what the eye should land on.
 ///
 /// Renders to nothing at all when there is nothing to say, so a caller can
@@ -1865,6 +1925,39 @@ mod tests {
         ] {
             assert!(page.contains(expected), "the page never says {expected:?}");
         }
+    }
+
+    /// The addresses a phase never decided reach the page with their count, or
+    /// a reader sees them only as hosts absent from it and takes them for
+    /// silent ones.
+    #[test]
+    fn what_a_phase_never_decided_reaches_the_page() {
+        let report = fixture::report();
+        let undecided: u128 = report
+            .phases()
+            .iter()
+            .flat_map(|phase| phase.undecided())
+            .map(|range| {
+                let (start, end) = match range {
+                    crate::model::ip::range::IpRange::V4(range) => (
+                        u128::from(range.start_addr().to_bits()),
+                        u128::from(range.end_addr().to_bits()),
+                    ),
+                    crate::model::ip::range::IpRange::V6(range) => {
+                        (range.start_addr().to_bits(), range.end_addr().to_bits())
+                    }
+                };
+                end - start + 1
+            })
+            .sum();
+        assert!(undecided > 1, "the fixture leaves addresses undecided");
+
+        let page = default_page();
+        assert!(page.contains("<dt>undecided</dt>"), "{page}");
+        assert!(
+            page.contains(&format!("{undecided} addresses with no verdict")),
+            "the count is what a reader acts on"
+        );
     }
 
     /// A router whose address was withheld reads as excluded, and not as the
