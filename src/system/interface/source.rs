@@ -273,6 +273,16 @@ impl SourceResolver {
             .find(|address| matches!(address, IpAddr::V6(v6) if v6.is_unicast_link_local()))
     }
 
+    /// Whether `target` sits on one of this host's own segments, so a packet
+    /// to it is framed to the target itself rather than to a gateway.
+    ///
+    /// A link-local target the scan named an interface for is on that
+    /// interface's segment, which is the only place such an address means
+    /// anything.
+    pub(crate) fn is_on_link(&self, target: IpAddr) -> bool {
+        self.zones.zone_of(&target).is_some() || self.onlink.source_for(target).is_some()
+    }
+
     /// Whether this host has any address to send probes from. When false,
     /// there is no point standing up a raw-socket scanner at all.
     pub fn has_sources(&self) -> bool {

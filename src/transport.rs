@@ -51,6 +51,7 @@ pub mod channel;
 #[cfg(feature = "packet-exchange")]
 pub mod exchange;
 pub mod frame;
+pub(crate) mod kernel_neighbors;
 pub mod link;
 pub mod mac;
 pub mod neighbor;

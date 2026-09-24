@@ -42,6 +42,7 @@ use crate::model::capture::CaptureCounts;
 use crate::model::ip::scoped::Zone;
 use crate::model::mac::MacAddr;
 use crate::transport::capture::{self, CaptureGuard, CaptureOptions, CaptureStream};
+use crate::transport::kernel_neighbors::KernelNeighbors;
 use crate::transport::link::EthernetSender;
 use crate::transport::raw::{self, TransportSenderHandle, TransportType};
 
@@ -860,6 +861,15 @@ pub struct ProbeTransport {
     /// Keeps the capture threads alive for this transport's lifetime, and holds
     /// the counters they publish.
     capture: CaptureGuard,
+    /// The kernel's neighbour table, where the send half hands its writes to
+    /// the kernel's own address resolution and the kernel will not say how
+    /// that went: a raw socket on Linux. `None` everywhere else, where a
+    /// neighbour that does not answer is refused at the send. See
+    /// [`KernelNeighbors`].
+    ///
+    /// Boxed so the table's lock sits behind a pointer rather than inside the
+    /// transport, whose auto traits are public and would otherwise carry it.
+    neighbors: Option<Box<KernelNeighbors>>,
 }
 
 impl ProbeTransport {
@@ -873,6 +883,19 @@ impl ProbeTransport {
     /// receive stream never reports a clean receive path it never had.
     pub fn capture_counts(&self) -> Option<CaptureCounts> {
         self.capture.counts()
+    }
+
+    /// The kernel's neighbour table, where this transport's writes wait on a
+    /// resolution the kernel keeps to itself. See [`KernelNeighbors`].
+    pub(crate) fn kernel_neighbors(&self) -> Option<&KernelNeighbors> {
+        self.neighbors.as_deref()
+    }
+
+    /// This transport, reading `neighbors` as the kernel's neighbour table.
+    #[cfg(test)]
+    pub(crate) fn with_kernel_neighbors(mut self, neighbors: KernelNeighbors) -> Self {
+        self.neighbors = Some(Box::new(neighbors));
+        self
     }
     /// Opens a transport for `kind` with the platform-default send backend
     /// ([`SendMode::Auto`]).
@@ -919,7 +942,12 @@ impl ProbeTransport {
             REPLY_QUEUE_DEPTH,
         )?;
         let tx: Box<dyn ProbeSender> = Box::new(RawIpSender::open(kind)?);
-        Ok(Self { tx, rx, capture })
+        Ok(Self {
+            tx,
+            rx,
+            capture,
+            neighbors: KernelNeighbors::from_system().map(Box::new),
+        })
     }
 
     /// A `LinkLayerFirst` transport: frames what it can, raw socket for the
@@ -945,6 +973,7 @@ impl ProbeTransport {
             }),
             rx,
             capture,
+            neighbors: None,
         })
     }
 
@@ -970,6 +999,7 @@ impl ProbeTransport {
             tx: Box::new(sender),
             rx,
             capture,
+            neighbors: None,
         })
     }
 
@@ -990,6 +1020,7 @@ impl ProbeTransport {
             tx: Box::new(NoopSender),
             rx,
             capture,
+            neighbors: None,
         })
     }
 
@@ -1009,6 +1040,7 @@ impl ProbeTransport {
             tx,
             rx,
             capture: CaptureGuard::noop(),
+            neighbors: None,
         }
     }
 
@@ -1020,6 +1052,7 @@ impl ProbeTransport {
             tx,
             rx,
             capture: CaptureGuard::stopped_early(),
+            neighbors: None,
         }
     }
 }

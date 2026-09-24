@@ -353,7 +353,10 @@ is routed through the tunnel rather than swept, and for a GRE tunnel, which
 sitting of a raw scan sends, since the sweeps beside a port scan never ask about
 a loopback target; `capturing` for what the capture layer says when a link
 refuses it with the privilege to capture, and for how long a frame channel waits
-on a link that stays quiet, down to a framed scan of an address nobody holds.
+on a link that stays quiet, down to a framed scan of an address nobody holds;
+`neighbours` for on-link addresses nothing answers address resolution for,
+scanned beside a live host through the kernel's own resolution, which takes a
+raw socket's writes to them and says nothing when it gives up.
 
 `listening` for the watch entry point over a real capture, on a segment and
 on a tunnel, whose link carries no hardware address for the listener's filter

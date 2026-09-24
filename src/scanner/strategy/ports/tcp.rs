@@ -1825,6 +1825,89 @@ mod tests {
         assert!(host.status().is_up());
     }
 
+    /// A scan of an on-link address the kernel never resolves hands the kernel
+    /// one probe, holds the rest until the kernel gives up, and then reads
+    /// every port unasked and the address unreached, with nothing failed.
+    ///
+    /// Through the whole loop, because what is at stake is what reaches the
+    /// sender: on Linux every write to a neighbour still being resolved is
+    /// accepted and queued against the socket, so twenty ports written freely
+    /// are twenty probes that never leave, read as twenty filtered ports, and
+    /// their retries are what fills the send buffer for every other host.
+    #[tokio::test]
+    async fn a_neighbour_the_kernel_never_resolves_is_asked_once_and_reported_unreached() {
+        use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborState, NeighborTable};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&reads);
+        // Resolving for the first two readings, then given up on, as the
+        // kernel's three requests a second apart would go, only faster.
+        let table = KernelNeighbors::with_reader(Box::new(move || {
+            let state = match counted.fetch_add(1, Ordering::SeqCst) {
+                0 | 1 => NeighborState::Resolving,
+                _ => NeighborState::Failed,
+            };
+            Ok(NeighborTable::from([(TARGET, state)]))
+        }));
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport =
+            ProbeTransport::from_parts(Box::new(sender), reply_rx).with_kernel_neighbors(table);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx.clone(),
+            TcpScanTechnique::Syn,
+            transport,
+            8,
+        );
+
+        let (targets, stream) = tokio::sync::mpsc::channel(32);
+        for port in 1..=20u16 {
+            targets
+                .send(PlannedTarget::new(
+                    u64::from(port),
+                    Target {
+                        ip: TARGET,
+                        port,
+                        protocol: Protocol::Tcp,
+                    },
+                ))
+                .await
+                .expect("the stream is open");
+        }
+        drop(targets);
+        scanner.scan(stream).await.expect("the scan runs");
+
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            1,
+            "one probe went to the kernel"
+        );
+        let host = session
+            .hosts()
+            .get(TARGET)
+            .expect("the address is recorded");
+        assert_eq!(host.ports().count(), 20, "every port is on the host");
+        assert!(
+            host.ports().all(|port| port.state() == PortState::Unasked),
+            "no probe left, so no port was asked"
+        );
+        assert_eq!(
+            ctx.take_unroutable(),
+            vec![TARGET],
+            "the address is unreached"
+        );
+        assert!(
+            ctx.failures_snapshot().is_empty(),
+            "and nothing failed here"
+        );
+    }
+
     /// A host unreachable reports on the address, not on the port that happened
     /// to be quoted - so the probe keeps its remaining attempts rather than
     /// taking a verdict the message does not support.

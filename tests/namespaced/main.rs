@@ -50,6 +50,7 @@ mod classification;
 mod degraded;
 mod listening;
 mod liveness;
+mod neighbours;
 mod resolving;
 mod resuming;
 mod segment;
