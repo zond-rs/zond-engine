@@ -948,12 +948,25 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// `token` is checked where the quotation carried one. Where it did not, the
     /// key alone is the evidence, and it has to name a live probe.
     ///
-    /// Returns whether the verdict is now on the host's record, so a caller can
-    /// tell a message that became evidence from one that did not. `false` means
-    /// the message named no probe this scan has outstanding, which the audit
-    /// counts as off-target, or named an address the scan's exclusions forbid,
-    /// which [`ScanContext::write_host`] drops. Whether the host was already in
-    /// the store makes no difference to the answer.
+    /// **An unreachable from this host's own address is not a host down.**
+    /// Linux answers a write it queued behind a neighbour resolution that
+    /// failed with a host unreachable sent from the very address the write left
+    /// from, to itself, over loopback. That is this host's kernel saying it
+    /// could not resolve the neighbour, the fact the send path and the
+    /// kernel's neighbour table carry, and not an intermediary answering for
+    /// the address. Whether it is heard at all depends on whether the capture
+    /// on loopback kept up, so filed as `Down` it would give identical dead
+    /// neighbours different statuses by which of their messages happened to
+    /// be caught. It is filed the way the other two are, as an address that
+    /// cannot be reached from here. See [`unreachable`](Self::unreachable).
+    ///
+    /// Returns whether the verdict is now on the host's record, or the address
+    /// filed as unreachable, so a caller can tell a message that became
+    /// evidence from one that did not. `false` means the message named no
+    /// probe this scan has outstanding, which the audit counts as off-target,
+    /// or named an address the scan's exclusions forbid, which
+    /// [`ScanContext::write_host`] drops. Whether the host was already in the
+    /// store makes no difference to the answer.
     pub fn record_host_down(
         &mut self,
         key: &ProbeTarget,
@@ -963,6 +976,11 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         if !self.ledger.names_attempt(key, token.as_ref()) {
             self.audit.record_off_target();
             return false;
+        }
+
+        if self.resolver.resolve(key.0) == Some(sender) {
+            self.record_unresolved(key.0, NeighborState::Failed);
+            return true;
         }
 
         // Set by the edit rather than read off `update_host`, whose answer is
@@ -2388,6 +2406,34 @@ mod tests {
         assert_eq!(
             session.hosts().get(TARGET).map(|host| host.status()),
             Some(HostStatus::Down)
+        );
+    }
+
+    /// A host unreachable from this host's own address is its kernel giving
+    /// up on a neighbour, and the address is filed unreachable rather than
+    /// down, as the neighbour table would file it.
+    ///
+    /// Linux sends one to itself for each write it threw away with a failed
+    /// resolution, and whether the capture on loopback catches it is chance.
+    /// Read as `Down`, identical dead neighbours would come back with two
+    /// statuses by which of those messages were caught.
+    #[test]
+    fn a_host_unreachable_from_this_host_itself_files_the_address_unreachable() {
+        let state = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (mut core, session, _reads) = core_reading(state);
+        let own: IpAddr = "192.0.2.1".parse().expect("a literal address");
+        core.ledger.arm(TARGET, (TARGET, 80), (), 0, Instant::now());
+
+        assert!(core.record_host_down(&(TARGET, 80), Some(()), own));
+
+        assert_ne!(
+            session.hosts().get(TARGET).map(|host| host.status()),
+            Some(HostStatus::Down),
+            "nothing on the network answered for the address"
+        );
+        assert!(
+            core.is_unreachable(&TARGET),
+            "the address is filed unreached"
         );
     }
 

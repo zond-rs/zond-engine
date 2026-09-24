@@ -19,6 +19,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use crate::netns::{Segment, available};
 use crate::support::{run_scan, test_config};
+use zond_engine::model::host::HostStatus;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::{PortSet, PortState};
 use zond_engine::model::target::{TargetMap, TargetSet};
@@ -34,6 +35,11 @@ use zond_engine::model::target::{TargetMap, TargetSet};
 /// writes with `ENOBUFS`, which the scan reads as its own send path failing.
 /// So the report must name each dead address as unreached, hold no failure,
 /// and give the live host its open port and its closed ones.
+///
+/// And the ten must read alike. The kernel tells itself about each write it
+/// threw away with a host unreachable over loopback, and whether the capture
+/// there catches one is chance, so a status taken from those messages would
+/// differ between identical addresses.
 #[tokio::test]
 async fn dead_neighbours_read_unreachable_and_leave_the_live_host_alone() {
     if !available() {
@@ -85,6 +91,16 @@ async fn dead_neighbours_read_unreachable_and_leave_the_live_host_alone() {
             "no probe reached {address}, so none of its ports was asked"
         );
     }
+    let statuses: Vec<HostStatus> = dead
+        .iter()
+        .filter_map(|address| outcome.host(*address).map(|host| host.status()))
+        .collect();
+    assert!(
+        statuses
+            .iter()
+            .all(|status| *status == statuses[0] && *status != HostStatus::Down),
+        "ten identical dead addresses read alike, and not as down: {statuses:?}"
+    );
     assert_eq!(outcome.port_state(live, open), Some(PortState::Open));
     for port in 1..=20 {
         assert_eq!(
