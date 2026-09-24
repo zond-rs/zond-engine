@@ -793,10 +793,22 @@ impl TcpPortScanner {
             _ => None,
         };
 
+        // The round trip of a segment the target sent, credited to the host as
+        // a liveness pass would credit its own, since a scan that ran none has
+        // no other measure of the host. Only a TCP reply's: an ICMP error may
+        // come from a router, and its round trip is the router's. The ledger
+        // has already attributed the reply to the attempt it answers by the
+        // number it echoes, so a reply to a retried probe is timed from the
+        // attempt it answers, where Karn's rule would have to discard it.
+        let timed = rtt.filter(|_| drawn_by.is_some());
+        let protocol = self.status_protocol();
         self.core.ctx.update_host(ip, |host| {
             host.add_port(port);
             if let Some((status, reason)) = evidence {
                 host.record_evidence(status, reason);
+            }
+            if let Some(rtt) = timed {
+                host.add_rtt_from(rtt, protocol);
             }
         });
     }
@@ -2619,6 +2631,29 @@ mod tests {
 
         let host = session.hosts().get(TARGET).expect("the target answered");
         assert!(host.ports().all(|port| port.state() == PortState::Open));
+    }
+
+    /// A host the scan heard from carries the round trip of the reply that
+    /// answered it.
+    ///
+    /// A scan that ran no liveness pass has no other measure of a host's
+    /// latency, and a report listing a found host with no round trip reads as
+    /// one nothing was timed against. A connect scan credits the handshake's;
+    /// a raw scan has the reply matched to the probe it answers, which is a
+    /// sharper measure than a connect's, and has to credit it too.
+    #[tokio::test]
+    async fn a_host_that_answered_is_credited_its_round_trip() {
+        let (session, _sent) =
+            scan_over_path(&ProbeTuning::default(), Some(Duration::from_millis(5)), 3).await;
+
+        let host = session.hosts().get(TARGET).expect("the target answered");
+        assert_eq!(host.rtt_protocol(), Some(StatusProtocol::TcpSyn));
+        assert!(
+            host.median_rtt()
+                .is_some_and(|rtt| rtt >= Duration::from_millis(5)),
+            "{:?}",
+            host.median_rtt()
+        );
     }
 
     /// A rate ceiling bounds every packet the scan puts on the wire, retries
