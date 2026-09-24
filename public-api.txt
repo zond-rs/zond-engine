@@ -14120,6 +14120,8 @@ pub fn zond_engine::report::ScanReport::recorded(impl core::convert::Into<alloc:
 pub fn zond_engine::report::ScanReport::refusals(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::report::Refusal>
 pub fn zond_engine::report::ScanReport::started_at(&self) -> std::time::SystemTime
 pub fn zond_engine::report::ScanReport::summary(&self) -> zond_engine::report::ScanSummary
+pub fn zond_engine::report::ScanReport::timed_out(&self) -> alloc::vec::Vec<core::net::ip_addr::IpAddr>
+pub fn zond_engine::report::ScanReport::undecided(&self) -> alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
 impl core::clone::Clone for zond_engine::report::ScanReport
 pub fn zond_engine::report::ScanReport::clone(&self) -> zond_engine::report::ScanReport
 impl core::fmt::Debug for zond_engine::report::ScanReport
@@ -18287,6 +18289,8 @@ pub fn zond_engine::report::ScanReport::recorded(impl core::convert::Into<alloc:
 pub fn zond_engine::report::ScanReport::refusals(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::report::Refusal>
 pub fn zond_engine::report::ScanReport::started_at(&self) -> std::time::SystemTime
 pub fn zond_engine::report::ScanReport::summary(&self) -> zond_engine::report::ScanSummary
+pub fn zond_engine::report::ScanReport::timed_out(&self) -> alloc::vec::Vec<core::net::ip_addr::IpAddr>
+pub fn zond_engine::report::ScanReport::undecided(&self) -> alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
 impl core::clone::Clone for zond_engine::report::ScanReport
 pub fn zond_engine::report::ScanReport::clone(&self) -> zond_engine::report::ScanReport
 impl core::fmt::Debug for zond_engine::report::ScanReport

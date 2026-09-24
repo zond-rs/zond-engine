@@ -2235,12 +2235,21 @@ impl ScanReport {
     ///
     /// True wherever the record says part of what was asked went unanswered:
     /// a strategy that did not run to completion, ground a phase declined
-    /// ([`refusals`](Self::refusals)), a host its own budget left early
-    /// ([`ScanPhase::timed_out`]), an address a discovery phase reached no
-    /// verdict on ([`ScanPhase::undecided`]), or a port recorded
-    /// [`Unasked`](crate::model::port::PortState::Unasked). Each of those is
-    /// the report covering less than it set out to, and a consumer handed
-    /// `false` for any of them would take a cut-short run as a complete one.
+    /// ([`refusals`](Self::refusals)), a host its own budget left early and no
+    /// phase finished ([`timed_out`](Self::timed_out)), an address no phase
+    /// reached a verdict on ([`undecided`](Self::undecided)), or a port
+    /// recorded [`Unasked`](crate::model::port::PortState::Unasked). Each of
+    /// those is the report covering less than it set out to, and a consumer
+    /// handed `false` for any of them would take a cut-short run as a
+    /// complete one.
+    ///
+    /// Read over the report rather than phase by phase, where the report
+    /// holds more than one account of the same ground: a resumed job carries
+    /// the stopped sitting's phases beside the one that finished, and a merge
+    /// holds every source's. What one phase left open and another closed is
+    /// closed. A failure and a refusal stand whatever came after, since
+    /// neither says which ground it cost, and a refusal recurs on every
+    /// sitting of the scan as written.
     ///
     /// Two things narrow a result and are not counted, because neither is
     /// coverage that fell short. An address this host had no route to
@@ -2249,12 +2258,99 @@ impl ScanReport {
     /// withheld was never asked for. Counting either would leave a sweep of a
     /// range with a gap in it, or under any policy at all, never complete.
     pub fn is_partial(&self) -> bool {
-        self.phases.iter().any(|phase| {
-            !phase.failures.is_empty()
-                || !phase.refusals.is_empty()
-                || !phase.timed_out.is_empty()
-                || !phase.undecided.is_empty()
-        }) || self.left_ports_unasked()
+        self.phases
+            .iter()
+            .any(|phase| !phase.failures.is_empty() || !phase.refusals.is_empty())
+            || !self.timed_out().is_empty()
+            || !self.undecided().is_empty()
+            || self.left_ports_unasked()
+    }
+
+    /// The addresses whose presence this report reached no verdict on,
+    /// ascending: named [`undecided`](ScanPhase::undecided) by some phase, and
+    /// decided by none.
+    ///
+    /// A phase decided an address it walked and did not name as undecided,
+    /// and the report decided one it holds a live host at or that some phase
+    /// found no route to. So the second sitting of a resumed job closes what
+    /// the first left open, and so does a later sweep merged with a stopped
+    /// one. Each phase keeps its own list as the record of that phase; this is
+    /// what the report as a whole left open, and what
+    /// [`is_partial`](Self::is_partial) and a comparison read.
+    pub fn undecided(&self) -> Vec<IpRange> {
+        let mut open = IpSet::new();
+        let mut decided = IpSet::new();
+        for phase in &self.phases {
+            let mut left = IpSet::new();
+            for range in &phase.undecided {
+                left.insert_range(*range);
+            }
+            let mut walked = IpSet::new();
+            for range in phase.targets.ranges() {
+                walked.insert_range(*range);
+            }
+            walked.subtract(&left);
+            append(&mut open, &left);
+            append(&mut decided, &walked);
+            for address in &phase.unroutable {
+                decided.insert(*address);
+            }
+        }
+        if open.is_empty() {
+            return Vec::new();
+        }
+        for host in self.hosts.values().filter(|host| host.is_alive()) {
+            for address in host.ips() {
+                decided.insert(*address);
+            }
+        }
+
+        open.subtract(&decided);
+        open.canonicalize();
+        let v4 = open.v4().iter().copied().map(IpRange::V4);
+        let v6 = open.v6().iter().copied().map(IpRange::V6);
+        v4.chain(v6).collect()
+    }
+
+    /// The addresses a phase's own time budget left early and no phase
+    /// finished, ascending.
+    ///
+    /// A phase finished an address where it walked it and did not run out of
+    /// time on it, and it has to be a phase of the same kind: a sweep that
+    /// found a host says nothing of the ports a port scan left unasked there.
+    /// So a resumed job whose second sitting finished a host the first
+    /// sitting's budget cut short has left nothing early, while one whose
+    /// second sitting ran out of time on it again has. Each phase keeps its
+    /// own [`timed_out`](ScanPhase::timed_out) list as the record of that
+    /// phase.
+    pub fn timed_out(&self) -> Vec<IpAddr> {
+        let walked: Vec<IpSet> = self
+            .phases
+            .iter()
+            .map(|phase| {
+                let mut walked = IpSet::new();
+                for range in phase.targets.ranges() {
+                    walked.insert_range(*range);
+                }
+                walked.canonicalize();
+                walked
+            })
+            .collect();
+
+        let mut left: Vec<IpAddr> = self
+            .phases
+            .iter()
+            .flat_map(|phase| phase.timed_out.iter().map(move |ip| (phase.kind, *ip)))
+            .filter(|(kind, ip)| {
+                !self.phases.iter().zip(&walked).any(|(other, walked)| {
+                    other.kind == *kind && walked.contains(ip) && !other.timed_out.contains(ip)
+                })
+            })
+            .map(|(_, ip)| ip)
+            .collect();
+        left.sort_unstable();
+        left.dedup();
+        left
     }
 
     /// Whether any host this report could reach carries a port recorded
@@ -2413,6 +2509,16 @@ impl ScanReport {
                 }
             }
         }
+    }
+}
+
+/// Adds every range of `from` to `into`, leaving the merge for later.
+fn append(into: &mut IpSet, from: &IpSet) {
+    for range in from.v4() {
+        into.push_v4_range(*range);
+    }
+    for range in from.v6() {
+        into.push_v6_range(*range);
     }
 }
 
@@ -3049,6 +3155,37 @@ mod tests {
         left.timed_out.push(ip(1));
 
         assert!(ScanReport::new(left, [Host::new(ip(1))]).is_partial());
+    }
+
+    /// A port-scan phase that walked `walked` and left `left` early, begun
+    /// `at` seconds into the epoch.
+    fn walked(at: u64, walked: &str, left: &[IpAddr]) -> ScanPhase {
+        let mut ips: IpSet = walked.parse().expect("a range");
+        ScanPhase {
+            started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(at),
+            targets: TargetScope::from_ip_set(&mut ips, &Exclusions::none()),
+            timed_out: left.to_vec(),
+            ..phase(ScanKind::PortScan)
+        }
+    }
+
+    /// **A host a later sitting finished is not left early.** A resumed job's
+    /// report carries the stopped sitting's phase beside the one that
+    /// finished, and the first still names the host its budget cut short. The
+    /// second walked that host and did not run out of time on it, so the job
+    /// finished it, and a report partial on the first sitting's word would
+    /// stay partial however the resume went.
+    #[test]
+    fn a_host_a_later_sitting_finished_is_not_left_early() {
+        let mut report = ScanReport::new(walked(1, "203.0.113.1", &[ip(1)]), []);
+        report.merge(ScanReport::new(walked(2, "203.0.113.1", &[]), []));
+        assert!(report.timed_out().is_empty());
+        assert!(!report.is_partial());
+
+        let mut again = ScanReport::new(walked(1, "203.0.113.1", &[ip(1)]), []);
+        again.merge(ScanReport::new(walked(2, "203.0.113.1", &[ip(1)]), []));
+        assert_eq!(again.timed_out(), [ip(1)], "left early both times");
+        assert!(again.is_partial());
     }
 
     /// Every way the record says a run covered less than it set out to makes

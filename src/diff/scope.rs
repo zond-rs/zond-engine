@@ -30,10 +30,9 @@ use crate::report::{PortScope, ScanReport, TargetScope};
 /// construction and answers by binary search over disjoint ranges.
 pub(crate) struct ScopeIndex {
     covered: IpSet,
-    /// What `covered` holds less each phase's own
-    /// [`undecided`](crate::report::ScanPhase::undecided) addresses: the
-    /// ground some phase walked and reached a verdict on.
-    decided: IpSet,
+    /// What the report as a whole reached no verdict on; see
+    /// [`ScanReport::undecided`].
+    undecided: IpSet,
     withheld: IpSet,
     stated: bool,
     ports: Vec<PortScope>,
@@ -45,30 +44,15 @@ pub(crate) struct ScopeIndex {
 impl ScopeIndex {
     pub(crate) fn of(report: &ScanReport) -> Self {
         let mut covered = IpSet::new();
-        let mut decided = IpSet::new();
+        let mut undecided = IpSet::new();
         let mut withheld = IpSet::new();
         let mut ports = Vec::new();
         let mut scopes = Vec::new();
 
         for phase in report.phases() {
             let scope = phase.targets();
-            // Per phase, since one phase's gap is another's ground: a resumed
-            // job's second sitting decides what its first left open.
-            let mut walked = IpSet::new();
             for range in scope.ranges() {
                 covered.insert_range(*range);
-                walked.insert_range(*range);
-            }
-            let mut open = IpSet::new();
-            for range in phase.undecided() {
-                open.insert_range(*range);
-            }
-            walked.subtract(&open);
-            for range in walked.v4() {
-                decided.push_v4_range(*range);
-            }
-            for range in walked.v6() {
-                decided.push_v6_range(*range);
             }
             for range in scope.excluded() {
                 withheld.insert_range(*range);
@@ -79,8 +63,13 @@ impl ScopeIndex {
 
         // Both are searched and never extended again, so the ordering the
         // search needs is established once here.
+        // The report's own reading, so a comparison and the report's
+        // `is_partial` agree about what is still open.
+        for range in report.undecided() {
+            undecided.insert_range(range);
+        }
         covered.canonicalize();
-        decided.canonicalize();
+        undecided.canonicalize();
         withheld.canonicalize();
 
         let stated = !covered.is_empty()
@@ -88,7 +77,7 @@ impl ScopeIndex {
             || scopes.iter().any(|scope| !scope.links().is_empty());
         Self {
             covered,
-            decided,
+            undecided,
             withheld,
             stated,
             ports,
@@ -142,9 +131,8 @@ impl ScopeIndex {
     /// discovery sweep that walked an address and a port scan that was forbidden
     /// it still means somebody looked.
     ///
-    /// An address every phase that walked it left
-    /// [`undecided`](crate::report::ScanPhase::undecided) answers
-    /// [`Unreached`](Coverage::Unreached) instead. The scan set out to ask it
+    /// An address the report left [`undecided`](ScanReport::undecided)
+    /// answers [`Unreached`](Coverage::Unreached) instead. The scan set out to ask it
     /// and stopped short of an answer, so a host missing there is one nobody
     /// found out about rather than one that went away.
     ///
@@ -152,10 +140,10 @@ impl ScopeIndex {
     /// [`of_host`](Self::of_host), since it is about the host rather than about
     /// any one of its addresses.
     pub(crate) fn address(&self, ip: &IpAddr) -> Coverage {
-        if self.decided.contains(ip) {
-            Coverage::Covered
-        } else if self.covered.contains(ip) {
+        if self.undecided.contains(ip) {
             Coverage::Unreached
+        } else if self.covered.contains(ip) {
+            Coverage::Covered
         } else if self.withheld.contains(ip) {
             Coverage::Withheld
         } else if self.stated {

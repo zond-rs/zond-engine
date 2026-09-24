@@ -1705,7 +1705,6 @@ fn fact(out: &mut dyn Write, key: &str, value: &str) -> Result<(), ExportError> 
 /// Every cause [`ScanReport::is_partial`] counts is named here, so the notice
 /// never claims a shortfall it cannot name.
 fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
-    let phases = report.phases();
     let mut causes = Vec::new();
     if report.failures().next().is_some() {
         causes.push("a strategy did not run to completion");
@@ -1713,10 +1712,10 @@ fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
     if report.refusals().next().is_some() {
         causes.push("ground was declined");
     }
-    if phases.iter().any(|phase| !phase.timed_out().is_empty()) {
+    if !report.timed_out().is_empty() {
         causes.push("a host's time budget ran out");
     }
-    if phases.iter().any(|phase| !phase.undecided().is_empty()) {
+    if !report.undecided().is_empty() {
         causes.push("addresses were never decided");
     }
     if report.left_ports_unasked() {

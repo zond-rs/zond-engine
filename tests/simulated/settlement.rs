@@ -615,6 +615,29 @@ async fn a_host_the_liveness_pass_never_asked_about_is_asked_on_the_resume() {
         .expect("the resume asked the host the first sitting never reached");
     assert_eq!(host.port_count(), 2, "and scanned both of its ports");
 
+    // The report of the job carries the stopped sitting's phases too, and what
+    // the first left undecided the second decided: the job is complete, and
+    // its report must not say otherwise.
+    assert!(
+        report.phases().len() > 2,
+        "the first sitting's phases are part of the report"
+    );
+    assert!(
+        report
+            .phases()
+            .iter()
+            .any(|phase| !phase.undecided().is_empty()),
+        "the stopped sitting's phase keeps its own record of what it left"
+    );
+    assert!(
+        report.undecided().is_empty(),
+        "and the second sitting decided all of it"
+    );
+    assert!(
+        !report.is_partial(),
+        "a resume that finished what the first sitting left is not partial"
+    );
+
     let listed = zond_engine::journal::store::list(&root).expect("lists");
     assert!(
         listed[0].is_complete(),

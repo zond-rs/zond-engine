@@ -2459,6 +2459,58 @@ mod tests {
         );
     }
 
+    /// A discovery phase over `walked` begun on `at`, that reached no verdict on
+    /// `open`.
+    fn swept(at: SystemTime, walked: &str, open: Option<&str>) -> ScanReport {
+        use crate::model::ip::range::IpRange;
+
+        let mut targets: IpSet = walked.parse().expect("a range");
+        let undecided = open.map_or_else(Vec::new, |open| {
+            let open: IpSet = open.parse().expect("a range");
+            open.v4().iter().copied().map(IpRange::V4).collect()
+        });
+        let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::Discovery,
+            started_at: at,
+            elapsed: Duration::from_secs(60),
+            privilege: Some(Privilege::Raw),
+            targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided,
+            probes: Vec::new(),
+            origin: None,
+        });
+        ScanReport::recorded("zond", vec![phase], Vec::new())
+    }
+
+    /// **A merge of a stopped sweep with a later complete one is complete.**
+    /// The stopped sweep's phase keeps its own record of what it never
+    /// decided, and the later one decided all of it, so the merged report has
+    /// nothing left undecided and is not partial. Read phase by phase it
+    /// would stay partial for ever, however many sweeps finished the job.
+    #[test]
+    fn a_stopped_sweep_merged_with_a_later_complete_one_is_not_partial() {
+        let stopped = swept(day(1), "192.0.2.0/28", Some("192.0.2.4-192.0.2.15"));
+        assert!(stopped.is_partial(), "test premise: the stopped sweep is");
+
+        let merged = merged(vec![stopped, swept(day(2), "192.0.2.0/28", None)]);
+
+        assert!(
+            merged
+                .phases()
+                .iter()
+                .any(|phase| !phase.undecided().is_empty()),
+            "the stopped phase keeps its own record"
+        );
+        assert!(!merged.is_partial());
+    }
+
     /// A newer scan that named the port from its number identified nothing,
     /// and carries neither the older identification nor the correlation drawn
     /// from it away.
