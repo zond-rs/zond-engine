@@ -222,6 +222,27 @@ impl RefusedStep {
         }
     }
 
+    /// A pass that would send the target its own packets, asked for under an
+    /// idle scan.
+    ///
+    /// An idle scan forges every probe from its zombie so the target never
+    /// hears from this host; a pass that opens a connection to the target or
+    /// sends it a probe from here is the one thing the technique exists to
+    /// avoid. So a pass the caller asked for that would do it is refused rather
+    /// than run in the open, on the same reasoning
+    /// [`idle_needs_privilege`](Self::idle_needs_privilege) refuses the scan
+    /// itself. `pass` names it the way a reader would, and `scanner` is the
+    /// strategy the report files the refusal under.
+    pub(crate) fn pass_not_in_an_idle_scan(scanner: ScannerKind, pass: &str) -> Self {
+        Self {
+            scanner,
+            reason: format!(
+                "an idle scan sends the target nothing from this host, and {pass} would \
+                 contact it directly - so it was not run"
+            ),
+        }
+    }
+
     /// An idle scan was asked for through a zombie the exclusions forbid.
     ///
     /// The scan reads the zombie's counter by probing it again and again, so

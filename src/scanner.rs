@@ -601,7 +601,12 @@ fn discovery_stages(cfg: &ZondConfig) -> Vec<Stage> {
 ///
 /// [`Stage::Finishing`] is left out. It sends nothing and is over as soon as it
 /// begins, so a run that reached it has done all the work there was to measure.
+///
+/// Read through [`running_under`], so the stages an idle scan lists are the
+/// ones it will run: a stage kept here that the scan then declines would leave
+/// a progress bar waiting for work that never comes.
 fn scan_stages(cfg: &ZondConfig) -> Vec<Stage> {
+    let cfg = &running_under(cfg);
     let mut stages = Vec::new();
 
     if asks_liveness(cfg) {
@@ -641,6 +646,110 @@ fn scan_stages(cfg: &ZondConfig) -> Vec<Stage> {
 /// answer to a forged probe goes to the zombie.
 fn asks_liveness(cfg: &ZondConfig) -> bool {
     !cfg.assume_up && cfg.idle_scan.is_none()
+}
+
+/// The configuration a scan actually runs under, given that an idle scan sends
+/// the target nothing from this host.
+///
+/// An idle scan forges every probe from its zombie, so the passes that run
+/// after the port phase are the problem the port phase solved: each of service
+/// detection, the detection corpus, active operating-system probing, the route
+/// trace, filter characterisation, IP-protocol probing and TLS enumeration
+/// opens a connection to the target or sends it a probe from this host, which
+/// is the one thing the technique exists to avoid. So under an idle scan every
+/// one of them is turned down to the level that sends the target nothing:
+/// service detection off, the detection ceiling and the operating-system level
+/// held at what reads only gathered evidence, and the rest cleared.
+///
+/// The result is that an idle scan puts nothing on the wire to the target but
+/// the forged probes, whatever else the caller set. What the caller asked for
+/// and cannot have here is not lost quietly: [`record_idle_refusals`] files a
+/// refusal for each pass this mutes that was more than a default left on, so
+/// the report says the pass was declined and why. Returned unchanged for a scan
+/// that is not an idle one.
+fn running_under(cfg: &ZondConfig) -> ZondConfig {
+    if cfg.idle_scan.is_none() {
+        return cfg.clone();
+    }
+
+    let mut muted = cfg.clone();
+    muted.service_detection = crate::config::ServiceDetection::Off;
+    if muted.detection.ceiling() > Some(crate::model::finding::DetectionClass::Passive) {
+        muted.detection =
+            crate::config::DetectionEnvelope::up_to(crate::model::finding::DetectionClass::Passive);
+    }
+    if muted.os_detection.is_active() {
+        muted.os_detection = crate::config::OsDetection::Passive;
+    }
+    muted.traceroute = false;
+    muted.characterise = false;
+    muted.ip_protocols.clear();
+    muted.tls_enumeration = false;
+    muted
+}
+
+/// Records, once, why each after-port pass an idle scan turns off was turned
+/// off, reading `cfg` as the caller set it.
+///
+/// A pass the caller asked for and that would contact the target directly is
+/// refused through the plan's refusal mechanism, so a reader sees it declined
+/// rather than silently absent; see
+/// [`RefusedStep::pass_not_in_an_idle_scan`](plan::RefusedStep::pass_not_in_an_idle_scan).
+/// Service detection is the exception: it is on by default and connecting is
+/// its whole purpose, and nothing here can tell a caller who set its level from
+/// one who took the default, so it is turned off with a line at verbosity one
+/// rather than a refusal that might misfire on a default nobody chose.
+fn record_idle_refusals(cfg: &ZondConfig, ctx: &ScanContext) {
+    use crate::model::finding::DetectionClass;
+    use crate::report::ScannerKind;
+    use plan::RefusedStep;
+
+    if cfg.service_detection.connects() {
+        crate::info!(
+            verbosity = 1,
+            "no service detection: an idle scan sends the target nothing from this host"
+        );
+    }
+    if cfg.detection.ceiling() > Some(DetectionClass::Passive) {
+        ctx.record_refusal(
+            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Detection, "active detection")
+                .into(),
+        );
+    }
+    if cfg.os_detection.is_active() {
+        ctx.record_refusal(
+            RefusedStep::pass_not_in_an_idle_scan(
+                ScannerKind::OsSeries,
+                "active operating-system probing",
+            )
+            .into(),
+        );
+    }
+    if cfg.traceroute {
+        ctx.record_refusal(
+            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Routed, "the route trace").into(),
+        );
+    }
+    if cfg.characterise {
+        ctx.record_refusal(
+            RefusedStep::pass_not_in_an_idle_scan(
+                ScannerKind::Routed,
+                "the filter characterisation",
+            )
+            .into(),
+        );
+    }
+    if !cfg.ip_protocols.is_empty() {
+        ctx.record_refusal(
+            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Routed, "the IP-protocol probe")
+                .into(),
+        );
+    }
+    if cfg.tls_enumeration {
+        ctx.record_refusal(
+            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Service, "TLS enumeration").into(),
+        );
+    }
 }
 
 /// How many address-and-port pairs a port scan plans to probe, or `None` where
@@ -1084,7 +1193,11 @@ fn listening_privilege(refusal: Option<&strategy::StrategyError>) -> Privilege {
 /// [`ZondConfig::assume_up`] skips the phase and scans every target on trust,
 /// which is what a host behind a firewall that answers no knock needs. An
 /// [idle scan](ZondConfig::idle_scan) skips it too, since the phase would send
-/// the target the packets from this host the technique exists to withhold.
+/// the target the packets from this host the technique exists to withhold. An
+/// idle scan also declines every later pass that would contact the target
+/// directly, service detection through TLS enumeration, so the target hears
+/// nothing from this host but the forged probes; the report says which passes
+/// were declined and why.
 ///
 /// The [`ScanReport`] carries a phase for each: the liveness pass as
 /// [`ScanKind::Discovery`] and the ports as [`ScanKind::PortScan`], so a reader
@@ -1213,7 +1326,11 @@ fn spawn_scan(
     settled: Checkpoint,
 ) -> JoinHandle<ScanReport> {
     let caps = ScanCapabilities::resolve(cfg, orchestrator::Probing::ports(cfg, &target_map));
-    let cfg = cfg.clone();
+    // What the caller set, kept so the passes an idle scan turns off can be
+    // named as declined rather than dropped, and the config the scan actually
+    // runs under, which an idle scan holds to what sends the target nothing.
+    let requested = cfg.clone();
+    let cfg = running_under(&requested);
 
     tokio::spawn(async move {
         // Phase one: which of these addresses has anything at it.
@@ -1275,6 +1392,10 @@ fn spawn_scan(
         let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privilege, scope, &cfg);
 
         ctx.enter_stage(Stage::Ports, None);
+        // Filed against the port phase, since that is the phase an idle scan
+        // has: it runs no liveness pass, so this is where a reader looks for
+        // what the scan declined to send the target from this host.
+        record_idle_refusals(&requested, &ctx);
         run_port_phase(target_map, live, &ctx, caps, &cfg, settled).await;
 
         // Straight after the ports, because what it needs is the list of ports a

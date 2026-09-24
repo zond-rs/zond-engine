@@ -142,6 +142,60 @@ async fn an_idle_scan_runs_no_liveness_pass_against_its_target() {
     );
 }
 
+/// Under an idle scan, every pass that would contact the target directly is
+/// declined, and the caller learns which and why.
+///
+/// The passes after the port phase — service detection, the detection corpus,
+/// active operating-system probing, the route trace, filter characterisation,
+/// IP-protocol probing and TLS enumeration — each open a connection to the
+/// target or send it a probe from this host, which is the one thing an idle
+/// scan exists to avoid. Turned off silently they would betray the scan or,
+/// caught, leave the caller wondering why what they asked for did nothing. So
+/// each the caller asked for is refused with a reason, on the port phase, which
+/// is the only phase an idle scan has.
+#[tokio::test]
+async fn an_idle_scan_declines_every_pass_that_would_contact_the_target() {
+    use zond_engine::config::{DetectionEnvelope, OsDetection};
+    use zond_engine::model::finding::DetectionClass;
+
+    let zombie: IpAddr = "192.0.2.9".parse().expect("an address");
+    let mut cfg = test_config();
+    cfg.idle_scan = Some(zond_engine::config::IdleScan::new(zombie));
+    cfg.exclusions = zond_engine::Exclusions::new(ip_set(zombie));
+    cfg.os_detection = OsDetection::Active;
+    cfg.traceroute = true;
+    cfg.characterise = true;
+    cfg.tls_enumeration = true;
+    cfg.ip_protocols = [47].into_iter().collect();
+    cfg.detection = DetectionEnvelope::up_to(DetectionClass::ActiveBenign);
+
+    let report = run_scan(target_map(LOOPBACK, "1,2"), &cfg).await.report;
+
+    let kinds: Vec<ScanKind> = report.phases().iter().map(|phase| phase.kind()).collect();
+    assert_eq!(
+        kinds,
+        vec![ScanKind::PortScan],
+        "an idle scan has one phase, and it ran no pass that made another"
+    );
+
+    let reasons: Vec<&str> = report.refusals().map(|refusal| refusal.reason()).collect();
+    for pass in [
+        "active operating-system probing",
+        "the route trace",
+        "the filter characterisation",
+        "the IP-protocol probe",
+        "TLS enumeration",
+        "active detection",
+    ] {
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains(pass) && reason.contains("idle scan")),
+            "no refusal names {pass}: {reasons:?}"
+        );
+    }
+}
+
 /// A host that is there is scanned exactly as it would be with no gate.
 #[tokio::test]
 async fn a_live_host_is_still_port_scanned() {
