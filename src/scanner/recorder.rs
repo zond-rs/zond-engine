@@ -174,11 +174,18 @@ impl PhaseRecorder {
             (ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => ranges_of(&heard_nothing),
             _ => Vec::new(),
         };
+        // Taken whatever the kind, for the same reason. What a port phase
+        // standing in for a liveness pass heard nothing from and did not
+        // finish asking is what the pass leaves undecided; see
+        // `ScanContext::forget_undecided`.
+        let unfinished = ctx.take_undecided();
         let liveness =
             (self.kind == ScanKind::Discovery).then(|| Liveness::found(ctx, heard_nothing));
-        let undecided = liveness.as_ref().map_or_else(Vec::new, |liveness| {
-            liveness.undecided(&targets, &unroutable)
-        });
+        let undecided = match (&liveness, self.kind, self.liveness_skipped) {
+            (Some(liveness), _, _) => liveness.undecided(&targets, &unroutable),
+            (None, ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => ranges_of(&unfinished),
+            _ => Vec::new(),
+        };
 
         let phase = ScanPhase::from_parts(PhaseParts {
             kind: self.kind,
@@ -547,9 +554,51 @@ mod tests {
         assert!(recorder.finish(&ctx).phases()[0].silent().is_empty());
     }
 
+    /// A port phase standing in for a dropped liveness pass names as undecided
+    /// the addresses filed so during it, heard nothing from and not asked in
+    /// full, and the report lists no host there, as the pass it stood in for
+    /// would have listed none. A phase that did not stand in for one names
+    /// none, and the filing is not carried into the next phase.
+    #[test]
+    fn a_port_phase_standing_in_for_liveness_names_what_it_left_undecided() {
+        use crate::model::ip::scoped::ScopedIp;
+
+        let cfg = ZondConfig::default();
+        let (session, ctx) = ScanSession::new();
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .skipping_liveness(LivenessSkip::PortsNoDearer);
+        ctx.update_host(ip(1), |host| host.set_status(HostStatus::Up));
+        ctx.update_host(ip(3), |_| {});
+        ctx.forget_undecided(vec![ScopedIp::from(ip(3))]);
+        let report = recorder.finish(&ctx);
+
+        let undecided: Vec<String> = report.phases()[0]
+            .undecided()
+            .iter()
+            .map(|range| format!("{}-{}", range.start_addr(), range.end_addr()))
+            .collect();
+        assert_eq!(undecided, ["203.0.113.3-203.0.113.3"]);
+        assert!(
+            report.host(&ip(3)).is_none(),
+            "an undecided address is no host"
+        );
+        assert!(!session.hosts().contains(ip(3)));
+        assert!(report.host(&ip(1)).is_some());
+        assert!(report.is_partial(), "and the report says it left one open");
+
+        let (_session, ctx) = ScanSession::new();
+        let ports = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .skipping_liveness(LivenessSkip::AssumeUp);
+        ctx.forget_undecided(vec![ScopedIp::from(ip(3))]);
+        assert!(ports.finish(&ctx).phases()[0].undecided().is_empty());
+        let next = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .skipping_liveness(LivenessSkip::PortsNoDearer);
+        assert!(next.finish(&ctx).phases()[0].undecided().is_empty());
+    }
+
     /// Silence is a discovery phase's evidence and nobody else's. A port phase
-    /// names no address undecided, and silence a context heard in one phase is
-    /// not carried into the next one's verdicts.
+    /// that did not stand in for one names no address undecided, and silence a
+    /// context heard in one phase is not carried into the next one's verdicts.
     #[test]
     fn only_a_discovery_phase_names_undecided_addresses_and_silence_does_not_carry() {
         use crate::journal::settle::Settled;

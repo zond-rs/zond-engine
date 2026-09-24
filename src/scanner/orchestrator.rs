@@ -2081,32 +2081,42 @@ pub(super) async fn run_port_phase(
 }
 
 /// Files as silent every address in `probed` the port probes asked on every
-/// port and drew nothing from, and forgets the record the scanners filed there.
+/// port and drew nothing from, files as undecided every one they drew nothing
+/// from without finishing asking, and forgets the records the scanners filed
+/// at both.
 ///
 /// Nothing drawn means the record is still
 /// [`Unknown`](crate::model::host::HostStatus::Unknown): no open port, no
-/// closed one, no ICMP error. A record with a port still
-/// [`Unasked`](PortState::Unasked) is kept, since the phase did not finish
-/// asking that address and its silence is not yet a verdict; so are the
-/// addresses nothing could be sent to and the ones a time budget left
-/// part-asked, each named in the report for what it is. See
-/// [`ScanContext::forget_silent`].
+/// closed one, no ICMP error. Such an address is silent where every port was
+/// asked in full. Where one was not, a port still
+/// [`Unasked`](PortState::Unasked) because the scan stopped short of it or cut
+/// its probe off, or the address's own time budget ran out, its silence is not
+/// yet a verdict, and the address is what a liveness pass stopped early leaves
+/// undecided: no host either way, and asked again on a resume. An address
+/// nothing could be sent to is neither, and is named in the report for what
+/// it is. See [`ScanContext::forget_silent`] and
+/// [`ScanContext::forget_undecided`].
 fn forget_the_silent(ctx: &ScanContext, probed: &IpSet) {
-    let silent: Vec<crate::model::ip::scoped::ScopedIp> = ctx
-        .store
-        .iter()
-        .filter(|entry| {
-            let host = entry.value();
-            let address = entry.key().addr();
-            host.status() == crate::model::host::HostStatus::Unknown
-                && host.ports().all(|port| port.state() != PortState::Unasked)
-                && probed.contains(&address)
-                && !ctx.is_unroutable(address)
-                && !ctx.left_early(address)
-        })
-        .map(|entry| entry.key().clone())
-        .collect();
+    let mut silent = Vec::new();
+    let mut undecided = Vec::new();
+    for entry in ctx.store.iter() {
+        let host = entry.value();
+        let address = entry.key().addr();
+        if host.status() != crate::model::host::HostStatus::Unknown
+            || !probed.contains(&address)
+            || ctx.is_unroutable(address)
+        {
+            continue;
+        }
+        let finished =
+            host.ports().all(|port| port.state() != PortState::Unasked) && !ctx.left_early(address);
+        match finished {
+            true => silent.push(entry.key().clone()),
+            false => undecided.push(entry.key().clone()),
+        }
+    }
     ctx.forget_silent(silent);
+    ctx.forget_undecided(undecided);
 }
 
 /// The plan as the port phase actually probed it.
@@ -3603,10 +3613,10 @@ mod tests {
 
     /// The port probes standing in for a liveness pass file as silent, and
     /// forget, exactly the records nothing was heard from at an address they
-    /// finished asking. One that answered is a host; one with a port never
-    /// asked, one nothing could be sent to and one its budget left part-asked
-    /// are each named for what they are; and an address outside what the phase
-    /// probed is not its to judge.
+    /// finished asking, and file as undecided, and forget, the ones nothing
+    /// was heard from at an address with a port never asked. One that answered
+    /// is a host; one nothing could be sent to is named for what it is; and an
+    /// address outside what the phase probed is not its to judge.
     #[test]
     fn the_silent_are_the_unheard_the_port_probes_finished_asking() {
         use crate::model::port::Port;
@@ -3629,20 +3639,26 @@ mod tests {
 
         let silent: Vec<IpAddr> = ctx.take_silent().iter().collect();
         assert_eq!(silent, ["192.0.2.2".parse::<IpAddr>().expect("an address")]);
+        let undecided: Vec<IpAddr> = ctx.take_undecided().iter().collect();
+        assert_eq!(
+            undecided,
+            ["192.0.2.3".parse::<IpAddr>().expect("an address")]
+        );
         let kept: Vec<String> = session
             .hosts()
             .snapshot()
             .iter()
             .map(|host| host.primary_ip().to_string())
             .collect();
-        assert_eq!(kept, ["192.0.2.1", "192.0.2.3", "192.0.2.4", "192.0.2.9"]);
+        assert_eq!(kept, ["192.0.2.1", "192.0.2.4", "192.0.2.9"]);
     }
 
-    /// And a record its own budget left part-asked is kept too: its ports carry
-    /// the scan's silence verdict for probes it never got, which is not the
-    /// silence of an address asked in full.
+    /// And a record its own budget left part-asked is not silent either: the
+    /// budget ended its asking, which is not the silence of an address asked
+    /// in full. It is undecided, as a liveness pass leaves an address its
+    /// budget cut short, and named besides among those the budget left.
     #[test]
-    fn a_host_left_early_is_not_filed_silent() {
+    fn a_host_left_early_is_undecided_rather_than_silent() {
         use crate::model::port::Port;
 
         let (session, ctx) = ScanSession::builder()
@@ -3660,7 +3676,8 @@ mod tests {
         forget_the_silent(&ctx, &ip_set(&["192.0.2.2"]));
 
         assert!(ctx.take_silent().is_empty());
-        assert!(session.hosts().contains(address));
+        assert!(ctx.take_undecided().contains(&address));
+        assert!(!session.hosts().contains(address));
     }
 
     /// A host the store holds but that never answered is not a host to spend a

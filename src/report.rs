@@ -1945,10 +1945,16 @@ impl ScanPhase {
     /// nothing could be sent to. An address left by its budget can be here and
     /// in [`timed_out`](Self::timed_out) both, which says why.
     ///
+    /// A port phase standing in for a liveness pass the engine dropped (see
+    /// [`LivenessSkip::PortsNoDearer`]) answers presence as that pass would,
+    /// and names here what it heard nothing from without finishing asking: a
+    /// port it never reached, a probe it cut off, or the address's own budget
+    /// running out. As the pass would have made no host of such an address,
+    /// the report lists none; a resumed job asks its ports again.
+    ///
     /// Empty for a phase that reached a verdict on everything it was asked
-    /// about, and for every phase that is not a
-    /// [`Discovery`](ScanKind::Discovery): a port scan settles ports rather than
-    /// presence, and a listener covers no address.
+    /// about, and for every other phase: another port scan settles ports
+    /// rather than presence, and a listener covers no address.
     pub fn undecided(&self) -> &[IpRange] {
         &self.undecided
     }
@@ -2658,6 +2664,15 @@ impl ScanReport {
             for range in &phase.silent {
                 silent.insert_range(*range);
             }
+            // What a port phase standing in for a liveness pass left
+            // undecided is no host either, for the reason
+            // `ScanPhase::undecided` gives. A discovery phase's undecided
+            // addresses are left alone: nothing of its own is listed there.
+            if phase.kind == ScanKind::PortScan {
+                for range in &phase.undecided {
+                    silent.insert_range(*range);
+                }
+            }
         }
         if silent.is_empty() {
             return;
@@ -3061,6 +3076,30 @@ mod tests {
     /// made it one. A host that answered is kept, and so is an unanswering one
     /// at an address the phase does not name, which is what a caller asking
     /// for every address as a host gets.
+    /// An address a port phase standing in for liveness left undecided is no
+    /// host either, and a record of it read back from a journal is dropped by
+    /// the same list; an address a discovery phase left undecided keeps
+    /// whatever record another phase filed there.
+    #[test]
+    fn a_host_nothing_answered_at_an_undecided_address_is_not_a_host() {
+        let mut ports = standing_in(&[]);
+        let mut sweep = phase(ScanKind::Discovery);
+        for (phase, last) in [(&mut ports, 5), (&mut sweep, 9)] {
+            let v4 = Ipv4Addr::new(203, 0, 113, last);
+            phase
+                .undecided
+                .push(IpRange::V4(Ipv4Range::new(v4, v4).expect("a range")));
+        }
+
+        let report = ScanReport::new(ports, [unheard(5)]);
+        assert!(
+            report.host(&ip(5)).is_none(),
+            "an undecided address is no host"
+        );
+        let report = ScanReport::new(sweep, [unheard(9)]);
+        assert!(report.host(&ip(9)).is_some());
+    }
+
     #[test]
     fn a_host_nothing_answered_at_a_silent_address_is_not_a_host() {
         let mut up = Host::new(ip(1));

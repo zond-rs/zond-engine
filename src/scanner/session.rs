@@ -1424,6 +1424,9 @@ pub struct ScanContext {
     /// Addresses a discovery pass found silent, or that a port phase standing
     /// in for one asked on every port and heard nothing from.
     pub(crate) silent: Arc<SilenceLog>,
+    /// Addresses a port phase standing in for a liveness pass heard nothing
+    /// from without finishing asking them.
+    pub(crate) undecided: Arc<SilenceLog>,
     /// Which stage's unit the plan, and so the settlements, are counted in.
     pub(crate) plan_stage: Stage,
     /// When each host's budget started, for a scan that set one.
@@ -1979,6 +1982,30 @@ impl ScanContext {
             self.silent.insert(key.addr());
             self.store.remove(&key);
         }
+    }
+
+    /// Files the host records at `keys` as addresses a port phase standing in
+    /// for its liveness pass heard nothing from and did not finish asking, and
+    /// forgets those records.
+    ///
+    /// The pass it stood in for would have reached no verdict on them either
+    /// way: nothing answered, which is not a host found, and not every port
+    /// was asked, which is not a silence. So no host is made of them, as the
+    /// pass would have made none, and they are named where that pass names
+    /// what it could not decide, the phase's
+    /// [`undecided`](crate::report::ScanPhase::undecided) list. Their ports
+    /// stay unsettled, so a resume asks them again.
+    pub(crate) fn forget_undecided(&self, keys: Vec<ScopedIp>) {
+        for key in keys {
+            self.undecided.insert(key.addr());
+            self.store.remove(&key);
+        }
+    }
+
+    /// The addresses [`forget_undecided`](Self::forget_undecided) filed,
+    /// merged and taken.
+    pub(crate) fn take_undecided(&self) -> IpSet {
+        self.undecided.drain()
     }
 
     /// Whether `address` has spent the per-host budget this scan was given,
@@ -2589,6 +2616,7 @@ impl SessionBuilder {
             unswept: Arc::new(UnsweptLog::default()),
             reached_by_connect: Arc::new(ConnectLog::default()),
             silent: Arc::new(SilenceLog::default()),
+            undecided: Arc::new(SilenceLog::default()),
             plan_stage: self.plan_stage,
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,
