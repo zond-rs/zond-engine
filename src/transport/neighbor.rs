@@ -31,6 +31,8 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::panic::{RefUnwindSafe, UnwindSafe};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::system::interface::LinkAddress;
 use crate::system::interface::{ProbeSockets, probe_route_source};
@@ -274,6 +276,88 @@ impl NeighborResolver {
             on_link: false,
         })
     }
+}
+
+/// How long a hardware address heard for a neighbour stays good enough to
+/// frame a probe to it without asking again.
+///
+/// Asking again is not free, and on some links not reliable. A client on
+/// Wi-Fi in power save has an ARP request, which is broadcast, held by the
+/// access point until the next DTIM beacon, a delivery that can take longer
+/// than the whole resolution waits; its replies, which are unicast, come back
+/// at once. Such a host answers a sweep that asks it for seconds and then
+/// fails a resolution that allows half of one, so the address a sweep has just
+/// heard must be the one its port probes use, as the kernel's own table would
+/// serve it.
+///
+/// Two minutes, because the entry has to outlast the gap between a sweep and
+/// every pass that follows it on the same host, and because the one way an
+/// entry goes wrong, the address moving to another machine, is rarer than
+/// that on any segment a scan is run from. The kernels' own tables are no
+/// stricter: Linux goes on framing to an entry for minutes while it
+/// re-confirms it, and macOS keeps one for twenty.
+const LEARNED_NEIGHBOR_TTL: Duration = Duration::from_secs(120);
+
+/// The hardware addresses this process has heard its neighbours claim, by
+/// `(interface, address)`.
+///
+/// One table for the whole process rather than one per sender, because what
+/// it holds is a fact about the link and not about any one scan: every
+/// transport a scan opens builds a sender of its own, and each of them asking
+/// afresh for an address the discovery sweep heard a moment ago is both
+/// wasted time and, on a link that delivers broadcast late, a lost host. The
+/// kernel's neighbour table is shared for the same reason.
+///
+/// Written by whatever hears a neighbour give its address, an ARP frame read
+/// by a sweep or a resolution a sender ran, and read by every sender before it
+/// asks. Nothing is ever read from it older than [`LEARNED_NEIGHBOR_TTL`].
+static LEARNED_NEIGHBORS: Mutex<LearnedNeighbors> = Mutex::new(LearnedNeighbors::new());
+
+/// The table behind [`learn_neighbor`] and [`learned_neighbor`], apart from
+/// the process's one instance so it can be tested with a clock of its own.
+struct LearnedNeighbors {
+    heard: Option<HashMap<(String, IpAddr), (MacAddr, Instant)>>,
+}
+
+impl LearnedNeighbors {
+    const fn new() -> Self {
+        Self { heard: None }
+    }
+
+    fn learn(&mut self, interface: &str, address: IpAddr, mac: MacAddr, at: Instant) {
+        self.heard
+            .get_or_insert_with(HashMap::new)
+            .insert((interface.to_owned(), address), (mac, at));
+    }
+
+    fn recall(&self, interface: &str, address: IpAddr, now: Instant) -> Option<MacAddr> {
+        let (mac, at) = self.heard.as_ref()?.get(&(interface.to_owned(), address))?;
+        (now.saturating_duration_since(*at) < LEARNED_NEIGHBOR_TTL).then_some(*mac)
+    }
+}
+
+/// Records that `address` on `interface` is held by `mac`, as a neighbour has
+/// just said.
+///
+/// A broadcast or multicast address is not recorded: no neighbour holds one,
+/// and a frame sent to it would reach every host on the segment.
+pub(crate) fn learn_neighbor(interface: &str, address: IpAddr, mac: MacAddr) {
+    if mac.is_broadcast() || mac.is_multicast() || mac == MacAddr::zero() {
+        return;
+    }
+    LEARNED_NEIGHBORS
+        .lock()
+        .unwrap_or_else(|held| held.into_inner())
+        .learn(interface, address, mac, Instant::now());
+}
+
+/// The hardware address a neighbour gave for `address` on `interface` within
+/// [`LEARNED_NEIGHBOR_TTL`], if one did.
+pub(crate) fn learned_neighbor(interface: &str, address: IpAddr) -> Option<MacAddr> {
+    LEARNED_NEIGHBORS
+        .lock()
+        .unwrap_or_else(|held| held.into_inner())
+        .recall(interface, address, Instant::now())
 }
 
 /// Converts a `netdev` interface into an [`InterfaceInfo`], returning `None`
@@ -674,5 +758,42 @@ mod tests {
         let resolver = resolver(vec![]);
         assert!(!resolver.has_ethernet());
         assert!(resolver.resolve(v4(1, 1, 1, 1)).is_none());
+    }
+
+    /// A heard address serves until it ages out, on its own interface only.
+    #[test]
+    fn a_heard_neighbour_serves_until_it_ages_out_on_its_own_link() {
+        let mut table = LearnedNeighbors::new();
+        let t0 = Instant::now();
+        let mac = MacAddr::new(0x02, 0, 0, 0, 0, 0x40);
+        let address = v4(192, 0, 2, 40);
+
+        assert_eq!(table.recall("en0", address, t0), None, "nothing heard yet");
+        table.learn("en0", address, mac, t0);
+        assert_eq!(table.recall("en0", address, t0), Some(mac));
+        assert_eq!(
+            table.recall(
+                "en0",
+                address,
+                t0 + LEARNED_NEIGHBOR_TTL - Duration::from_secs(1)
+            ),
+            Some(mac)
+        );
+        assert_eq!(
+            table.recall("en0", address, t0 + LEARNED_NEIGHBOR_TTL),
+            None,
+            "aged out"
+        );
+        assert_eq!(table.recall("en1", address, t0), None, "another link");
+    }
+
+    /// No neighbour holds a broadcast or multicast address, so neither is
+    /// taken as one; framing a probe to it would reach the whole segment.
+    #[test]
+    fn a_group_address_is_not_learned_as_a_neighbour() {
+        let address = v4(192, 0, 2, 41);
+        learn_neighbor("test-group0", address, MacAddr::broadcast());
+        learn_neighbor("test-group0", address, MacAddr::new(0x01, 0, 0x5e, 0, 0, 1));
+        assert_eq!(learned_neighbor("test-group0", address), None);
     }
 }

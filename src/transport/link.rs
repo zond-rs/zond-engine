@@ -44,7 +44,7 @@ use pnet_packet::ethernet::{EtherTypes, EthernetPacket};
 use crate::protocols::arp;
 use crate::transport::capture::{self, FrameSink};
 use crate::transport::frame;
-use crate::transport::neighbor::{LinkRoute, NeighborResolver};
+use crate::transport::neighbor::{self, LinkRoute, NeighborResolver};
 use crate::transport::probe::{Emission, IpProtocols, ProbeSender, SendError};
 
 /// How long to wait for an ARP reply before giving up on an on-link target.
@@ -214,10 +214,9 @@ impl EthernetSender {
             }
         };
 
-        let mac =
-            ask_unless_unanswered(&self.unanswered, &route.interface, route.next_hop, || {
-                self.arp_resolve(&route.interface, route.src_mac, src_v4, target_v4)
-            })?;
+        let mac = recall_or_ask(&self.unanswered, &route.interface, route.next_hop, || {
+            self.arp_resolve(&route.interface, route.src_mac, src_v4, target_v4)
+        })?;
         self.resolver
             .lock()
             .map_err(|_| poisoned("route resolver"))?
@@ -414,6 +413,30 @@ fn poisoned(what: &str) -> SendError {
     SendError::Refused(format!(
         "the {what} lock was poisoned by another thread's panic"
     ))
+}
+
+/// The hardware address of `next_hop` on `interface`: the one a neighbour gave
+/// for it lately, or else what `exchange` resolves, which is then recorded for
+/// every other sender.
+///
+/// What a neighbour said a moment ago, to a sweep or to another sender, stands
+/// before a fresh exchange is run and before an unanswered one is held against
+/// it. A host that answered this scan's discovery has answered, whatever one
+/// later broadcast of ours drew; see
+/// [`learn_neighbor`](neighbor::learn_neighbor) for why a later broadcast can
+/// go unheard by a host that is there.
+fn recall_or_ask(
+    unanswered: &Mutex<UnansweredNeighbors>,
+    interface: &str,
+    next_hop: IpAddr,
+    exchange: impl FnOnce() -> Result<MacAddr, SendError>,
+) -> Result<MacAddr, SendError> {
+    if let Some(mac) = neighbor::learned_neighbor(interface, next_hop) {
+        return Ok(mac);
+    }
+    let mac = ask_unless_unanswered(unanswered, interface, next_hop, exchange)?;
+    neighbor::learn_neighbor(interface, next_hop, mac);
+    Ok(mac)
 }
 
 /// Runs `exchange`, the address resolution for `next_hop` on `interface`,
@@ -820,6 +843,60 @@ mod tests {
             unanswered.lock().unwrap().seen.is_empty(),
             "an answer leaves no record behind"
         );
+    }
+
+    /// A neighbour a sweep heard is framed to at once, with no exchange run and
+    /// an earlier unanswered one not held against it.
+    ///
+    /// A client on Wi-Fi in power save answers a sweep that asks it for seconds
+    /// and can miss a later broadcast that waits half of one. Asking again for
+    /// what the sweep already heard wrote such a host off, every port unasked,
+    /// for the half-minute an unanswered exchange is remembered.
+    #[test]
+    fn a_neighbour_a_sweep_heard_is_not_asked_again() {
+        let interface = "test-heard0";
+        let mac = MacAddr::new(0x02, 0, 0, 0, 0, 0x31);
+        let unanswered = Mutex::new(UnansweredNeighbors::default());
+        unanswered
+            .lock()
+            .unwrap()
+            .note(interface, DEAD, Instant::now());
+        neighbor::learn_neighbor(interface, DEAD, mac);
+
+        let exchanges = std::cell::Cell::new(0);
+        let resolved = recall_or_ask(&unanswered, interface, DEAD, || {
+            exchanges.set(exchanges.get() + 1);
+            Err(unanswered_neighbor(DEAD, interface))
+        });
+
+        assert_eq!(resolved.ok(), Some(mac));
+        assert_eq!(exchanges.get(), 0, "the heard address was asked for again");
+    }
+
+    /// What one sender resolves, the next is given: every transport a scan
+    /// opens builds a sender of its own, and each asking afresh costs a whole
+    /// exchange per neighbour per pass.
+    #[test]
+    fn a_resolution_one_sender_ran_serves_the_next() {
+        let interface = "test-heard1";
+        let mac = MacAddr::new(0x02, 0, 0, 0, 0, 0x32);
+        let exchanges = std::cell::Cell::new(0);
+        let answering = || {
+            exchanges.set(exchanges.get() + 1);
+            Ok(mac)
+        };
+
+        let first = Mutex::new(UnansweredNeighbors::default());
+        let second = Mutex::new(UnansweredNeighbors::default());
+        assert_eq!(
+            recall_or_ask(&first, interface, DEAD, answering).ok(),
+            Some(mac)
+        );
+        assert_eq!(
+            recall_or_ask(&second, interface, DEAD, answering).ok(),
+            Some(mac)
+        );
+        assert_eq!(exchanges.get(), 1, "one exchange for two senders");
     }
 
     /// A neighbour that answers after an earlier timeout is no longer skipped:

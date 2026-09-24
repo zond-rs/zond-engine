@@ -60,6 +60,7 @@ use crate::transport::channel::{self, EthernetHandle};
 use crate::transport::frame::LinkType;
 use crate::transport::mac::IntoCoreMac;
 use crate::transport::mac::IntoPnetMac;
+use crate::transport::neighbor;
 
 use crate::scanner::strategy::frames::{self, DiscoveryProtocol, ProtocolMatch, Reading};
 use ipv6::Ipv6Discovery;
@@ -1351,6 +1352,15 @@ impl LocalScanner {
 
             self.sweep.audit.record_off_target();
             return Err(FrameRejected::AddressOutOfRange(subject));
+        }
+
+        // An ARP frame names its sender's address and comes from its hardware
+        // address, which is exactly what a sender framing a probe to that
+        // address has to know. Handed on, so the passes after this sweep frame
+        // their probes to the neighbour it heard rather than asking again by a
+        // broadcast the neighbour may not hear in time.
+        if protocol == StatusProtocol::Arp && subject.is_ipv4() {
+            neighbor::learn_neighbor(self.identity.zone.name(), subject, source_mac);
         }
 
         if subject != source_addr {
