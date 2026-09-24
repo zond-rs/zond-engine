@@ -24,17 +24,20 @@
 //! Most of what the corpus speaks is HTTP, and an HTTP response says where it
 //! ends: a `Content-Length`, or a chunked body's closing chunk. A reply read to
 //! that point is over, whatever the connection then does, so the read stops
-//! there. Anything else is read until the peer closes or falls silent, because
-//! the bytes alone cannot say whether more is coming.
+//! there. Anything else is read until the peer closes, or, once it has said
+//! something, until it has been quiet for an [idle gap](idle_gap): the bytes
+//! alone cannot say whether more is coming, but a port that answered and then
+//! went quiet has, for any purpose a detection has, finished answering.
 //!
 //! Stopping at the message's own end is what keeps a detection's time budget
 //! paying for the target's answers rather than for its idle connections. A
 //! server that holds the connection open after replying, whether it ignores the
-//! request's `Connection: close` or keeps every connection alive until an idle
-//! timeout, would otherwise have each exchange wait out that timeout, or the
-//! rest of the detection's budget, for bytes that are never sent. A detection
-//! asking four questions of such a server spends its budget on the first few
-//! and leaves the rest unasked.
+//! request's `Connection: close`, keeps every connection alive until an idle
+//! timeout, or, like redis and memcached, waits on the same connection for the
+//! next command, would otherwise have each exchange wait out that timeout, or
+//! the rest of the detection's budget, for bytes that are never sent. A
+//! detection asking four questions of such a server spends its budget on the
+//! first few and leaves the rest unasked.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
@@ -97,7 +100,9 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
 }
 
 /// Connects by `egress`, sends `bytes`, and reads the reply until it is whole,
-/// the port falls silent, the connection closes, or `cap` bytes have been read.
+/// the connection closes, the port falls silent, or `cap` bytes have been read.
+/// Silent means no first byte before the deadline, or no further byte for the
+/// [idle gap](idle_gap) once the port has begun to answer.
 ///
 /// A `tunnel` wraps the connected socket in the transport the port answered
 /// inside before a byte of the probe is sent, so an `ssl/*` service is reached
@@ -121,7 +126,12 @@ pub(crate) fn tcp(
         .map_err(|error| ExchangeError::of(&error))?;
     tcp.set_read_timeout(Some(remaining(deadline).ok_or(ExchangeError::TimedOut)?))
         .map_err(|error| ExchangeError::of(&error))?;
+    // A second handle on the same socket, kept to shorten the read timeout
+    // once the reply has begun: a timeout is the socket's, so it holds under a
+    // TLS session as it does in the clear.
+    let socket = tcp.try_clone().map_err(|error| ExchangeError::of(&error))?;
     let mut stream = super::tls::wrap(tcp, addr.ip(), tunnel).ok_or(ExchangeError::Reset)?;
+    let sent = Instant::now();
     stream
         .write_all(bytes)
         .map_err(|error| ExchangeError::of(&error))?;
@@ -129,6 +139,7 @@ pub(crate) fn tcp(
     let mut reply = Vec::new();
     let mut buffer = [0u8; 4096];
     let mut whole = false;
+    let mut gap = None;
     while (reply.len() as u64) < cap {
         let want = ((cap - reply.len() as u64) as usize).min(buffer.len());
         match stream.read(&mut buffer[..want]) {
@@ -144,9 +155,20 @@ pub(crate) fn tcp(
                     whole = true;
                     break;
                 }
+                // Once the port has begun to answer, it has only as long as the
+                // idle gap to go on doing so, and never past the deadline.
+                let Some(left) = remaining(deadline) else {
+                    break;
+                };
+                let gap = *gap.get_or_insert_with(|| idle_gap(sent.elapsed(), left));
+                if socket.set_read_timeout(Some(gap.min(left))).is_err() {
+                    break;
+                }
             }
             // A read timeout is the ordinary end of a reply that does not close
-            // the connection; any other error ends it too.
+            // the connection, whether the port went quiet after answering or the
+            // deadline came first; any other error ends it too. Neither is a
+            // self-terminating end, so the reply is not whole.
             Err(_) => break,
         }
     }
@@ -155,6 +177,38 @@ pub(crate) fn tcp(
         bytes: reply,
         complete: whole,
     })
+}
+
+/// How long a port that has begun to answer may go quiet before its reply is
+/// taken as over, given how long it took to begin and how much of the deadline
+/// was left when it did.
+///
+/// Only a reply that neither closes the connection nor says where it ends
+/// relies on this, and the gap has to outlast the pauses a live service makes
+/// in the middle of one, while leaving the rest of the caller's budget for its
+/// next question. Each of the three terms answers one of those:
+///
+/// - Twice the wait for the first byte. A reply larger than the sender's first
+///   flight pauses one round trip for acknowledgements, and a server that
+///   writes in pieces pauses on its own work between them. The first byte's
+///   wait held both, the round trip and the server's thought, so twice it
+///   covers a pause of either kind with a margin of one more.
+/// - A quarter of the time left. A speak-first service greets before it has
+///   read the request, so its first byte says nothing about how long the
+///   answer to the request takes; this lets that answer take a good share of
+///   what the caller can spare. A quarter, because a caller asking question
+///   after question of a port that holds every connection open keeps three
+///   quarters of what was left each time, so no question is left unasked for
+///   want of time.
+/// - 300 ms at least, above the stalls a fast link's replies still show: a
+///   small second write held by Nagle's algorithm until the client's delayed
+///   acknowledgement, up to 200 ms on common stacks, and a busy host's
+///   scheduling on top.
+///
+/// The gap never outlasts the deadline, which the read loop holds it to.
+fn idle_gap(first_byte: Duration, left: Duration) -> Duration {
+    const FLOOR: Duration = Duration::from_millis(300);
+    first_byte.saturating_mul(2).max(left / 4).max(FLOOR)
 }
 
 /// Where the HTTP/1.x response at the start of `reply` ends, once all of it has
@@ -300,7 +354,23 @@ pub(crate) fn udp(
 
 #[cfg(test)]
 mod tests {
-    use super::http_message_end;
+    use super::{http_message_end, idle_gap};
+    use std::time::Duration;
+
+    /// The gap a quiet port is allowed covers a pause as long again as its
+    /// first byte took, lets a speak-first service take a good share of the
+    /// budget over its answer, and never drops to a stall a fast link shows.
+    /// Each term is the one that governs somewhere.
+    #[test]
+    fn the_idle_gap_is_the_largest_of_its_three_terms() {
+        let ms = Duration::from_millis;
+        // A slow first byte: twice its wait.
+        assert_eq!(idle_gap(ms(900), ms(2_000)), ms(1_800));
+        // A prompt port with time to spare: a quarter of what is left.
+        assert_eq!(idle_gap(ms(1), ms(3_000)), ms(750));
+        // Little time left and a prompt port: the floor.
+        assert_eq!(idle_gap(ms(1), ms(400)), ms(300));
+    }
 
     #[test]
     fn a_response_with_a_length_ends_once_that_many_body_bytes_are_in() {

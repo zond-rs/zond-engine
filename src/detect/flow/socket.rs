@@ -325,6 +325,46 @@ mod tests {
         );
     }
 
+    /// A service that answers and then keeps the connection open for the next
+    /// command, as redis and memcached do, and whose replies carry no length a
+    /// generic reader could follow. Each exchange ends once the reply has
+    /// arrived and the port has gone quiet, so a flow's second question is
+    /// asked inside the budget the first would otherwise have spent waiting for
+    /// a close that never comes.
+    #[test]
+    fn a_reply_the_service_holds_the_connection_open_after_ends_once_the_port_goes_quiet() {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for sock in listener.incoming().take(2) {
+                let Ok(mut sock) = sock else { return };
+                std::thread::spawn(move || {
+                    let _ = sock.read(&mut [0u8; 512]);
+                    let _ = sock.write_all(b"+PONG\r\n");
+                    // Held for the next command until the client lets go.
+                    let _ = sock.read(&mut [0u8; 1]);
+                });
+            }
+        });
+
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 3_000, 2));
+        for command in ["PING\r\n", "PING\r\n"] {
+            let reply = probe.speak(command.as_bytes());
+            assert_eq!(
+                reply.as_deref(),
+                Some(&b"+PONG\r\n"[..]),
+                "a question went unanswered, refused on {:?}",
+                probe.last_refusal()
+            );
+        }
+        assert!(
+            !probe.reply_complete(),
+            "a reply ended by the port going quiet was taken as whole"
+        );
+    }
+
     /// An exchange the flow's clock ran out on is a question the budget left
     /// unanswered, and says so: a flow whose last request was still waiting
     /// when its time was up must not read the same as one the port declined.
