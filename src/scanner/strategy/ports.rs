@@ -803,7 +803,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// never left, sitting in the kernel's queue, and its silence says nothing
     /// about the port. What the caller makes of that depends on which of the
     /// two it was; see [`service_retries`](RawPortScan::service_retries) and
-    /// [`resolve_remaining`](RawPortScan::resolve_remaining).
+    /// [`conclude_pending_neighbors`](Self::conclude_pending_neighbors).
     pub(crate) fn pending_neighbor(&self, host: IpAddr) -> Option<NeighborState> {
         let Some(NeighborGate::Asked { at }) = self.neighbor_gates.get(&host).copied() else {
             return None;
@@ -812,6 +812,32 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             return None;
         }
         self.kernel_neighbor(host, at)
+    }
+
+    /// Files every host whose neighbour the kernel was still resolving, or had
+    /// given up on, when the scan ended.
+    ///
+    /// Out of time with the kernel still asking, the one probe such a host was
+    /// sent never left, and nothing was heard from its neighbour for as long
+    /// as the scan ran, so the address is one nothing reached. Asked of every
+    /// host still waiting rather than of the probes still on the ledger: the
+    /// probe may as well be back in the hold queue, having run out of
+    /// attempts while the kernel asked, and the address is the same absent
+    /// host either way.
+    pub(crate) fn conclude_pending_neighbors(&mut self) {
+        let waiting: Vec<IpAddr> = self
+            .neighbor_gates
+            .iter()
+            .filter(|(_, gate)| matches!(gate, NeighborGate::Asked { .. }))
+            .map(|(host, _)| *host)
+            .collect();
+        for host in waiting {
+            if let Some(state) = self.pending_neighbor(host)
+                && state.is_unresolved()
+            {
+                self.record_unresolved(host, state);
+            }
+        }
     }
 
     /// Whether `host` is an address this scan cannot reach and has never heard
@@ -1501,14 +1527,6 @@ pub trait RawPortScan: PortScanner {
         for (ip, port) in self.core_mut().ledger.drain_unresolved() {
             // Unreachable is known of the address however far this probe's own
             // schedule got. See `RawProbeScan::unreachable`.
-            // Out of time with the kernel still asking: the probe never left,
-            // and nothing was heard from the neighbour for as long as the scan
-            // ran, so the address is filed as one nothing reached.
-            if let Some(state) = self.core().pending_neighbor(ip)
-                && state.is_unresolved()
-            {
-                self.core_mut().record_unresolved(ip, state);
-            }
             if self.core().is_unreachable(&ip) {
                 self.record_unasked_endpoint(ip, port);
                 continue;
@@ -1681,7 +1699,18 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
             // outstanding, and the rate bounds how fast they are asked for.
             _ = send_tick.tick(), if admitting => {
                 let now = Instant::now();
-                for _ in 0..scanner.core().batch {
+                // The batch is a budget of sends, and only a probe handed to
+                // the sender spends it. A probe held again, settled unasked or
+                // turned away from an unreachable address put nothing on the
+                // wire, and charging it a share would let the probes waiting
+                // on a dead neighbour's resolution take every share a rate
+                // ceiling allows, re-checked each tick while the live hosts
+                // behind them are never asked. The loop still ends: each pass
+                // sends, takes a held probe due now (one held again is due
+                // later), or takes from the stream until it is empty or the
+                // hold queue is full.
+                let budget = scanner.core().audit.sends_attempted + scanner.core().batch as u64;
+                while scanner.core().audit.sends_attempted < budget {
                     // A probe already held for its host's next slot goes first.
                     // It was taken off the stream before anything still in the
                     // channel was looked at, and leaving it behind fresh targets
@@ -1759,6 +1788,9 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
         }
     };
 
+    // Before anything is settled, so every port of an address the kernel
+    // never resolved takes the same verdict, wherever its probe was waiting.
+    scanner.core_mut().conclude_pending_neighbors();
     scanner.resolve_remaining();
     // Probes still waiting for a host's next slot. Before the channel drain
     // below and after the ledger above, because a held retry is accounted for by
@@ -2285,6 +2317,23 @@ mod tests {
             !core.is_unreachable(&TARGET),
             "the kernel has not given up, so neither has the scan"
         );
+    }
+
+    /// A host still waiting on the kernel when the scan ends is filed
+    /// unreachable, wherever its one probe was: a probe that ran out of
+    /// attempts while the kernel asked is back in the hold queue, off the
+    /// ledger that the scan's end otherwise reads.
+    #[test]
+    fn a_host_still_waiting_on_its_neighbour_at_the_end_is_filed_unreachable() {
+        let state = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (mut core, _session, _reads) = core_reading(std::sync::Arc::clone(&state));
+        assert_eq!(core.admit(TARGET, Instant::now()), Admission::Send);
+        assert!(core.ledger.is_empty(), "no probe of it is on the ledger");
+
+        *state.lock().unwrap() = Some(NeighborState::Resolving);
+        core.conclude_pending_neighbors();
+
+        assert!(core.is_unreachable(&TARGET));
     }
 
     /// A host reached through a gateway has no neighbour entry of its own, so

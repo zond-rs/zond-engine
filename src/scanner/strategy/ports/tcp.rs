@@ -1940,6 +1940,120 @@ mod tests {
         );
     }
 
+    /// Under a rate ceiling, the probes held while the kernel resolves dead
+    /// neighbours spend none of it, and a live host behind them is asked every
+    /// port.
+    ///
+    /// A tick releases a batch, and a probe that went back to wait on a
+    /// resolution put nothing on the wire. Charged a share anyway, the ports
+    /// of a few dead neighbours, each re-checked every few tens of
+    /// milliseconds, would take every share a slow ceiling gives and the live
+    /// host would reach the deadline never asked. Here the kernel gives up on
+    /// the dead neighbours only once the live host has been asked everything,
+    /// so a scan that starves it waits on them to its deadline.
+    #[tokio::test]
+    async fn probes_held_on_a_resolution_spend_none_of_a_rate_ceiling() {
+        use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborState, NeighborTable};
+        use std::sync::Arc;
+
+        const LIVE: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 60));
+        const LIVE_PORTS: u16 = 10;
+        let dead: Vec<IpAddr> = (101..106)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let seen = Arc::clone(&sent);
+        let neighbours = dead.clone();
+        let table = KernelNeighbors::with_reader(Box::new(move || {
+            let live_asked = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, _, dst)| *dst == LIVE)
+                .count();
+            let state = if live_asked >= usize::from(LIVE_PORTS) {
+                NeighborState::Failed
+            } else {
+                NeighborState::Resolving
+            };
+            Ok(neighbours
+                .iter()
+                .map(|address| (*address, state))
+                .chain([(LIVE, NeighborState::Resolved)])
+                .collect::<NeighborTable>())
+        }));
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
+        let transport =
+            ProbeTransport::from_parts(Box::new(sender), reply_rx).with_kernel_neighbors(table);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let targets_total = dead.len() * 20 + usize::from(LIVE_PORTS);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx.clone(),
+            TcpScanTechnique::Syn,
+            transport,
+            targets_total,
+        );
+        // A hundred probes a second: one a tick, a tick every ten milliseconds.
+        scanner.core_mut().send_tick = Duration::from_millis(10);
+        scanner.core_mut().batch = 1;
+
+        let (targets, stream) = tokio::sync::mpsc::channel(targets_total);
+        let plan = dead
+            .iter()
+            .flat_map(|address| (1..=20u16).map(move |port| (*address, port)))
+            .chain((1..=LIVE_PORTS).map(|port| (LIVE, port)));
+        for (position, (ip, port)) in plan.enumerate() {
+            targets
+                .send(PlannedTarget::new(
+                    position as u64,
+                    Target {
+                        ip,
+                        port,
+                        protocol: Protocol::Tcp,
+                    },
+                ))
+                .await
+                .expect("the stream is open");
+        }
+        drop(targets);
+        scanner.scan(stream).await.expect("the scan runs");
+
+        let live = session
+            .hosts()
+            .get(LIVE)
+            .expect("the live host is recorded");
+        for port in live.ports() {
+            assert_ne!(
+                port.state(),
+                PortState::Unasked,
+                "the live host's port {} was never asked",
+                port.number()
+            );
+        }
+        let unreached = ctx.take_unroutable();
+        for address in &dead {
+            assert!(
+                unreached.contains(address),
+                "{address} is unreached: {unreached:?}"
+            );
+        }
+        let to_dead = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, dst)| dead.contains(dst))
+            .count();
+        assert_eq!(
+            to_dead,
+            dead.len(),
+            "one probe each started the resolutions"
+        );
+    }
+
     /// Every address is asked before the deadline, however long the sender
     /// spends resolving the ones that turn out dead.
     ///
