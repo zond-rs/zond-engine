@@ -268,6 +268,7 @@ impl UdpPortScanner {
     /// A reply that matches no outstanding probe is dropped: it is a duplicate
     /// of one already resolved, an answer to a probe already written off, or a
     /// packet that reached us despite not answering anything this scan sent.
+    /// Returns whether it resolved one.
     ///
     /// The round trip is whatever the ledger is willing to vouch for. A probe
     /// that was sent once is unambiguous; one that was retried is not, since
@@ -279,13 +280,13 @@ impl UdpPortScanner {
         sender: IpAddr,
         ttl: Option<u8>,
         now: Instant,
-    ) {
+    ) -> bool {
         let Some(resolution) = self.core.ledger.resolve(&target, None, now) else {
             // A duplicate of one already resolved, an answer to a probe already
             // written off, or a packet that reached us despite answering nothing
             // this scan sent.
             self.core.audit.record_reply_without_rtt();
-            return;
+            return false;
         };
 
         let rtt = resolution.rtt;
@@ -295,6 +296,20 @@ impl UdpPortScanner {
         self.settle(Outcome::Answered {
             position: resolution.payload,
         });
+        true
+    }
+
+    /// Whether this scan asked `target` and settled it already, which is
+    /// what makes a reply matching no outstanding probe a duplicate or a late
+    /// answer rather than a stray: its port is on the host.
+    fn asked(&self, (ip, port): ProbeTarget) -> bool {
+        self.core
+            .ctx
+            .read_host(ip, |host| {
+                host.ports()
+                    .any(|found| found.number() == port && found.protocol() == Protocol::Udp)
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -430,18 +445,13 @@ impl RawPortScan for UdpPortScanner {
     /// Classifies one captured reply and, if it answers an outstanding probe,
     /// resolves that probe.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
+        // What the reply proves about the *host*, a separate claim from the
+        // port verdict and filed after it; see below.
+        let mut declared = None;
         let classified = match reply.protocol {
             IpNextHeaderProtocols::Udp => {
                 answering_probe(&reply.bytes, self.core.src_port).map(|(port, datagram)| {
-                    // What the reply proves about the *host*, which is a
-                    // separate claim from the port verdict below and survives
-                    // the probe being resolved twice: a duplicate answer is
-                    // still a name server answering.
-                    if let Some(role) = payload::declared_role(port, datagram) {
-                        self.core.ctx.update_host(reply.source, |host| {
-                            host.add_network_role(role);
-                        });
-                    }
+                    declared = payload::declared_role(port, datagram);
                     ((reply.source, port), Verdict::Port(PortState::Open))
                 })
             }
@@ -453,7 +463,7 @@ impl RawPortScan for UdpPortScanner {
 
         match classified {
             Some((target, Verdict::Port(state))) => {
-                self.resolve_probe(
+                let resolved = self.resolve_probe(
                     target,
                     state,
                     reply.source,
@@ -463,7 +473,23 @@ impl RawPortScan for UdpPortScanner {
                     // behalf, the hop counter is the cheapest evidence of which.
                     reply.observation.map(IpObservation::remaining_hops),
                     now,
-                )
+                );
+                // Only for a reply from a port this scan asked. The capture
+                // hands over whatever reaches the scan's source port, which on
+                // a busy machine includes other programs' conversations, and a
+                // role read from a stray would write a host record for an
+                // address the scan never asked about. A reply that resolved
+                // nothing can still be a duplicate, or an answer to a probe
+                // already written off, and says what the first would have: a
+                // name server answering twice is still a name server. Those
+                // are the ones whose port is already on the host.
+                if let Some(role) = declared
+                    && (resolved || self.asked(target))
+                {
+                    self.core.ctx.update_host(target.0, |host| {
+                        host.add_network_role(role);
+                    });
+                }
             }
             // Named a host but resolved no probe. Counted as seen rather than
             // off-target: it came from an address this scan asked about.
@@ -966,6 +992,43 @@ mod tests {
         assert!(
             host.network_roles().contains(&NetworkRole::DnsServer),
             "the reply parsed as DNS, which a bound socket cannot fake"
+        );
+    }
+
+    /// A name server's answer to a question this scan never asked records
+    /// nothing, and one to a question it did ask still names the host however
+    /// many times it arrives.
+    ///
+    /// The capture hands over whatever reaches the scan's source port, which
+    /// on a busy machine includes other programs' conversations: a resolver
+    /// that drew the same ephemeral port hears its name server's answers
+    /// there. Reading a role from one would write a host record for its
+    /// sender, an address the scan never asked about, into a report that
+    /// then lists it as a name server. A second answer from a host that was
+    /// asked is a duplicate rather than a stray, and says what the first did.
+    #[test]
+    fn a_dns_answer_names_the_sender_only_if_the_scan_asked_it() {
+        let (mut scanner, session) = scanner_with_mock();
+        let mut answer = crate::scanner::payload::for_port(53).to_vec();
+        answer[2] |= 0b1000_0000;
+
+        scanner.handle_reply(
+            &udp_reply_saying(53, SCAN_SRC_PORT, answer.clone()),
+            Instant::now(),
+        );
+        assert!(
+            session.hosts().get(TARGET).is_none(),
+            "an answer nobody asked for invented a host: {:?}",
+            session.hosts().get(TARGET)
+        );
+
+        probe(&mut scanner, TARGET, 53);
+        scanner.handle_reply(&udp_reply(53, SCAN_SRC_PORT), Instant::now());
+        scanner.handle_reply(&udp_reply_saying(53, SCAN_SRC_PORT, answer), Instant::now());
+        let host = session.hosts().get(TARGET).expect("the host answered");
+        assert!(
+            host.network_roles().contains(&NetworkRole::DnsServer),
+            "a duplicate answer from a host that was asked still names it"
         );
     }
 
