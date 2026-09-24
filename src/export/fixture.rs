@@ -330,12 +330,16 @@ pub(crate) fn report() -> ScanReport {
         ..Default::default()
     };
 
+    // For the schema rather than for plausibility, as the idle-scan record
+    // is: a phase carries the reason a liveness pass was skipped, so every
+    // writer and reader is held to one.
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
         Privilege::Raw,
         TargetScope::from_ip_set(&mut targets, &Exclusions::new(excluded)),
         &config,
-    );
+    )
+    .skipping_liveness(crate::report::LivenessSkip::PortsNoDearer);
 
     ctx.record_failure(ScannerKind::Local, "raw socket unavailable".to_string());
     ctx.record_probe_stats(probe_stats());
@@ -457,6 +461,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         timed_out: Vec::new(),
         reached_by_connect: Vec::new(),
         undecided: Vec::new(),
+        liveness_skipped: None,
         probes: Vec::new(),
         origin: None,
     });

@@ -128,7 +128,7 @@ use crate::model::{
 #[cfg(feature = "journal-format")]
 use crate::report::ScanPhase;
 use crate::report::ScannerKind;
-use crate::report::{ScanKind, ScanReport, TargetScope};
+use crate::report::{LivenessSkip, ScanKind, ScanReport, TargetScope};
 use crate::scanner::orchestrator::{
     Enrichment, ScanCapabilities, finish_enrichment, probed_subset, run_port_phase,
 };
@@ -726,6 +726,24 @@ fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
     }
 
     reaches_a_local_segment(cfg, map)
+}
+
+/// Why a port scan under `cfg` runs with no liveness pass, or `None` where it
+/// runs one; `runs_liveness` is [`liveness_earns_its_place`]'s verdict.
+///
+/// An idle scan first, since it forbids the pass whatever else was set; then
+/// the caller's own [`assume_up`](ZondConfig::assume_up); and otherwise the
+/// engine's decision that the port probes cost no more than asking first.
+fn liveness_skip(cfg: &ZondConfig, runs_liveness: bool) -> Option<LivenessSkip> {
+    if runs_liveness {
+        None
+    } else if cfg.idle_scan.is_some() {
+        Some(LivenessSkip::IdleScan)
+    } else if cfg.assume_up {
+        Some(LivenessSkip::AssumeUp)
+    } else {
+        Some(LivenessSkip::PortsNoDearer)
+    }
 }
 
 /// The most addresses a scan is checked for on-link targets across.
@@ -1468,14 +1486,18 @@ fn spawn_scan(
         // from are settled at their own positions by the dispatcher. See
         // `Outcome::Skipped`, and `Outcome::Undecided` for a host it never
         // reached a verdict on.
-        let (liveness, live) = if !runs_liveness {
-            if cfg.idle_scan.is_some() {
-                crate::info!(verbosity = 1, "liveness pass skipped (idle scan)");
-            } else if !cfg.assume_up {
-                // Neither declined by the caller nor forbidden by the technique:
-                // dropped because probing the ports costs no more than asking
-                // whether the host is there would, so the port probes do both.
-                crate::info!(verbosity = 1, "liveness pass skipped (port scan no dearer)");
+        let skipped = liveness_skip(&cfg, runs_liveness);
+        let (liveness, live) = if let Some(why) = skipped {
+            match why {
+                LivenessSkip::IdleScan => {
+                    crate::info!(verbosity = 1, "liveness pass skipped (idle scan)");
+                }
+                LivenessSkip::PortsNoDearer => {
+                    crate::info!(verbosity = 1, "liveness pass skipped (port scan no dearer)");
+                }
+                // The caller asked for it, and a line saying so tells them
+                // nothing they did not choose.
+                _ => {}
             }
             (None, None)
         } else {
@@ -1519,7 +1541,10 @@ fn spawn_scan(
         };
         let scope = TargetScope::from_target_map(&mut covered, &cfg.exclusions);
         crate::model::exclusion::Exclusions::withhold_targets(&cfg.exclusions, &mut target_map);
-        let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privilege, scope, &cfg);
+        let mut recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privilege, scope, &cfg);
+        if let Some(why) = skipped {
+            recorder = recorder.skipping_liveness(why);
+        }
 
         ctx.enter_stage(Stage::Ports, None);
         // Filed against the port phase, since that is the phase an idle scan

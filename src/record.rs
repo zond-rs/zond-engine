@@ -1384,6 +1384,16 @@ pub struct PhaseRecord {
     /// overstates it only where that sitting stopped during discovery.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undecided: Vec<RangeRecord>,
+    /// Why a port sitting ran with no liveness pass in front of it, by its wire
+    /// name.
+    ///
+    /// Skipped when absent, which is every sitting a liveness pass preceded and
+    /// every one that is not a port scan, and defaulted on the way in. A name
+    /// this build does not know reads back as absent, which claims only that
+    /// the reason is not stated, where guessing one would misstate what the
+    /// findings mean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness_skipped: Option<String>,
     /// What each strategy recorded about its own run.
     #[serde(default)]
     pub probe_stats: Vec<ProbeStatsRecord>,
@@ -1525,6 +1535,9 @@ impl From<&ScanPhase> for PhaseRecord {
                 .map(RangeRecord::from)
                 .collect(),
             undecided: phase.undecided().iter().map(RangeRecord::from).collect(),
+            liveness_skipped: phase
+                .liveness_skipped()
+                .map(|skip| wire::liveness_skip_name(skip).to_owned()),
             probe_stats: phase
                 .probe_stats()
                 .iter()
@@ -1573,6 +1586,10 @@ impl From<&PhaseRecord> for ScanPhase {
                 .iter()
                 .filter_map(RangeRecord::rebuild)
                 .collect(),
+            liveness_skipped: record
+                .liveness_skipped
+                .as_deref()
+                .and_then(wire::liveness_skip),
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(PhaseOrigin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),

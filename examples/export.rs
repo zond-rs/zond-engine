@@ -797,6 +797,7 @@ fn phase() -> ScanPhase {
         // document too, as `refusals` is.
         reached_by_connect: Vec::new(),
         undecided: Vec::new(),
+        liveness_skipped: None,
     })
 }
 

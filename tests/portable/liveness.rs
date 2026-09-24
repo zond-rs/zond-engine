@@ -24,7 +24,7 @@ use crate::support::*;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::PortSet;
 use zond_engine::model::target::{TargetMap, TargetSet};
-use zond_engine::report::ScanKind;
+use zond_engine::report::{LivenessSkip, ScanKind};
 
 /// An address nothing answers for, or `None` with the reason already printed.
 fn dead() -> Option<IpAddr> {
@@ -50,6 +50,11 @@ async fn a_port_scan_records_the_liveness_pass_as_its_own_phase() {
 
     let kinds: Vec<ScanKind> = report.phases().iter().map(|phase| phase.kind()).collect();
     assert_eq!(kinds, vec![ScanKind::Discovery, ScanKind::PortScan]);
+    assert_eq!(
+        report.phases()[1].liveness_skipped(),
+        None,
+        "a port phase a liveness pass preceded names no reason for skipping one"
+    );
 }
 
 /// A scan naming no more ports than the liveness pass would ask skips the pass
@@ -71,6 +76,11 @@ async fn a_scan_of_few_ports_lets_the_port_probes_stand_in() {
         kinds,
         vec![ScanKind::PortScan],
         "a two-port scan is cheaper probed than asked, so it runs no liveness pass"
+    );
+    assert_eq!(
+        report.phases()[0].liveness_skipped(),
+        Some(LivenessSkip::PortsNoDearer),
+        "and the port phase says why, rather than leaving the missing phase to be read"
     );
 }
 
@@ -171,6 +181,11 @@ async fn assume_up_probes_the_ports_without_asking_first() {
         .collect();
     assert_eq!(kinds, vec![ScanKind::PortScan], "no liveness phase ran");
     assert_eq!(
+        outcome.report.phases()[0].liveness_skipped(),
+        Some(LivenessSkip::AssumeUp),
+        "and the phase says the caller declined it"
+    );
+    assert_eq!(
         outcome.report.summary().ports_total,
         2,
         "the ports were probed on trust"
@@ -203,6 +218,11 @@ async fn an_idle_scan_runs_no_liveness_pass_against_its_target() {
         .map(|phase| phase.kind())
         .collect();
     assert_eq!(kinds, vec![ScanKind::PortScan], "no liveness phase ran");
+    assert_eq!(
+        outcome.report.phases()[0].liveness_skipped(),
+        Some(LivenessSkip::IdleScan),
+        "and the phase says the technique forbade it"
+    );
     assert!(
         outcome.host(LOOPBACK).is_none(),
         "the target heard from this host, and answered it"
@@ -375,6 +395,19 @@ async fn a_resumed_assume_up_scan_records_no_discovery_phase() {
             .phases()
             .iter()
             .map(|p| p.kind())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        resumed
+            .phases()
+            .iter()
+            .all(|phase| phase.liveness_skipped() == Some(LivenessSkip::AssumeUp)),
+        "every sitting, the one read back from the journal included, says why it ran \
+         no liveness pass: {:?}",
+        resumed
+            .phases()
+            .iter()
+            .map(|p| p.liveness_skipped())
             .collect::<Vec<_>>()
     );
 

@@ -123,9 +123,10 @@ pub use crate::report::ENGINE_VERSION;
 // than called through, since a caller should not have to know where they live.
 pub use crate::record::wire::{
     attachment_source_name, confidence_name, detection_ceiling_name, detection_class_name,
-    filtering_name, host_status_name, ip_protocol_state_name, network_role_name, port_scope_name,
-    port_state_name, protocol_name, reference_kind_name, scan_kind_name, scan_response_name,
-    scanner_kind_name, severity_name, status_protocol_name, stop_reason_name, tcp_flags_name,
+    filtering_name, host_status_name, ip_protocol_state_name, liveness_skip_name,
+    network_role_name, port_scope_name, port_state_name, protocol_name, reference_kind_name,
+    scan_kind_name, scan_response_name, scanner_kind_name, severity_name, status_protocol_name,
+    stop_reason_name, tcp_flags_name,
 };
 
 /// The wire name of a send mode.
@@ -589,6 +590,15 @@ pub struct PhaseDto<'a> {
     /// there says nothing about the network. Disjoint from `unroutable`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub undecided: Vec<RangeDto>,
+    /// Why this port phase ran with no liveness pass in front of it, by name.
+    ///
+    /// Left out where one preceded it, which the report carries as a discovery
+    /// phase of its own, and on every phase that is not a port scan. Stated
+    /// rather than left to be read off the missing discovery phase, since the
+    /// caller's choice, an idle scan and the engine's own decision read the same
+    /// from the phase list and differ in what the findings mean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub liveness_skipped: Option<&'static str>,
     /// What each instrumented scanner observed about its own run. Empty where
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
@@ -684,6 +694,7 @@ impl<'a> PhaseDto<'a> {
                 .map(RangeDto::new)
                 .collect(),
             undecided: phase.undecided().iter().map(RangeDto::new).collect(),
+            liveness_skipped: phase.liveness_skipped().map(liveness_skip_name),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
             origin: phase.origin().map(|origin| PhaseOriginDto {
                 label: origin.label(),

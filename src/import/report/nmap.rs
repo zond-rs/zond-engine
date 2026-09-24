@@ -759,6 +759,9 @@ impl Run {
             // The scope holds only addresses the document gave a verdict on, up
             // or down, so none of it is left undecided.
             undecided: Vec::new(),
+            // An nmap document does not say whether host discovery ran, only
+            // what it concluded, so no reason is claimed.
+            liveness_skipped: None,
             probes: Vec::new(),
             origin: None,
         });

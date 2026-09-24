@@ -647,6 +647,7 @@ mod tests {
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
+            liveness_skipped: None,
             probes: Vec::new(),
             origin: None,
         });
@@ -689,6 +690,7 @@ mod tests {
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
+            liveness_skipped: None,
             probes: Vec::new(),
             origin: None,
         });
@@ -728,6 +730,7 @@ mod tests {
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
+            liveness_skipped: None,
             probes: Vec::new(),
             origin: None,
         });

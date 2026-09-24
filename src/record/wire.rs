@@ -47,7 +47,7 @@ use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::protocols::tcp;
 use crate::report::ScannerKind;
-use crate::report::{AttachmentSource, PortScope, ScanKind, StopReason};
+use crate::report::{AttachmentSource, LivenessSkip, PortScope, ScanKind, StopReason};
 
 /// The prefix that marks a name a strategy supplied rather than one this engine
 /// defines.
@@ -515,6 +515,25 @@ pub fn scan_kind(name: &str) -> Option<ScanKind> {
     })
 }
 
+/// The wire name for why a port phase ran with no liveness pass.
+pub fn liveness_skip_name(skip: LivenessSkip) -> &'static str {
+    match skip {
+        LivenessSkip::AssumeUp => "assume_up",
+        LivenessSkip::IdleScan => "idle_scan",
+        LivenessSkip::PortsNoDearer => "ports_no_dearer",
+    }
+}
+
+/// [`liveness_skip_name`] read back.
+pub fn liveness_skip(name: &str) -> Option<LivenessSkip> {
+    Some(match name {
+        "assume_up" => LivenessSkip::AssumeUp,
+        "idle_scan" => LivenessSkip::IdleScan,
+        "ports_no_dearer" => LivenessSkip::PortsNoDearer,
+        _ => return None,
+    })
+}
+
 /// Which strategy something is attributed to.
 pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
     match kind {
@@ -682,6 +701,10 @@ mod tests {
 
         for value in ScanKind::ALL {
             assert_eq!(scan_kind(scan_kind_name(value)), Some(value));
+        }
+
+        for value in LivenessSkip::ALL {
+            assert_eq!(liveness_skip(liveness_skip_name(value)), Some(value));
         }
 
         for value in IpProtocolState::ALL {

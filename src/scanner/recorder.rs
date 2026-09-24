@@ -20,7 +20,9 @@
 use std::time::{Instant, SystemTime};
 
 use crate::config::ZondConfig;
-use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope};
+use crate::report::{
+    LivenessSkip, PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope,
+};
 use crate::scanner::orchestrator::Liveness;
 use crate::scanner::session::ScanContext;
 use crate::system::privilege::Privilege;
@@ -83,6 +85,7 @@ pub struct PhaseRecorder {
     privilege: Privilege,
     targets: TargetScope,
     settings: ScanSettings,
+    liveness_skipped: Option<LivenessSkip>,
 }
 
 impl PhaseRecorder {
@@ -109,7 +112,20 @@ impl PhaseRecorder {
             privilege,
             targets,
             settings: ScanSettings::from(cfg),
+            liveness_skipped: None,
         }
+    }
+
+    /// Records that this port phase runs with no liveness pass in front of it,
+    /// and why.
+    ///
+    /// For a caller orchestrating a port scan who skipped the pass, so the
+    /// record says so rather than leaving a reader to infer it from the missing
+    /// discovery phase. See [`ScanPhase::liveness_skipped`].
+    #[must_use]
+    pub fn skipping_liveness(mut self, why: LivenessSkip) -> Self {
+        self.liveness_skipped = Some(why);
+        self
     }
 
     /// Closes the record, snapshotting the hosts the scan wrote into `ctx`.
@@ -177,6 +193,7 @@ impl PhaseRecorder {
                 }
             },
             undecided,
+            liveness_skipped: self.liveness_skipped,
             probes: ctx.take_probe_stats(),
             origin: None,
             attachments: ctx.take_attachments(),

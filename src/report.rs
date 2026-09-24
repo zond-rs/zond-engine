@@ -135,6 +135,42 @@ impl fmt::Display for ScanKind {
     }
 }
 
+/// Why a port phase ran with no liveness pass in front of it.
+///
+/// A port scan ordinarily asks each address whether anything is there before
+/// it probes the address's ports, and records that pass as a
+/// [`Discovery`](ScanKind::Discovery) phase of its own. A phase carrying one of
+/// these ran without it, and which one changes what the phase's findings mean:
+/// the caller's choice and the technique's both probed every address on trust,
+/// while the engine's own decision probed every address because asking first
+/// would have cost as much as the probes did, and read the probes' answers as
+/// the liveness question's.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LivenessSkip {
+    /// The caller declined the pass, and asked for every address to be probed
+    /// as a host that is there.
+    AssumeUp,
+    /// The scan was an [idle scan](ScanSettings::idle_scan), which forges every
+    /// probe from its zombie, and a liveness pass would have been this host
+    /// asking the target directly.
+    IdleScan,
+    /// The engine dropped the pass because the scan named no more ports per
+    /// address than the pass would have asked, so probing them cost no more
+    /// than asking first. An answer on any port, open or closed, is what found
+    /// a host.
+    PortsNoDearer,
+}
+
+impl LivenessSkip {
+    /// Every reason this build records, in declaration order.
+    ///
+    /// Here for the reason [`ScanKind::ALL`] is: the enum is
+    /// `#[non_exhaustive]`, and the export conformance suite reads this list
+    /// against the published schema's own.
+    pub const ALL: [LivenessSkip; 3] = [Self::AssumeUp, Self::IdleScan, Self::PortsNoDearer];
+}
+
 /// Which ports a phase walked, and whether it walked the same ones everywhere.
 ///
 /// A scope records the addresses a phase covered, and for a port scan that is
@@ -1645,6 +1681,9 @@ pub struct PhaseParts {
     /// Addresses in scope the phase reached no verdict on. See
     /// [`ScanPhase::undecided`].
     pub undecided: Vec<IpRange>,
+    /// Why a port phase ran with no liveness pass in front of it. See
+    /// [`ScanPhase::liveness_skipped`].
+    pub liveness_skipped: Option<LivenessSkip>,
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
@@ -1674,6 +1713,7 @@ impl ScanPhase {
             timed_out: parts.timed_out,
             reached_by_connect: parts.reached_by_connect,
             undecided: parts.undecided,
+            liveness_skipped: parts.liveness_skipped,
             probes: parts.probes,
             origin: parts.origin,
             attachments: parts.attachments,
@@ -1737,6 +1777,9 @@ pub struct ScanPhase {
     /// Beside `unroutable` for the reason `timed_out` is: the phase qualifying
     /// what it covered. See [`undecided`](Self::undecided).
     undecided: Vec<IpRange>,
+    /// Why this port phase ran with no liveness pass in front of it, or `None`.
+    /// See [`liveness_skipped`](Self::liveness_skipped).
+    liveness_skipped: Option<LivenessSkip>,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<PhaseOrigin>,
@@ -1873,6 +1916,18 @@ impl ScanPhase {
     /// presence, and a listener covers no address.
     pub fn undecided(&self) -> &[IpRange] {
         &self.undecided
+    }
+
+    /// Why this port phase ran with no liveness pass in front of it.
+    ///
+    /// `None` for a port phase a liveness pass preceded, which the report
+    /// carries as a [`Discovery`](ScanKind::Discovery) phase of its own, and for
+    /// every phase that is not a [`PortScan`](ScanKind::PortScan). Recorded
+    /// rather than left to be inferred from the missing discovery phase, since
+    /// the three reasons read the same from the phase list and differ in what
+    /// the findings mean; see [`LivenessSkip`].
+    pub fn liveness_skipped(&self) -> Option<LivenessSkip> {
+        self.liveness_skipped
     }
 
     /// The strategies in this phase that could not do their job.
@@ -2881,6 +2936,7 @@ mod tests {
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
+            liveness_skipped: None,
             probes: Vec::new(),
             origin: None,
         }

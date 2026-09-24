@@ -599,6 +599,7 @@ struct PhaseDto {
     timed_out: Vec<String>,
     reached_by_connect: Vec<RangeDto>,
     undecided: Vec<RangeDto>,
+    liveness_skipped: Option<String>,
     origin: Option<PhaseOriginDto>,
 }
 
@@ -613,6 +614,9 @@ struct PhaseOriginDto {
 impl PhaseDto {
     fn record(self) -> Result<PhaseRecord, String> {
         known(wire::scan_kind(&self.kind), "a scan phase", &self.kind)?;
+        if let Some(skip) = &self.liveness_skipped {
+            known(wire::liveness_skip(skip), "a liveness skip", skip)?;
+        }
 
         Ok(PhaseRecord {
             // Not read back: a phase somebody else's document describes was
@@ -655,6 +659,7 @@ impl PhaseDto {
                 .into_iter()
                 .map(RangeDto::record)
                 .collect::<Result<_, _>>()?,
+            liveness_skipped: self.liveness_skipped,
             probe_stats: self
                 .probe_stats
                 .into_iter()
@@ -2235,6 +2240,11 @@ mod tests {
                 before.undecided(),
                 "what a phase never decided is what keeps it from reading as silence"
             );
+            assert_eq!(
+                after.liveness_skipped(),
+                before.liveness_skipped(),
+                "why a phase ran with no liveness pass is what says how to read its hosts"
+            );
         }
         assert!(
             original
@@ -2249,6 +2259,13 @@ mod tests {
                 .iter()
                 .any(|phase| !phase.undecided().is_empty()),
             "the fixture leaves something undecided, or the check above proves nothing"
+        );
+        assert!(
+            original
+                .phases()
+                .iter()
+                .any(|phase| phase.liveness_skipped().is_some()),
+            "the fixture skips a liveness pass, or the check above proves nothing"
         );
     }
 

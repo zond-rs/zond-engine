@@ -1338,6 +1338,21 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
+    // Why a port phase ran with no liveness pass. The phase list reads the same
+    // for all three, and the reason is what says how to read the hosts below.
+    if let Some(skip) = phase.liveness_skipped {
+        let why = match skip {
+            "assume_up" => "every address probed as up, as asked",
+            "idle_scan" => "an idle scan asks the target nothing directly",
+            _ => "probing the ports cost no more; an answer on any found the host",
+        };
+        fact(
+            out,
+            "liveness pass",
+            &format!("{}{}", esc("skipped"), dim(&[esc(why)])),
+        )?;
+    }
+
     // Addresses a privileged phase reached the unprivileged way. Their results
     // sit beside raw ones under a phase headed privileged, and this line is
     // what tells the two apart.
