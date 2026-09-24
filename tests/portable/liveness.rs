@@ -37,14 +37,60 @@ fn dead() -> Option<IpAddr> {
 
 /// The report says how the run was spent: what it took to establish anything
 /// was there, and what it took to probe it.
+///
+/// A wide port list, so the liveness pass earns its place: it asks a handful of
+/// ports where the port scan would ask sixty-four, so gating the second on the
+/// first is the cheaper order. A narrow list is the other way round and skips
+/// the pass; see [`a_scan_of_few_ports_lets_the_port_probes_stand_in`].
 #[tokio::test]
 async fn a_port_scan_records_the_liveness_pass_as_its_own_phase() {
-    let report = run_scan(target_map(LOOPBACK, "1,2"), &test_config())
+    let report = run_scan(target_map(LOOPBACK, "1-64"), &test_config())
         .await
         .report;
 
     let kinds: Vec<ScanKind> = report.phases().iter().map(|phase| phase.kind()).collect();
     assert_eq!(kinds, vec![ScanKind::Discovery, ScanKind::PortScan]);
+}
+
+/// A scan naming no more ports than the liveness pass would ask skips the pass
+/// and lets the port probes stand in for it.
+///
+/// The pass asks the common five and a few of the scan's own ports; a scan of
+/// two ports would cost less probed directly than asked about first, so there
+/// is one phase, not two, and an answer on either port, open or closed, is what
+/// finds the host. Loopback is neither on this host's own segment nor a UDP
+/// target, so the port count alone decides.
+#[tokio::test]
+async fn a_scan_of_few_ports_lets_the_port_probes_stand_in() {
+    let report = run_scan(target_map(LOOPBACK, "1,2"), &test_config())
+        .await
+        .report;
+
+    let kinds: Vec<ScanKind> = report.phases().iter().map(|phase| phase.kind()).collect();
+    assert_eq!(
+        kinds,
+        vec![ScanKind::PortScan],
+        "a two-port scan is cheaper probed than asked, so it runs no liveness pass"
+    );
+}
+
+/// A scan naming a UDP port keeps its liveness pass however few ports it names,
+/// because a UDP probe to a dead address is dear where a liveness probe is
+/// cheap.
+#[tokio::test]
+async fn a_udp_scan_keeps_its_liveness_pass_even_for_one_port() {
+    let mut map = TargetMap::new();
+    let ports = PortSet::try_from("u:53").expect("a port specification");
+    map.add_unit(TargetSet::new(IpSet::from(LOOPBACK), ports));
+
+    let report = run_scan(map, &test_config()).await.report;
+
+    let kinds: Vec<ScanKind> = report.phases().iter().map(|phase| phase.kind()).collect();
+    assert_eq!(
+        kinds,
+        vec![ScanKind::Discovery, ScanKind::PortScan],
+        "a UDP scan keeps the cheap liveness pass in front of its dear probes"
+    );
 }
 
 /// The whole point. An address nothing answers for gets a handful of liveness
@@ -72,7 +118,9 @@ async fn an_address_nothing_answers_for_is_never_port_scanned() {
 #[tokio::test]
 async fn the_port_phase_covers_only_what_answered() {
     let Some(dead) = dead() else { return };
-    let report = run_scan(target_map(dead, "1,2"), &test_config())
+    // A wide port list, so the liveness pass runs and the two phases exist to
+    // compare; a narrow one skips the pass and there is only the port phase.
+    let report = run_scan(target_map(dead, "1-64"), &test_config())
         .await
         .report;
 

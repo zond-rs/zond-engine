@@ -90,7 +90,10 @@ fn assert_valid_against(url: &str, document: &Value) {
 async fn a_real_port_scan_exports_a_document_the_schema_accepts() {
     let server = spawn_banner_server(b"SSH-2.0-OpenSSH_8.9p1\r\n").await;
     let closed = closed_loopback_port().await;
-    let ports = format!("{},{}", server.port, closed);
+    // A wide enough port list that the liveness pass earns its place and the
+    // export carries both phases: a scan of a handful of ports costs no more
+    // probed than asked and runs the ports alone.
+    let ports = format!("1-10,{},{}", server.port, closed);
 
     let outcome = run_scan(target_map(LOOPBACK, &ports), &test_config()).await;
     let document = export(&outcome.report, ExportOptions::new());
@@ -103,7 +106,7 @@ async fn a_real_port_scan_exports_a_document_the_schema_accepts() {
 
     assert_eq!(document["phases"][1]["kind"], "port_scan");
     assert_eq!(document["phases"][1]["targets"]["addresses"], "1");
-    assert_eq!(document["phases"][1]["targets"]["probes"], "2");
+    assert_eq!(document["phases"][1]["targets"]["probes"], "12");
 }
 
 /// Discovery reports take a different shape - no port dimension, a different

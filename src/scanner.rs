@@ -605,11 +605,14 @@ fn discovery_stages(cfg: &ZondConfig) -> Vec<Stage> {
 /// Read through [`running_under`], so the stages an idle scan lists are the
 /// ones it will run: a stage kept here that the scan then declines would leave
 /// a progress bar waiting for work that never comes.
-fn scan_stages(cfg: &ZondConfig) -> Vec<Stage> {
+///
+/// `runs_liveness` is [`liveness_earns_its_place`]'s verdict, passed in rather
+/// than recomputed so the plan it may build is built once for the scan.
+fn scan_stages(cfg: &ZondConfig, runs_liveness: bool) -> Vec<Stage> {
     let cfg = &running_under(cfg);
     let mut stages = Vec::new();
 
-    if asks_liveness(cfg) {
+    if runs_liveness {
         stages.push(Stage::Discovery);
     }
     stages.push(Stage::Ports);
@@ -646,6 +649,97 @@ fn scan_stages(cfg: &ZondConfig) -> Vec<Stage> {
 /// answer to a forged probe goes to the zombie.
 fn asks_liveness(cfg: &ZondConfig) -> bool {
     !cfg.assume_up && cfg.idle_scan.is_none()
+}
+
+/// Whether a port scan's liveness pass earns the probes it costs, so that the
+/// port phase runs behind it rather than over every target.
+///
+/// The pass exists to spare a port scan the cost of probing every port of an
+/// address nothing lives at: a dead address costs the pass a handful of probes
+/// where it would cost the port scan one per port. That only saves anything
+/// when the port scan is the dearer of the two. The pass asks each address a
+/// fixed set — the common five and up to a few of the scan's own ports, one
+/// SCTP probe where the scan names SCTP; see
+/// [`SynPorts`](strategy::routed::SynPorts) — so a scan naming no more ports
+/// per address than that would spend as much establishing liveness as it would
+/// spend just probing them. There the pass is dropped and the port probes stand
+/// in for it: an answer on any port, open or closed, is the host answering, the
+/// same evidence a liveness probe reads, and an address that answers nothing is
+/// left [`Unknown`](crate::model::host::HostStatus::Unknown) with its targets
+/// settled by the port scan, exactly as [`ZondConfig::assume_up`] leaves them —
+/// never down on evidence never gathered, never undecided as if unasked.
+///
+/// Two questions keep the pass even for a small scan, because for them it still
+/// pays:
+///
+/// - **A scan that names a UDP port.** A UDP probe to a dead address waits out
+///   an ICMP unreachable a target rate-limits, or a full timeout, where the
+///   pass settles the address with cheap TCP or link-layer probes first. So a
+///   UDP scan, however few ports it names, keeps its liveness pass.
+/// - **A target on this host's own segment.** There the pass reaches it by ARP
+///   or neighbour discovery, one packet, answered by a live stack whatever it
+///   filters above the link, which finds a host that a direct port scan of a
+///   few filtered ports would miss and costs less than one such probe. Whether
+///   any target is on-link is read from the discovery plan, which classifies
+///   the targets against this host's interfaces and sends nothing.
+///
+/// `false` for an [idle scan](ZondConfig::idle_scan) and for
+/// [`assume_up`](ZondConfig::assume_up), which decline the pass for their own
+/// reasons; see [`asks_liveness`].
+fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
+    use crate::model::port::Protocol;
+
+    if !asks_liveness(cfg) {
+        return false;
+    }
+
+    // A UDP probe is dear against a dead address, so the cheap liveness pass in
+    // front of it pays whatever the port count.
+    if map.names(Protocol::Udp) {
+        return true;
+    }
+
+    let asked = SynPorts::for_scan(&tcp_ports_of(map)).len()
+        + usize::from(orchestrator::sctp_discovery_port(map).is_some());
+    // The dearest address to probe decides it: the pass pays as soon as one
+    // unit asks more ports than the pass would, since that is where a dead
+    // address would cost the port scan more than the pass.
+    let per_address = map
+        .units
+        .iter()
+        .map(crate::model::target::TargetSet::port_count)
+        .max()
+        .unwrap_or(0);
+    if per_address > asked {
+        return true;
+    }
+
+    reaches_a_local_segment(cfg, map)
+}
+
+/// Whether the discovery plan for `map` reaches any target at the link layer,
+/// where liveness is one exact ARP or neighbour-discovery packet.
+///
+/// Builds the plan and reads it; the plan classifies the targets against this
+/// host's interfaces and sends nothing. Empty of local steps for an
+/// unprivileged run, which has no link-layer strategy to reach a segment with,
+/// and for one whose targets are all behind a gateway or on loopback.
+fn reaches_a_local_segment(cfg: &ZondConfig, map: &TargetMap) -> bool {
+    let mut ips = IpSet::new();
+    for unit in &map.units {
+        for range in unit.ips().v4() {
+            ips.push_v4_range(*range);
+        }
+        for range in unit.ips().v6() {
+            ips.push_v6_range(*range);
+        }
+    }
+    ips.canonicalize();
+
+    let plan = plan::DiscoveryPlan::build(ips, Scope::Targeted, &cfg.exclusions, &cfg.send_source);
+    plan.steps()
+        .iter()
+        .any(|step| matches!(step, plan::DiscoveryStep::Local { .. }))
 }
 
 /// The configuration a scan actually runs under, given that an idle scan sends
@@ -703,6 +797,10 @@ fn record_idle_refusals(cfg: &ZondConfig, ctx: &ScanContext) {
     use crate::model::finding::DetectionClass;
     use crate::report::ScannerKind;
     use plan::RefusedStep;
+
+    if cfg.idle_scan.is_none() {
+        return;
+    }
 
     if cfg.service_detection.connects() {
         crate::info!(
@@ -1225,6 +1323,7 @@ pub async fn scan(
     enough_descriptors()?;
 
     let planned = planned_targets(&target_map);
+    let runs_liveness = liveness_earns_its_place(cfg, &target_map);
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
@@ -1235,12 +1334,12 @@ pub async fn scan(
         .listening_only_to(cfg.listen_only_ports.clone())
         .detections(detections)
         .planning(Stage::Ports, planned)
-        .staging(scan_stages(cfg))
+        .staging(scan_stages(cfg, runs_liveness))
         // See `discover`: drawn here and kept nowhere, because nothing is
         // recording this scan.
         .ordering(Some(rand::random()))
         .build();
-    let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default());
+    let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default(), runs_liveness);
     Ok((session, ScanTask::new(handle)))
 }
 
@@ -1278,6 +1377,7 @@ pub async fn scan_with_journal(
     cfg.evasion.validate()?;
     enough_descriptors()?;
     under_the_recorded_policy(&journal, cfg)?;
+    let runs_liveness = liveness_earns_its_place(cfg, &target_map);
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
@@ -1289,7 +1389,7 @@ pub async fn scan_with_journal(
         .resuming(journal.resume_point())
         .detections(detections)
         .planning(Stage::Ports, planned_targets(&target_map))
-        .staging(scan_stages(cfg))
+        .staging(scan_stages(cfg, runs_liveness))
         // See `discover_with_journal`: the order is the job's rather than this
         // sitting's, so it comes back off the manifest.
         .ordering(journal.manifest().order_seed)
@@ -1307,7 +1407,7 @@ pub async fn scan_with_journal(
     // ended, and a caller watching it to know when to stop would wait for a scan
     // that was already over. See `ScanContext::progress`.
     let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
-    let handle = spawn_scan(target_map, cfg, ctx, resume_point);
+    let handle = spawn_scan(target_map, cfg, ctx, resume_point, runs_liveness);
 
     Ok((session, ScanTask::journalling(handle, ticker, earlier)))
 }
@@ -1324,6 +1424,7 @@ fn spawn_scan(
     cfg: &ZondConfig,
     ctx: ScanContext,
     settled: Checkpoint,
+    runs_liveness: bool,
 ) -> JoinHandle<ScanReport> {
     let caps = ScanCapabilities::resolve(cfg, orchestrator::Probing::ports(cfg, &target_map));
     // What the caller set, kept so the passes an idle scan turns off can be
@@ -1340,11 +1441,20 @@ fn spawn_scan(
         // from are settled at their own positions by the dispatcher. See
         // `Outcome::Skipped`, and `Outcome::Undecided` for a host it never
         // reached a verdict on.
-        let (liveness, live) = if !asks_liveness(&cfg) {
-            if !cfg.assume_up {
+        let (liveness, live) = if !runs_liveness {
+            if cfg.idle_scan.is_some() {
                 crate::info!(
                     verbosity = 1,
                     "no liveness pass: an idle scan sends its targets nothing from this host"
+                );
+            } else if !cfg.assume_up {
+                // Neither declined by the caller nor forbidden by the technique:
+                // dropped because probing the ports costs no more than asking
+                // whether the host is there would, so the port probes do both.
+                crate::info!(
+                    verbosity = 1,
+                    "no liveness pass: probing these ports costs no more than asking, so an \
+                     answer on any of them is what finds the host"
                 );
             }
             (None, None)

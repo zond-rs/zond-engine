@@ -672,7 +672,10 @@ async fn a_host_the_liveness_pass_heard_nothing_from_is_settled_as_down() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("scratch root");
 
-    let plan = closed_ports_at(silent, 2).await;
+    // Enough ports that the liveness pass runs: a scan of a few ports probes
+    // them directly instead, and then it is the port scan, not the liveness
+    // pass, that settles a silent host.
+    let plan = closed_ports_at(silent, 10).await;
     let recorded = Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn);
     let journal = Journal::create(&root, &recorded, Privilege::Connect, "silent").expect("creates");
     let (_session, task) = zond_engine::scanner::scan_with_journal(
@@ -709,8 +712,8 @@ async fn a_host_the_liveness_pass_heard_nothing_from_is_settled_as_down() {
     let listed = zond_engine::journal::store::list(&root).expect("lists");
     assert_eq!(
         listed[0].settled(),
-        Some(2),
-        "both ports of a host asked and found silent are settled: {evidence}"
+        Some(10),
+        "every port of a host asked and found silent is settled: {evidence}"
     );
 
     std::fs::remove_dir_all(&root).ok();

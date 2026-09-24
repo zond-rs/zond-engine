@@ -106,6 +106,51 @@ async fn a_host_behind_a_drop_policy_is_found_on_the_port_the_scan_names() {
     );
 }
 
+/// A scan of few ports over a silent, routed host skips the liveness pass and
+/// probes the ports directly, and the host that answers nothing is left
+/// [`Unknown`], with the ports it was asked, rather than down or unasked.
+///
+/// The skip must not make a silent host read as one nothing asked about: the
+/// port phase covers the address, and the address answering nothing is the
+/// same [`Unknown`] a port scan produces for any silent target, not a verdict
+/// the missing liveness pass never earned.
+///
+/// [`Unknown`]: zond_engine::model::host::HostStatus::Unknown
+#[tokio::test]
+async fn a_few_port_scan_skips_liveness_and_leaves_a_silent_host_unknown() {
+    use zond_engine::model::host::HostStatus;
+
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    let silent = IpAddr::V4(segment.silent_host());
+
+    let report = run_scan(target_map(silent, "1,2"), &test_config())
+        .await
+        .report;
+
+    let kinds: Vec<ScanKind> = report.phases().iter().map(|phase| phase.kind()).collect();
+    assert_eq!(
+        kinds,
+        vec![ScanKind::PortScan],
+        "a two-port scan of a routed host runs the ports without a liveness pass"
+    );
+    assert_eq!(
+        report.phases()[0].targets().addresses(),
+        1,
+        "the port phase asked about the address, so it is not one nothing asked"
+    );
+    if let Some(host) = report.host(silent) {
+        assert_ne!(
+            host.status(),
+            HostStatus::Down,
+            "a silent host is unknown, never down on evidence no pass gathered"
+        );
+    }
+}
+
 /// The connect sweep, which is how an unprivileged run asks, finds the same
 /// host behind a drop policy on the port the scan names, and misses it asking
 /// the common five alone.
