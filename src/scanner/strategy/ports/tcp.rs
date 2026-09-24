@@ -2612,6 +2612,12 @@ mod tests {
     /// A slower scan is meant to take longer, not to ask less. One attempt a
     /// probe, so the retry schedule adds nothing to the budget and what is
     /// left is the part the rate has to cover.
+    ///
+    /// What is asserted is that every port was asked, not what each answered:
+    /// with one attempt and the path running in real time, a runner that
+    /// stalls longer than a probe's timeout can read one open port filtered,
+    /// which is a verdict about that stall and not about the deadline. A
+    /// deadline cut short leaves ports unasked, and that is what fails here.
     #[tokio::test]
     async fn a_rate_limited_scan_asks_every_port_however_long_the_ceiling_makes_it() {
         const PORTS: u16 = 300;
@@ -2629,18 +2635,22 @@ mod tests {
         let (session, _sent) = scan_over_path(&tuning, Some(Duration::from_millis(5)), PORTS).await;
 
         let host = session.hosts().get(TARGET).expect("the target answered");
-        let short: Vec<(u16, PortState)> = host
+        let unasked: Vec<u16> = host
             .ports()
-            .filter(|port| port.state() != PortState::Open)
-            .map(|port| (port.number(), port.state()))
+            .filter(|port| port.state() == PortState::Unasked)
+            .map(|port| port.number())
             .collect();
         assert!(
-            short.is_empty(),
-            "{} of {PORTS} open ports read otherwise, first {:?}",
-            short.len(),
-            short.first()
+            unasked.is_empty(),
+            "{} of {PORTS} ports never asked, first {:?}",
+            unasked.len(),
+            unasked.first()
         );
         assert_eq!(host.ports().count(), usize::from(PORTS));
+        assert!(
+            host.ports().any(|port| port.state() == PortState::Open),
+            "the path answered nothing, so the scan proved nothing"
+        );
     }
 
     /// A scan of two ports over a range of mostly empty addresses, held to a
