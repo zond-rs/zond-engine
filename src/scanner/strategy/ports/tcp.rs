@@ -2598,6 +2598,29 @@ mod tests {
         assert_eq!(host.ports().count(), usize::from(PORTS));
     }
 
+    /// A scan built from the largest attempt budget and timeout scale the
+    /// configuration accepts runs, and answers what it was asked.
+    ///
+    /// Both reach the arithmetic that sizes the scan's deadline from its
+    /// retry schedule while the scanner is built, and it overflowed there: an
+    /// attempt budget of 43 panicked before the first probe.
+    #[tokio::test]
+    async fn a_scan_built_from_the_largest_accepted_retry_settings_runs() {
+        let tuning = ProbeTuning {
+            retry: crate::config::RetryConfig {
+                max_attempts: std::num::NonZeroU8::new(u8::MAX),
+                timeout_scale: crate::config::TimeoutScale::new(f64::MAX),
+                ..crate::config::RetryConfig::default()
+            },
+            ..ProbeTuning::default()
+        };
+
+        let (session, _sent) = scan_over_path(&tuning, Some(Duration::from_millis(1)), 3).await;
+
+        let host = session.hosts().get(TARGET).expect("the target answered");
+        assert!(host.ports().all(|port| port.state() == PortState::Open));
+    }
+
     /// A rate ceiling bounds every packet the scan puts on the wire, retries
     /// included.
     ///

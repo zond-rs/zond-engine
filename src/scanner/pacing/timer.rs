@@ -31,6 +31,26 @@ use std::time::{Duration, Instant};
 /// wait against a clock that has nothing new to tell it.
 pub const RECHECK_SOON: Duration = Duration::from_millis(100);
 
+/// How far ahead [`later`] reads an instant it cannot represent.
+///
+/// Thirty years, as tokio reads a sleep it cannot represent: past the end of
+/// any scan, so a deadline this far out is one nothing reaches, and near
+/// enough that every platform's [`Instant`] holds it.
+const FAR_FUTURE: Duration = Duration::from_secs(30 * 365 * 24 * 60 * 60);
+
+/// `from` moved `by` later, or [`FAR_FUTURE`] later where `from + by` is past
+/// what an [`Instant`] can hold.
+///
+/// For every clock a caller's duration moves. Each of those durations is one
+/// a caller may set as long as it likes, and `Duration::MAX` is the obvious
+/// way to write a wait with no end; `Instant + Duration` panics on it. Read as
+/// thirty years, the wait is still one no scan outlives.
+pub(crate) fn later(from: Instant, by: Duration) -> Instant {
+    from.checked_add(by)
+        .or_else(|| from.checked_add(FAR_FUTURE))
+        .unwrap_or(from)
+}
+
 /// The three limits a probing loop runs under: a hard deadline, a minimum
 /// runtime, and however long silence has gone on.
 ///
@@ -61,8 +81,8 @@ impl ScanTimer {
     pub fn new(max_total_duration: Duration, min_runtime_duration: Duration) -> Self {
         let now = Instant::now();
         Self {
-            hard_deadline: now + max_total_duration,
-            min_runtime: now + min_runtime_duration,
+            hard_deadline: later(now, max_total_duration),
+            min_runtime: later(now, min_runtime_duration),
             last_activity: now,
         }
     }
@@ -129,7 +149,7 @@ impl ScanTimer {
     /// network. The deadline is a bound on how long a scan waits for answers,
     /// and a loop held up by its own work has not spent that time waiting.
     pub(crate) fn extend(&mut self, by: Duration) {
-        self.hard_deadline += by;
+        self.hard_deadline = later(self.hard_deadline, by);
     }
 
     /// Whether a socket timeout is allowed to end the loop yet.

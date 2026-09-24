@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::report::StopReason;
+use crate::scanner::pacing::timer::later;
 
 /// Why a scan is winding down.
 ///
@@ -100,7 +101,7 @@ impl ScanHandle {
     /// The clock starts here, which is where the scan is assembled, so the
     /// budget covers the whole call rather than the probing part of it.
     pub fn bounded(budget: Option<Duration>) -> Self {
-        let deadline = budget.map(|budget| Instant::now() + budget);
+        let deadline = budget.map(|budget| later(Instant::now(), budget));
         Self {
             stop: Arc::new(Stop {
                 aborted: AtomicBool::new(false),
@@ -214,6 +215,16 @@ mod tests {
         let clone = handle.clone();
         assert_eq!(handle.stopped(), None);
         assert_eq!(clone.deadline(), handle.deadline());
+    }
+
+    /// The longest budget a caller can write is a scan that runs until it is
+    /// stopped, not a panic: `Duration::MAX` is past what a clock can count
+    /// to from now.
+    #[test]
+    fn the_longest_budget_is_one_that_never_runs_out() {
+        let handle = ScanHandle::bounded(Some(Duration::MAX));
+        assert_eq!(handle.stopped(), None);
+        assert!(handle.deadline().is_some());
     }
 
     /// An abort that arrives after the budget expired does not rename what

@@ -1345,6 +1345,10 @@ pub struct ZondConfig {
     /// many packets a tenth of a second at one address while those run, and one
     /// everywhere else. The numbers are stated here rather than left for
     /// somebody to find in a capture.
+    ///
+    /// A gap longer than a clock can count from now, such as `Duration::MAX`,
+    /// holds every probe after a host's first until the scan is stopped: it is
+    /// the gap asked for, not the absence of one, which is `None`.
     pub host_probe_interval: Option<Duration>,
 
     /// The longest a scan will keep working on one host before leaving it with
@@ -1405,6 +1409,9 @@ pub struct ZondConfig {
     /// It bounds this call and not the job behind it, so each sitting of a
     /// resumed scan is given the budget afresh. A job that must finish inside
     /// one is the caller's to bound, by counting the sittings they start.
+    ///
+    /// A budget longer than a clock can count from now, such as
+    /// `Duration::MAX`, is one that never runs out.
     pub scan_timeout: Option<Duration>,
 
     /// Which segment a TCP port probe carries, and so what its answers mean.

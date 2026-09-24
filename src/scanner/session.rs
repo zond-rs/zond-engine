@@ -1154,7 +1154,7 @@ impl HostSpacing {
     fn ready_at(&self, address: IpAddr, now: Instant) -> Option<Instant> {
         let minimum = self.minimum?;
         let last = *self.last_sent.get(&address)?;
-        let ready = last + minimum;
+        let ready = crate::scanner::pacing::timer::later(last, minimum);
         (ready > now).then_some(ready)
     }
 
@@ -3419,6 +3419,22 @@ mod tests {
             ctx.host_ready_at(ip, now).is_none(),
             "a recorded send moves nothing while there is no gap to move it against"
         );
+    }
+
+    /// The longest gap a caller can write holds a host's next probe past the
+    /// end of any scan, not a panic: `Duration::MAX` after the last probe is
+    /// past what a clock can count to.
+    #[test]
+    fn the_longest_gap_holds_a_host_rather_than_panicking() {
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(Duration::MAX))
+            .build();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+        let now = Instant::now();
+
+        ctx.host_probed(ip, now);
+        let ready = ctx.host_ready_at(ip, now).expect("asked too recently");
+        assert!(ready > now + Duration::from_secs(365 * 24 * 60 * 60));
     }
 
     /// A host is ready until it is probed, and then not until the gap has run.

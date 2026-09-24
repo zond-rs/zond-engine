@@ -58,6 +58,7 @@
 //! or retiring a probe costs `O(log n)`. Stale queue entries are discarded when
 //! they surface rather than searched for and removed.
 
+use super::timer::later;
 use crate::config::{RetryConfig, ScanEffort};
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
@@ -285,11 +286,11 @@ impl RetryPolicy {
         );
 
         Self {
-            initial_rto: self.initial_rto.mul_f64(factor),
+            initial_rto: saturating_mul(self.initial_rto, factor),
             // Scaling the ceiling below the floor would leave the policy
             // describing an empty range. The floor wins, since it is the one of
             // the two that the protocol imposes.
-            max_rto: self.max_rto.mul_f64(factor).max(self.min_rto),
+            max_rto: saturating_mul(self.max_rto, factor).max(self.min_rto),
             ..self
         }
     }
@@ -303,8 +304,8 @@ impl RetryPolicy {
     pub fn worst_case_probe_lifetime(&self) -> Duration {
         let mut total = Duration::ZERO;
         for attempt in 1..=self.max_attempts {
-            let scaled = scale(self.initial_rto, self.backoff, attempt).min(self.max_rto);
-            total = total.saturating_add(scaled.mul_f64(1.0 + self.jitter.max(0.0)));
+            let scaled = scale(self.initial_rto, self.backoff, attempt, self.max_rto);
+            total = total.saturating_add(saturating_mul(scaled, 1.0 + self.jitter.max(0.0)));
         }
         total
     }
@@ -760,7 +761,7 @@ where
         record.record_attempt(token, now);
         let attempt = record.sends;
 
-        let due = now + self.timeout_for(host, attempt);
+        let due = later(now, self.timeout_for(host, attempt));
         self.timers.push(Timer {
             due,
             key,
@@ -866,7 +867,7 @@ where
                 .expect("record present")
                 .generation = generation;
 
-            let due = now + self.timeout_for(host, attempt);
+            let due = later(now, self.timeout_for(host, attempt));
             self.timers.push(Timer {
                 due,
                 key: timer.key,
@@ -927,7 +928,7 @@ where
             return;
         }
         let (host, attempt) = (record.host, record.sends);
-        let due = now + self.timeout_for(host, attempt);
+        let due = later(now, self.timeout_for(host, attempt));
         let generation = self.take_generation();
         let record = self.records.get_mut(key).expect("present above");
         record.deferred = false;
@@ -1096,7 +1097,7 @@ where
         };
         let base = base.clamp(self.policy.min_rto, ceiling);
 
-        let scaled = scale(base, self.policy.backoff, attempt).min(ceiling);
+        let scaled = scale(base, self.policy.backoff, attempt, ceiling);
         self.jitter.spread(scaled, self.policy.jitter)
     }
 
@@ -1106,12 +1107,17 @@ where
     }
 }
 
-/// `base` multiplied by `backoff` once per attempt beyond the first.
-fn scale(base: Duration, backoff: f64, attempt: u8) -> Duration {
+/// `base` multiplied by `backoff` once per attempt beyond the first, and held
+/// to `ceiling`.
+///
+/// Held in the multiplication rather than after it. An attempt budget can
+/// reach 255, and three to the 254th is no duration at all, so the product is
+/// taken where it can saturate and clamped before it becomes one.
+fn scale(base: Duration, backoff: f64, attempt: u8, ceiling: Duration) -> Duration {
     if attempt <= 1 || backoff <= 1.0 {
-        return base;
+        return base.min(ceiling);
     }
-    base.mul_f64(backoff.powi(i32::from(attempt - 1)))
+    saturating_mul(base, backoff.powi(i32::from(attempt - 1))).min(ceiling)
 }
 
 /// `duration` scaled by `factor`, saturating at [`Duration::MAX`] where
@@ -1163,7 +1169,7 @@ impl Jitter {
         }
         let spread = spread.min(1.0);
         let factor = 1.0 + (self.next_unit() * 2.0 - 1.0) * spread;
-        base.mul_f64(factor.max(0.0))
+        saturating_mul(base, factor.max(0.0))
     }
 }
 
@@ -1198,6 +1204,70 @@ mod tests {
             0.0,
             None,
         )
+    }
+
+    /// Arms one probe under `policy` and runs it to the end of its schedule,
+    /// sending every retry, which is every piece of arithmetic a schedule
+    /// does. Returns how many attempts it was given.
+    fn schedule_to_the_end(policy: RetryPolicy) -> u8 {
+        let _ = (
+            policy.worst_case_probe_lifetime(),
+            policy.longest_probe_lifetime(),
+        );
+        let mut ledger = ledger(policy);
+        ledger.arm(HOST, (HOST, 80), 0, (), Instant::now());
+        while let Some(now) = ledger.next_due() {
+            for event in due_at(&mut ledger, now) {
+                match event {
+                    Due::Retry { key, attempt } => {
+                        ledger.rearm(HOST, key, u32::from(attempt), now);
+                    }
+                    Due::Exhausted { attempts, .. } => return attempts,
+                }
+            }
+        }
+        0
+    }
+
+    /// Every attempt budget the configuration accepts schedules to its end.
+    ///
+    /// The backoff multiplies once per attempt, and a budget of 255 raises a
+    /// backoff of three to the 254th: no duration holds that. Multiplied
+    /// before it was clamped, the product panicked while a scan was being
+    /// built, before its first probe, for any budget from 43 at a port scan's
+    /// backoff and from 68 at a sweep's.
+    #[test]
+    fn every_attempt_budget_a_caller_can_ask_for_schedules_without_panicking() {
+        for backoff in [2.0, 3.0] {
+            let policy = RetryPolicy {
+                backoff,
+                ..policy()
+            }
+            .configured(RetryConfig {
+                max_attempts: std::num::NonZeroU8::new(u8::MAX),
+                ..RetryConfig::default()
+            });
+            assert_eq!(schedule_to_the_end(policy), u8::MAX, "backoff {backoff}");
+        }
+    }
+
+    /// The largest timeout scale the configuration accepts schedules too, as
+    /// a wait longer than any scan rather than a panic.
+    #[test]
+    fn the_largest_timeout_scale_schedules_without_panicking() {
+        let policy = policy().configured(RetryConfig {
+            timeout_scale: TimeoutScale::new(f64::MAX),
+            ..RetryConfig::default()
+        });
+        assert!(policy.max_rto >= Duration::from_secs(u64::from(u32::MAX)));
+
+        let now = Instant::now();
+        let mut ledger = ledger(policy);
+        ledger.arm(HOST, (HOST, 80), 0, (), now);
+        assert!(
+            due_at(&mut ledger, now + Duration::from_secs(3600)).is_empty(),
+            "a timeout that long is not due within the hour"
+        );
     }
 
     fn ledger(policy: RetryPolicy) -> ProbeLedger<(IpAddr, u16), u32> {
