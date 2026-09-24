@@ -345,6 +345,18 @@ trait ResolutionLink: FrameSink {
     /// The next frame the link's filter admitted, or `None` once its read
     /// timeout passes with nothing.
     fn next_frame(&mut self) -> Option<&[u8]>;
+
+    /// The time on the clock the link's reads wait against, which the
+    /// schedule of requests and the timeout are both measured on.
+    ///
+    /// The link owns it because the link is what spends the time: a real
+    /// capture's reads take real time, so the clock is the real one. A link
+    /// simulated in a test keeps a clock of its own that its reads advance,
+    /// so the schedule is shown to the millisecond rather than as closely as
+    /// a loaded machine's sleeps happen to allow.
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 impl ResolutionLink for capture::FrameChannel {
@@ -364,12 +376,12 @@ fn resolve_over(
     request: &[u8],
     target: Ipv4Addr,
 ) -> Result<Option<MacAddr>, String> {
-    let started = Instant::now();
+    let started = link.now();
     let spacing = ARP_TIMEOUT / ARP_REQUESTS;
     let mut sent = 0;
 
     loop {
-        let elapsed = started.elapsed();
+        let elapsed = link.now().duration_since(started);
         if elapsed >= ARP_TIMEOUT {
             return Ok(None);
         }
@@ -535,15 +547,26 @@ mod tests {
         buf
     }
 
+    /// How long one quiet read of a [`LossyNeighbour`] takes on its clock.
+    ///
+    /// Shorter than [`CHANNEL_READ_TIMEOUT`], as a capture woken early by a
+    /// frame for some other host would be, so the loop runs many reads per
+    /// request and a schedule keyed to read boundaries rather than to time
+    /// would show.
+    const QUIET_READ: Duration = Duration::from_millis(5);
+
     /// A neighbour on a segment that loses frames: it answers the request
     /// numbered `answers` and none before it, as it would if the earlier ones
-    /// or their replies were dropped, and waits out each read the way a quiet
-    /// capture does.
+    /// or their replies were dropped. Each quiet read advances its own clock
+    /// by [`QUIET_READ`], and it notes the time on that clock of every request
+    /// it is sent.
     struct LossyNeighbour {
         reply: Vec<u8>,
         answers: u32,
-        requests: u32,
+        sent_at: Vec<Duration>,
         replied: bool,
+        epoch: Instant,
+        clock: Duration,
     }
 
     impl LossyNeighbour {
@@ -551,27 +574,37 @@ mod tests {
             Self {
                 reply: arp_reply(ip, mac),
                 answers,
-                requests: 0,
+                sent_at: Vec::new(),
                 replied: false,
+                epoch: Instant::now(),
+                clock: Duration::ZERO,
             }
+        }
+
+        fn requests(&self) -> u32 {
+            self.sent_at.len() as u32
         }
     }
 
     impl FrameSink for LossyNeighbour {
         fn send_frame(&mut self, _frame: &[u8]) -> Result<(), String> {
-            self.requests += 1;
+            self.sent_at.push(self.clock);
             Ok(())
         }
     }
 
     impl ResolutionLink for LossyNeighbour {
         fn next_frame(&mut self) -> Option<&[u8]> {
-            if self.requests >= self.answers && !self.replied {
+            if self.requests() >= self.answers && !self.replied {
                 self.replied = true;
                 return Some(&self.reply);
             }
-            std::thread::sleep(CHANNEL_READ_TIMEOUT / 10);
+            self.clock += QUIET_READ;
             None
+        }
+
+        fn now(&self) -> Instant {
+            self.epoch + self.clock
         }
     }
 
@@ -592,26 +625,41 @@ mod tests {
             let resolved = resolve_over(&mut neighbour, b"request", ip);
 
             assert_eq!(resolved, Ok(Some(mac)), "answering request {answers}");
-            assert_eq!(neighbour.requests, answers, "and asked no further");
+            assert_eq!(neighbour.requests(), answers, "and asked no further");
         }
     }
 
-    /// A neighbour that never answers is asked every scheduled time, and given
-    /// up after the one timeout the requests share.
+    /// A neighbour that never answers is asked at each scheduled time, and
+    /// given up after the one timeout the requests share.
+    ///
+    /// Measured on the link's clock, so each figure is exact: a request goes
+    /// out on the first read boundary at or after its share of the wait
+    /// begins, and the resolution ends on the first at or after the timeout.
     #[test]
     fn a_neighbour_that_never_answers_costs_one_timeout_across_every_request() {
         let ip = Ipv4Addr::new(192, 0, 2, 200);
         let mut neighbour =
             LossyNeighbour::answering(u32::MAX, ip, MacAddr::new(0x02, 0, 0, 0, 0, 1));
 
-        let started = Instant::now();
         assert_eq!(resolve_over(&mut neighbour, b"request", ip), Ok(None));
-        let waited = started.elapsed();
 
-        assert_eq!(neighbour.requests, ARP_REQUESTS);
+        let spacing = ARP_TIMEOUT / ARP_REQUESTS;
+        let scheduled: Vec<Duration> = (0..ARP_REQUESTS).map(|n| spacing * n).collect();
+        assert_eq!(
+            neighbour.sent_at.len(),
+            scheduled.len(),
+            "every request sent"
+        );
+        for (sent, due) in neighbour.sent_at.iter().zip(&scheduled) {
+            assert!(
+                *sent >= *due && *sent < *due + QUIET_READ,
+                "a request due at {due:?} went out at {sent:?}"
+            );
+        }
         assert!(
-            waited >= ARP_TIMEOUT && waited < ARP_TIMEOUT + CHANNEL_READ_TIMEOUT * 2,
-            "a dead neighbour cost {waited:?}"
+            neighbour.clock >= ARP_TIMEOUT && neighbour.clock < ARP_TIMEOUT + QUIET_READ,
+            "a dead neighbour cost {:?}",
+            neighbour.clock
         );
     }
 
