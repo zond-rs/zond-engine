@@ -16,7 +16,7 @@ and one consumer of this crate among others.
 
 ```toml
 [dependencies]
-zond-engine = "0.16"
+zond-engine = "0.17"
 ```
 
 ## Two phases
