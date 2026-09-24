@@ -284,9 +284,9 @@ impl UdpPortScanner {
 
     /// The core a UDP port scan runs on.
     ///
-    /// The pace it must outlive is the send rate itself: a UDP scan has no
-    /// evidence to run a congestion window on, so the rate is the pacing rather
-    /// than a backstop and is the slowest thing about the scan.
+    /// Paced by the send rate itself: a UDP scan has no evidence to run a
+    /// congestion window on, so the rate is the pacing rather than a backstop,
+    /// and the deadline outlives it; see [`deadline_for`](super::deadline_for).
     fn core(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -311,7 +311,6 @@ impl UdpPortScanner {
             retry: RETRY_POLICY.configured(tuning.retry),
             rate,
             deadline: DEADLINE_CONFIG,
-            pace: Duration::from_secs(1) / rate.get(),
             window: WindowLimits::fixed(MAX_IN_FLIGHT),
             max_unresolved: MAX_IN_FLIGHT as usize,
         })

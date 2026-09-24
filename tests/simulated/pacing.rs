@@ -329,3 +329,63 @@ async fn probes_still_held_when_a_scan_stops_are_recorded_as_never_asked() {
         "the gap outlasted the budget, so some ports must be reported as never asked"
     );
 }
+
+/// A scan spaced at one host whose answers arrive after the first timeout
+/// still settles every port, and leaves nothing outstanding when it ends.
+///
+/// Both clocks run here at once. Each reply lands after its probe's retry has
+/// come due, so a retry is queued for the gap behind every first attempt, and
+/// most are overtaken by the late answer while they wait. A retry sent after
+/// its answer arrived asks a question nothing is waiting on; one that took
+/// back a slot in the window for that would leak it, and a scan that leaked
+/// enough stops admitting targets and idles until its deadline with the rest
+/// never asked. And the spacing alone makes this scan slower than any deadline
+/// sized for an unspaced one, so a deadline that ignored the gap would stop it
+/// with ports queued.
+#[tokio::test]
+async fn a_spaced_scan_whose_answers_come_late_settles_every_port() {
+    const PORTS: u16 = 150;
+    let ports: Vec<u16> = (FIRST..FIRST + PORTS).collect();
+
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for &port in &ports {
+        net = net.host(
+            TARGET,
+            port,
+            Policy::open().delay(Duration::from_millis(400)),
+        );
+    }
+
+    let (session, ctx) = ScanSession::builder()
+        .host_probe_interval(Some(GAP))
+        .build();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        ports.len(),
+    );
+
+    let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
+    run_port_scanner(&mut scanner, targets).await;
+
+    let host = session.hosts().get(TARGET).expect("the target answered");
+    let unsettled: Vec<(u16, PortState)> = ports
+        .iter()
+        .map(|&port| {
+            let state = host
+                .ports()
+                .find(|recorded| recorded.number() == port)
+                .map_or(PortState::Unasked, |recorded| recorded.state());
+            (port, state)
+        })
+        .filter(|(_, state)| *state != PortState::Open)
+        .collect();
+    assert!(
+        unsettled.is_empty(),
+        "{} of {PORTS} ports answered and read otherwise: {:?}",
+        unsettled.len(),
+        &unsettled[..unsettled.len().min(8)]
+    );
+}

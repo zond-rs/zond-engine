@@ -309,6 +309,26 @@ impl RetryPolicy {
         total
     }
 
+    /// The longest any one attempt may wait for its answer: the ceiling, spread
+    /// as far as the jitter reaches.
+    ///
+    /// Longer than the first timeout of
+    /// [`worst_case_probe_lifetime`](Self::worst_case_probe_lifetime), which
+    /// assumes nothing has been measured. Measurement moves a host's timeout
+    /// either way, and a host measured slow is timed at up to this on every
+    /// attempt, the first included.
+    pub(crate) fn longest_timeout(&self) -> Duration {
+        let ceiling = self.max_rto.max(self.min_rto);
+        saturating_mul(ceiling, 1.0 + self.jitter.clamp(0.0, 1.0))
+    }
+
+    /// The longest a probe can occupy the ledger whatever was measured: every
+    /// attempt at [`longest_timeout`](Self::longest_timeout).
+    pub(crate) fn longest_probe_lifetime(&self) -> Duration {
+        self.longest_timeout()
+            .saturating_mul(u32::from(self.max_attempts.max(1)))
+    }
+
     /// The budget for a probe to `host`, after any silent-host reduction.
     fn budget_for(&self, host: Option<&HostState>) -> u8 {
         let Some(rule) = self.silent_host else {
@@ -1037,6 +1057,24 @@ fn scale(base: Duration, backoff: f64, attempt: u8) -> Duration {
         return base;
     }
     base.mul_f64(backoff.powi(i32::from(attempt - 1)))
+}
+
+/// `duration` scaled by `factor`, saturating at [`Duration::MAX`] where
+/// [`Duration::mul_f64`] would panic.
+///
+/// Every factor a schedule is multiplied by is one a caller can make as large
+/// as they like: a backoff raised to the attempt number, a
+/// [`TimeoutScale`](crate::config::TimeoutScale). A product past what a
+/// duration holds is a wait longer than any scan, and saturating says so
+/// without taking the scan down. A factor that is not a number, or not above
+/// zero, gives zero.
+pub(crate) fn saturating_mul(duration: Duration, factor: f64) -> Duration {
+    let seconds = duration.as_secs_f64() * factor;
+    Duration::try_from_secs_f64(seconds).unwrap_or(if seconds > 0.0 {
+        Duration::MAX
+    } else {
+        Duration::ZERO
+    })
 }
 
 /// The jitter source: SplitMix64, small enough to inline and with a fixed,

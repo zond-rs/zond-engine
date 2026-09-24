@@ -2035,6 +2035,14 @@ impl ScanContext {
         self.spacing.sent(address, now);
     }
 
+    /// The gap this scan keeps between two probes at one address, or `None`
+    /// for a scan that set none. A scanner sizing its own deadline reads it,
+    /// since every probe at one host waits it out in turn. See
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval).
+    pub(crate) fn host_probe_interval(&self) -> Option<Duration> {
+        self.spacing.minimum
+    }
+
     /// The addresses left early so far, taken.
     pub(crate) fn take_timed_out(&self) -> Vec<IpAddr> {
         self.timed_out.drain()

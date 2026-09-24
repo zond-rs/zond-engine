@@ -233,8 +233,9 @@ impl TcpPortScanner {
 
     /// The core a TCP port scan runs on.
     ///
-    /// The pace it must outlive is the slowest its congestion window may settle
-    /// at, which is the retry floor stretched by the window's own floor.
+    /// Paced by its congestion window under the rate ceiling, and given a
+    /// deadline that outlives the slowest either may settle at; see
+    /// [`deadline_for`](super::deadline_for).
     fn core(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -260,7 +261,6 @@ impl TcpPortScanner {
             retry,
             rate,
             deadline: super::super::raw::DEADLINE_CONFIG,
-            pace: retry.min_rto / super::TCP_PORT_WINDOW.floor,
             window: super::TCP_PORT_WINDOW,
             max_unresolved: super::TCP_PORT_UNRESOLVED,
         })
@@ -2414,6 +2414,143 @@ mod tests {
             budget > lifetime,
             "a {budget:?} scan cannot finish a {lifetime:?} probe"
         );
+    }
+
+    /// A path that logs when each probe left and, given a delay, answers every
+    /// SYN with the SYN+ACK an open port sends, that long after the probe left.
+    /// Without one it answers nothing, as a filter does.
+    struct Path {
+        answer_after: Option<Duration>,
+        replies: mpsc::Sender<CapturedSegment>,
+        sent: std::sync::Arc<std::sync::Mutex<Vec<(u16, Instant)>>>,
+    }
+
+    impl ProbeSender for Path {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            dst: IpAddr,
+            _zone: Option<u32>,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
+            let probe = tcp::parse(segment).expect("the scan sends whole segments");
+            self.sent
+                .lock()
+                .unwrap()
+                .push((probe.destination_port(), Instant::now()));
+            let Some(delay) = self.answer_after else {
+                return Ok(());
+            };
+            let reply = segment_to(
+                probe.destination_port(),
+                probe.source_port(),
+                TcpScanTechnique::Syn,
+                TcpToken {
+                    nonce: probe.sequence(),
+                },
+                SYN | ACK,
+            );
+            let replies = self.replies.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                // Stamped on arrival, as a capture stamps it.
+                let arrived = CapturedSegment::synthetic(dst, IpNextHeaderProtocols::Tcp, reply);
+                let _ = replies.send(arrived).await;
+            });
+            Ok(())
+        }
+    }
+
+    /// When each probe left, and to which port.
+    type Departures = std::sync::Arc<std::sync::Mutex<Vec<(u16, Instant)>>>;
+
+    /// Runs a SYN scan built from `tuning`, as the engine builds one, of
+    /// `ports` ports on [`TARGET`] over a [`Path`], and returns what it
+    /// recorded and when each probe left.
+    async fn scan_over_path(
+        tuning: &ProbeTuning,
+        answer_after: Option<Duration>,
+        ports: u16,
+    ) -> (ScanSession, Departures) {
+        let (session, ctx) = ScanSession::new();
+        let (replies, reply_rx) = mpsc::channel(4096);
+        let sent = Departures::default();
+        let path = Path {
+            answer_after,
+            replies,
+            sent: std::sync::Arc::clone(&sent),
+        };
+        let transport = ProbeTransport::from_parts(Box::new(path), reply_rx);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let core =
+            TcpPortScanner::core(resolver, ctx, transport, tuning, 54_321, usize::from(ports));
+        let mut scanner = TcpPortScanner::build(
+            core,
+            TcpScanTechnique::Syn,
+            None,
+            OsDetection::default(),
+            ServiceDetection::default(),
+        );
+
+        let (targets, stream) = mpsc::channel(usize::from(ports));
+        for port in 1..=ports {
+            targets
+                .send(PlannedTarget::new(
+                    u64::from(port),
+                    Target {
+                        ip: TARGET,
+                        port,
+                        protocol: Protocol::Tcp,
+                    },
+                ))
+                .await
+                .expect("the stream is open");
+        }
+        drop(targets);
+        scanner.scan(stream).await.expect("the scan runs");
+        (session, sent)
+    }
+
+    /// A scan held to a rate ceiling asks every port, however long the
+    /// ceiling makes it take.
+    ///
+    /// The deadline is the guarantee that a scan ends, and it has to outlive
+    /// the pace the caller asked for. A ceiling of a hundred probes a second
+    /// puts a few hundred ports past any budget sized for an unlimited scan,
+    /// and every one it stops short of reads unasked, open ones with the rest.
+    /// A slower scan is meant to take longer, not to ask less. One attempt a
+    /// probe, so the retry schedule adds nothing to the budget and what is
+    /// left is the part the rate has to cover.
+    #[tokio::test]
+    async fn a_rate_limited_scan_asks_every_port_however_long_the_ceiling_makes_it() {
+        const PORTS: u16 = 300;
+        let tuning = ProbeTuning {
+            max_probe_rate: std::num::NonZeroU32::new(100),
+            retry: crate::config::RetryConfig {
+                max_attempts: std::num::NonZeroU8::new(1),
+                ..crate::config::RetryConfig::default()
+            },
+            ..ProbeTuning::default()
+        };
+
+        // Well inside the shortest timeout, so the one attempt is answered
+        // whatever the round trips teach the scan.
+        let (session, _sent) = scan_over_path(&tuning, Some(Duration::from_millis(5)), PORTS).await;
+
+        let host = session.hosts().get(TARGET).expect("the target answered");
+        let short: Vec<(u16, PortState)> = host
+            .ports()
+            .filter(|port| port.state() != PortState::Open)
+            .map(|port| (port.number(), port.state()))
+            .collect();
+        assert!(
+            short.is_empty(),
+            "{} of {PORTS} open ports read otherwise, first {:?}",
+            short.len(),
+            short.first()
+        );
+        assert_eq!(host.ports().count(), usize::from(PORTS));
     }
 
     /// An ICMP error built by hand rather than from a probe this scan sent:

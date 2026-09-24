@@ -93,7 +93,9 @@ use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
+use crate::scanner::pacing::retry::{
+    Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy, saturating_mul,
+};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::PortScanner;
 use crate::system::interface::SourceResolver;
@@ -226,6 +228,66 @@ const TCP_PORT_RATE_CEILING: NonZeroU32 = NonZeroU32::new(20_000).expect("a non-
 /// per-target load is an order of magnitude higher, and that is an argument
 /// rather than an experiment.
 const UDP_PORT_RATE_PER_SEC: NonZeroU32 = NonZeroU32::new(400).expect("a non-zero rate");
+
+/// How far behind its own rate a port scan's send ticker may fall before the
+/// deadline stops allowing for it.
+///
+/// The ticker falls behind whenever the loop is busy reading replies, and a
+/// missed tick is delayed rather than made up. Half again the rate's own time
+/// is the allowance the routed sweep gives its ticker for the same reason, and
+/// it costs a scan that finishes nothing.
+const SEND_SLACK: f64 = 1.5;
+
+/// The deadline a raw port scan of `target_count` endpoints runs under:
+/// `config` with its hard budget widened to what the scan's own pacing needs.
+///
+/// The hard deadline is the guarantee that a scan ends, and it must not be
+/// what ends one still going at a pace it was allowed. A budget shorter than
+/// that stops the scan mid-plan and the ports it never reached come back
+/// unasked, open ones among them: a slower scan is meant to take longer, not
+/// to ask less. So the pace is taken from every limit it answers to, each at
+/// the slowest it may legitimately settle:
+///
+/// - **The window**, cut to its floor, with every question holding its slot
+///   for the longest timeout the retry policy allows. Not the shortest: a path
+///   with a long round trip times every question long, and a window at its
+///   floor on such a path is the pacing working as designed.
+/// - **The rate**, with every attempt at every endpoint leaving through the
+///   send ticker, and [`SEND_SLACK`] for a ticker that falls behind.
+/// - **The gap between two probes at one host**, with every attempt at every
+///   endpoint waiting its turn as though all of them were one host's, since
+///   the scan is not told how its endpoints spread over addresses.
+///
+/// The slowest of the three is the pace, and the three are not added, since
+/// they bind at once rather than in turn. On top of the pace comes the tail:
+/// the last probe admitted may still spend its whole schedule with each
+/// attempt at the longest timeout, which is what a host measured slow is timed
+/// at.
+///
+/// Every term is generous for a scan that is going well, and costs it nothing,
+/// since the loop stops the moment every probe is settled. What the deadline
+/// still bounds is a scan that has stopped making progress. A term no clock
+/// can count saturates, and the deadline with it: a gap or a timeout that long
+/// is one the caller asked the scan to wait out.
+fn deadline_for(
+    config: AdaptiveDeadlineConfig,
+    retry: &RetryPolicy,
+    window: WindowLimits,
+    rate: NonZeroU32,
+    host_gap: Option<Duration>,
+    target_count: usize,
+) -> AdaptiveDeadlineConfig {
+    let attempts = u32::from(retry.max_attempts.max(1));
+    let by_window = retry.longest_timeout() / window.floor.max(1);
+    let by_rate = saturating_mul(
+        Duration::from_secs(1),
+        SEND_SLACK * f64::from(attempts) / f64::from(rate.get()),
+    );
+    let by_gap = host_gap.unwrap_or_default().saturating_mul(attempts);
+    config
+        .allowing_for(retry.longest_probe_lifetime())
+        .allowing_pace_of(by_window.max(by_rate).max(by_gap), target_count)
+}
 
 /// A probe's identity within a scan: which address, which port.
 pub type ProbeTarget = (IpAddr, u16);
@@ -412,12 +474,9 @@ pub(super) struct CoreParts<'a> {
     pub rate: NonZeroU32,
     /// The budgets the scan runs against. The two scanners differ here: a UDP
     /// scan is inherently slower and needs a silence floor above the ICMP
-    /// rate-limit interval before quiet means anything.
+    /// rate-limit interval before quiet means anything. Its hard budget is
+    /// widened to what the scan's own pacing needs; see [`deadline_for`].
     pub deadline: AdaptiveDeadlineConfig,
-    /// The slowest pace the scan may settle at, which its deadline must outlive.
-    /// The two scanners derive this differently: a TCP scan paces on its
-    /// congestion window, a UDP scan on the rate itself.
-    pub pace: Duration,
     /// The in-flight window.
     pub window: WindowLimits,
     /// The most probes that may be outstanding at once.
@@ -441,15 +500,19 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             retry,
             rate,
             deadline,
-            pace,
             window,
             max_unresolved,
         } = parts;
 
         let (send_tick, batch) = super::raw::pacing_for(rate);
-        let deadline = deadline
-            .allowing_for(retry.worst_case_probe_lifetime())
-            .allowing_pace_of(pace, target_count);
+        let deadline = deadline_for(
+            deadline,
+            &retry,
+            window,
+            rate,
+            ctx.host_probe_interval(),
+            target_count,
+        );
 
         let mut core = Self {
             resolver,
@@ -1892,6 +1955,50 @@ mod tests {
         let failures = core.ctx.failures_snapshot();
         assert_eq!(failures.len(), 1, "{failures:?}");
         failures[0].reason().to_owned()
+    }
+
+    /// A port scan's deadline outlasts the slowest pace each of its limits
+    /// allows, worked out from the numbers rather than read from the scan: the
+    /// window at its floor with every question timed at the longest timeout,
+    /// every attempt through the rate ceiling, and every attempt waiting out
+    /// the gap at one host. A deadline shorter than any of them stops a scan
+    /// that is going exactly as it was told to, with ports never asked.
+    #[test]
+    fn a_port_scan_outlasts_the_slowest_pace_each_of_its_limits_allows() {
+        const PORTS: usize = 65_535;
+        let retry = PORT_RETRY_POLICY;
+        let attempts = f64::from(retry.max_attempts);
+        let hundred = NonZeroU32::new(100).expect("non-zero");
+        let gap = Duration::from_millis(25);
+
+        for (case, rate, host_gap) in [
+            ("unlimited", TCP_PORT_RATE_CEILING, None),
+            ("at a hundred a second", hundred, None),
+            ("with a gap at one host", TCP_PORT_RATE_CEILING, Some(gap)),
+        ] {
+            let given = deadline_for(
+                super::super::raw::DEADLINE_CONFIG,
+                &retry,
+                TCP_PORT_WINDOW,
+                rate,
+                host_gap,
+                PORTS,
+            )
+            .max_budget
+            .for_target_count(PORTS)
+            .as_secs_f64();
+
+            // Two seconds at the ceiling, spread by up to 30%, over sixteen.
+            let window = PORTS as f64 * 2.0 * 1.3 / 16.0;
+            let wire = PORTS as f64 * attempts / f64::from(rate.get());
+            let spacing = PORTS as f64 * attempts * host_gap.unwrap_or_default().as_secs_f64();
+            for (limit, needed) in [("window", window), ("rate", wire), ("gap", spacing)] {
+                assert!(
+                    given >= needed,
+                    "{case}: the {limit} needs {needed:.0} s and the scan is given {given:.0} s"
+                );
+            }
+        }
     }
 
     /// Ports never seen leaving are blamed on this machine only where the

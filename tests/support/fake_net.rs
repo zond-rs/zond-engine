@@ -1214,6 +1214,13 @@ impl FakeLink {
         let delay = policy.delay;
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
+            // Stamped as it arrives, the way a capture stamps a frame, so the
+            // round trip a scanner measures is the delay the policy set rather
+            // than the moment the reply was composed.
+            let segment = CapturedSegment {
+                received_at: Instant::now(),
+                ..segment
+            };
             for _ in 0..copies {
                 // The receiver is gone once the scan ends, which is the normal
                 // way a delayed reply that arrived too late is discarded.

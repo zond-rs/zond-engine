@@ -202,7 +202,6 @@ impl SctpPortScanner {
             retry,
             rate,
             deadline: super::super::raw::DEADLINE_CONFIG,
-            pace: retry.min_rto / super::TCP_PORT_WINDOW.floor,
             window: super::TCP_PORT_WINDOW,
             max_unresolved: super::TCP_PORT_UNRESOLVED,
         })
