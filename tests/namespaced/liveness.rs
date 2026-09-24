@@ -142,7 +142,7 @@ async fn a_few_port_scan_skips_liveness_and_leaves_a_silent_host_unknown() {
         1,
         "the port phase asked about the address, so it is not one nothing asked"
     );
-    if let Some(host) = report.host(silent) {
+    if let Some(host) = report.host(&silent) {
         assert_ne!(
             host.status(),
             HostStatus::Down,
