@@ -762,6 +762,7 @@ impl Run {
             // An nmap document does not say whether host discovery ran, only
             // what it concluded, so no reason is claimed.
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });

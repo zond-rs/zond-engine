@@ -600,6 +600,7 @@ struct PhaseDto {
     reached_by_connect: Vec<RangeDto>,
     undecided: Vec<RangeDto>,
     liveness_skipped: Option<String>,
+    silent: Vec<RangeDto>,
     origin: Option<PhaseOriginDto>,
 }
 
@@ -660,6 +661,11 @@ impl PhaseDto {
                 .map(RangeDto::record)
                 .collect::<Result<_, _>>()?,
             liveness_skipped: self.liveness_skipped,
+            silent: self
+                .silent
+                .into_iter()
+                .map(RangeDto::record)
+                .collect::<Result<_, _>>()?,
             probe_stats: self
                 .probe_stats
                 .into_iter()
@@ -2245,6 +2251,11 @@ mod tests {
                 before.liveness_skipped(),
                 "why a phase ran with no liveness pass is what says how to read its hosts"
             );
+            assert_eq!(
+                after.silent(),
+                before.silent(),
+                "an address asked and silent is accounted for, not lost"
+            );
         }
         assert!(
             original
@@ -2267,6 +2278,54 @@ mod tests {
                 .any(|phase| phase.liveness_skipped().is_some()),
             "the fixture skips a liveness pass, or the check above proves nothing"
         );
+    }
+
+    /// A port phase that stood in for a dropped liveness pass keeps, through a
+    /// written document and back, both why it ran alone and the addresses it
+    /// found silent, and the document holds no host at one of those.
+    #[test]
+    fn a_silent_address_survives_a_round_trip_and_stays_no_host() {
+        use crate::model::ip::range::{IpRange, Ipv4Range};
+        use crate::model::port::{Port, PortState, Protocol};
+        use crate::report::{LivenessSkip, PhaseParts, ScanKind, ScanPhase, ScanSettings};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let at = |last| Ipv4Addr::new(203, 0, 113, last);
+        let mut ips =
+            crate::model::parse::ip::to_set(&["203.0.113.0/29"], None, None).expect("a range");
+        let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::PortScan,
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            elapsed: Duration::from_secs(1),
+            privilege: Some(crate::system::privilege::Privilege::Raw),
+            targets: crate::report::TargetScope::from_ip_set(
+                &mut ips,
+                &crate::model::exclusion::Exclusions::none(),
+            ),
+            settings: ScanSettings::from(&crate::ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: Some(LivenessSkip::PortsNoDearer),
+            silent: vec![IpRange::V4(Ipv4Range::new(at(5), at(6)).expect("a range"))],
+            probes: Vec::new(),
+            origin: None,
+        });
+        let mut up = crate::model::host::Host::new(IpAddr::V4(at(1)));
+        up.set_status(HostStatus::Up);
+        up.add_port(Port::new(443, Protocol::Tcp, PortState::Closed));
+        let original = ScanReport::new(phase, [up]);
+
+        let restored = read(&write(&original)).expect("a readable document");
+
+        let phase = &restored.phases()[0];
+        assert_eq!(phase.silent(), original.phases()[0].silent());
+        assert_eq!(phase.liveness_skipped(), Some(LivenessSkip::PortsNoDearer));
+        assert_eq!(restored.hosts().count(), 1, "only the host that answered");
     }
 
     #[test]

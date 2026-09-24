@@ -599,6 +599,15 @@ pub struct PhaseDto<'a> {
     /// from the phase list and differ in what the findings mean.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness_skipped: Option<&'static str>,
+    /// Addresses this port phase asked on every port and heard nothing from,
+    /// ascending.
+    ///
+    /// Left out when empty, which is every phase but a port phase standing in
+    /// for a liveness pass the engine dropped as no cheaper. There an address
+    /// here drew no open port, no closed one and no ICMP error, is not listed
+    /// as a host, and is not undecided: its ports were asked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub silent: Vec<RangeDto>,
     /// What each instrumented scanner observed about its own run. Empty where
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
@@ -695,6 +704,7 @@ impl<'a> PhaseDto<'a> {
                 .collect(),
             undecided: phase.undecided().iter().map(RangeDto::new).collect(),
             liveness_skipped: phase.liveness_skipped().map(liveness_skip_name),
+            silent: phase.silent().iter().map(RangeDto::new).collect(),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
             origin: phase.origin().map(|origin| PhaseOriginDto {
                 label: origin.label(),

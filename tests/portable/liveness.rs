@@ -413,3 +413,83 @@ async fn a_resumed_assume_up_scan_records_no_discovery_phase() {
 
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// **A silent address in a scan that skipped its liveness pass is no host,
+/// and is accounted for.**
+///
+/// Two ports cost less probed than asked, so the port probes stand in for the
+/// liveness pass, and an address that answered none of them is what that pass
+/// would have found silent: it is not listed as a host, a comparison or a
+/// front end would otherwise read one "unknown, filtered" host per silent
+/// address. The port phase names it silent instead, its ports were asked so
+/// the journal holds them settled and a resume asks nothing, and the report
+/// read back from the journal keeps the same answer.
+#[cfg(feature = "journal-format")]
+#[tokio::test]
+async fn a_silent_address_of_a_skipped_liveness_pass_is_named_and_not_listed() {
+    use zond_engine::Exclusions;
+    use zond_engine::detect::Detections;
+    use zond_engine::journal::Journal;
+    use zond_engine::journal::manifest::Plan;
+    use zond_engine::model::technique::TcpScanTechnique;
+    use zond_engine::system::privilege::Privilege;
+
+    let Some(dead) = dead() else { return };
+    let plan = target_map(dead, "1,2");
+    let recorded = Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn);
+
+    let root = std::env::temp_dir().join(format!("zond-silent-skip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+
+    let journal = Journal::create(&root, &recorded, Privilege::current(), "seg").expect("creates");
+    let directory = journal.directory().to_path_buf();
+    let (_session, task) = zond_engine::scanner::scan_with_journal(
+        plan,
+        &test_config(),
+        Detections::embedded(),
+        journal,
+    )
+    .await
+    .expect("the scan starts");
+    let report = task.join().await.expect("the scan finishes");
+
+    assert!(
+        report.host(&dead).is_none(),
+        "an address that answered no port is listed as a host"
+    );
+    let phase = &report.phases()[0];
+    assert_eq!(phase.liveness_skipped(), Some(LivenessSkip::PortsNoDearer));
+    assert_eq!(phase.silent().len(), 1, "and the phase names it silent");
+    assert!(phase.undecided().is_empty(), "its ports were asked");
+
+    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    assert_eq!(listed[0].settled(), Some(2), "both ports are settled");
+    assert!(
+        listed[0].is_complete(),
+        "so a resume has nothing left to ask"
+    );
+
+    let read_back = zond_engine::journal::store::report(&directory).expect("reads back");
+    assert!(
+        read_back.host(&dead).is_none(),
+        "the journal's own record of the address does not bring it back"
+    );
+    assert_eq!(read_back.phases()[0].silent(), phase.silent());
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// `assume_up` asks for every address as a host, so a silent one is listed,
+/// each port carrying the silence it drew, and no phase names it silent.
+#[tokio::test]
+async fn assume_up_still_lists_a_silent_address() {
+    let Some(dead) = dead() else { return };
+    let mut cfg = test_config();
+    cfg.assume_up = true;
+
+    let report = run_scan(target_map(dead, "1,2"), &cfg).await.report;
+
+    assert!(report.host(&dead).is_some(), "the caller asked for it");
+    assert!(report.phases()[0].silent().is_empty());
+}

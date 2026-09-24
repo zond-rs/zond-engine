@@ -158,7 +158,8 @@ pub enum LivenessSkip {
     /// The engine dropped the pass because the scan named no more ports per
     /// address than the pass would have asked, so probing them cost no more
     /// than asking first. An answer on any port, open or closed, is what found
-    /// a host.
+    /// a host, and an address that answered on none is named in the phase's
+    /// [`silent`](ScanPhase::silent) list rather than listed as a host.
     PortsNoDearer,
 }
 
@@ -1684,6 +1685,9 @@ pub struct PhaseParts {
     /// Why a port phase ran with no liveness pass in front of it. See
     /// [`ScanPhase::liveness_skipped`].
     pub liveness_skipped: Option<LivenessSkip>,
+    /// Addresses a port phase standing in for its liveness pass asked on every
+    /// port and heard nothing from. See [`ScanPhase::silent`].
+    pub silent: Vec<IpRange>,
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
@@ -1714,6 +1718,7 @@ impl ScanPhase {
             reached_by_connect: parts.reached_by_connect,
             undecided: parts.undecided,
             liveness_skipped: parts.liveness_skipped,
+            silent: parts.silent,
             probes: parts.probes,
             origin: parts.origin,
             attachments: parts.attachments,
@@ -1780,6 +1785,9 @@ pub struct ScanPhase {
     /// Why this port phase ran with no liveness pass in front of it, or `None`.
     /// See [`liveness_skipped`](Self::liveness_skipped).
     liveness_skipped: Option<LivenessSkip>,
+    /// Addresses asked on every port that answered none, and so no host. See
+    /// [`silent`](Self::silent).
+    silent: Vec<IpRange>,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<PhaseOrigin>,
@@ -1930,6 +1938,26 @@ impl ScanPhase {
         self.liveness_skipped
     }
 
+    /// Addresses this port phase asked on every port it named and heard
+    /// nothing from at all, ascending.
+    ///
+    /// Filled only where the phase stood in for a liveness pass the engine
+    /// dropped as no cheaper than the ports; see
+    /// [`LivenessSkip::PortsNoDearer`]. There the port probes answer the
+    /// liveness question, and an address that drew no open port, no closed one
+    /// and no ICMP error is what the pass would have found silent: it is not
+    /// listed as a host, as the pass would not have listed it, and it is named
+    /// here instead, so the report still accounts for it. Its ports were
+    /// asked, so it is neither [`undecided`](Self::undecided) nor owed another
+    /// sitting, and a comparison reads it as covered and quiet.
+    ///
+    /// Empty for every other phase. A caller who declined the pass with
+    /// [`ZondConfig::assume_up`] asked for every address as a host, and gets
+    /// each one with the silence its ports drew.
+    pub fn silent(&self) -> &[IpRange] {
+        &self.silent
+    }
+
     /// The strategies in this phase that could not do their job.
     pub fn failures(&self) -> &[ScannerFailure] {
         &self.failures
@@ -2055,11 +2083,13 @@ impl ScanReport {
     /// during the scan appears once rather than once per address and two
     /// link-locals on different segments stay two hosts.
     pub fn new(phase: ScanPhase, hosts: impl IntoIterator<Item = Host>) -> Self {
-        Self {
+        let mut report = Self {
             engine_version: Cow::Borrowed(ENGINE_VERSION),
             phases: vec![phase],
             hosts: index(hosts),
-        }
+        };
+        report.forget_the_silent();
+        report
     }
 
     /// A report over the phases of a job that ran in more than one sitting.
@@ -2097,11 +2127,13 @@ impl ScanReport {
         phases: Vec<ScanPhase>,
         hosts: impl IntoIterator<Item = Host>,
     ) -> Self {
-        Self {
+        let mut report = Self {
             engine_version,
             phases,
             hosts: index(hosts),
-        }
+        };
+        report.forget_the_silent();
+        report
     }
 
     /// The engine version that produced this report.
@@ -2577,6 +2609,37 @@ impl ScanReport {
                 }
             }
         }
+        self.forget_the_silent();
+    }
+
+    /// Drops every host nothing was heard from at an address a phase names
+    /// [`silent`](ScanPhase::silent).
+    ///
+    /// Applied wherever a report is assembled, from a scan, from a journal and
+    /// from a merge, rather than once where the scan ends. A journal writes
+    /// hosts down as they change, so a record of an address later found silent
+    /// can already be on disk, and a resumed job restores it beside the later
+    /// sittings' phases. Read against every phase the report holds, the answer
+    /// is the same however the report came together.
+    ///
+    /// Only a host still [`Unknown`](HostStatus::Unknown): one that answered in
+    /// any phase, or in any document merged in, carries that evidence and is a
+    /// host whatever another phase heard.
+    fn forget_the_silent(&mut self) {
+        let mut silent = IpSet::new();
+        for phase in &self.phases {
+            for range in &phase.silent {
+                silent.insert_range(*range);
+            }
+        }
+        if silent.is_empty() {
+            return;
+        }
+        silent.canonicalize();
+
+        self.hosts.retain(|_, host| {
+            host.status() != HostStatus::Unknown || !host.ips().iter().any(|ip| silent.contains(ip))
+        });
     }
 }
 
@@ -2937,9 +3000,87 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         }
+    }
+
+    /// A port phase that stood in for a dropped liveness pass, naming `silent`
+    /// the addresses it asked and heard nothing from.
+    fn standing_in(silent: &[u8]) -> ScanPhase {
+        let mut phase = phase(ScanKind::PortScan);
+        phase.liveness_skipped = Some(LivenessSkip::PortsNoDearer);
+        phase.silent = silent
+            .iter()
+            .map(|&last| {
+                let v4 = Ipv4Addr::new(203, 0, 113, last);
+                IpRange::V4(Ipv4Range::new(v4, v4).expect("a range"))
+            })
+            .collect();
+        phase
+    }
+
+    /// A host the scanners filed at an address, and nothing heard from it.
+    fn unheard(last: u8) -> Host {
+        let mut host = Host::new(ip(last));
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+        host
+    }
+
+    /// An address a port phase asked on every port and heard nothing from is
+    /// not a host, as the liveness pass that phase stood in for would not have
+    /// made it one. A host that answered is kept, and so is an unanswering one
+    /// at an address the phase does not name, which is what a caller asking
+    /// for every address as a host gets.
+    #[test]
+    fn a_host_nothing_answered_at_a_silent_address_is_not_a_host() {
+        let mut up = Host::new(ip(1));
+        up.set_status(HostStatus::Up);
+
+        let report = ScanReport::new(standing_in(&[5]), [up, unheard(5), unheard(9)]);
+
+        assert!(report.host(&ip(5)).is_none(), "a silent address is no host");
+        assert!(
+            report.host(&ip(1)).is_some(),
+            "a host that answered is kept"
+        );
+        assert!(
+            report.host(&ip(9)).is_some(),
+            "an address the phase does not name silent keeps its record"
+        );
+    }
+
+    /// Read back from a journal, a record the first sitting wrote down before
+    /// the phase found its address silent comes back beside that phase, and is
+    /// dropped all the same: the answer is the report's, not the order a
+    /// record reached the disk in.
+    #[test]
+    fn a_journalled_record_at_a_silent_address_is_dropped_on_read_back() {
+        let resumed = ScanReport::from_phases(vec![standing_in(&[5])], [unheard(5)]);
+        assert!(resumed.host(&ip(5)).is_none());
+
+        let recorded = ScanReport::recorded("0.17.0", vec![standing_in(&[5])], [unheard(5)]);
+        assert!(recorded.host(&ip(5)).is_none());
+    }
+
+    /// A host another phase or document heard from stays a host after a merge
+    /// with one that found its address silent: that evidence is not undone by
+    /// a later silence, which says only that it was quiet then.
+    #[test]
+    fn a_host_heard_elsewhere_survives_a_phase_that_found_it_silent() {
+        let mut up = Host::new(ip(5));
+        up.set_status(HostStatus::Up);
+        let mut earlier = ScanReport::new(phase(ScanKind::Discovery), [up]);
+
+        earlier.merge(ScanReport::new(standing_in(&[5]), [unheard(5)]));
+
+        assert!(
+            earlier
+                .host(&ip(5))
+                .is_some_and(|host| host.status() == HostStatus::Up),
+            "the merge kept the host an earlier phase heard"
+        );
     }
 
     /// A duration no clock can add to is a phase to place at its start, not a

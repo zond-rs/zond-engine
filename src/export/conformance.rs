@@ -542,6 +542,10 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // A phase that declined nothing leaves this out rather than writing an
         // empty list, which is what most phases do.
         ("phase", "refusals"),
+        // Every phase but a port phase standing in for a liveness pass the
+        // engine dropped leaves this out, and so does such a phase that heard
+        // something from every address it asked.
+        ("phase", "silent"),
         // A phase that ran out of time on no host leaves this out rather than
         // writing an empty list, which is every phase that set no per-host
         // budget.

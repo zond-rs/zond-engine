@@ -873,6 +873,13 @@
             "$ref": "#/$defs/range"
           }
         },
+        "silent": {
+          "description": "Addresses this port phase asked on every port and heard nothing from, ascending: no open port, no closed one, no ICMP error. Absent where there were none, which is every phase but a `port_scan` whose `liveness_skipped` is `ports_no_dearer`. There the port probes stood in for the liveness pass, and an address here is what that pass would have found silent: it is not listed among the hosts, and its ports were asked, so it is not `undecided` and a comparison reads it as covered.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/range"
+          }
+        },
         "liveness_skipped": {
           "description": "Why this port phase ran with no liveness pass in front of it. Absent where one preceded it, which the report carries as a `discovery` phase of its own, and on every phase that is not a `port_scan`. `assume_up`: the caller declined the pass and asked for every address to be probed as a host that is there. `idle_scan`: the scan was an idle scan, whose every probe is forged from its zombie, and a liveness pass would have been this host asking the target directly. `ports_no_dearer`: the engine dropped the pass because the scan named no more ports per address than the pass would have asked, so an answer on any port, open or closed, is what found a host.",
           "enum": [

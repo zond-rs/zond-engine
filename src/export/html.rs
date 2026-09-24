@@ -1353,6 +1353,43 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
+    // Addresses a port phase asked on every port and heard nothing from, where
+    // it stood in for a liveness pass. Absent from the hosts below as a pass
+    // would have left them, and named here so the page still accounts for
+    // them. Capped for the reason the undecided list is.
+    if !phase.silent.is_empty() {
+        const SHOWN: usize = 6;
+        let mut ranges: Vec<String> = phase
+            .silent
+            .iter()
+            .take(SHOWN)
+            .map(|range| match range.start == range.end {
+                true => esc(&range.start),
+                false => format!("{}–{}", esc(&range.start), esc(&range.end)),
+            })
+            .collect();
+        let more = phase.silent.len().saturating_sub(SHOWN);
+        if more > 0 {
+            ranges.push(esc(&format!(
+                "and {more} more {}",
+                if more == 1 { "range" } else { "ranges" }
+            )));
+        }
+        let count = addresses_in(&phase.silent);
+        fact(
+            out,
+            "silent",
+            &format!(
+                "{}{}",
+                ranges.join(", "),
+                dim(&[esc(&format!(
+                    "{count} {} silent on every port, not listed",
+                    if count == 1 { "address" } else { "addresses" }
+                ))])
+            ),
+        )?;
+    }
+
     // Addresses a privileged phase reached the unprivileged way. Their results
     // sit beside raw ones under a phase headed privileged, and this line is
     // what tells the two apart.

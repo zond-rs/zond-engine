@@ -263,6 +263,7 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -291,9 +292,47 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: open.v4().iter().copied().map(IpRange::V4).collect(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         })
+    }
+
+    /// **An address a port phase asked and found silent is covered.** The phase
+    /// stood in for a liveness pass and asked every port there, so a host last
+    /// seen at that address and absent now reads as the liveness pass would
+    /// have left it, gone from a place that was looked at, and never as ground
+    /// the scan did not reach.
+    #[test]
+    fn an_address_a_port_phase_found_silent_is_covered() {
+        let mut walked = to_set(&["203.0.113.0/24"], None, None).expect("a range");
+        let silent = to_set(&["203.0.113.5"], None, None).expect("an address");
+        let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::PortScan,
+            started_at: SystemTime::UNIX_EPOCH,
+            elapsed: Duration::from_secs(1),
+            privilege: Some(Privilege::Raw),
+            targets: TargetScope::from_ip_set(&mut walked, &Exclusions::none()),
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: Some(crate::report::LivenessSkip::PortsNoDearer),
+            silent: silent.v4().iter().copied().map(IpRange::V4).collect(),
+            probes: Vec::new(),
+            origin: None,
+        });
+        let report = ScanReport::recorded("test", vec![phase], Vec::new());
+
+        assert_eq!(
+            ScopeIndex::of(&report).address(&ip(5)),
+            Coverage::Covered,
+            "asked and silent, not unreached"
+        );
     }
 
     /// **An address a stopped sweep never decided is unreached, not covered.**

@@ -3575,6 +3575,7 @@ pub zond_engine::export::schema::PhaseDto::probe_stats: alloc::vec::Vec<zond_eng
 pub zond_engine::export::schema::PhaseDto::reached_by_connect: alloc::vec::Vec<zond_engine::export::schema::RangeDto>
 pub zond_engine::export::schema::PhaseDto::refusals: alloc::vec::Vec<zond_engine::export::schema::RefusalDto<'a>>
 pub zond_engine::export::schema::PhaseDto::settings: zond_engine::export::schema::SettingsDto
+pub zond_engine::export::schema::PhaseDto::silent: alloc::vec::Vec<zond_engine::export::schema::RangeDto>
 pub zond_engine::export::schema::PhaseDto::started_at: alloc::string::String
 pub zond_engine::export::schema::PhaseDto::targets: zond_engine::export::schema::ScopeDto
 pub zond_engine::export::schema::PhaseDto::timed_out: alloc::vec::Vec<alloc::string::String>
@@ -13142,6 +13143,7 @@ pub zond_engine::record::PhaseRecord::probe_stats: alloc::vec::Vec<zond_engine::
 pub zond_engine::record::PhaseRecord::reached_by_connect: alloc::vec::Vec<zond_engine::record::RangeRecord>
 pub zond_engine::record::PhaseRecord::refusals: alloc::vec::Vec<zond_engine::record::RefusalRecord>
 pub zond_engine::record::PhaseRecord::settings: zond_engine::record::SettingsRecord
+pub zond_engine::record::PhaseRecord::silent: alloc::vec::Vec<zond_engine::record::RangeRecord>
 pub zond_engine::record::PhaseRecord::started_at: std::time::SystemTime
 pub zond_engine::record::PhaseRecord::targets: zond_engine::record::ScopeRecord
 pub zond_engine::record::PhaseRecord::timed_out: alloc::vec::Vec<core::net::ip_addr::IpAddr>
@@ -13975,6 +13977,7 @@ pub zond_engine::report::PhaseParts::probes: alloc::vec::Vec<zond_engine::report
 pub zond_engine::report::PhaseParts::reached_by_connect: alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
 pub zond_engine::report::PhaseParts::refusals: alloc::vec::Vec<zond_engine::report::Refusal>
 pub zond_engine::report::PhaseParts::settings: zond_engine::report::ScanSettings
+pub zond_engine::report::PhaseParts::silent: alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
 pub zond_engine::report::PhaseParts::started_at: std::time::SystemTime
 pub zond_engine::report::PhaseParts::targets: zond_engine::report::TargetScope
 pub zond_engine::report::PhaseParts::timed_out: alloc::vec::Vec<core::net::ip_addr::IpAddr>
@@ -14105,6 +14108,7 @@ pub fn zond_engine::report::ScanPhase::probe_stats(&self) -> &[zond_engine::repo
 pub fn zond_engine::report::ScanPhase::reached_by_connect(&self) -> &[zond_engine::model::ip::range::IpRange]
 pub fn zond_engine::report::ScanPhase::refusals(&self) -> &[zond_engine::report::Refusal]
 pub fn zond_engine::report::ScanPhase::settings(&self) -> &zond_engine::report::ScanSettings
+pub fn zond_engine::report::ScanPhase::silent(&self) -> &[zond_engine::model::ip::range::IpRange]
 pub fn zond_engine::report::ScanPhase::started_at(&self) -> std::time::SystemTime
 pub fn zond_engine::report::ScanPhase::targets(&self) -> &zond_engine::report::TargetScope
 pub fn zond_engine::report::ScanPhase::timed_out(&self) -> &[core::net::ip_addr::IpAddr]

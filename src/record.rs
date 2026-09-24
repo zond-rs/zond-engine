@@ -1394,6 +1394,14 @@ pub struct PhaseRecord {
     /// findings mean.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liveness_skipped: Option<String>,
+    /// Addresses a port sitting standing in for its liveness pass asked on
+    /// every port and heard nothing from.
+    ///
+    /// Skipped when empty, which is every sitting a liveness pass preceded, and
+    /// defaulted on the way in. Read back, it is what keeps a host record the
+    /// sitting already journalled at such an address out of the report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub silent: Vec<RangeRecord>,
     /// What each strategy recorded about its own run.
     #[serde(default)]
     pub probe_stats: Vec<ProbeStatsRecord>,
@@ -1538,6 +1546,7 @@ impl From<&ScanPhase> for PhaseRecord {
             liveness_skipped: phase
                 .liveness_skipped()
                 .map(|skip| wire::liveness_skip_name(skip).to_owned()),
+            silent: phase.silent().iter().map(RangeRecord::from).collect(),
             probe_stats: phase
                 .probe_stats()
                 .iter()
@@ -1590,6 +1599,11 @@ impl From<&PhaseRecord> for ScanPhase {
                 .liveness_skipped
                 .as_deref()
                 .and_then(wire::liveness_skip),
+            silent: record
+                .silent
+                .iter()
+                .filter_map(RangeRecord::rebuild)
+                .collect(),
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(PhaseOrigin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),

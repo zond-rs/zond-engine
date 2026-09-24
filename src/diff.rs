@@ -336,9 +336,21 @@ impl ScanDiff {
     /// enforces that. Two reports compare in whichever order they are given, and
     /// a caller who hands them over the other way round gets a diff that reads
     /// backwards rather than an error.
+    ///
+    /// An address either scan found [`silent`](crate::report::ScanPhase::silent)
+    /// on every port is compared as no host on both sides where the other lists
+    /// it with nothing heard from it. One scan asked for every address as a
+    /// host and the other stood its port probes in for a liveness pass; neither
+    /// heard anything there, and reading the difference as a host leaving or
+    /// arriving would report the two scans' settings as the network changing.
     pub fn compare(baseline: &ScanReport, current: &ScanReport, options: &DiffOptions) -> Self {
-        let baseline_hosts: Vec<&Host> = baseline.hosts().collect();
-        let current_hosts: Vec<&Host> = current.hosts().collect();
+        let quiet = silent_in(baseline, current);
+        let heard = |host: &&Host| {
+            host.status() != crate::model::host::HostStatus::Unknown
+                || !host.ips().iter().any(|ip| quiet.contains(ip))
+        };
+        let baseline_hosts: Vec<&Host> = baseline.hosts().filter(heard).collect();
+        let current_hosts: Vec<&Host> = current.hosts().filter(heard).collect();
 
         let baseline_scope = ScopeIndex::of(baseline);
         let current_scope = ScopeIndex::of(current);
@@ -577,6 +589,18 @@ fn merged(hosts: &[&Host], indices: &[usize]) -> Option<Host> {
     Some(merged)
 }
 
+/// Every address a phase of either report names silent, as one set.
+fn silent_in(baseline: &ScanReport, current: &ScanReport) -> crate::model::ip::set::IpSet {
+    let mut quiet = crate::model::ip::set::IpSet::new();
+    for phase in baseline.phases().iter().chain(current.phases()) {
+        for range in phase.silent() {
+            quiet.insert_range(*range);
+        }
+    }
+    quiet.canonicalize();
+    quiet
+}
+
 #[cfg(test)]
 mod tests {
     use crate::system::privilege::Privilege;
@@ -617,6 +641,39 @@ mod tests {
     /// early. How long a scan took is not what any of them is about.
     const PROMPT: Duration = Duration::ZERO;
 
+    /// A port scan over `covered` that ran with no liveness pass and found the
+    /// addresses in `silent` quiet on every port.
+    fn found_silent(covered: &str, silent: &str, at: SystemTime) -> ScanReport {
+        let mut targets = to_set(&[covered], None, None).expect("a parseable range");
+        let silent = to_set(&[silent], None, None).expect("a parseable range");
+        let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::PortScan,
+            started_at: at,
+            elapsed: PROMPT,
+            privilege: Some(Privilege::Raw),
+            targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: Some(crate::report::LivenessSkip::PortsNoDearer),
+            silent: silent
+                .v4()
+                .iter()
+                .copied()
+                .map(crate::model::ip::range::IpRange::V4)
+                .collect(),
+            probes: Vec::new(),
+            origin: None,
+        });
+
+        ScanReport::recorded("test", vec![phase], Vec::new())
+    }
+
     /// A report that says nothing about what it covered, which is what a foreign
     /// scanner's output reads as.
     fn unscoped(hosts: Vec<Host>) -> ScanReport {
@@ -648,6 +705,7 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -691,6 +749,7 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -731,6 +790,7 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -2262,5 +2322,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An address one scan listed as a host it heard nothing from, and the
+    /// other found silent on every port, is the same quiet address both times:
+    /// neither a host that went away nor one that arrived. The first is what a
+    /// caller asking for every address as a host gets, the second what a scan
+    /// standing in for its liveness pass leaves, and a comparison of the two is
+    /// not a change in the network.
+    #[test]
+    fn a_quiet_address_listed_once_and_found_silent_once_is_no_change() {
+        let start = SystemTime::UNIX_EPOCH;
+        let mut unheard = Host::new(ip(5));
+        unheard.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+        let listed = scoped(vec![unheard], "203.0.113.0/29", &[], start);
+        let silent = found_silent("203.0.113.0/29", "203.0.113.5", start + DAY);
+
+        assert!(
+            ScanDiff::between(&listed, &silent).hosts().is_empty(),
+            "a quiet address read as a host that went away"
+        );
+        assert!(
+            ScanDiff::between(&silent, &listed).hosts().is_empty(),
+            "or as one that arrived"
+        );
+    }
+
+    /// A host that answered and is silent now went away, exactly as it would
+    /// read had a liveness pass found it silent: the address was covered.
+    #[test]
+    fn a_host_that_answered_and_is_silent_now_is_removed_from_covered_ground() {
+        let start = SystemTime::UNIX_EPOCH;
+        let answered = scoped(vec![host(5)], "203.0.113.0/29", &[], start);
+        let silent = found_silent("203.0.113.0/29", "203.0.113.5", start + DAY);
+
+        let diff = ScanDiff::between(&answered, &silent);
+        let [delta] = diff.hosts() else {
+            panic!("one host changed: {:?}", diff.hosts());
+        };
+        assert!(
+            matches!(
+                delta.presence(),
+                crate::diff::Presence::Removed {
+                    after: Coverage::Covered
+                }
+            ),
+            "{:?}",
+            delta.presence()
+        );
     }
 }

@@ -462,6 +462,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         reached_by_connect: Vec::new(),
         undecided: Vec::new(),
         liveness_skipped: None,
+        silent: Vec::new(),
         probes: Vec::new(),
         origin: None,
     });
