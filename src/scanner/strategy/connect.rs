@@ -191,6 +191,13 @@ struct Probed {
     outcome: Outcome,
     /// Whether a send was made, as the run's audit counts it.
     attempt: Attempt,
+    /// How long the connect took to draw its answer, where it drew one.
+    ///
+    /// A completed handshake returns once the SYN/ACK is in and a refusal once
+    /// the RST is, so either is one round trip to the host, timed from when
+    /// the attempt began rather than from any wait for a socket. `None` for a
+    /// timeout and for every probe that never left.
+    rtt: Option<Duration>,
     /// What the reply proved the host *is*, where its protocol says so.
     ///
     /// A claim about the host rather than about the port, and carried alongside
@@ -594,6 +601,12 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit, s
                 StatusReason::new(StatusProtocol::TcpSyn, "tcp connect answered by the host"),
             );
         }
+        // The handshake's round trip, which is the host's as much as the
+        // liveness pass's own connect is: a scan that ran no such pass has no
+        // other on this path.
+        if let Some(rtt) = probed.rtt {
+            host.add_rtt_from(rtt, StatusProtocol::TcpSyn);
+        }
         if !probed.about_the_host.is_empty() {
             // The same call the service phase makes on the privileged path.
             // What a banner says about the machine is worth the same whichever
@@ -685,26 +698,32 @@ async fn port_prober(
             responses: Vec::new(),
             about_the_host: crate::fingerprint::AboutTheHost::default(),
             answered: false,
+            rtt: None,
             outcome,
             attempt,
             role: None,
         })
     };
 
-    let (result, _descriptor) = match dial(&handle, descriptors::PATIENCE, || {
+    let (result, began, _descriptor) = match dial(&handle, descriptors::PATIENCE, || {
         connect(egress, socket_addr, shaping)
     })
     .await
     {
         Dialled::Ran {
-            result, descriptor, ..
-        } => (result, descriptor),
+            result,
+            began,
+            descriptor,
+        } => (result, began, descriptor),
         // Not a local failure: the scan ended first, as for a target still
         // queued (see `record_unasked`).
         Dialled::Stopped => return unasked(Outcome::Unasked, Attempt::Unmade),
         Dialled::Starved => return unasked(Outcome::Unroutable, Attempt::Starved),
     };
 
+    // Read before the fingerprint talks to the port, which is the service's
+    // time rather than the path's.
+    let rtt = began.elapsed();
     match result {
         Ok(stream) => {
             let port = settled(target.port, PortState::Open, Some(ScanResponse::TcpSynAck));
@@ -721,6 +740,7 @@ async fn port_prober(
                 responses,
                 about_the_host,
                 answered: true,
+                rtt: Some(rtt),
                 outcome: Outcome::Answered { position },
                 attempt: Attempt::Sent,
                 // A TCP handshake proves a service, and the service is the
@@ -753,6 +773,7 @@ async fn port_prober(
                     responses: Vec::new(),
                     about_the_host: crate::fingerprint::AboutTheHost::default(),
                     answered: true,
+                    rtt: Some(rtt),
                     outcome: Outcome::Answered { position },
                     attempt: Attempt::Sent,
                     role: None,
@@ -773,6 +794,7 @@ async fn port_prober(
                     responses: Vec::new(),
                     about_the_host: crate::fingerprint::AboutTheHost::default(),
                     answered: false,
+                    rtt: None,
                     outcome: Outcome::Exhausted { position },
                     attempt: Attempt::Sent,
                     role: None,
@@ -844,6 +866,9 @@ async fn udp_port_prober(
             responses: Vec::new(),
             about_the_host: crate::fingerprint::AboutTheHost::default(),
             answered,
+            // A datagram's reply is the service's as much as the path's, so no
+            // round trip is read from it.
+            rtt: None,
             outcome,
             attempt,
             // Filled in by the one arm that has a reply to read it from.
@@ -1476,6 +1501,48 @@ mod tests {
                 .expect("a verdict")
                 .state(),
             PortState::Closed
+        );
+    }
+
+    /// A TCP port that refuses a connect is a SYN out and a RST back, one round
+    /// trip to the host, and the host is credited with it. Without it a scan
+    /// that ran no liveness pass, the only other source of a round trip on this
+    /// path, reports every host it found with none.
+    #[tokio::test]
+    async fn a_refused_connect_times_the_host() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let port = {
+            let listener = std::net::TcpListener::bind((ip, 0)).expect("bind to reserve");
+            listener.local_addr().expect("reserved addr").port()
+        };
+        let planned = PlannedTarget::new(
+            0,
+            Target {
+                ip,
+                port,
+                protocol: Protocol::Tcp,
+            },
+        );
+
+        let probed = port_prober(
+            planned,
+            ServiceDetection::Off,
+            Shaping::default(),
+            Egress::KERNEL,
+            SocketAddr::new(ip, port),
+            ScanHandle::new(),
+        )
+        .await;
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        absorb_probe(&ctx, probed, &mut ProbeAudit::new(), &mut 0);
+
+        let host = session
+            .hosts()
+            .get(ip)
+            .expect("the refusal proves the host");
+        assert!(
+            host.average_rtt().is_some(),
+            "the connect's round trip was not recorded against the host"
         );
     }
 
