@@ -111,6 +111,11 @@ pub mod tcp;
 pub mod tls;
 pub mod udp;
 
+// Where an HTTP response ends by its own framing, for the two readers that
+// fetch pages. Crate-private: nothing here builds or classifies HTTP, so it is
+// a reader's helper rather than a protocol this crate speaks.
+pub(crate) mod http;
+
 // Reading a string a stranger wrote, shared by the three announcement protocols
 // that carry one. Private, being a helper rather than a protocol.
 mod text;

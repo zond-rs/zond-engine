@@ -365,6 +365,13 @@ async fn fetch_text(addr: std::net::SocketAddr, path: &str) -> Option<String> {
 }
 
 /// One request and the response it draws, whole and bounded.
+///
+/// Whole means where the response says it ends, a `Content-Length` or a
+/// chunked body's closing chunk, as a detection's exchange reads it, and the
+/// close only for a response that says neither. A server that ignores the
+/// request's `Connection: close` and holds the socket until an idle timeout of
+/// its own would otherwise have each request wait that timeout out, and one
+/// longer than [`FETCH_TIMEOUT`] leave the icon unread.
 async fn exchange(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
     let mut stream = super::analyzer_connect(addr).await.ok()?;
     stream.write_all(&request(path)).await.ok()?;
@@ -377,6 +384,10 @@ async fn exchange(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
             break;
         }
         response.extend_from_slice(&buffer[..read]);
+        if let Some(end) = crate::protocols::http::message_end(&response) {
+            response.truncate(end);
+            break;
+        }
         if response.len() >= MAX_ICON_BYTES {
             response.truncate(MAX_ICON_BYTES);
             break;
@@ -925,5 +936,61 @@ mod tests {
         let icon = fetch(addr, "/favicon.ico").await;
         server.await.unwrap();
         assert_eq!(icon.as_deref(), Some(ICON));
+    }
+
+    /// A response that says how long it is ends there, whatever the server then
+    /// does with the connection.
+    ///
+    /// Plenty of servers ignore the request's `Connection: close` and keep the
+    /// socket until an idle timeout of their own. Read to the close, each of
+    /// the two requests this analyzer makes waited out that timeout, and one
+    /// longer than [`FETCH_TIMEOUT`] left the icon unread altogether. The server
+    /// here answers both requests in full and then holds every connection far
+    /// past that budget, so the icon arrives only if each reply is read to its
+    /// declared length and no further.
+    #[tokio::test]
+    async fn an_icon_is_read_to_its_declared_length_on_a_connection_held_open() {
+        const ICON: &[u8] = b"\x00\x00\x01\x00held-open-icon";
+        const HOLD: Duration = Duration::from_secs(30);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 512];
+                    let Ok(read) = stream.read(&mut buffer).await else {
+                        return;
+                    };
+                    let asked = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                    let reply = match asked.split_whitespace().nth(1) {
+                        Some("/favicon.ico") => [
+                            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", ICON.len())
+                                .into_bytes(),
+                            ICON.to_vec(),
+                        ]
+                        .concat(),
+                        _ => {
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\n<p>no icon</p>".to_vec()
+                        }
+                    };
+                    let _ = stream.write_all(&reply).await;
+                    tokio::time::sleep(HOLD).await;
+                });
+            }
+        });
+
+        let ctx = PortContext::new(8080, crate::model::port::Protocol::Tcp)
+            .with_addr(Some(addr))
+            .with_speaks_http(true);
+        let responses = ResponseSet::from_banners(vec!["HTTP/1.1 200 OK\r\n\r\n".to_string()]);
+        let collected = FaviconAnalyzer.collect(&ctx, &responses).await;
+        server.abort();
+
+        assert_eq!(
+            collected.frames.first().map(Vec::as_slice),
+            Some(ICON),
+            "the icon was not read before the fetch budget ran out"
+        );
     }
 }
