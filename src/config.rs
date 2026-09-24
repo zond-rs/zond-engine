@@ -897,16 +897,21 @@ pub struct ProbeTuning {
     /// verdict without them. See [`ZondConfig::icmp_evidence`].
     pub icmp_evidence: bool,
 
-    /// Source addresses to send every probe from, overriding what the routing
-    /// table would choose. One per family at most is used. Empty means the host
-    /// decides. Set to send from a chosen interface when the default route is a
-    /// VPN the link-layer path cannot traverse.
+    /// Source addresses to send probes to routed targets from, overriding
+    /// what the routing table would choose. One per family at most is used.
+    /// Empty means the host decides. Set to send from a chosen interface when
+    /// the default route is a VPN the link-layer path cannot traverse.
     ///
     /// The connections a scan opens follow its probes: the connect scan, the
     /// service pass, a TLS enumeration and the detections all leave a routed
     /// target's connection from the forced source and by the interface holding
     /// it. A target that a link here reaches directly, and one of a family
-    /// nothing was forced for, is left to the routing table by both.
+    /// nothing was forced for, is left to the routing table by both: a source
+    /// cannot carry a target of the other family, so with only an IPv4 source
+    /// forced, an IPv6 target goes wherever the routing table sends it, a VPN
+    /// holding the default route included. A caller that must not send by the
+    /// routing table forces a source for each family its targets span, or
+    /// leaves out the targets it has none for.
     pub send_source: Vec<IpAddr>,
 }
 
