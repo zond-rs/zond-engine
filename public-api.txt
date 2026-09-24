@@ -1529,6 +1529,7 @@ impl zond_engine::detect::flow::SocketProbe
 pub fn zond_engine::detect::flow::SocketProbe::new(core::net::socket_addr::SocketAddr, zond_engine::model::port::Protocol, core::option::Option<zond_engine::fingerprint::model::Tunnel>, &zond_engine::detect::compute::Budget) -> Self
 impl zond_engine::detect::flow::Probe for zond_engine::detect::flow::SocketProbe
 pub fn zond_engine::detect::flow::SocketProbe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
+pub fn zond_engine::detect::flow::SocketProbe::plan(&mut self, u32)
 pub fn zond_engine::detect::flow::SocketProbe::reply_complete(&self) -> bool
 pub fn zond_engine::detect::flow::SocketProbe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 impl core::marker::Freeze for zond_engine::detect::flow::SocketProbe
@@ -1540,10 +1541,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::Sock
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::SocketProbe
 pub trait zond_engine::detect::flow::Probe: core::marker::Send
 pub fn zond_engine::detect::flow::Probe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
+pub fn zond_engine::detect::flow::Probe::plan(&mut self, u32)
 pub fn zond_engine::detect::flow::Probe::reply_complete(&self) -> bool
 pub fn zond_engine::detect::flow::Probe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 impl zond_engine::detect::flow::Probe for zond_engine::detect::flow::SocketProbe
 pub fn zond_engine::detect::flow::SocketProbe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
+pub fn zond_engine::detect::flow::SocketProbe::plan(&mut self, u32)
 pub fn zond_engine::detect::flow::SocketProbe::reply_complete(&self) -> bool
 pub fn zond_engine::detect::flow::SocketProbe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn zond_engine::detect::flow::check(&zond_engine::detect::flow::schema::FlowDetection) -> alloc::vec::Vec<zond_engine::detect::flow::ValidationError>

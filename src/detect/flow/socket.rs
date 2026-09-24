@@ -13,7 +13,7 @@
 //! detection outside a scan builds it the same way.
 
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::detect::compute::Budget;
 use crate::detect::exchange;
@@ -70,7 +70,22 @@ pub struct SocketProbe {
     /// Whether the last `speak` read its reply to a self-terminating end: the
     /// peer closing, or an HTTP message reaching the length it declared.
     last_complete: bool,
+    /// The exchanges the flow may still make, this probe's own included, once
+    /// the flow has said how many it plans. See [`Probe::plan`].
+    exchanges_left: Option<u32>,
 }
+
+/// The least a datagram is waited on for its reply, however many the flow
+/// still plans to send.
+///
+/// Sharing the flow's time among its datagrams could otherwise leave each too
+/// little for any reply to arrive, and a guess given no time to be answered is
+/// a guess silently not tried. Half a second holds an intercontinental round
+/// trip and an agent's work on the request with room to spare. A flow planning
+/// more datagrams than its budget holds at this pace is refused the rest on its
+/// deadline, which its report then shows, rather than trying every one too
+/// briefly to hear any.
+const DATAGRAM_WAIT_FLOOR: Duration = Duration::from_millis(500);
 
 impl SocketProbe {
     /// A probe bound to `addr`, held to `budget`.
@@ -104,6 +119,7 @@ impl SocketProbe {
             connections_left: budget.max_connections,
             last_refusal: None,
             last_complete: false,
+            exchanges_left: None,
         }
     }
 
@@ -114,6 +130,40 @@ impl SocketProbe {
         self.egress = egress;
         self
     }
+
+    /// How long to wait for this datagram's reply: its share of the flow's time
+    /// left, split evenly among the exchanges the flow still plans, and never
+    /// less than [`DATAGRAM_WAIT_FLOOR`] or past the flow's deadline.
+    ///
+    /// Silence is an ordinary answer over UDP, and every datagram of a flow may
+    /// draw one. Given the whole of what is left, the first unanswered one
+    /// would spend it and the rest would never be sent; given an even share,
+    /// each is heard out and the last still has its turn. A caller speaking
+    /// without a plan has told this probe nothing of what follows, so its
+    /// datagram gets all the time there is, and silence at the deadline is a
+    /// question the clock closed rather than one heard out.
+    fn datagram_wait(&self, left: Duration) -> DatagramWait {
+        let Some(planned) = self.exchanges_left else {
+            return DatagramWait {
+                until: self.deadline,
+                full_share: false,
+            };
+        };
+        let share = (left / planned.max(1)).max(DATAGRAM_WAIT_FLOOR);
+        DatagramWait {
+            until: (Instant::now() + share).min(self.deadline),
+            full_share: share <= left,
+        }
+    }
+}
+
+/// The wait one datagram's reply is given.
+struct DatagramWait {
+    /// When it ends.
+    until: Instant,
+    /// Whether it is the datagram's whole share, so silence at its end is the
+    /// port's answer even if the flow's deadline falls there too.
+    full_share: bool,
 }
 
 impl Probe for SocketProbe {
@@ -125,10 +175,10 @@ impl Probe for SocketProbe {
             self.last_refusal = Some(ProbeRefusal::Connections);
             return None;
         }
-        if exchange::remaining(self.deadline).is_none() {
+        let Some(left) = exchange::remaining(self.deadline) else {
             self.last_refusal = Some(ProbeRefusal::Deadline);
             return None;
-        }
+        };
         let sent = bytes.len() as u64;
         if sent > self.bytes_left {
             self.last_refusal = Some(ProbeRefusal::Bytes);
@@ -136,6 +186,8 @@ impl Probe for SocketProbe {
         }
         self.bytes_left -= sent;
         self.connections_left -= 1;
+        let datagram = self.datagram_wait(left);
+        self.exchanges_left = self.exchanges_left.map(|planned| planned.saturating_sub(1));
 
         // The reply may consume at most what the byte budget has left. A silent or
         // unreachable port is not a refusal, so `last_refusal` stays clear, unless
@@ -153,7 +205,7 @@ impl Probe for SocketProbe {
                 self.addr,
                 self.egress,
                 bytes,
-                self.deadline,
+                datagram.until,
                 self.bytes_left,
             ),
             // An SCTP port is scanned without a client stack, so there is
@@ -170,8 +222,11 @@ impl Probe for SocketProbe {
             // the clock stopped it. Refused, so the flow's report says a budget
             // left it unanswered rather than that the port had nothing to say.
             // A port that refused the connection or reset it did so with time
-            // to spare, and stays silence.
-            if exchange::remaining(self.deadline).is_none() {
+            // to spare, and stays silence. So does a datagram that was waited
+            // on for its whole share: its silence was heard out, and is the
+            // answer, even when that share was the last of the flow's time.
+            let heard_out = self.protocol == Protocol::Udp && datagram.full_share;
+            if exchange::remaining(self.deadline).is_none() && !heard_out {
                 self.last_refusal = Some(ProbeRefusal::Deadline);
             }
             return None;
@@ -188,6 +243,10 @@ impl Probe for SocketProbe {
 
     fn reply_complete(&self) -> bool {
         self.last_complete
+    }
+
+    fn plan(&mut self, exchanges: u32) {
+        self.exchanges_left = Some(exchanges);
     }
 }
 
@@ -363,6 +422,72 @@ mod tests {
             !probe.reply_complete(),
             "a reply ended by the port going quiet was taken as whole"
         );
+    }
+
+    /// A flow that guesses over UDP, one datagram per guess, where a wrong
+    /// guess draws no reply at all, as an SNMP agent treats a community it does
+    /// not know. Silence is the answer to each wrong guess, so each may wait
+    /// only its share of the flow's time: an agent that accepts only the second
+    /// guess is found, rather than the first guess's silence spending the whole
+    /// budget and leaving the rest untried, and the last guess heard out to the
+    /// end of the budget is answered by its silence rather than cut short.
+    #[test]
+    fn a_udp_flow_tries_every_guess_when_the_first_goes_unanswered() {
+        use crate::detect::flow::{FlowSeed, run, schema::FlowDetection};
+
+        let agent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = agent.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 512];
+            while let Ok((read, from)) = agent.recv_from(&mut buffer) {
+                if &buffer[..read] == b"second" {
+                    let _ = agent.send_to(b"accepted", from);
+                }
+            }
+        });
+
+        let flow: FlowDetection = toml::from_str(
+            r#"
+            [detection]
+            id      = "guesses"
+            version = "1.0.0"
+            title   = "Guesses"
+            [detection.when]
+            protocol = "udp"
+            [detection.capabilities]
+            class      = "active-benign"
+            max_millis = 1500
+            [[step]]
+            for_each    = { var = "guess", in = ["first", "second", "third"] }
+            on_no_match = "continue"
+            send        = "{guess}"
+            expect      = "accepted"
+              [[step.finding]]
+              when    = "matched"
+              severity = "high"
+              summary = "the agent accepted {guess}"
+            "#,
+        )
+        .expect("a valid flow");
+
+        let mut probe = SocketProbe::new(addr, Protocol::Udp, None, &budget(4096, 1_500, 8));
+        let findings = run(
+            &flow,
+            "0",
+            &FlowSeed::new("127.0.0.1", addr.port()),
+            &mut probe,
+        );
+
+        let summaries: Vec<&str> = findings.iter().map(|finding| finding.title()).collect();
+        assert_eq!(
+            summaries,
+            vec!["the agent accepted second"],
+            "the accepted guess was never tried; last refusal {:?}",
+            probe.last_refusal()
+        );
+        // The last guess's silence was heard out for its whole share, so it is
+        // the agent's answer, not a question the budget left open.
+        assert_eq!(probe.last_refusal(), None);
     }
 
     /// An exchange the flow's clock ran out on is a question the budget left

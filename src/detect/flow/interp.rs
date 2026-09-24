@@ -79,6 +79,20 @@ pub trait Probe: Send {
         true
     }
 
+    /// Told, before a flow's first exchange, the most exchanges the flow will
+    /// make: one for each step that sends, and one per item for a `for_each`.
+    ///
+    /// For a probe that waits on silence. Over a datagram protocol no reply is
+    /// often the whole answer, an agent ignoring a guess it does not accept, and
+    /// a probe that gave each such wait everything left of the flow's time would
+    /// spend it all on the first unanswered question. Knowing how many questions
+    /// may follow, it can share the time among them instead. An upper bound, not
+    /// a promise: a step whose guard is false sends nothing. The default ignores
+    /// it, as a probe that never waits on silence can.
+    fn plan(&mut self, exchanges: u32) {
+        let _ = exchanges;
+    }
+
     /// Why the most recent [`speak`](Self::speak) returned [`None`], if a budget
     /// refused the exchange rather than the port merely going silent. The default
     /// is [`None`]: a probe with no budget of its own never refuses, it only goes
@@ -159,6 +173,7 @@ pub fn run(
     let mut env = Env::new();
     seed.seed(&mut env);
     let mut findings = Vec::new();
+    probe.plan(exchanges(flow));
 
     // The step ceiling is enforced here, not only in the build-time validator, so
     // a flow handed straight to `run` by a caller that never validated it cannot
@@ -187,6 +202,26 @@ pub fn run(
         }
     }
     findings
+}
+
+/// How many exchanges `flow` makes when every step runs: one for each step that
+/// sends, and one per item for a `for_each`, clamped where [`run`] clamps them.
+///
+/// An upper bound rather than a prediction, because a step whose guard is false
+/// sends nothing, and which guards hold is not known until the replies are in.
+pub(crate) fn exchanges(flow: &FlowDetection) -> u32 {
+    let sends: usize = flow
+        .step
+        .iter()
+        .take(MAX_FLOW_STEPS)
+        .filter(|step| step.send.is_some())
+        .map(|step| {
+            step.for_each
+                .as_ref()
+                .map_or(1, |for_each| for_each.items.len().min(MAX_LOOP_ITEMS))
+        })
+        .sum();
+    u32::try_from(sends).unwrap_or(u32::MAX)
 }
 
 /// Runs one step and says whether the flow goes on.

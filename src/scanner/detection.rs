@@ -616,6 +616,10 @@ impl Probe for Pooled {
     fn reply_complete(&self) -> bool {
         self.inner.reply_complete()
     }
+
+    fn plan(&mut self, exchanges: u32) {
+        self.inner.plan(exchanges);
+    }
 }
 
 /// The budget a flow's probe is held to, filled from what the detection declared

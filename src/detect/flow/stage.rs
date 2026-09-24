@@ -41,7 +41,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::time::{Duration, Instant};
 
 use super::db::FlowDb;
-use super::schema::{FlowDetection, MAX_FLOW_STEPS, MAX_LOOP_ITEMS};
+use super::schema::FlowDetection;
 use super::{FlowSeed, Probe, ProbeRefusal};
 use crate::config::limits::DETECTION_FLOW_CONCURRENCY;
 use crate::detect::manifest::{
@@ -366,27 +366,12 @@ impl Limits {
     }
 }
 
-/// How many requests `flow` makes when every step runs: one for each step that
-/// sends, and one per item for a `for_each`, clamped where the interpreter
-/// clamps them.
-///
-/// An upper bound rather than a prediction, because a step whose guard is false
-/// sends nothing. It is the number a reader weighs a shortfall against, what the
-/// flow set out to ask, and a guard that would have skipped a step the budget
-/// already stopped is not something the run can know.
+/// How many requests `flow` makes when every step runs, which is the number a
+/// reader weighs a shortfall against: what the flow set out to ask. A guard
+/// that would have skipped a step the budget already stopped is not something
+/// the run can know. See [`exchanges`](super::interp::exchanges).
 fn requests(flow: &FlowDetection) -> u32 {
-    let sends: usize = flow
-        .step
-        .iter()
-        .take(MAX_FLOW_STEPS)
-        .filter(|step| step.send.is_some())
-        .map(|step| {
-            step.for_each
-                .as_ref()
-                .map_or(1, |for_each| for_each.items.len().min(MAX_LOOP_ITEMS))
-        })
-        .sum();
-    u32::try_from(sends).unwrap_or(u32::MAX)
+    super::interp::exchanges(flow)
 }
 
 /// What the flows run against one port share: the replies it has given, and
@@ -586,6 +571,10 @@ impl Probe for CachingProbe<'_> {
 
     fn reply_complete(&self) -> bool {
         self.inner.reply_complete()
+    }
+
+    fn plan(&mut self, exchanges: u32) {
+        self.inner.plan(exchanges);
     }
 }
 
@@ -875,6 +864,36 @@ mod tests {
             }],
             "the refused first question was lost behind the answered last one"
         );
+    }
+
+    /// The count of exchanges a flow plans reaches the port's own probe through
+    /// the cache that wraps it. A probe told nothing gives its first unanswered
+    /// datagram the whole of the flow's time, so a wrapper that swallowed the
+    /// plan would bring back the flow that never tries its second guess.
+    #[test]
+    fn a_flows_planned_exchanges_reach_the_probe_beneath_the_cache() {
+        struct Planned(std::sync::Arc<Mutex<Vec<u32>>>);
+        impl Probe for Planned {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                None
+            }
+            fn plan(&mut self, exchanges: u32) {
+                self.0.lock().expect("uncontended").push(exchanges);
+            }
+        }
+
+        let told = std::sync::Arc::new(Mutex::new(Vec::new()));
+        detect_port(
+            &four_question_flows(1, 2_000),
+            &benign_envelope(),
+            "192.0.2.10",
+            Some("http"),
+            80,
+            Protocol::Tcp,
+            |_caps| Some(Box::new(Planned(std::sync::Arc::clone(&told))) as Box<dyn Probe>),
+        );
+
+        assert_eq!(*told.lock().expect("uncontended"), vec![4]);
     }
 
     /// A probe that counts its socket exchanges, so a test can tell a cached hit
