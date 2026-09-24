@@ -230,10 +230,7 @@ pub enum ScanError {
     /// second would fail somewhere in the middle of the run. The engine reads
     /// the limit and never raises it; a caller raises its own soft limit,
     /// within the hard one, before it starts a scan.
-    #[error(
-        "the process may hold {limit} file descriptors and a scan needs at least \
-         {needed}; raise the limit"
-    )]
+    #[error("file descriptor limit {limit} is below the {needed} a scan needs")]
     TooFewDescriptors {
         /// The soft limit the process has.
         limit: usize,

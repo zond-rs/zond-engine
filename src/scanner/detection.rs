@@ -112,12 +112,11 @@ impl Unfinished {
         match self {
             Unfinished::CutShort { id, why } => ctx.record_cut_short(
                 ScannerKind::Detection,
-                format!("detection '{id}' on {endpoint} went unanswered: {why}"),
+                format!("{id} on {endpoint} cut short: {why}"),
             ),
-            Unfinished::Failed { id, why } => ctx.record_failure(
-                ScannerKind::Detection,
-                format!("detection '{id}' on {endpoint} {why}"),
-            ),
+            Unfinished::Failed { id, why } => {
+                ctx.record_failure(ScannerKind::Detection, format!("{id} on {endpoint}: {why}"))
+            }
         }
     }
 }
@@ -411,25 +410,22 @@ fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
         RunOutcome::BudgetExceeded(trap) => {
             let why = match trap {
                 BudgetTrap::Deadline => {
-                    format!("its {} ms time budget ran out", budget.deadline.as_millis())
+                    format!("{} ms budget", budget.deadline.as_millis())
                 }
-                BudgetTrap::Bytes => format!("its {}-byte budget ran out", budget.max_bytes),
+                BudgetTrap::Bytes => format!("{}-byte budget", budget.max_bytes),
                 BudgetTrap::Connections => {
-                    format!("its {}-connection budget ran out", budget.max_connections)
+                    format!("{}-connection budget", budget.max_connections)
                 }
                 BudgetTrap::Fuel => {
-                    format!("its work budget of {} operations ran out", budget.fuel)
+                    format!("{}-operation budget", budget.fuel)
                 }
-                BudgetTrap::Memory => format!(
-                    "its memory budget of {} elements ran out",
-                    budget.max_memory
-                ),
+                BudgetTrap::Memory => format!("{}-element memory budget", budget.max_memory),
             };
             Unfinished::CutShort { id, why }
         }
         RunOutcome::Denied(denial) => Unfinished::Failed {
             id,
-            why: format!("was denied {:?}: {}", denial.capability, denial.reason),
+            why: format!("denied {:?}: {}", denial.capability, denial.reason),
         },
         RunOutcome::Faulted(fault) => Unfinished::Failed {
             id,
@@ -454,17 +450,17 @@ fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
     let stopped = match shortfall.stopped {
         Stopped::Starved => return starved(shortfall),
         Stopped::Budget { refusal, limit } => match refusal {
-            ProbeRefusal::Deadline => format!("its {limit} ms time budget ran out"),
-            ProbeRefusal::Bytes => format!("its {limit}-byte budget ran out"),
-            ProbeRefusal::Connections => format!("its {limit}-connection budget ran out"),
+            ProbeRefusal::Deadline => format!("{limit} ms budget"),
+            ProbeRefusal::Bytes => format!("{limit}-byte budget"),
+            ProbeRefusal::Connections => format!("{limit}-connection budget"),
             ProbeRefusal::Descriptors => return starved(shortfall),
         },
-        Stopped::PortUnresponsive => "the port was given up on as unresponsive".to_string(),
+        Stopped::PortUnresponsive => "port unresponsive".to_string(),
     };
     Unfinished::CutShort {
         id: shortfall.detection.clone(),
         why: format!(
-            "{stopped} with {} of {} requests answered",
+            "{stopped} ({}/{} answered)",
             shortfall.answered, shortfall.requests
         ),
     }
@@ -475,10 +471,12 @@ fn starved(shortfall: &Shortfall) -> Unfinished {
     Unfinished::Failed {
         id: shortfall.detection.clone(),
         why: format!(
-            "was refused a socket with {} of {} requests answered: {}",
+            "no socket ({}/{} answered{})",
             shortfall.answered,
             shortfall.requests,
-            crate::system::descriptors::starved_while("in the time the detection had")
+            crate::system::descriptors::soft_limit()
+                .map(|limit| format!(", file limit {limit}"))
+                .unwrap_or_default()
         ),
     }
 }
@@ -983,8 +981,7 @@ mod tests {
 
         let lines = logged(|| describe_shortfall(&shortfall).record(&ctx, "192.0.2.1:443"));
 
-        let expected = "detection 'backup-files' on 192.0.2.1:443 went unanswered: \
-                        its 3000 ms time budget ran out with 3 of 6 requests answered";
+        let expected = "backup-files on 192.0.2.1:443 cut short: 3000 ms budget (3/6 answered)";
         let failures = ctx.failures_snapshot();
         assert_eq!(
             failures.len(),
@@ -1017,11 +1014,7 @@ mod tests {
         assert_eq!(failures.len(), 1, "the shortfall was not filed");
         let reason = failures[0].reason();
         assert!(
-            reason.starts_with(
-                "detection 'backup-files' on 192.0.2.1:443 was refused a socket \
-                 with 1 of 6 requests answered: the process reached its file \
-                 descriptor limit"
-            ) && reason.ends_with("raise the limit and scan again"),
+            reason.starts_with("backup-files on 192.0.2.1:443: no socket (1/6 answered"),
             "{reason}"
         );
         assert!(
@@ -1078,15 +1071,9 @@ mod tests {
             Unfinished::Failed { why, .. } => panic!("a spent budget read as a fault: {why}"),
         };
 
-        assert_eq!(
-            why(cut(BudgetTrap::Deadline)),
-            "its 2000 ms time budget ran out"
-        );
-        assert_eq!(why(cut(BudgetTrap::Bytes)), "its 4096-byte budget ran out");
-        assert_eq!(
-            why(cut(BudgetTrap::Connections)),
-            "its 2-connection budget ran out"
-        );
+        assert_eq!(why(cut(BudgetTrap::Deadline)), "2000 ms budget");
+        assert_eq!(why(cut(BudgetTrap::Bytes)), "4096-byte budget");
+        assert_eq!(why(cut(BudgetTrap::Connections)), "2-connection budget");
     }
 
     /// The budget the probe is built with, which is the part of the probe's

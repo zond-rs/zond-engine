@@ -93,7 +93,10 @@ use crate::{counted, info, warn};
 pub struct RefusedStep {
     /// The strategy that would have taken this work.
     pub scanner: ScannerKind,
-    /// What cannot be done, and what the caller could write instead.
+    /// What cannot be done, and what the caller could write instead, in one
+    /// short line: the ground, then the reason and any remedy in brief. The
+    /// reasoning behind each refusal is on the function that builds it, not in
+    /// the words a console prints.
     pub reason: String,
 }
 
@@ -114,11 +117,7 @@ impl RefusedStep {
     pub fn technique_needs_raw_sockets(technique: TcpScanTechnique) -> Self {
         Self {
             scanner: ScannerKind::for_raw_tcp(technique),
-            reason: format!(
-                "the {technique} technique needs raw sockets, which this process does \
-                 not have, and a connect scan answers a different question - so no TCP \
-                 port was probed"
-            ),
+            reason: format!("tcp ports: {technique} scan needs raw sockets (sudo)"),
         }
     }
 
@@ -132,10 +131,7 @@ impl RefusedStep {
     pub fn sctp_needs_raw_sockets() -> Self {
         Self {
             scanner: ScannerKind::SctpPort,
-            reason: "the sctp ports named for this scan need raw sockets, which this process \
-                     does not have, and there is no unprivileged init probe - so no sctp port \
-                     was probed"
-                .to_string(),
+            reason: "sctp ports: init scan needs raw sockets (sudo)".to_string(),
         }
     }
 
@@ -148,10 +144,7 @@ impl RefusedStep {
     pub fn sctp_not_in_an_idle_scan() -> Self {
         Self {
             scanner: ScannerKind::SctpPort,
-            reason: "an idle scan reads a third party's counter, which carries no sctp probe, \
-                     and sending one directly would put this host's address on the target - so \
-                     no sctp port was probed"
-                .to_string(),
+            reason: "sctp ports: not probed in an idle scan".to_string(),
         }
     }
 
@@ -163,10 +156,7 @@ impl RefusedStep {
     pub fn udp_not_in_an_idle_scan() -> Self {
         Self {
             scanner: ScannerKind::UdpPort,
-            reason: "an idle scan reads a third party's counter, which carries no udp probe, \
-                     and sending one directly would put this host's address on the target - so \
-                     no udp port was probed"
-                .to_string(),
+            reason: "udp ports: not probed in an idle scan".to_string(),
         }
     }
 
@@ -180,11 +170,8 @@ impl RefusedStep {
         Self {
             scanner: ScannerKind::for_raw_tcp(technique),
             reason: format!(
-                "this process can send self-built frames and holds no raw socket, and {} \
-                 out of a frame's reach; a connect scan answers a different question than \
-                 the {technique} technique asks - so no TCP port on {} was probed",
-                counted(targets, "target is", "targets are"),
-                if targets == 1 { "it" } else { "them" },
+                "tcp ports on {}: {technique} scan needs a raw socket (sudo)",
+                counted(targets, "target", "targets"),
             ),
         }
     }
@@ -195,11 +182,8 @@ impl RefusedStep {
         Self {
             scanner: ScannerKind::SctpPort,
             reason: format!(
-                "this process can send self-built frames and holds no raw socket, and {} \
-                 out of a frame's reach; there is no unprivileged init probe - so no sctp \
-                 port on {} was probed",
-                counted(targets, "target is", "targets are"),
-                if targets == 1 { "it" } else { "them" },
+                "sctp ports on {}: init scan needs a raw socket (sudo)",
+                counted(targets, "target", "targets"),
             ),
         }
     }
@@ -214,10 +198,8 @@ impl RefusedStep {
         Self {
             scanner,
             reason: format!(
-                "this process can send self-built frames and holds no raw socket, and {} \
-                 out of a frame's reach - so {pass} left {} alone",
-                counted(hosts, "host is", "hosts are"),
-                if hosts == 1 { "it" } else { "them" },
+                "{pass} on {}: needs a raw socket (sudo)",
+                counted(hosts, "host", "hosts"),
             ),
         }
     }
@@ -236,7 +218,7 @@ impl RefusedStep {
     pub(crate) fn pass_not_in_an_idle_scan(scanner: ScannerKind, pass: &str) -> Self {
         Self {
             scanner,
-            reason: format!("{pass} not run (would reach the target directly under an idle scan)"),
+            reason: format!("{pass}: not run in an idle scan (contacts the target)"),
         }
     }
 
@@ -249,11 +231,7 @@ impl RefusedStep {
     pub(crate) fn idle_zombie_excluded(zombie: IpAddr) -> Self {
         Self {
             scanner: ScannerKind::Idle,
-            reason: format!(
-                "the idle scan's zombie {zombie} is excluded, and the scan reads its counter \
-                 by probing it again and again - and scanning the target under this host's \
-                 own address instead would betray the scan, so no TCP port was probed"
-            ),
+            reason: format!("idle scan: zombie {zombie} is excluded"),
         }
     }
 
@@ -267,11 +245,7 @@ impl RefusedStep {
     pub fn idle_needs_privilege() -> Self {
         Self {
             scanner: ScannerKind::Idle,
-            reason: "an idle scan forges the source address of its probes, which needs \
-                     a self-built frame this process cannot open without privilege - and \
-                     scanning the target under this host's own address instead would \
-                     betray the scan, so no TCP port was probed"
-                .to_owned(),
+            reason: "idle scan: needs raw sockets (sudo)".to_owned(),
         }
     }
 
@@ -283,8 +257,7 @@ impl RefusedStep {
         Self {
             scanner: ScannerKind::Routed,
             reason: format!(
-                "{}: too large to probe one address at a time, and routed IPv6 has \
-                 no other strategy yet. Give specific addresses or a smaller prefix.",
+                "{}: too large to walk (give addresses or a smaller prefix)",
                 describe(range)
             ),
         }
@@ -302,9 +275,7 @@ impl RefusedStep {
         Self {
             scanner: ScannerKind::Connect,
             reason: format!(
-                "{}: too large to probe one address at a time, and an unprivileged \
-                 scan has no other strategy. Run with root to sweep a segment this \
-                 size, or give specific addresses or a smaller prefix.",
+                "{}: too large to walk (sudo sweeps a segment)",
                 describe(range)
             ),
         }
@@ -323,9 +294,7 @@ impl RefusedStep {
         Self {
             scanner: ScannerKind::SynPort,
             reason: format!(
-                "{target} is link-local and names no interface, so it names a \
-                 different machine on every segment this host is on. Say which: \
-                 {}%en0, naming the interface the segment is reached through.",
+                "{target}: link-local, name the interface ({}%en0)",
                 range.start_addr()
             ),
         }
@@ -340,10 +309,7 @@ impl RefusedStep {
         let target = name(range);
         Self {
             scanner: ScannerKind::SynPort,
-            reason: format!(
-                "{target} was named on two interfaces at once, and each is a \
-                 different machine. Scan one segment at a time."
-            ),
+            reason: format!("{target}: named on two interfaces (scan one at a time)"),
         }
     }
 
@@ -364,10 +330,7 @@ impl RefusedStep {
         Self {
             scanner: ScannerKind::Local,
             reason: format!(
-                "{}: too large to probe one address at a time, and this scan is \
-                 not sweeping the segment. The all-nodes solicitation reaches a \
-                 prefix this size in one packet - scan the segment rather than \
-                 the range, or give specific addresses.",
+                "{}: too large to walk (sweep the segment instead)",
                 describe(range)
             ),
         }
@@ -627,8 +590,7 @@ impl DiscoveryPlan {
             refusals.push(RefusedStep {
                 scanner: ScannerKind::Local,
                 reason: format!(
-                    "{} is link-local, so it names a different machine on every \
-                     segment. Say which: {}%<interface>.",
+                    "{}: link-local, name the interface ({}%en0)",
                     range.start_addr(),
                     range.start_addr()
                 ),

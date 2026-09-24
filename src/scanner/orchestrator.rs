@@ -3059,15 +3059,15 @@ mod tests {
         assert_eq!(reasons.len(), 2, "one for each protocol: {reasons:?}");
         for reason in reasons {
             assert!(
-                reason.contains("self-built frames") && reason.contains("out of a frame's reach"),
+                reason.contains("needs a raw socket"),
                 "the frames path's reason: {reason}"
             );
             assert!(
-                !reason.contains("does not have"),
+                !reason.contains("needs raw sockets"),
                 "not the connect path's: {reason}"
             );
             assert!(
-                reason.contains("1 target is") && reason.contains("port on it was probed"),
+                reason.contains("on 1 target:"),
                 "and it counts the one target it names: {reason}"
             );
         }

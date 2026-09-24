@@ -175,10 +175,7 @@ pub(crate) fn starved_while(wait: &str) -> String {
     let limit = soft_limit()
         .map(|limit| format!(" of {limit}"))
         .unwrap_or_default();
-    format!(
-        "the process reached its file descriptor limit{limit} and no socket came \
-         free {wait}; raise the limit and scan again"
-    )
+    format!("file descriptor limit{limit} reached, no socket free {wait}")
 }
 
 /// The fewest descriptors the gate leaves to the rest of the process, however
