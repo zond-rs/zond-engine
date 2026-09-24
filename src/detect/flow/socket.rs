@@ -68,7 +68,8 @@ pub struct SocketProbe {
     /// silent.
     last_refusal: Option<ProbeRefusal>,
     /// Whether the last `speak` read its reply to a self-terminating end: the
-    /// peer closing, or an HTTP message reaching the length it declared.
+    /// peer closing, or an HTTP message reaching the length it declared. False
+    /// after a `speak` that returned nothing, which left no reply to be whole.
     last_complete: bool,
     /// The exchanges the flow may still make, this probe's own included, once
     /// the flow has said how many it plans. See [`Probe::plan`].
@@ -171,6 +172,7 @@ impl Probe for SocketProbe {
         // Refuse the exchange the budget cannot pay for, before any packet leaves,
         // recording which budget so a silent port and a spent one stay distinct.
         self.last_refusal = None;
+        self.last_complete = false;
         if self.connections_left == 0 {
             self.last_refusal = Some(ProbeRefusal::Connections);
             return None;
@@ -488,6 +490,40 @@ mod tests {
         // The last guess's silence was heard out for its whole share, so it is
         // the agent's answer, not a question the budget left open.
         assert_eq!(probe.last_refusal(), None);
+    }
+
+    /// What the probe says about a reply's completeness describes its last
+    /// exchange, and an exchange that drew nothing has no whole reply to
+    /// describe, whatever the one before it read.
+    #[test]
+    fn an_exchange_that_drew_nothing_is_not_reported_whole() {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            // Answers the one connection and closes it, then stops listening.
+            // The request is read first, so the close is a clean one rather
+            // than a reset over unread bytes.
+            if let Ok((mut sock, _)) = listener.accept() {
+                let _ = sock.read(&mut [0u8; 16]);
+                let _ = sock.write_all(b"ok");
+            }
+        });
+
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 5_000, 8));
+        assert!(probe.speak(b"a").is_some());
+        assert!(
+            probe.reply_complete(),
+            "a reply read to the close was not whole"
+        );
+        server.join().unwrap();
+
+        assert!(probe.speak(b"b").is_none(), "a closed port answered");
+        assert!(
+            !probe.reply_complete(),
+            "the unanswered exchange was described by the one before it"
+        );
     }
 
     /// An exchange the flow's clock ran out on is a question the budget left

@@ -458,6 +458,9 @@ struct CachingProbe<'a> {
     /// How many of this flow's requests drew a reply, from the socket or the
     /// cache, which is how far a flow a budget stopped had got.
     answered: u32,
+    /// Whether the reply the last `speak` returned was read to a clean end,
+    /// wherever it came from. See [`Probe::reply_complete`].
+    last_complete: bool,
 }
 
 impl<'a> CachingProbe<'a> {
@@ -475,6 +478,7 @@ impl<'a> CachingProbe<'a> {
             budget,
             refused: None,
             answered: 0,
+            last_complete: false,
         }
     }
 
@@ -517,6 +521,7 @@ const DEAD_PORT_STRIKES: u32 = 2;
 
 impl Probe for CachingProbe<'_> {
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        self.last_complete = false;
         {
             let cache = self
                 .port
@@ -527,6 +532,9 @@ impl Probe for CachingProbe<'_> {
                 && reply.len() as u64 <= self.budget
             {
                 self.answered += 1;
+                // Only a whole reply is ever cached, so one served from the
+                // cache is whole, whatever this flow's own last fetch was.
+                self.last_complete = true;
                 return Some(reply.clone());
             }
         }
@@ -558,7 +566,8 @@ impl Probe for CachingProbe<'_> {
             return None;
         };
         self.answered += 1;
-        if self.inner.reply_complete() {
+        self.last_complete = self.inner.reply_complete();
+        if self.last_complete {
             self.port
                 .cache
                 .lock()
@@ -570,7 +579,7 @@ impl Probe for CachingProbe<'_> {
     }
 
     fn reply_complete(&self) -> bool {
-        self.inner.reply_complete()
+        self.last_complete
     }
 
     fn plan(&mut self, exchanges: u32) {
@@ -950,6 +959,49 @@ mod tests {
             0,
             "the second flow never touched the socket"
         );
+    }
+
+    /// What a flow's probe says about the completeness of a reply describes
+    /// the reply it returned, whichever of the socket and the cache it came
+    /// from. A cached reply is whole by construction, so after a hit the probe
+    /// says so, even when its own last trip to the socket was cut short.
+    #[test]
+    fn a_reply_served_from_the_cache_is_reported_whole_after_a_truncated_fetch() {
+        let port = PortShare::default();
+        let (whole, _) = counting(b"the page", true);
+        let mut first = CachingProbe::new(whole, &port, Duration::from_millis(1500), 4096);
+        first.speak(b"GET / HTTP/1.1\r\n\r\n");
+
+        let (cut, _) = counting(b"cut sho", false);
+        let mut second = CachingProbe::new(cut, &port, Duration::from_millis(1500), 4096);
+        second.speak(b"GET /big HTTP/1.1\r\n\r\n");
+        assert!(
+            !second.reply_complete(),
+            "a truncated fetch was reported whole"
+        );
+
+        let served = second.speak(b"GET / HTTP/1.1\r\n\r\n");
+        assert_eq!(served.as_deref(), Some(&b"the page"[..]));
+        assert!(
+            second.reply_complete(),
+            "the cached reply was described by the truncated fetch before it"
+        );
+    }
+
+    /// A request that drew nothing leaves no reply to call whole.
+    #[test]
+    fn an_unanswered_request_is_not_reported_whole() {
+        struct Silent;
+        impl Probe for Silent {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                None
+            }
+        }
+        let port = PortShare::default();
+        let mut probe =
+            CachingProbe::new(Box::new(Silent), &port, Duration::from_millis(1500), 4096);
+        assert!(probe.speak(b"GET / HTTP/1.1\r\n\r\n").is_none());
+        assert!(!probe.reply_complete());
     }
 
     #[test]
