@@ -58,11 +58,12 @@ use crate::report::StopReason;
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
+use crate::scanner::strategy::raw::SendFaults;
 use crate::scanner::strategy::sweep::HostSweep;
-use crate::success;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
+use crate::{info, success};
 
 /// The payload every echo request carries, so a reply can be checked against
 /// what was sent rather than trusted to have come back whole.
@@ -169,7 +170,9 @@ pub struct OsEchoScanner {
     /// The hard ceiling on this run, derived from the worst case a retry can
     /// still be answered within.
     deadline: Instant,
-    send_failure: Option<String>,
+    /// Why requests did not leave, split by whose fact it was: this host's
+    /// send path, or an address nothing reaches from here.
+    faults: SendFaults,
 }
 
 impl OsEchoScanner {
@@ -228,7 +231,7 @@ impl OsEchoScanner {
                 + RETRY_POLICY.worst_case_probe_lifetime()
                 + send_duration
                 + QUIET_FLOOR,
-            send_failure: None,
+            faults: SendFaults::default(),
         }
     }
 
@@ -289,11 +292,20 @@ impl OsEchoScanner {
                 true
             }
             Err(e) => {
-                error!(
-                    verbosity = 2,
-                    "failed to send OS echo probe to {target}: {e:#}"
-                );
-                self.send_failure = Some(format!("{e:#}"));
+                // An address nothing reaches is the address's fact and is
+                // reported against it; only this host's own refusals are the
+                // pass failing. Each said once. See `SendFaults`.
+                if e.is_unroutable() {
+                    if self.faults.unroutable.is_none() {
+                        info!(verbosity = 2, "{target} cannot be reached: {e:#}");
+                    }
+                } else if self.faults.broken.is_none() {
+                    error!(
+                        verbosity = 2,
+                        "failed to send OS echo probe to {target}: {e:#}"
+                    );
+                }
+                self.faults.record(target, &e);
                 false
             }
         };
@@ -356,11 +368,15 @@ impl OsEchoScanner {
             Err(e) => {
                 // Not recorded as a send failure of its own: the echo beside it
                 // is what this pass is counted in, and a host whose timestamp
-                // could not be sent is still being asked.
-                error!(
-                    verbosity = 2,
-                    "failed to send OS timestamp probe to {target}: {e:#}"
-                );
+                // could not be sent is still being asked. Nor logged as an
+                // error where the echo beside it already said the address
+                // cannot be reached.
+                if !e.is_unroutable() {
+                    error!(
+                        verbosity = 2,
+                        "failed to send OS timestamp probe to {target}: {e:#}"
+                    );
+                }
             }
         }
     }
@@ -568,17 +584,13 @@ impl OsEchoScanner {
             }
         };
 
-        if self.sweep.audit.sends_failed > 0 {
-            self.ctx.record_failure(
-                ScannerKind::OsEcho,
-                format!(
-                    "{} of {} echo probes could not be sent: {}",
-                    self.sweep.audit.sends_attempted,
-                    self.sweep.audit.sends_attempted,
-                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
-                ),
-            );
-        }
+        self.faults.file(
+            &self.ctx,
+            ScannerKind::OsEcho,
+            "echo probes",
+            self.sweep.audit.sends_attempted,
+            self.sweep.audit.sends_failed,
+        );
 
         let capture = self.transport.capture_counts();
         let targets = self.next_sequence as u128;
@@ -728,6 +740,50 @@ mod tests {
              nothing beats the least bad guess"
         );
         assert_eq!(host.status(), HostStatus::Up);
+    }
+
+    /// A host the sender cannot reach is reported unreached, and only a
+    /// refusal of this host's own is the pass failing.
+    ///
+    /// A dead neighbour's every request is refused with the same answer, and
+    /// read as a failure it would report the pass broken for a fact about the
+    /// address, the way the port scanners and the sweeps do not.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_address_that_cannot_be_reached_is_not_a_failed_pass() {
+        struct Refusing(fn() -> SendError);
+
+        impl ProbeSender for Refusing {
+            fn send(
+                &self,
+                _s: &[u8],
+                _src: IpAddr,
+                _dst: IpAddr,
+                _zone: Option<u32>,
+                _emission: Emission,
+            ) -> Result<(), SendError> {
+                Err((self.0)())
+            }
+        }
+
+        let unresolved = || SendError::Unresolved("192.0.2.10 did not answer".to_string());
+        let full = || SendError::Refused("No buffer space available".to_string());
+        for (refusal, unreached) in [(unresolved as fn() -> SendError, true), (full, false)] {
+            let (_session, ctx) = ScanSession::new();
+            let (_tx, rx) = mpsc::channel(1024);
+            let transport = ProbeTransport::from_parts(Box::new(Refusing(refusal)), rx);
+            let mut scanner = OsEchoScanner::with_transport(ctx.clone(), vec![TARGET], transport);
+
+            scanner.probe().await.expect("the phase runs");
+
+            let failures = ctx.failures_snapshot();
+            if unreached {
+                assert_eq!(ctx.take_unroutable(), vec![TARGET], "reported unreached");
+                assert!(failures.is_empty(), "and nothing failed: {failures:?}");
+            } else {
+                assert!(ctx.take_unroutable().is_empty());
+                assert_eq!(failures.len(), 1, "this host's refusal is a failure");
+            }
+        }
     }
 
     /// Every other ping on the host is filtered out by the identifier, in

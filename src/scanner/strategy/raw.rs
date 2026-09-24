@@ -580,7 +580,7 @@ pub(super) struct SendFaults {
 
 impl SendFaults {
     /// Files one failed send against the address it was aimed at.
-    fn record(&mut self, target: IpAddr, error: &SendError) {
+    pub(super) fn record(&mut self, target: IpAddr, error: &SendError) {
         if error.is_unroutable() {
             self.unroutable_count += 1;
             self.addresses.insert(target);
@@ -588,6 +588,30 @@ impl SendFaults {
                 .get_or_insert_with(|| (target, error.to_string()));
         } else {
             self.broken.get_or_insert_with(|| error.to_string());
+        }
+    }
+
+    /// Says what a pass's refused sends came to, each kind where it belongs:
+    /// a failure of this host's send path as a failure, naming how many of
+    /// the pass's `attempted` sends of `probes` it refused out of `failed`,
+    /// and each address with no way to it against the address.
+    pub(super) fn file(
+        &self,
+        ctx: &crate::scanner::session::ScanContext,
+        kind: crate::report::ScannerKind,
+        probes: &str,
+        attempted: u64,
+        failed: u64,
+    ) {
+        if let Some(reason) = &self.broken {
+            let broken = failed.saturating_sub(self.unroutable_count);
+            ctx.record_failure(
+                kind,
+                format!("{broken} of {attempted} {probes} could not be sent: {reason}"),
+            );
+        }
+        for address in &self.addresses {
+            ctx.record_unroutable(*address);
         }
     }
 }

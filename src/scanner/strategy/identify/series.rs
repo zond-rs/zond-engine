@@ -127,6 +127,7 @@ use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
+use crate::scanner::strategy::raw::SendFaults;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
@@ -324,7 +325,9 @@ pub struct OsSeriesScanner {
     /// What has been read, per host.
     collected: HashMap<IpAddr, Collected>,
     audit: ProbeAudit,
-    send_failure: Option<String>,
+    /// Why probes did not leave, split by whose fact it was: this host's send
+    /// path, or an address nothing reaches from here.
+    faults: SendFaults,
     /// How many hosts this run managed to name, for the closing line.
     named: usize,
 }
@@ -382,7 +385,7 @@ impl OsSeriesScanner {
             answered: HashSet::new(),
             collected: HashMap::new(),
             audit: ProbeAudit::new(),
-            send_failure: None,
+            faults: SendFaults::default(),
             named: 0,
         }
     }
@@ -455,11 +458,20 @@ impl OsSeriesScanner {
                 self.audit.record_send(true);
             }
             Err(e) => {
-                error!(
-                    verbosity = 2,
-                    "failed to send a series probe to {address}: {e:#}"
-                );
-                self.send_failure = Some(format!("{e:#}"));
+                // An address nothing reaches is the address's fact and is
+                // reported against it; only this host's own refusals are the
+                // pass failing. Each said once. See `SendFaults`.
+                if e.is_unroutable() {
+                    if self.faults.unroutable.is_none() {
+                        info!(verbosity = 2, "{address} cannot be reached: {e:#}");
+                    }
+                } else if self.faults.broken.is_none() {
+                    error!(
+                        verbosity = 2,
+                        "failed to send a series probe to {address}: {e:#}"
+                    );
+                }
+                self.faults.record(address, &e);
                 self.audit.record_send(false);
             }
         }
@@ -668,17 +680,13 @@ impl OsSeriesScanner {
             }
         }
 
-        if self.audit.sends_failed > 0 {
-            self.ctx.record_failure(
-                ScannerKind::OsSeries,
-                format!(
-                    "{} of {} series probes could not be sent: {}",
-                    self.audit.sends_failed,
-                    self.audit.sends_attempted,
-                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
-                ),
-            );
-        }
+        self.faults.file(
+            &self.ctx,
+            ScannerKind::OsSeries,
+            "series probes",
+            self.audit.sends_attempted,
+            self.audit.sends_failed,
+        );
         if self.named > 0 {
             info!(
                 verbosity = 1,
@@ -1119,6 +1127,57 @@ mod tests {
         let refusals = &scanner.collected[&TARGET].closed.samples;
         let reading = read_identifiers(refusals);
         assert_eq!(reading.class, IdClass::Counting, "{}", reading.line);
+    }
+
+    /// A host the sender cannot reach is reported unreached, and only a
+    /// refusal of this host's own is the pass failing.
+    ///
+    /// A dead neighbour's every probe is refused with the same answer, and
+    /// read as a failure it would report the pass broken for a fact about the
+    /// address, the way the port scanners and the sweeps do not.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_address_that_cannot_be_reached_is_not_a_failed_pass() {
+        struct Refusing(fn() -> SendError);
+
+        impl ProbeSender for Refusing {
+            fn send(
+                &self,
+                _s: &[u8],
+                _src: IpAddr,
+                _dst: IpAddr,
+                _zone: Option<u32>,
+                _emission: Emission,
+            ) -> Result<(), SendError> {
+                Err((self.0)())
+            }
+        }
+
+        let unresolved = || SendError::Unresolved("192.0.2.10 did not answer".to_string());
+        let full = || SendError::Refused("No buffer space available".to_string());
+        for (refusal, unreached) in [(unresolved as fn() -> SendError, true), (full, false)] {
+            let (_session, ctx) = ScanSession::new();
+            let (_tx, rx) = mpsc::channel(1024);
+            let transport =
+                ProbeTransport::from_parts(Box::new(Refusing(refusal)), rx as CaptureStream);
+            let mut scanner = OsSeriesScanner::with_transport(
+                ctx.clone(),
+                vec![both_ports()],
+                2,
+                transport,
+                Emission::routed(),
+            );
+
+            scanner.probe().await.expect("the phase runs");
+
+            let failures = ctx.failures_snapshot();
+            if unreached {
+                assert_eq!(ctx.take_unroutable(), vec![TARGET], "reported unreached");
+                assert!(failures.is_empty(), "and nothing failed: {failures:?}");
+            } else {
+                assert!(ctx.take_unroutable().is_empty());
+                assert_eq!(failures.len(), 1, "this host's refusal is a failure");
+            }
+        }
     }
 
     /// Somebody else's segment carries a nonce this scan never sent. It must
