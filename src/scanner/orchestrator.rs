@@ -1610,6 +1610,11 @@ fn tls_ports(ctx: &ScanContext) -> Vec<(crate::model::ip::scoped::ScopedIp, u16)
             if port.protocol() == Protocol::Tcp
                 && port.state() == PortState::Open
                 && port.security().is_some()
+                // Asked even though this scan's own service pass never
+                // handshakes with such a port: a record restored from an
+                // earlier sitting is no licence for the dozens of hellos this
+                // pass sends. See `ScanContext::listens_only`.
+                && !ctx.listens_only(port.number(), port.protocol())
             {
                 targets.push((address.clone(), port.number()));
             }
@@ -3668,6 +3673,43 @@ mod tests {
         assert!(
             support.is_empty(),
             "nothing was asked, so nothing is recorded"
+        );
+    }
+
+    /// A port the scan only listens on is not walked, even where it carries a
+    /// handshake's record, which this scan's own service pass would never have
+    /// written there but a restored sitting can.
+    ///
+    /// The walk is dozens of ClientHellos, and on a printer's raw-print port
+    /// each is a page. The endpoint here would accept, so an enumeration that
+    /// ran would be recorded, as the test after this one shows.
+    #[tokio::test]
+    async fn the_pass_leaves_a_listen_only_port_alone() {
+        use crate::model::host::Host;
+        use crate::model::port::{Port, Security};
+
+        let addr = tls_endpoint(0xC02F).await;
+        let (_session, ctx) = crate::scanner::session::ScanSession::builder()
+            .listening_only_to(std::collections::BTreeSet::from([addr.port()]))
+            .build();
+        let mut host = Host::new(addr.ip());
+        host.set_status(crate::model::host::HostStatus::Up);
+        host.add_port(
+            Port::new(addr.port(), Protocol::Tcp, PortState::Open)
+                .with_security(Security::new().with_tls_version("TLSv1.2")),
+        );
+        ctx.store.insert(host.scoped_ip(), host);
+
+        let cfg = crate::config::ZondConfig {
+            tls_enumeration: true,
+            ..Default::default()
+        };
+        run_tls_enumeration(&ctx, &cfg).await;
+
+        let support = recorded_support(&ctx, addr.port()).expect("the port is still there");
+        assert!(
+            support.is_empty(),
+            "a listen-only port was offered hellos: {support:?}"
         );
     }
 

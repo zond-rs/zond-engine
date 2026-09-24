@@ -713,6 +713,17 @@ pub struct ScanSettings {
     /// and found an endpoint refusing every offer it was given.
     pub tls_enumeration: bool,
 
+    /// The TCP ports the phase connected to and listened on and sent nothing,
+    /// ascending.
+    ///
+    /// Recorded because an open port here with no service beyond its number's
+    /// is not a port that would not say: it was left unprobed on purpose, and
+    /// probing it may make a printer print. See
+    /// [`ZondConfig::listen_only_ports`] for the rule, and
+    /// [`listened_only_to`](Self::listened_only_to) for the question a reader
+    /// asks of one port.
+    pub listen_only_ports: Vec<u16>,
+
     /// What the scan changed about the packets it sent, or `None` if it changed
     /// nothing. A filtered port found with a probe from a trusted source port is
     /// a different fact than the same port found with an ordinary probe; see
@@ -734,6 +745,27 @@ pub struct ScanSettings {
     /// either way, and only this says whether that is a port nothing answered
     /// for or a port whose refusal the scan was not listening for.
     pub icmp_evidence: bool,
+}
+
+impl ScanSettings {
+    /// Whether the phase only listened on `number` over `protocol`, sending it
+    /// nothing, so that what the port reports is what it volunteered and no
+    /// more.
+    ///
+    /// ```
+    /// use zond_engine::ZondConfig;
+    /// use zond_engine::model::port::Protocol;
+    /// use zond_engine::report::ScanSettings;
+    ///
+    /// let settings = ScanSettings::from(&ZondConfig::default());
+    /// assert!(settings.listened_only_to(9100, Protocol::Tcp));
+    /// assert!(!settings.listened_only_to(9100, Protocol::Udp));
+    /// assert!(!settings.listened_only_to(80, Protocol::Tcp));
+    /// ```
+    #[must_use]
+    pub fn listened_only_to(&self, number: u16, protocol: Protocol) -> bool {
+        protocol == Protocol::Tcp && self.listen_only_ports.contains(&number)
+    }
 }
 
 impl From<&ZondConfig> for ScanSettings {
@@ -768,6 +800,7 @@ impl From<&ZondConfig> for ScanSettings {
             characterise,
             ip_protocols,
             tls_enumeration,
+            listen_only_ports,
             evasion,
             idle_scan,
             icmp_evidence,
@@ -807,6 +840,7 @@ impl From<&ZondConfig> for ScanSettings {
             characterise: *characterise,
             ip_protocols: ip_protocols.iter().copied().collect(),
             tls_enumeration: *tls_enumeration,
+            listen_only_ports: listen_only_ports.iter().copied().collect(),
             evasion: EvasionRecord::from_profile(evasion),
             idle_scan: *idle_scan,
             icmp_evidence: *icmp_evidence,

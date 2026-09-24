@@ -483,9 +483,12 @@ pub async fn scan(
         }
         let endpoint = zones.endpoint(target.ip(), target.port());
         let egress = ctx.egress_toward(target.ip());
+        // Identified over the connection that finds the port open, so the
+        // port's own cap applies here rather than in a pass of its own.
+        let identify = ctx.service_detection_on(detection, target.port(), target.protocol());
         pool.admit(port_prober(
             target,
-            detection,
+            identify,
             shaping,
             egress,
             endpoint,

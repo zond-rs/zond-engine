@@ -381,6 +381,7 @@ pub zond_engine::config::ZondConfig::host_timeout: core::option::Option<core::ti
 pub zond_engine::config::ZondConfig::icmp_evidence: bool
 pub zond_engine::config::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::config::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
+pub zond_engine::config::ZondConfig::listen_only_ports: alloc::collections::btree::set::BTreeSet<u16>
 pub zond_engine::config::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ZondConfig::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ZondConfig::no_dns: bool
@@ -413,6 +414,7 @@ impl core::marker::Unpin for zond_engine::config::ZondConfig
 impl core::marker::UnsafeUnpin for zond_engine::config::ZondConfig
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ZondConfig
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ZondConfig
+pub const zond_engine::config::RAW_PRINT_PORTS: [u16; 8]
 pub mod zond_engine::cve
 #[non_exhaustive] pub enum zond_engine::cve::CatalogueError
 pub zond_engine::cve::CatalogueError::Io(core::io::error::Error)
@@ -3909,6 +3911,7 @@ pub zond_engine::export::schema::SettingsDto::host_timeout_us: core::option::Opt
 pub zond_engine::export::schema::SettingsDto::icmp_evidence: bool
 pub zond_engine::export::schema::SettingsDto::idle_scan: core::option::Option<zond_engine::export::schema::IdleScanDto>
 pub zond_engine::export::schema::SettingsDto::ip_protocols: alloc::vec::Vec<u8>
+pub zond_engine::export::schema::SettingsDto::listen_only_ports: alloc::vec::Vec<u16>
 pub zond_engine::export::schema::SettingsDto::max_probe_rate: core::option::Option<u32>
 pub zond_engine::export::schema::SettingsDto::min_probe_rate: core::option::Option<u32>
 pub zond_engine::export::schema::SettingsDto::os_detection: &'static str
@@ -13467,6 +13470,7 @@ pub zond_engine::record::SettingsRecord::host_timeout: core::option::Option<core
 pub zond_engine::record::SettingsRecord::icmp_evidence: bool
 pub zond_engine::record::SettingsRecord::idle_scan: core::option::Option<zond_engine::record::IdleScanRecord>
 pub zond_engine::record::SettingsRecord::ip_protocols: alloc::vec::Vec<u8>
+pub zond_engine::record::SettingsRecord::listen_only_ports: alloc::vec::Vec<u16>
 pub zond_engine::record::SettingsRecord::max_probe_rate: core::option::Option<u32>
 pub zond_engine::record::SettingsRecord::min_probe_rate: core::option::Option<u32>
 pub zond_engine::record::SettingsRecord::os_detection: alloc::string::String
@@ -14131,6 +14135,7 @@ pub zond_engine::report::ScanSettings::host_timeout: core::option::Option<core::
 pub zond_engine::report::ScanSettings::icmp_evidence: bool
 pub zond_engine::report::ScanSettings::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::report::ScanSettings::ip_protocols: alloc::vec::Vec<u8>
+pub zond_engine::report::ScanSettings::listen_only_ports: alloc::vec::Vec<u16>
 pub zond_engine::report::ScanSettings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::report::ScanSettings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::report::ScanSettings::os_detection: zond_engine::config::OsDetection
@@ -14143,6 +14148,8 @@ pub zond_engine::report::ScanSettings::service_detection: zond_engine::config::S
 pub zond_engine::report::ScanSettings::tcp_technique: zond_engine::model::technique::TcpScanTechnique
 pub zond_engine::report::ScanSettings::tls_enumeration: bool
 pub zond_engine::report::ScanSettings::traceroute: bool
+impl zond_engine::report::ScanSettings
+pub fn zond_engine::report::ScanSettings::listened_only_to(&self, u16, zond_engine::model::port::Protocol) -> bool
 impl core::clone::Clone for zond_engine::report::ScanSettings
 pub fn zond_engine::report::ScanSettings::clone(&self) -> zond_engine::report::ScanSettings
 impl core::cmp::PartialEq for zond_engine::report::ScanSettings
@@ -15199,6 +15206,7 @@ pub fn zond_engine::scanner::session::SessionBuilder::detections(self, zond_engi
 pub fn zond_engine::scanner::session::SessionBuilder::excluding(self, zond_engine::model::exclusion::Exclusions) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::host_probe_interval(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::host_timeout(self, core::option::Option<core::time::Duration>) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::listening_only_to(self, alloc::collections::btree::set::BTreeSet<u16>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::ordering(self, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::planning(self, zond_engine::scanner::session::Stage, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
@@ -18513,6 +18521,7 @@ pub zond_engine::ZondConfig::host_timeout: core::option::Option<core::time::Dura
 pub zond_engine::ZondConfig::icmp_evidence: bool
 pub zond_engine::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
 pub zond_engine::ZondConfig::ip_protocols: alloc::collections::btree::set::BTreeSet<u8>
+pub zond_engine::ZondConfig::listen_only_ports: alloc::collections::btree::set::BTreeSet<u16>
 pub zond_engine::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::ZondConfig::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::ZondConfig::no_dns: bool

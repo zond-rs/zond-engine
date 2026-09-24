@@ -1720,6 +1720,7 @@
         "characterise",
         "ip_protocols",
         "tls_enumeration",
+        "listen_only_ports",
         "icmp_evidence"
       ],
       "properties": {
@@ -1857,6 +1858,15 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 255
+          }
+        },
+        "listen_only_ports": {
+          "description": "The TCP ports the phase connected to and listened on and sent nothing, ascending. An open port listed here that names no more than its number implies was left unprobed on purpose, since a printer prints whatever arrives on one, rather than found to have nothing to say. Empty for a phase that probed every port alike, which is every phase written before a scan held any back.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
           }
         },
         "evasion": {

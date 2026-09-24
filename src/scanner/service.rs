@@ -110,6 +110,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
             continue;
         }
         let egress = ctx.egress_toward(target.addr());
+        let detection = ctx.service_detection_on(detection, port, protocol);
         pool.admit(fingerprint_one(target, port, protocol, detection, egress))
             .await;
     }
@@ -416,8 +417,11 @@ mod tests {
     }
 
     use crate::scanner::session::ScanSession;
+    use std::collections::BTreeSet;
     use std::net::IpAddr;
-    use tokio::io::AsyncWriteExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     #[tokio::test]
@@ -494,6 +498,63 @@ mod tests {
         let port = host.ports().find(|p| p.number() == 9).unwrap();
         // Untouched: no service was attached by the phase.
         assert!(port.service().is_none());
+    }
+
+    /// A silent loopback listener that counts every byte any connection sends
+    /// it, standing in for a printer's raw-print port.
+    async fn counting_listener() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let received = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&received);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let count = Arc::clone(&count);
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 1024];
+                    while let Ok(n) = sock.read(&mut buffer).await {
+                        if n == 0 {
+                            break;
+                        }
+                        count.fetch_add(n, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+        (addr, received)
+    }
+
+    /// The pass after a raw scan listens on a listen-only port and sends it
+    /// nothing, at the most thorough level there is, where the same port off
+    /// the list is asked everything.
+    ///
+    /// The raw path's half of the rule. A printer prints what arrives there,
+    /// and this pass is the one a privileged scan reaches it through.
+    #[tokio::test]
+    async fn a_listen_only_port_is_sent_nothing_where_any_other_is_asked() {
+        let mut received = Vec::new();
+        for listen_only in [true, false] {
+            let (addr, count) = counting_listener().await;
+            let ports = match listen_only {
+                true => BTreeSet::from([addr.port()]),
+                false => BTreeSet::new(),
+            };
+            let (session, ctx) = ScanSession::builder().listening_only_to(ports).build();
+            let ip = addr.ip();
+            let mut host = Host::new(ip);
+            host.add_port(Port::new(addr.port(), Protocol::Tcp, PortState::Open));
+            session.hosts().insert(ip, host);
+
+            detect(&ctx, ServiceDetection::Thorough, Protocol::Tcp).await;
+            received.push(count.load(Ordering::SeqCst));
+        }
+
+        assert_eq!(received[0], 0, "a listen-only port was sent a payload");
+        assert!(
+            received[1] > 0,
+            "the same port off the list was asked nothing, so the first half \
+             proves nothing"
+        );
     }
 
     /// An open port that refuses a connection is a shortfall the port itself

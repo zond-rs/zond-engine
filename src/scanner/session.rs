@@ -71,6 +71,7 @@
 //! empty" and "the raw scanner never started" would be the same answer.
 
 use dashmap::DashMap;
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -79,6 +80,7 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tracing::error;
 
+use crate::config::ServiceDetection;
 use crate::detect::compute::DetectionRunRecord;
 use crate::info;
 use crate::journal::settle::{Outcome, Settled, Settlements};
@@ -1448,6 +1450,9 @@ pub struct ScanContext {
     /// The sources the scan forced, which decide where each connection it
     /// opens leaves from. Empty for a scan that forced none.
     pub(crate) forced: Arc<crate::system::dial::ForcedSources>,
+    /// The TCP ports this scan connects to and listens on and sends nothing;
+    /// see [`listens_only`](Self::listens_only).
+    pub(crate) listen_only: Arc<BTreeSet<u16>>,
 }
 
 impl ScanContext {
@@ -1458,6 +1463,41 @@ impl ScanContext {
     /// a forced source is spoken to from that source too.
     pub(crate) fn egress_toward(&self, target: IpAddr) -> crate::system::dial::Egress {
         self.forced.toward(target)
+    }
+
+    /// Whether this scan may do no more than connect to `number` over
+    /// `protocol` and read what it volunteers.
+    ///
+    /// Asked by every pass that would put bytes on a port: the service pass and
+    /// the connect scanner's inline identification, through
+    /// [`service_detection_on`](Self::service_detection_on), and the detection
+    /// and TLS enumeration passes, which leave such a port alone. A pass that
+    /// wrote to a port without asking would be the one that makes a printer
+    /// print; see
+    /// [`ZondConfig::listen_only_ports`](crate::config::ZondConfig::listen_only_ports).
+    pub(crate) fn listens_only(&self, number: u16, protocol: Protocol) -> bool {
+        protocol == Protocol::Tcp && self.listen_only.contains(&number)
+    }
+
+    /// How far identification goes on one port under a scan asking for
+    /// `detection`: that far, or no further than listening on a port this scan
+    /// [only listens on](Self::listens_only).
+    ///
+    /// A cap rather than a skip, because connecting and reading is safe on any
+    /// port and names every service that greets on connect. Everything past
+    /// [`ServiceDetection::Banner`] sends, a handshake's ClientHello and an
+    /// analyzer's second connection as much as a probe.
+    pub(crate) fn service_detection_on(
+        &self,
+        detection: ServiceDetection,
+        number: u16,
+        protocol: Protocol,
+    ) -> ServiceDetection {
+        if self.listens_only(number, protocol) {
+            detection.min(ServiceDetection::Banner)
+        } else {
+            detection
+        }
     }
 
     /// Records the responses the service phase gathered for one port, for the
@@ -2216,6 +2256,8 @@ pub struct SessionBuilder {
     host_probe_interval: Option<Duration>,
     order_seed: Option<u64>,
     send_source: Vec<IpAddr>,
+    /// `None` for the default, [`RAW_PRINT_PORTS`](crate::config::RAW_PRINT_PORTS).
+    listen_only: Option<BTreeSet<u16>>,
 }
 
 impl SessionBuilder {
@@ -2373,6 +2415,19 @@ impl SessionBuilder {
         self
     }
 
+    /// The TCP ports this scan connects to and listens on, and sends nothing.
+    ///
+    /// Left unset, the printers' ports,
+    /// [`RAW_PRINT_PORTS`](crate::config::RAW_PRINT_PORTS), as
+    /// [`scan`](crate::scanner::scan) has them by default. A caller
+    /// orchestrating their own scan sets this to what
+    /// [`ZondConfig::listen_only_ports`](crate::config::ZondConfig::listen_only_ports)
+    /// says, and an empty set probes every port alike.
+    pub fn listening_only_to(mut self, ports: BTreeSet<u16>) -> Self {
+        self.listen_only = Some(ports);
+        self
+    }
+
     /// Opens the session and the context.
     ///
     /// This is where a scan's own clock starts, so a caller holding a builder
@@ -2430,6 +2485,10 @@ impl SessionBuilder {
             tapes: Arc::new(Tapes::default()),
             detections: self.detections,
             forced: Arc::new(crate::system::dial::ForcedSources::new(&self.send_source)),
+            listen_only: Arc::new(
+                self.listen_only
+                    .unwrap_or_else(|| crate::config::RAW_PRINT_PORTS.into_iter().collect()),
+            ),
         };
 
         (session, ctx)

@@ -503,6 +503,14 @@ impl FromStr for OsDetection {
     }
 }
 
+/// The TCP ports a network printer prints whatever arrives on: 9100 for its
+/// first queue and 9101 to 9107 for the rest.
+///
+/// Raw printing, known as JetDirect or AppSocket, has no protocol to speak of:
+/// every byte a connection carries is part of the print job. The default for
+/// [`ZondConfig::listen_only_ports`], which says what a scan does about it.
+pub const RAW_PRINT_PORTS: [u16; 8] = [9100, 9101, 9102, 9103, 9104, 9105, 9106, 9107];
+
 /// How far a scan may go to identify what is listening behind an open port.
 ///
 /// The port-scan phase establishes that a port is *open*; naming what is on it
@@ -1139,6 +1147,39 @@ pub struct ZondConfig {
     /// ```
     pub tls_enumeration: bool,
 
+    /// The TCP ports a scan connects to and listens on, and sends nothing.
+    ///
+    /// [`RAW_PRINT_PORTS`] by default. On one of those a printer prints
+    /// whatever bytes arrive, so a probe is not a question it declines to
+    /// answer but a page of gibberish, one per probe on every printer a scan
+    /// finds. The rule follows the port number rather than a host identified as
+    /// a printer, because what would identify one is the very probe that
+    /// prints.
+    ///
+    /// On a port listed here, identification reads what the port volunteers on
+    /// connecting, as [`ServiceDetection::Banner`] does everywhere, and no
+    /// detection, TLS handshake or enumeration, or any other conversation is
+    /// opened to it. Finding the port open is unaffected: that probe completes
+    /// or answers a handshake and carries no payload. The port keeps the name
+    /// its number implies and whatever it said unasked, and the report records
+    /// this set, so a reader can tell a port left unprobed on purpose from one
+    /// that had nothing to say; see
+    /// [`ScanSettings::listen_only_ports`](crate::report::ScanSettings::listen_only_ports).
+    ///
+    /// Clear it to probe these ports like any other, accepting that a printer
+    /// behind one prints what it is sent. Add to it to spare any other port
+    /// whose device cannot be trusted with a request it did not expect. UDP is
+    /// not affected: nothing prints a datagram.
+    ///
+    /// ```
+    /// # use zond_engine::ZondConfig;
+    /// let mut cfg = ZondConfig::default();
+    /// assert!(cfg.listen_only_ports.contains(&9100));
+    /// // Probe the printers' ports too, knowing each probe may print.
+    /// cfg.listen_only_ports.clear();
+    /// ```
+    pub listen_only_ports: BTreeSet<u16>,
+
     /// Scan TCP ports through a third-party zombie rather than by addressing the
     /// target directly, when set. See [`IdleScan`].
     ///
@@ -1460,8 +1501,9 @@ pub struct ZondConfig {
 }
 
 impl Default for ZondConfig {
-    /// Hand-written so [`icmp_evidence`](Self::icmp_evidence) defaults on; every
-    /// other field takes its own type's default.
+    /// Hand-written so [`icmp_evidence`](Self::icmp_evidence) defaults on and
+    /// [`listen_only_ports`](Self::listen_only_ports) to the printers' ports;
+    /// every other field takes its own type's default.
     fn default() -> Self {
         Self {
             icmp_evidence: true,
@@ -1473,6 +1515,7 @@ impl Default for ZondConfig {
             characterise: Default::default(),
             ip_protocols: Default::default(),
             tls_enumeration: Default::default(),
+            listen_only_ports: RAW_PRINT_PORTS.into_iter().collect(),
             idle_scan: Default::default(),
             exclusions: Default::default(),
             redact: Default::default(),
@@ -1525,6 +1568,9 @@ impl ZondConfig {
             ip_protocols: _,
             tls_enumeration: _,
             idle_scan: _,
+            // Held by the scan's context, which every pass that would put bytes
+            // on a port asks first.
+            listen_only_ports: _,
             exclusions: _,
             redact: _,
             detection: _,
@@ -1570,6 +1616,26 @@ impl ZondConfig {
 
 #[cfg(test)]
 mod tests {
+
+    /// A scan left as it came sends nothing to a printer's raw-print ports,
+    /// 9100 and the seven queues after it, and nothing else is spared.
+    ///
+    /// The default is the whole of the protection: a front end that never
+    /// heard of the setting passes it on untouched, and a scan of a network
+    /// with a printer on it prints nothing.
+    #[test]
+    fn a_default_scan_only_listens_on_the_raw_print_ports() {
+        let cfg = ZondConfig::default();
+        assert_eq!(
+            cfg.listen_only_ports,
+            (9100..=9107).collect::<BTreeSet<u16>>()
+        );
+        assert_eq!(
+            crate::report::ScanSettings::from(&cfg).listen_only_ports,
+            (9100..=9107).collect::<Vec<u16>>(),
+            "the report records what the scan held back"
+        );
+    }
 
     /// The capture knob reaches the strategies, which is the whole of what it
     /// does: a scan asked for the evidence and the tuning has to carry it.

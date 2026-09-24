@@ -1248,6 +1248,25 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         fact(out, "evasion", &evasion_detail(evasion))?;
     }
 
+    // Ports sent nothing on purpose: one here that names no product was not
+    // asked, so it is not one that would not say.
+    if !settings.listen_only_ports.is_empty() {
+        let ports: crate::model::port::PortSet = settings
+            .listen_only_ports
+            .iter()
+            .map(|&number| (number, crate::model::port::Protocol::Tcp))
+            .collect();
+        fact(
+            out,
+            "listened only",
+            &format!(
+                "tcp {}{}",
+                esc(&ports.to_string()),
+                dim(&[esc("sent nothing, since a printer prints what arrives")])
+            ),
+        )?;
+    }
+
     // Addresses the caller named that nothing was sent to. No probe left this
     // machine for them, so the report says nothing about what is there.
     if !phase.unroutable.is_empty() {

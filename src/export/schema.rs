@@ -970,6 +970,14 @@ pub struct SettingsDto {
     /// scan that never enumerated, and one that did and found an endpoint
     /// refusing every offer. Only this tells them apart.
     pub tls_enumeration: bool,
+
+    /// The TCP ports the phase connected to and listened on and sent nothing,
+    /// ascending.
+    ///
+    /// An open port listed here that names no more than its number implies was
+    /// left unprobed on purpose, since a printer prints whatever arrives on
+    /// one, rather than found to have nothing to say.
+    pub listen_only_ports: Vec<u16>,
     /// What the scan changed about the packets it sent, omitted when it changed
     /// nothing. See [`EvasionDto`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1080,6 +1088,7 @@ impl SettingsDto {
             characterise: settings.characterise,
             ip_protocols: settings.ip_protocols.clone(),
             tls_enumeration: settings.tls_enumeration,
+            listen_only_ports: settings.listen_only_ports.clone(),
             evasion: settings.evasion.as_ref().map(EvasionDto::new),
             idle_scan: settings.idle_scan.map(|idle| IdleScanDto {
                 zombie: idle.zombie.to_string(),

@@ -28,7 +28,13 @@
 //!   the routing table's own choice is listed with the public ways in it
 //!   offers, and nothing else in the crate may call them.
 //!
-//! A new one of either fails the test until somebody writes that line.
+//! - **A pass that dials a port without asking whether it may send there.**
+//!   A printer prints whatever arrives on its raw-print ports, so a scan only
+//!   listens on the ports it was told to, and every pass that dials a target
+//!   has to ask first. Every file that takes a scan's egress to dial with also
+//!   asks that question, or is listed with why it sends a port no payload.
+//!
+//! A new one of any of these fails the test until somebody writes that line.
 //!
 //! What it cannot see is a socket a dependency opens on the engine's behalf.
 //! The one such dependency is `hickory-resolver`, which asks the host's own
@@ -122,6 +128,79 @@ const KERNEL_EGRESS: &[(&str, &[&str], &str)] = &[
 
 /// How a file chooses the routing table over a scan's egress.
 const KERNEL: &str = "Egress::KERNEL";
+
+/// How a scan pass takes the egress it dials a target with.
+const TAKES_EGRESS: &str = "egress_toward(";
+
+/// The two ways a pass asks whether it may send a port anything past the
+/// connection: whether the port is listen-only, and how far identification
+/// may go on it.
+const ASKS_LISTEN_ONLY: &[&str] = &["listens_only(", "service_detection_on("];
+
+/// The files that take a scan's egress and put no payload on a TCP port with
+/// it, and why.
+///
+/// **Adding a file here is the point of this census.** A pass that writes to a
+/// port it dialled asks `ScanContext::listens_only` first, or through
+/// `service_detection_on`; one that only establishes a port's state, or speaks
+/// nothing but UDP, says so on this line.
+const SENDS_NO_PAYLOAD: &[(&str, &str)] = &[(
+    "src/scanner/session.rs",
+    "defines `egress_toward` and `listens_only` alike, and dials nothing itself.",
+)];
+
+/// **Every scan pass that dials a target asks whether it may send there.**
+///
+/// File-grained, as the other censuses here are: a second pass added to a file
+/// whose first one already asks is not caught, and its own test is what holds
+/// it. What this catches is the pass nobody thought of as a sender, in a file
+/// of its own.
+#[test]
+fn every_pass_that_dials_a_target_asks_whether_it_may_send_there() {
+    let mut takes = BTreeSet::new();
+    let mut unasked = Vec::new();
+    for path in sources() {
+        let text = fs::read_to_string(&path).expect("a source file is readable");
+        let code = without_comments(&without_tests(&text));
+        let path = path.to_string_lossy().replace('\\', "/");
+        if !code.contains(TAKES_EGRESS) {
+            continue;
+        }
+        takes.insert(path.clone());
+        let listed = SENDS_NO_PAYLOAD.iter().any(|(listed, _)| *listed == path);
+        if !listed && !ASKS_LISTEN_ONLY.iter().any(|asks| calls(&code, asks)) {
+            unasked.push(path);
+        }
+    }
+
+    assert!(
+        takes.len() > SENDS_NO_PAYLOAD.len(),
+        "no pass takes a scan's egress by `{TAKES_EGRESS}`, so the census has stopped \
+         seeing what it is looking for. Update TAKES_EGRESS in tests/hygiene/dialling.rs."
+    );
+    assert!(
+        unasked.is_empty(),
+        "these take a scan's egress to dial with and never ask whether the port may be \
+         sent anything: {unasked:?}\n\n\
+         A printer prints whatever arrives on its raw-print ports, so a scan connects to \
+         the ports in `ZondConfig::listen_only_ports` and sends them nothing. A pass that \
+         writes to a port it dialled without asking prints a page per probe.\n\n\
+         Ask `ScanContext::listens_only` (or `service_detection_on`) before sending, or, \
+         if the pass puts no payload on a TCP port, add the file to SENDS_NO_PAYLOAD in \
+         tests/hygiene/dialling.rs saying why."
+    );
+
+    let stale: Vec<&str> = SENDS_NO_PAYLOAD
+        .iter()
+        .map(|(path, _)| *path)
+        .filter(|path| !takes.contains(*path))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these are in SENDS_NO_PAYLOAD but no longer take a scan's egress: {stale:?}\n\n\
+         Remove them, so the list stays a census rather than a wish."
+    );
+}
 
 /// What opening a TCP or UDP socket looks like, through `std`, `tokio` and
 /// `socket2` alike. `socket2` names the socket type rather than a constructor
@@ -260,7 +339,7 @@ fn every_other_socket_says_something() {
             "{path}'s note is too short to be an answer: {why:?}"
         );
     }
-    for (path, why) in OTHER_SOCKETS {
+    for (path, why) in OTHER_SOCKETS.iter().chain(SENDS_NO_PAYLOAD) {
         assert!(
             why.len() > 60,
             "{path}'s note is too short to be an answer: {why:?}"

@@ -424,8 +424,11 @@ pub(crate) async fn fingerprint_tcp_via(
     egress: Egress,
 ) -> (Port, AboutTheHost, Vec<String>) {
     // Capture the peer address before `gather` consumes the stream, so active
-    // analyzers can open their own connection to the same target.
-    let addr = stream.peer_addr().ok();
+    // analyzers can open their own connection to the same target. Only at a
+    // level that sends: an active analyzer's connection carries a request,
+    // an SSH key exchange or a favicon fetch, and one handed no address to
+    // dial is left with the passive reading the level promises.
+    let addr = stream.peer_addr().ok().filter(|_| detection.sends());
     // Every stage inside `gather` is bounded and their sum is nobody's property;
     // see [`COLLECTION_BUDGET`]. A port that runs out of it is left exactly as
     // the scan recorded it, which is what a port that said nothing gets.
@@ -2066,6 +2069,68 @@ mod tests {
             worst < COLLECTION_BUDGET,
             "the budget ({COLLECTION_BUDGET:?}) is below the longest honest path \
              ({worst:?}), so it would cut real scans short"
+        );
+    }
+
+    /// A level that sends nothing sends nothing through an analyzer either.
+    ///
+    /// The SSH analyzer's key exchange is a second connection carrying this
+    /// engine's identification and a KEXINIT, and it is started from a banner
+    /// alone. Listening is what a caller asks for on equipment that must not be
+    /// sent anything, and what a scan does on a printer's raw-print port, so the
+    /// port that greeted is asked nothing further. The port number is SSH's
+    /// while the socket is an ephemeral loopback one, as in the legacy TLS test
+    /// above: the number decides which analyzer is interested, the socket who
+    /// is dialled.
+    #[tokio::test]
+    async fn a_port_only_listened_to_is_not_dialled_again_by_an_analyzer() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let addr = listener.local_addr().expect("a local address");
+        let connections = Arc::new(AtomicUsize::new(0));
+        let received = Arc::new(AtomicUsize::new(0));
+        let (seen, bytes) = (Arc::clone(&connections), Arc::clone(&received));
+        let server = tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let bytes = Arc::clone(&bytes);
+                tokio::spawn(async move {
+                    let _ = sock.write_all(b"SSH-2.0-OpenSSH_9.6p1 Debian-3\r\n").await;
+                    let mut buffer = [0u8; 1024];
+                    while let Ok(n) = sock.read(&mut buffer).await {
+                        if n == 0 {
+                            break;
+                        }
+                        bytes.fetch_add(n, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let port = baseline_port(22, Protocol::Tcp, PortState::Open);
+        let (port, _, _) =
+            fingerprint_tcp_via(stream, port, ServiceDetection::Banner, Egress::KERNEL).await;
+        server.abort();
+
+        assert_eq!(
+            port.service().map(Service::name),
+            Some("ssh"),
+            "the greeting alone names the service"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "the port was dialled again"
+        );
+        assert_eq!(
+            received.load(Ordering::SeqCst),
+            0,
+            "the port was sent a payload"
         );
     }
 

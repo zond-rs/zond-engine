@@ -803,6 +803,9 @@ struct SettingsDto {
     characterise: bool,
     ip_protocols: Vec<u8>,
     tls_enumeration: bool,
+    /// The TCP ports the scan only listened on, absent in a document written
+    /// before a scan held any back, which probed every port alike.
+    listen_only_ports: Vec<u16>,
     /// What the scan changed about its packets, absent when it changed nothing.
     /// Deserialized into the journal's own record, then checked by
     /// [`checked_evasion`]: four of its fields are named vocabularies or
@@ -934,6 +937,7 @@ impl SettingsDto {
             characterise: self.characterise,
             ip_protocols: self.ip_protocols,
             tls_enumeration: self.tls_enumeration,
+            listen_only_ports: self.listen_only_ports,
             evasion: self.evasion,
             idle_scan: self.idle_scan,
             icmp_evidence: self.icmp_evidence,

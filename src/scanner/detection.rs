@@ -213,6 +213,9 @@ struct PortTarget {
     protocol: Protocol,
     service: Option<String>,
     responses: Vec<String>,
+    /// Whether the scan only listens on this port, so that no detection that
+    /// speaks may run over it; see [`ScanContext::listens_only`].
+    listen_only: bool,
 }
 
 /// Every open port some detection would run over, snapshotted so the store is not
@@ -261,6 +264,7 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
                     protocol,
                     service,
                     responses,
+                    listen_only: ctx.listens_only(number, protocol),
                 });
             }
         }
@@ -286,6 +290,7 @@ async fn detect_one(
         protocol,
         service,
         responses,
+        listen_only,
     } = target;
     let addr = address.to_socket_addr(number)?;
     // The port's service label is the only record that it answered inside a
@@ -308,6 +313,12 @@ async fn detect_one(
             number,
             protocol,
             |caps| {
+                // A detection that declares `speak` exists to send, and a port
+                // the scan only listens on is sent nothing. Declined before a
+                // socket is opened, so the flow simply does not apply here.
+                if listen_only && caps.speak.is_some() {
+                    return None;
+                }
                 Some(Box::new(Pooled {
                     inner: SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps)).via(egress),
                     _permit: gate.acquire(),
@@ -338,6 +349,13 @@ async fn detect_one(
             &port_context,
             &response_slices,
             |grant| {
+                // The same rule as a flow's: a module served `speak` is not run
+                // on a port the scan only listens on. One that is not served it
+                // reads the responses the scan already drew, which is safe
+                // anywhere.
+                if listen_only && grant.speak {
+                    return None;
+                }
                 // Acquire the permit before building `LiveCapabilities`, which
                 // starts the flow's clock: the wait for a socket must not come
                 // out of the flow's own time budget.

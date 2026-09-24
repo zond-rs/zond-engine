@@ -1876,6 +1876,14 @@ pub struct SettingsRecord {
     /// reads back as a sitting that did not enumerate. That is what it was.
     #[serde(default)]
     pub tls_enumeration: bool,
+    /// The TCP ports it connected to and listened on and sent nothing,
+    /// ascending.
+    ///
+    /// Defaulted on the way in, so a record written before a scan held any
+    /// port back reads as a sitting that probed every port alike. That is what
+    /// it was.
+    #[serde(default)]
+    pub listen_only_ports: Vec<u16>,
     /// What the sitting changed about the packets it sent, omitted when it
     /// changed nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1966,6 +1974,7 @@ impl From<&ScanSettings> for SettingsRecord {
             characterise: settings.characterise,
             ip_protocols: settings.ip_protocols.clone(),
             tls_enumeration: settings.tls_enumeration,
+            listen_only_ports: settings.listen_only_ports.clone(),
             evasion: settings.evasion.as_ref().map(|e| EvasionSettingsRecord {
                 source_port: e.source_port,
                 ttl: e.ttl,
@@ -2020,6 +2029,7 @@ impl From<&SettingsRecord> for ScanSettings {
             characterise: record.characterise,
             ip_protocols: record.ip_protocols.clone(),
             tls_enumeration: record.tls_enumeration,
+            listen_only_ports: record.listen_only_ports.clone(),
             evasion: record.evasion.as_ref().map(|e| EvasionRecord {
                 source_port: e.source_port,
                 ttl: e.ttl,

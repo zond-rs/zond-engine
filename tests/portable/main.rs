@@ -38,6 +38,7 @@ mod fingerprint_embedding;
 mod hostname_resolution;
 mod import;
 mod lifecycle;
+mod listen_only;
 mod liveness;
 mod port_states;
 mod reporting;
