@@ -1135,7 +1135,7 @@ async fn sweep(
             reason = cause.into();
             // Taken off the queue and never asked, so it counts with the rest
             // still waiting behind it.
-            ctx.record_outcome(Outcome::Unasked);
+            ctx.record_address_outcomes(Outcome::Unasked, 1);
             break;
         }
         probes += 1;
@@ -1153,7 +1153,7 @@ async fn sweep(
 
     // Anything still queued was never asked, and carries no position to settle.
     while rx.try_recv().is_ok() {
-        ctx.record_outcome(Outcome::Unasked);
+        ctx.record_address_outcomes(Outcome::Unasked, 1);
     }
 
     // Every address dispatched; wait out the probes still in flight.
@@ -1242,18 +1242,18 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit, st
         }
         Fate::Unroutable => {
             audit.record_send(false);
-            ctx.record_outcome(Outcome::Unroutable);
+            ctx.record_address_outcomes(Outcome::Unroutable, 1);
         }
         Fate::Starved => {
             audit.record_send(false);
             *starved += 1;
-            ctx.record_outcome(Outcome::Unroutable);
+            ctx.record_address_outcomes(Outcome::Unroutable, 1);
         }
         Fate::Interrupted => {
             audit.record_send(true);
-            ctx.record_outcome(Outcome::Interrupted);
+            ctx.record_address_outcomes(Outcome::Interrupted, 1);
         }
-        Fate::Unasked => ctx.record_outcome(Outcome::Unasked),
+        Fate::Unasked => ctx.record_address_outcomes(Outcome::Unasked, 1),
     }
 }
 

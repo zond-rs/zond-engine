@@ -773,9 +773,9 @@ impl LocalScanner {
         // still held was never sent.
         let interrupted = self.sweep.ledger.drain_unresolved();
         self.ctx
-            .record_many_outcomes(Outcome::Interrupted, interrupted.len() as u64);
+            .record_address_outcomes(Outcome::Interrupted, interrupted.len() as u64);
         self.ctx
-            .record_many_outcomes(Outcome::Unasked, unasked.len() as u64);
+            .record_address_outcomes(Outcome::Unasked, unasked.len() as u64);
         // And which addresses they were, since neither kind says anything is
         // absent: a port scan's liveness filter reads this before it skips a
         // host the sweep did not find.

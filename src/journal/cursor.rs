@@ -8,8 +8,8 @@
 
 //! # How far a scan got
 //!
-//! A position in the plan below which everything is settled, and the handful of
-//! positions above it that settled out of order.
+//! A position in the plan below which everything is settled, and the positions
+//! above it that settled out of order.
 //!
 //! ## A position needs nothing stored to name it
 //!
@@ -20,10 +20,11 @@
 //! every run, and the nth target is a stable identity that costs nothing to
 //! record.
 //!
-//! That is the whole reason this is affordable. The cursor holds one integer and
-//! a small set, not a list of addresses, so its size is a property of how far
-//! out of order the scan settled rather than of how large the scan is. A `/8` on
-//! a thousand ports checkpoints in the same handful of bytes a `/24` does.
+//! That is what makes a checkpoint of a plan walked in order affordable. The
+//! cursor holds one integer and the positions settled above it, not a list of
+//! addresses, so its size is a property of how far out of order the scan settled
+//! rather than of how large the scan is. How far that is depends on the order
+//! the targets are asked in, which the next section weighs.
 //!
 //! This enumeration is load-bearing. The dispatcher decides what to probe by it
 //! and this decides what was probed by it, so the two have to be one numbering.
@@ -41,12 +42,25 @@
 //! every consecutive settled position above it. Anything that settles out of
 //! order waits in [`above`](Cursor::settled_above) until the gap below it fills.
 //!
-//! The set stays small on its own, with no window to size and no eviction policy
-//! to get wrong. It holds only what the watermark has not caught up to, which is
-//! bounded by how far the dispatcher runs ahead of the slowest outstanding probe.
-//! A single tarpitting host stalls the watermark and the set grows to the
-//! pipeline depth, a few tens of thousands of integers rather than a few million,
-//! then collapses the moment that host settles.
+//! The set holds only what the watermark has not caught up to, with no window to
+//! size and no eviction policy to get wrong. How much that is depends on the
+//! order the plan is walked in.
+//!
+//! Walked in plan order, it is bounded by how far the dispatcher runs ahead of
+//! the slowest outstanding probe. A single tarpitting host stalls the watermark
+//! and the set grows to the pipeline depth, then collapses the moment that host
+//! settles.
+//!
+//! Walked in a seeded [`Permutation`](crate::scanner::order::Permutation), which
+//! is how every scan the engine starts walks it, the positions settled so far
+//! are scattered across the whole plan, and the watermark stays near zero until
+//! nearly all of them are in. The set then holds close to everything settled:
+//! half the plan at the halfway mark and nearly all of it at the end, eight
+//! bytes and a tree node per position in memory, and a decimal integer per
+//! position in every checkpoint written from it. A shuffled `/24` on a thousand
+//! ports, a quarter of a million positions, costs a checkpoint of a megabyte or
+//! so; a shuffled `/8` sweep costs one of a hundred megabytes and more by its
+//! end, rewritten on every tick.
 //!
 //! ## Only settled positions are recorded
 //!
@@ -65,8 +79,8 @@ use crate::model::target::{PlannedTarget, Target, TargetIndex};
 
 /// How far a scan has got, maintained as it runs.
 ///
-/// Cheap to update and cheap to snapshot. See the module documentation for why
-/// the set stays small without being bounded explicitly.
+/// Cheap to update. A snapshot costs what the set above the watermark holds,
+/// which the module documentation weighs for the orders a scan walks in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Cursor {
     watermark: u64,
@@ -156,8 +170,12 @@ impl Cursor {
     /// How many settled positions are waiting on a gap below them.
     ///
     /// The size of the out-of-order window, and so the size of a checkpoint.
-    /// Worth watching: a number that grows and does not fall is a target that
-    /// never settles, which is a tarpit or a defect rather than a slow network.
+    ///
+    /// For a plan walked in order, worth watching: a number that grows and does
+    /// not fall is a target that never settles, which is a tarpit or a defect
+    /// rather than a slow network. A shuffled walk grows it with every position
+    /// that settles until the last few gaps below close, so there it measures
+    /// progress rather than a stall.
     pub fn pending_count(&self) -> usize {
         self.above.len()
     }
@@ -173,12 +191,11 @@ impl Cursor {
 
 /// A cursor as it is written down.
 ///
-/// Sparse rather than a bitmap over a fixed window. Both are bounded by how far
-/// the dispatcher runs ahead, and the sparse form is far smaller in the case that
-/// occurs, where a handful of positions are out of order rather than tens of
-/// thousands. A bitmap only wins where the window is nearly full, which is the
-/// pathological case and not one worth
-/// optimising the ordinary one for.
+/// Sparse: the settled positions above the watermark, each named. For a plan
+/// walked in order that is a handful of positions and far smaller than a bitmap
+/// over the window would be. For a shuffled walk it names most of what has
+/// settled, and a bitmap over the unsettled span would be the smaller form by
+/// a factor of thirty or more; see the module documentation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// The position below which everything is settled.
@@ -233,10 +250,12 @@ impl Checkpoint {
     /// which numbers an address against this same plan.
     ///
     /// Computed from the ranges, so continuing a sweep of a `/8` costs what
-    /// continuing a sweep of a `/24` does. Everything below the watermark is one
-    /// span to drop; above it, only the few positions that settled out of order
-    /// are taken out individually. Anything the plan was too large to number
-    /// comes back whole, since no checkpoint can have accounted for it.
+    /// continuing a sweep of a `/24` does, for a sweep that settled in order.
+    /// Everything below the watermark is one span to drop; above it, the
+    /// positions that settled out of order are taken out individually, which
+    /// for a shuffled sweep is most of what it settled. Anything the plan was
+    /// too large to number comes back whole, since no checkpoint can have
+    /// accounted for it.
     ///
     /// `positions` has to number the plan this checkpoint was written against. A
     /// position is an index into one enumeration, and the manifest's plan
@@ -298,14 +317,13 @@ impl Checkpoint {
     /// The stretches of `0..total` this checkpoint leaves unsettled, ascending
     /// and never empty.
     ///
-    /// Everything below the watermark is settled, and above it only the few
+    /// Everything below the watermark is settled, and above it only the
     /// positions that settled out of order are, so the stretches are the gaps
-    /// between those: a handful of spans however large the plan.
+    /// between those: one more span than there are such positions.
     fn unsettled_spans(&self, total: u64) -> Vec<Range<u64>> {
         // `settled_above` is written ascending, and a checkpoint from disk is
-        // only as ordered as the file said. Sorting a copy costs nothing on the
-        // window-sized list this holds and makes the walk below right either
-        // way.
+        // only as ordered as the file said. Sorting a copy is linear in an
+        // already sorted list and makes the walk below right either way.
         let mut above = self.settled_above.clone();
         above.sort_unstable();
 
@@ -710,9 +728,40 @@ mod tests {
         assert_eq!(cursor.pending_count(), 0);
     }
 
-    /// Out-of-order settling is the normal case, since the dispatcher shuffles
-    /// within a batch, so the watermark has to be correct whatever order
-    /// positions arrive in.
+    /// **A shuffled walk holds what has settled until the gaps below close.**
+    /// The module documentation prices a checkpoint by this: under the order
+    /// every scan the engine starts walks in, the set above the watermark is
+    /// most of what has settled rather than a pipeline's depth, and it empties
+    /// only once the walk is done.
+    #[test]
+    fn a_shuffled_walk_holds_what_has_settled_until_the_gaps_below_close() {
+        const PLAN: u64 = 4_096;
+        let order: Vec<u64> = crate::scanner::order::Permutation::new(7, PLAN)
+            .iter()
+            .collect();
+
+        let mut cursor = Cursor::new();
+        for position in &order[..order.len() / 2] {
+            cursor.settle(*position);
+        }
+        assert!(
+            cursor.pending_count() as u64 > PLAN * 2 / 5,
+            "halfway, {} of {} settled positions wait above a watermark of {}",
+            cursor.pending_count(),
+            PLAN / 2,
+            cursor.watermark()
+        );
+
+        for position in &order[order.len() / 2..] {
+            cursor.settle(*position);
+        }
+        assert_eq!(cursor.watermark(), PLAN);
+        assert_eq!(cursor.pending_count(), 0);
+    }
+
+    /// Out-of-order settling is the normal case, since a seeded scan walks a
+    /// permutation of the whole plan, so the watermark has to be correct
+    /// whatever order positions arrive in.
     #[test]
     fn the_watermark_is_independent_of_arrival_order() {
         let forwards = {

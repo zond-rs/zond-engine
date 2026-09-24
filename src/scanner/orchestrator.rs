@@ -1984,9 +1984,18 @@ pub(super) async fn run_port_phase(
     if let Some(Liveness { live, silent }) = liveness {
         dispatcher = dispatcher.screened(live, silent);
     }
-    let rx = dispatcher.run(ctx);
+    let (rx, walk) = dispatcher.spawn(ctx);
 
     run_port_scan(built.scanner, rx, ctx, cfg.service_detection, cfg.detection).await;
+    // The walk settles the targets of hosts found down as it passes them, and a
+    // scanner that stopped early may have left it still walking. Waited for
+    // here, so every settlement it makes is in before the scan's last
+    // checkpoint rather than racing it. It ends promptly: the receiver is gone
+    // with the scanner, so its next send fails, and a stopped scan's walk
+    // checks the stop between the targets it passes.
+    if let Err(error) = walk.await {
+        error!("the target walk ended abnormally: {error}");
+    }
     finish_enrichment(None, caps, ctx).await;
     // Passive first, then active: the echo probe is aimed at the hosts the
     // passive sources could not name, and it can only know which those are once

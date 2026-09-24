@@ -266,14 +266,29 @@ impl Dispatcher {
     /// the next batch while the current one is still being consumed without letting
     /// the buffer grow without bound. The task stops early if the receiver is
     /// dropped or the scan signals a stop.
+    ///
+    /// The task settles the targets it does not emit as it walks past them, so
+    /// a caller that checkpoints the scan should drain the receiver to its end
+    /// before the last checkpoint: a receiver dropped early leaves the task
+    /// winding down on its own, and what it settles then may land after the
+    /// checkpoint was written.
     pub fn run(self, ctx: &ScanContext) -> mpsc::Receiver<PlannedTarget> {
+        self.spawn(ctx).0
+    }
+
+    /// [`run`](Self::run), handing back the task as well, for a caller that
+    /// waits for every settlement the walk makes before it lets the scan end.
+    pub(crate) fn spawn(
+        self,
+        ctx: &ScanContext,
+    ) -> (mpsc::Receiver<PlannedTarget>, tokio::task::JoinHandle<()>) {
         let batch_size = self.batch_size.max(1);
         let (tx, rx) = mpsc::channel(batch_size.saturating_mul(2));
         let scan_handle = ctx.handle.clone();
         let order = self.order(ctx.order_seed);
         let ctx = ctx.clone();
 
-        tokio::spawn(async move {
+        let walk = tokio::spawn(async move {
             let mut batch = Vec::with_capacity(batch_size);
 
             // Numbered by position in the plan whichever way they arrive, so
@@ -335,7 +350,7 @@ impl Dispatcher {
             drain(&mut batch, &tx, &scan_handle).await;
         });
 
-        rx
+        (rx, walk)
     }
 
     /// The plan addressed by position, and the order to walk those positions in,
@@ -653,6 +668,29 @@ mod tests {
             ctx.settlements().count(Outcome::Skipped { position: 0 }),
             0,
             "a stopped scan walked on through targets nothing would probe"
+        );
+    }
+
+    /// **Every settlement the walk makes is in once its task is awaited.** A
+    /// scanner that stops early drops the receiver while the walk may still be
+    /// settling the targets of hosts found down, and a scan that ended without
+    /// waiting for it would write its last checkpoint without them.
+    #[tokio::test]
+    async fn every_settlement_the_walk_makes_is_in_once_it_is_awaited() {
+        let (_session, ctx) = context();
+        let (rx, walk) = Dispatcher::new(wide(24))
+            .screened(
+                "192.0.2.255".parse::<IpSet>().expect("an address"),
+                "192.0.2.0-192.0.2.254".parse::<IpSet>().expect("a range"),
+            )
+            .spawn(&ctx);
+        drop(rx);
+
+        walk.await.expect("the walk ends");
+        assert_eq!(
+            ctx.settlements().count(Outcome::Skipped { position: 0 }),
+            255,
+            "the walk passed every silent host's target before it ended"
         );
     }
 

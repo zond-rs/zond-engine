@@ -1381,6 +1381,8 @@ pub struct ScanContext {
     pub(crate) reached_by_connect: Arc<ConnectLog>,
     /// Addresses a discovery pass found silent.
     pub(crate) silent: Arc<SilenceLog>,
+    /// Which stage's unit the plan, and so the settlements, are counted in.
+    pub(crate) plan_stage: Stage,
     /// When each host's budget started, for a scan that set one.
     pub(crate) clocks: Arc<HostClocks>,
     pub(crate) spacing: Arc<HostSpacing>,
@@ -2047,6 +2049,22 @@ impl ScanContext {
         self.settlements.record_many(outcome, count);
     }
 
+    /// Records `count` addresses a sweep left unsettled the same way, where the
+    /// scan's settlements are counted in addresses.
+    ///
+    /// A port scan's plan is counted in address-and-port pairs, and its
+    /// liveness pass asks about addresses that plan does not number. Counted
+    /// beside the port targets, three hundred addresses the pass never asked
+    /// would read as three hundred port targets never asked, in a tally whose
+    /// unit is the port target. The pass's own account of those addresses is
+    /// its phase's [`undecided`](crate::report::ScanPhase::undecided) list, so
+    /// nothing is lost by leaving them out here.
+    pub(crate) fn record_address_outcomes(&self, outcome: Outcome, count: u64) {
+        if self.plan_stage != Stage::Ports {
+            self.settlements.record_many(outcome, count);
+        }
+    }
+
     /// Records what became of one address, in a scan counted in addresses.
     ///
     /// The position comes from the plan this scan is numbered in, which the
@@ -2467,6 +2485,7 @@ impl SessionBuilder {
             unswept: Arc::new(UnsweptLog::default()),
             reached_by_connect: Arc::new(ConnectLog::default()),
             silent: Arc::new(SilenceLog::default()),
+            plan_stage: self.plan_stage,
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,
                 started: DashMap::new(),
@@ -3632,5 +3651,25 @@ mod tests {
             .expect("the host is kept at the address the policy allows");
         assert_eq!(primary, other);
         assert!(!ips.contains(&excluded), "{ips:?}");
+    }
+
+    /// **A port scan's settlements count port targets, not the addresses its
+    /// liveness pass left.** Its plan is numbered in address-and-port pairs, so
+    /// three hundred addresses a stopped pass never asked are not three
+    /// hundred port targets never asked. A sweep's plan is its addresses, and
+    /// there they count.
+    #[test]
+    fn a_liveness_pass_leaves_a_port_scans_counters_alone() {
+        let (_session, ports) = ScanSession::builder()
+            .planning(Stage::Ports, Some(1_024))
+            .build();
+        ports.record_address_outcomes(Outcome::Unasked, 300);
+        assert_eq!(ports.settlements().count(Outcome::Unasked), 0);
+
+        let (_session, sweep) = ScanSession::builder()
+            .planning(Stage::Discovery, Some(1_024))
+            .build();
+        sweep.record_address_outcomes(Outcome::Unasked, 300);
+        assert_eq!(sweep.settlements().count(Outcome::Unasked), 300);
     }
 }

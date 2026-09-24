@@ -177,7 +177,8 @@ impl Outcome {
 /// counts of what did not.
 ///
 /// Memory follows how far out of order the scan settled, never how many targets
-/// it had. A plan of sixteen billion costs the same here as one of a thousand.
+/// it had: a handful of positions for a plan walked in order, and most of what
+/// has settled for a shuffled one. See [`cursor`](super::cursor).
 #[derive(Debug, Default)]
 pub struct Settlements {
     cursor: Mutex<Cursor>,
