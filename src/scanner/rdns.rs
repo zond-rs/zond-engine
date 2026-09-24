@@ -29,6 +29,10 @@
 //! sniff, it simply issues reverse lookups through the system resolver for every
 //! host that still lacks a name.
 //!
+//! Both paths ask by the routing table, whatever source a scan forced; see
+//! [`ZondConfig::send_source`](crate::config::ZondConfig::send_source) for why
+//! a lookup is not pinned.
+//!
 //! ## What answering proves
 //!
 //! Both paths above read DNS *responses*, and a machine that answers a DNS

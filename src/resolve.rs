@@ -31,6 +31,10 @@
 //!   and mDNS is enabled, again as `nas.local`, which on a home network is often
 //!   what the author meant by it.
 //!
+//! Every lookup leaves by the routing table. A scan forced to a source pins its
+//! probes and connections, not the questions asked before it starts; see
+//! [`ZondConfig::send_source`](crate::config::ZondConfig::send_source).
+//!
 //! ## Why a resolver, and not just the hook
 //!
 //! [`crate::model::parse`] already has the seam a name passes through: a
