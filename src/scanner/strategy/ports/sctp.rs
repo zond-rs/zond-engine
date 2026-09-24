@@ -558,7 +558,8 @@ impl RawPortScan for SctpPortScanner {
             return;
         };
 
-        let first_attempt = !self.core.ledger.contains(&(ip, port));
+        // A retry takes no slot in the window; see the TCP scanner's `send`.
+        let first_attempt = position.is_some();
 
         let sent = send_probe(
             self.core.transport.tx.as_ref(),

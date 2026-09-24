@@ -734,7 +734,9 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// `first_attempt` decides whether the send takes a window slot. A retry
     /// does not: the slot went back when the question it repeats ran out of
     /// round-trip budget, and handing it back a second time would let the
-    /// window admit more than it believes it has. The host's slot draws no such
+    /// window admit more than it believes it has. It comes from the plan
+    /// position the send carries, the one fact about a probe that does not
+    /// change while a retry waits. The host's slot draws no such
     /// distinction: a retry is a packet at the target like any other, and the
     /// gap is about what the target receives rather than about what this scan
     /// is still waiting for.

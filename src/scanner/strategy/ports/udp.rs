@@ -612,9 +612,11 @@ impl RawPortScan for UdpPortScanner {
 
         // Whether this send takes a slot in the congestion window. A retry does
         // not: the slot went back when the question it repeats ran out of
-        // round-trip budget. The ledger is what knows, since it is what holds
-        // the probe between attempts.
-        let first_attempt = !self.core.ledger.contains(&(ip, port));
+        // round-trip budget. The position says which this is, as it does for
+        // the ledger below; the ledger's own state would not, since a retry
+        // whose probe was settled while it waited finds nothing there and
+        // would read as a first attempt.
+        let first_attempt = position.is_some();
 
         let sent = send_udp(
             self.core.transport.tx.as_ref(),

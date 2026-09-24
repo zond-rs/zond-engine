@@ -676,9 +676,11 @@ impl RawPortScan for TcpPortScanner {
 
         // Whether this send takes a slot in the congestion window. A retry does
         // not: the slot went back when the question it repeats ran out of
-        // round-trip budget. The ledger is what knows, since it is what holds
-        // the probe between attempts.
-        let first_attempt = !self.core.ledger.contains(&(ip, port));
+        // round-trip budget. The position says which this is, as it does for
+        // the ledger below; the ledger's own state would not, since a retry
+        // whose probe was settled while it waited finds nothing there and
+        // would read as a first attempt.
+        let first_attempt = position.is_some();
 
         let token = send_tcp_probe(
             self.core.transport.tx.as_ref(),
@@ -2328,6 +2330,49 @@ mod tests {
         super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(10));
 
         assert_eq!(sent.lock().unwrap().len(), 1);
+    }
+
+    /// A retry still waiting for its host's next slot when a late answer
+    /// settles its probe is never sent, and takes nothing from the window.
+    ///
+    /// The answer to the first attempt arrived after that attempt's timeout,
+    /// while the retry waited out the gap the caller asked the scan to keep.
+    /// Sent anyway, it is a packet at a host the caller asked to treat gently,
+    /// asking a question nothing is waiting on. And a send read as a first
+    /// attempt takes a window slot that no answer or timeout will ever give
+    /// back: enough of them and the scan stops admitting targets and idles to
+    /// its deadline.
+    #[test]
+    fn a_retry_overtaken_by_a_late_answer_is_never_sent() {
+        let (session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(Duration::from_secs(3600)))
+            .build();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let mut scanner =
+            TcpPortScanner::with_transport(resolver, ctx, TcpScanTechnique::Syn, transport, 8);
+
+        let first = probe(&mut scanner, &sent, 80);
+        super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(1));
+        assert_eq!(sent.lock().unwrap().len(), 1, "the retry waits for the gap");
+
+        let reply = tcp_segment(&scanner, 80, first, SYN | ACK);
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            Instant::now(),
+        );
+        super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(7200));
+
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            1,
+            "a retry went out for a port already answered"
+        );
+        assert_eq!(scanner.core.window.in_flight(), 0, "a window slot leaked");
+        assert_eq!(port_state(&session, 80), Some(PortState::Open));
     }
 
     /// Each attempt carries its own nonce, so a reply to the first arriving
