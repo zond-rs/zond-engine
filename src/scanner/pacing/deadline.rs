@@ -189,6 +189,20 @@ impl AdaptiveDeadline {
         )
     }
 
+    /// Gives the hard deadline back the time the loop spent inside its own
+    /// sender.
+    ///
+    /// A send is ordinarily a few microseconds, and a sender that resolves a
+    /// neighbour before its first frame blocks the loop for the whole wait,
+    /// half a second for each address nothing answers. Neither is time spent
+    /// waiting on the network, which is what the deadline is sized for, and a
+    /// scan charged for it runs out with addresses it never reached, which
+    /// then read as unasked for no reason of their own. Still bounded: every
+    /// wait inside a sender is bounded, and a scan has finitely many targets.
+    pub(crate) fn allow_for_sending(&mut self, spent: Duration) {
+        self.timer.extend(spent);
+    }
+
     /// Whether the scan should stop: the deadline has passed, or the minimum
     /// runtime is behind it and nothing new has happened for longer than the
     /// measured tolerance justifies.

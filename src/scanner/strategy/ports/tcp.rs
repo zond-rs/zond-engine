@@ -1908,6 +1908,96 @@ mod tests {
         );
     }
 
+    /// Every address is asked before the deadline, however long the sender
+    /// spends resolving the ones that turn out dead.
+    ///
+    /// A sender that frames its own probes resolves each neighbour before the
+    /// first frame to it and blocks the loop for the whole wait when nothing
+    /// answers. That wait is the sender's, not the network's, and a deadline
+    /// sized for the network would otherwise run out on it with addresses
+    /// still queued, which then read unasked for no reason of their own.
+    #[tokio::test]
+    async fn the_deadline_allows_for_the_time_the_sender_spends_resolving() {
+        use std::sync::{Arc, Mutex};
+
+        /// Waits out a resolution the first time it meets each address and
+        /// refuses it as unanswered, as the frame path does.
+        struct Resolving {
+            asked: Arc<Mutex<Vec<IpAddr>>>,
+        }
+        impl crate::transport::probe::ProbeSender for Resolving {
+            fn send(
+                &self,
+                _segment: &[u8],
+                _src: IpAddr,
+                dst: IpAddr,
+                _zone: Option<u32>,
+                _emission: crate::transport::probe::Emission,
+            ) -> Result<(), crate::transport::probe::SendError> {
+                let first = {
+                    let mut asked = self.asked.lock().unwrap();
+                    let first = !asked.contains(&dst);
+                    asked.push(dst);
+                    first
+                };
+                if first {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                Err(crate::transport::probe::SendError::Unresolved(format!(
+                    "{dst} did not answer address resolution"
+                )))
+            }
+        }
+
+        let dead: Vec<IpAddr> = (101..111)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let (_session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
+        let transport = ProbeTransport::from_parts(
+            Box::new(Resolving {
+                asked: Arc::clone(&asked),
+            }),
+            reply_rx,
+        );
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx.clone(),
+            TcpScanTechnique::Syn,
+            transport,
+            8,
+        );
+
+        // Twenty ports an address, one address after another, as a plan
+        // covering a range lays them out.
+        let (targets, stream) = tokio::sync::mpsc::channel(256);
+        for (host, ip) in dead.iter().enumerate() {
+            for port in 1..=20u16 {
+                targets
+                    .send(PlannedTarget::new(
+                        (host * 20 + usize::from(port)) as u64,
+                        Target {
+                            ip: *ip,
+                            port,
+                            protocol: Protocol::Tcp,
+                        },
+                    ))
+                    .await
+                    .expect("the stream is open");
+            }
+        }
+        drop(targets);
+        scanner.scan(stream).await.expect("the scan runs");
+
+        let asked = asked.lock().unwrap();
+        for ip in &dead {
+            assert!(asked.contains(ip), "{ip} was never asked");
+        }
+        assert_eq!(ctx.take_unroutable(), dead, "every address is unreached");
+    }
+
     /// A host unreachable reports on the address, not on the port that happened
     /// to be quoted - so the probe keeps its remaining attempts rather than
     /// taking a verdict the message does not support.

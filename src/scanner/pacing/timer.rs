@@ -123,6 +123,15 @@ impl ScanTimer {
         Instant::now() > self.hard_deadline
     }
 
+    /// Moves the hard deadline `by` later.
+    ///
+    /// For time the loop spent on something other than waiting for the
+    /// network. The deadline is a bound on how long a scan waits for answers,
+    /// and a loop held up by its own work has not spent that time waiting.
+    pub(crate) fn extend(&mut self, by: Duration) {
+        self.hard_deadline += by;
+    }
+
     /// Whether a socket timeout is allowed to end the loop yet.
     ///
     /// A timeout before the minimum runtime is a scan that has not waited long

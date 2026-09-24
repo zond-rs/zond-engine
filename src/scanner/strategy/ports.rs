@@ -1235,7 +1235,7 @@ pub trait RawPortScan: PortScanner {
     /// the ledger so it comes back when the probe retires.
     fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant) {
         match self.core_mut().admit(ip, now) {
-            Admission::Send => self.send(ip, port, Some(position), now),
+            Admission::Send => send_timed(self, ip, port, Some(position), now),
             Admission::Hold(ready) => {
                 self.core_mut().hold(ip, port, Some(position), ready);
                 return;
@@ -1270,7 +1270,7 @@ pub trait RawPortScan: PortScanner {
             return;
         }
         match self.core_mut().admit(ip, now) {
-            Admission::Send => self.send(ip, port, None, now),
+            Admission::Send => send_timed(self, ip, port, None, now),
             Admission::Hold(ready) => self.core_mut().hold(ip, port, None, ready),
             Admission::Unreachable => {}
         }
@@ -1571,6 +1571,24 @@ pub trait RawPortScan: PortScanner {
         };
         self.settle(outcome);
     }
+}
+
+/// [`RawPortScan::send`], with the time it took given back to the deadline.
+///
+/// A sender that frames its own probes resolves each new neighbour inline and
+/// holds the loop for the whole wait when nothing answers. See
+/// [`AdaptiveDeadline::allow_for_sending`].
+fn send_timed<S: RawPortScan + ?Sized>(
+    scanner: &mut S,
+    ip: IpAddr,
+    port: u16,
+    position: Option<u64>,
+    now: Instant,
+) {
+    let started = Instant::now();
+    scanner.send(ip, port, position, now);
+    let spent = started.elapsed();
+    scanner.core_mut().deadline.allow_for_sending(spent);
 }
 
 /// How a run names itself in the audit and in its own failure messages.
