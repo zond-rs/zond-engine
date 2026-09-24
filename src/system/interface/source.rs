@@ -194,7 +194,9 @@ pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<
 /// subnets. Everything else is put to the kernel, by connecting a UDP socket to
 /// the target and reading back the address it chose, which asks the routing
 /// table without sending a packet. When the kernel declines, the last resort is
-/// any address on an interface that could plausibly carry the traffic.
+/// any address on an interface that could plausibly carry the traffic. A
+/// source the scan [forced](Self::with_forced) answers between the subnets and
+/// the kernel.
 pub struct SourceResolver {
     onlink: OnLinkTable,
     sockets: ProbeSockets,
@@ -209,7 +211,8 @@ pub struct SourceResolver {
     /// interface holds an `fe80::/64`.
     zones: ZoneMap,
     /// Source addresses the caller forced, one per family at most. When set for
-    /// a target's family, this is the answer, ahead of the routing table.
+    /// a routed target's family, this is the answer, ahead of the routing
+    /// table.
     forced: Vec<IpAddr>,
 }
 
@@ -243,7 +246,9 @@ impl SourceResolver {
         self
     }
 
-    /// Forces the source addresses, one per family, ahead of the routing table.
+    /// Forces the source addresses, one per family, ahead of the routing table
+    /// for every target no prefix of this host's holds; see
+    /// [`resolve`](Self::resolve).
     pub fn with_forced(mut self, forced: Vec<IpAddr>) -> Self {
         self.forced = forced;
         self
@@ -289,11 +294,24 @@ impl SourceResolver {
         !self.onlink.is_empty()
     }
 
-    /// The forced source matching `target`'s family, when one was set. This is
-    /// how [`with_forced`](Self::with_forced) overrides the routing table: a
-    /// scan pinned to an interface sends every global target from that
-    /// interface's address rather than the one the kernel would have picked.
+    /// The forced source matching `target`'s family, when one was set and
+    /// applies to it. This is how [`with_forced`](Self::with_forced) overrides
+    /// the routing table: a scan pinned to an interface sends a routed target
+    /// from that interface's address rather than the one the kernel would have
+    /// picked.
+    ///
+    /// Only a routed target, as the plan and the scan's connections apply it.
+    /// [`resolve`](Self::resolve) asks this after this host's own prefixes,
+    /// and loopback, an IPv4 address written inside IPv6, and a link-local
+    /// address are no link's to be pinned to: the first two are the kernel's,
+    /// and the third is on the link its zone names or on none.
     fn forced_source(&self, target: IpAddr) -> Option<IpAddr> {
+        let no_link = target.is_loopback()
+            || matches!(target, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some()
+                || v6.is_unicast_link_local());
+        if no_link {
+            return None;
+        }
         self.forced
             .iter()
             .copied()
@@ -304,9 +322,16 @@ impl SourceResolver {
     /// if no address on this host could plausibly reach it.
     ///
     /// Five answers in order of authority: the interface a link-local target
-    /// named, a forced source, this host's own segments, the kernel's routing
-    /// table, then `plausible_source` for the case where the kernel refuses but
-    /// the host visibly holds an address of the right scope.
+    /// named, this host's own segments and tunnel prefixes, a forced source,
+    /// the kernel's routing table, then `plausible_source` for the case where
+    /// the kernel refuses but the host visibly holds an address of the right
+    /// scope.
+    ///
+    /// The same order the scan's plan classifies in and its connections leave
+    /// by. A target inside a prefix this host holds has one link that reaches
+    /// it, which a forced source must not move it off; a forced source placed
+    /// ahead would send its probes out by another link while the plan and
+    /// every connection to it went by its own.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
         if let Some(cached) = self.cache.get(&target) {
             return *cached;
@@ -314,8 +339,8 @@ impl SourceResolver {
 
         let scoped = self.scoped_source(target);
         let source = scoped
-            .or_else(|| self.forced_source(target))
             .or_else(|| self.onlink.source_for(target))
+            .or_else(|| self.forced_source(target))
             .or_else(|| probe_route_source(target, &mut self.sockets))
             .or_else(|| plausible_source(&self.links, target));
 
@@ -555,8 +580,70 @@ mod tests {
         let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24)]);
         let mut resolver = SourceResolver::from_links(&[intf]).with_forced(vec![v6, v4]);
 
-        let public = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let public = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
         assert_eq!(resolver.resolve(public), Some(v4));
+    }
+
+    /// A forced source is for a target the routing table would send out by the
+    /// wrong link, and a target inside a prefix this host holds has one link
+    /// that reaches it: a neighbour on another segment by that segment, a peer
+    /// inside a tunnel's own prefix through the tunnel. The plan and every
+    /// connection to such a target leave by its own link; a raw probe sourced
+    /// from the forced LAN address would leave by the LAN, reach nothing the
+    /// plan expected, and report a host the rest of the scan reached as silent.
+    #[test]
+    fn a_forced_source_leaves_a_target_inside_a_held_prefix_to_its_own_link() {
+        use crate::system::interface::Addressing;
+
+        let lan = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
+        let tunnel_address = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
+        let other_segment = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+        let links = [
+            Link::new("en0", 4).with_addresses(vec![v4net(192, 0, 2, 50, 24)]),
+            Link::new("en1", 5).with_addresses(vec![v4net(203, 0, 113, 7, 24)]),
+            Link::new("utun9", 20)
+                .with_addressing(Addressing::PointToPoint)
+                .with_addresses(vec![v4net(198, 51, 100, 2, 24)]),
+        ];
+        let mut resolver = SourceResolver::from_links(&links).with_forced(vec![lan]);
+
+        assert_eq!(
+            resolver.resolve(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))),
+            Some(tunnel_address),
+            "a peer inside the tunnel's prefix is reached through the tunnel"
+        );
+        assert_eq!(
+            resolver.resolve(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))),
+            Some(other_segment),
+            "a neighbour on another segment is reached on that segment"
+        );
+        assert_eq!(
+            resolver.resolve(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9))),
+            Some(lan),
+            "and a neighbour on the forced source's own segment from it"
+        );
+    }
+
+    /// Loopback and an IPv4 address written inside IPv6 are no link's, so the
+    /// plan leaves them to the kernel whatever is forced, and so does this.
+    #[test]
+    fn a_forced_source_does_not_answer_for_loopback_or_a_mapped_address() {
+        let lan = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
+        let global = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x50));
+        let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24)]);
+        let mut resolver = SourceResolver::from_links(&[intf]).with_forced(vec![lan, global]);
+
+        for target in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            IpAddr::V6(Ipv4Addr::new(203, 0, 113, 1).to_ipv6_mapped()),
+        ] {
+            let source = resolver.resolve(target);
+            assert!(
+                source != Some(lan) && source != Some(global),
+                "{target} was sourced from the forced {source:?}"
+            );
+        }
     }
 
     fn v6net(addr: Ipv6Addr, prefix: u8) -> LinkAddress {
