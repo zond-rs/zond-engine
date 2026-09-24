@@ -2478,6 +2478,8 @@ mod tests {
     /// Without one it answers nothing, as a filter does.
     struct Path {
         answer_after: Option<Duration>,
+        /// The hosts that answer, or every host where this is empty.
+        live: Vec<IpAddr>,
         replies: mpsc::Sender<CapturedSegment>,
         sent: std::sync::Arc<std::sync::Mutex<Vec<(u16, Instant)>>>,
     }
@@ -2499,6 +2501,9 @@ mod tests {
             let Some(delay) = self.answer_after else {
                 return Ok(());
             };
+            if !self.live.is_empty() && !self.live.contains(&dst) {
+                return Ok(());
+            }
             let reply = segment_to(
                 probe.destination_port(),
                 probe.source_port(),
@@ -2530,18 +2535,30 @@ mod tests {
         answer_after: Option<Duration>,
         ports: u16,
     ) -> (ScanSession, Departures) {
+        let targets = (1..=ports).map(|port| (TARGET, port)).collect();
+        scan_targets_over_path(tuning, answer_after, Vec::new(), targets).await
+    }
+
+    /// [`scan_over_path`] of `targets`, with only the hosts in `live`
+    /// answering, or every host where it is empty.
+    async fn scan_targets_over_path(
+        tuning: &ProbeTuning,
+        answer_after: Option<Duration>,
+        live: Vec<IpAddr>,
+        targets: Vec<(IpAddr, u16)>,
+    ) -> (ScanSession, Departures) {
         let (session, ctx) = ScanSession::new();
         let (replies, reply_rx) = mpsc::channel(4096);
         let sent = Departures::default();
         let path = Path {
             answer_after,
+            live,
             replies,
             sent: std::sync::Arc::clone(&sent),
         };
         let transport = ProbeTransport::from_parts(Box::new(path), reply_rx);
         let resolver = SourceResolver::from_links(&[on_link_interface()]);
-        let core =
-            TcpPortScanner::core(resolver, ctx, transport, tuning, 54_321, usize::from(ports));
+        let core = TcpPortScanner::core(resolver, ctx, transport, tuning, 54_321, targets.len());
         let mut scanner = TcpPortScanner::build(
             core,
             TcpScanTechnique::Syn,
@@ -2550,13 +2567,13 @@ mod tests {
             ServiceDetection::default(),
         );
 
-        let (targets, stream) = mpsc::channel(usize::from(ports));
-        for port in 1..=ports {
-            targets
+        let (queue, stream) = mpsc::channel(targets.len().max(1));
+        for (position, (ip, port)) in targets.into_iter().enumerate() {
+            queue
                 .send(PlannedTarget::new(
-                    u64::from(port),
+                    position as u64,
                     Target {
-                        ip: TARGET,
+                        ip,
                         port,
                         protocol: Protocol::Tcp,
                     },
@@ -2564,9 +2581,25 @@ mod tests {
                 .await
                 .expect("the stream is open");
         }
-        drop(targets);
+        drop(queue);
         scanner.scan(stream).await.expect("the scan runs");
         (session, sent)
+    }
+
+    /// The busiest second on the wire in `sent`: the most probes that left
+    /// within one second of any one of them.
+    fn busiest_second(sent: &Departures) -> usize {
+        let departures: Vec<Instant> = sent.lock().unwrap().iter().map(|(_, at)| *at).collect();
+        departures
+            .iter()
+            .map(|start| {
+                departures
+                    .iter()
+                    .filter(|at| **at >= *start && **at < *start + Duration::from_secs(1))
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// A scan held to a rate ceiling asks every port, however long the
@@ -2608,6 +2641,61 @@ mod tests {
             short.first()
         );
         assert_eq!(host.ports().count(), usize::from(PORTS));
+    }
+
+    /// A scan of two ports over a range of mostly empty addresses, held to a
+    /// low rate ceiling, finds the hosts that are there, asks every address
+    /// every port, and keeps to the ceiling on the wire.
+    ///
+    /// The shape a scan of a few ports over a range takes when the port probes
+    /// stand in for the liveness pass: nothing has timed the hosts, most
+    /// addresses answer nothing and are asked as often as the budget allows,
+    /// and the ceiling makes the whole of it slow. A deadline sized for an
+    /// unlimited scan stops it with most addresses unasked and the live hosts
+    /// among them, and retries sent outside the ceiling put more than it on
+    /// the wire.
+    #[tokio::test]
+    async fn a_rate_limited_scan_of_a_range_finds_its_hosts_and_asks_every_address() {
+        const RATE: u32 = 40;
+        let addresses: Vec<IpAddr> = (100..140)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let live = vec![addresses[7], addresses[31]];
+        let targets: Vec<(IpAddr, u16)> = addresses
+            .iter()
+            .flat_map(|ip| [(*ip, 22), (*ip, 80)])
+            .collect();
+        let tuning = ProbeTuning {
+            max_probe_rate: std::num::NonZeroU32::new(RATE),
+            ..ProbeTuning::default()
+        };
+
+        let (session, sent) = scan_targets_over_path(
+            &tuning,
+            Some(Duration::from_millis(5)),
+            live.clone(),
+            targets,
+        )
+        .await;
+
+        for ip in &addresses {
+            let host = session.hosts().get(*ip).expect("every address was asked");
+            let expected = if live.contains(ip) {
+                PortState::Open
+            } else {
+                PortState::Filtered
+            };
+            for port in host.ports() {
+                assert_eq!(port.state(), expected, "{ip}:{}", port.number());
+            }
+            assert_eq!(host.ports().count(), 2, "{ip}");
+            assert_eq!(host.status().is_up(), live.contains(ip), "{ip}");
+        }
+        let busiest = busiest_second(&sent);
+        assert!(
+            busiest <= RATE as usize + 2,
+            "{busiest} probes left in one second under a ceiling of {RATE}"
+        );
     }
 
     /// A scan built from the largest attempt budget and timeout scale the
@@ -2682,23 +2770,13 @@ mod tests {
 
         let (session, sent) = scan_over_path(&tuning, None, PORTS).await;
 
-        let departures: Vec<Instant> = sent.lock().unwrap().iter().map(|(_, at)| *at).collect();
         let attempts = usize::from(PORT_RETRY_POLICY.max_attempts);
         assert_eq!(
-            departures.len(),
+            sent.lock().unwrap().len(),
             usize::from(PORTS) * attempts,
             "every port asked as often as its budget allows"
         );
-        let busiest = departures
-            .iter()
-            .map(|start| {
-                departures
-                    .iter()
-                    .filter(|at| **at >= *start && **at < *start + Duration::from_secs(1))
-                    .count()
-            })
-            .max()
-            .unwrap_or(0);
+        let busiest = busiest_second(&sent);
         assert!(
             busiest <= RATE as usize + 2,
             "{busiest} probes left in one second under a ceiling of {RATE}"
