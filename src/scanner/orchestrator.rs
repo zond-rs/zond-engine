@@ -1607,9 +1607,11 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
 
     ctx.enter_stage(Stage::Tls, Some(targets.len() as u64));
 
+    let ports = targets.len() as u128;
+    let accept = if ports == 1 { "accepts" } else { "accept" };
     info!(
-        "enumerating what {} accept",
-        counted(targets.len() as u128, "TLS port", "TLS ports")
+        "enumerating what {} {accept}",
+        counted(ports, "TLS port", "TLS ports")
     );
 
     let mut pool = ProbePool::new(

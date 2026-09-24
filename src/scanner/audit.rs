@@ -439,12 +439,11 @@ impl ProbeAudit {
             let percent = recovered * 100.0;
             match window {
                 Some(window) if window.adaptive => crate::warn!(
-                    "{scanner}: {percent:.0}% of answers needed a retry, paced down to \
-                     {} in flight",
+                    "{scanner}: {percent:.0}% of answers needed a retry (paced to {})",
                     window.capacity,
                 ),
                 _ => crate::warn!(
-                    "{scanner}: {percent:.0}% of answers needed a retry, lower --max-probe-rate"
+                    "{scanner}: {percent:.0}% of answers needed a retry (rate too high)"
                 ),
             }
         }
@@ -462,8 +461,7 @@ impl ProbeAudit {
             let share = unanswered as f64 / targets as f64;
             if share >= UNANSWERED_SHARE_SUGGESTING_LOSS {
                 crate::warn!(
-                    "{scanner}: paced down to {} in flight and {percent:.0}% still unanswered; \
-                     those may be dropped probes rather than filtered ports",
+                    "{scanner}: {percent:.0}% unanswered at {} in flight (maybe loss)",
                     window.capacity,
                     percent = share * 100.0,
                 );
@@ -474,7 +472,7 @@ impl ProbeAudit {
             && counts.dropped > 0
         {
             crate::warn!(
-                "{scanner}: capture dropped {}, replies lost on this host",
+                "{scanner}: capture dropped {} (replies lost)",
                 crate::logging::counted(counts.dropped.into(), "frame", "frames"),
             );
         }

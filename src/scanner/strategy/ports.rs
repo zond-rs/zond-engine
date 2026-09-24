@@ -664,7 +664,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
                 if self.unreachable.insert(host) {
                     // `{error:#}` for the operating system's own words, which
                     // are the part a reader asking why can act on.
-                    info!(verbosity = 2, "{host} cannot be reached: {error:#}");
+                    info!(verbosity = 2, "{host} unreachable ({error:#})");
                 }
             }
             (Err(error), first) => {
@@ -701,10 +701,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// it.
     pub fn record_no_route(&mut self, host: IpAddr) {
         if self.unreachable.insert(host) {
-            info!(
-                verbosity = 2,
-                "{host} cannot be reached: no address on this host has a route to it"
-            );
+            info!(verbosity = 2, "{host} unreachable (no source address)");
         }
     }
 
@@ -712,14 +709,12 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// heard nothing from, in the kernel's word for where it stands.
     fn record_unresolved(&mut self, host: IpAddr, state: NeighborState) {
         if self.unreachable.insert(host) {
+            let resolution = if host.is_ipv4() { "ARP" } else { "NDP" };
             let how = match state {
-                NeighborState::Failed => "gave up resolving its hardware address",
-                _ => "is still resolving its hardware address",
+                NeighborState::Failed => format!("no {resolution} reply"),
+                _ => format!("{resolution} pending"),
             };
-            info!(
-                verbosity = 2,
-                "{host} cannot be reached: the kernel {how}, so no probe to it left"
-            );
+            info!(verbosity = 2, "{host} unreachable ({how})");
         }
     }
 

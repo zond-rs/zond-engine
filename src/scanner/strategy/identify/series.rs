@@ -463,7 +463,7 @@ impl OsSeriesScanner {
                 // pass failing. Each said once. See `SendFaults`.
                 if e.is_unroutable() {
                     if self.faults.unroutable.is_none() {
-                        info!(verbosity = 2, "{address} cannot be reached: {e:#}");
+                        info!(verbosity = 2, "{address} unreachable ({e:#})");
                     }
                 } else if self.faults.broken.is_none() {
                     error!(

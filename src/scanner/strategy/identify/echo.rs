@@ -297,7 +297,7 @@ impl OsEchoScanner {
                 // pass failing. Each said once. See `SendFaults`.
                 if e.is_unroutable() {
                     if self.faults.unroutable.is_none() {
-                        info!(verbosity = 2, "{target} cannot be reached: {e:#}");
+                        info!(verbosity = 2, "{target} unreachable ({e:#})");
                     }
                 } else if self.faults.broken.is_none() {
                     error!(
