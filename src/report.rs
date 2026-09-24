@@ -2230,10 +2230,52 @@ impl ScanReport {
         self.phases.iter().flat_map(ScanPhase::probe_stats)
     }
 
-    /// Whether any strategy failed to run to completion. A `true` here means
-    /// the results are narrower than the caller asked for.
+    /// Whether the findings are narrower than the caller asked for, which is
+    /// what a reader of this one flag takes it to answer.
+    ///
+    /// True wherever the record says part of what was asked went unanswered:
+    /// a strategy that did not run to completion, ground a phase declined
+    /// ([`refusals`](Self::refusals)), a host its own budget left early
+    /// ([`ScanPhase::timed_out`]), an address a discovery phase reached no
+    /// verdict on ([`ScanPhase::undecided`]), or a port recorded
+    /// [`Unasked`](crate::model::port::PortState::Unasked). Each of those is
+    /// the report covering less than it set out to, and a consumer handed
+    /// `false` for any of them would take a cut-short run as a complete one.
+    ///
+    /// Two things narrow a result and are not counted, because neither is
+    /// coverage that fell short. An address this host had no route to
+    /// ([`ScanPhase::unroutable`]) was never coverable from here, and a port
+    /// left unasked on one is the same fact; an address an exclusion policy
+    /// withheld was never asked for. Counting either would leave a sweep of a
+    /// range with a gap in it, or under any policy at all, never complete.
     pub fn is_partial(&self) -> bool {
-        self.phases.iter().any(|phase| !phase.failures.is_empty())
+        self.phases.iter().any(|phase| {
+            !phase.failures.is_empty()
+                || !phase.refusals.is_empty()
+                || !phase.timed_out.is_empty()
+                || !phase.undecided.is_empty()
+        }) || self.left_ports_unasked()
+    }
+
+    /// Whether any host this report could reach carries a port recorded
+    /// [`Unasked`](crate::model::port::PortState::Unasked): named by the scan,
+    /// and never probed.
+    ///
+    /// A host every one of whose addresses a phase names as unroutable is left
+    /// out, since a port there went unasked because nothing could be sent to
+    /// it, which [`is_partial`](Self::is_partial) does not count.
+    pub(crate) fn left_ports_unasked(&self) -> bool {
+        let unroutable: std::collections::BTreeSet<&IpAddr> = self
+            .phases
+            .iter()
+            .flat_map(|phase| phase.unroutable.iter())
+            .collect();
+        self.hosts.values().any(|host| {
+            host.ips().iter().any(|ip| !unroutable.contains(ip))
+                && host
+                    .ports()
+                    .any(|port| port.state() == crate::model::port::PortState::Unasked)
+        })
     }
 
     /// Counts derived from the recorded hosts.
@@ -2995,6 +3037,58 @@ mod tests {
         assert!(!StopReason::Aborted.is_complete());
         assert!(!StopReason::StreamClosed.is_complete());
         assert!(!StopReason::TimedOut.is_complete());
+    }
+
+    /// **A run whose only host a time budget left early is partial.** The
+    /// host is named in `timed_out` and carries only what the scan reached,
+    /// and a consumer reading the one flag that answers "is this complete"
+    /// was told it was.
+    #[test]
+    fn a_run_that_left_a_host_early_is_partial() {
+        let mut left = phase(ScanKind::PortScan);
+        left.timed_out.push(ip(1));
+
+        assert!(ScanReport::new(left, [Host::new(ip(1))]).is_partial());
+    }
+
+    /// Every way the record says a run covered less than it set out to makes
+    /// it partial, and ground that was never coverable from here does not.
+    #[test]
+    fn every_recorded_shortfall_is_partial_and_an_unreachable_address_is_not() {
+        let refused = {
+            let mut phase = phase(ScanKind::Discovery);
+            phase
+                .refusals
+                .push(Refusal::new(ScannerKind::Connect, "too large to sweep"));
+            ScanReport::new(phase, [])
+        };
+        assert!(
+            refused.is_partial(),
+            "ground declined is ground not covered"
+        );
+
+        let undecided = {
+            let mut phase = phase(ScanKind::Discovery);
+            phase.undecided.push(IpRange::V4(
+                Ipv4Range::new(Ipv4Addr::new(192, 0, 2, 4), Ipv4Addr::new(192, 0, 2, 7))
+                    .expect("a range"),
+            ));
+            ScanReport::new(phase, [])
+        };
+        assert!(undecided.is_partial(), "an address nobody decided");
+
+        let mut unasked = Host::new(ip(1));
+        unasked.add_port(Port::new(443, Protocol::Tcp, PortState::Unasked));
+        let cut_short = ScanReport::new(phase(ScanKind::PortScan), [unasked.clone()]);
+        assert!(cut_short.is_partial(), "a port named and never asked");
+
+        let mut no_route = phase(ScanKind::PortScan);
+        no_route.unroutable.push(ip(1));
+        let unreachable = ScanReport::new(no_route, [unasked]);
+        assert!(
+            !unreachable.is_partial(),
+            "a port unasked because nothing could reach its address was never coverable"
+        );
     }
 
     #[test]

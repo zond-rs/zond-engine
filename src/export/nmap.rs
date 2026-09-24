@@ -179,7 +179,11 @@ impl Exporter for NmapXmlExporter {
                 "{ENGINE_NAME} done; {} IP addresses ({} hosts up) scanned in {elapsed:.2} seconds",
                 summary.hosts_total, summary.hosts_alive
             )),
-            if report.is_partial() {
+            // A strategy that failed is the one shortfall nmap's own runs
+            // call an error. A host its budget left early and a port left
+            // unasked are, in nmap's output, part of a run that succeeded,
+            // and a consumer of this format reads the attribute that way.
+            if report.failures().next().is_some() {
                 "error"
             } else {
                 "success"

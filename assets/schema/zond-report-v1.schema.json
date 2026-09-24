@@ -59,7 +59,7 @@
       "$ref": "#/$defs/duration_us"
     },
     "partial": {
-      "description": "True if any strategy failed to run to completion, meaning the findings are narrower than the caller asked for. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart.",
+      "description": "True if the findings are narrower than the caller asked for: a strategy failed to run to completion, a phase declined ground (`refusals`), a host's own budget left it early (`timed_out`), a discovery phase reached no verdict on an address (`undecided`), or a port a reachable host was scanned for went `unasked`. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart. An address with no route (`unroutable`) and one an exclusion withheld do not make a report partial, since neither was coverable ground that went uncovered.",
       "type": "boolean"
     },
     "summary": {

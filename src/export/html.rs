@@ -337,7 +337,10 @@ fn write_notices(
             out,
             true,
             "partial",
-            "a strategy did not run to completion, so these findings are narrower than the scan asked for",
+            &format!(
+                "these findings are narrower than the scan asked for: {}",
+                shortfalls(report).join(", ")
+            ),
         )?;
     }
     if unprivileged > 0 {
@@ -1696,6 +1699,32 @@ fn fact(out: &mut dyn Write, key: &str, value: &str) -> Result<(), ExportError> 
     Ok(())
 }
 
+/// What made a report partial, a clause each, in the order a reader would
+/// look for them: the faults first, then the ground left unfinished.
+///
+/// Every cause [`ScanReport::is_partial`] counts is named here, so the notice
+/// never claims a shortfall it cannot name.
+fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
+    let phases = report.phases();
+    let mut causes = Vec::new();
+    if report.failures().next().is_some() {
+        causes.push("a strategy did not run to completion");
+    }
+    if report.refusals().next().is_some() {
+        causes.push("ground was declined");
+    }
+    if phases.iter().any(|phase| !phase.timed_out().is_empty()) {
+        causes.push("a host's time budget ran out");
+    }
+    if phases.iter().any(|phase| !phase.undecided().is_empty()) {
+        causes.push("addresses were never decided");
+    }
+    if report.left_ports_unasked() {
+        causes.push("ports went unasked");
+    }
+    causes
+}
+
 /// How many addresses `ranges` hold, read back off their rendered ends.
 ///
 /// A range whose ends do not read back as one family's addresses adds
@@ -2033,6 +2062,16 @@ mod tests {
         let hosts = page.find("Hosts <span").expect("a host section");
 
         assert!(notice < hosts, "the notice sits below the findings");
+        for cause in [
+            "a strategy did not run to completion",
+            "a host's time budget ran out",
+            "addresses were never decided",
+        ] {
+            assert!(
+                page[notice..hosts].contains(&esc(cause)),
+                "the notice never names {cause:?}, which the fixture has"
+            );
+        }
     }
 
     /// States keep the spelling the JSON gives them, so a reader who greps the

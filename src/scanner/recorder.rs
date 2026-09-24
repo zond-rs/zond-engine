@@ -307,6 +307,11 @@ mod tests {
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
         let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
 
+        // Both addresses in scope asked and found silent, so the one thing
+        // that could make this phase partial is the address with no route.
+        for address in [ip(1), ip(2)] {
+            ctx.settle_address(address, crate::journal::settle::Settled::Exhausted);
+        }
         let unreachable: IpAddr = "2001:db8::1".parse().expect("literal");
         ctx.record_unroutable(unreachable);
         // Twice, as two probes to one address would: it is one fact about one
