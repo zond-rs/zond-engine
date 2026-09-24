@@ -154,6 +154,10 @@ pub enum PortChange {
     /// none was not shown whether it is still presented, so the claim goes
     /// under `unsettled` beside the
     /// [`Withdrawn`](CertificateChange::Withdrawn) that reports the absence.
+    /// A vulnerability correlation rests on the identification it was drawn
+    /// from, and a current scan that identified nothing there, or named the
+    /// software without a version, did not say what runs there now, so that
+    /// claim goes under `unsettled` too.
     Findings {
         /// Findings the current scan claims and the baseline did not.
         appeared: Vec<Finding>,
@@ -162,8 +166,8 @@ pub enum PortChange {
         resolved: Vec<Finding>,
         /// Findings the baseline claimed that the current scan neither claims
         /// nor settled: part of the evidence each rests on is a walk the
-        /// current scan left unfinished or never made, or a certificate it
-        /// recorded none of.
+        /// current scan left unfinished or never made, a certificate it
+        /// recorded none of, or an identification it did not make.
         unsettled: Vec<Finding>,
         /// Findings both scans claim, where the severity moved.
         reassessed: Vec<Reassessment>,
@@ -457,17 +461,10 @@ fn changes_between(
         super::host::findings_between(before.findings(), after.findings());
 
     // What the baseline's claim rests on is in the baseline's own record, and
-    // whether the current scan settled it is in the current one's. A scan that
-    // made no enumeration at all holds no record to ask, which is the same
-    // answer as one holding an empty one.
-    let silent = Security::new();
-    let now = after.security().unwrap_or(&silent);
-    let (unsettled, resolved): (Vec<Finding>, Vec<Finding>) =
-        gone.into_iter().partition(|finding| {
-            before
-                .security()
-                .is_some_and(|basis| now.standing(finding, basis) == Some(Standing::Unsettled))
-        });
+    // whether the current scan settled it is in the current one's.
+    let (unsettled, resolved): (Vec<Finding>, Vec<Finding>) = gone
+        .into_iter()
+        .partition(|finding| standing(finding, before, after) == Some(Standing::Unsettled));
 
     if !appeared.is_empty()
         || !resolved.is_empty()
@@ -483,6 +480,71 @@ fn changes_between(
     }
 
     changes
+}
+
+/// Where the current account of an endpoint, `after`, leaves a claim the
+/// baseline's account, `before`, carried, or `None` where the claim is not
+/// one drawn from evidence either record holds.
+///
+/// A claim drawn from the TLS handshake asks the current record's security,
+/// and a scan that made no enumeration at all holds no record to ask, which is
+/// the same answer as one holding an empty one; see [`Security::standing`].
+///
+/// A vulnerability correlation rests on the identification it was drawn from,
+/// and asks [`correlation_standing`].
+fn standing(finding: &Finding, before: &Port, after: &Port) -> Option<Standing> {
+    if finding.cpe().is_some() {
+        return correlation_standing(finding, before.service()?, after.service());
+    }
+    let silent = Security::new();
+    let now = after.security().unwrap_or(&silent);
+    now.standing(finding, before.security()?)
+}
+
+/// Where the service `now` identified leaves a correlation `basis`'s
+/// identification drew, or `None` where `basis` does not carry the identifier
+/// the claim names and so is not what the claim rests on.
+///
+/// Upheld where `now` carries that identifier, and overturned where it says
+/// something else runs there: another service, another product, or another
+/// version of the same one. That is a newer identification that no longer
+/// backs the claim, and its absence is the upgrade or the replacement the
+/// comparison was run to see.
+///
+/// Unsettled where `now` said nothing that tells: no service, a label read off
+/// the port number, or the same software named without a version. A scan run
+/// without service detection, or one whose probe matched a product and not
+/// its release, did not say what runs there now, and reporting the claim
+/// resolved on its word would announce a vulnerability fixed by a scan that
+/// never looked. The same reading a merge makes, which keeps an older
+/// identification's identifiers beside a newer one that states no version.
+fn correlation_standing(
+    finding: &Finding,
+    basis: &Service,
+    now: Option<&Service>,
+) -> Option<Standing> {
+    let cpe = finding.cpe()?;
+    if !basis.cpes().contains(cpe) {
+        return None;
+    }
+    let Some(now) = now.filter(|service| !service.is_inferred()) else {
+        return Some(Standing::Unsettled);
+    };
+    if now.cpes().contains(cpe) {
+        return Some(Standing::Upheld);
+    }
+
+    let differs = |stated: Option<&str>, then: Option<&str>| {
+        stated.is_some_and(|stated| then.is_none_or(|then| stated != then))
+    };
+    let contradicts = now.name() != basis.name()
+        || differs(now.product(), basis.product())
+        || differs(now.version(), basis.version());
+    Some(if contradicts {
+        Standing::Overturned
+    } else {
+        Standing::Unsettled
+    })
 }
 
 /// What moved about the service on an endpoint.
@@ -985,6 +1047,91 @@ mod tests {
         let (_, resolved, unsettled, _) = findings_change(&changes).expect("a findings change");
         assert!(unsettled.is_empty(), "{:?}", titles(unsettled));
         assert_eq!(titles(resolved), ["TLS certificate is self-signed"]);
+    }
+
+    /// An endpoint identified as Apache httpd 2.4.49, carrying the CVE
+    /// correlation drawn from its CPE, which is how a scan records one.
+    fn correlated() -> Port {
+        const CPE: &str = "cpe:/a:apache:http_server:2.4.49";
+        let mut port = port(PortState::Open);
+        port.set_service(
+            Service::new("http", 90)
+                .with_product("Apache httpd")
+                .with_version("2.4.49")
+                .with_cpe(CPE),
+        );
+        port.add_finding(
+            finding("Apache httpd 2.4.49: path traversal")
+                .with_reference(crate::model::finding::Reference::Cve(
+                    "CVE-2021-41773".into(),
+                ))
+                .with_cpe(CPE),
+        );
+        port
+    }
+
+    /// **A correlation the current scan identified nothing to test is not
+    /// resolved.** It rests on the identification it was drawn from, and a
+    /// scan run without service detection, one that labelled the port by its
+    /// number alone, or one that named the software without reading a version
+    /// did not say what runs there now. Reported resolved, a quick port scan
+    /// compared against last month's thorough one would announce every
+    /// vulnerability on the network fixed.
+    #[test]
+    fn a_correlation_the_current_scan_identified_nothing_to_test_is_not_resolved() {
+        let before = correlated();
+
+        let mut labelled = port(PortState::Open);
+        labelled.set_service(Service::new("http", 0));
+        let mut unversioned = port(PortState::Open);
+        unversioned.set_service(Service::new("http", 90).with_product("Apache httpd"));
+
+        for (case, after) in [
+            ("no service at all", port(PortState::Open)),
+            ("a port-number label", labelled),
+            ("the same software without a version", unversioned),
+        ] {
+            let changes = changes_between(Some(&before), Some(&after), &clocks());
+            let (_, resolved, unsettled, _) = findings_change(&changes).expect("a findings change");
+            assert!(
+                resolved.is_empty(),
+                "{case}: reported {:?} resolved",
+                titles(resolved)
+            );
+            assert_eq!(
+                titles(unsettled),
+                ["Apache httpd 2.4.49: path traversal"],
+                "{case}"
+            );
+        }
+    }
+
+    /// The counterpart: a newer identification that no longer carries the
+    /// identifier the claim was drawn from settled it, and that is the upgrade
+    /// the comparison was run to see.
+    #[test]
+    fn a_correlation_a_newer_identification_no_longer_backs_is_resolved() {
+        let before = correlated();
+        let mut upgraded = port(PortState::Open);
+        upgraded.set_service(
+            Service::new("http", 90)
+                .with_product("Apache httpd")
+                .with_version("2.4.58")
+                .with_cpe("cpe:/a:apache:http_server:2.4.58"),
+        );
+        let mut replaced = port(PortState::Open);
+        replaced.set_service(Service::new("http", 90).with_product("nginx"));
+
+        for (case, after) in [("upgraded", upgraded), ("replaced", replaced)] {
+            let changes = changes_between(Some(&before), Some(&after), &clocks());
+            let (_, resolved, unsettled, _) = findings_change(&changes).expect("a findings change");
+            assert!(unsettled.is_empty(), "{case}: {:?}", titles(unsettled));
+            assert_eq!(
+                titles(resolved),
+                ["Apache httpd 2.4.49: path traversal"],
+                "{case}"
+            );
+        }
     }
 
     /// One side missing is an endpoint that appeared or went away, which the

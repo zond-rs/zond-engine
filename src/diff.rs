@@ -131,7 +131,10 @@
 //! [`PortChange::Findings`] carries it as unsettled rather than resolved. A
 //! finding drawn from a certificate's posture rests on that certificate, and a
 //! current scan that recorded none, because its handshake failed or the leaf
-//! would not parse, is unsettled the same way.
+//! would not parse, is unsettled the same way. So is a vulnerability
+//! correlation, which rests on the identification it was drawn from, where the
+//! current scan identified nothing on the endpoint, labelled it by its port
+//! number alone, or named the software without its version.
 //!
 //! ## Which record continues which
 //!
