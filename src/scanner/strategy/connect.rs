@@ -53,7 +53,7 @@ use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::routed::SynPorts;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::descriptors::{self, Descriptor};
-use crate::transport::dial::{Egress, Shaping};
+use crate::transport::dial::{Connecting, Egress, Shaping};
 use async_trait::async_trait;
 use std::io::{self, ErrorKind};
 use std::net::{IpAddr, SocketAddr};
@@ -179,9 +179,12 @@ struct Probed {
     /// from the kernel rather than from a conversation.
     about_the_host: crate::fingerprint::AboutTheHost,
     /// Whether the host answered. The kernel hands back a completed handshake or
-    /// a `ConnectionRefused` only when a segment came back from the target, so
-    /// either one proves a live stack - a refusal is a RST the kernel
-    /// translated. A timeout proves nothing and never sets this.
+    /// a `ConnectionRefused` only when something came back, and a refusal is
+    /// almost always the target's own RST, so either is read as a live stack;
+    /// a port unreachable standing in for one comes, as a rule, from a filter
+    /// on the host itself. A timeout or any other unreachable proves
+    /// nothing about the host, whose sender this path cannot see, and never
+    /// sets this.
     answered: bool,
     /// What became of this target, for a resume.
     ///
@@ -216,18 +219,106 @@ type ProbedPort = Option<Probed>;
 /// Carried by the probe rather than counted when it is admitted, because only
 /// the probe knows: a probe admitted can still find no socket, no route, or a
 /// scan that stopped before it asked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Attempt {
     /// The probe was sent.
     Sent,
-    /// This machine refused the send before anything left it: no route, no
-    /// source to send from.
-    Refused,
+    /// This machine refused the send before anything left it, for the reason
+    /// carried, which the scan reports once it has drained.
+    Refused(Refusal),
     /// The process had no socket to give the probe for as long as it would
     /// wait, which the scan reports once it has drained.
     Starved,
     /// Nothing was attempted: the scan stopped before the probe asked.
     Unmade,
+}
+
+/// Why this machine refused to send a probe, sorted the way the raw path sorts
+/// a send it could not make: by whose fact it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Refusal {
+    /// No route leads to the address. A fact about the address as seen from
+    /// here rather than a fault, and reported against the address.
+    NoRoute,
+    /// Anything else: no source to send from, no local port, a probe that met
+    /// itself on every try. This machine's failure, in the operating system's
+    /// own words, which is the part a reader asking why can act on.
+    Local(String),
+}
+
+impl Refusal {
+    /// The refusal `error` is, raised before anything left this machine.
+    fn of(error: &io::Error) -> Self {
+        match error.kind() {
+            ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => Self::NoRoute,
+            _ => Self::Local(error.to_string()),
+        }
+    }
+}
+
+/// What a scan's probes could not ask, and why, reported once it has drained.
+///
+/// Each is a port or address left unasked, which a resume asks again, and
+/// each has a cause the report has to name: without it, a scan that could not
+/// send reads as a network that did not answer.
+#[derive(Debug, Default)]
+struct Shortfall {
+    /// Targets the process had no socket for.
+    starved: u128,
+    /// Addresses no route led to.
+    unroutable: std::collections::BTreeSet<IpAddr>,
+    /// Targets this machine refused for any other reason.
+    refused: u128,
+    /// The first of those refusals, in the operating system's words.
+    first_refusal: Option<String>,
+}
+
+impl Shortfall {
+    /// Counts one probe's `attempt` for `ip`, if it fell short.
+    fn count(&mut self, ip: IpAddr, attempt: &Attempt) {
+        match attempt {
+            Attempt::Starved => self.starved += 1,
+            Attempt::Refused(Refusal::NoRoute) => {
+                self.unroutable.insert(ip);
+            }
+            Attempt::Refused(Refusal::Local(why)) => {
+                self.refused += 1;
+                self.first_refusal.get_or_insert_with(|| why.clone());
+            }
+            Attempt::Sent | Attempt::Unmade => {}
+        }
+    }
+
+    /// Files what fell short, counting targets as `unit` and `units`.
+    ///
+    /// An address no route led to is filed against the address, the way the
+    /// raw path files one, unless it answered something else, since an
+    /// address that answered was reached and a report saying otherwise would
+    /// contradict the ports it holds for it.
+    fn report(self, ctx: &ScanContext, scanner: ScannerKind, unit: &str, units: &str) {
+        if self.starved > 0 {
+            let unasked = counted(self.starved, unit, units);
+            report_starved(ctx, scanner, unasked, descriptors::PATIENCE);
+        }
+        for address in self.unroutable {
+            let reached = ctx
+                .read_host(address, |host| host.status() == HostStatus::Up)
+                .unwrap_or(false);
+            if !reached {
+                ctx.record_unroutable(address);
+            }
+        }
+        if self.refused > 0 {
+            let cause = self.first_refusal.as_deref().unwrap_or("cause unrecorded");
+            ctx.record_failure(
+                scanner,
+                format!(
+                    "{} left unasked: this machine refused to send them: {cause}",
+                    counted(self.refused, unit, units)
+                ),
+            );
+        }
+    }
 }
 
 /// Adapts the unprivileged [`scan`] engine to [`PortScanner`], so
@@ -408,12 +499,12 @@ impl PortScanner for ConnectUdpPortScanner {
     async fn scan(&mut self, mut rx: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         let ctx = self.ctx.clone();
         let shaping = Shaping::from(&self.evasion);
-        let mut starved = 0u128;
+        let mut shortfall = Shortfall::default();
         let mut pool = ProbePool::new(
             self.concurrency,
             self.ctx.clone(),
             self.kind(),
-            |probed, audit: &mut ProbeAudit| absorb_probe(&ctx, probed, audit, &mut starved),
+            |probed, audit: &mut ProbeAudit| absorb_probe(&ctx, probed, audit, &mut shortfall),
         );
 
         let mut probes = 0u128;
@@ -449,10 +540,7 @@ impl PortScanner for ConnectUdpPortScanner {
 
         pool.drain().await;
         let audit = pool.into_audit();
-        if starved > 0 {
-            let unasked = counted(starved, "port", "ports");
-            report_starved(&self.ctx, self.kind(), unasked, descriptors::PATIENCE);
-        }
+        shortfall.report(&self.ctx, self.kind(), "port", "ports");
         finish(&self.ctx, audit, self.kind(), probes, reason);
         Ok(())
     }
@@ -478,12 +566,12 @@ pub async fn scan(
 ) -> Result<(), StrategyError> {
     let shaping = Shaping::from(evasion);
     let folder = ctx.clone();
-    let mut starved = 0u128;
+    let mut shortfall = Shortfall::default();
     let mut pool = ProbePool::new(
         concurrency_limit,
         ctx.clone(),
         ScannerKind::Connect,
-        |probed, audit: &mut ProbeAudit| absorb_probe(&folder, probed, audit, &mut starved),
+        |probed, audit: &mut ProbeAudit| absorb_probe(&folder, probed, audit, &mut shortfall),
     );
 
     let mut probes = 0u128;
@@ -527,10 +615,7 @@ pub async fn scan(
     // Every target dispatched; wait out the probes still in flight.
     pool.drain().await;
     let audit = pool.into_audit();
-    if starved > 0 {
-        let unasked = counted(starved, "port", "ports");
-        report_starved(&ctx, ScannerKind::Connect, unasked, descriptors::PATIENCE);
-    }
+    shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);
     Ok(())
 }
@@ -550,21 +635,23 @@ pub async fn scan(
 /// raw scan draws in its second pass.
 ///
 /// The send is counted here, from the probe's own [`Attempt`], and a probe
-/// starved of a socket is also counted into `starved`, which the scan reports
+/// that could not ask is also counted into `shortfall`, which the scan reports
 /// once it has drained.
-fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit, starved: &mut u128) {
+fn absorb_probe(
+    ctx: &ScanContext,
+    probed: ProbedPort,
+    audit: &mut ProbeAudit,
+    shortfall: &mut Shortfall,
+) {
     let Some(probed) = probed else {
         return;
     };
     match probed.attempt {
         Attempt::Sent => audit.record_send(true),
-        Attempt::Refused => audit.record_send(false),
-        Attempt::Starved => {
-            audit.record_send(false);
-            *starved += 1;
-        }
+        Attempt::Refused(_) | Attempt::Starved => audit.record_send(false),
         Attempt::Unmade => {}
     }
+    shortfall.count(probed.ip, &probed.attempt);
     ctx.record_outcome(probed.outcome);
     if probed.answered {
         // A connect probe carries no attempt token: the retransmission that may
@@ -620,11 +707,13 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit, s
 /// A port in `state`, carrying the packet that settled it where one did.
 ///
 /// This scanner never sees a segment, the kernel does the handshake and hands
-/// back an outcome, but the outcome names the packet exactly: a completed
-/// connection is a SYN/ACK, a refusal is the RST the kernel translated into it,
-/// and a timeout is silence. Recorded so an unprivileged report can say what its
-/// verdicts rest on, which is the one thing separating a port a firewall dropped
-/// from a port nothing was listening on.
+/// back an outcome, but the outcome names what came back: a completed
+/// connection is a SYN/ACK, a timeout is silence, an unreachable is an ICMP
+/// error, and a refusal is one of two packets the kernel reports alike, a RST
+/// or an ICMP port unreachable, and is named as a refusal for that reason.
+/// Recorded so an unprivileged report can say what its verdicts rest on,
+/// which is the one thing separating a port a firewall dropped from a port
+/// nothing was listening on.
 ///
 /// `None` where no packet is implied: a local failure, no route, no socket
 /// left, is this host giving up, and crediting the target with a silence it was
@@ -666,9 +755,13 @@ fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
 /// handle.
 ///
 /// An accepted connection is `Open` and gets fingerprinted over the live stream,
-/// a refusal is `Closed`, and a timeout is `Filtered`, the usual signature of a
-/// firewall drop. A connect that fails before anything leaves this machine is
-/// `Unasked`. Only TCP is supported, so UDP targets are skipped.
+/// a refusal is `Closed`, and an ICMP error or a timeout is `Filtered`. A
+/// connect this machine refused before anything left it is `Unasked`; see
+/// [`Handshake`] for how each is told from the others. Only TCP is supported,
+/// so UDP targets are skipped.
+///
+/// A connect that met itself asked nothing, and is made again from a fresh
+/// socket, up to [`SELF_MEETINGS`] times.
 ///
 /// The connection, and every one the fingerprint makes after it, leaves by
 /// `egress`. Its socket comes from the process's budget and is held until the
@@ -691,6 +784,19 @@ async fn port_prober(
     }
 
     let position = planned.position;
+    let verdict = |state, reason, answered, rtt, outcome| {
+        Some(Probed {
+            ip: target.ip,
+            port: Some(settled(target.port, state, reason)),
+            responses: Vec::new(),
+            about_the_host: crate::fingerprint::AboutTheHost::default(),
+            answered,
+            rtt,
+            outcome,
+            attempt: Attempt::Sent,
+            role: None,
+        })
+    };
     let unasked = |outcome, attempt| {
         Some(Probed {
             ip: target.ip,
@@ -705,113 +811,258 @@ async fn port_prober(
         })
     };
 
-    let (result, began, _descriptor) = match dial(&handle, descriptors::PATIENCE, || {
-        connect(egress, socket_addr, shaping)
-    })
-    .await
-    {
-        Dialled::Ran {
-            result,
-            began,
-            descriptor,
-        } => (result, began, descriptor),
-        // Not a local failure: the scan ended first, as for a target still
-        // queued (see `record_unasked`).
-        Dialled::Stopped => return unasked(Outcome::Unasked, Attempt::Unmade),
-        Dialled::Starved => return unasked(Outcome::Unroutable, Attempt::Starved),
-    };
+    let mut met_itself = None;
+    for _ in 0..SELF_MEETINGS {
+        let (handshake, rtt, descriptor) = match dial(&handle, descriptors::PATIENCE, || {
+            std::future::ready(egress.start_connect(socket_addr, shaping))
+        })
+        .await
+        {
+            Dialled::Ran {
+                result: Ok(connecting),
+                began,
+                descriptor,
+            } => {
+                let handshake = Handshake::sent(handshake(connecting).await);
+                // Read before the fingerprint talks to the port, which is the
+                // service's time rather than the path's.
+                (handshake, began.elapsed(), Some(descriptor))
+            }
+            Dialled::Ran {
+                result: Err(e),
+                began,
+                ..
+            } => (Handshake::unsent(e), began.elapsed(), None),
+            // Not a local failure: the scan ended first, as for a target still
+            // queued (see `record_unasked`).
+            Dialled::Stopped => return unasked(Outcome::Unasked, Attempt::Unmade),
+            Dialled::Starved => return unasked(Outcome::Unroutable, Attempt::Starved),
+        };
 
-    // Read before the fingerprint talks to the port, which is the service's
-    // time rather than the path's.
-    let rtt = began.elapsed();
-    match result {
-        Ok(stream) => {
-            let port = settled(target.port, PortState::Open, Some(ScanResponse::TcpSynAck));
-            // The detailed form, for the second and third values. This
-            // handshake is the only conversation an unprivileged scan has with
-            // the port, so what it draws here is everything any later phase can
-            // read without dialling again: the responses a passive detection
-            // needs, and what the same bytes said about the machine.
-            let (port, about_the_host, responses) =
-                crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await;
-            Some(Probed {
-                ip: target.ip,
-                port: Some(port),
-                responses,
-                about_the_host,
-                answered: true,
-                rtt: Some(rtt),
-                outcome: Outcome::Answered { position },
-                attempt: Attempt::Sent,
-                // A TCP handshake proves a service, and the service is the
-                // port's to name. No role is read from one.
-                role: None,
-            })
-        }
-        Err(e) => {
-            match e.kind() {
-                // A refusal is the clearest verdict this scanner ever gets, and
-                // it is filed as one. The RST the kernel translated into it
-                // proves two things at once: the port has nothing listening, and
-                // something is there to say so.
-                //
-                // Recorded rather than dropped because a port list that changes
-                // with the caller's privilege level is not a smaller answer, it
-                // is a different one. The raw path files `Closed` here, so
-                // omitting it would leave an unprivileged report with no
-                // `Closed` entry in its `ports_by_state` however many refusals
-                // it collected - a summary structurally wrong rather than merely
-                // incomplete, and exactly the kind of difference somebody
-                // diffing two scans would read as a change in the network.
-                ErrorKind::ConnectionRefused => Some(Probed {
+        return match handshake {
+            Handshake::Accepted(stream) => {
+                let port = settled(target.port, PortState::Open, Some(ScanResponse::TcpSynAck));
+                // The detailed form, for the second and third values. This
+                // handshake is the only conversation an unprivileged scan has
+                // with the port, so what it draws here is everything any later
+                // phase can read without dialling again: the responses a
+                // passive detection needs, and what the same bytes said about
+                // the machine. The descriptor is held until it is done.
+                let (port, about_the_host, responses) =
+                    crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await;
+                drop(descriptor);
+                Some(Probed {
                     ip: target.ip,
-                    port: Some(settled(
-                        target.port,
-                        PortState::Closed,
-                        Some(ScanResponse::TcpRst),
-                    )),
-                    responses: Vec::new(),
-                    about_the_host: crate::fingerprint::AboutTheHost::default(),
+                    port: Some(port),
+                    responses,
+                    about_the_host,
                     answered: true,
                     rtt: Some(rtt),
                     outcome: Outcome::Answered { position },
                     attempt: Attempt::Sent,
+                    // A TCP handshake proves a service, and the service is the
+                    // port's to name. No role is read from one.
                     role: None,
-                }),
-                // Silence: the probe was dropped, the classic firewall
-                // signature. Settled, because a connect gets one attempt and
-                // this was it. The budget running out and the stack giving up
-                // first are the same outcome, a SYN out and nothing back, and
-                // the second can come first on Windows, where a probe keeps a
-                // single retransmission.
-                ErrorKind::TimedOut => Some(Probed {
-                    ip: target.ip,
-                    port: Some(settled(
-                        target.port,
-                        PortState::Filtered,
-                        Some(ScanResponse::NoResponse),
-                    )),
-                    responses: Vec::new(),
-                    about_the_host: crate::fingerprint::AboutTheHost::default(),
-                    answered: false,
-                    rtt: None,
-                    outcome: Outcome::Exhausted { position },
-                    attempt: Attempt::Sent,
-                    role: None,
-                }),
-                // Anything else failed without a segment leaving this machine -
-                // a local routing failure, a source not held here - so nothing
-                // was asked and the host has proved nothing. The next sitting
-                // may well get further.
-                //
-                // No evidence recorded, since there is no packet to name, and
-                // no verdict either: filing `Filtered` would credit the target
-                // with a silence it was never asked for in the one field a
-                // reader takes for a finding.
-                _ => unasked(Outcome::Unroutable, Attempt::Refused),
+                })
             }
+            // A refusal is the clearest verdict this scanner ever gets, and it
+            // is filed as one, under the name of what it is: a refusal, which
+            // the operating system hands back alike for a reset and for an
+            // ICMP port unreachable. Most are resets, a stack with nothing
+            // listening, and the port is read closed. A filter rejecting with
+            // a port unreachable reads closed here too, where the raw path,
+            // which sees the packet, reads it filtered; no error code on any
+            // platform separates the two, so the reason recorded says what
+            // the verdict rests on rather than naming a reset nobody saw.
+            //
+            // Recorded rather than dropped because a port list that changes
+            // with the caller's privilege level is not a smaller answer, it is
+            // a different one: omitting it would leave an unprivileged report
+            // with no `Closed` entry in its `ports_by_state` however many
+            // refusals it collected, which somebody diffing two scans would
+            // read as a change in the network.
+            Handshake::Refused => verdict(
+                PortState::Closed,
+                Some(ScanResponse::ConnectionRefused),
+                true,
+                Some(rtt),
+                Outcome::Answered { position },
+            ),
+            // Something on the way refused the connection with an ICMP error:
+            // a firewall's reject, a router with no way on. The raw path reads
+            // the same packet as filtered, and so does this one. Settled,
+            // because it is an answer; the host is not credited, because the
+            // error's sender is not surfaced and is as often a router as the
+            // target, and neither is its round trip.
+            Handshake::Unreachable => verdict(
+                PortState::Filtered,
+                Some(ScanResponse::IcmpUnreachable),
+                false,
+                None,
+                Outcome::Answered { position },
+            ),
+            // Silence: the probe was dropped, the classic firewall signature.
+            // Settled, because a connect gets one attempt and this was it.
+            Handshake::Silent => verdict(
+                PortState::Filtered,
+                Some(ScanResponse::NoResponse),
+                false,
+                None,
+                Outcome::Exhausted { position },
+            ),
+            Handshake::MetItself(e) => {
+                met_itself = Some(e);
+                continue;
+            }
+            // This machine refused the connect before anything left it, so
+            // nothing was asked and the host has proved nothing. The next
+            // sitting may well get further.
+            //
+            // No evidence recorded, since there is no packet to name, and no
+            // verdict either: filing `Filtered` would credit the target with a
+            // silence it was never asked for in the one field a reader takes
+            // for a finding.
+            Handshake::NotSent(e) => {
+                unasked(Outcome::Unroutable, Attempt::Refused(Refusal::of(&e)))
+            }
+            // The SYN left and the connect failed in a way that names no
+            // packet. It was asked, so the send counts, and it has no verdict,
+            // so a resume asks again.
+            Handshake::Failed(e) => {
+                error!(
+                    verbosity = 2,
+                    "connect to {socket_addr} failed after sending: {e}"
+                );
+                unasked(Outcome::Unroutable, Attempt::Sent)
+            }
+        };
+    }
+
+    // Met itself every time, which only a pinned source port equal to the
+    // target's, on this machine's own address, can do.
+    let why = met_itself.map_or_else(String::new, |e| e.to_string());
+    unasked(Outcome::Unroutable, Attempt::Refused(Refusal::Local(why)))
+}
+
+/// How many times a connect probe is made before a connect that keeps
+/// meeting itself is given up.
+///
+/// A connect meets itself when the kernel draws the target's own port as its
+/// source, which a fresh socket draws again with odds of about one in the
+/// size of the ephemeral range. Three is room for that and for nothing else:
+/// a probe that met itself three times is one pinned to the port it asks
+/// about, which no retry changes.
+const SELF_MEETINGS: usize = 3;
+
+/// What one connect probe's handshake came to, read for what it says about
+/// the port.
+///
+/// The operating system hands a connect back as an error code and nothing
+/// else, and the codes are shared between causes that mean different things:
+/// `EHOSTUNREACH` is a missing route on this machine and a firewall's reject
+/// on the far side. What separates them is when the code arrived, so a
+/// connect is made in two halves (see
+/// [`Egress::start_connect`](crate::transport::dial::Egress::start_connect)),
+/// and a code from the first half is always [`NotSent`](Self::NotSent).
+#[derive(Debug)]
+enum Handshake {
+    /// The handshake completed: a SYN/ACK.
+    Accepted(TcpStream),
+    /// The connection was refused: a reset, or an ICMP port unreachable,
+    /// which every platform reports alike.
+    Refused,
+    /// An ICMP error other than a port unreachable ended the connect after its
+    /// SYN left: an administrative prohibition, a host or network the path
+    /// could not reach, a protocol the far end does not speak.
+    ///
+    /// Linux ends a connect at the first such error; macOS and the BSDs hold
+    /// it as a soft error and keep retrying, so there the same packet ends in
+    /// [`Silent`](Self::Silent), which is filed as the same state.
+    Unreachable,
+    /// Nothing came back within the connect's budget, or the stack gave up
+    /// first, which is the same outcome, a SYN out and nothing back; the
+    /// second can come first on Windows, where a probe keeps a single
+    /// retransmission.
+    Silent,
+    /// The connect reached its own socket; see
+    /// [`met_itself`](crate::transport::dial::met_itself).
+    MetItself(io::Error),
+    /// This machine refused the connect before anything left it.
+    NotSent(io::Error),
+    /// The SYN left and the connect failed in a way that names no packet.
+    Failed(io::Error),
+}
+
+impl Handshake {
+    /// Reads a connect's first half refused, before anything left this
+    /// machine.
+    ///
+    /// A refusal stays a refusal whichever half reported it, since no stack
+    /// invents one: over loopback the answer can arrive before the connect
+    /// call returns.
+    fn unsent(error: io::Error) -> Self {
+        if crate::transport::dial::met_itself(&error) {
+            Self::MetItself(error)
+        } else if error.kind() == ErrorKind::ConnectionRefused {
+            Self::Refused
+        } else {
+            Self::NotSent(error)
         }
     }
+
+    /// Reads the outcome of a connect's second half, after its SYN left.
+    fn sent(result: io::Result<TcpStream>) -> Self {
+        let error = match result {
+            Ok(stream) => return Self::Accepted(stream),
+            Err(error) => error,
+        };
+        if crate::transport::dial::met_itself(&error) {
+            return Self::MetItself(error);
+        }
+        match error.kind() {
+            ErrorKind::ConnectionRefused => Self::Refused,
+            ErrorKind::TimedOut => Self::Silent,
+            _ if is_unreachable(&error) => Self::Unreachable,
+            _ => Self::Failed(error),
+        }
+    }
+}
+
+/// Whether `error`, raised after a probe left, is an ICMP error other than a
+/// port unreachable: a host or network the path could not reach, an
+/// administrative prohibition, which Linux reports as a host it cannot reach,
+/// and on Linux a protocol unreachable (`ENOPROTOOPT`) or an unknown or
+/// isolated host (`EHOSTDOWN`, `ENONET`), which the standard library has no
+/// kind for.
+fn is_unreachable(error: &io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable
+    ) {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        matches!(
+            error.raw_os_error(),
+            Some(libc::ENOPROTOOPT | libc::EHOSTDOWN | libc::ENONET)
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// The second half of a connect, given [`CONNECT_PROBE_TIMEOUT`] to be
+/// answered.
+///
+/// The budget running out and the stack giving up first are the same outcome,
+/// a SYN out and nothing back, so both come back as [`ErrorKind::TimedOut`].
+async fn handshake(connecting: Connecting) -> io::Result<TcpStream> {
+    timeout(CONNECT_PROBE_TIMEOUT, connecting.finish())
+        .await
+        .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()))
 }
 
 /// Probes a single [`PlannedTarget`] for UDP using a standard OS `UdpSocket`,
@@ -825,8 +1076,9 @@ async fn port_prober(
 /// `ConnectionRefused` on a subsequent operation. An unconnected socket
 /// discards the same error with nowhere to deliver it.
 ///
-/// A reply is `Open`, a refusal is `Closed`, and silence is `OpenFiltered` -
-/// the same three verdicts the raw scanner reaches, by a different route.
+/// A reply is `Open`, a refusal is `Closed`, any other ICMP error the kernel
+/// surfaces is `Filtered`, and silence is `OpenFiltered` - the verdicts the
+/// raw scanner reaches, by a different route.
 /// Errors that say nothing about the target (no local socket, no route) are
 /// logged and yield no record rather than a guess.
 ///
@@ -882,7 +1134,7 @@ async fn udp_port_prober(
     // scanner runs out of sockets is the shortfall a reader cannot see. The
     // outcome is `Unroutable` rather than `Unasked` for the reason the TCP
     // prober gives: this host gave up, which the next sitting may not.
-    let refused = Attempt::Refused;
+    let refused = |e: &io::Error| Attempt::Refused(Refusal::of(e));
     let (socket, _descriptor) = match dial(&handle, descriptors::PATIENCE, || {
         egress.udp_shaped(target.ip, shaping)
     })
@@ -898,7 +1150,7 @@ async fn udp_port_prober(
                 verbosity = 2,
                 "no UDP socket for probing {socket_addr}: {e}"
             );
-            return record(PortState::Unasked, false, Outcome::Unroutable, refused);
+            return record(PortState::Unasked, false, Outcome::Unroutable, refused(&e));
         }
         Dialled::Stopped => {
             return record(PortState::Unasked, false, Outcome::Unasked, Attempt::Unmade);
@@ -918,7 +1170,7 @@ async fn udp_port_prober(
             verbosity = 2,
             "cannot address UDP probe to {socket_addr}: {e}"
         );
-        return record(PortState::Unasked, false, Outcome::Unroutable, refused);
+        return record(PortState::Unasked, false, Outcome::Unroutable, refused(&e));
     }
 
     if let Err(e) = socket.send(payload::for_port(target.port)).await {
@@ -936,7 +1188,7 @@ async fn udp_port_prober(
                     verbosity = 2,
                     "failed to send UDP probe to {socket_addr}: {e}"
                 );
-                record(PortState::Unasked, false, Outcome::Unroutable, refused)
+                record(PortState::Unasked, false, Outcome::Unroutable, refused(&e))
             }
         };
     }
@@ -960,6 +1212,16 @@ async fn udp_port_prober(
         // An ICMP Port Unreachable, surfaced against the connected peer.
         Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => record(
             PortState::Closed,
+            false,
+            Outcome::Answered { position },
+            Attempt::Sent,
+        ),
+        // Any other ICMP error the kernel surfaced: an administrative
+        // prohibition, which Linux reports on a connected socket as a host it
+        // cannot reach, or a protocol unreachable. The raw path reads the same
+        // packet as filtered, and so does this one.
+        Ok(Err(e)) if is_unreachable(&e) => record(
+            PortState::Filtered,
             false,
             Outcome::Answered { position },
             Attempt::Sent,
@@ -1534,7 +1796,12 @@ mod tests {
         )
         .await;
         let (session, ctx) = crate::scanner::session::ScanSession::new();
-        absorb_probe(&ctx, probed, &mut ProbeAudit::new(), &mut 0);
+        absorb_probe(
+            &ctx,
+            probed,
+            &mut ProbeAudit::new(),
+            &mut Shortfall::default(),
+        );
 
         let host = session
             .hosts()
@@ -1580,6 +1847,166 @@ mod tests {
                 "a live {ip} listener must read as open"
             );
         }
+    }
+
+    fn tcp_target(ip: IpAddr, port: u16) -> PlannedTarget {
+        PlannedTarget::new(
+            u64::from(port),
+            Target {
+                ip,
+                port,
+                protocol: Protocol::Tcp,
+            },
+        )
+    }
+
+    /// A connect that reaches its own socket is never filed as an open port.
+    ///
+    /// On Linux, and on macOS over IPv6, a connect given its target's port as
+    /// its source completes a handshake with itself, and a prober that took
+    /// the completed connect for an answer filed a port nothing listened on
+    /// as open and identified its service from its own questions. On macOS
+    /// over IPv4 the kernel refuses it instead. Either way nothing was asked.
+    ///
+    /// Pinning the source port to the target's is what makes every attempt
+    /// meet itself, so the prober's fresh tries meet itself too and the port
+    /// ends unasked, with the reason reported, rather than with a verdict.
+    #[tokio::test]
+    async fn a_connect_that_reaches_itself_is_never_filed_as_an_open_port() {
+        for ip in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ] {
+            let port = {
+                let reserved = std::net::TcpListener::bind((ip, 0)).expect("a free port");
+                reserved.local_addr().expect("its address").port()
+            };
+            let shaping = Shaping {
+                source_port: Some(port),
+                hop_limit: None,
+            };
+
+            let probed = port_prober(
+                tcp_target(ip, port),
+                ServiceDetection::default(),
+                shaping,
+                Egress::KERNEL,
+                SocketAddr::new(ip, port),
+                ScanHandle::new(),
+            )
+            .await
+            .expect("a TCP target is probed");
+
+            assert_eq!(
+                probed.port.as_ref().map(Port::state),
+                Some(PortState::Unasked),
+                "{ip}: a connect that met itself was filed as {:?}",
+                probed.port
+            );
+            assert!(
+                matches!(&probed.attempt, Attempt::Refused(Refusal::Local(why))
+                    if why.contains("reached itself")),
+                "{ip}: the refusal says why, and has {:?}",
+                probed.attempt
+            );
+            assert!(!probed.answered, "{ip}: nothing answered");
+        }
+    }
+
+    /// Where an error surfaced decides what it means: the same code before
+    /// the SYN left is this machine's failure, and after it is an answer.
+    ///
+    /// `EHOSTUNREACH` is both a missing route here and a firewall's
+    /// administrative prohibition on the far side, which Linux reports alike.
+    /// Read as a local failure, a firewalled port is filed unasked and asked
+    /// again on every resume; read as an answer, a port this machine could
+    /// not reach would be filed filtered, a finding about a target nothing
+    /// was sent to.
+    #[test]
+    fn an_unreachable_is_an_answer_after_the_syn_left_and_a_local_failure_before() {
+        for kind in [ErrorKind::HostUnreachable, ErrorKind::NetworkUnreachable] {
+            assert!(
+                matches!(
+                    Handshake::sent(Err(io::Error::from(kind))),
+                    Handshake::Unreachable
+                ),
+                "{kind:?} after the SYN left"
+            );
+            assert!(
+                matches!(
+                    Handshake::unsent(io::Error::from(kind)),
+                    Handshake::NotSent(_)
+                ),
+                "{kind:?} before anything left"
+            );
+            assert_eq!(
+                Refusal::of(&io::Error::from(kind)),
+                Refusal::NoRoute,
+                "{kind:?} before anything left is filed against the address"
+            );
+        }
+        let refused = || io::Error::from(ErrorKind::ConnectionRefused);
+        assert!(matches!(
+            Handshake::sent(Err(refused())),
+            Handshake::Refused
+        ));
+        assert!(matches!(Handshake::unsent(refused()), Handshake::Refused));
+        assert!(matches!(
+            Handshake::sent(Err(io::Error::from(ErrorKind::TimedOut))),
+            Handshake::Silent
+        ));
+        assert!(matches!(
+            Handshake::unsent(io::Error::from(ErrorKind::AddrNotAvailable)),
+            Handshake::NotSent(_)
+        ));
+    }
+
+    /// A port this machine refused to send to is left unasked, and the report
+    /// says why, in the operating system's words.
+    ///
+    /// Without the line, a scan whose every connect failed locally reads as
+    /// one that asked and heard nothing: the ports are unasked, but nothing
+    /// says the cause was here. The refusal is made by pinning connections to
+    /// a source no interface holds, so the bind fails before anything is sent
+    /// and the documentation address is never dialled.
+    #[tokio::test]
+    async fn a_port_this_machine_refused_to_send_is_unasked_and_the_report_says_why() {
+        let target = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+        let (session, ctx) = crate::scanner::session::ScanSession::builder()
+            .send_source(vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 250))])
+            .build();
+        let (tx, rx) = mpsc::channel(2);
+        tx.send(tcp_target(target, 443)).await.expect("queued");
+        drop(tx);
+
+        scan(
+            rx,
+            1,
+            ctx.clone(),
+            ServiceDetection::Off,
+            &EvasionProfile::default(),
+            &ZoneMap::new(),
+        )
+        .await
+        .expect("the scan runs");
+
+        let state = session.hosts().read(target, |host| {
+            host.ports().map(Port::state).collect::<Vec<_>>()
+        });
+        assert_eq!(state, Some(vec![PortState::Unasked]));
+        let failures = ctx.failures_snapshot();
+        assert!(
+            failures.iter().any(|failure| failure
+                .reason()
+                .starts_with("1 port left unasked: this machine refused")),
+            "the report says the refusal was this machine's, and has {failures:?}"
+        );
+        let stats = &ctx.probe_stats_snapshot()[0];
+        assert_eq!(
+            (stats.sends_attempted(), stats.sends_failed()),
+            (1, 1),
+            "a send this machine refused is a send that failed"
+        );
     }
 
     /// TCP targets belong to the connect scanner next door; this prober must

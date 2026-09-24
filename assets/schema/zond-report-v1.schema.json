@@ -276,6 +276,7 @@
                 "tcp_syn_ack",
                 "overheard_syn_ack",
                 "tcp_rst",
+                "connection_refused",
                 "udp_response",
                 "sctp_init_ack",
                 "sctp_abort",

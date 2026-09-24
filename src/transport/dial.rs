@@ -291,6 +291,61 @@ impl Egress {
             .await
     }
 
+    /// Starts a connect to `addr`, honouring `shaping`, and returns once its
+    /// SYN is the kernel's to send.
+    ///
+    /// [`connect_shaped`](Self::connect_shaped) in two halves, for the connect
+    /// scanner, because the two fail for different reasons and the reason is
+    /// the port's verdict. An error from here is this machine refusing before
+    /// anything left it: no socket, no route, no source, no local port. An
+    /// error from [`Connecting::finish`] came after the SYN was handed over: a
+    /// refusal, an ICMP error the kernel matched to the connection, or nothing
+    /// back at all. The operating system names both halves with the same
+    /// codes, `EHOSTUNREACH` for a missing route here as for a firewall's
+    /// rejection on the far side, so only where an error surfaces tells them
+    /// apart.
+    ///
+    /// The socket carries nothing the caller did not choose, as
+    /// [`connect_shaped`](Self::connect_shaped)'s does, so an unshaped connect
+    /// sends the SYN any other program would.
+    ///
+    /// A connect that met itself is refused here on the platforms that refuse
+    /// one outright, and comes back from [`Connecting::finish`] on the ones
+    /// that complete it; [`met_itself`] names it either way.
+    pub(crate) fn start_connect(
+        self,
+        addr: SocketAddr,
+        shaping: Shaping,
+    ) -> io::Result<Connecting> {
+        let socket = self.socket(addr.ip(), Protocol::Tcp, shaping)?;
+        socket.set_nonblocking(true)?;
+        match socket.connect(&addr.into()) {
+            Ok(()) => {}
+            #[cfg(unix)]
+            Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => {}
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            // macOS refuses a connect given the target's own port as its
+            // source, with `EINVAL` over IPv4 and `EADDRINUSE` over IPv6 from
+            // a wildcard bind, and leaves that port bound to say so.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::AddrInUse
+                ) && socket
+                    .local_addr()
+                    .ok()
+                    .and_then(|local| local.as_socket())
+                    .is_some_and(|local| local.port() == addr.port()) =>
+            {
+                return Err(io::Error::other(MetItself));
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(Connecting {
+            stream: TcpStream::from_std(std::net::TcpStream::from(socket))?,
+        })
+    }
+
     /// Connects to `addr` on the calling thread, giving the connection
     /// `timeout` and a full descriptor table `patience`.
     ///
@@ -423,6 +478,71 @@ impl Egress {
         }
         Ok(socket)
     }
+}
+
+/// A connect whose SYN is the kernel's to send, waiting on what comes back.
+///
+/// See [`Egress::start_connect`] for why a connect is made in two halves.
+#[derive(Debug)]
+pub(crate) struct Connecting {
+    /// The socket, registered with the runtime while its handshake is under
+    /// way, so its readiness is what says the handshake is over.
+    stream: TcpStream,
+}
+
+impl Connecting {
+    /// Waits for the handshake to finish, and returns the connection or what
+    /// ended it.
+    ///
+    /// Unbounded, as a connect is; the caller holds the clock. Every error
+    /// here came after the SYN was handed to the kernel, so it is something
+    /// that happened on the way to the target or at it: a reset, an ICMP error
+    /// the kernel matched to the connection, the stack giving up. A connection
+    /// that met itself comes back as an error [`met_itself`] names, and is
+    /// closed as it is dropped.
+    pub(crate) async fn finish(self) -> io::Result<TcpStream> {
+        self.stream.writable().await?;
+        if let Some(error) = self.stream.take_error()? {
+            return Err(error);
+        }
+        if self.stream.local_addr()? == self.stream.peer_addr()? {
+            return Err(io::Error::other(MetItself));
+        }
+        Ok(self.stream)
+    }
+}
+
+/// A connect that reached its own socket rather than anything listening.
+///
+/// A connect to one of this machine's own addresses can be given the port it
+/// is aimed at as its own ephemeral source, when nothing holds that port, and
+/// then its SYN arrives at the socket that sent it. Linux completes the
+/// handshake as a simultaneous open, as macOS does over IPv6 from a socket
+/// bound to the address; macOS otherwise refuses the connect. A full-range
+/// scan of loopback meets it once or twice a run, at whichever ports the
+/// kernel happens to draw.
+///
+/// Neither outcome is an answer about the port. The completed one is a
+/// conversation with nobody, which read as a handshake would file a port with
+/// no listener as open and identify its service by the scanner's own
+/// questions echoed back; the refused one was never sent. What it does prove
+/// is that nothing held the port when the kernel chose it, which is why a
+/// fresh socket, given another source, is the way to the verdict.
+#[derive(Debug)]
+struct MetItself;
+
+impl std::fmt::Display for MetItself {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the connect was given its target's port as its source and reached itself")
+    }
+}
+
+impl std::error::Error for MetItself {}
+
+/// Whether `error` is a connect that reached its own socket rather than
+/// anything listening; see [`Egress::start_connect`].
+pub(crate) fn met_itself(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<MetItself>())
 }
 
 impl Pin {

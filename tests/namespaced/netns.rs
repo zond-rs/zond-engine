@@ -357,6 +357,32 @@ impl Segment {
         address
     }
 
+    /// An address routed through the peer that the peer refuses by policy,
+    /// and returns it: a host behind a firewall that rejects rather than drops.
+    ///
+    /// The peer forwards, and holds a `prohibit` route for the address, so
+    /// every packet sent there is answered with an ICMP administrative
+    /// prohibition from the peer, which is the reply a firewall's reject
+    /// sends and a connect is handed as a host it cannot reach. Built from a
+    /// route rather than a firewall rule, so it needs nothing but `ip`.
+    ///
+    /// The peer's kernel limits the ICMP errors it sends each destination, to
+    /// a burst of six and then one a second, so a test asks a handful of
+    /// questions here and no more.
+    pub fn prohibited_host(&self) -> Ipv4Addr {
+        let address = Ipv4Addr::new(10, 98, self.index as u8, 13);
+        self.there(&["sh", "-c", "echo 1 > /proc/sys/net/ipv4/ip_forward"]);
+        self.there(&["ip", "route", "add", "prohibit", &format!("{address}/32")]);
+        ip(&[
+            "route",
+            "add",
+            &format!("{address}/32"),
+            "via",
+            &peer_v4(self.index).to_string(),
+        ]);
+        address
+    }
+
     /// Holds `address` behind this segment's peer too, and routes it there at
     /// `metric`, so a second segment offers another way to a target another
     /// one already reaches.

@@ -187,6 +187,118 @@ async fn an_administratively_prohibited_port_is_filtered_rather_than_closed() {
     );
 }
 
+/// A connect scan reads a port a filter rejects as filtered, as the raw path
+/// does, rather than as a port it never asked.
+///
+/// A firewall's reject answers with an ICMP administrative prohibition, and
+/// Linux hands a connect that as a host it cannot reach: the error a missing
+/// route raises before anything is sent. Read as that, every port behind the
+/// reject is filed unasked, asked again on every resume, and the scan says
+/// nothing about the filter it met. Driven directly, since a process with raw
+/// sockets never plans a connect scan here.
+#[tokio::test]
+async fn a_connect_scan_reads_a_port_a_filter_rejects_as_filtered() {
+    use zond_engine::config::ServiceDetection;
+    use zond_engine::model::port::Protocol;
+    use zond_engine::model::port::discovery::ScanResponse;
+    use zond_engine::model::target::{PlannedTarget, Target};
+    use zond_engine::scanner::session::ScanSession;
+
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    let target = std::net::IpAddr::V4(segment.prohibited_host());
+    let (session, ctx) = ScanSession::new();
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(PlannedTarget::new(
+        0,
+        Target {
+            ip: target,
+            port: 443,
+            protocol: Protocol::Tcp,
+        },
+    ))
+    .await
+    .expect("queue");
+    drop(tx);
+
+    zond_engine::scanner::strategy::connect::scan(
+        rx,
+        1,
+        ctx.clone(),
+        ServiceDetection::Off,
+        &zond_engine::EvasionProfile::default(),
+        &zond_engine::ZoneMap::new(),
+    )
+    .await
+    .expect("the connect scan runs");
+
+    let port = session
+        .hosts()
+        .read(target, |host| {
+            host.ports().find(|port| port.number() == 443).cloned()
+        })
+        .flatten()
+        .expect("the port is on the host");
+    assert_eq!(
+        (
+            port.state(),
+            port.discovery().map(|found| found.reason().clone())
+        ),
+        (PortState::Filtered, Some(ScanResponse::IcmpUnreachable)),
+        "a rejected connect is a filtered port, settled by the ICMP error"
+    );
+    assert!(
+        ctx.failures_snapshot().is_empty(),
+        "a filter answering is not this machine failing: {:?}",
+        ctx.failures_snapshot()
+    );
+}
+
+/// The unprivileged UDP scan reads a datagram a filter rejects as filtered
+/// too, which a connected socket is handed as a host it cannot reach.
+#[tokio::test]
+async fn a_plain_udp_scan_reads_a_port_a_filter_rejects_as_filtered() {
+    use zond_engine::model::port::Protocol;
+    use zond_engine::model::target::{PlannedTarget, Target};
+    use zond_engine::scanner::session::ScanSession;
+    use zond_engine::scanner::strategy::PortScanner;
+    use zond_engine::scanner::strategy::connect::ConnectUdpPortScanner;
+
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    let target = std::net::IpAddr::V4(segment.prohibited_host());
+    let (session, ctx) = ScanSession::new();
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(PlannedTarget::new(
+        0,
+        Target {
+            ip: target,
+            port: 161,
+            protocol: Protocol::Udp,
+        },
+    ))
+    .await
+    .expect("queue");
+    drop(tx);
+
+    ConnectUdpPortScanner::new(ctx, 1, &zond_engine::EvasionProfile::default())
+        .scan(rx)
+        .await
+        .expect("the scan runs");
+
+    assert_eq!(
+        crate::support::port_state(&session, target, 161),
+        Some(PortState::Filtered),
+        "a rejected datagram is a filtered port, not an open|filtered one"
+    );
+}
+
 /// A UDP port nothing is bound to is reported Closed.
 ///
 /// The only thing that makes a UDP port positively closed is an ICMP port

@@ -1229,7 +1229,8 @@ impl PortAcc {
 fn scan_response(reason: &str) -> ScanResponse {
     match reason {
         "syn-ack" => ScanResponse::TcpSynAck,
-        "reset" | "conn-refused" => ScanResponse::TcpRst,
+        "reset" => ScanResponse::TcpRst,
+        "conn-refused" => ScanResponse::ConnectionRefused,
         "no-response" => ScanResponse::NoResponse,
         "udp-response" | "proto-response" => ScanResponse::UdpResponse,
         reason if reason.ends_with("-prohibited") => ScanResponse::IcmpProhibited,
@@ -1568,6 +1569,23 @@ mod tests {
 
         let error = read(document).expect_err("refused");
         assert!(error.to_string().contains("DOCTYPE"), "{error}");
+    }
+
+    /// A connect scan's refusal keeps its own name rather than becoming a
+    /// reset.
+    ///
+    /// nmap records `conn-refused` for the error a connect is handed, which
+    /// is a reset or an ICMP port unreachable, and the engine's own connect
+    /// scan records the same thing under the same meaning. Read as a reset,
+    /// an imported connect scan would claim a packet nobody saw, and a
+    /// comparison with the engine's own would differ where the two agree.
+    #[test]
+    fn a_refused_connect_is_read_as_a_refusal_rather_than_a_reset() {
+        assert_eq!(
+            scan_response("conn-refused"),
+            ScanResponse::ConnectionRefused
+        );
+        assert_eq!(scan_response("reset"), ScanResponse::TcpRst);
     }
 
     // -----------------------------------------------------------------------

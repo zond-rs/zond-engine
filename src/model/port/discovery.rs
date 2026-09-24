@@ -75,6 +75,18 @@ pub enum ScanResponse {
     OverheardSynAck,
     /// Received a TCP RST (Port is Closed or Blocked).
     TcpRst,
+    /// A connection the operating system refused: a TCP RST or an ICMP port
+    /// unreachable, which it reports alike.
+    ///
+    /// What a connect made through the operating system's own TCP learns where
+    /// a raw probe would read [`TcpRst`](Self::TcpRst). Named apart because
+    /// the two packets mean different things, a reset is a stack with nothing
+    /// listening and a port unreachable answering a TCP probe is a filter
+    /// rejecting it, and a connect is handed the same error for either, with
+    /// neither the packet nor its sender. Most refusals are resets, which is
+    /// why the port is read closed; this says the reading rests on a refusal
+    /// rather than on a packet anybody saw.
+    ConnectionRefused,
     /// Received a valid protocol response to a UDP payload.
     UdpResponse,
     /// Received an SCTP INIT-ACK: an endpoint willing to open an association,
