@@ -565,7 +565,9 @@ async fn a_host_the_liveness_pass_never_asked_about_is_asked_on_the_resume() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("scratch root");
 
-    let plan = closed_ports_at(LOOPBACK, 2).await;
+    // Enough ports that the liveness pass runs, which is the pass this is
+    // about: a scan of a few ports probes them directly instead.
+    let plan = closed_ports_at(LOOPBACK, 10).await;
     let recorded = Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn);
 
     // First sitting, with no time to ask anything.
@@ -613,7 +615,7 @@ async fn a_host_the_liveness_pass_never_asked_about_is_asked_on_the_resume() {
         .hosts()
         .next()
         .expect("the resume asked the host the first sitting never reached");
-    assert_eq!(host.port_count(), 2, "and scanned both of its ports");
+    assert_eq!(host.port_count(), 10, "and scanned every one of its ports");
 
     // The report of the job carries the stopped sitting's phases too, and what
     // the first left undecided the second decided: the job is complete, and
@@ -742,13 +744,15 @@ async fn a_liveness_pass_stopped_before_it_asked_names_every_address_undecided()
 
     let range: IpSet = "127.0.0.1-127.0.0.4".parse().expect("a range");
     let mut plan = TargetMap::new();
+    // Enough ports that the liveness pass runs, which is the pass this is
+    // about: a scan of a few ports probes them directly instead.
+    let mut ports = Vec::new();
+    for _ in 0..10 {
+        ports.push(closed_loopback_port().await.to_string());
+    }
     plan.add_unit(TargetSet::new(
         range.clone(),
-        closed_loopback_port()
-            .await
-            .to_string()
-            .parse::<PortSet>()
-            .expect("a port"),
+        ports.join(",").parse::<PortSet>().expect("ports"),
     ));
 
     let mut cut_short = test_config();

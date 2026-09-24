@@ -93,6 +93,25 @@ async fn a_udp_scan_keeps_its_liveness_pass_even_for_one_port() {
     );
 }
 
+/// A scan by a technique other than a SYN keeps its liveness pass however few
+/// ports it names, because its port probes cannot stand in for it: an open port
+/// answers a FIN with nothing, and where no raw path reaches the target the FIN
+/// is not sent at all.
+#[tokio::test]
+async fn a_fin_scan_keeps_its_liveness_pass_even_for_few_ports() {
+    let mut cfg = test_config();
+    cfg.tcp_technique = zond_engine::model::technique::TcpScanTechnique::Fin;
+
+    let report = run_scan(target_map(LOOPBACK, "1,2"), &cfg).await.report;
+
+    let kinds: Vec<ScanKind> = report.phases().iter().map(|phase| phase.kind()).collect();
+    assert_eq!(
+        kinds,
+        vec![ScanKind::Discovery, ScanKind::PortScan],
+        "a FIN's silence proves nothing about the host, so the pass still runs"
+    );
+}
+
 /// The whole point. An address nothing answers for gets a handful of liveness
 /// probes, not one per port.
 #[tokio::test]

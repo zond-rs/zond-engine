@@ -660,7 +660,7 @@ fn asks_liveness(cfg: &ZondConfig) -> bool {
 /// when the port scan is the dearer of the two. The pass asks each address a
 /// fixed set — the common five and up to a few of the scan's own ports, one
 /// SCTP probe where the scan names SCTP; see
-/// [`SynPorts`](strategy::routed::SynPorts) — so a scan naming no more ports
+/// [`SynPorts`] — so a scan naming no more ports
 /// per address than that would spend as much establishing liveness as it would
 /// spend just probing them. There the pass is dropped and the port probes stand
 /// in for it: an answer on any port, open or closed, is the host answering, the
@@ -669,9 +669,15 @@ fn asks_liveness(cfg: &ZondConfig) -> bool {
 /// settled by the port scan, exactly as [`ZondConfig::assume_up`] leaves them —
 /// never down on evidence never gathered, never undecided as if unasked.
 ///
-/// Two questions keep the pass even for a small scan, because for them it still
-/// pays:
+/// Three things keep the pass even for a small scan, because for them the port
+/// probes cannot stand in for it or it still pays:
 ///
+/// - **A TCP technique other than a SYN.** Only a SYN draws an answer from
+///   every port a live host has, a SYN+ACK where it listens and a reset where
+///   it does not. A FIN, a flagless or a Christmas-tree probe draws nothing
+///   from an open port, so a host with only open ports would read as silent,
+///   and those techniques have no connect form, so where no raw socket or
+///   frame reaches a target they send it nothing at all.
 /// - **A scan that names a UDP port.** A UDP probe to a dead address waits out
 ///   an ICMP unreachable a target rate-limits, or a full timeout, where the
 ///   pass settles the address with cheap TCP or link-layer probes first. So a
@@ -691,6 +697,11 @@ fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
 
     if !asks_liveness(cfg) {
         return false;
+    }
+
+    // Only a SYN's replies prove a host from every port; see above.
+    if !cfg.tcp_technique.has_connect_fallback() {
+        return true;
     }
 
     // A UDP probe is dear against a dead address, so the cheap liveness pass in
@@ -717,6 +728,15 @@ fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
     reaches_a_local_segment(cfg, map)
 }
 
+/// The most addresses a scan is checked for on-link targets across.
+///
+/// A local segment a host reaches at the link layer is small: a `/23` is
+/// already a large one, and this leaves generous room past that. Building the
+/// discovery plan classifies every address, so a scan of a wide routed range,
+/// which cannot be on-link, is not made to pay that walk only to learn it has
+/// no link-layer targets and skip the liveness pass anyway.
+const ON_LINK_CHECK_CEILING: u128 = 1 << 13;
+
 /// Whether the discovery plan for `map` reaches any target at the link layer,
 /// where liveness is one exact ARP or neighbour-discovery packet.
 ///
@@ -724,7 +744,17 @@ fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
 /// host's interfaces and sends nothing. Empty of local steps for an
 /// unprivileged run, which has no link-layer strategy to reach a segment with,
 /// and for one whose targets are all behind a gateway or on loopback.
+///
+/// A range wider than a segment could be is taken as routed without building
+/// the plan, since only a segment-sized set can be on-link and the classifying
+/// walk is what this call exists to avoid spending on a scan that skips the
+/// pass regardless. See [`ON_LINK_CHECK_CEILING`].
 fn reaches_a_local_segment(cfg: &ZondConfig, map: &TargetMap) -> bool {
+    match map.gross_ips() {
+        Ok(count) if count <= ON_LINK_CHECK_CEILING => {}
+        _ => return false,
+    }
+
     let mut ips = IpSet::new();
     for unit in &map.units {
         for range in unit.ips().v4() {
