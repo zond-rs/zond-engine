@@ -14827,6 +14827,7 @@ pub fn zond_engine::scanner::payload::for_port(u16) -> &'static [u8]
 pub mod zond_engine::scanner::plan
 #[non_exhaustive] pub enum zond_engine::scanner::plan::DiscoveryStep
 pub zond_engine::scanner::plan::DiscoveryStep::Connect
+pub zond_engine::scanner::plan::DiscoveryStep::Connect::ports: zond_engine::scanner::strategy::routed::SynPorts
 pub zond_engine::scanner::plan::DiscoveryStep::Connect::targets: zond_engine::model::ip::set::IpSet
 pub zond_engine::scanner::plan::DiscoveryStep::Local
 pub zond_engine::scanner::plan::DiscoveryStep::Local::interface: alloc::boxed::Box<zond_engine::system::interface::Link>
@@ -15269,6 +15270,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::connect::ConnectPortScanner
 pub struct zond_engine::scanner::strategy::connect::ConnectScanner
 impl zond_engine::scanner::strategy::connect::ConnectScanner
+pub fn zond_engine::scanner::strategy::connect::ConnectScanner::asking(zond_engine::model::ip::set::IpSet, zond_engine::scanner::session::ScanContext, &zond_engine::evasion::EvasionProfile, zond_engine::scanner::strategy::routed::SynPorts) -> Self
 pub fn zond_engine::scanner::strategy::connect::ConnectScanner::new(zond_engine::model::ip::set::IpSet, zond_engine::scanner::session::ScanContext, &zond_engine::evasion::EvasionProfile) -> Self
 impl zond_engine::scanner::strategy::HostScanner for zond_engine::scanner::strategy::connect::ConnectScanner
 pub fn zond_engine::scanner::strategy::connect::ConnectScanner::discover_hosts<'life0, 'async_trait>(&'life0 mut self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -15298,6 +15300,7 @@ impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::connect::Conn
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::connect::ConnectUdpPortScanner
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::connect::ConnectUdpPortScanner
 pub async fn zond_engine::scanner::strategy::connect::discover(zond_engine::model::ip::set::IpSet, zond_engine::scanner::session::ScanContext, &zond_engine::evasion::EvasionProfile) -> core::result::Result<(), zond_engine::scanner::strategy::StrategyError>
+pub async fn zond_engine::scanner::strategy::connect::discover_on(zond_engine::model::ip::set::IpSet, zond_engine::scanner::session::ScanContext, &zond_engine::evasion::EvasionProfile, zond_engine::scanner::strategy::routed::SynPorts) -> core::result::Result<(), zond_engine::scanner::strategy::StrategyError>
 pub async fn zond_engine::scanner::strategy::connect::scan(tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>, usize, zond_engine::scanner::session::ScanContext, zond_engine::config::ServiceDetection, &zond_engine::evasion::EvasionProfile, &zond_engine::model::ip::scoped::ZoneMap) -> core::result::Result<(), zond_engine::scanner::strategy::StrategyError>
 pub mod zond_engine::scanner::strategy::frames
 #[non_exhaustive] pub enum zond_engine::scanner::strategy::frames::ProtocolMatch

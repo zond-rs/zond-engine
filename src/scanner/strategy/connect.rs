@@ -40,7 +40,7 @@ use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusRe
 use crate::model::ip::scoped::ZoneMap;
 use crate::model::ip::set::IpSet;
 use crate::model::port::discovery::{Discovery, ScanResponse};
-use crate::model::port::{Port, PortSet, PortState, Protocol};
+use crate::model::port::{Port, PortState, Protocol};
 use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
 use crate::report::StopReason;
@@ -50,6 +50,7 @@ use crate::scanner::handle::ScanHandle;
 use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::ScanContext;
+use crate::scanner::strategy::routed::SynPorts;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::descriptors::{self, Descriptor};
 use crate::transport::dial::{Egress, Shaping};
@@ -95,6 +96,8 @@ pub struct ConnectScanner {
     /// What each liveness probe changes about the packet it sends. Only the
     /// source port and hop limit reach the wire from here (see `dial::Shaping`).
     evasion: EvasionProfile,
+    /// The ports every address is asked about.
+    ports: SynPorts,
 }
 
 impl ConnectScanner {
@@ -106,10 +109,20 @@ impl ConnectScanner {
     /// the hop limit reach the wire; the kernel builds the rest of what a
     /// connect sends.
     pub fn new(ips: IpSet, ctx: ScanContext, evasion: &EvasionProfile) -> Self {
+        Self::asking(ips, ctx, evasion, SynPorts::common())
+    }
+
+    /// [`new`](Self::new), asking `ports` rather than the common five.
+    ///
+    /// The set a routed sweep of the same addresses would ask, so that which
+    /// strategy reached an address decides nothing about which ports it was
+    /// asked on. See [`discover_on`].
+    pub fn asking(ips: IpSet, ctx: ScanContext, evasion: &EvasionProfile, ports: SynPorts) -> Self {
         Self {
             ips,
             ctx,
             evasion: evasion.clone(),
+            ports,
         }
     }
 }
@@ -124,10 +137,11 @@ impl HostScanner for ConnectScanner {
         // The targets are taken rather than cloned. A sweep asks each address
         // once, so a second call has nothing left to probe and correctly does
         // nothing, where a clone would silently re-probe the whole set.
-        discover(
+        discover_on(
             std::mem::take(&mut self.ips),
             self.ctx.clone(),
             &self.evasion,
+            self.ports,
         )
         .await
     }
@@ -1066,18 +1080,40 @@ fn finish(
     ctx.record_probe_stats(audit.stats(scanner, probes, reason, None, None));
 }
 
-/// Multi-port host discovery for unprivileged environments.
+/// Multi-port host discovery for unprivileged environments, asking the common
+/// five ports: SSH (22), HTTP (80), HTTPS (443), SMB (445), and RDP (3389).
 ///
-/// Sweeps the target networks by probing a small set of common infrastructure
-/// ports: SSH (22), HTTP (80), HTTPS (443), SMB (445), and RDP (3389). Spreading
-/// the probe across several ports catches hosts that only expose one of them,
-/// which improves the odds of finding Linux, Windows, and embedded targets alike.
+/// [`discover_on`] with [`SynPorts::common`], for a sweep that was asked about
+/// no ports of its own.
+pub async fn discover(
+    ips: IpSet,
+    ctx: ScanContext,
+    evasion: &EvasionProfile,
+) -> Result<(), StrategyError> {
+    discover_on(ips, ctx, evasion, SynPorts::common()).await
+}
+
+/// Multi-port host discovery for unprivileged environments, asking each address
+/// about every port of `ports` until one of them answers.
 ///
-/// One task per address, not per port. Its ports are tried in turn and the
-/// first TCP-layer answer ends the address, so a host that answers on SSH costs
-/// one connect rather than five. A silent address costs all five, as it would
-/// with a task per port: the same socket budget, spent on fewer addresses at a
-/// time rather than on more ports of each.
+/// `ports` is the set a routed SYN sweep asks, and for the same reason: a host
+/// behind a filter that drops a connection attempt to anything it does not
+/// serve answers on the ports it serves and nowhere else, so a port scan's
+/// liveness pass passes [`SynPorts::for_scan`] and the host is asked about the
+/// ports the scan is about to probe. Taking the one type both sweeps take is
+/// what keeps an unprivileged run from finding fewer hosts than a privileged
+/// one over the same ports. See [`SynPorts`] for which ports those are.
+///
+/// One task per address, not per port. Its ports are tried in turn, in the
+/// order the set holds them, and the first TCP-layer answer ends the address,
+/// so a host that answers on SSH costs one connect whatever the set's size. A
+/// silent address costs a connect per port, each waiting out the
+/// [`CONNECT_PROBE_TIMEOUT`], so a silent range takes up to eight timeouts an
+/// address where the common five alone take five. The socket budget is the
+/// same either way: one descriptor per address in flight, held one connect at
+/// a time, so a larger set lengthens a silent sweep and never widens it. A task
+/// per port would spend the same descriptor-seconds on fewer addresses at a
+/// time and answer no sooner.
 ///
 /// That shape is also what lets a sweep be continued. An address is the unit a
 /// journal counts, so its verdict has to be earned as a whole: answered, or
@@ -1090,31 +1126,26 @@ fn finish(
 /// spread load across the network instead of hammering one subnet at a time, and
 /// each connect waits out the [`CONNECT_PROBE_TIMEOUT`] so that hosts on slow or
 /// distant links still register.
-pub async fn discover(
+pub async fn discover_on(
     ips: IpSet,
     ctx: ScanContext,
     evasion: &EvasionProfile,
+    ports: SynPorts,
 ) -> Result<(), StrategyError> {
-    sweep(ips, ctx, evasion, descriptors::PATIENCE).await
+    sweep(ips, ctx, evasion, ports, descriptors::PATIENCE).await
 }
 
-/// [`discover`], waiting at most `patience` for a socket the process has none
-/// of before leaving an address unasked.
+/// [`discover_on`], waiting at most `patience` for a socket the process has
+/// none of before leaving an address unasked.
 async fn sweep(
     ips: IpSet,
     ctx: ScanContext,
     evasion: &EvasionProfile,
+    ports: SynPorts,
     patience: Duration,
 ) -> Result<(), StrategyError> {
     let shaping = Shaping::from(evasion);
-    // The same list `PortSet::common_discovery` names, taken from there rather
-    // than spelled again here. Two copies of five port numbers is two copies to
-    // keep in step, and nothing would have reported them drifting apart.
-    let ports: Arc<[u16]> = PortSet::common_discovery()
-        .iter()
-        .map(|(port, _)| port)
-        .collect::<Vec<_>>()
-        .into();
+    let ports: Arc<[u16]> = ports.as_slice().into();
 
     let mut rx = dispatch_addresses(ips, 1024, ctx.order_seed, &ctx.handle);
     let folder = ctx.clone();
@@ -1265,8 +1296,8 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit, st
 /// finish, so the next port is tried.
 ///
 /// The stop signal is checked between ports, not only between addresses.
-/// One task covers up to five connects, and a sweep that only looked once
-/// per address would take five timeouts to wind down rather than one. What has
+/// One task covers up to eight connects, and a sweep that only looked once
+/// per address would take eight timeouts to wind down rather than one. What has
 /// been asked so far decides how the address is filed: cut off part way through
 /// is not the same as asked and silent, and only the second is a verdict.
 ///
@@ -1611,6 +1642,7 @@ mod tests {
                 IpSet::from(local),
                 ctx.clone(),
                 &EvasionProfile::default(),
+                SynPorts::common(),
                 patience,
             )
             .await

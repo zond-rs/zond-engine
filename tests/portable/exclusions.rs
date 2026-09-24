@@ -44,7 +44,7 @@ use zond_engine::scanner::strategy::local::Scope;
 /// Every address a step would probe.
 fn addresses_of(step: &DiscoveryStep) -> Vec<IpAddr> {
     match step {
-        DiscoveryStep::Local { targets, .. } | DiscoveryStep::Connect { targets } => {
+        DiscoveryStep::Local { targets, .. } | DiscoveryStep::Connect { targets, .. } => {
             targets.iter().collect()
         }
         DiscoveryStep::Routed { targets, .. } | DiscoveryStep::RoutedSctp { targets, .. } => {

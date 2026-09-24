@@ -479,6 +479,10 @@ pub enum DiscoveryStep {
     Connect {
         /// The addresses to try.
         targets: IpSet,
+        /// The ports every address is asked about, the same set a routed step
+        /// asks. The common five unless [`DiscoveryPlan::asking_tcp`] said
+        /// otherwise.
+        ports: SynPorts,
     },
 }
 
@@ -500,7 +504,7 @@ impl DiscoveryStep {
     /// answer.
     pub fn target_count(&self) -> u128 {
         match self {
-            Self::Local { targets, .. } | Self::Connect { targets } => targets.len(),
+            Self::Local { targets, .. } | Self::Connect { targets, .. } => targets.len(),
             Self::Routed { targets, .. } | Self::RoutedSctp { targets, .. } => {
                 targets.len() as u128
             }
@@ -542,9 +546,12 @@ impl DiscoveryStep {
             Self::RoutedSctp { targets, port } => Ok(Box::new(RoutedScanner::over_sctp(
                 targets, ctx, dns_tx, tuning, port,
             )?)),
-            Self::Connect { targets } => {
-                Ok(Box::new(ConnectScanner::new(targets, ctx, &tuning.evasion)))
-            }
+            Self::Connect { targets, ports } => Ok(Box::new(ConnectScanner::asking(
+                targets,
+                ctx,
+                &tuning.evasion,
+                ports,
+            ))),
         }
     }
 }
@@ -681,7 +688,10 @@ impl DiscoveryPlan {
         }
 
         if !unmapped.is_empty() {
-            steps.push(DiscoveryStep::Connect { targets: unmapped });
+            steps.push(DiscoveryStep::Connect {
+                targets: unmapped,
+                ports: SynPorts::common(),
+            });
         }
 
         Self {
@@ -718,7 +728,8 @@ impl DiscoveryPlan {
         self.steps.extend(sctp);
     }
 
-    /// Asks every routed target about `ports` in place of the common five.
+    /// Asks every routed and connect target about `ports` in place of the
+    /// common five.
     ///
     /// Apart from [`build`](Self::build) for the reason
     /// [`also_over_sctp`](Self::also_over_sctp) is: the ports a port scan is
@@ -727,13 +738,16 @@ impl DiscoveryPlan {
     /// host that drops a SYN to anything it does not serve is still asked about
     /// the ports the scan is about to ask it.
     ///
-    /// Only the routed steps change. A segment is swept at the link layer,
-    /// where a host answers ARP and neighbour discovery whatever it filters
-    /// above them, and a connect step asks the list the unprivileged sweep
-    /// keeps.
+    /// The routed and the connect steps change alike, so which of the two
+    /// reaches an address decides nothing about which ports it is asked on.
+    /// A segment is swept at the link layer, where a host answers ARP and
+    /// neighbour discovery whatever it filters above them, and is left as it
+    /// was.
     pub fn asking_tcp(&mut self, ports: SynPorts) {
         for step in &mut self.steps {
-            if let DiscoveryStep::Routed { ports: asked, .. } = step {
+            if let DiscoveryStep::Routed { ports: asked, .. }
+            | DiscoveryStep::Connect { ports: asked, .. } = step
+            {
                 *asked = ports;
             }
         }
@@ -819,7 +833,7 @@ impl DiscoveryPlan {
         }
 
         let existing = self.steps.iter_mut().find_map(|step| match step {
-            DiscoveryStep::Connect { targets } => Some(targets),
+            DiscoveryStep::Connect { targets, .. } => Some(targets),
             _ => None,
         });
         match existing {
@@ -832,9 +846,22 @@ impl DiscoveryPlan {
                 }
                 held.canonicalize();
             }
-            None => self.steps.push(DiscoveryStep::Connect {
-                targets: moved.clone(),
-            }),
+            // Asking what the routed steps ask, since these are addresses a
+            // routed step would have swept had a frame reached them.
+            None => {
+                let ports = self
+                    .steps
+                    .iter()
+                    .find_map(|step| match step {
+                        DiscoveryStep::Routed { ports, .. } => Some(*ports),
+                        _ => None,
+                    })
+                    .unwrap_or_else(SynPorts::common);
+                self.steps.push(DiscoveryStep::Connect {
+                    targets: moved.clone(),
+                    ports,
+                });
+            }
         }
         moved
     }
@@ -1470,7 +1497,7 @@ mod tests {
             other => panic!("expected the routed step, found {other:?}"),
         }
         match &plan.steps()[2] {
-            DiscoveryStep::Connect { targets } => assert_eq!(*targets, moved),
+            DiscoveryStep::Connect { targets, .. } => assert_eq!(*targets, moved),
             other => panic!("expected the connect step, found {other:?}"),
         }
     }
@@ -1519,6 +1546,7 @@ mod tests {
             ours: IpSet::new(),
             steps: vec![DiscoveryStep::Connect {
                 targets: set_of(&["127.0.0.1"]),
+                ports: SynPorts::common(),
             }],
             refusals: Vec::new(),
         };
@@ -1527,7 +1555,7 @@ mod tests {
 
         assert!(taken.is_empty(), "nothing was taken from a frame step");
         match &plan.steps()[0] {
-            DiscoveryStep::Connect { targets } => assert_eq!(*targets, set_of(&["127.0.0.1"])),
+            DiscoveryStep::Connect { targets, .. } => assert_eq!(*targets, set_of(&["127.0.0.1"])),
             other => panic!("expected the connect step, found {other:?}"),
         }
     }
@@ -1558,6 +1586,81 @@ mod tests {
         ));
     }
 
+    /// The addresses a plan reaches by connect are asked the ports its routed
+    /// addresses are. Asked fewer, a host behind a filter that serves only a
+    /// port the scan names is found when a frame reaches it and missed when
+    /// only a connect does, loopback and tunnels on every run and everything
+    /// on an unprivileged one.
+    #[test]
+    fn the_connect_step_asks_the_ports_the_routed_steps_are_given() {
+        let mut plan = DiscoveryPlan {
+            ours: IpSet::new(),
+            steps: vec![
+                DiscoveryStep::Routed {
+                    targets: vec![RoutedTarget {
+                        target: v6("198.51.100.1"),
+                        source: v6("192.0.2.9"),
+                    }],
+                    ports: SynPorts::common(),
+                },
+                DiscoveryStep::Connect {
+                    targets: set_of(&["127.0.0.1"]),
+                    ports: SynPorts::common(),
+                },
+            ],
+            refusals: Vec::new(),
+        };
+        let scan = SynPorts::for_scan(&"8443".try_into().expect("a port specification"));
+
+        plan.asking_tcp(scan);
+
+        assert!(
+            matches!(
+                plan.steps(),
+                [DiscoveryStep::Routed { .. }, DiscoveryStep::Connect { ports, .. }] if *ports == scan
+            ),
+            "the connect step asks {:?}",
+            plan.steps()
+        );
+    }
+
+    /// And a connect step made after the ports were chosen, for what a frame
+    /// cannot reach, asks them too: the order a caller edits a plan in decides
+    /// nothing about which ports an address is asked on.
+    #[test]
+    fn a_connect_step_made_for_what_frames_miss_asks_the_routed_ports() {
+        let mut plan = DiscoveryPlan {
+            ours: IpSet::new(),
+            steps: vec![DiscoveryStep::Routed {
+                targets: vec![
+                    RoutedTarget {
+                        target: v6("198.51.100.1"),
+                        source: v6("192.0.2.9"),
+                    },
+                    RoutedTarget {
+                        target: v6("198.51.100.2"),
+                        source: v6("192.0.2.9"),
+                    },
+                ],
+                ports: SynPorts::common(),
+            }],
+            refusals: Vec::new(),
+        };
+        let scan = SynPorts::for_scan(&"8443".try_into().expect("a port specification"));
+
+        plan.asking_tcp(scan);
+        plan.connect_instead(&set_of(&["198.51.100.2"]));
+
+        assert!(
+            matches!(
+                plan.steps(),
+                [DiscoveryStep::Routed { .. }, DiscoveryStep::Connect { ports, .. }] if *ports == scan
+            ),
+            "the connect step asks {:?}",
+            plan.steps()
+        );
+    }
+
     /// An SCTP sweep runs beside each routed step and nowhere else: a segment
     /// is swept at the link layer, where ARP and neighbour discovery answer
     /// whatever the host speaks above them, and a connect step has no raw
@@ -1576,6 +1679,7 @@ mod tests {
                 },
                 DiscoveryStep::Connect {
                     targets: IpSet::new(),
+                    ports: SynPorts::common(),
                 },
             ],
             refusals: Vec::new(),

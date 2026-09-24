@@ -711,10 +711,10 @@ fn spawn_discovery(
 /// `reach` is the difference between the two: a sweep may go beyond the
 /// addresses it was given, and a port scan's liveness check never does.
 ///
-/// `syn_ports` is what a routed SYN sweep asks every address about: the common
-/// five for a sweep, and those with some of the scan's own ports for a port
-/// scan's liveness pass. See [`SynPorts`] for why a host behind a filter needs
-/// the second.
+/// `syn_ports` is what every address a TCP probe reaches is asked about, by a
+/// routed SYN sweep and a connect sweep alike: the common five for a sweep,
+/// and those with some of the scan's own ports for a port scan's liveness
+/// pass. See [`SynPorts`] for why a host behind a filter needs the second.
 ///
 /// `sctp_port` adds an INIT sweep beside the SYN one, for a port scan whose
 /// ports name SCTP. `None` for a run that never mentioned it, which is every
@@ -745,7 +745,7 @@ async fn run_discovery(
             plan.also_over_sctp(port);
         }
         for step in plan.steps() {
-            if let plan::DiscoveryStep::Connect { targets } = step {
+            if let plan::DiscoveryStep::Connect { targets, .. } = step {
                 ctx.record_reached_by_connect(targets);
             }
         }
@@ -753,7 +753,9 @@ async fn run_discovery(
         finish_enrichment(Some(enrichment), caps, ctx).await;
     } else {
         let targets = orchestrator::walkable(targets, ctx);
-        if let Err(error) = strategy::connect::discover(targets, ctx.clone(), &cfg.evasion).await {
+        if let Err(error) =
+            strategy::connect::discover_on(targets, ctx.clone(), &cfg.evasion, syn_ports).await
+        {
             ctx.record_failure(ScannerKind::Connect, error.to_string());
         }
         finish_enrichment(None, caps, ctx).await;

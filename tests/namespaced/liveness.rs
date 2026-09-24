@@ -106,6 +106,55 @@ async fn a_host_behind_a_drop_policy_is_found_on_the_port_the_scan_names() {
     );
 }
 
+/// The connect sweep, which is how an unprivileged run asks, finds the same
+/// host behind a drop policy on the port the scan names, and misses it asking
+/// the common five alone.
+///
+/// Driven at the strategy rather than through a scan, because this tier runs
+/// as root and a scan here takes the raw path.
+#[tokio::test]
+async fn a_connect_sweep_finds_a_host_behind_a_drop_policy_on_the_port_the_scan_names() {
+    use zond_engine::EvasionProfile;
+    use zond_engine::scanner::session::ScanSession;
+    use zond_engine::scanner::strategy::connect;
+    use zond_engine::scanner::strategy::routed::SynPorts;
+
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let routed = segment.routed_peer();
+    let port = segment.listen_tcp_on(routed);
+    segment.drop_tcp_except(port);
+    let target = IpAddr::V4(routed);
+    let scan_ports = zond_engine::model::port::PortSet::try_from(port.to_string().as_str())
+        .expect("a port specification");
+
+    let (common, ctx) = ScanSession::new();
+    connect::discover(target.into(), ctx, &EvasionProfile::default())
+        .await
+        .expect("the sweep runs");
+    assert!(
+        !common.hosts().contains(target),
+        "the host answered one of the common five, so this proves nothing"
+    );
+
+    let (asked, ctx) = ScanSession::new();
+    connect::discover_on(
+        target.into(),
+        ctx,
+        &EvasionProfile::default(),
+        SynPorts::for_scan(&scan_ports),
+    )
+    .await
+    .expect("the sweep runs");
+    assert!(
+        asked.hosts().contains(target),
+        "the connect sweep never asked the one port the host serves"
+    );
+}
+
 /// `assume_up` sends the target its port probes and nothing else.
 ///
 /// A caller who turned the liveness pass off asked for no question about

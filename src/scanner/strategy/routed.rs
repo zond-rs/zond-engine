@@ -103,8 +103,9 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
         .is_some_and(|reply| !matches!(reply, TcpReply::ChallengeAck))
 }
 
-/// The TCP ports a SYN sweep asks every address about, all of them on every
-/// attempt.
+/// The TCP ports a liveness sweep asks every address about: a routed SYN sweep
+/// all of them on every attempt, a connect sweep each in turn until one
+/// answers.
 ///
 /// One port is enough for a host that answers a SYN to a closed port with a
 /// reset, which is what an unfiltered stack does. It is not enough for the
@@ -117,9 +118,7 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
 /// So the set is two lists:
 ///
 /// - **The common five**, SSH, HTTP, HTTPS, SMB and RDP, from
-///   [`COMMON_DISCOVERY_PORTS`]. The unprivileged sweep asks exactly these, and
-///   a privileged sweep that asked less would find fewer hosts with more
-///   privilege.
+///   [`COMMON_DISCOVERY_PORTS`].
 /// - **Up to [`SCAN_PORTS`](Self::SCAN_PORTS) of the scan's own ports**, for
 ///   a port scan's liveness pass: those are the ports whose answers the scan
 ///   exists to report, so a filtered host serving nothing else still has a
@@ -128,8 +127,16 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
 ///   thinks likeliest to be listening and a scan naming one port adds that
 ///   port.
 ///
-/// All of them go out on every attempt, under one sequence number and source
-/// port, so a reply on any of them names the attempt and retires the address.
+/// One set for both sweeps, so that privilege decides how an address is
+/// asked and never which ports: a set kept by each would let an unprivileged
+/// run find fewer hosts than a privileged one over the same ports, or the
+/// reverse, and nothing would report the two drifting apart. See
+/// [`connect::discover_on`](super::connect::discover_on) for what a connect
+/// sweep pays for the larger set.
+///
+/// A SYN sweep sends all of them on every attempt, under one sequence number
+/// and source port, so a reply on any of them names the attempt and retires
+/// the address.
 /// Spreading them across attempts instead would leave a lost SYN to the one
 /// port a filtered host serves with no retransmission behind it.
 ///
