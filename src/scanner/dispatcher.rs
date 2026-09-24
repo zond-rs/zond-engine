@@ -420,29 +420,43 @@ mod tests {
         ScanSession::new()
     }
 
+    /// An unseeded dispatcher shuffles within each batch, and emits every
+    /// target of the plan once.
+    ///
+    /// The shuffle is random, so whether it moved anything is a question of
+    /// probability, and the plan is sized so the answer cannot come out wrong
+    /// by chance: 1,000 targets in batches of 100 are all left in plan order
+    /// with probability (1/100!)^10, where ten targets in batches of four were
+    /// left in order about once in 1,150 runs and failed the suite for it.
     #[tokio::test]
     async fn dispatcher_emits_all_targets_shuffled() {
         let mut target_map = TargetMap::new();
-        let ip_set: IpSet = "192.0.2.1-192.0.2.10".parse().unwrap();
-        let port_set: PortSet = "80".parse().unwrap();
-        let unit = TargetSet::new(ip_set, port_set);
-        target_map.units.push(unit);
+        let ip_set: IpSet = "192.0.2.1-192.0.2.250".parse().unwrap();
+        let port_set: PortSet = "80,443,8080,8443".parse().unwrap();
+        target_map.units.push(TargetSet::new(ip_set, port_set));
 
         let (_session, ctx) = context();
-        let dispatcher = Dispatcher::new(target_map).with_batch_size(4);
+        let dispatcher = Dispatcher::new(target_map).with_batch_size(100);
         let mut rx = dispatcher.run(&ctx);
 
-        let mut received = Vec::new();
-        while let Some(target) = rx.recv().await {
-            received.push(target);
+        let mut positions = Vec::new();
+        while let Some(planned) = rx.recv().await {
+            positions.push(planned.position);
         }
 
-        assert_eq!(received.len(), 10);
-        let is_ordered = received.windows(2).all(|w| match (w[0].ip(), w[1].ip()) {
-            (IpAddr::V4(a), IpAddr::V4(b)) => a.octets()[3] < b.octets()[3],
-            _ => false,
-        });
-        assert!(!is_ordered, "Targets were not shuffled");
+        assert_eq!(positions.len(), 1_000);
+        assert!(
+            positions.windows(2).any(|pair| pair[0] > pair[1]),
+            "every target came out in plan order"
+        );
+        // Shuffled within a batch and never across one: each run of 100 is
+        // exactly the batch the plan put there.
+        for (batch, chunk) in positions.chunks(100).enumerate() {
+            let mut sorted = chunk.to_vec();
+            sorted.sort_unstable();
+            let first = batch as u64 * 100;
+            assert_eq!(sorted, (first..first + 100).collect::<Vec<_>>());
+        }
     }
 
     /// The dispatcher emits exactly the plan's own enumeration, as a set.
