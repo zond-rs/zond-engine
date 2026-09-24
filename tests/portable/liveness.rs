@@ -299,3 +299,65 @@ async fn the_gate_keeps_each_unit_its_own_ports() {
         );
     }
 }
+
+/// A resumed `assume_up` scan records no discovery phase, empty or otherwise.
+///
+/// `assume_up` runs no liveness pass, so a sitting of it records only a port
+/// phase; a resume folds the earlier sittings in front of this one, and neither
+/// half may invent a discovery phase for a pass that never ran. Were one there,
+/// a reader would take the scan for a two-phase job and a diff would compare a
+/// sweep that never happened.
+#[cfg(feature = "journal-format")]
+#[tokio::test]
+async fn a_resumed_assume_up_scan_records_no_discovery_phase() {
+    use zond_engine::Exclusions;
+    use zond_engine::detect::Detections;
+    use zond_engine::journal::Journal;
+    use zond_engine::journal::manifest::Plan;
+    use zond_engine::model::technique::TcpScanTechnique;
+    use zond_engine::system::privilege::Privilege;
+
+    let plan = target_map(LOOPBACK, "1,2");
+    let recorded = Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn);
+    let mut cfg = test_config();
+    cfg.assume_up = true;
+
+    let root = std::env::temp_dir().join(format!("zond-assume-resume-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+
+    let journal = Journal::create(&root, &recorded, Privilege::current(), "seg").expect("creates");
+    let directory = journal.directory().to_path_buf();
+    let (_session, task) = zond_engine::scanner::scan_with_journal(
+        plan.clone(),
+        &cfg,
+        Detections::embedded(),
+        journal,
+    )
+    .await
+    .expect("the first sitting starts");
+    let _first = task.join().await.expect("the first sitting finishes");
+
+    let (journal, _checkpoint) =
+        Journal::resume(&directory, &recorded, Privilege::current()).expect("resumes");
+    let (_session, task) =
+        zond_engine::scanner::scan_with_journal(plan, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the second sitting starts");
+    let resumed = task.join().await.expect("the second sitting finishes");
+
+    assert!(
+        resumed
+            .phases()
+            .iter()
+            .all(|phase| phase.kind() != ScanKind::Discovery),
+        "a resumed assume_up scan recorded a discovery phase for a pass it never ran: {:?}",
+        resumed
+            .phases()
+            .iter()
+            .map(|p| p.kind())
+            .collect::<Vec<_>>()
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}

@@ -233,6 +233,22 @@ impl ProbeAudit {
         self.started.elapsed()
     }
 
+    /// Probes per second actually put on the wire, over the whole run.
+    ///
+    /// The send timer paces to a configured rate but never makes up a tick it
+    /// missed while the loop was busy with replies: catching up would release
+    /// the burst the pace exists to prevent, so a busy sweep runs slower than
+    /// asked and the deadline is sized to allow for it. This is what it managed,
+    /// so the gap between it and the configured rate is readable rather than
+    /// hidden in the elapsed time. Zero for a run too short to divide by.
+    fn achieved_send_rate(&self) -> f64 {
+        let seconds = self.started.elapsed().as_secs_f64();
+        if seconds <= 0.0 {
+            return 0.0;
+        }
+        self.sends_attempted as f64 / seconds
+    }
+
     /// Probes this run tried to put on the wire.
     pub fn sends_attempted(&self) -> u64 {
         self.sends_attempted
@@ -360,7 +376,7 @@ impl ProbeAudit {
         crate::info!(
             verbosity = 3,
             "audit[{scanner}] {found}/{targets} hosts in {elapsed:.0?}, stopped: {reason:?} \
-             | sent {sent} (failed {failed}) \
+             | sent {sent} (failed {failed}, {rate:.0}/s) \
              | captured {seen} (off-target {off}, no-rtt {no_rtt}){kernel} \
              | found on {attempts}{window} \
              | first {first}, last {last} \
@@ -369,6 +385,7 @@ impl ProbeAudit {
             elapsed = self.elapsed(),
             sent = self.sends_attempted,
             failed = self.sends_failed,
+            rate = self.achieved_send_rate(),
             seen = self.segments_seen,
             off = self.segments_off_target,
             no_rtt = self.replies_without_rtt,

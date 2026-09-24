@@ -451,9 +451,9 @@ impl PortScanner for IdlePortScanner {
             self.ctx.record_failure(
                 ScannerKind::Idle,
                 format!(
-                    "the zombie {} has a {} IP-ID counter, not the counting one an idle scan reads",
+                    "zombie {} unusable ({})",
                     self.zombie,
-                    class.name()
+                    unsuitable_zombie(class)
                 ),
             );
             drain(&mut targets);
@@ -513,6 +513,27 @@ impl PortScanner for IdlePortScanner {
 /// handed as unasked rather than leaving it looking merely unfinished.
 fn drain(targets: &mut mpsc::Receiver<PlannedTarget>) {
     while targets.try_recv().is_ok() {}
+}
+
+/// The flag a refusal names for a zombie whose IP-ID counter classified as
+/// `class`, terse and parenthesised as the console wants it.
+///
+/// The classifier's own names are wire-facts a rule matches on, not English: a
+/// refusal built from `class.name()` reads "a too-few IP-ID counter". This
+/// gives each the short reason the console line carries in parentheses.
+/// `Counting` is the class an idle scan accepts and never reaches here; it is
+/// named anyway so the match is exhaustive and a class added later is not
+/// silently unflagged.
+fn unsuitable_zombie(class: IdClass) -> &'static str {
+    match class {
+        IdClass::Absent => "IPv6, no IP-ID",
+        IdClass::TooFew => "too few replies",
+        IdClass::Unclear => "IP-ID unreadably slow",
+        IdClass::Zero => "IP-ID always zero",
+        IdClass::Constant => "IP-ID never advances",
+        IdClass::Scattered => "IP-ID randomised",
+        IdClass::Counting => "IP-ID counts",
+    }
 }
 
 /// The verdict a counter advance implies, read between two counter samples that
@@ -748,11 +769,15 @@ mod tests {
         scan(&mut scanner, &[OPEN_PORT]).await;
 
         assert_eq!(port_state(&session, OPEN_PORT), None);
+        let failures = ctx.failures_snapshot();
+        let refusal = failures
+            .iter()
+            .find(|failure| failure.scanner() == ScannerKind::Idle)
+            .expect("the refusal is recorded against the idle scanner");
         assert!(
-            ctx.failures_snapshot()
-                .iter()
-                .any(|failure| failure.scanner() == ScannerKind::Idle),
-            "the refusal is recorded against the idle scanner"
+            refusal.reason().contains("IP-ID never advances"),
+            "the refusal flags what the counter did, not \"a constant IP-ID counter\": {}",
+            refusal.reason()
         );
     }
 }

@@ -1981,16 +1981,16 @@ pub(super) async fn run_port_phase(
     ctx.learn_zones(zones.clone());
 
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
-    // SCTP is planned from the targets rather than from the configuration,
-    // since the ports are what name it and no default list holds one. UDP is
-    // planned by the configuration, except under an idle scan, whose refusal of
-    // it is owed only where the targets name a UDP port.
+    // SCTP and UDP are both planned from the targets rather than from the
+    // configuration, since the ports are what name them and no default list
+    // holds one: a scan names neither by default, and a step built whatever the
+    // targets say would open a scanner for a transport nobody asked about.
     let mut plan = super::plan::PortScanPlan::build(cfg, caps.privilege);
     if target_map.names(Protocol::Sctp) {
         plan.cover_sctp(caps.privilege);
     }
     if target_map.names(Protocol::Udp) {
-        plan.cover_udp();
+        plan.cover_udp(caps.privilege);
     }
 
     // Over what this sitting will probe, which is the addresses an earlier one
@@ -2754,8 +2754,12 @@ mod tests {
         let cfg = ZondConfig::default();
         let (_session, ctx) = ScanSession::new();
 
+        let mut plan = plan::PortScanPlan::build(&cfg, Privilege::Raw);
+        // The targets name a UDP port, so the plan carries a UDP step to lose to
+        // the frames reach and gain a connect stand-in, as a UDP scan's would.
+        plan.cover_udp(Privilege::Raw);
         let built = build_port_scanner(
-            plan::PortScanPlan::build(&cfg, Privilege::Raw),
+            plan,
             BOTH,
             &ctx,
             1,

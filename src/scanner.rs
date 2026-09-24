@@ -803,10 +803,7 @@ fn record_idle_refusals(cfg: &ZondConfig, ctx: &ScanContext) {
     }
 
     if cfg.service_detection.connects() {
-        crate::info!(
-            verbosity = 1,
-            "no service detection: an idle scan sends the target nothing from this host"
-        );
+        crate::info!(verbosity = 1, "service detection skipped (idle scan)");
     }
     if cfg.detection.ceiling() > Some(DetectionClass::Passive) {
         ctx.record_refusal(
@@ -1443,19 +1440,12 @@ fn spawn_scan(
         // reached a verdict on.
         let (liveness, live) = if !runs_liveness {
             if cfg.idle_scan.is_some() {
-                crate::info!(
-                    verbosity = 1,
-                    "no liveness pass: an idle scan sends its targets nothing from this host"
-                );
+                crate::info!(verbosity = 1, "liveness pass skipped (idle scan)");
             } else if !cfg.assume_up {
                 // Neither declined by the caller nor forbidden by the technique:
                 // dropped because probing the ports costs no more than asking
                 // whether the host is there would, so the port probes do both.
-                crate::info!(
-                    verbosity = 1,
-                    "no liveness pass: probing these ports costs no more than asking, so an \
-                     answer on any of them is what finds the host"
-                );
+                crate::info!(verbosity = 1, "liveness pass skipped (port scan no dearer)");
             }
             (None, None)
         } else {

@@ -14910,7 +14910,7 @@ pub struct zond_engine::scanner::plan::PortScanPlan
 impl zond_engine::scanner::plan::PortScanPlan
 pub fn zond_engine::scanner::plan::PortScanPlan::build(&zond_engine::config::ZondConfig, zond_engine::system::privilege::Privilege) -> Self
 pub fn zond_engine::scanner::plan::PortScanPlan::cover_sctp(&mut self, zond_engine::system::privilege::Privilege)
-pub fn zond_engine::scanner::plan::PortScanPlan::cover_udp(&mut self)
+pub fn zond_engine::scanner::plan::PortScanPlan::cover_udp(&mut self, zond_engine::system::privilege::Privilege)
 pub fn zond_engine::scanner::plan::PortScanPlan::covers(&self, zond_engine::model::port::Protocol) -> bool
 pub fn zond_engine::scanner::plan::PortScanPlan::into_steps(self) -> alloc::vec::Vec<zond_engine::scanner::plan::PortScanStep>
 pub fn zond_engine::scanner::plan::PortScanPlan::refusals(&self) -> &[zond_engine::scanner::plan::RefusedStep]

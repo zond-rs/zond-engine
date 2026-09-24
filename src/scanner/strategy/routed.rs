@@ -808,6 +808,17 @@ impl RoutedScanner {
     /// `reason`: the addresses it reached no verdict on and why, the sends that
     /// failed, and its audit.
     fn finish(&mut self, reason: StopReason) {
+        // What this sweep is in the report: `Routed` for the SYN sweep,
+        // `RoutedSctp` for the INIT one. Read from the probe rather than
+        // hardcoded, or an SCTP sweep's failures and counters would be filed as
+        // the SYN sweep's and a reader could not tell which question the network
+        // did not answer.
+        let kind = self.kind();
+        let label = match self.probe {
+            SweepProbe::Init { .. } => "sctp-discovery",
+            _ => "routed-discovery",
+        };
+
         // What the sweep did not earn a verdict for, so a resumed one asks again
         // rather than skipping it. None of these carries a position: a probe
         // still mid-schedule was cut off rather than spent, one still queued was
@@ -867,7 +878,7 @@ impl RoutedScanner {
         if let Some(reason) = &self.faults.broken {
             let broken = self.sweep.audit.sends_failed - self.faults.unroutable_count;
             self.ctx.record_failure(
-                ScannerKind::Routed,
+                kind,
                 format!(
                     "{broken} of {} probes could not be sent: {reason}",
                     self.sweep.audit.sends_attempted,
@@ -905,14 +916,8 @@ impl RoutedScanner {
         // the capture threads it keeps alive.
         let capture = self.transport.capture_counts();
         let targets = self.ips.len();
-        self.sweep.report(
-            &self.ctx,
-            "routed-discovery",
-            ScannerKind::Routed,
-            targets,
-            reason,
-            capture,
-        );
+        self.sweep
+            .report(&self.ctx, label, kind, targets, reason, capture);
     }
 
     /// Records a captured reply as evidence its sender is alive, if it answers

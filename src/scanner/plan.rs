@@ -236,10 +236,7 @@ impl RefusedStep {
     pub(crate) fn pass_not_in_an_idle_scan(scanner: ScannerKind, pass: &str) -> Self {
         Self {
             scanner,
-            reason: format!(
-                "an idle scan sends the target nothing from this host, and {pass} would \
-                 contact it directly - so it was not run"
-            ),
+            reason: format!("{pass} not run (would reach the target directly under an idle scan)"),
         }
     }
 
@@ -1154,28 +1151,37 @@ impl PortScanPlan {
         }
 
         // Raw scanning needs both the privilege and an address to probe from.
-        let raw = privilege.is_raw() && interface::SourceResolver::from_system().has_sources();
+        let raw = Self::raw_scanning(privilege);
         if privilege.is_raw() && !raw {
             warn!("no usable network interface found; using TCP connect fallback");
         }
 
+        // The TCP step alone. UDP is added by [`cover_udp`] when the targets
+        // name a UDP port, the way SCTP is by [`cover_sctp`]: a step built here
+        // whatever the targets name would open a UDP scanner on every TCP-only
+        // scan, which probes nothing and reports an empty audit for a transport
+        // nobody asked about.
         if raw {
             plan.steps.push(PortScanStep::RawTcp {
                 technique: cfg.tcp_technique,
             });
-            plan.steps.push(PortScanStep::RawUdp);
         } else if cfg.tcp_technique.has_connect_fallback() {
             plan.steps.push(PortScanStep::ConnectTcp);
-            plan.steps.push(PortScanStep::ConnectUdp);
         } else {
             plan.refuse(
                 Protocol::Tcp,
                 RefusedStep::technique_needs_raw_sockets(cfg.tcp_technique),
             );
-            plan.steps.push(PortScanStep::ConnectUdp);
         }
 
         plan
+    }
+
+    /// Whether this host can raw-scan: it holds the privilege and has an address
+    /// to probe from. The decision [`build`](Self::build) makes for the TCP
+    /// step, read again where the UDP step is added so the two agree.
+    fn raw_scanning(privilege: Privilege) -> bool {
+        privilege.is_raw() && interface::SourceResolver::from_system().has_sources()
     }
 
     /// Records that `protocol` will not be probed, and the refusal that says
@@ -1240,23 +1246,31 @@ impl PortScanPlan {
         }
     }
 
-    /// Adds the refusal that says why UDP ports go unprobed, where the plan
-    /// holds no step for them.
+    /// Adds the step that probes UDP, or the refusal that says why it could not
+    /// be added.
     ///
-    /// Only an idle scan plans none, and its refusal is apart from
-    /// [`build`](Self::build) for the reason [`cover_sctp`](Self::cover_sctp)
+    /// Apart from [`build`](Self::build) for the reason [`cover_sctp`](Self::cover_sctp)
     /// is: whether a UDP port was named is in the targets, which the plan is
-    /// built before reading, and an idle scan of TCP ports alone refusing UDP
-    /// would put a line in every such report about ground nobody asked for.
-    /// Without it the targets that do name UDP reach the router with nothing
-    /// to take them and no refusal to account for them, and are filed as ports
-    /// the scan lost.
+    /// built before reading. A step added there whatever the targets name would
+    /// open a UDP scanner on every TCP-only scan, to probe nothing and report an
+    /// empty audit; and an idle scan of TCP ports alone would carry a UDP
+    /// refusal about ground nobody asked for. Called only when the targets name
+    /// a UDP port, it adds the connect or raw step the run's privilege calls
+    /// for, or, under an idle scan whose counter carries no datagram, the
+    /// refusal that says the port goes unprobed.
     ///
-    /// Call it when the targets name a UDP port. On any other plan it does
-    /// nothing, since every other plan already has a UDP step.
-    pub fn cover_udp(&mut self) {
-        if self.idle && !self.covers(Protocol::Udp) {
+    /// Called with the same `privilege` the plan was built for, so the UDP step
+    /// is raw exactly where the TCP step is.
+    pub fn cover_udp(&mut self, privilege: Privilege) {
+        if self.covers(Protocol::Udp) {
+            return;
+        }
+        if self.idle {
             self.refuse(Protocol::Udp, RefusedStep::udp_not_in_an_idle_scan());
+        } else if Self::raw_scanning(privilege) {
+            self.steps.push(PortScanStep::RawUdp);
+        } else {
+            self.steps.push(PortScanStep::ConnectUdp);
         }
     }
 
@@ -1831,7 +1845,7 @@ mod tests {
         for privilege in [Privilege::Raw, Privilege::Connect] {
             let mut plan = PortScanPlan::build(&cfg, privilege);
             plan.cover_sctp(privilege);
-            plan.cover_udp();
+            plan.cover_udp(privilege);
 
             assert!(
                 plan.steps().is_empty(),
@@ -1853,16 +1867,21 @@ mod tests {
         }
     }
 
-    /// An ordinary scan plans its UDP step whatever the targets name, so being
-    /// told they name UDP changes nothing about it.
+    /// An ordinary scan plans no UDP step until the targets are found to name a
+    /// UDP port, so a TCP-only scan opens no UDP scanner to probe nothing.
     #[test]
-    fn covering_udp_changes_nothing_about_a_plan_that_already_does() {
+    fn a_udp_step_is_planned_only_when_the_targets_name_udp() {
+        for privilege in [Privilege::Raw, Privilege::Connect] {
+            let plan = PortScanPlan::build(&ZondConfig::default(), privilege);
+            assert!(
+                !plan.covers(Protocol::Udp),
+                "{privilege:?}: a plan built before the targets are read names no UDP step, so \
+                 a TCP-only scan opens no UDP scanner to probe nothing"
+            );
+        }
+
         let mut plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
-        let steps = plan.steps().len();
-
-        plan.cover_udp();
-
-        assert_eq!(plan.steps().len(), steps);
+        plan.cover_udp(Privilege::Connect);
         assert!(plan.covers(Protocol::Udp) && !plan.refuses(Protocol::Udp));
         assert!(plan.refusals().is_empty());
     }
@@ -1966,7 +1985,8 @@ mod tests {
     /// they are never probed and never reported.
     #[test]
     fn an_unprivileged_plan_covers_both_protocols() {
-        let plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
+        let mut plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
+        plan.cover_udp(Privilege::Connect);
 
         assert!(plan.covers(Protocol::Tcp));
         assert!(plan.covers(Protocol::Udp));
@@ -1983,7 +2003,8 @@ mod tests {
             tcp_technique: TcpScanTechnique::Fin,
             ..ZondConfig::default()
         };
-        let plan = PortScanPlan::build(&cfg, Privilege::Connect);
+        let mut plan = PortScanPlan::build(&cfg, Privilege::Connect);
+        plan.cover_udp(Privilege::Connect);
 
         assert!(
             !plan.covers(Protocol::Tcp),

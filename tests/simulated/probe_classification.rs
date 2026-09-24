@@ -1059,6 +1059,50 @@ async fn an_init_sweep_finds_a_host_that_answers_only_sctp() {
     );
 }
 
+/// The INIT sweep files its counters as the SCTP sweep, not the SYN one.
+///
+/// The report tells the two sweeps apart by `ScannerKind`, and a scan that asks
+/// over both transports files a set of counters for each; an INIT sweep filing
+/// under `Routed` would fold its numbers into the SYN sweep's and leave a reader
+/// unable to see which question the network answered.
+#[tokio::test]
+async fn an_init_sweep_files_its_counters_as_the_sctp_sweep() {
+    use zond_engine::report::ScannerKind;
+
+    let net = FakeNet::new(Layer4::Sctp).host(TARGET, 3868, Policy::open());
+    let (_session, ctx) = ScanSession::new();
+
+    let mut scanner = RoutedScanner::with_transport_asking(
+        vec![RoutedTarget {
+            target: TARGET,
+            source: SCANNER_V4.into(),
+        }],
+        ctx.clone(),
+        None,
+        net.transport(),
+        SweepProbe::init(SCTP_SRC_PORT, 3868),
+    );
+    scanner
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    let stats = ctx.probe_stats_snapshot();
+    assert!(
+        stats
+            .iter()
+            .any(|filed| filed.scanner() == ScannerKind::RoutedSctp),
+        "the INIT sweep's counters are filed as the SYN sweep's: {:?}",
+        stats.iter().map(|s| s.scanner()).collect::<Vec<_>>()
+    );
+    assert!(
+        stats
+            .iter()
+            .all(|filed| filed.scanner() != ScannerKind::Routed),
+        "and nothing it filed reads as the SYN sweep"
+    );
+}
+
 /// A refusal proves the host as well as an acceptance does, which is what makes
 /// an INIT a discovery probe and not a port probe: a closed port answers too, so
 /// the sweep does not have to guess which port is listening.

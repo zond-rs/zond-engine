@@ -1957,13 +1957,19 @@ impl TlsSupport {
         }
 
         for fault in self.faults() {
-            let carriers: Vec<&'static str> = self
-                .versions
-                .iter()
-                .flat_map(|held| held.suites.iter())
-                .filter(|suite| suite.has_fault(fault))
-                .map(|suite| suite.name())
-                .collect();
+            // Each suite once, however many versions accept it: the remedy is
+            // to remove that cipher, which is one edit whether it was offered
+            // under one protocol version or three, and a name listed once per
+            // version would read as the same suite repeated with nothing to
+            // tell the repeats apart.
+            let mut carriers: Vec<&'static str> = Vec::new();
+            for held in &self.versions {
+                for suite in &held.suites {
+                    if suite.has_fault(fault) && !carriers.contains(&suite.name()) {
+                        carriers.push(suite.name());
+                    }
+                }
+            }
 
             let Ok(finding) = Finding::new(
                 detection_id(),
@@ -2683,6 +2689,41 @@ mod tests {
                 .as_str()
                 .contains("TLS_RSA_WITH_RC4_128_SHA"),
             "the suites are carried in the excerpt for whoever needs them"
+        );
+    }
+
+    /// A suite accepted under several versions is one cipher to remove, so the
+    /// excerpt names it once with a count to match, not once per version with
+    /// nothing to tell the repeats apart.
+    #[test]
+    fn a_suite_accepted_under_several_versions_is_listed_once() {
+        let rc4 = CipherSuite::ALL
+            .into_iter()
+            .find(|suite| suite.has_fault(SuiteFault::Rc4) && !suite.is_export())
+            .expect("the registry carries an RC4 suite");
+
+        let support = TlsSupport::new()
+            .accepting(VersionSupport::new(TlsVersion::Tls10, vec![rc4], vec![]))
+            .accepting(VersionSupport::new(TlsVersion::Tls11, vec![rc4], vec![]))
+            .accepting(VersionSupport::new(TlsVersion::Tls12, vec![rc4], vec![]));
+
+        let excerpt = support
+            .findings()
+            .into_iter()
+            .find(|finding| finding.title().contains("RC4"))
+            .expect("the RC4 fault is one finding")
+            .excerpt()
+            .as_str()
+            .to_string();
+
+        assert_eq!(
+            excerpt.matches(rc4.name()).count(),
+            1,
+            "the suite is named once across three versions: {excerpt}"
+        );
+        assert!(
+            excerpt.starts_with("1 of the accepted suites"),
+            "and the count matches the list: {excerpt}"
         );
     }
 
