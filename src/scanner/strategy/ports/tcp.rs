@@ -327,7 +327,7 @@ impl TcpPortScanner {
             ),
         };
         let key = (ip, tcp_packet.source_port());
-        self.resolve_probe(
+        let resolved = self.resolve_probe(
             key,
             Some(token),
             state,
@@ -342,7 +342,14 @@ impl TcpPortScanner {
             now,
         );
 
-        self.identify_stack(ip, state, captured);
+        // Only for a reply that answered one of this scan's probes. The capture
+        // hands over whatever reaches the scan's source port, which on a busy
+        // machine includes other programs' conversations, and reading a stray
+        // segment's header would write a host record for an address this scan
+        // never asked about.
+        if resolved {
+            self.identify_stack(ip, state, captured);
+        }
     }
 
     /// Marks the probe this outbound segment carries as seen on the wire,
@@ -508,7 +515,8 @@ impl TcpPortScanner {
     /// `token` names the attempt that was answered, or `None` where the reply
     /// could not say. A reply matching no live attempt resolves nothing: it is a
     /// stray or spoofed segment, a duplicate of one already acted on, or an
-    /// answer to a probe already written off.
+    /// answer to a probe already written off. Returns whether it resolved one,
+    /// which is what makes anything else the reply carries this scan's to read.
     fn resolve_probe(
         &mut self,
         key: ProbeTarget,
@@ -516,13 +524,13 @@ impl TcpPortScanner {
         state: PortState,
         answer: Answer,
         now: Instant,
-    ) {
+    ) -> bool {
         let Some(resolution) = self.core.ledger.resolve(&key, token, now) else {
             // A reply matching no live attempt: a stray or spoofed segment, a
             // duplicate of one already acted on, or an answer to a probe already
-            // written off. It proves something is there and yields no sample.
+            // written off. It yields no sample.
             self.core.audit.record_reply_without_rtt();
-            return;
+            return false;
         };
 
         let rtt = resolution.rtt;
@@ -532,6 +540,7 @@ impl TcpPortScanner {
         self.settle(Outcome::Answered {
             position: resolution.payload,
         });
+        true
     }
 
     /// Which protocol a host verdict from this scan is credited to.
@@ -1349,6 +1358,29 @@ mod tests {
             })),
             source_mac: None,
         }
+    }
+
+    /// **A segment answering none of this scan's probes records no host.**
+    ///
+    /// The capture delivers whatever arrives at the scan's source port, and on
+    /// a busy machine that includes other programs' conversations: loopback
+    /// traffic from a process that happened to draw the same ephemeral port is
+    /// the everyday case. A reply the ledger cannot match resolves nothing, and
+    /// reading its header anyway would write a host record for its sender, an
+    /// address the scan never asked about, into a report that then lists it.
+    #[test]
+    fn a_segment_answering_no_probe_of_this_scan_records_no_host() {
+        let (mut scanner, session, _sent) = scanner_with_mock();
+
+        let stray = tcp_segment(&scanner, 443, TcpToken { nonce: 0 }, SYN | ACK);
+        scanner.handle_tcp_reply(&captured_with_ttl(stray, 64), Instant::now());
+
+        assert_eq!(
+            session.hosts().len(),
+            0,
+            "a stray segment invented a host: {:?}",
+            session.hosts().get(TARGET)
+        );
     }
 
     /// One of this scan's own probes as the capture hands it back, which is

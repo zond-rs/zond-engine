@@ -685,16 +685,32 @@ async fn a_host_the_liveness_pass_heard_nothing_from_is_settled_as_down() {
     .expect("the scan starts");
     let report = task.join().await.expect("it finishes");
 
-    assert_eq!(report.hosts().count(), 0, "nothing answers there");
+    // What the liveness pass recorded of itself, so a failure below says
+    // which of its verdicts went missing and why.
+    let liveness = &report.phases()[0];
+    let evidence = format!(
+        "undecided {:?}; timed out {:?}; failures {:?}; probe stats {:?}",
+        liveness.undecided(),
+        liveness.timed_out(),
+        liveness.failures(),
+        liveness.probe_stats(),
+    );
+
+    assert_eq!(
+        report.hosts().count(),
+        0,
+        "nothing answers there, yet the report holds {:?}: {evidence}",
+        report.hosts().collect::<Vec<_>>()
+    );
     assert!(
-        report.phases()[0].undecided().is_empty(),
-        "an address asked and found silent has its verdict"
+        liveness.undecided().is_empty(),
+        "an address asked and found silent has its verdict: {evidence}"
     );
     let listed = zond_engine::journal::store::list(&root).expect("lists");
     assert_eq!(
         listed[0].settled(),
         Some(2),
-        "both ports of a host asked and found silent are settled"
+        "both ports of a host asked and found silent are settled: {evidence}"
     );
 
     std::fs::remove_dir_all(&root).ok();
