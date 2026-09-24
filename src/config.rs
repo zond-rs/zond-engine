@@ -883,14 +883,14 @@ pub struct ProbeTuning {
     /// identification by either route.
     pub service_detection: ServiceDetection,
 
-    /// What the caller has chosen to change about the packets each strategy
+    /// What the caller has chosen to change about the probes each strategy
     /// emits, over the defaults it would otherwise send.
     ///
     /// A default profile is inert: a strategy handed one sends exactly what it
-    /// would without it. Read wherever a strategy chooses a field a caller may
-    /// override: the source port a probe leaves from today, and the hop limit,
-    /// spoofed address, fragmentation and decoys as those land. See
-    /// [`EvasionProfile`].
+    /// would without it. Read wherever a strategy chooses a field of a probe a
+    /// caller may override, and not by the conversations that follow a probe
+    /// over connections of their own. See [`EvasionProfile`], and
+    /// [what a profile shapes](crate::evasion#a-profile-shapes-the-probes).
     pub evasion: EvasionProfile,
 
     /// Whether the capture admits ICMP errors for a technique that reaches its
@@ -1469,13 +1469,14 @@ pub struct ZondConfig {
     /// detection phase, after service detection, and only when it ran.
     pub detection: DetectionEnvelope,
 
-    /// What the scan changes about the packets it emits, over the defaults.
+    /// What the scan changes about the probes it sends, over the defaults.
     ///
     /// Defaults to an inert profile, so a scan that set nothing here is
     /// indistinguishable from one run before the option existed. Carried into
     /// [`probe_tuning`](Self::probe_tuning) for the strategies to read, and into
-    /// the report, so a scan that evaded something says so. See
-    /// [`EvasionProfile`].
+    /// the report, so a scan that evaded something says so. The conversations
+    /// that follow a probe over connections of their own are not shaped; see
+    /// [what a profile shapes](crate::evasion#a-profile-shapes-the-probes).
     pub evasion: EvasionProfile,
 
     /// Whether to capture ICMP errors for a technique whose verdict does not

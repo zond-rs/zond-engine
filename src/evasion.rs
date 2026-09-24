@@ -49,6 +49,27 @@
 //! That path cannot reach loopback or a tunnel, so it is a real cost rather
 //! than a detail. A profile that sets none of the three leaves the send path
 //! exactly as it was.
+//!
+//! ## A profile shapes the probes
+//!
+//! Every packet a scan sends to find a host or settle a port's state carries
+//! the profile, whichever path sends it: a raw probe, a self-built frame, and
+//! a connect probe, whose socket carries it for its whole life, so the
+//! identification the connect scanner makes over that same connection does
+//! too. The conversations a scan opens afterwards over connections of their
+//! own do not: the service pass, the fingerprint engine's second connections,
+//! a TLS enumeration, a detection's exchanges, the datagrams asked of mDNS and
+//! SNMP agents, and name lookups. Those leave with the operating system's
+//! defaults.
+//!
+//! The source port settles it. One source port cannot be held by several
+//! connections to the same port of the same target at once, since they would
+//! share every field that tells connections apart, and a connection that
+//! closes holds its four fields in `TIME_WAIT` for up to four minutes, so the
+//! dozens of connections a detection makes to one web port from one source
+//! port would be refused all but the first. A profile that carried its hop
+//! limit into those conversations and not its source port would describe
+//! neither the probes nor the scan, so it describes the probes, exactly.
 
 use std::net::IpAddr;
 
@@ -92,8 +113,11 @@ pub struct EvasionProfile {
     /// `None` keeps the engine's own choice, which is not one value: the raw TCP
     /// scanner randomises a fresh high port per probe, and the UDP scanner holds
     /// one high port for the scan. Setting this replaces *both* with the chosen
-    /// port, one profile shaping every packet, so a scan pins its source port
-    /// everywhere a source port is chosen, the connect path included.
+    /// port, one profile shaping every probe, so a scan pins its source port
+    /// everywhere a probe's source port is chosen, the connect scan's probes
+    /// included. The conversations that follow a probe over connections of
+    /// their own leave from ports the operating system chooses; see
+    /// [what a profile shapes](self#a-profile-shapes-the-probes).
     pub source_port: Option<u16>,
 
     /// The hop limit (IPv4 TTL / IPv6 hop limit) written into every ordinary
@@ -104,8 +128,10 @@ pub struct EvasionProfile {
     /// [`HOP_LIMIT_ROUTED`](crate::protocols::ip::HOP_LIMIT_ROUTED), which is
     /// enough for any path on the public internet.
     ///
-    /// This governs the probes a scan sends to *reach* a host. It does not touch
-    /// path measurement: a traceroute exists precisely to vary the hop limit hop
+    /// This governs the probes a scan sends to *reach* a host, and not the
+    /// conversations that follow them over connections of their own; see
+    /// [what a profile shapes](self#a-profile-shapes-the-probes). It does not
+    /// touch path measurement: a traceroute exists precisely to vary the hop limit hop
     /// by hop, and reads the value back out of the errors that return, so it sets
     /// its own and ignores this one. Overriding traceroute's hop limit from here
     /// would not be evasion; it would be breaking the instrument.

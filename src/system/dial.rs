@@ -42,7 +42,10 @@
 //! A caller that opened its own socket would be the one that forgot any of
 //! these.
 //! What a caller does choose is [`Shaping`]: a source port and a hop limit,
-//! which only the connect scanner's probes carry. With nothing forced, nothing
+//! which only the connect scanner's probes carry, since an evasion profile
+//! shapes a scan's probes and not the conversations that follow them; see
+//! [`crate::evasion`] for why the source port rules out the rest. With nothing
+//! forced, nothing
 //! chosen, and on a platform that needs nothing set, a connect is exactly a
 //! plain [`TcpStream::connect`] and a datagram socket a plain ephemeral bind,
 //! so the kernel sees what it would have seen from any other program.
