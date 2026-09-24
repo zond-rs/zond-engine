@@ -445,7 +445,34 @@ pub struct RawProbeScan<T> {
     /// held, so leaving them in the channel lets the dispatcher feel it exactly
     /// as it feels the [`window`](Self::window). It deliberately does **not**
     /// stop the send path, which is the only thing that empties this.
+    ///
+    /// First attempts only. A retry waits in a queue of its own, admitted on
+    /// different terms.
     pub held: std::collections::BinaryHeap<HeldProbe>,
+    /// Retries waiting to be sent, earliest first: every retry the ledger
+    /// schedules waits here for the send ticker, and for its host's next slot
+    /// where the scan keeps a gap.
+    ///
+    /// A retry is a packet on the wire like any other, and the rate ceiling is
+    /// the fastest this scan may put packets there, so a retry spends a tick's
+    /// budget exactly as a first attempt does. Sent the moment it came due
+    /// instead, retries would ride on top of a ceiling the first attempts are
+    /// already filling, and against a range that answers nothing the wire
+    /// would carry the ceiling once per attempt.
+    ///
+    /// Kept apart from [`held`](Self::held) because the two are admitted on
+    /// different terms. A first attempt takes a slot in the
+    /// [`window`](Self::window) and waits for one; a retry takes none, since
+    /// the question it repeats already gave its slot back (see
+    /// [`congestion`](crate::scanner::pacing::congestion)), and must not
+    /// wait behind a full window it does not occupy.
+    ///
+    /// Its probe's clock is stopped while it waits (see
+    /// [`ProbeLedger::defer`]), so an attempt the ticker has not yet sent is
+    /// never overtaken by the next one, and a probe never runs out of attempts
+    /// it did not send. Never larger than the ledger: a probe has at most one
+    /// retry waiting.
+    pub(crate) retries: std::collections::BinaryHeap<HeldProbe>,
 }
 
 /// What a [`RawProbeScan`] is built from.
@@ -537,6 +564,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             batch,
             max_unresolved,
             held: std::collections::BinaryHeap::new(),
+            retries: std::collections::BinaryHeap::new(),
         };
         core.seed_timing();
         core
@@ -561,7 +589,9 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     ///   what this found. A held probe is counted here because it has not been
     ///   sent: stopping on an empty ledger while one waited would report a port
     ///   this scan chose to delay as one it had asked about and heard nothing
-    ///   from.
+    ///   from. A retry waiting for the ticker is not counted: its probe is
+    ///   still on the ledger, and one whose probe has left it has nothing to
+    ///   ask.
     ///
     /// Silence is not one of them. It reads as a fourth
     /// condition and it cannot be one: with targets still queued, an empty
@@ -626,19 +656,33 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         self.held.len() >= self.max_unresolved
     }
 
-    /// Holds `probe` back until its host may be asked again.
+    /// Whether the send ticker has anything to do: a target to admit, or a
+    /// retry waiting for its turn. A retry is sent whether or not the window
+    /// has room; see [`retries`](Self::retries).
+    pub(crate) fn sending(&self, sending_finished: bool) -> bool {
+        self.admitting(sending_finished) || !self.retries.is_empty()
+    }
+
+    /// Holds `probe` back until `ready`: a first attempt in
+    /// [`held`](Self::held), a retry in [`retries`](Self::retries), told
+    /// apart by whether it carries a plan position.
     ///
-    /// The caller has already established that the host is not ready. Callers
-    /// that cannot hold a probe must not ask, since a probe dropped on that
-    /// answer is a port reported as silent that nobody sent anything to; see
+    /// For a host not yet ready, the caller has already established as much.
+    /// Callers that cannot hold a probe must not ask, since a probe dropped on
+    /// that answer is a port reported as silent that nobody sent anything to;
+    /// see
     /// [`ScanContext::host_ready_at`](crate::scanner::session::ScanContext::host_ready_at).
     fn hold(&mut self, ip: IpAddr, port: u16, position: Option<u64>, ready: Instant) {
-        self.held.push(HeldProbe {
+        let entry = HeldProbe {
             ip,
             port,
             position,
             ready,
-        });
+        };
+        match position {
+            Some(_) => self.held.push(entry),
+            None => self.retries.push(entry),
+        }
     }
 
     /// The next held probe whose host may be asked now.
@@ -654,20 +698,13 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// returns, so it cannot be drawn again on this call: every iteration either
     /// yields a probe or takes one entry out of the queue's due prefix.
     fn take_ready(&mut self, now: Instant) -> Option<HeldProbe> {
-        while let Some(next) = self.held.peek() {
-            if next.ready > now {
-                return None;
-            }
-            let mut entry = self.held.pop().expect("peeked");
-            match self.ctx.host_ready_at(entry.ip, now) {
-                None => return Some(entry),
-                Some(ready) => {
-                    entry.ready = ready;
-                    self.held.push(entry);
-                }
-            }
-        }
-        None
+        take_ready_from(&mut self.held, &self.ctx, now)
+    }
+
+    /// The next waiting retry whose host may be asked now, on the terms
+    /// [`take_ready`](Self::take_ready) gives.
+    pub(crate) fn take_ready_retry(&mut self, now: Instant) -> Option<HeldProbe> {
+        take_ready_from(&mut self.retries, &self.ctx, now)
     }
 
     /// Records one probe leaving the wire, or failing to, and why.
@@ -1186,6 +1223,29 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     }
 }
 
+/// The next entry of `queue` whose host `ctx` says may be asked at `now`. See
+/// [`RawProbeScan::take_ready`].
+fn take_ready_from(
+    queue: &mut std::collections::BinaryHeap<HeldProbe>,
+    ctx: &ScanContext,
+    now: Instant,
+) -> Option<HeldProbe> {
+    while let Some(next) = queue.peek() {
+        if next.ready > now {
+            return None;
+        }
+        let mut entry = queue.pop().expect("peeked");
+        match ctx.host_ready_at(entry.ip, now) {
+            None => return Some(entry),
+            Some(ready) => {
+                entry.ready = ready;
+                queue.push(entry);
+            }
+        }
+    }
+    None
+}
+
 /// How long a probe to a host whose neighbour the kernel is still resolving
 /// is held before the kernel's table is read again.
 ///
@@ -1361,21 +1421,30 @@ pub trait RawPortScan: PortScanner {
 
     /// Resends a probe already outstanding. The ledger keeps its position.
     ///
-    /// A retry held past the end of its probe's schedule has nothing left to
-    /// ask: the ledger retired the probe meanwhile, and sending it would put a
-    /// question on the wire that nothing is waiting to hear answered. A retry
-    /// to an address found unreachable is not sent either, and the ledger
-    /// retires it on schedule into the verdict every port of the address
-    /// takes.
+    /// A retry whose probe has left the ledger has nothing left to ask: a late
+    /// answer to an earlier attempt settled it while the retry waited, and
+    /// sending it would put a question on the wire that nothing is waiting to
+    /// hear answered. A retry to an address found unreachable is not sent
+    /// either, and the ledger retires it on schedule into the verdict every
+    /// port of the address takes.
+    ///
+    /// The probe's clock stopped while the retry waited, and restarts here
+    /// whatever became of it: from the send, which re-arms it, or from now for
+    /// a retry that did not leave, so the attempt it was charged still counts
+    /// and the probe runs out on schedule. See `ProbeLedger::defer`.
     fn reprobe(&mut self, ip: IpAddr, port: u16, now: Instant) {
         if !self.core().ledger.contains(&(ip, port)) {
             return;
         }
         match self.core_mut().admit(ip, now) {
             Admission::Send => send_timed(self, ip, port, None, now),
-            Admission::Hold(ready) => self.core_mut().hold(ip, port, None, ready),
+            Admission::Hold(ready) => {
+                self.core_mut().hold(ip, port, None, ready);
+                return;
+            }
             Admission::Unreachable => {}
         }
+        self.core_mut().ledger.resume(&(ip, port), now);
     }
 
     /// Puts one probe on the wire.
@@ -1455,19 +1524,18 @@ pub trait RawPortScan: PortScanner {
     ///
     /// A held first attempt was never armed, so nothing else will account for
     /// it: without this it is the port that vanishes from the host entirely,
-    /// which is the one shortfall a reader cannot see. A held retry is still
-    /// outstanding on the ledger and is recorded with everything else there,
-    /// so it is dropped rather than recorded twice.
+    /// which is the one shortfall a reader cannot see. A waiting retry is
+    /// still outstanding on the ledger and is recorded with everything else
+    /// there, so it is dropped rather than recorded twice.
     ///
     /// Nothing is counted. These targets were counted into the audit's
     /// denominator when they came off the stream, and counting them again would
     /// make a scan claim to have been handed more work than the plan holds.
     fn resolve_held(&mut self) {
+        self.core_mut().retries.clear();
         let held = std::mem::take(&mut self.core_mut().held);
         for entry in held {
-            if entry.position.is_some() {
-                self.record_unasked_endpoint(entry.ip, entry.port);
-            }
+            self.record_unasked_endpoint(entry.ip, entry.port);
         }
     }
 
@@ -1513,17 +1581,18 @@ pub trait RawPortScan: PortScanner {
                     if attempt == 2 {
                         self.core_mut().judge_timeout(ip);
                     }
-                    // A retry is a probe at a host like any other and is spaced
-                    // like one. Held rather than skipped, because the ledger has
-                    // already charged this attempt and scheduled the next: a
-                    // skipped retry spends an attempt on a packet nobody sent,
-                    // and a host spaced slower than its own retry schedule would
-                    // spend all three that way and settle the port as silent
-                    // having asked once.
-                    match self.core().ctx.host_ready_at(ip, now) {
-                        Some(ready) => self.core_mut().hold(ip, port, None, ready),
-                        None => self.reprobe(ip, port, now),
-                    }
+                    // A retry is a probe at a host like any other, and waits
+                    // for the send ticker and the host's next slot like one.
+                    // Its probe's clock stops while it waits, because the
+                    // ledger has already charged this attempt: left running,
+                    // a retry held past its own timeout is overtaken by the
+                    // next, and a host spaced slower than its retry schedule
+                    // would spend every attempt that way and settle the port
+                    // as silent having asked once.
+                    let core = self.core_mut();
+                    core.ledger.defer(&(ip, port));
+                    let ready = core.ctx.host_ready_at(ip, now).unwrap_or(now);
+                    core.hold(ip, port, None, ready);
                 }
                 Due::Exhausted {
                     key: (ip, port),
@@ -1670,6 +1739,16 @@ pub trait RawPortScan: PortScanner {
     }
 }
 
+/// Does what one pass of [`drive`] does with the probes due at `now`: retires
+/// the spent ones and sends every retry, with no rate ceiling to wait on.
+#[cfg(test)]
+pub(crate) fn retry_due<S: RawPortScan>(scanner: &mut S, now: Instant) {
+    scanner.service_retries(now);
+    while let Some(retry) = scanner.core_mut().take_ready_retry(now) {
+        scanner.send_held(retry, now);
+    }
+}
+
 /// Runs every probe `scanner` has outstanding to the end of its schedule, as a
 /// scan left to finish does, so a test reads the verdict silence earns rather
 /// than the one a stop leaves.
@@ -1678,7 +1757,7 @@ pub(crate) fn run_out<S: RawPortScan>(scanner: &mut S) {
     let mut now = Instant::now();
     while !scanner.core().ledger.is_empty() {
         now += Duration::from_secs(60);
-        scanner.service_retries(now);
+        retry_due(scanner, now);
     }
 }
 
@@ -1768,7 +1847,7 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
 
         // Both are read before the `select!`, which borrows the receive half
         // mutably for the duration of the statement.
-        let admitting = scanner.core().admitting(sending_finished);
+        let sending = scanner.core().sending(sending_finished);
         let tick = scanner.core().tick_delay(now);
 
         tokio::select! {
@@ -1776,7 +1855,8 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
             // timer's resolution is expressed. Taken from the stream only when
             // the ledger has room: the ceiling bounds how many answers are
             // outstanding, and the rate bounds how fast they are asked for.
-            _ = send_tick.tick(), if admitting => {
+            // Retries are released here too, and the same rate bounds them.
+            _ = send_tick.tick(), if sending => {
                 let now = Instant::now();
                 // The batch is a budget of sends, and only a probe handed to
                 // the sender spends it. A probe held again, settled unasked or
@@ -1785,21 +1865,29 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
                 // on a dead neighbour's resolution take every share a rate
                 // ceiling allows, re-checked each tick while the live hosts
                 // behind them are never asked. The loop still ends: each pass
-                // sends, takes a held probe due now (one held again is due
-                // later), or takes from the stream until it is empty or the
-                // hold queue is full.
+                // sends, takes a waiting retry or a held probe due now (one
+                // held again is due later), or takes from the stream until it
+                // is empty or the hold queue is full.
                 let budget = scanner.core().audit.sends_attempted + scanner.core().batch as u64;
                 while scanner.core().audit.sends_attempted < budget {
-                    // A probe already held for its host's next slot goes first.
+                    // A retry goes first, whether or not the window has room:
+                    // it takes no slot, and its probe is a question already
+                    // asked, whose schedule is waiting on this send.
+                    if let Some(retry) = scanner.core_mut().take_ready_retry(now) {
+                        scanner.send_held(retry, now);
+                        continue;
+                    }
+                    if !scanner.core().admitting(sending_finished) {
+                        break;
+                    }
+
+                    // A probe already held for its host's next slot goes next.
                     // It was taken off the stream before anything still in the
                     // channel was looked at, and leaving it behind fresh targets
                     // would have a scan with a gap set starve the hosts it had
                     // already reached in favour of ones it had not.
                     if let Some(held) = scanner.core_mut().take_ready(now) {
                         scanner.send_held(held, now);
-                        if !scanner.core().admitting(sending_finished) {
-                            break;
-                        }
                         continue;
                     }
 
@@ -1840,9 +1928,6 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
                             sending_finished = true;
                             break;
                         }
-                    }
-                    if !scanner.core().admitting(sending_finished) {
-                        break;
                     }
                 }
             }
@@ -1957,6 +2042,7 @@ mod tests {
             batch: 1,
             max_unresolved: 64,
             held: std::collections::BinaryHeap::new(),
+            retries: std::collections::BinaryHeap::new(),
         };
         (core, session)
     }
@@ -2086,6 +2172,7 @@ mod tests {
             batch: 1,
             max_unresolved: 64,
             held: std::collections::BinaryHeap::new(),
+            retries: std::collections::BinaryHeap::new(),
         };
         (core, session)
     }

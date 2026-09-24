@@ -2240,7 +2240,7 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 80);
 
-        scanner.service_retries(Instant::now() + Duration::from_secs(1));
+        super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(1));
 
         assert_eq!(sent.lock().unwrap().len(), 2, "the probe was not retried");
         assert!(scanner.core.ledger.contains(&(TARGET, 80)));
@@ -2261,7 +2261,7 @@ mod tests {
         let mut now = Instant::now();
         for _ in 0..PORT_RETRY_POLICY.max_attempts + 2 {
             now += Duration::from_secs(4);
-            scanner.service_retries(now);
+            super::super::retry_due(&mut scanner, now);
         }
 
         assert_eq!(
@@ -2286,7 +2286,7 @@ mod tests {
         let mut now = Instant::now();
         for _ in 0..PORT_RETRY_POLICY.max_attempts + 2 {
             now += Duration::from_secs(4);
-            scanner.service_retries(now);
+            super::super::retry_due(&mut scanner, now);
         }
 
         assert_eq!(port_state(&session, 443), Some(PortState::Filtered));
@@ -2302,7 +2302,7 @@ mod tests {
         let mut now = Instant::now();
         for _ in 0..PORT_RETRY_POLICY.max_attempts + 2 {
             now += Duration::from_secs(4);
-            scanner.service_retries(now);
+            super::super::retry_due(&mut scanner, now);
         }
 
         assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
@@ -2325,7 +2325,7 @@ mod tests {
             Instant::now(),
         );
 
-        scanner.service_retries(Instant::now() + Duration::from_secs(10));
+        super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(10));
 
         assert_eq!(sent.lock().unwrap().len(), 1);
     }
@@ -2338,7 +2338,7 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         let first = probe(&mut scanner, &sent, 80);
 
-        scanner.service_retries(Instant::now() + Duration::from_secs(1));
+        super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(1));
         let second = last_probe(scanner.technique, &sent);
         assert_ne!(
             first.nonce, second.nonce,
@@ -2362,7 +2362,7 @@ mod tests {
     fn every_attempt_leaves_from_the_scans_own_port() {
         let (mut scanner, _session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 80);
-        scanner.service_retries(Instant::now() + Duration::from_secs(1));
+        super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(1));
 
         let ports: Vec<u16> = sent
             .lock()
@@ -2551,6 +2551,57 @@ mod tests {
             short.first()
         );
         assert_eq!(host.ports().count(), usize::from(PORTS));
+    }
+
+    /// A rate ceiling bounds every packet the scan puts on the wire, retries
+    /// included.
+    ///
+    /// The ceiling is the fastest a scan may send, and it is the knob for a
+    /// target that must not be pushed. Against a host that answers nothing,
+    /// every probe is sent as often as its budget allows, and retries sent the
+    /// moment they came due would ride on top of first attempts already
+    /// filling the ceiling: the wire would carry up to the ceiling once per
+    /// attempt. So no second on the wire may carry more than the ceiling,
+    /// give or take the one tick a window of a second can straddle.
+    #[tokio::test]
+    async fn a_rate_ceiling_holds_retries_to_it_as_well() {
+        const PORTS: u16 = 100;
+        const RATE: u32 = 100;
+        // Every port at its full budget, so the count below is exact.
+        let tuning = ProbeTuning {
+            max_probe_rate: std::num::NonZeroU32::new(RATE),
+            retry: crate::config::RetryConfig {
+                dampen_silent_hosts: false,
+                ..crate::config::RetryConfig::default()
+            },
+            ..ProbeTuning::default()
+        };
+
+        let (session, sent) = scan_over_path(&tuning, None, PORTS).await;
+
+        let departures: Vec<Instant> = sent.lock().unwrap().iter().map(|(_, at)| *at).collect();
+        let attempts = usize::from(PORT_RETRY_POLICY.max_attempts);
+        assert_eq!(
+            departures.len(),
+            usize::from(PORTS) * attempts,
+            "every port asked as often as its budget allows"
+        );
+        let busiest = departures
+            .iter()
+            .map(|start| {
+                departures
+                    .iter()
+                    .filter(|at| **at >= *start && **at < *start + Duration::from_secs(1))
+                    .count()
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(
+            busiest <= RATE as usize + 2,
+            "{busiest} probes left in one second under a ceiling of {RATE}"
+        );
+        let host = session.hosts().get(TARGET).expect("the ports are recorded");
+        assert!(host.ports().all(|port| port.state() == PortState::Filtered));
     }
 
     /// An ICMP error built by hand rather than from a probe this scan sent:

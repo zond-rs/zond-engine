@@ -1340,7 +1340,7 @@ mod tests {
         let mut now = Instant::now();
         for _ in 0..8 {
             now += Duration::from_secs(10);
-            scanner.service_retries(now);
+            super::super::retry_due(&mut scanner, now);
         }
 
         assert_eq!(
@@ -1536,7 +1536,7 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_recorder();
         probe(&mut scanner, TARGET, 53);
 
-        scanner.service_retries(Instant::now() + Duration::from_secs(2));
+        super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(2));
 
         assert_eq!(sent.lock().unwrap().len(), 2, "the probe was not retried");
         assert_eq!(port_state(&session, TARGET, 53), None, "no verdict yet");
@@ -1582,7 +1582,7 @@ mod tests {
 
         // The ration's next allowances fall to retries.
         now += Duration::from_secs(2);
-        scanner.service_retries(now);
+        super::super::retry_due(&mut scanner, now);
         for port in 7..=8 {
             scanner.handle_reply(&unreachable(TARGET, port), now);
         }
@@ -1590,7 +1590,7 @@ mod tests {
         // Everything else stays silent to its last attempt.
         for _ in 0..RETRY_POLICY.max_attempts + 1 {
             now += RETRY_POLICY.worst_case_probe_lifetime();
-            scanner.service_retries(now);
+            super::super::retry_due(&mut scanner, now);
         }
         assert!(scanner.core.ledger.is_empty(), "every probe was settled");
 
@@ -1611,7 +1611,7 @@ mod tests {
         let mut now = Instant::now();
         for _ in 0..RETRY_POLICY.max_attempts + 1 {
             now += RETRY_POLICY.worst_case_probe_lifetime();
-            scanner.service_retries(now);
+            super::super::retry_due(&mut scanner, now);
         }
 
         assert_eq!(
@@ -1634,7 +1634,7 @@ mod tests {
         let mut now = Instant::now();
         for _ in 0..RETRY_POLICY.max_attempts + 1 {
             now += RETRY_POLICY.worst_case_probe_lifetime();
-            scanner.service_retries(now);
+            super::super::retry_due(&mut scanner, now);
         }
         let after = scanner.core.deadline.time_until_next_tick();
 

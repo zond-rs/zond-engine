@@ -445,6 +445,9 @@ struct Record<T, P> {
     /// different value has been superseded and is discarded on sight, which is
     /// how a timer is cancelled without being found.
     generation: u32,
+    /// Whether the retry this probe was last scheduled for is still waiting to
+    /// be sent, with its clock stopped. See [`ProbeLedger::defer`].
+    deferred: bool,
 }
 
 impl<T: Copy, P> Record<T, P> {
@@ -459,6 +462,7 @@ impl<T: Copy, P> Record<T, P> {
             witnessed: 0,
             budget,
             generation,
+            deferred: false,
         }
     }
 
@@ -732,6 +736,7 @@ where
                 // answered lifts any restriction on its outstanding probes.
                 record.budget = budget;
                 record.generation = generation;
+                record.deferred = false;
                 if let Some(payload) = payload {
                     record.payload = payload;
                 }
@@ -882,6 +887,56 @@ where
     /// iteration, which is cheaper than keeping the queue exactly pruned.
     pub fn next_due(&self) -> Option<Instant> {
         self.timers.peek().map(|timer| timer.due)
+    }
+
+    /// Stops `key`'s clock while the retry [`drain_due`](Self::drain_due) just
+    /// scheduled for it waits for the caller's admission.
+    ///
+    /// For a caller that sends a retry when its own pacing allows rather than
+    /// the moment it comes due. The attempt is already charged; what stops is
+    /// the timer that would charge the next one, or retire the probe, while
+    /// this one has not left. Left running, a retry held longer than its own
+    /// timeout is overtaken by the next, and a probe held past the end of its
+    /// schedule retires as silent having been asked fewer times than its
+    /// budget, each spent attempt a packet nobody sent.
+    ///
+    /// The clock restarts from the send, since [`rearm`](Self::rearm) times
+    /// the attempt from when it left, or from [`resume`](Self::resume) for a
+    /// retry the caller ends up not sending. A caller that defers must do one
+    /// or the other, or the probe waits outstanding until the scan ends.
+    pub(crate) fn defer(&mut self, key: &K) {
+        let generation = self.take_generation();
+        if let Some(record) = self.records.get_mut(key) {
+            record.generation = generation;
+            record.deferred = true;
+        }
+    }
+
+    /// Restarts `key`'s clock from `now`, for a deferred retry that was not
+    /// sent after all: refused by the sender, or aimed at an address that
+    /// cannot be reached. The attempt stays charged, so the probe still runs
+    /// out of attempts on schedule rather than waiting outstanding forever.
+    ///
+    /// Does nothing for a probe that is not deferred, which includes one whose
+    /// retry was sent and re-armed.
+    pub(crate) fn resume(&mut self, key: &K, now: Instant) {
+        let Some(record) = self.records.get(key) else {
+            return;
+        };
+        if !record.deferred {
+            return;
+        }
+        let (host, attempt) = (record.host, record.sends);
+        let due = now + self.timeout_for(host, attempt);
+        let generation = self.take_generation();
+        let record = self.records.get_mut(key).expect("present above");
+        record.deferred = false;
+        record.generation = generation;
+        self.timers.push(Timer {
+            due,
+            key: *key,
+            generation,
+        });
     }
 
     /// Removes every outstanding probe, yielding their keys, for a scan that is
@@ -1455,6 +1510,69 @@ mod tests {
             }]
         );
         assert_eq!(ledger.len(), 1, "a retried probe is still outstanding");
+    }
+
+    /// A retry waiting to be sent holds its probe's clock, so the probe is
+    /// neither retried again nor retired while the attempt it was charged has
+    /// not left, and times its next attempt from when this one does.
+    ///
+    /// Left running, a retry held longer than its own timeout is overtaken by
+    /// the next, and a probe held past the end of its schedule retires as
+    /// silent having been asked fewer times than its budget says.
+    #[test]
+    fn a_deferred_retry_stops_its_probes_clock_until_it_is_sent() {
+        let t0 = Instant::now();
+        let mut ledger = ledger(policy());
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
+        assert_eq!(
+            due_at(&mut ledger, t0 + Duration::from_millis(100)).len(),
+            1
+        );
+        ledger.defer(&(HOST, 80));
+
+        assert!(
+            due_at(&mut ledger, t0 + Duration::from_secs(3600)).is_empty(),
+            "nothing comes due while the retry waits"
+        );
+        assert!(ledger.contains(&(HOST, 80)));
+
+        let sent = t0 + Duration::from_secs(3600);
+        ledger.rearm(HOST, (HOST, 80), 2, sent);
+        ledger.resume(&(HOST, 80), sent);
+        assert_eq!(
+            due_at(&mut ledger, sent + Duration::from_secs(10)),
+            vec![Due::Retry {
+                key: (HOST, 80),
+                attempt: 3
+            }],
+            "the next attempt is timed from the send, and only once"
+        );
+    }
+
+    /// A deferred retry that never leaves restarts its probe's clock from
+    /// when that was known, so the attempt it was charged still counts and
+    /// the probe runs out on schedule rather than waiting forever.
+    #[test]
+    fn a_deferred_retry_that_is_not_sent_still_runs_its_probe_out() {
+        let t0 = Instant::now();
+        let mut ledger = ledger(RetryPolicy {
+            max_attempts: 2,
+            ..policy()
+        });
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
+        assert_eq!(
+            due_at(&mut ledger, t0 + Duration::from_millis(100)).len(),
+            1
+        );
+        ledger.defer(&(HOST, 80));
+
+        let refused = t0 + Duration::from_secs(1);
+        ledger.resume(&(HOST, 80), refused);
+
+        assert!(matches!(
+            due_at(&mut ledger, refused + Duration::from_secs(10))[..],
+            [Due::Exhausted { attempts: 2, .. }]
+        ));
     }
 
     /// The budget is a total, not a count of retries: three attempts means two
