@@ -69,7 +69,7 @@ use crate::detect::compute::{
     Budget, BudgetTrap, CapError, CapTapeRecord, Capabilities, DetectionRunRecord,
     LiveCapabilities, RunOutcome, ScanInstant,
 };
-use crate::detect::flow::stage::Shortfall;
+use crate::detect::flow::stage::{Shortfall, Stopped};
 use crate::detect::flow::{Probe, ProbeRefusal, SocketProbe, stage};
 use crate::detect::host::stage as host_stage;
 use crate::detect::manifest::{
@@ -421,18 +421,22 @@ fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
     }
 }
 
-/// A flow a budget cut short, phrased for the report: the budget, its size, and
-/// how many of the flow's requests had been answered when it ran out.
+/// A flow left short of its questions, phrased for the report: what stopped
+/// it, a budget and its size or the port going unresponsive, and how many of
+/// the flow's requests had been answered by then.
 fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
-    let budget = match shortfall.refusal {
-        ProbeRefusal::Deadline => format!("{} ms time budget", shortfall.limit),
-        ProbeRefusal::Bytes => format!("{}-byte budget", shortfall.limit),
-        ProbeRefusal::Connections => format!("{}-connection budget", shortfall.limit),
+    let stopped = match shortfall.stopped {
+        Stopped::Budget { refusal, limit } => match refusal {
+            ProbeRefusal::Deadline => format!("its {limit} ms time budget ran out"),
+            ProbeRefusal::Bytes => format!("its {limit}-byte budget ran out"),
+            ProbeRefusal::Connections => format!("its {limit}-connection budget ran out"),
+        },
+        Stopped::PortUnresponsive => "the port was given up on as unresponsive".to_string(),
     };
     Unfinished::CutShort {
         id: shortfall.detection.clone(),
         why: format!(
-            "its {budget} ran out with {} of {} requests answered",
+            "{stopped} with {} of {} requests answered",
             shortfall.answered, shortfall.requests
         ),
     }
@@ -901,8 +905,10 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let shortfall = Shortfall {
             detection: "backup-files".to_string(),
-            refusal: ProbeRefusal::Deadline,
-            limit: 3_000,
+            stopped: Stopped::Budget {
+                refusal: ProbeRefusal::Deadline,
+                limit: 3_000,
+            },
             answered: 3,
             requests: 6,
         };
