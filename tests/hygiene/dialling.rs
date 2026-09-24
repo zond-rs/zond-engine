@@ -8,7 +8,7 @@
 
 //! # Every connection to a target opened in one place, as a census
 //!
-//! `src/system/dial.rs` is where the engine opens the ordinary TCP and UDP
+//! `src/transport/dial.rs` is where the engine opens the ordinary TCP and UDP
 //! sockets it speaks to a scanned host through, and where each is given what
 //! has to be set on it before it connects: the forced source and interface of
 //! a scan pinned to one, and on Windows a limit on the SYN retransmissions of
@@ -45,7 +45,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The file every connection to a target is opened in.
-const DIALLER: &str = "src/system/dial.rs";
+const DIALLER: &str = "src/transport/dial.rs";
 
 /// The other files that open a TCP or UDP socket, and why theirs is not a
 /// connection to a target.
@@ -243,7 +243,7 @@ fn every_socket_outside_the_dialler_has_said_why_it_is_not_a_connection_to_a_tar
         unlisted.is_empty(),
         "these open a TCP or UDP socket outside {DIALLER} and are not in OTHER_SOCKETS: \
          {unlisted:?}\n\n\
-         A connection to a scanned host has to be opened through `crate::system::dial`, \
+         A connection to a scanned host has to be opened through `crate::transport::dial`, \
          which is where each socket gets what the platform needs set before it connects: \
          on Windows, the SYN retransmission limit without which a refused port reads as \
          filtered. A socket opened anywhere else behaves the same on Linux and macOS and \

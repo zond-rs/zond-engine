@@ -83,7 +83,7 @@ use crate::model::tls::{
 };
 use crate::protocols::tls::{self, Offer, RECORD_HEADER_LEN, ServerResponse};
 use crate::system::descriptors;
-use crate::system::dial::Egress;
+use crate::transport::dial::Egress;
 use crate::{info, warn};
 
 /// The most offers put to one endpoint under one version.

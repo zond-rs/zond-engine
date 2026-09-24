@@ -52,7 +52,7 @@ use crate::scanner::pool::ProbePool;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::descriptors::{self, Descriptor};
-use crate::system::dial::{Egress, Shaping};
+use crate::transport::dial::{Egress, Shaping};
 use async_trait::async_trait;
 use std::io::{self, ErrorKind};
 use std::net::{IpAddr, SocketAddr};

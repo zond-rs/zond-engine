@@ -19,7 +19,7 @@ use crate::detect::compute::Budget;
 use crate::detect::exchange;
 use crate::fingerprint::Tunnel;
 use crate::model::port::Protocol;
-use crate::system::dial::Egress;
+use crate::transport::dial::Egress;
 
 use super::{Probe, ProbeRefusal};
 

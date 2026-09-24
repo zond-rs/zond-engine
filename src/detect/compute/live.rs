@@ -37,7 +37,7 @@ use std::time::Instant;
 use crate::detect::exchange::{self, ExchangeError};
 use crate::fingerprint::Tunnel;
 use crate::model::port::Protocol;
-use crate::system::dial::Egress;
+use crate::transport::dial::Egress;
 
 use super::budget::Budget;
 use super::capability::{CapError, Capabilities, ScanInstant};

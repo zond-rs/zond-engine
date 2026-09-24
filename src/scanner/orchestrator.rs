@@ -1207,7 +1207,7 @@ const MDNS_PORT: u16 = 5353;
 async fn own_name(
     addr: std::net::SocketAddr,
     ip: IpAddr,
-    egress: crate::system::dial::Egress,
+    egress: crate::transport::dial::Egress,
 ) -> Option<String> {
     let query = crate::protocols::mdns::build_reverse_query(ip).ok()?;
     let reply = crate::fingerprint::probe_udp_raw_via(addr, &query, egress).await?;
@@ -1228,7 +1228,7 @@ async fn own_name(
 async fn ask_what_hardware(
     target: crate::model::ip::scoped::ScopedIp,
     hostname: Option<String>,
-    egress: crate::system::dial::Egress,
+    egress: crate::transport::dial::Egress,
 ) -> Option<(crate::model::ip::scoped::ScopedIp, Vec<OsEvidence>)> {
     let addr = target.to_socket_addr(MDNS_PORT)?;
 
@@ -1273,7 +1273,7 @@ const SNMP_PORT: u16 = 161;
 /// The request leaves by `egress`.
 async fn ask_for_kernel(
     target: crate::model::ip::scoped::ScopedIp,
-    egress: crate::system::dial::Egress,
+    egress: crate::transport::dial::Egress,
 ) -> Option<(
     crate::model::ip::scoped::ScopedIp,
     Port,

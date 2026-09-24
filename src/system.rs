@@ -14,11 +14,8 @@
 //! carry, and which source address reaches a given target. [`neighbor_cache`] reads
 //! the host's own IPv6 neighbour table, which is the only source of an IPv6
 //! address nobody named. [`privilege`] reports whether the process may open raw
-//! sockets. `dial`, internal to the crate, opens the ordinary TCP and UDP
-//! sockets the engine speaks to a target through, which is where each one is
-//! given what the host's stack has to be told before it connects, and
-//! `descriptors`, also internal, reads how many of those sockets the process
-//! may hold at once and shares that budget among every scan it runs.
+//! sockets. `descriptors`, internal to the crate, reads how many sockets the
+//! process may hold at once and shares that budget among every scan it runs.
 //!
 //! This is the only module that asks the host about itself, and it asks only
 //! what a scan needs to send a packet. It does not profile the
@@ -27,7 +24,6 @@
 //! collecting data on its embedder's host for nobody's benefit.
 
 pub(crate) mod descriptors;
-pub(crate) mod dial;
 pub mod interface;
 pub mod neighbor_cache;
 pub mod privilege;

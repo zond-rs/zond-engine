@@ -47,7 +47,7 @@ use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::fingerprint::Tunnel;
 use crate::protocols::http::message_end as http_message_end;
 use crate::system::descriptors;
-use crate::system::dial::Egress;
+use crate::transport::dial::Egress;
 
 /// The largest datagram a UDP reply is read into, the theoretical maximum
 /// payload of one.
@@ -332,7 +332,7 @@ mod tests {
 
         let reply = super::tcp(
             addr,
-            crate::system::dial::Egress::KERNEL,
+            crate::transport::dial::Egress::KERNEL,
             None,
             b"GET / HTTP/1.1\r\n\r\n",
             Instant::now() + Duration::from_secs(5),

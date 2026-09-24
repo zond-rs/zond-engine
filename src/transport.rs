@@ -44,9 +44,15 @@
 //! what bypassing the host's firewall and connection tracking needs.
 //! A scanner picks between them through [`probe::ProbeSender`] and is otherwise
 //! unaware of which one it has.
+//!
+//! `dial`, internal to the crate, opens the ordinary TCP and UDP sockets the
+//! engine speaks to a target through when the kernel builds the packets, which
+//! is where each one is given what the host's stack has to be told before it
+//! connects.
 
 pub mod capture;
 pub mod channel;
+pub(crate) mod dial;
 
 #[cfg(feature = "packet-exchange")]
 pub mod exchange;

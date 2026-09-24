@@ -112,7 +112,7 @@ use tokio::time::timeout;
 
 use crate::config::ServiceDetection;
 use crate::model::port::{Port, PortState, Protocol, Service};
-use crate::system::dial::Egress;
+use crate::transport::dial::Egress;
 
 /// How long to wait for a service to speak first (banner grab).
 const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);

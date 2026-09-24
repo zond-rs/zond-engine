@@ -1454,7 +1454,7 @@ pub struct ScanContext {
     pub(crate) detections: crate::detect::Detections,
     /// The sources the scan forced, which decide where each connection it
     /// opens leaves from. Empty for a scan that forced none.
-    pub(crate) forced: Arc<crate::system::dial::ForcedSources>,
+    pub(crate) forced: Arc<crate::transport::dial::ForcedSources>,
     /// The TCP ports this scan connects to and listens on and sends nothing;
     /// see [`listens_only`](Self::listens_only).
     pub(crate) listen_only: Arc<BTreeSet<u16>>,
@@ -1466,7 +1466,7 @@ impl ScanContext {
     /// Asked by every phase that dials, once per destination, and handed to
     /// each connection it makes there, so a port the scan's probe reached from
     /// a forced source is spoken to from that source too.
-    pub(crate) fn egress_toward(&self, target: IpAddr) -> crate::system::dial::Egress {
+    pub(crate) fn egress_toward(&self, target: IpAddr) -> crate::transport::dial::Egress {
         self.forced.toward(target)
     }
 
@@ -2506,7 +2506,9 @@ impl SessionBuilder {
             responses: Arc::new(Responses::default()),
             tapes: Arc::new(Tapes::default()),
             detections: self.detections,
-            forced: Arc::new(crate::system::dial::ForcedSources::new(&self.send_source)),
+            forced: Arc::new(crate::transport::dial::ForcedSources::new(
+                &self.send_source,
+            )),
             listen_only: Arc::new(
                 self.listen_only
                     .unwrap_or_else(|| crate::config::RAW_PRINT_PORTS.into_iter().collect()),

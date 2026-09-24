@@ -277,7 +277,7 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
 /// connection a detection opens leaves by `egress`, as the scan's probe did.
 async fn detect_one(
     target: PortTarget,
-    egress: crate::system::dial::Egress,
+    egress: crate::transport::dial::Egress,
     detections: crate::detect::Detections,
     detection: ServiceDetection,
     envelope: DetectionEnvelope,

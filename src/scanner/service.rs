@@ -38,7 +38,7 @@ use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Stage};
 use crate::system::descriptors;
-use crate::system::dial::Egress;
+use crate::transport::dial::Egress;
 
 /// Fingerprints every open port currently in the store worth an exchange,
 /// upgrading each port's service in place.
