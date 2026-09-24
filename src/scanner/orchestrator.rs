@@ -877,14 +877,19 @@ pub(super) async fn run_port_scan(
 /// phase, falls back to active reverse lookups when DNS is enabled and does
 /// nothing when it is not. This is the single place the "passive where a sweep
 /// ran, active otherwise" policy lives.
+///
+/// `unheard` says whether the active lookups name hosts nothing was heard
+/// from too, which only a port scan whose caller asked for every address as a
+/// host does; see [`rdns::Unheard`].
 pub(super) async fn finish_enrichment(
     enrichment: Option<Enrichment>,
     caps: ScanCapabilities,
     ctx: &ScanContext,
+    unheard: rdns::Unheard,
 ) {
     match enrichment {
         Some(enrichment) => enrichment.finish(ctx).await,
-        None if caps.dns => rdns::resolve_hosts_async(ctx).await,
+        None if caps.dns => rdns::resolve(ctx, unheard).await,
         None => {}
     }
 }
@@ -1958,6 +1963,13 @@ fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) -> 
 /// Nothing is opened for an empty map. A liveness phase that found nothing is a
 /// finished answer, and raw sockets held to probe no targets are a failure this
 /// would report for no reason.
+///
+/// `stands_in` is whether these port probes stand in for a liveness pass the
+/// engine dropped as no cheaper; see
+/// [`LivenessSkip::PortsNoDearer`](crate::report::LivenessSkip::PortsNoDearer).
+/// There the addresses they heard nothing from are filed silent and their
+/// records forgotten, as the pass would have left them; see
+/// [`forget_the_silent`].
 pub(super) async fn run_port_phase(
     mut target_map: TargetMap,
     liveness: Option<Liveness>,
@@ -1965,6 +1977,7 @@ pub(super) async fn run_port_phase(
     caps: ScanCapabilities,
     cfg: &ZondConfig,
     settled: Checkpoint,
+    stands_in: bool,
 ) {
     if target_map.is_empty() {
         return;
@@ -2051,11 +2064,49 @@ pub(super) async fn run_port_phase(
     if let Err(error) = walk.await {
         error!("the target walk ended abnormally: {error}");
     }
-    finish_enrichment(None, caps, ctx).await;
+    // Before the names are asked for, so the resolver is not sent a query per
+    // address the scan found nothing at.
+    if stands_in {
+        forget_the_silent(ctx, &probed);
+    }
+    let unheard = match cfg.assume_up {
+        true => rdns::Unheard::Named,
+        false => rdns::Unheard::Skipped,
+    };
+    finish_enrichment(None, caps, ctx, unheard).await;
     // Passive first, then active: the echo probe is aimed at the hosts the
     // passive sources could not name, and it can only know which those are once
     // they have run.
     run_passive_os_identification(ctx, cfg.os_detection);
+}
+
+/// Files as silent every address in `probed` the port probes asked on every
+/// port and drew nothing from, and forgets the record the scanners filed there.
+///
+/// Nothing drawn means the record is still
+/// [`Unknown`](crate::model::host::HostStatus::Unknown): no open port, no
+/// closed one, no ICMP error. A record with a port still
+/// [`Unasked`](PortState::Unasked) is kept, since the phase did not finish
+/// asking that address and its silence is not yet a verdict; so are the
+/// addresses nothing could be sent to and the ones a time budget left
+/// part-asked, each named in the report for what it is. See
+/// [`ScanContext::forget_silent`].
+fn forget_the_silent(ctx: &ScanContext, probed: &IpSet) {
+    let silent: Vec<crate::model::ip::scoped::ScopedIp> = ctx
+        .store
+        .iter()
+        .filter(|entry| {
+            let host = entry.value();
+            let address = entry.key().addr();
+            host.status() == crate::model::host::HostStatus::Unknown
+                && host.ports().all(|port| port.state() != PortState::Unasked)
+                && probed.contains(&address)
+                && !ctx.is_unroutable(address)
+                && !ctx.left_early(address)
+        })
+        .map(|entry| entry.key().clone())
+        .collect();
+    ctx.forget_silent(silent);
 }
 
 /// The plan as the port phase actually probed it.
@@ -2706,7 +2757,7 @@ mod tests {
             dns: false,
         };
 
-        run_port_phase(map, None, &ctx, caps, &cfg, Checkpoint::default()).await;
+        run_port_phase(map, None, &ctx, caps, &cfg, Checkpoint::default(), false).await;
 
         let failures = ctx.take_failures();
         assert!(
@@ -3548,6 +3599,68 @@ mod tests {
         let mut host = Host::new(ip.parse().expect("an address"));
         host.set_status(status);
         host
+    }
+
+    /// The port probes standing in for a liveness pass file as silent, and
+    /// forget, exactly the records nothing was heard from at an address they
+    /// finished asking. One that answered is a host; one with a port never
+    /// asked, one nothing could be sent to and one its budget left part-asked
+    /// are each named for what they are; and an address outside what the phase
+    /// probed is not its to judge.
+    #[test]
+    fn the_silent_are_the_unheard_the_port_probes_finished_asking() {
+        use crate::model::port::Port;
+
+        let unheard = |ip: &str, state: PortState| {
+            let mut host = host_at(ip, HostStatus::Unknown);
+            host.add_port(Port::new(443, Protocol::Tcp, state));
+            host
+        };
+        let (session, ctx) = store_holding(vec![
+            host_at("192.0.2.1", HostStatus::Up),
+            unheard("192.0.2.2", PortState::Filtered),
+            unheard("192.0.2.3", PortState::Unasked),
+            unheard("192.0.2.4", PortState::Filtered),
+            unheard("192.0.2.9", PortState::Filtered),
+        ]);
+        ctx.record_unroutable("192.0.2.4".parse().expect("an address"));
+
+        forget_the_silent(&ctx, &ip_set(&["192.0.2.1-192.0.2.4"]));
+
+        let silent: Vec<IpAddr> = ctx.take_silent().iter().collect();
+        assert_eq!(silent, ["192.0.2.2".parse::<IpAddr>().expect("an address")]);
+        let kept: Vec<String> = session
+            .hosts()
+            .snapshot()
+            .iter()
+            .map(|host| host.primary_ip().to_string())
+            .collect();
+        assert_eq!(kept, ["192.0.2.1", "192.0.2.3", "192.0.2.4", "192.0.2.9"]);
+    }
+
+    /// And a record its own budget left part-asked is kept too: its ports carry
+    /// the scan's silence verdict for probes it never got, which is not the
+    /// silence of an address asked in full.
+    #[test]
+    fn a_host_left_early_is_not_filed_silent() {
+        use crate::model::port::Port;
+
+        let (session, ctx) = ScanSession::builder()
+            .host_timeout(Some(std::time::Duration::ZERO))
+            .build();
+        let address: IpAddr = "192.0.2.2".parse().expect("an address");
+        ctx.update_host(address, |host| {
+            host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+        });
+        assert!(
+            ctx.host_expired(address),
+            "the budget is spent before it is asked"
+        );
+
+        forget_the_silent(&ctx, &ip_set(&["192.0.2.2"]));
+
+        assert!(ctx.take_silent().is_empty());
+        assert!(session.hosts().contains(address));
     }
 
     /// A host the store holds but that never answered is not a host to spend a

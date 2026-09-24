@@ -1002,7 +1002,7 @@ async fn run_discovery(
             }
         }
         let enrichment = Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await;
-        finish_enrichment(Some(enrichment), caps, ctx).await;
+        finish_enrichment(Some(enrichment), caps, ctx, rdns::Unheard::Skipped).await;
     } else {
         let targets = orchestrator::walkable(targets, ctx);
         if let Err(error) =
@@ -1010,7 +1010,7 @@ async fn run_discovery(
         {
             ctx.record_failure(ScannerKind::Connect, error.to_string());
         }
-        finish_enrichment(None, caps, ctx).await;
+        finish_enrichment(None, caps, ctx, rdns::Unheard::Skipped).await;
     }
 
     orchestrator::run_passive_os_identification(ctx, cfg.os_detection);
@@ -1551,7 +1551,8 @@ fn spawn_scan(
         // has: it runs no liveness pass, so this is where a reader looks for
         // what the scan declined to send the target from this host.
         record_idle_refusals(&requested, &ctx);
-        run_port_phase(target_map, live, &ctx, caps, &cfg, settled).await;
+        let stands_in = skipped == Some(LivenessSkip::PortsNoDearer);
+        run_port_phase(target_map, live, &ctx, caps, &cfg, settled, stands_in).await;
 
         // Straight after the ports, because what it needs is the list of ports a
         // handshake completed against and the service pass is what produces it.

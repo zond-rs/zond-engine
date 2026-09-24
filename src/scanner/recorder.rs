@@ -20,12 +20,8 @@
 use std::time::{Instant, SystemTime};
 
 use crate::config::ZondConfig;
-use std::net::IpAddr;
-
-use crate::model::host::HostStatus;
 use crate::model::ip::range::IpRange;
 use crate::model::ip::set::IpSet;
-use crate::model::port::PortState;
 use crate::report::{
     LivenessSkip, PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope,
 };
@@ -169,21 +165,20 @@ impl PhaseRecorder {
         let unroutable = ctx.take_unroutable();
         // Taken whatever the kind, so a context reused for another phase starts
         // with no silence it did not hear.
-        let silent = ctx.take_silent();
-        let liveness = (self.kind == ScanKind::Discovery).then(|| Liveness::found(ctx, silent));
+        let heard_nothing = ctx.take_silent();
+        // A port phase names what it filed only where its probes stood in for
+        // a liveness pass the engine dropped: there an address they drew
+        // nothing from is what the pass would have found silent. See
+        // `ScanPhase::silent`.
+        let silent = match (self.kind, self.liveness_skipped) {
+            (ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => ranges_of(&heard_nothing),
+            _ => Vec::new(),
+        };
+        let liveness =
+            (self.kind == ScanKind::Discovery).then(|| Liveness::found(ctx, heard_nothing));
         let undecided = liveness.as_ref().map_or_else(Vec::new, |liveness| {
             liveness.undecided(&targets, &unroutable)
         });
-        let timed_out = ctx.take_timed_out();
-        // Only where the port probes stood in for a liveness pass the engine
-        // dropped: there an address they drew nothing from is what the pass
-        // would have found silent. See `ScanPhase::silent`.
-        let silent = match (self.kind, self.liveness_skipped) {
-            (ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => {
-                silent_on_every_port(ctx, &targets, &unroutable, &timed_out)
-            }
-            _ => Vec::new(),
-        };
 
         let phase = ScanPhase::from_parts(PhaseParts {
             kind: self.kind,
@@ -197,7 +192,7 @@ impl PhaseRecorder {
             failures: ctx.take_failures(),
             refusals: ctx.take_refusals(),
             unroutable,
-            timed_out,
+            timed_out: ctx.take_timed_out(),
             // Taken whatever the privilege, so a context reused for another
             // phase starts empty, and kept only for a raw phase: one at
             // `Connect` reached everything this way, and its privilege says so.
@@ -223,44 +218,10 @@ impl PhaseRecorder {
     }
 }
 
-/// The addresses in `scope` a port phase asked on every port it named and
-/// drew nothing from: no open port, no closed one, no ICMP error, so the host
-/// record the scanners filed there is still [`Unknown`](HostStatus::Unknown).
-///
-/// A record with a port still [`Unasked`](PortState::Unasked) is left out,
-/// since the phase did not finish asking that address and its silence is not
-/// yet a verdict, and so are the addresses nothing could be sent to and the
-/// ones a time budget left part-asked: each is already named for what it is.
-fn silent_on_every_port(
-    ctx: &ScanContext,
-    scope: &TargetScope,
-    unroutable: &[IpAddr],
-    timed_out: &[IpAddr],
-) -> Vec<IpRange> {
-    let mut covered = IpSet::new();
-    for range in scope.ranges() {
-        covered.insert_range(*range);
-    }
-    covered.canonicalize();
-
-    let mut silent = IpSet::new();
-    for entry in ctx.store.iter() {
-        let host = entry.value();
-        let address = host.scoped_ip().addr();
-        let heard_nothing = host.status() == HostStatus::Unknown
-            && host.ports().all(|port| port.state() != PortState::Unasked);
-        if heard_nothing
-            && covered.contains(&address)
-            && !unroutable.contains(&address)
-            && !timed_out.contains(&address)
-        {
-            silent.insert(address);
-        }
-    }
-    silent.canonicalize();
-
-    let v4 = silent.v4().iter().copied().map(IpRange::V4);
-    let v6 = silent.v6().iter().copied().map(IpRange::V6);
+/// `set` as the ranges a phase records, IPv4 first.
+fn ranges_of(set: &IpSet) -> Vec<IpRange> {
+    let v4 = set.v4().iter().copied().map(IpRange::V4);
+    let v6 = set.v6().iter().copied().map(IpRange::V6);
     v4.chain(v6).collect()
 }
 
@@ -547,41 +508,24 @@ mod tests {
         assert_eq!(undecided, ["203.0.113.4-203.0.113.4"]);
     }
 
-    /// A port phase standing in for a dropped liveness pass names as silent
-    /// exactly the addresses it asked on every port and heard nothing from, and
-    /// the report does not list them. An address with a port the phase never
-    /// got to ask, and one nothing could be sent to, are not silent: each is
-    /// named for what it is. A phase whose caller asked for every address as a
-    /// host names none and lists them all.
+    /// A port phase standing in for a dropped liveness pass names the
+    /// addresses filed silent during it, and the report lists no host there. A
+    /// phase whose caller asked for every address as a host names none: it
+    /// files no silence, and silence filed anyway is not its to name.
     #[test]
-    fn a_port_phase_standing_in_for_liveness_names_its_silent_addresses() {
-        use crate::model::port::{Port, Protocol};
+    fn a_port_phase_standing_in_for_liveness_names_what_was_filed_silent() {
+        use crate::model::ip::scoped::ScopedIp;
 
-        let unheard = |ctx: &ScanContext, last: u8, state: PortState| {
-            ctx.update_host(ip(last), |host| {
-                host.add_port(Port::new(443, Protocol::Tcp, state));
-            });
-        };
-        let fill = |ctx: &ScanContext| {
-            ctx.update_host(ip(1), |host| host.set_status(HostStatus::Up));
-            unheard(ctx, 2, PortState::Filtered);
-            unheard(ctx, 3, PortState::Unasked);
-            unheard(ctx, 4, PortState::Filtered);
-            ctx.record_unroutable(ip(4));
-        };
         let cfg = ZondConfig::default();
-        // Every address above inside the phase's scope, so what keeps one off
-        // the list is the rule under test and not the scope.
-        let asked = || {
-            let mut targets = IpSet::from_str("203.0.113.1-203.0.113.4").expect("a valid range");
-            TargetScope::from_ip_set(&mut targets, &Exclusions::none())
-        };
 
-        let (_session, ctx) = ScanSession::new();
-        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, asked(), &cfg)
+        let (session, ctx) = ScanSession::new();
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
             .skipping_liveness(LivenessSkip::PortsNoDearer);
-        fill(&ctx);
+        ctx.update_host(ip(1), |host| host.set_status(HostStatus::Up));
+        ctx.update_host(ip(2), |_| {});
+        ctx.forget_silent(vec![ScopedIp::from(ip(2))]);
         let report = recorder.finish(&ctx);
+
         let silent: Vec<String> = report.phases()[0]
             .silent()
             .iter()
@@ -589,18 +533,17 @@ mod tests {
             .collect();
         assert_eq!(silent, ["203.0.113.2-203.0.113.2"]);
         assert!(report.host(&ip(2)).is_none(), "a silent address is no host");
-        assert!(report.host(&ip(1)).is_some() && report.host(&ip(3)).is_some());
+        assert!(
+            !session.hosts().contains(ip(2)),
+            "and the live store agrees with the report"
+        );
+        assert!(report.host(&ip(1)).is_some());
 
         let (_session, ctx) = ScanSession::new();
-        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, asked(), &cfg)
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
             .skipping_liveness(LivenessSkip::AssumeUp);
-        fill(&ctx);
-        let report = recorder.finish(&ctx);
-        assert!(report.phases()[0].silent().is_empty());
-        assert!(
-            report.host(&ip(2)).is_some(),
-            "a caller who asked for every address as a host gets this one"
-        );
+        ctx.settle_address(ip(2), crate::journal::settle::Settled::Exhausted);
+        assert!(recorder.finish(&ctx).phases()[0].silent().is_empty());
     }
 
     /// Silence is a discovery phase's evidence and nobody else's. A port phase

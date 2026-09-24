@@ -719,6 +719,13 @@ pub struct ScanSession {
 
 impl ScanSession {
     /// What the scan has found so far.
+    ///
+    /// Once the scan is over this holds the hosts its report lists. While it
+    /// runs it can hold more: a port scan that stood its probes in for a
+    /// liveness pass files a record at every address it asks, and forgets the
+    /// ones nothing answered when its ports are done, so an event naming such
+    /// an address can find no host behind it by the time it is read. See
+    /// [`ScanPhase::silent`](crate::report::ScanPhase::silent).
     pub fn hosts(&self) -> &HostStore {
         &self.store
     }
@@ -907,6 +914,11 @@ impl UnroutableLog {
         entries.insert(address);
     }
 
+    fn contains(&self, address: IpAddr) -> bool {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.contains(&address)
+    }
+
     fn drain(&self) -> Vec<IpAddr> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *entries).into_iter().collect()
@@ -950,6 +962,11 @@ impl TimedOutLog {
     fn insert(&self, address: IpAddr) {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         entries.insert(address);
+    }
+
+    fn contains(&self, address: IpAddr) -> bool {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.contains(&address)
     }
 
     fn drain(&self) -> Vec<IpAddr> {
@@ -1379,7 +1396,8 @@ pub struct ScanContext {
     pub(crate) unswept: Arc<UnsweptLog>,
     /// Addresses a raw phase reached by TCP connect instead.
     pub(crate) reached_by_connect: Arc<ConnectLog>,
-    /// Addresses a discovery pass found silent.
+    /// Addresses a discovery pass found silent, or that a port phase standing
+    /// in for one asked on every port and heard nothing from.
     pub(crate) silent: Arc<SilenceLog>,
     /// Which stage's unit the plan, and so the settlements, are counted in.
     pub(crate) plan_stage: Stage,
@@ -1898,6 +1916,44 @@ impl ScanContext {
     /// The unroutable addresses filed so far, taken.
     pub(crate) fn take_unroutable(&self) -> Vec<IpAddr> {
         self.unroutable.drain()
+    }
+
+    /// Whether `address` has been filed as unroutable in this phase, left in
+    /// place.
+    pub(crate) fn is_unroutable(&self, address: IpAddr) -> bool {
+        self.unroutable.contains(address)
+    }
+
+    /// Whether `address` has been filed as left early by its own budget in this
+    /// phase, left in place.
+    ///
+    /// Unlike [`host_expired`](Self::host_expired), which is asked before a
+    /// probe and files the host the moment its budget is found spent, this
+    /// reads what was filed and files nothing: a host whose clock runs out
+    /// after its last probe was answered for in full.
+    pub(crate) fn left_early(&self, address: IpAddr) -> bool {
+        self.timed_out.contains(address)
+    }
+
+    /// Files the host records at `keys` as addresses a port phase standing in
+    /// for its liveness pass asked on every port and heard nothing from, and
+    /// forgets those records.
+    ///
+    /// The pass it stood in for would have found each address silent and made
+    /// no host of it, and forgetting the record here is what keeps the live
+    /// store and the report the phase closes into saying the same: a caller
+    /// reading [`ScanSession::hosts`] after the scan sees the hosts the report
+    /// lists. The addresses go where a discovery pass files its silence, which
+    /// is what the phase's
+    /// [`silent`](crate::report::ScanPhase::silent) list is read from.
+    ///
+    /// A record a journal already wrote down stays on disk; the report drops
+    /// it on read-back by the same list.
+    pub(crate) fn forget_silent(&self, keys: Vec<ScopedIp>) {
+        for key in keys {
+            self.silent.insert(key.addr());
+            self.store.remove(&key);
+        }
     }
 
     /// Whether `address` has spent the per-host budget this scan was given,

@@ -796,12 +796,58 @@ fn push_unique(servers: &mut Vec<SocketAddr>, server: SocketAddr) {
 /// Active-only reverse resolution for the unprivileged scan path.
 ///
 /// Without raw sockets there is nothing to sniff, so this issues a reverse
-/// lookup through the system resolver for every host that still lacks a
-/// hostname. The lookups run concurrently, and each answer is written back
-/// through [`ScanContext::write_host`] so it announces itself like any other
-/// finding. Any failure to build the resolver leaves the store untouched, since
-/// a scan without hostnames is still a useful scan.
+/// lookup through the system resolver for every host that answered and still
+/// lacks a hostname. The lookups run concurrently, and each answer is written
+/// back through [`ScanContext::write_host`] so it announces itself like any
+/// other finding. Any failure to build the resolver leaves the store untouched,
+/// since a scan without hostnames is still a useful scan.
+///
+/// A host nothing was heard from, one still
+/// [`Unknown`](crate::model::host::HostStatus::Unknown), is not looked up. It
+/// is a record a port scan filed while asking an address, not a host anything
+/// found, and a scan of one port over a wide range files one per silent
+/// address: resolving them would send the resolver a query per address the
+/// scan found nothing at, where naming the hosts it found needs one per host.
 pub async fn resolve_hosts_async(ctx: &ScanContext) {
+    resolve(ctx, Unheard::Skipped).await;
+}
+
+/// Whether a reverse lookup names the hosts nothing was heard from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unheard {
+    /// Only hosts that answered are named, which is every scan but one below.
+    Skipped,
+    /// Every host is named, answered or not: a scan whose caller asked for
+    /// every address listed as a host, with
+    /// [`assume_up`](crate::config::ZondConfig::assume_up), lists these too,
+    /// and a listed host is one worth a name.
+    Named,
+}
+
+/// The hosts a reverse lookup asks about: every one still unnamed, less those
+/// nothing was heard from unless `unheard` says to name them.
+///
+/// Keyed by the address the host is stored under rather than by `primary_ip`,
+/// so the write that follows lands on the entry that was read. The two agree
+/// for most hosts and not for one whose leading address changed after it was
+/// first credited.
+fn to_resolve(ctx: &ScanContext, unheard: Unheard) -> Vec<crate::model::ip::scoped::ScopedIp> {
+    ctx.host_addresses()
+        .into_iter()
+        .filter(|key| {
+            ctx.read_host(key, |host| {
+                host.hostname().is_none()
+                    && (unheard == Unheard::Named
+                        || host.status() != crate::model::host::HostStatus::Unknown)
+            })
+            .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// [`resolve_hosts_async`], naming the hosts nothing was heard from where
+/// `unheard` says to.
+pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
     use hickory_resolver::TokioResolver;
 
     let Ok(builder) = TokioResolver::builder_tokio() else {
@@ -813,21 +859,7 @@ pub async fn resolve_hosts_async(ctx: &ScanContext) {
 
     let mut set = tokio::task::JoinSet::new();
 
-    // Keyed by the address the host is stored under rather than by
-    // `primary_ip`, so the write below lands on the entry that was read. The
-    // two agree for most hosts and not for one whose leading address changed
-    // after it was first credited.
-    let mut ips_to_resolve = Vec::new();
-    for key in ctx.host_addresses() {
-        let unnamed = ctx
-            .read_host(&key, |host| host.hostname().is_none())
-            .unwrap_or(false);
-        if unnamed {
-            ips_to_resolve.push(key);
-        }
-    }
-
-    for key in ips_to_resolve {
+    for key in to_resolve(ctx, unheard) {
         let resolver = resolver.clone();
 
         set.spawn(async move {
@@ -947,6 +979,37 @@ mod tests {
     use crate::scanner::session::{ScanEvent, ScanSession};
     use crate::transport::probe::{Emission, ProbeSender, SendError};
     use std::net::Ipv4Addr;
+
+    /// A reverse lookup names the hosts that answered and leaves the records
+    /// nothing was heard from alone, unless the caller asked for every
+    /// address listed as a host.
+    ///
+    /// A scan of one port over a wide range files one such record per silent
+    /// address. Named, each would cost the resolver a query about an address
+    /// the scan found nothing at: tens of thousands for a /16, where the hosts
+    /// it found need one each.
+    #[test]
+    fn a_reverse_lookup_names_only_the_hosts_that_answered_unless_asked_for_all() {
+        let (_session, ctx) = ScanSession::new();
+        let at = |last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last));
+        ctx.update_host(at(1), |host| host.set_status(HostStatus::Up));
+        ctx.update_host(at(2), |_| {});
+        ctx.update_host(at(3), |host| {
+            host.set_status(HostStatus::Up);
+            host.set_hostname(Some("named.example".to_string()));
+        });
+
+        let asked = |unheard| -> Vec<IpAddr> {
+            let mut asked: Vec<IpAddr> = to_resolve(&ctx, unheard)
+                .iter()
+                .map(|key| key.addr())
+                .collect();
+            asked.sort_unstable();
+            asked
+        };
+        assert_eq!(asked(Unheard::Skipped), [at(1)]);
+        assert_eq!(asked(Unheard::Named), [at(1), at(2)]);
+    }
 
     // -----------------------------------------------------------------------
     // A name that is the address written again

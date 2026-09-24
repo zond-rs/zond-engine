@@ -444,7 +444,7 @@ async fn a_silent_address_of_a_skipped_liveness_pass_is_named_and_not_listed() {
 
     let journal = Journal::create(&root, &recorded, Privilege::current(), "seg").expect("creates");
     let directory = journal.directory().to_path_buf();
-    let (_session, task) = zond_engine::scanner::scan_with_journal(
+    let (session, task) = zond_engine::scanner::scan_with_journal(
         plan,
         &test_config(),
         Detections::embedded(),
@@ -457,6 +457,10 @@ async fn a_silent_address_of_a_skipped_liveness_pass_is_named_and_not_listed() {
     assert!(
         report.host(&dead).is_none(),
         "an address that answered no port is listed as a host"
+    );
+    assert!(
+        !session.hosts().contains(dead),
+        "the live session lists what the report does not"
     );
     let phase = &report.phases()[0];
     assert_eq!(phase.liveness_skipped(), Some(LivenessSkip::PortsNoDearer));
