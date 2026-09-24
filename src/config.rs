@@ -1505,6 +1505,12 @@ pub struct ZondConfig {
     /// routing table forces a source for each family its targets span, or
     /// leaves out the targets it has none for.
     ///
+    /// A connection is held to its interface by binding the socket to it, which
+    /// Linux allows a process without `CAP_NET_RAW` from 5.7 on. On an earlier
+    /// kernel an unprivileged scan's pinned connections are refused that bind,
+    /// and their targets are reported as ones this host could not reach rather
+    /// than reached by another link.
+    ///
     /// Name lookups are not pinned. The reverse lookups a scan makes for the
     /// hosts it finds ask the host's configured resolvers, and each interface's
     /// gateway, by the routing table, as the system resolver a caller
