@@ -890,13 +890,20 @@ pub struct FindingRecord {
     /// advice at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
-    /// The platform identifier a correlation drew it from, if it was drawn
-    /// from one.
+    /// The lowest of [`cpes`](Self::cpes), for a reader written before a
+    /// finding could name more than one.
     ///
     /// Omitted when absent, for the reason `remediation` is, and absent from
-    /// every finding a correlation did not draw.
+    /// every finding a correlation did not draw. Read back beside `cpes`, so a
+    /// record that carries only this one still names what its claim rests on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpe: Option<String>,
+    /// Every platform identifier a correlation drew it from, ascending.
+    ///
+    /// Omitted when empty, which is every finding a correlation did not draw,
+    /// and defaulted on the way in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cpes: Vec<String>,
 }
 
 impl From<&Finding> for FindingRecord {
@@ -910,7 +917,8 @@ impl From<&Finding> for FindingRecord {
             excerpt: (!finding.excerpt().is_empty()).then(|| finding.excerpt().as_str().to_owned()),
             references: finding.references().map(ReferenceRecord::from).collect(),
             remediation: finding.remediation().map(str::to_owned),
-            cpe: finding.cpe().map(str::to_owned),
+            cpe: finding.cpes().next().map(str::to_owned),
+            cpes: finding.cpes().map(str::to_owned).collect(),
         }
     }
 }
@@ -943,7 +951,7 @@ impl FindingRecord {
         if let Some(remediation) = &self.remediation {
             finding = finding.with_remediation(remediation.clone());
         }
-        if let Some(cpe) = &self.cpe {
+        for cpe in self.cpe.iter().chain(&self.cpes) {
             finding = finding.with_cpe(cpe.clone());
         }
         for reference in self.references.iter().filter_map(ReferenceRecord::rebuild) {
@@ -2616,6 +2624,7 @@ mod tests {
         .with_reference(Reference::url("https://grafana.com/security/"))
         .with_remediation("Upgrade to 8.3.1 or later.")
         .with_cpe("cpe:/a:grafana:grafana:8.3.0")
+        .with_cpe("cpe:2.3:a:grafana:grafana:8.3.0:*:*:*:*:*:*:*")
     }
 
     #[test]
@@ -2625,6 +2634,20 @@ mod tests {
             .rebuild()
             .expect("a finding rebuilds");
         assert_eq!(original, rebuilt, "a field was lost in the round trip");
+    }
+
+    /// A record written before a finding could name more than one identifier
+    /// carries its one in `cpe`, and reads back resting on it.
+    #[test]
+    fn a_finding_recorded_with_one_identifier_reads_back_resting_on_it() {
+        let mut record = FindingRecord::from(&maximal_finding());
+        record.cpes.clear();
+        let rebuilt = record.rebuild().expect("a finding rebuilds");
+
+        assert_eq!(
+            rebuilt.cpes().collect::<Vec<_>>(),
+            ["cpe:/a:grafana:grafana:8.3.0"]
+        );
     }
 
     #[test]
@@ -2649,6 +2672,7 @@ mod tests {
             }],
             remediation: None,
             cpe: None,
+            cpes: Vec::new(),
         };
         let finding = softened
             .rebuild()

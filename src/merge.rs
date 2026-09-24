@@ -677,16 +677,18 @@ fn fold_port(accounts: &[&Port]) -> Port {
 /// from the newest account that settled it, so what overturns a claim here is
 /// always a newer account that settled what the claim rests on.
 ///
-/// A correlation rests on the platform identifier it names, and is overturned
-/// where the account's service carried that identifier and the folded one does
-/// not: [`fold_service`] keeps an identifier only while the identification it
-/// was read from stands. An identifier the account's own service does not
-/// carry is not evidence the report holds, and the claim is left alone.
+/// A correlation rests on the platform identifiers it names, and is
+/// overturned where the account's service carried one of them and the folded
+/// one carries none: [`fold_service`] keeps an identifier only while the
+/// identification it was read from stands, and the claim stands while any
+/// identifier it was drawn from does. Identifiers the account's own service
+/// does not carry are not evidence the report holds, and a claim resting on
+/// no other is left alone.
 fn overturned(finding: &Finding, account: &Port, folded: &Port) -> bool {
-    if let Some(cpe) = finding.cpe() {
+    if finding.is_correlation() {
         let carries = |port: &Port| {
             port.service()
-                .is_some_and(|service| service.cpes().contains(cpe))
+                .is_some_and(|service| finding.cpes().any(|cpe| service.cpes().contains(cpe)))
         };
         return carries(account) && !carries(folded);
     }
@@ -2405,6 +2407,55 @@ mod tests {
             claims_on_80(merged.hosts().cloned()),
             claims_on_80([june]),
             "the merged port carries what 2.4.58 draws and nothing 2.4.49 did"
+        );
+    }
+
+    /// **A claim is carried while any identifier it was drawn from is still
+    /// backed.** An imported document can name one release twice, in the URI
+    /// form and the 2.3 form, and each draws the same vulnerability. A newer
+    /// scan that backs only the first, identifying the release under a
+    /// version string of its own, still backs the claim, and dropping it
+    /// because the second went unbacked would retire a vulnerability the
+    /// newer scan's own identification carries.
+    #[test]
+    fn a_claim_is_carried_while_any_identifier_it_was_drawn_from_is_backed() {
+        const URI: &str = "cpe:/a:apache:http_server:2.4.49";
+        const FORMATTED: &str = "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*";
+        let claim = |cpe: &str| {
+            finding(
+                "zond:cve-kev",
+                "http_server 2.4.49 has 1 known vulnerability",
+            )
+            .with_reference(crate::model::finding::Reference::cve("CVE-2021-41773").unwrap())
+            .with_cpe(cpe)
+        };
+
+        let mut imported = Port::new(80, TCP, PortState::Open).with_service(
+            Service::new("http", 90)
+                .with_product("Apache httpd")
+                .with_version("2.4.49")
+                .with_cpe(URI)
+                .with_cpe(FORMATTED),
+        );
+        imported.add_finding(claim(URI));
+        imported.add_finding(claim(FORMATTED));
+
+        let rescanned = Port::new(80, TCP, PortState::Open).with_service(
+            Service::new("http", 90)
+                .with_product("Apache httpd")
+                .with_version("2.4.49 (Unix)")
+                .with_cpe(URI),
+        );
+
+        let merged = merged(vec![
+            report("nmap 7.94", day(1), vec![with_port(host(1), imported)]),
+            report("zond", day(2), vec![with_port(host(1), rescanned)]),
+        ]);
+
+        assert_eq!(
+            claims_on_80(merged.hosts().cloned()),
+            ["http_server 2.4.49 has 1 known vulnerability"],
+            "the newer identification still carries {URI}"
         );
     }
 

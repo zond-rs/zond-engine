@@ -1939,10 +1939,17 @@ pub struct FindingDto<'a> {
     /// Remediation advice, if the detection carried any. Untrusted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<&'a str>,
-    /// The platform identifier a vulnerability correlation drew it from.
-    /// Untrusted; absent from a finding drawn from anything else.
+    /// The lowest of `cpes`, for a consumer written before a finding could
+    /// name more than one. Untrusted; absent from a finding drawn from
+    /// anything but a vulnerability correlation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpe: Option<&'a str>,
+    /// Every platform identifier a vulnerability correlation drew it from,
+    /// ascending: the claim rests on each, and stands while any is still what
+    /// the service is identified as. Untrusted; absent from a finding drawn
+    /// from anything else.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cpes: Vec<&'a str>,
 }
 
 impl<'a> FindingDto<'a> {
@@ -1959,7 +1966,8 @@ impl<'a> FindingDto<'a> {
             excerpt: (!finding.excerpt().is_empty()).then(|| finding.excerpt().as_str()),
             references: finding.references().map(ReferenceDto::new).collect(),
             remediation: finding.remediation(),
-            cpe: finding.cpe(),
+            cpe: finding.cpes().next(),
+            cpes: finding.cpes().collect(),
         }
     }
 }

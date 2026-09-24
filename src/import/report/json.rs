@@ -1528,6 +1528,7 @@ struct FindingDto {
     references: Vec<ReferenceDto>,
     remediation: Option<String>,
     cpe: Option<String>,
+    cpes: Vec<String>,
 }
 
 impl FindingDto {
@@ -1571,6 +1572,7 @@ impl FindingDto {
                 .collect(),
             remediation: self.remediation,
             cpe: self.cpe,
+            cpes: self.cpes,
         })
     }
 }
@@ -2487,9 +2489,11 @@ mod tests {
                 .hosts()
                 .flat_map(|host| host.ports())
                 .flat_map(|port| port.findings())
-                .filter_map(|finding| {
-                    let cpe = finding.cpe()?;
-                    Some((finding.title().to_owned(), cpe.to_owned()))
+                .flat_map(|finding| {
+                    finding
+                        .cpes()
+                        .map(|cpe| (finding.title().to_owned(), cpe.to_owned()))
+                        .collect::<Vec<_>>()
                 })
                 .collect()
         };

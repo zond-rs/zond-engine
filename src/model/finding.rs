@@ -46,6 +46,7 @@
 //! unstructured script blob never has, and it is what lets a detection be
 //! accepted from a stranger and still answer for itself.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
@@ -516,16 +517,21 @@ pub struct Finding {
     /// because what produced them is deterministic.
     references: Vec<Reference>,
     remediation: Option<String>,
-    /// The platform identifier the finding was drawn from, for one a
-    /// vulnerability correlation drew from a service's CPE.
+    /// The platform identifiers the finding was drawn from, for one a
+    /// vulnerability correlation drew from a service's CPEs, ascending.
     ///
-    /// Carried as a field rather than left to the excerpt, which quotes it for
-    /// a person. A correlation rests on the identification it matched, and
+    /// Carried as a field rather than left to the excerpt, which quotes one
+    /// for a person. A correlation rests on the identification it matched, and
     /// [`merge`](crate::merge) has to ask whether a newer scan still backs that
     /// identification before carrying the finding past it; the excerpt is not
     /// a parser's to read, and the detection id names a catalogue anybody may
     /// write rather than the correlator.
-    cpe: Option<String>,
+    ///
+    /// A set, because one claim can be drawn from several. A service may carry
+    /// two identifiers for one release, an imported document's URI form beside
+    /// its 2.3 form, and both draw the same vulnerability: the claim then rests
+    /// on either, and is backed while any of them is.
+    cpes: BTreeSet<String>,
 }
 
 impl Finding {
@@ -556,7 +562,7 @@ impl Finding {
             excerpt: Excerpt::default(),
             references: Vec::new(),
             remediation: None,
-            cpe: None,
+            cpes: BTreeSet::new(),
         })
     }
 
@@ -584,13 +590,14 @@ impl Finding {
         self
     }
 
-    /// Records the platform identifier the finding was drawn from.
+    /// Adds a platform identifier the finding was drawn from.
     ///
     /// For a correlation, which draws a finding from a CPE a service carries.
-    /// A finding drawn from anything else carries none.
+    /// A finding drawn from anything else carries none. Adding one already
+    /// named changes nothing.
     #[must_use]
     pub fn with_cpe(mut self, cpe: impl Into<String>) -> Self {
-        self.cpe = Some(cpe.into());
+        self.cpes.insert(cpe.into());
         self
     }
 
@@ -635,11 +642,20 @@ impl Finding {
         self.remediation.as_deref()
     }
 
-    /// The platform identifier a correlation drew this finding from, or
-    /// `None` for a finding drawn from anything else. Untrusted: a scanned
-    /// host's banner chose it, so escape before display.
-    pub fn cpe(&self) -> Option<&str> {
-        self.cpe.as_deref()
+    /// The platform identifiers a correlation drew this finding from,
+    /// ascending, and none for a finding drawn from anything else. Untrusted: a
+    /// scanned host's banner chose them, so escape before display.
+    ///
+    /// Every one of them draws the same claim, so the claim stands while any
+    /// of them is still what the endpoint is identified as.
+    pub fn cpes(&self) -> impl Iterator<Item = &str> {
+        self.cpes.iter().map(String::as_str)
+    }
+
+    /// Whether a correlation drew this finding, which is whether it names a
+    /// platform identifier it rests on.
+    pub(crate) fn is_correlation(&self) -> bool {
+        !self.cpes.is_empty()
     }
 
     /// The key that decides whether this finding and another are the same claim.
@@ -707,11 +723,13 @@ impl Finding {
     /// [`Service::merge`](crate::model::port::Service::merge) unions CPEs: a
     /// reference is a pointer that applies, not a verdict that competes.
     ///
-    /// The excerpt, the remediation and the platform identifier travel with the
-    /// verdict where there is one to take, and fill a gap where there is not.
-    /// The identifier goes with the excerpt, which quotes it: two accounts of
-    /// one correlation drawn from two identifiers are one claim, and the one
-    /// the finding says it rests on is the one its text names.
+    /// **Platform identifiers union** too. Two accounts of one correlation
+    /// drawn from two identifiers are one claim resting on either, and keeping
+    /// one would have a merge drop the claim once a newer scan backed the
+    /// other and not that one.
+    ///
+    /// The excerpt and the remediation travel with the verdict where there is
+    /// one to take, and fill a gap where there is not.
     pub fn corroborate(&mut self, other: Finding) -> bool {
         // Destructured rather than reached through `other.…`, so a field added
         // to this struct is a compile error here and not a value that quietly
@@ -725,7 +743,7 @@ impl Finding {
             excerpt,
             references,
             remediation,
-            cpe,
+            cpes,
         } = other;
 
         let mut changed = false;
@@ -767,10 +785,6 @@ impl Finding {
                 self.remediation = remediation;
                 changed = true;
             }
-            if cpe.is_some() && cpe != self.cpe {
-                self.cpe = cpe;
-                changed = true;
-            }
         } else {
             // Superseded. What it justified itself with is still better than
             // nothing where nothing is recorded, and cannot displace what is.
@@ -782,10 +796,6 @@ impl Finding {
                 self.remediation = remediation;
                 changed = true;
             }
-            if self.cpe.is_none() && cpe.is_some() {
-                self.cpe = cpe;
-                changed = true;
-            }
         }
 
         for reference in references {
@@ -793,6 +803,9 @@ impl Finding {
                 self.references.push(reference);
                 changed = true;
             }
+        }
+        for cpe in cpes {
+            changed |= self.cpes.insert(cpe);
         }
 
         changed
@@ -1136,11 +1149,14 @@ mod tests {
         assert_eq!(carrying.excerpt().as_str(), "READONLY");
     }
 
-    /// The identifier a correlation names goes with the excerpt that quotes
-    /// it: the current reading's where there is one, and a superseded one's
-    /// only where the record names none.
+    /// **A claim drawn from two identifiers names both.** A service carrying
+    /// one release under two identifiers draws the same vulnerability from
+    /// each, and the claim rests on either. Keeping the last alone, a merge
+    /// whose newer scan backed only the first would drop a claim that scan
+    /// still backs. Whichever account is the current reading, and whichever
+    /// catalogue version drew it, the identifiers union as references do.
     #[test]
-    fn a_correlations_identifier_travels_with_the_verdict() {
+    fn a_claim_drawn_from_two_identifiers_names_both() {
         let drawn = |version: Version, cpe: &str| {
             Finding::new(
                 DetectionId::new("zond:cve-kev", version, "hash").unwrap(),
@@ -1153,25 +1169,26 @@ mod tests {
             .with_reference(Reference::cve("CVE-2021-41773").unwrap())
             .with_cpe(cpe)
         };
-        let january = "cpe:/a:apache:http_server:2.4.49";
-        let june = "cpe:/a:apache:http_server:2.4.50";
+        let uri = "cpe:/a:apache:http_server:2.4.49";
+        let formatted = "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*";
 
-        let mut current = drawn(Version::new(1, 0, 0), january);
-        assert!(current.corroborate(drawn(Version::new(1, 0, 0), june)));
-        assert_eq!(current.cpe(), Some(june), "the later reading's identifier");
-
-        let mut newer = drawn(Version::new(2, 0, 0), june);
-        newer.corroborate(drawn(Version::new(1, 0, 0), january));
-        assert_eq!(
-            newer.cpe(),
-            Some(june),
-            "a superseded one does not displace it"
-        );
-
-        let mut bare = drawn(Version::new(2, 0, 0), june);
-        bare.cpe = None;
-        assert!(bare.corroborate(drawn(Version::new(1, 0, 0), january)));
-        assert_eq!(bare.cpe(), Some(january), "but fills the gap");
+        for (current, other) in [
+            (Version::new(1, 0, 0), Version::new(1, 0, 0)),
+            (Version::new(2, 0, 0), Version::new(1, 0, 0)),
+            (Version::new(1, 0, 0), Version::new(2, 0, 0)),
+        ] {
+            let mut claim = drawn(current, uri);
+            assert!(claim.corroborate(drawn(other, formatted)));
+            assert_eq!(
+                claim.cpes().collect::<Vec<_>>(),
+                [uri, formatted],
+                "{current} corroborated by {other}"
+            );
+            assert!(
+                !claim.corroborate(drawn(other, uri)),
+                "an identifier already named is no news"
+            );
+        }
     }
 
     #[test]

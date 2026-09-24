@@ -505,6 +505,7 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         ("attachment", "native_vlan"),
         ("attachment", "port"),
         ("finding", "cpe"),
+        ("finding", "cpes"),
         ("finding", "excerpt"),
         ("finding", "remediation"),
         // A rule names whichever parts of a box it knows, and most name one or

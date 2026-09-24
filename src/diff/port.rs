@@ -493,7 +493,7 @@ fn changes_between(
 /// A vulnerability correlation rests on the identification it was drawn from,
 /// and asks [`correlation_standing`].
 fn standing(finding: &Finding, before: &Port, after: &Port) -> Option<Standing> {
-    if finding.cpe().is_some() {
+    if finding.is_correlation() {
         return correlation_standing(finding, before.service()?, after.service());
     }
     let silent = Security::new();
@@ -502,10 +502,10 @@ fn standing(finding: &Finding, before: &Port, after: &Port) -> Option<Standing> 
 }
 
 /// Where the service `now` identified leaves a correlation `basis`'s
-/// identification drew, or `None` where `basis` does not carry the identifier
-/// the claim names and so is not what the claim rests on.
+/// identification drew, or `None` where `basis` carries none of the
+/// identifiers the claim names and so is not what the claim rests on.
 ///
-/// Upheld where `now` carries that identifier, and overturned where it says
+/// Upheld where `now` carries one of them, and overturned where it says
 /// something else runs there: another service, another product, or another
 /// version of the same one. That is a newer identification that no longer
 /// backs the claim, and its absence is the upgrade or the replacement the
@@ -523,14 +523,14 @@ fn correlation_standing(
     basis: &Service,
     now: Option<&Service>,
 ) -> Option<Standing> {
-    let cpe = finding.cpe()?;
-    if !basis.cpes().contains(cpe) {
+    let backs = |service: &Service| finding.cpes().any(|cpe| service.cpes().contains(cpe));
+    if !backs(basis) {
         return None;
     }
     let Some(now) = now.filter(|service| !service.is_inferred()) else {
         return Some(Standing::Unsettled);
     };
-    if now.cpes().contains(cpe) {
+    if backs(now) {
         return Some(Standing::Upheld);
     }
 

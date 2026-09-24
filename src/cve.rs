@@ -72,8 +72,8 @@
 //! and it is idempotent, because a finding deduplicates by claim, so a second run
 //! corroborates rather than doubles.
 //!
-//! Every finding records the CPE it was drawn from, as
-//! [`Finding::cpe`]. The claim rests on that identification, and a
+//! Every finding records the CPEs it was drawn from, as
+//! [`Finding::cpes`]. The claim rests on those identifications, and a
 //! [`merge`](crate::merge) that folds in a newer scan identifying another
 //! version has to be able to tell which findings went with the old one.
 
@@ -1540,6 +1540,9 @@ affected = "== 2.4.49"
         correlate(&mut host);
         let port = host.ports().find(|p| p.number() == 80).unwrap();
         assert!(port.findings().count() > 0, "the release draws findings");
-        assert!(port.findings().all(|finding| finding.cpe() == Some(cpe)));
+        assert!(
+            port.findings()
+                .all(|finding| finding.cpes().collect::<Vec<_>>() == [cpe])
+        );
     }
 }
