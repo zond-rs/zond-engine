@@ -30,11 +30,12 @@
 //! hardware address. They share the filter, the counters, the threading and the
 //! shutdown, and differ only in what they hand over.
 //!
-//! That was two stacks until it was one. A local sweep read frames through a
-//! second, unfiltered receive path that copied the whole segment into this
-//! process to discard nearly all of it, could not report what the kernel had
-//! dropped, and had no way to be told to stop. [`channel`] is what remains of it:
-//! a link-layer *sender* paired with a capture, because building and emitting a
+//! One path rather than one per reader, because every receive path needs the
+//! same three things: a filter, so the kernel discards what nobody reads
+//! instead of copying the whole segment into this process; the kernel's own
+//! drop count, so a short result can say it heard less than was sent; and a
+//! way to be told to stop. [`channel`] sends at the link layer and hears
+//! through a capture like everything else, because building and emitting a
 //! frame byte for byte is a genuinely different job from hearing one.
 //!
 //! The two send backends are named for the layer they write at. [`raw`] hands a

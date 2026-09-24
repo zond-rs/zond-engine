@@ -78,6 +78,15 @@ use ipv6::Ipv6Discovery;
 /// 802.1Q-tagged frames are not admitted, and that loses nothing: the frame
 /// reader below takes the EtherType from its fixed offset, so a tagged frame
 /// would read as an unsupported EtherType and be rejected a layer up anyway.
+///
+/// One expression, where a listener's filter is a set of alternatives each
+/// link takes what it can of. A listener reads whatever a link carries, so a
+/// tunnel that cannot express the Ethernet clauses still has TCP worth
+/// hearing. A sweep sends Ethernet frames and reads every answer from an
+/// Ethernet header, so a link without one would take the IP clauses, hear
+/// nothing it can read, and report an empty segment; as one expression the
+/// Ethernet clauses refuse such a link instead, which is what the sweep
+/// needs. See [`CaptureFilter`](crate::transport::capture::CaptureFilter).
 fn sweep_filter() -> String {
     let mut clauses: Vec<&'static str> = frames::sweep_protocols()
         .iter()
@@ -1900,6 +1909,25 @@ mod tests {
                 "the sweep filter rejects {what}, so the sweep would never see one: {filter}"
             );
         }
+    }
+
+    /// A link with no Ethernet header refuses the sweep's filter whole rather
+    /// than taking the part of it that it can express. The sweep reads every
+    /// answer from an Ethernet header, so a capture opened there on the IP
+    /// clauses alone would hear nothing it can read and report the segment
+    /// empty; refused, the sweep says it cannot run on that link.
+    #[test]
+    fn a_link_without_ethernet_refuses_the_sweep_filter_whole() {
+        /// `DLT_RAW`, how a WireGuard or IP-in-IP tunnel comes up.
+        const RAW: i32 = 12;
+
+        let filter = super::sweep_filter();
+        let tunnel = pcap::Capture::dead(pcap::Linktype(RAW)).expect("a dead capture");
+
+        assert!(
+            tunnel.compile(&filter, true).is_err(),
+            "a tunnel took the sweep filter: {filter}"
+        );
     }
 
     /// The other half of the same rule. A filter that admitted everything would
