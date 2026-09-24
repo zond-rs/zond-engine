@@ -108,6 +108,14 @@ impl Service {
     /// [`ServiceDetection::Off`](crate::config::ServiceDetection::Off) says about
     /// the same label.
     ///
+    /// Why nothing was asked is the phase's to say, not the port's, as every
+    /// choice about how deep a scan probes is: a port its phase only listened
+    /// to, [`ScanSettings::listened_only_to`](crate::report::ScanSettings::listened_only_to),
+    /// keeps the label its number implies on purpose, as does every port of a
+    /// phase with service detection off. Carried on each port as well, the
+    /// fact would be one copy per port of one decision, and a merge would have
+    /// to reconcile the copies with the settings they came from.
+    ///
     /// Read by anything that must not mistake a guess for an identification:
     /// [`diff`](crate::diff) ignores an inferred service entirely, because two
     /// tools with different port catalogues would otherwise appear to disagree

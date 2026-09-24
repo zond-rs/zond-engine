@@ -2250,12 +2250,12 @@ impl ScanContext {
 /// Builds a [`ScanSession`] and the [`ScanContext`] the strategies behind it
 /// write into.
 ///
-/// Six things a session can be given, five of which most callers leave alone.
-/// A builder rather than constructors chaining into each other, because such a
-/// chain puts the widest of them under the narrowest name, and a caller who
-/// wants one setting without another has to know each one's neutral value,
-/// such as `Checkpoint::default()` for no resume point. Here each is named once
-/// and there is one neutral state.
+/// Everything a session can be given beyond its defaults, most of which a
+/// caller leaves alone. A builder rather than constructors chaining into each
+/// other, because such a chain puts the widest of them under the narrowest
+/// name, and a caller who wants one setting without another has to know each
+/// one's neutral value, such as `Checkpoint::default()` for no resume point.
+/// Here each is named once and there is one neutral state.
 ///
 /// ```no_run
 /// use zond_engine::scanner::session::ScanSession;

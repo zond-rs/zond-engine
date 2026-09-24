@@ -2020,6 +2020,9 @@ pub struct ServiceDto<'a> {
     pub name: &'a str,
     /// Certainty of this identification, 0 to 100. A table lookup by port
     /// number scores near zero; a completed protocol handshake scores near 100.
+    /// A port its phase only listened to scores what it volunteered, which
+    /// is often nothing; the phase's `listen_only_ports` say it was left
+    /// unprobed on purpose.
     pub confidence: u8,
     /// The specific product or daemon.
     pub product: Option<&'a str>,

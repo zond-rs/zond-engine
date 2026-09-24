@@ -1676,7 +1676,7 @@
           "type": "string"
         },
         "confidence": {
-          "description": "Certainty of this identification. A table lookup by port number scores near zero; a completed protocol handshake scores near 100.",
+          "description": "Certainty of this identification. A table lookup by port number scores near zero; a completed protocol handshake scores near 100. A port its phase only listened to scores what it volunteered, which is often nothing; the phase's `listen_only_ports` say it was left unprobed on purpose.",
           "$ref": "#/$defs/percentage"
         },
         "product": {
