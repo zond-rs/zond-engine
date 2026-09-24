@@ -532,6 +532,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         ("hardware", "version"),
         ("origin", "label"),
         ("phase", "attachments"),
+        // A phase that found no host rationing its ICMP errors leaves this out,
+        // which is every phase that asked no UDP ports of one.
+        ("phase", "icmp_rate_limited"),
         // A port phase a liveness pass preceded leaves this out, which is most
         // of them, and so does every phase that is not a port scan.
         ("phase", "liveness_skipped"),

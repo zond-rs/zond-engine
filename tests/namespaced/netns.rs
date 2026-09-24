@@ -383,6 +383,12 @@ impl Segment {
         address
     }
 
+    /// Lifts the ration the peer's kernel sends its ICMP errors under, so it
+    /// answers every closed UDP port it is asked about however fast.
+    pub fn unrationed_icmp(&self) {
+        self.there(&["sh", "-c", "echo 0 > /proc/sys/net/ipv4/icmp_ratelimit"]);
+    }
+
     /// Holds `address` behind this segment's peer too, and routes it there at
     /// `metric`, so a second segment offers another way to a target another
     /// one already reaches.

@@ -41,6 +41,7 @@
 //! keeps a router's error attributable: the ICMP comes from the router, but the
 //! probe it refers to was aimed at the host behind it.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -51,6 +52,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{ProbeTuning, ServiceDetection};
 use crate::journal::settle::Outcome;
+use crate::logging::info;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
@@ -176,6 +178,54 @@ pub struct UdpPortScanner {
     /// the raw scan that classifies a port opens no conversation with it; see
     /// [`detect_services`](PortScanner::detect_services).
     service_detection: ServiceDetection,
+    /// What each host's answers showed of the allowance its ICMP errors are
+    /// sent under, read once the scan is over; see [`IcmpTally`].
+    icmp: HashMap<IpAddr, IcmpTally>,
+}
+
+/// How one host answered the ports it was asked about, kept to tell a host
+/// rate-limiting its ICMP errors from one whose ports are mostly silent.
+///
+/// A closed UDP port is known only by the port unreachable its host sends,
+/// and hosts ration those: Linux sends a burst of six to each destination and
+/// one a second after it, and the BSDs cap the rate as a whole. Against a
+/// ration the answers a scan gets depend on how long it asks and not on how
+/// fast: measured against a Linux peer's 250 closed ports, a scan of 4.3 s
+/// read 8 closed, one of 11.8 s read 13, and one paced to 20 probes a second
+/// over 15.8 s read 19, one a second after the burst each time, where the
+/// same peer without its ration answered all 250 in 0.86 s. Slowing the pace
+/// to the ration therefore buys no verdicts; only time does, about one second
+/// a port, which the scan's own deadline does not give. What the scan owes is
+/// to say so, since without it every closed port it had no answer for reads
+/// as a port that might be open.
+///
+/// The signature is a retry answered. A closed port behind a ration is silent
+/// to the question the ration had no allowance for and answers the retry the
+/// next allowance falls to, while a port a filter drops is silent to every
+/// attempt and a closed port on a clean link answers the first. So a host is
+/// read as rationing when a port of its answered closed only once asked
+/// again, and more of its ports stayed silent than answered. One late answer
+/// is often all a ration leaves: a Linux peer asked forty closed ports at once
+/// answered six at once and one retry, the next allowance, before the scan
+/// ended. A lossy link answers late too, but leaves few of a host's ports
+/// silent; what the reading can mistake is a filter dropping most ports on a
+/// lossy link in front of a few closed ones, one of which lost its first
+/// answer.
+#[derive(Debug, Default, Clone, Copy)]
+struct IcmpTally {
+    /// Ports the host itself answered with a port unreachable.
+    closed: u32,
+    /// Of those, the ones answered after the probe had been sent again.
+    late: u32,
+    /// Ports that stayed silent to every attempt.
+    silent: u32,
+}
+
+impl IcmpTally {
+    /// Whether this host's answers show its ICMP errors rationed.
+    fn rate_limited(self) -> bool {
+        self.late > 0 && self.silent > self.closed
+    }
 }
 
 impl UdpPortScanner {
@@ -204,6 +254,7 @@ impl UdpPortScanner {
         Ok(Self {
             service_detection: tuning.service_detection,
             core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
+            icmp: HashMap::new(),
         })
     }
 
@@ -227,6 +278,7 @@ impl UdpPortScanner {
         Self {
             service_detection: tuning.service_detection,
             core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
+            icmp: HashMap::new(),
         }
     }
 
@@ -288,6 +340,14 @@ impl UdpPortScanner {
             self.core.audit.record_reply_without_rtt();
             return false;
         };
+
+        if state == PortState::Closed && sender == target.0 {
+            let tally = self.icmp.entry(target.0).or_default();
+            tally.closed += 1;
+            if resolution.attempts > 1 {
+                tally.late += 1;
+            }
+        }
 
         let rtt = resolution.rtt;
         self.core.record_answer(&resolution);
@@ -535,6 +595,9 @@ impl RawPortScan for UdpPortScanner {
     /// - **Nothing answered.** `OpenFiltered` from exhaustion records nothing.
     ///   Silence is not evidence about a host.
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState, sender: Option<IpAddr>) {
+        if state == PortState::OpenFiltered && sender.is_none() {
+            self.icmp.entry(ip).or_default().silent += 1;
+        }
         // Nothing answered, so there is no header to read and no round trip to
         // credit. The fuller form below is for the paths that had a reply.
         self.record_port_answered_by(ip, port_num, state, sender, None, None);
@@ -580,6 +643,24 @@ impl RawPortScan for UdpPortScanner {
 }
 
 impl UdpPortScanner {
+    /// Names every host whose answers showed its ICMP errors rationed, so a
+    /// reader knows its closed ports may read open|filtered and why.
+    fn report_rationed(&mut self) {
+        for (ip, tally) in self.icmp.drain() {
+            if tally.rate_limited() {
+                info!(
+                    verbosity = 1,
+                    "{ip} rate-limited its ICMP errors: {} of its ports answered closed, \
+                     {} of them only when asked again, and {} stayed silent",
+                    tally.closed,
+                    tally.late,
+                    tally.silent
+                );
+                self.core.ctx.record_icmp_rate_limited(ip);
+            }
+        }
+    }
+
     /// [`record_port`](RawPortScan::record_port), also carrying what the reply
     /// that produced the verdict was measured to be.
     ///
@@ -700,8 +781,14 @@ impl PortScanner for UdpPortScanner {
     /// unlike the TCP scanner's window, because a UDP scan is given no evidence
     /// it could adapt on: silence is its ordinary outcome and its replies name
     /// no attempt.
+    ///
+    /// A host whose answers show its ICMP errors rationed is named in the
+    /// phase's report once the scan is over: a port of its answered closed
+    /// only when asked again, while more of them stayed silent than answered. See
+    /// [`ScanPhase::icmp_rate_limited`](crate::report::ScanPhase::icmp_rate_limited).
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         super::drive(self, targets).await;
+        self.report_rationed();
         Ok(())
     }
 
@@ -1454,6 +1541,62 @@ mod tests {
 
         assert_eq!(sent.lock().unwrap().len(), 2, "the probe was not retried");
         assert_eq!(port_state(&session, TARGET, 53), None, "no verdict yet");
+    }
+
+    /// A host that answers some closed ports only when asked again, and
+    /// leaves more silent than it answers, is named as rationing its ICMP
+    /// errors; one whose answered ports all answered the first question is
+    /// not, however many of its ports stayed silent.
+    ///
+    /// The first is Linux's ration as a scan meets it: a burst of answers, and
+    /// then one a second going to whichever probe arrives next, which by then
+    /// is a retry. The second is a filter dropping most ports in front of a
+    /// few closed ones, whose silence no retry changes. Naming the second as
+    /// the first would tell a reader its filtered ports are closed ones.
+    #[test]
+    fn a_host_rationing_its_icmp_errors_is_named_and_a_filtered_one_is_not() {
+        const FILTERED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201));
+        let (mut scanner, _session) = scanner_with_mock();
+        let unreachable = |host: IpAddr, port: u16| {
+            icmpv4_error(
+                host,
+                IcmpCodes::DestinationPortUnreachable,
+                host,
+                SCAN_SRC_PORT,
+                port,
+            )
+        };
+        for port in 1..=20 {
+            probe(&mut scanner, TARGET, port);
+            probe(&mut scanner, FILTERED, port);
+        }
+
+        // The burst: six answered at once from the rationing host, and eight
+        // from the filtered one, which answers every closed port it has.
+        let mut now = Instant::now();
+        for port in 1..=6 {
+            scanner.handle_reply(&unreachable(TARGET, port), now);
+        }
+        for port in 1..=8 {
+            scanner.handle_reply(&unreachable(FILTERED, port), now);
+        }
+
+        // The ration's next allowances fall to retries.
+        now += Duration::from_secs(2);
+        scanner.service_retries(now);
+        for port in 7..=8 {
+            scanner.handle_reply(&unreachable(TARGET, port), now);
+        }
+
+        // Everything else stays silent to its last attempt.
+        for _ in 0..RETRY_POLICY.max_attempts + 1 {
+            now += RETRY_POLICY.worst_case_probe_lifetime();
+            scanner.service_retries(now);
+        }
+        assert!(scanner.core.ledger.is_empty(), "every probe was settled");
+
+        scanner.report_rationed();
+        assert_eq!(scanner.core.ctx.take_icmp_rate_limited(), vec![TARGET]);
     }
 
     /// A probe that has spent its budget is written off while the scan is still

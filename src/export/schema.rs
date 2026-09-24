@@ -569,6 +569,14 @@ pub struct PhaseDto<'a> {
     /// as a quiet machine rather than as a scan that ran out of time.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub timed_out: Vec<String>,
+    /// Addresses whose ICMP errors the phase found rate-limited, ascending.
+    ///
+    /// Left out when empty. A closed UDP port is known only by the ICMP port
+    /// unreachable its host sends, and a host here rationed those, so most of
+    /// its closed ports read `open_filtered` beside the few that read
+    /// `closed`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub icmp_rate_limited: Vec<String>,
     /// Addresses this phase reached by TCP connect although it held the
     /// privilege its raw strategies need, ascending.
     ///
@@ -694,6 +702,11 @@ impl<'a> PhaseDto<'a> {
                 .collect(),
             timed_out: phase
                 .timed_out()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            icmp_rate_limited: phase
+                .icmp_rate_limited()
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect(),

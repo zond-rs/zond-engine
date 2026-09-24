@@ -860,6 +860,14 @@
             "minLength": 1
           }
         },
+        "icmp_rate_limited": {
+          "description": "Addresses whose ICMP errors this phase found rate-limited, ascending. Absent where there were none. A closed UDP port is known only by the ICMP port unreachable its host sends, and a host here rationed those, as Linux does at about one a second after a short burst: most of the closed ports asked of it read `open_filtered` beside the few that read `closed`, and a longer scan reads more of them, at about one a second. Read from the host's own answers: a port answered closed only when asked again while more of its ports stayed silent than answered.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "reached_by_connect": {
           "description": "Addresses this phase reached by TCP connect although `privileged` is true, ascending. Absent where there were none, which is most phases, and on every unprivileged phase, which reached everything this way. A raw probe goes where the scanning process can put a packet of its own, and some addresses are beyond that whatever the privilege: loopback, and an address nothing routes to. A process that can inject frames and holds no raw socket also cannot reach the scanning host's own addresses, anything routed through a tunnel, or, for its port probes, an IPv6 neighbour. What the phase found at one of these is connect evidence: a port that answered nothing may have been told nothing by the local stack, and none was asked with the technique `settings` names.",
           "type": "array",

@@ -597,6 +597,7 @@ struct PhaseDto {
     probe_stats: Vec<ProbeStatsDto>,
     unroutable: Vec<String>,
     timed_out: Vec<String>,
+    icmp_rate_limited: Vec<String>,
     reached_by_connect: Vec<RangeDto>,
     undecided: Vec<RangeDto>,
     liveness_skipped: Option<String>,
@@ -647,6 +648,11 @@ impl PhaseDto {
                 .collect::<Result<_, _>>()?,
             timed_out: self
                 .timed_out
+                .iter()
+                .map(|ip| address(ip))
+                .collect::<Result<_, _>>()?,
+            icmp_rate_limited: self
+                .icmp_rate_limited
                 .iter()
                 .map(|ip| address(ip))
                 .collect::<Result<_, _>>()?,
@@ -2308,6 +2314,7 @@ mod tests {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: Some(LivenessSkip::PortsNoDearer),

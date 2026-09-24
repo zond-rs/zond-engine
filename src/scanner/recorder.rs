@@ -193,6 +193,7 @@ impl PhaseRecorder {
             refusals: ctx.take_refusals(),
             unroutable,
             timed_out: ctx.take_timed_out(),
+            icmp_rate_limited: ctx.take_icmp_rate_limited(),
             // Taken whatever the privilege, so a context reused for another
             // phase starts empty, and kept only for a raw phase: one at
             // `Connect` reached everything this way, and its privilege says so.

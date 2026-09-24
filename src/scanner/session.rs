@@ -948,6 +948,29 @@ impl UnsweptLog {
     }
 }
 
+/// Addresses whose ICMP errors a phase found rate-limited, gathered across
+/// it.
+///
+/// The same shape as [`TimedOutLog`] and for a related purpose: the phase
+/// qualifying what it covered. A set, so a host two scanners read the same
+/// way is named once.
+#[derive(Debug, Default)]
+pub(crate) struct RateLimitedLog {
+    entries: Mutex<std::collections::BTreeSet<IpAddr>>,
+}
+
+impl RateLimitedLog {
+    fn insert(&self, address: IpAddr) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.insert(address);
+    }
+
+    fn drain(&self) -> Vec<IpAddr> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries).into_iter().collect()
+    }
+}
+
 /// Addresses whose own budget ran out, gathered across a phase.
 ///
 /// The same shape as [`UnroutableLog`] and for a related purpose: both are the
@@ -1392,6 +1415,8 @@ pub struct ScanContext {
     pub(crate) unroutable: Arc<UnroutableLog>,
     /// Addresses the scan stopped working on because their budget ran out.
     pub(crate) timed_out: Arc<TimedOutLog>,
+    /// Addresses whose ICMP errors the scan found rate-limited.
+    pub(crate) icmp_rate_limited: Arc<RateLimitedLog>,
     /// Addresses a discovery sweep stopped before it reached a verdict on.
     pub(crate) unswept: Arc<UnsweptLog>,
     /// Addresses a raw phase reached by TCP connect instead.
@@ -2015,6 +2040,19 @@ impl ScanContext {
         self.timed_out.drain()
     }
 
+    /// Records that `address` rate-limited the ICMP errors a scanner reads
+    /// its verdicts from, so the ports it had no allowance to answer for
+    /// read as silent; see
+    /// [`ScanPhase::icmp_rate_limited`](crate::report::ScanPhase::icmp_rate_limited).
+    pub(crate) fn record_icmp_rate_limited(&self, address: IpAddr) {
+        self.icmp_rate_limited.insert(address);
+    }
+
+    /// The addresses found rate-limiting their ICMP errors so far, taken.
+    pub(crate) fn take_icmp_rate_limited(&self) -> Vec<IpAddr> {
+        self.icmp_rate_limited.drain()
+    }
+
     /// Records that `targets` were reached by TCP connect in a phase that held
     /// the privilege its raw strategies need.
     ///
@@ -2539,6 +2577,7 @@ impl SessionBuilder {
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             timed_out: Arc::new(TimedOutLog::default()),
+            icmp_rate_limited: Arc::new(RateLimitedLog::default()),
             unswept: Arc::new(UnsweptLog::default()),
             reached_by_connect: Arc::new(ConnectLog::default()),
             silent: Arc::new(SilenceLog::default()),

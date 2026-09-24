@@ -1301,6 +1301,22 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
+    // Addresses that rationed the ICMP errors a closed UDP port is known by.
+    // Their open|filtered ports are mostly closed ones the scan had no answer
+    // for, which the port list alone does not say.
+    if !phase.icmp_rate_limited.is_empty() {
+        let addresses: Vec<String> = phase.icmp_rate_limited.iter().map(|ip| esc(ip)).collect();
+        fact(
+            out,
+            "ICMP rate-limited",
+            &format!(
+                "{}{}",
+                addresses.join(", "),
+                dim(&[esc("closed UDP ports may read open|filtered")])
+            ),
+        )?;
+    }
+
     // Addresses the phase never reached a verdict on. Absent from the hosts
     // below like the silent ones, and without this line they read as silent.
     // Capped, since a sweep stopped halfway through a shuffled range leaves

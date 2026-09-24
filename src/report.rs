@@ -1676,6 +1676,9 @@ pub struct PhaseParts {
     /// Addresses whose per-host budget ran out before the phase finished with
     /// them.
     pub timed_out: Vec<IpAddr>,
+    /// Addresses whose ICMP errors the phase found rate-limited. See
+    /// [`ScanPhase::icmp_rate_limited`].
+    pub icmp_rate_limited: Vec<IpAddr>,
     /// Addresses a raw phase reached by TCP connect. See
     /// [`ScanPhase::reached_by_connect`].
     pub reached_by_connect: Vec<IpRange>,
@@ -1715,6 +1718,7 @@ impl ScanPhase {
             refusals: parts.refusals,
             unroutable: parts.unroutable,
             timed_out: parts.timed_out,
+            icmp_rate_limited: parts.icmp_rate_limited,
             reached_by_connect: parts.reached_by_connect,
             undecided: parts.undecided,
             liveness_skipped: parts.liveness_skipped,
@@ -1770,6 +1774,11 @@ pub struct ScanPhase {
     /// looks the same whether the scan asked and heard nothing or ran out of
     /// time to ask.
     timed_out: Vec<IpAddr>,
+    /// Addresses whose ICMP errors the phase found rate-limited.
+    ///
+    /// Beside `unroutable` for the reason `timed_out` is: the phase qualifying
+    /// what it covered. See [`icmp_rate_limited`](Self::icmp_rate_limited).
+    icmp_rate_limited: Vec<IpAddr>,
     /// Addresses this phase reached by TCP connect although it held the
     /// privilege its raw strategies need.
     ///
@@ -1873,6 +1882,24 @@ impl ScanPhase {
     /// to ask about; what it does not carry is the rest of them.
     pub fn timed_out(&self) -> &[IpAddr] {
         &self.timed_out
+    }
+
+    /// Addresses whose ICMP errors this phase found rate-limited, ascending.
+    ///
+    /// A closed UDP port is known only by the ICMP port unreachable its host
+    /// sends, and hosts ration those: Linux answers a burst and then about
+    /// one a second. Against a host here the scan had no answer for most of
+    /// the closed ports it asked, and they read `OpenFiltered`, silence being
+    /// all it heard, beside the few that read `Closed`. Its open|filtered
+    /// ports are therefore mostly closed ones, which a page of them does not
+    /// say without this list; a longer scan reads more of them, at about one
+    /// a second.
+    ///
+    /// Read from the host's own answers: a port answered closed only when
+    /// asked again while more of its ports stayed silent than answered, which
+    /// a filter dropping ports does not produce.
+    pub fn icmp_rate_limited(&self) -> &[IpAddr] {
+        &self.icmp_rate_limited
     }
 
     /// Addresses this phase reached by TCP connect although it held the
@@ -2997,6 +3024,7 @@ mod tests {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,

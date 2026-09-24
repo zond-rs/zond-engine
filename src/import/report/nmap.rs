@@ -755,6 +755,7 @@ impl Run {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
             // The scope holds only addresses the document gave a verdict on, up
             // or down, so none of it is left undecided.

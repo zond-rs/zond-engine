@@ -3567,6 +3567,7 @@ impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::O
 pub zond_engine::export::schema::PhaseDto::attachments: alloc::vec::Vec<zond_engine::export::schema::AttachmentDto<'a>>
 pub zond_engine::export::schema::PhaseDto::elapsed_us: u64
 pub zond_engine::export::schema::PhaseDto::failures: alloc::vec::Vec<zond_engine::export::schema::FailureDto<'a>>
+pub zond_engine::export::schema::PhaseDto::icmp_rate_limited: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::export::schema::PhaseDto::kind: &'static str
 pub zond_engine::export::schema::PhaseDto::liveness_skipped: core::option::Option<&'static str>
 pub zond_engine::export::schema::PhaseDto::origin: core::option::Option<zond_engine::export::schema::PhaseOriginDto<'a>>
@@ -13137,6 +13138,7 @@ pub struct zond_engine::record::PhaseRecord
 pub zond_engine::record::PhaseRecord::attachments: alloc::vec::Vec<zond_engine::record::AttachmentRecord>
 pub zond_engine::record::PhaseRecord::elapsed: core::time::Duration
 pub zond_engine::record::PhaseRecord::failures: alloc::vec::Vec<zond_engine::record::FailureRecord>
+pub zond_engine::record::PhaseRecord::icmp_rate_limited: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::record::PhaseRecord::kind: alloc::string::String
 pub zond_engine::record::PhaseRecord::liveness_skipped: core::option::Option<alloc::string::String>
 pub zond_engine::record::PhaseRecord::origin: core::option::Option<zond_engine::record::PhaseOriginRecord>
@@ -13971,6 +13973,7 @@ pub struct zond_engine::report::PhaseParts
 pub zond_engine::report::PhaseParts::attachments: alloc::vec::Vec<zond_engine::report::Attachment>
 pub zond_engine::report::PhaseParts::elapsed: core::time::Duration
 pub zond_engine::report::PhaseParts::failures: alloc::vec::Vec<zond_engine::report::ScannerFailure>
+pub zond_engine::report::PhaseParts::icmp_rate_limited: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::report::PhaseParts::kind: zond_engine::report::ScanKind
 pub zond_engine::report::PhaseParts::liveness_skipped: core::option::Option<zond_engine::report::LivenessSkip>
 pub zond_engine::report::PhaseParts::origin: core::option::Option<zond_engine::report::PhaseOrigin>
@@ -14102,6 +14105,7 @@ impl zond_engine::report::ScanPhase
 pub fn zond_engine::report::ScanPhase::attachments(&self) -> &[zond_engine::report::Attachment]
 pub fn zond_engine::report::ScanPhase::elapsed(&self) -> core::time::Duration
 pub fn zond_engine::report::ScanPhase::failures(&self) -> &[zond_engine::report::ScannerFailure]
+pub fn zond_engine::report::ScanPhase::icmp_rate_limited(&self) -> &[core::net::ip_addr::IpAddr]
 pub fn zond_engine::report::ScanPhase::kind(&self) -> zond_engine::report::ScanKind
 pub fn zond_engine::report::ScanPhase::liveness_skipped(&self) -> core::option::Option<zond_engine::report::LivenessSkip>
 pub fn zond_engine::report::ScanPhase::origin(&self) -> core::option::Option<&zond_engine::report::PhaseOrigin>

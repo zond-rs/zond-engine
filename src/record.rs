@@ -1367,6 +1367,12 @@ pub struct PhaseRecord {
     /// and defaulted on the way in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timed_out: Vec<IpAddr>,
+    /// Addresses whose ICMP errors the sitting found rate-limited.
+    ///
+    /// Skipped when empty, which is every sitting that asked no UDP ports of a
+    /// rationing host, and defaulted on the way in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub icmp_rate_limited: Vec<IpAddr>,
     /// Addresses a raw sitting reached by TCP connect instead.
     ///
     /// Skipped when empty, which is most sittings, and defaulted on the way in.
@@ -1537,6 +1543,7 @@ impl From<&ScanPhase> for PhaseRecord {
             refusals: phase.refusals().iter().map(RefusalRecord::from).collect(),
             unroutable: phase.unroutable().to_vec(),
             timed_out: phase.timed_out().to_vec(),
+            icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
             reached_by_connect: phase
                 .reached_by_connect()
                 .iter()
@@ -1580,6 +1587,7 @@ impl From<&PhaseRecord> for ScanPhase {
             refusals: record.refusals.iter().map(Refusal::from).collect(),
             unroutable: record.unroutable.clone(),
             timed_out: record.timed_out.clone(),
+            icmp_rate_limited: record.icmp_rate_limited.clone(),
             // A range whose ends do not describe one is dropped rather than
             // guessed at, as `TargetScope` drops one. What remains still says
             // which addresses the sitting reached this way.

@@ -327,6 +327,71 @@ async fn a_udp_port_nothing_is_bound_to_is_reported_closed() {
     );
 }
 
+/// A host rationing its ICMP errors is named in the report, so its closed UDP
+/// ports reading open|filtered are not taken for ports that might be open.
+///
+/// The peer is a Linux kernel at its defaults, which sends each destination a
+/// burst of six port unreachables and then one a second. Asked about forty
+/// closed ports at once, it answers a handful and leaves the rest silent, and
+/// only a real kernel's ration shows the pattern the scan reads it by: the
+/// answers after the burst fall to retries.
+#[tokio::test]
+async fn a_host_rationing_its_icmp_errors_is_named_in_the_report() {
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    let outcome = run_scan(target_map(segment.peer(), "U:40000-40039"), &test_config()).await;
+
+    let closed = (40000..40040)
+        .filter(|&port| outcome.port_state(segment.peer(), port) == Some(PortState::Closed))
+        .count();
+    assert!(
+        closed < 40,
+        "the peer answered all {closed} closed ports, so nothing rationed its errors"
+    );
+    let named: Vec<_> = outcome
+        .report
+        .phases()
+        .iter()
+        .flat_map(|phase| phase.icmp_rate_limited().iter().copied())
+        .collect();
+    assert_eq!(
+        named,
+        vec![segment.peer()],
+        "{closed} of 40 closed ports answered, and the report should say why"
+    );
+}
+
+/// A host answering every closed port is not named as rationing, which is
+/// the claim the name makes: the same forty ports, from a peer with its ration
+/// lifted, all read closed and the report names nobody.
+#[tokio::test]
+async fn a_host_answering_every_closed_port_is_not_named_as_rationing() {
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    segment.unrationed_icmp();
+    let outcome = run_scan(target_map(segment.peer(), "U:40000-40039"), &test_config()).await;
+
+    assert!(
+        (40000..40040)
+            .all(|port| outcome.port_state(segment.peer(), port) == Some(PortState::Closed)),
+        "an unrationed peer answers every closed port"
+    );
+    assert!(
+        outcome
+            .report
+            .phases()
+            .iter()
+            .all(|phase| phase.icmp_rate_limited().is_empty()),
+        "a host that answered everything was named as rationing"
+    );
+}
+
 /// A UDP reply reaches the scan and opens the port.
 ///
 /// The other half of the same path, and the one that catches a capture filter
