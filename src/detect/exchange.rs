@@ -46,6 +46,7 @@ use std::time::{Duration, Instant};
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::fingerprint::Tunnel;
 use crate::protocols::http::message_end as http_message_end;
+use crate::system::descriptors;
 use crate::system::dial::Egress;
 
 /// The largest datagram a UDP reply is read into, the theoretical maximum
@@ -77,11 +78,19 @@ pub(crate) enum ExchangeError {
     ConnectionRefused,
     /// The connection failed, or a TLS handshake could not be set up over it.
     Reset,
+    /// The process had no descriptor to give the exchange's socket for as
+    /// long as the caller's time allowed, so nothing was sent. This machine's
+    /// shortfall rather than anything the port did, and kept apart from a
+    /// reset so that it is reported rather than read as the port's answer.
+    Starved,
 }
 
 impl ExchangeError {
     /// Which error an I/O failure surfaces as.
     fn of(error: &std::io::Error) -> Self {
+        if descriptors::exhausted(error) {
+            return Self::Starved;
+        }
         match error.kind() {
             ErrorKind::TimedOut | ErrorKind::WouldBlock => Self::TimedOut,
             ErrorKind::ConnectionRefused => Self::ConnectionRefused,
@@ -113,6 +122,13 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
 ///
 /// A silent port is an empty reply rather than an error. What that means belongs
 /// to the caller.
+///
+/// The exchange holds one descriptor, its socket, and nothing beside it: a
+/// caller that took one share of the process's descriptor budget for its
+/// exchanges has taken all they need. A table full for other reasons is
+/// waited out until the deadline, since a socket that comes free later still
+/// leaves the question time to be asked, and one that never does comes back
+/// [`ExchangeError::Starved`].
 pub(crate) fn tcp(
     addr: SocketAddr,
     egress: Egress,
@@ -121,16 +137,12 @@ pub(crate) fn tcp(
     deadline: Instant,
     cap: u64,
 ) -> Result<Reply, ExchangeError> {
-    let timeout = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
+    let left = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
     let tcp = egress
-        .connect_within(addr, timeout.min(CONNECT_PROBE_TIMEOUT))
+        .connect_within(addr, left.min(CONNECT_PROBE_TIMEOUT), left)
         .map_err(|error| ExchangeError::of(&error))?;
     tcp.set_read_timeout(Some(remaining(deadline).ok_or(ExchangeError::TimedOut)?))
         .map_err(|error| ExchangeError::of(&error))?;
-    // A second handle on the same socket, kept to shorten the read timeout
-    // once the reply has begun: a timeout is the socket's, so it holds under a
-    // TLS session as it does in the clear.
-    let socket = tcp.try_clone().map_err(|error| ExchangeError::of(&error))?;
     let mut stream = super::tls::wrap(tcp, addr.ip(), tunnel).ok_or(ExchangeError::Reset)?;
     let sent = Instant::now();
     stream
@@ -162,7 +174,11 @@ pub(crate) fn tcp(
                     break;
                 };
                 let gap = *gap.get_or_insert_with(|| idle_gap(sent.elapsed(), left));
-                if socket.set_read_timeout(Some(gap.min(left))).is_err() {
+                if stream
+                    .socket()
+                    .set_read_timeout(Some(gap.min(left)))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -223,8 +239,9 @@ pub(crate) fn udp(
     deadline: Instant,
     cap: u64,
 ) -> Result<Reply, ExchangeError> {
+    let left = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
     let socket = egress
-        .udp_blocking(addr.ip())
+        .udp_blocking(addr.ip(), left)
         .map_err(|error| ExchangeError::of(&error))?;
     socket
         .connect(addr)
@@ -261,6 +278,75 @@ pub(crate) fn udp(
 mod tests {
     use super::{http_message_end, idle_gap};
     use std::time::Duration;
+
+    /// An exchange holds one descriptor, its socket, and nothing beside it, so
+    /// a table with room for that socket carries the exchange through.
+    ///
+    /// Every connection a scan makes takes one share of the process's
+    /// descriptor budget, and a detection's flow takes one for its exchanges.
+    /// An exchange that held a second descriptor of its own would push the
+    /// scan past its budget into the share kept for the rest of the process,
+    /// and where the table was full, the second descriptor would be refused
+    /// after the connection was made and read as the port resetting it: a
+    /// finding lost with nothing said. Here the table has room for two, the
+    /// exchange's socket and the listener's accepted end, and not a third.
+    #[cfg(unix)]
+    #[test]
+    fn an_exchange_holds_one_descriptor_and_goes_through_on_a_table_with_room_for_it() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+        use std::io::{Read, Write};
+        use std::time::Instant;
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "an_exchange_holds_one_descriptor_and_goes_through_on_a_table_with_room_for_it",
+        ) {
+            return;
+        }
+        const REPLY: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+        let addr = listener.local_addr().expect("its address");
+        // Answers once, keeping the connection open, so the reply is read to
+        // the length it declares rather than to a close.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(accepted) => break accepted,
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 256];
+            while !request.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            let _ = stream.write_all(REPLY);
+            std::thread::sleep(Duration::from_secs(2));
+        });
+
+        let mut held = exhaust(64);
+        held.truncate(held.len() - 2);
+
+        let reply = super::tcp(
+            addr,
+            crate::system::dial::Egress::KERNEL,
+            None,
+            b"GET / HTTP/1.1\r\n\r\n",
+            Instant::now() + Duration::from_secs(5),
+            4096,
+        )
+        .map(|reply| reply.bytes);
+        assert_eq!(
+            reply.as_deref(),
+            Ok(REPLY),
+            "the exchange needed more than its one socket"
+        );
+        drop(held);
+        let _ = server.join();
+    }
 
     /// The gap a quiet port is allowed covers a pause as long again as its
     /// first byte took, lets a speak-first service take a good share of the

@@ -42,9 +42,10 @@ use super::schema::{MAX_FLOW_STEPS, MAX_LOOP_ITEMS, SEED_VAR_HOST, SEED_VAR_PORT
 use super::{Env, eval};
 
 /// Why an exchange a flow asked for was refused before it happened, rather than
-/// simply going unanswered: a budget the detection declared, now spent. A silent
-/// port and a spent budget both leave a step without a reply, and a report needs
-/// to tell them apart.
+/// simply going unanswered: a budget the detection declared, now spent, or a
+/// socket the process had none left to give. A silent port and a refused
+/// exchange both leave a step without a reply, and a report needs to tell them
+/// apart.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeRefusal {
@@ -54,6 +55,11 @@ pub enum ProbeRefusal {
     Connections,
     /// The wall-clock budget is spent.
     Deadline,
+    /// The process had no file descriptor to give the exchange's socket for as
+    /// long as the flow's time allowed. Neither the port's doing nor the
+    /// detection's: the process's descriptor limit is too small for what it
+    /// has open, and raising it is the remedy.
+    Descriptors,
 }
 
 /// The one capability a flow reaches the world through: send bytes to the scanned

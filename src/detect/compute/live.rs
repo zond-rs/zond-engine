@@ -167,6 +167,15 @@ impl From<ExchangeError> for CapError {
             ExchangeError::TimedOut => CapError::TimedOut,
             ExchangeError::ConnectionRefused => CapError::ConnectionRefused,
             ExchangeError::Reset => CapError::Reset,
+            // Denied rather than handed back as an I/O failure: the socket was
+            // never opened, so a module that caught it would read this
+            // machine's shortfall as the port's answer, and one that retried
+            // would find the table no emptier. Ending the run files it with
+            // the reason, and the remedy is the operator's.
+            ExchangeError::Starved => CapError::Denied(format!(
+                "no socket to speak through: {}",
+                crate::system::descriptors::starved_while("in the time the detection had")
+            )),
         }
     }
 }
@@ -181,6 +190,19 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use std::time::Duration;
+
+    /// A module's exchange the process had no socket for ends its run with a
+    /// reason, rather than coming back as a reset the module would catch and
+    /// read as the port's answer.
+    #[test]
+    fn a_speak_refused_a_socket_ends_the_run_with_the_reason() {
+        let error = CapError::from(ExchangeError::Starved);
+        assert!(error.is_fatal(), "handed back to the module: {error:?}");
+        assert!(
+            matches!(&error, CapError::Denied(reason) if reason.contains("file descriptor limit")),
+            "{error:?}"
+        );
+    }
 
     fn budget() -> Budget {
         Budget {

@@ -289,19 +289,22 @@ impl Egress {
     }
 
     /// Connects to `addr` on the calling thread, giving the connection
-    /// `timeout`.
+    /// `timeout` and a full descriptor table `patience`.
     ///
     /// For a caller that holds a blocking socket, which is a detection running
     /// on the blocking pool. The same socket [`connect`](Self::connect) would
     /// build, connected the way [`std::net::TcpStream::connect_timeout`]
     /// connects one, and a full descriptor table waited out the same way
-    /// before it, outside `timeout`.
+    /// before it, outside `timeout`. The patience is the caller's, because a
+    /// detection's exchange has a clock of its own that a wait for a socket
+    /// cannot outlast.
     pub(crate) fn connect_within(
         self,
         addr: SocketAddr,
         timeout: Duration,
+        patience: Duration,
     ) -> io::Result<std::net::TcpStream> {
-        descriptors::patiently_blocking(descriptors::PATIENCE, || {
+        descriptors::patiently_blocking(patience, || {
             if self.tcp_is_plain(Shaping::default()) {
                 return std::net::TcpStream::connect_timeout(&addr, timeout);
             }
@@ -338,9 +341,15 @@ impl Egress {
         UdpSocket::from_std(std::net::UdpSocket::from(socket))
     }
 
-    /// [`udp`](Self::udp), for a caller holding a blocking socket.
-    pub(crate) fn udp_blocking(self, peer: IpAddr) -> io::Result<std::net::UdpSocket> {
-        descriptors::patiently_blocking(descriptors::PATIENCE, || {
+    /// [`udp`](Self::udp), for a caller holding a blocking socket, waiting
+    /// out a full descriptor table for `patience`; see
+    /// [`connect_within`](Self::connect_within).
+    pub(crate) fn udp_blocking(
+        self,
+        peer: IpAddr,
+        patience: Duration,
+    ) -> io::Result<std::net::UdpSocket> {
+        descriptors::patiently_blocking(patience, || {
             if self.pin.is_none() {
                 return std::net::UdpSocket::bind(wildcard(peer, 0));
             }
@@ -609,7 +618,7 @@ mod tests {
             let listener = std::net::TcpListener::bind((ip, 0)).expect("a loopback listener");
             let addr = listener.local_addr().expect("its address");
             let stream = Egress::KERNEL
-                .connect_within(addr, Duration::from_secs(1))
+                .connect_within(addr, Duration::from_secs(1), descriptors::PATIENCE)
                 .expect("the connect completes");
             assert_eq!(stream.peer_addr().expect("a peer"), addr, "{ip}");
         }
@@ -898,7 +907,7 @@ mod tests {
         // as a failed connect.
         let handle = std::thread::spawn(move || listener.accept());
         let _stream = egress
-            .connect_within(addr, Duration::from_secs(1))
+            .connect_within(addr, Duration::from_secs(1), descriptors::PATIENCE)
             .expect("the blocking connect");
         let (_accepted, from) = handle.join().expect("the accept joins").expect("an accept");
         assert_eq!(from.ip(), source, "the blocking connection's source");

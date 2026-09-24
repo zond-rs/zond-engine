@@ -64,8 +64,9 @@ const HOST_SYN_RETRANSMIT: Duration = Duration::from_secs(1);
 /// detection, detections, TLS enumeration) work on at once.
 ///
 /// A pace, not a guard on the socket table. What keeps the process's table
-/// from filling is its descriptor budget, half the soft file limit, which
-/// every connection a scan opens takes a share of before its socket and waits
+/// from filling is its descriptor budget, what the soft file limit leaves
+/// once a reserve for the rest of the process is set aside, which every
+/// connection a scan opens takes a share of before its socket and waits
 /// for when there is none; a table full for other reasons is waited out
 /// rather than read as the target's answer. This is how many conversations a
 /// pass keeps going, enough that a wide scan is not queued one port deep and
@@ -95,10 +96,10 @@ pub const DETECTION_FLOW_CONCURRENCY: usize = 8;
 ///
 /// A ceiling, and not always the one that binds. Each probe in flight holds a
 /// socket, and the process may hold only so many: every connect probe takes its
-/// socket from a budget of half the process's descriptor limit, shared by every
-/// scan the process runs, so a shell's default of 256 or 1,024 holds a sweep
-/// below this and slows it rather than letting it lose the addresses it has no
-/// socket for.
+/// socket from a budget of half the process's descriptor limit, less under a
+/// very small one, shared by every scan the process runs, so a shell's default
+/// of 256 or 1,024 holds a sweep below this and slows it rather than letting
+/// it lose the addresses it has no socket for.
 pub const DISCOVERY_CONCURRENCY: usize = 2048;
 
 // ╔════════════════════════════════════════════╗

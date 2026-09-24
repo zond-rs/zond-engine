@@ -54,8 +54,26 @@ use crate::fingerprint::Tunnel;
 /// it. A plain [`TcpStream`] and a TLS [`StreamOwned`] both satisfy it, so the
 /// read-and-write loop in each probe is written once against `dyn ReadWrite`
 /// rather than duplicated per transport.
-pub(crate) trait ReadWrite: Read + Write {}
-impl<T: Read + Write> ReadWrite for T {}
+pub(crate) trait ReadWrite: Read + Write {
+    /// The socket underneath, for what is set on the socket rather than said
+    /// through the stream: a read timeout holds under a TLS session as it does
+    /// in the clear. Reached through the stream rather than through a second
+    /// handle on the socket, which would be a second descriptor for one
+    /// connection.
+    fn socket(&self) -> &TcpStream;
+}
+
+impl ReadWrite for TcpStream {
+    fn socket(&self) -> &TcpStream {
+        self
+    }
+}
+
+impl ReadWrite for StreamOwned<ClientConnection, TcpStream> {
+    fn socket(&self) -> &TcpStream {
+        self.get_ref()
+    }
+}
 
 /// Wraps a connected socket in the transport a tunnel names, ready for the same
 /// exchange either way.

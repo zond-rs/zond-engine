@@ -445,12 +445,19 @@ fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
 /// A flow left short of its questions, phrased for the report: what stopped
 /// it, a budget and its size or the port going unresponsive, and how many of
 /// the flow's requests had been answered by then.
+///
+/// A flow the process had no socket for is filed as a failure rather than as
+/// cut short, as every other connection refused a socket is: nothing about
+/// the port or the detection held, the process ran out of descriptors, and
+/// the report names the limit and its remedy.
 fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
     let stopped = match shortfall.stopped {
+        Stopped::Starved => return starved(shortfall),
         Stopped::Budget { refusal, limit } => match refusal {
             ProbeRefusal::Deadline => format!("its {limit} ms time budget ran out"),
             ProbeRefusal::Bytes => format!("its {limit}-byte budget ran out"),
             ProbeRefusal::Connections => format!("its {limit}-connection budget ran out"),
+            ProbeRefusal::Descriptors => return starved(shortfall),
         },
         Stopped::PortUnresponsive => "the port was given up on as unresponsive".to_string(),
     };
@@ -459,6 +466,19 @@ fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
         why: format!(
             "{stopped} with {} of {} requests answered",
             shortfall.answered, shortfall.requests
+        ),
+    }
+}
+
+/// A flow the process had no socket for, as the failure it is filed as.
+fn starved(shortfall: &Shortfall) -> Unfinished {
+    Unfinished::Failed {
+        id: shortfall.detection.clone(),
+        why: format!(
+            "was refused a socket with {} of {} requests answered: {}",
+            shortfall.answered,
+            shortfall.requests,
+            crate::system::descriptors::starved_while("in the time the detection had")
         ),
     }
 }
@@ -539,10 +559,19 @@ fn detect_hosts(ctx: &ScanContext) {
 ///
 /// Each permit also carries a share of the process's descriptor budget, the
 /// one every connection a scan opens draws from, since a flow's exchanges open
-/// their sockets one after another and one share covers them; see
+/// their sockets one after another, each holding its one socket and no other
+/// descriptor, and one share covers them; see
 /// [`descriptors`](crate::system::descriptors). It is taken after the phase's
 /// own permit and never the other way round, and nothing waiting on the
 /// process's budget waits on this gate, so neither wait can close a cycle.
+///
+/// The share is the flow's rather than each exchange's. Taken per exchange,
+/// the queue for it would fall between a flow's questions, inside its clock,
+/// and a busy scan would read as a slow port: the flow would run out of time
+/// on its own budget and count dead waits against a port that answered every
+/// question it was asked. Held for the flow, the wait is before the clock,
+/// and a table the rest of the process fills past its reserve is the only
+/// wait left inside it, which the flow reports as the process's shortfall.
 struct Gate {
     /// Permits still to be handed out.
     free: std::sync::Mutex<usize>,
@@ -965,6 +994,40 @@ mod tests {
         assert_eq!(failures[0].scanner(), ScannerKind::Detection);
         assert_eq!(failures[0].reason(), expected);
         assert_eq!(lines, vec![(tracing::Level::WARN, expected.to_string())]);
+        drop(session);
+    }
+
+    /// A flow the process had no socket for is filed as a failure naming the
+    /// descriptor limit and its remedy, as every other connection refused a
+    /// socket is, so a scan that lost a detection this way is never read as
+    /// one whose ports were cleared.
+    #[test]
+    fn a_detection_refused_a_socket_is_reported_as_a_failure_naming_the_limit() {
+        let (session, ctx) = ScanSession::new();
+        let shortfall = Shortfall {
+            detection: "backup-files".to_string(),
+            stopped: Stopped::Starved,
+            answered: 1,
+            requests: 6,
+        };
+
+        let lines = logged(|| describe_shortfall(&shortfall).record(&ctx, "192.0.2.1:443"));
+
+        let failures = ctx.failures_snapshot();
+        assert_eq!(failures.len(), 1, "the shortfall was not filed");
+        let reason = failures[0].reason();
+        assert!(
+            reason.starts_with(
+                "detection 'backup-files' on 192.0.2.1:443 was refused a socket \
+                 with 1 of 6 requests answered: the process reached its file \
+                 descriptor limit"
+            ) && reason.ends_with("raise the limit and scan again"),
+            "{reason}"
+        );
+        assert!(
+            matches!(lines.as_slice(), [(tracing::Level::ERROR, _)]),
+            "not announced as a failure: {lines:?}"
+        );
         drop(session);
     }
 

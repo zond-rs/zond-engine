@@ -193,7 +193,8 @@ impl Probe for SocketProbe {
 
         // The reply may consume at most what the byte budget has left. A silent or
         // unreachable port is not a refusal, so `last_refusal` stays clear, unless
-        // it was the flow's clock that ended the wait.
+        // it was the flow's clock that ended the wait, or the process that had
+        // no socket to make the exchange with.
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
                 self.addr,
@@ -213,9 +214,12 @@ impl Probe for SocketProbe {
             // An SCTP port is scanned without a client stack, so there is
             // nothing here for a detection to hold a conversation over.
             Protocol::Sctp => return None,
+        };
+        if matches!(reply, Err(exchange::ExchangeError::Starved)) {
+            self.last_refusal = Some(ProbeRefusal::Descriptors);
+            return None;
         }
-        .ok()
-        .filter(|reply| !reply.bytes.is_empty());
+        let reply = reply.ok().filter(|reply| !reply.bytes.is_empty());
 
         let Some(reply) = reply else {
             // Every wait in an exchange is drawn from what is left of the flow's
@@ -263,6 +267,39 @@ mod tests {
         Budget::new(0, Duration::from_millis(millis))
             .with_max_bytes(max_bytes)
             .with_max_connections(max_connections)
+    }
+
+    /// An exchange the process had no socket for is refused on the process's
+    /// account, once the flow's own time has gone on waiting for one, rather
+    /// than coming back as a port that said nothing: a flow reads silence as
+    /// an answer and clears the port, and the finding a reply would have drawn
+    /// is lost with nothing said.
+    #[cfg(unix)]
+    #[test]
+    fn an_exchange_with_no_socket_to_give_is_refused_rather_than_read_as_silence() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "an_exchange_with_no_socket_to_give_is_refused_rather_than_read_as_silence",
+        ) {
+            return;
+        }
+        // Bound before the table fills; nothing will reach it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+        let addr = listener.local_addr().expect("its address");
+        let held = exhaust(64);
+
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4_096, 300, 8));
+        let reply = probe.speak(b"GET / HTTP/1.1\r\n\r\n");
+        drop(held);
+
+        assert_eq!(reply, None, "a reply with no socket to carry it");
+        assert_eq!(
+            probe.last_refusal(),
+            Some(ProbeRefusal::Descriptors),
+            "the process's shortfall was not told apart from the port's silence"
+        );
     }
 
     #[test]

@@ -333,6 +333,11 @@ pub(crate) enum Stopped {
     /// questions only the port could answer. The shortfall is the port's, so
     /// it names no budget of the flow's.
     PortUnresponsive,
+    /// The process had no socket to give one of the flow's exchanges for as
+    /// long as the flow's time allowed, so a question went unasked. The
+    /// shortfall is this machine's, neither the port's nor the flow's budget,
+    /// and raising the process's descriptor limit is its remedy.
+    Starved,
 }
 
 /// The ceilings a flow runs under, the ones it declared and this runtime's
@@ -356,12 +361,14 @@ impl Limits {
         }
     }
 
-    /// The ceiling `refusal` names.
-    fn of_refusal(&self, refusal: ProbeRefusal) -> u64 {
+    /// The ceiling `refusal` names, or [`None`] for a refusal that is not one
+    /// of the flow's budgets.
+    fn of_refusal(&self, refusal: ProbeRefusal) -> Option<u64> {
         match refusal {
-            ProbeRefusal::Deadline => self.millis,
-            ProbeRefusal::Bytes => self.bytes,
-            ProbeRefusal::Connections => self.connections,
+            ProbeRefusal::Deadline => Some(self.millis),
+            ProbeRefusal::Bytes => Some(self.bytes),
+            ProbeRefusal::Connections => Some(self.connections),
+            ProbeRefusal::Descriptors => None,
         }
     }
 }
@@ -455,6 +462,9 @@ struct CachingProbe<'a> {
     /// next: a flow whose large request the byte budget turned away and whose
     /// smaller one then fitted still left the first unanswered.
     refused: Option<ProbeRefusal>,
+    /// Whether one of this flow's exchanges was refused a socket, whichever
+    /// refusal came first.
+    starved: bool,
     /// How many of this flow's requests drew a reply, from the socket or the
     /// cache, which is how far a flow a budget stopped had got.
     answered: u32,
@@ -477,22 +487,30 @@ impl<'a> CachingProbe<'a> {
             written_off: false,
             budget,
             refused: None,
+            starved: false,
             answered: 0,
             last_complete: false,
         }
     }
 
     /// What left this flow short of what it set out to ask, or [`None`] when
-    /// nothing did. The port is to blame when it was given up on before one of
-    /// the flow's questions, or when it stalled this flow alone and the flow
-    /// then ran out of budget on it; the flow's own budget otherwise.
+    /// nothing did. The process is to blame when it had no socket for one of
+    /// the flow's exchanges, whatever else happened, since that is the one
+    /// shortfall with a remedy outside the target. The port is to blame when
+    /// it was given up on before one of the flow's questions, or when it
+    /// stalled this flow alone and the flow then ran out of budget on it; the
+    /// flow's own budget otherwise.
     fn stopped(&self, limits: &Limits) -> Option<Stopped> {
+        if self.starved {
+            return Some(Stopped::Starved);
+        }
         if self.written_off || (self.struck && self.refused.is_some()) {
             return Some(Stopped::PortUnresponsive);
         }
-        self.refused.map(|refusal| Stopped::Budget {
-            refusal,
-            limit: limits.of_refusal(refusal),
+        let refusal = self.refused?;
+        Some(match limits.of_refusal(refusal) {
+            Some(limit) => Stopped::Budget { refusal, limit },
+            None => Stopped::Starved,
         })
     }
 
@@ -562,7 +580,9 @@ impl Probe for CachingProbe<'_> {
             }
         }
         let Some(reply) = reply else {
-            self.refused = self.refused.or(self.inner.last_refusal());
+            let refusal = self.inner.last_refusal();
+            self.starved |= refusal == Some(ProbeRefusal::Descriptors);
+            self.refused = self.refused.or(refusal);
             return None;
         };
         self.answered += 1;
@@ -794,6 +814,47 @@ mod tests {
                     )),
             "the budget refusal was not surfaced: {refusals:?}"
         );
+    }
+
+    /// A flow the process had no socket for is reported as starved, not as a
+    /// quiet port and not as a budget of its own: a question went unasked for
+    /// a reason outside both the target and the detection. Starved wins over
+    /// a budget refusal that came first, since it is the one with a remedy the
+    /// operator holds.
+    #[test]
+    fn a_flow_refused_a_socket_is_reported_as_starved_whatever_came_first() {
+        struct Starving {
+            asked: u32,
+        }
+        impl Probe for Starving {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                self.asked += 1;
+                None
+            }
+            fn last_refusal(&self) -> Option<ProbeRefusal> {
+                match self.asked {
+                    1 => Some(ProbeRefusal::Bytes),
+                    _ => Some(ProbeRefusal::Descriptors),
+                }
+            }
+        }
+        let port = PortShare::default();
+        let limits = Limits {
+            millis: 1_000,
+            bytes: 1_000,
+            connections: 4,
+        };
+        let mut probe = CachingProbe::new(
+            Box::new(Starving { asked: 0 }),
+            &port,
+            Duration::from_millis(750),
+            1_000,
+        );
+        assert_eq!(probe.speak(b"first"), None);
+        assert_eq!(probe.speak(b"second"), None);
+
+        assert_eq!(probe.stopped(&limits), Some(Stopped::Starved));
+        assert!(!probe.slow(), "a starved flow says nothing about the port");
     }
 
     /// A request a budget turned away is a question the flow did not get

@@ -158,8 +158,9 @@ pub enum CapError {
     /// hard end.
     #[error("the connection budget is exhausted")]
     ConnectionBudgetExhausted,
-    /// The call is refused on policy grounds, a `resolve` outside the granted
-    /// scope. A hard end, carrying the reason for the report.
+    /// The call is refused: on policy grounds, a `resolve` outside the granted
+    /// scope, or for want of a socket, a `speak` the process had no file
+    /// descriptor for. A hard end, carrying the reason for the report.
     #[error("the call was denied: {0}")]
     Denied(String),
     /// The exchange timed out. Handed back to the module.

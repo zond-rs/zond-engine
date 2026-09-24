@@ -1459,6 +1459,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::ParseEr
 pub zond_engine::detect::flow::ProbeRefusal::Bytes
 pub zond_engine::detect::flow::ProbeRefusal::Connections
 pub zond_engine::detect::flow::ProbeRefusal::Deadline
+pub zond_engine::detect::flow::ProbeRefusal::Descriptors
 impl core::clone::Clone for zond_engine::detect::flow::ProbeRefusal
 pub fn zond_engine::detect::flow::ProbeRefusal::clone(&self) -> zond_engine::detect::flow::ProbeRefusal
 impl core::cmp::Eq for zond_engine::detect::flow::ProbeRefusal
@@ -16360,6 +16361,9 @@ pub zond_engine::scanner::ScanError::PlanChanged(zond_engine::journal::manifest:
 pub zond_engine::scanner::ScanError::TaskFailed
 pub zond_engine::scanner::ScanError::TaskFailed::detail: alloc::string::String
 pub zond_engine::scanner::ScanError::TaskFailed::panicked: bool
+pub zond_engine::scanner::ScanError::TooFewDescriptors
+pub zond_engine::scanner::ScanError::TooFewDescriptors::limit: usize
+pub zond_engine::scanner::ScanError::TooFewDescriptors::needed: usize
 pub zond_engine::scanner::ScanError::WrongPhase
 impl core::convert::From<zond_engine::evasion::EvasionError> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::evasion::EvasionError) -> Self
@@ -17612,6 +17616,9 @@ pub zond_engine::ScanError::PlanChanged(zond_engine::journal::manifest::PlanChan
 pub zond_engine::ScanError::TaskFailed
 pub zond_engine::ScanError::TaskFailed::detail: alloc::string::String
 pub zond_engine::ScanError::TaskFailed::panicked: bool
+pub zond_engine::ScanError::TooFewDescriptors
+pub zond_engine::ScanError::TooFewDescriptors::limit: usize
+pub zond_engine::ScanError::TooFewDescriptors::needed: usize
 pub zond_engine::ScanError::WrongPhase
 impl core::convert::From<zond_engine::evasion::EvasionError> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::evasion::EvasionError) -> Self

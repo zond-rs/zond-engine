@@ -220,6 +220,35 @@ pub enum ScanError {
     /// for what that check covers and what it does not.
     #[error("{0}")]
     Evasion(#[from] crate::evasion::EvasionError),
+
+    /// The process may hold too few file descriptors for a scan to keep a
+    /// socket for its connections beside what the rest of the process needs.
+    ///
+    /// Checked before anything is sent. Run anyway, the scan's connections
+    /// and the process's other files, a journal among them, would take their
+    /// descriptors from the same table too small for both, and whichever came
+    /// second would fail somewhere in the middle of the run. The engine reads
+    /// the limit and never raises it; a caller raises its own soft limit,
+    /// within the hard one, before it starts a scan.
+    #[error(
+        "the process may hold {limit} file descriptors and a scan needs at least \
+         {needed}; raise the limit"
+    )]
+    TooFewDescriptors {
+        /// The soft limit the process has.
+        limit: usize,
+        /// The least a scan needs.
+        needed: usize,
+    },
+}
+
+/// Refuses a scan in a process whose descriptor limit leaves its connections
+/// no socket; see [`ScanError::TooFewDescriptors`].
+fn enough_descriptors() -> Result<(), ScanError> {
+    match crate::system::descriptors::too_few() {
+        Some((limit, needed)) => Err(ScanError::TooFewDescriptors { limit, needed }),
+        None => Ok(()),
+    }
 }
 
 /// Refuses a scan whose exclusion policy is not the one its journal was counted
@@ -421,6 +450,7 @@ pub async fn discover(
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
+    enough_descriptors()?;
 
     let planned = planned_addresses(&Positions::of(&targets));
 
@@ -487,6 +517,7 @@ pub async fn discover_with_journal(
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
+    enough_descriptors()?;
 
     let recorded = journal.manifest().recorded();
     let Some(addresses) = recorded.addresses() else {
@@ -1054,6 +1085,7 @@ pub async fn scan(
     detections: Detections,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
+    enough_descriptors()?;
 
     let planned = planned_targets(&target_map);
 
@@ -1107,6 +1139,7 @@ pub async fn scan_with_journal(
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
+    enough_descriptors()?;
     under_the_recorded_policy(&journal, cfg)?;
 
     let (session, ctx) = ScanSession::builder()

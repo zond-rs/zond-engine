@@ -88,6 +88,7 @@ impl Coded for ScanError {
             #[cfg(feature = "journal-format")]
             ScanError::PlanChanged(changed) => changed.code(),
             ScanError::Evasion(evasion) => evasion.code(),
+            ScanError::TooFewDescriptors { .. } => "scan.too_few_descriptors",
             // A strategy that unwound is a defect in this crate, and a strategy
             // that returned an error is the network being the network. A
             // consumer that files bugs wants to tell those apart.
@@ -376,6 +377,14 @@ mod tests {
     #[test]
     fn the_codes_are_what_they_were() {
         assert_eq!(ScanError::WrongPhase.code(), "scan.wrong_phase");
+        assert_eq!(
+            ScanError::TooFewDescriptors {
+                limit: 16,
+                needed: 17
+            }
+            .code(),
+            "scan.too_few_descriptors"
+        );
         assert_eq!(
             EvasionError::SourcePortZero.code(),
             "evasion.source_port_zero"

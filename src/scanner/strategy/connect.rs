@@ -1530,70 +1530,10 @@ mod tests {
         assert!(!Shaping::from(&EvasionProfile::default()).is_active());
     }
 
-    /// The variable a re-run of one of the tests below finds itself under,
-    /// naming the test it is.
     #[cfg(unix)]
-    const OWN_PROCESS: &str = "ZOND_TEST_IN_OWN_PROCESS";
-
-    /// Whether this is the process `name` should run its body in.
-    ///
-    /// A test that runs this process out of descriptors would take every test
-    /// running beside it down too, so it runs its body in a process of its
-    /// own: the first call re-runs this binary on that one test and fails if
-    /// the re-run does, and the re-run is the call that answers `true`.
-    #[cfg(unix)]
-    fn in_a_process_of_its_own(name: &str) -> bool {
-        if std::env::var(OWN_PROCESS).is_ok_and(|running| running == name) {
-            return true;
-        }
-        let path = format!(
-            "{}::{name}",
-            module_path!().split_once("::").expect("a crate path").1
-        );
-        let run = std::process::Command::new(std::env::current_exe().expect("this test binary"))
-            .args([path.as_str(), "--exact", "--nocapture", "--test-threads=1"])
-            .env(OWN_PROCESS, name)
-            .output()
-            .expect("re-running the test in a process of its own");
-        let stdout = String::from_utf8_lossy(&run.stdout);
-        assert!(
-            run.status.success(),
-            "{name} failed in its own process:\n{stdout}{}",
-            String::from_utf8_lossy(&run.stderr),
-        );
-        // A filter that matched nothing exits cleanly too.
-        assert!(
-            stdout.contains("1 passed"),
-            "{name} did not run in its own process:\n{stdout}"
-        );
-        false
-    }
-
-    /// Lowers this process's descriptor limit to `limit` and opens files until
-    /// it is reached, so the next socket anything asks for is refused. The
-    /// files are handed back, and dropping them is what frees the table.
-    #[cfg(unix)]
-    fn exhaust_descriptors(limit: libc::rlim_t) -> Vec<std::fs::File> {
-        let mut bounds = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: `getrlimit` writes one `rlimit` through a pointer to a live
-        // local of that type, and `setrlimit` reads one the same way.
-        unsafe {
-            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut bounds), 0);
-            bounds.rlim_cur = limit;
-            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &bounds), 0);
-        }
-        let mut held = Vec::new();
-        loop {
-            match std::fs::File::open("/dev/null") {
-                Ok(file) => held.push(file),
-                Err(e) if e.raw_os_error() == Some(libc::EMFILE) => return held,
-                Err(e) => panic!("filling the descriptor table: {e}"),
-            }
-        }
-    }
+    use crate::system::descriptors::testing::{
+        exhaust as exhaust_descriptors, in_a_process_of_its_own,
+    };
 
     /// A sweep that cannot have a socket waits for one, and finds the host
     /// the moment the table has room, rather than passing the address over
@@ -1607,6 +1547,7 @@ mod tests {
     #[test]
     fn a_sweep_short_of_descriptors_waits_for_one_rather_than_passing_the_address_over() {
         if !in_a_process_of_its_own(
+            module_path!(),
             "a_sweep_short_of_descriptors_waits_for_one_rather_than_passing_the_address_over",
         ) {
             return;
@@ -1651,6 +1592,7 @@ mod tests {
     #[test]
     fn a_sweep_that_never_gets_a_socket_reports_it_rather_than_an_empty_network() {
         if !in_a_process_of_its_own(
+            module_path!(),
             "a_sweep_that_never_gets_a_socket_reports_it_rather_than_an_empty_network",
         ) {
             return;
