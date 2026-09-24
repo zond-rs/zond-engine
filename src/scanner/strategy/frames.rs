@@ -156,6 +156,17 @@ pub trait DiscoveryProtocol: Send {
     /// whole of what an implementation does.
     fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError>;
 
+    /// Reads one IP packet that arrived with no link-layer header, off a
+    /// tunnel or a PPP link, as [`interpret`](Self::interpret) reads a frame.
+    ///
+    /// Unhandled unless a protocol says otherwise: most of these readers read
+    /// something only a link with hardware addresses carries, ARP or a DHCP
+    /// broadcast, and one whose message is plain IP reads it here as well,
+    /// so a listener on such a link hears it.
+    fn interpret_packet(&self, _packet: &[u8]) -> Reading {
+        Reading::unhandled()
+    }
+
     /// The evidence this protocol produces, for the liveness record of whichever
     /// host it claims a frame from.
     ///
@@ -245,22 +256,33 @@ impl DiscoveryProtocol for ArpProtocol {
 /// advertisement is proof its sender is present however it was provoked.
 pub struct NdpProtocol;
 
-impl DiscoveryProtocol for NdpProtocol {
-    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
-        match ndp::advertisement(frame) {
+impl NdpProtocol {
+    /// What `advert` answers, and what its sender said of itself.
+    fn read(advert: Option<ndp::Advertisement>) -> Reading {
+        match advert {
             Some(advert) if is_assignable(advert.target) => {
                 let matched = ProtocolMatch::Solicited(Some(IpAddr::V6(advert.target)));
-                Ok(match advert.router {
+                match advert.router {
                     true => Reading::declaring(matched, NetworkRole::Router),
                     false => Reading::matched(matched),
-                })
+                }
             }
             // An advertisement naming an address nothing can hold proves its
             // sender exists and says nothing about *which* address that is, so
             // the frame is left for another protocol to claim rather than
             // crediting a host with an address it cannot have.
-            Some(_) | None => Ok(Reading::unhandled()),
+            Some(_) | None => Reading::unhandled(),
         }
+    }
+}
+
+impl DiscoveryProtocol for NdpProtocol {
+    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
+        Ok(Self::read(ndp::advertisement(frame)))
+    }
+
+    fn interpret_packet(&self, packet: &[u8]) -> Reading {
+        Self::read(ndp::advertisement_in(packet))
     }
 
     fn status_protocol(&self) -> StatusProtocol {
@@ -315,12 +337,23 @@ fn is_assignable(address: std::net::Ipv6Addr) -> bool {
 /// to it belongs to any one address's probe.
 pub struct RouterAdvertProtocol;
 
-impl DiscoveryProtocol for RouterAdvertProtocol {
-    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
-        Ok(match ndp::is_router_advertisement(frame) {
+impl RouterAdvertProtocol {
+    /// What a message is, given whether it is a router advertisement.
+    fn read(advertises: bool) -> Reading {
+        match advertises {
             true => Reading::declaring(ProtocolMatch::Unsolicited, NetworkRole::Router),
             false => Reading::unhandled(),
-        })
+        }
+    }
+}
+
+impl DiscoveryProtocol for RouterAdvertProtocol {
+    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
+        Ok(Self::read(ndp::is_router_advertisement(frame)))
+    }
+
+    fn interpret_packet(&self, packet: &[u8]) -> Reading {
+        Self::read(ndp::is_router_advertisement_in(packet))
     }
 
     fn status_protocol(&self) -> StatusProtocol {

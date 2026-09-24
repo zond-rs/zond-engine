@@ -991,14 +991,12 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
 
     tokio::spawn(async move {
         // **Opened before the phase is opened, because opening it is the
-        // question the phase's privilege field asks.** A listener holds what it
-        // needs exactly when a capture came up, and that is not the same as
-        // running as root: `pcap` reads a link for a user in the `access_bpf`
-        // group on macOS and for a binary with `cap_net_raw` on Linux, both
-        // being how anybody who is not root captures anything. Asking the
-        // operating system for an effective uid instead would report those runs
-        // as unprivileged while they listened perfectly well, and, worse, a
-        // run that opened nothing as privileged.
+        // question the phase's privilege field asks.** Whether a capture came
+        // up, and if not whether privilege is what refused it, is not the same
+        // as running as root: `pcap` reads a link for a user in the
+        // `access_bpf` group on macOS and for a binary with `cap_net_raw` on
+        // Linux, both being how anybody who is not root captures anything. See
+        // `listening_privilege`.
         //
         // There is no fallback to record either way. Reading a link is the whole
         // capability here, where a scan can degrade to connect attempts.
@@ -1011,10 +1009,7 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         // the setting up, and with the open's own answer in hand.
         let recorder = PhaseRecorder::start(
             ScanKind::Listen,
-            // A listener that opened a capture held what it needed; one that
-            // did not, did not. The same question the scan phases answer from
-            // the process's own privileges, answered here from the open.
-            Privilege::from_raw(opened.is_ok()),
+            listening_privilege(opened.as_ref().err()),
             TargetScope::listening_on(scope.links.clone(), &cfg.exclusions),
             &cfg,
         );
@@ -1042,6 +1037,35 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         orchestrator::run_correlation(&ctx, cfg.service_detection);
         recorder.finish(&ctx)
     })
+}
+
+/// The privilege a listener held, read off what its capture was told, with
+/// `refusal` being why no link could be captured on.
+///
+/// A listener that opened a capture held what it needed. One refused for want
+/// of privilege did not. Any other refusal, a link that would not compile the
+/// filter, one that is down or carries framing nothing here parses, or a
+/// reader thread that would not start, comes after the platform's permission
+/// check, which `libpcap` makes before it binds a link: the process held the
+/// privilege and the link refused for its own reasons. Recorded as
+/// unprivileged, that run would tell its reader to find a privilege it had.
+/// Where no link was tried at all, nothing asked the question, and the
+/// process's own answer, measured as every scan phase measures it, is the
+/// only one there is.
+fn listening_privilege(refusal: Option<&strategy::StrategyError>) -> Privilege {
+    use crate::transport::capture::CaptureError;
+
+    match refusal {
+        None => Privilege::Raw,
+        Some(strategy::StrategyError::Capture(CaptureError::NoInterface { refused }))
+            if refused.is_empty() =>
+        {
+            Privilege::current()
+        }
+        Some(strategy::StrategyError::Capture(error)) if error.is_denied() => Privilege::Connect,
+        Some(strategy::StrategyError::Capture(_)) => Privilege::Raw,
+        Some(_) => Privilege::current(),
+    }
 }
 
 /// Probes a known set of targets for open ports.
@@ -1298,6 +1322,44 @@ fn spawn_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A listener's privilege says what its capture was told. Only a refusal
+    /// for want of privilege records one missing: a link that would not take
+    /// the filter, or carried framing nothing here reads, was opened by a
+    /// process the platform had already let capture, and recording it as
+    /// unprivileged sends a reader after a privilege they hold.
+    #[test]
+    fn a_listener_is_recorded_unprivileged_only_where_privilege_refused_it() {
+        use crate::scanner::strategy::StrategyError;
+        use crate::transport::capture::CaptureError;
+
+        let denied = |link: &str| CaptureError::Denied {
+            interface: link.into(),
+            source: pcap::Error::PcapError("permission denied".into()),
+        };
+        let filter = CaptureError::Filter {
+            filter: "ip6 and ether proto 0x86dd".into(),
+            source: pcap::Error::PcapError("not an ethernet link".into()),
+        };
+        let refused = |refused| StrategyError::Capture(CaptureError::NoInterface { refused });
+
+        assert_eq!(
+            listening_privilege(Some(&refused(vec![("en0".into(), denied("en0"))]))),
+            Privilege::Connect,
+            "the platform refused this process"
+        );
+        assert_eq!(
+            listening_privilege(Some(&refused(vec![("utun4".into(), filter)]))),
+            Privilege::Raw,
+            "the link refused the filter, after the platform let it open"
+        );
+        assert_eq!(listening_privilege(None), Privilege::Raw, "it listened");
+        assert_eq!(
+            listening_privilege(Some(&refused(Vec::new()))),
+            Privilege::current(),
+            "no link was tried, so the process's own answer is all there is"
+        );
+    }
 
     /// A panic inside the engine happened in the caller's process, so what it
     /// said is the one thing they can act on. Both shapes `panic!` produces are

@@ -159,6 +159,20 @@ const MAX_RECORDED_HOSTS: usize = 65_536;
 /// least urgently and works least well.
 const ABORT_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// The address that sent an IP packet of either family, read off a link
+/// that carries both with nothing in front of them to say which.
+fn ip_source(packet: &[u8]) -> Option<IpAddr> {
+    match packet.first()? >> 4 {
+        4 => Some(IpAddr::V4(
+            pnet_packet::ipv4::Ipv4Packet::new(packet)?.get_source(),
+        )),
+        6 => Some(IpAddr::V6(
+            pnet_packet::ipv6::Ipv6Packet::new(packet)?.get_source(),
+        )),
+        _ => None,
+    }
+}
+
 /// The TCP segment inside an IP packet, and the address that sent it, where
 /// the packet carries one.
 ///
@@ -691,6 +705,12 @@ impl PassiveListener {
     /// admits everything copies a link into this process to discard almost all
     /// of it.
     ///
+    /// No DNS and no mDNS. A sweep reads mDNS for addresses worth asking
+    /// about; a listener asks nothing and credits a frame to its sender alone,
+    /// and a lookup is somebody else's question whose answer names machines
+    /// other than the one that sent it. A reader for a machine naming itself
+    /// would bring port 5353 back with it.
+    ///
     /// Alternatives rather than one expression, because a listener is pointed
     /// at whatever links somebody names, and not all of them are Ethernet. A
     /// tunnel, a PPP link or a loopback carries no hardware address, so the
@@ -707,9 +727,6 @@ impl PassiveListener {
             // The announcements, which are what say where this machine is.
             "(ether proto 0x88cc)",
             "(ether dst 01:00:0c:cc:cc:cc)",
-            // Names somebody else's lookup put on the wire.
-            "(udp port 5353)",
-            "(udp port 53)",
             // The handshakes that say an endpoint served a real client. Only
             // the server's half of one establishes a listener; see
             // `read_endpoint`.
@@ -728,12 +745,14 @@ impl PassiveListener {
     /// they happen to be written in.
     fn read(&mut self, captured: &CapturedFrame) {
         // A link with no Ethernet header carries no hardware address, no
-        // announcement and none of the link-layer exchanges the presence
-        // readers know. What it carries is IP, and the reading of IP that
-        // needs nothing beneath it is a TCP segment's.
+        // announcement and no ARP or DHCP broadcast. What it carries is IP, and
+        // the readings of IP that need nothing beneath it are a TCP segment's
+        // and a neighbour or router advertisement's.
         if captured.link != LinkType::Ethernet {
-            if let Some(packet) = transport_frame::strip_to_ip(captured.link, &captured.bytes) {
-                self.read_endpoint(packet, None, captured);
+            if let Some(packet) = transport_frame::strip_to_ip(captured.link, &captured.bytes)
+                && !self.read_endpoint(packet, None, captured)
+            {
+                self.read_presence_in(packet, &captured.zone);
             }
             return;
         }
@@ -1101,12 +1120,40 @@ impl PassiveListener {
         let Ok(source) = crate::protocols::source_address(frame) else {
             return;
         };
+        let mac = frame.source().into_core();
+        self.credit_presence(source, Some(mac), zone, |protocol| {
+            protocol.interpret(frame).ok()
+        });
+    }
+
+    /// The same, for an IP packet off a link with no hardware addresses: a
+    /// tunnel or a PPP link, where a neighbour or router advertisement is the
+    /// same message with no Ethernet header in front of it. The sender is
+    /// recorded by its address alone, since the link names it by nothing else.
+    fn read_presence_in(&mut self, packet: &[u8], zone: &Zone) {
+        let Some(source) = ip_source(packet) else {
+            return;
+        };
+        self.credit_presence(source, None, zone, |protocol| {
+            Some(protocol.interpret_packet(packet))
+        });
+    }
+
+    /// Records `source` as present where one of the readers recognises what
+    /// it sent, reading each with `interpret`.
+    fn credit_presence(
+        &mut self,
+        source: IpAddr,
+        mac: Option<MacAddr>,
+        zone: &Zone,
+        interpret: impl Fn(&dyn DiscoveryProtocol) -> Option<frames::Reading>,
+    ) {
         if !self.admits(source) {
             return;
         }
 
         for protocol in &self.protocols {
-            let Ok(reading) = protocol.interpret(frame) else {
+            let Some(reading) = interpret(protocol.as_ref()) else {
                 continue;
             };
             if matches!(reading.matched, ProtocolMatch::Unhandled) {
@@ -1118,7 +1165,9 @@ impl PassiveListener {
             // server identifier are claims about somebody else, and a listener
             // has no probe outstanding to check either against.
             let mut host = Host::new(source);
-            host.record_mac(frame.source().into_core());
+            if let Some(mac) = mac {
+                host.record_mac(mac);
+            }
             host.record_evidence(
                 HostStatus::Up,
                 StatusReason::basic(protocol.status_protocol()),
@@ -1567,6 +1616,103 @@ mod tests {
         assert_eq!(host.mac(), None, "a tunnel carries no hardware address");
         let port = host.ports().next().expect("an endpoint was recorded");
         assert_eq!((port.number(), port.state()), (443, PortState::Open));
+    }
+
+    /// A neighbour or router advertisement off a link with no Ethernet header
+    /// is heard as it is off one with it, and credited to its sender by
+    /// address alone. On a PPP link or a tunnel carrying IPv6 these are what
+    /// say the far end is there and that it routes, and a listener reading
+    /// only the TCP there would hear half of what the link says.
+    #[test]
+    fn an_advertisement_heard_on_a_tunnel_records_its_sender() {
+        let sender = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2));
+        let mut router_advert = vec![0u8; 16];
+        router_advert[0] = pnet_packet::icmpv6::Icmpv6Types::RouterAdvert.0;
+        let target = std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x99);
+
+        for (what, body, role) in [
+            ("a router advertisement", router_advert, true),
+            (
+                "a neighbour advertisement",
+                advertisement_body(target, 0),
+                false,
+            ),
+        ] {
+            // The same message with the Ethernet header taken off, which is
+            // how a tunnel delivers it.
+            let packet = ndp_frame(&body).split_off(14);
+            let (mut listener, ctx) = listening(Recording::Everything);
+            listener.read(&CapturedFrame {
+                zone: zone(),
+                link: LinkType::Raw,
+                bytes: packet,
+                observed_at: SystemTime::UNIX_EPOCH,
+            });
+
+            let hosts = ctx.hosts_snapshot();
+            assert_eq!(hosts.len(), 1, "{what}: one sender, one host");
+            assert_eq!(hosts[0].primary_ip(), sender, "{what}: its sender");
+            assert_eq!(hosts[0].mac(), None, "{what}: no hardware address");
+            assert_eq!(
+                hosts[0].network_roles().contains(&NetworkRole::Router),
+                role,
+                "{what}"
+            );
+        }
+    }
+
+    /// The listener's capture admits what its readers read and nothing they
+    /// do not. A lookup on port 53 or 5353 is somebody else's question and
+    /// its answer names machines other than the one that sent it, which a
+    /// listener crediting only a frame's sender has no use for; admitted, it
+    /// is traffic copied into this process to be thrown away. Compiled with
+    /// `libpcap` and run against real frames, which needs no interface.
+    #[test]
+    fn the_listener_filter_admits_its_readers_frames_and_no_lookups() {
+        let filter = PassiveListener::filter().to_string();
+        let program = pcap::Capture::dead(pcap::Linktype::ETHERNET)
+            .expect("a dead capture")
+            .compile(&filter, true)
+            .unwrap_or_else(|e| panic!("the listener filter `{filter}` does not compile: {e}"));
+
+        let udp = |port: u16| {
+            let datagram = crate::protocols::craft::Packet::new()
+                .push(crate::protocols::craft::Ipv4::new(
+                    Ipv4Addr::new(198, 51, 100, 7),
+                    Ipv4Addr::new(198, 51, 100, 1),
+                ))
+                .push(crate::protocols::craft::Udp::new(port, port).with_payload(vec![0u8; 12]))
+                .build()
+                .expect("a test datagram");
+            [
+                ethernet::build_header(PEER_MAC, PEER_MAC, EtherTypes::Ipv4),
+                datagram,
+            ]
+            .concat()
+        };
+
+        for (what, frame) in [
+            (
+                "an ARP frame",
+                arp_reply_frame(Ipv4Addr::new(198, 51, 100, 2)),
+            ),
+            (
+                "a neighbour advertisement",
+                ndp_frame(&advertisement_body(
+                    std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2),
+                    0,
+                )),
+            ),
+            (
+                "a DHCP server reply",
+                dhcp_reply_frame(Ipv4Addr::new(192, 0, 2, 1), None),
+            ),
+        ] {
+            assert!(program.filter(&frame), "{what} is not admitted: {filter}");
+        }
+        for (what, frame) in [("a DNS lookup", udp(53)), ("an mDNS message", udp(5353))] {
+            assert!(!program.filter(&frame), "{what} is admitted: {filter}");
+        }
     }
 
     /// A frame is credited to the machine that sent it, and to no address the

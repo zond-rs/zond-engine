@@ -225,7 +225,17 @@ pub struct Advertisement {
 
 /// Reads `frame` as a neighbor advertisement, if it is one.
 pub fn advertisement(frame: &Frame<'_>) -> Option<Advertisement> {
-    let packet = icmpv6(frame)?;
+    advertisement_in(ipv6_payload(frame)?)
+}
+
+/// Reads `packet`, a bare IPv6 packet, as a neighbor advertisement, if it is
+/// one.
+///
+/// The form a link with no Ethernet header delivers, a tunnel's or a PPP
+/// link's, where the advertisement is the same message with nothing in front
+/// of it.
+pub(crate) fn advertisement_in(packet: &[u8]) -> Option<Advertisement> {
+    let packet = icmpv6(packet)?;
 
     let advert = NeighborAdvertPacket::new(packet.payload())?;
     if advert.get_icmpv6_type() != Icmpv6Types::NeighborAdvert {
@@ -247,14 +257,19 @@ pub fn advertisement(frame: &Frame<'_>) -> Option<Advertisement> {
 
 /// Whether `frame` is a router advertisement, which its sender is only entitled
 /// to send if it routes (RFC 4861 §4.2).
+pub fn is_router_advertisement(frame: &Frame<'_>) -> bool {
+    ipv6_payload(frame).is_some_and(is_router_advertisement_in)
+}
+
+/// Whether `packet`, a bare IPv6 packet, is a router advertisement.
 ///
 /// Held to the hop limit the RFC requires (§6.1.2), so an advertisement that
-/// crossed a router, and so did not come from the segment it claims to serve,
+/// crossed a router, and so did not come from the link it claims to serve,
 /// establishes nothing. Unlike a neighbour advertisement there is no
 /// second claim here to preserve: the whole message is the router's account of
 /// itself.
-pub fn is_router_advertisement(frame: &Frame<'_>) -> bool {
-    let Some(packet) = icmpv6(frame) else {
+pub(crate) fn is_router_advertisement_in(packet: &[u8]) -> bool {
+    let Some(packet) = icmpv6(packet) else {
         return false;
     };
 
@@ -265,19 +280,22 @@ pub fn is_router_advertisement(frame: &Frame<'_>) -> bool {
         && packet.get_hop_limit() == ip::HOP_LIMIT_NDP
 }
 
-/// The IPv6 packet inside `frame`, if it carries ICMPv6.
-fn icmpv6<'a>(frame: &Frame<'a>) -> Option<pnet_packet::ipv6::Ipv6Packet<'a>> {
-    ip::ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)
+/// The IPv6 packet `frame` carries, if it carries one.
+fn ipv6_payload<'a>(frame: &Frame<'a>) -> Option<&'a [u8]> {
+    (frame.ethertype() == EtherTypes::Ipv6).then(|| frame.payload())
 }
 
-// ╔════════════════════════════════════════════╗
-// ║ ████████╗███████╗███████╗████████╗███████╗ ║
-// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
-// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
-// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
-// ║    ██║   ███████╗███████║   ██║   ███████║ ║
-// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
-// ╚════════════════════════════════════════════╝
+/// `packet` read as IPv6, if it is IPv6 carrying ICMPv6.
+///
+/// The version is checked, since a link with no header in front of its
+/// packets carries both families and says which only there.
+fn icmpv6(packet: &[u8]) -> Option<pnet_packet::ipv6::Ipv6Packet<'_>> {
+    if packet.first()? >> 4 != 6 {
+        return None;
+    }
+    let packet = pnet_packet::ipv6::Ipv6Packet::new(packet)?;
+    (packet.get_next_header() == IpNextHeaderProtocols::Icmpv6).then_some(packet)
+}
 
 #[cfg(test)]
 mod tests {

@@ -15318,6 +15318,7 @@ pub struct zond_engine::scanner::strategy::frames::ArpProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::ArpProtocol
 pub fn zond_engine::scanner::strategy::frames::ArpProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::ArpProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::ArpProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::ArpProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::marker::Freeze for zond_engine::scanner::strategy::frames::ArpProtocol
 impl core::marker::Send for zond_engine::scanner::strategy::frames::ArpProtocol
@@ -15330,6 +15331,7 @@ pub struct zond_engine::scanner::strategy::frames::DhcpProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::DhcpProtocol
 pub fn zond_engine::scanner::strategy::frames::DhcpProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::DhcpProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::DhcpProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::DhcpProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::marker::Freeze for zond_engine::scanner::strategy::frames::DhcpProtocol
 impl core::marker::Send for zond_engine::scanner::strategy::frames::DhcpProtocol
@@ -15342,6 +15344,7 @@ pub struct zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol
 pub fn zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::marker::Freeze for zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol
 impl core::marker::Send for zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol
@@ -15354,6 +15357,7 @@ pub struct zond_engine::scanner::strategy::frames::NdpProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::NdpProtocol
 pub fn zond_engine::scanner::strategy::frames::NdpProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::NdpProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::NdpProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::NdpProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::marker::Freeze for zond_engine::scanner::strategy::frames::NdpProtocol
 impl core::marker::Send for zond_engine::scanner::strategy::frames::NdpProtocol
@@ -15376,6 +15380,7 @@ pub struct zond_engine::scanner::strategy::frames::RouterAdvertProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::RouterAdvertProtocol
 pub fn zond_engine::scanner::strategy::frames::RouterAdvertProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::RouterAdvertProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::RouterAdvertProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::RouterAdvertProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::marker::Freeze for zond_engine::scanner::strategy::frames::RouterAdvertProtocol
 impl core::marker::Send for zond_engine::scanner::strategy::frames::RouterAdvertProtocol
@@ -15387,26 +15392,32 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::fr
 pub trait zond_engine::scanner::strategy::frames::DiscoveryProtocol: core::marker::Send
 pub fn zond_engine::scanner::strategy::frames::DiscoveryProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::DiscoveryProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::DiscoveryProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::DiscoveryProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::ArpProtocol
 pub fn zond_engine::scanner::strategy::frames::ArpProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::ArpProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::ArpProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::ArpProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::DhcpProtocol
 pub fn zond_engine::scanner::strategy::frames::DhcpProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::DhcpProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::DhcpProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::DhcpProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol
 pub fn zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::Icmpv6EchoProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::NdpProtocol
 pub fn zond_engine::scanner::strategy::frames::NdpProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::NdpProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::NdpProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::NdpProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 impl zond_engine::scanner::strategy::frames::DiscoveryProtocol for zond_engine::scanner::strategy::frames::RouterAdvertProtocol
 pub fn zond_engine::scanner::strategy::frames::RouterAdvertProtocol::capture_clause(&self) -> &'static str
 pub fn zond_engine::scanner::strategy::frames::RouterAdvertProtocol::interpret(&self, &zond_engine::protocols::ethernet::Frame<'_>) -> core::result::Result<zond_engine::scanner::strategy::frames::Reading, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::scanner::strategy::frames::RouterAdvertProtocol::interpret_packet(&self, &[u8]) -> zond_engine::scanner::strategy::frames::Reading
 pub fn zond_engine::scanner::strategy::frames::RouterAdvertProtocol::status_protocol(&self) -> zond_engine::model::host::status::StatusProtocol
 pub fn zond_engine::scanner::strategy::frames::sweep_protocols() -> alloc::vec::Vec<alloc::boxed::Box<dyn zond_engine::scanner::strategy::frames::DiscoveryProtocol>>
 pub mod zond_engine::scanner::strategy::icmp_error
