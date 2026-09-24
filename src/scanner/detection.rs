@@ -319,9 +319,12 @@ async fn detect_one(
                 if listen_only && caps.speak.is_some() {
                     return None;
                 }
+                // The permit first: building the probe starts the flow's clock,
+                // and the wait for a socket must not come out of its budget.
+                let permit = gate.acquire();
                 Some(Box::new(Pooled {
                     inner: SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps)).via(egress),
-                    _permit: gate.acquire(),
+                    _permit: permit,
                 }) as Box<dyn Probe>)
             },
         );
@@ -530,23 +533,34 @@ fn detect_hosts(ctx: &ScanContext) {
 /// one flow per port would.
 ///
 /// A permit is taken when a flow's probe is built and given back when the probe
-/// is dropped, which is the flow's whole run. Nothing here waits on a permit while
-/// holding another, so the count cannot deadlock, and the wait happens before
+/// is dropped, which is the flow's whole run. The wait happens before
 /// [`SocketProbe::new`] starts the flow's clock rather than inside an exchange,
 /// so queueing never counts against a detection's own time budget.
+///
+/// Each permit also carries a share of the process's descriptor budget, the
+/// one every connection a scan opens draws from, since a flow's exchanges open
+/// their sockets one after another and one share covers them; see
+/// [`descriptors`](crate::system::descriptors). It is taken after the phase's
+/// own permit and never the other way round, and nothing waiting on the
+/// process's budget waits on this gate, so neither wait can close a cycle.
 struct Gate {
     /// Permits still to be handed out.
     free: std::sync::Mutex<usize>,
     /// Woken as each is given back.
     returned: std::sync::Condvar,
+    /// The runtime the process's descriptor budget is waited on through, from
+    /// the threads a flow runs on, which carry none of their own.
+    runtime: tokio::runtime::Handle,
 }
 
 impl Gate {
-    /// A gate holding `permits` sockets.
+    /// A gate holding `permits` sockets. Built on the runtime, which it keeps
+    /// a handle to.
     fn new(permits: usize) -> Self {
         Self {
             free: std::sync::Mutex::new(permits),
             returned: std::sync::Condvar::new(),
+            runtime: tokio::runtime::Handle::current(),
         }
     }
 
@@ -560,16 +574,19 @@ impl Gate {
                 .unwrap_or_else(|held| held.into_inner());
         }
         *free -= 1;
+        drop(free);
         Permit {
             gate: Arc::clone(self),
+            _descriptor: crate::system::descriptors::descriptor_blocking(&self.runtime),
         }
     }
 }
 
-/// One socket's worth of the phase's budget, given back when the flow holding it
-/// is done.
+/// One socket's worth of the phase's budget, and of the process's, given back
+/// when the flow holding it is done.
 struct Permit {
     gate: Arc<Gate>,
+    _descriptor: crate::system::descriptors::Descriptor,
 }
 
 impl Drop for Permit {

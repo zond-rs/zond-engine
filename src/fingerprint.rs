@@ -745,11 +745,16 @@ async fn gather(
 /// The first one succeeded, so this either succeeds immediately or the port has
 /// stopped accepting; see [`CONNECT_RETRY_TIMEOUT`]. It leaves by `egress`, the
 /// way the first one did.
+///
+/// No share of the process's descriptor budget of its own: the pass that
+/// fingerprints the port holds one for the whole identification, whose
+/// connections follow one another. A table full for other reasons is waited
+/// out before that timeout starts, not within it.
 async fn redial(socket: SocketAddr, egress: Egress) -> Option<TcpStream> {
-    match timeout(CONNECT_RETRY_TIMEOUT, egress.connect(socket)).await {
-        Ok(Ok(fresh)) => Some(fresh),
-        _ => None,
-    }
+    egress
+        .connect_timed(socket, CONNECT_RETRY_TIMEOUT)
+        .await
+        .ok()
 }
 
 /// One question a port can be asked, and the unit [`gather`] falls through.
@@ -1094,9 +1099,9 @@ fn same_host_path(url: &str, peer: SocketAddr) -> Option<String> {
 /// never returns. One round trip, and only on a response that asked for it,
 /// leaving by `egress` as the connection that drew the redirect did.
 async fn follow_redirect(socket: SocketAddr, path: &str, egress: Egress) -> Option<String> {
-    let mut stream = timeout(CONNECT_RETRY_TIMEOUT, egress.connect(socket))
+    let mut stream = egress
+        .connect_timed(socket, CONNECT_RETRY_TIMEOUT)
         .await
-        .ok()?
         .ok()?;
 
     // `Host` names the address actually being scanned, which is what a virtual

@@ -60,9 +60,16 @@ pub const CONNECT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 #[cfg(test)]
 const HOST_SYN_RETRANSMIT: Duration = Duration::from_secs(1);
 
-/// How many TCP connects the port-scan and service-detection fan-outs keep in
-/// flight at once. Bounded so a wide scan stays fast without exhausting OS
-/// sockets.
+/// How many targets the connect port scan and the passes after it (service
+/// detection, detections, TLS enumeration) work on at once.
+///
+/// A pace, not a guard on the socket table. What keeps the process's table
+/// from filling is its descriptor budget, half the soft file limit, which
+/// every connection a scan opens takes a share of before its socket and waits
+/// for when there is none; a table full for other reasons is waited out
+/// rather than read as the target's answer. This is how many conversations a
+/// pass keeps going, enough that a wide scan is not queued one port deep and
+/// few enough that one host is not asked fifty things at the same instant.
 pub const CONNECT_CONCURRENCY: usize = 50;
 
 /// How many of one port's detection flows run at once.
@@ -93,18 +100,6 @@ pub const DETECTION_FLOW_CONCURRENCY: usize = 8;
 /// below this and slows it rather than letting it lose the addresses it has no
 /// socket for.
 pub const DISCOVERY_CONCURRENCY: usize = 2048;
-
-/// How long a connect probe keeps asking for a socket while the process has
-/// none to give, before its target is left unasked.
-///
-/// A probe refused a socket has sent nothing, so waiting costs time and never
-/// a verdict. The engine's own probes take at most half the table, and a sweep
-/// gives each socket back within a [`CONNECT_PROBE_TIMEOUT`], so a table that
-/// stays full for several of those is held by the rest of the process, and
-/// nothing the scan finishes will free it. Past this the target is filed
-/// unasked, the scan reports that it ran out of descriptors, and a resume asks
-/// again.
-pub(crate) const DESCRIPTOR_PATIENCE: Duration = Duration::from_secs(10);
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║

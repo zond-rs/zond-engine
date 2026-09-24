@@ -31,7 +31,7 @@
 //! the process could not open is a question nobody asked, not an answer.
 
 use crate::config::ServiceDetection;
-use crate::config::limits::{CONNECT_PROBE_TIMEOUT, DESCRIPTOR_PATIENCE, DISCOVERY_CONCURRENCY};
+use crate::config::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
 use crate::counted;
 use crate::evasion::EvasionProfile;
 use crate::journal::settle::{Outcome, Settled};
@@ -430,7 +430,7 @@ impl PortScanner for ConnectUdpPortScanner {
         let audit = pool.into_audit();
         if starved > 0 {
             let unasked = counted(starved, "port", "ports");
-            report_starved(&self.ctx, self.kind(), unasked, DESCRIPTOR_PATIENCE);
+            report_starved(&self.ctx, self.kind(), unasked, descriptors::PATIENCE);
         }
         finish(&self.ctx, audit, self.kind(), probes, reason);
         Ok(())
@@ -442,8 +442,9 @@ impl PortScanner for ConnectUdpPortScanner {
 /// This is the primary scanning strategy for callers without root privileges. It
 /// consumes the randomized stream of targets a
 /// [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) produces, holding the
-/// number of in-flight connections at or below `concurrency_limit` to avoid
-/// exhausting OS sockets, and records every port it probed into the shared
+/// number of ports in flight at or below `concurrency_limit` and each
+/// connection within the process's descriptor budget, and records every port it
+/// probed into the shared
 /// [`ScanContext`] store - open, closed and filtered alike, so the list does not
 /// depend on whether the caller had root.
 pub async fn scan(
@@ -507,7 +508,7 @@ pub async fn scan(
     let audit = pool.into_audit();
     if starved > 0 {
         let unasked = counted(starved, "port", "ports");
-        report_starved(&ctx, ScannerKind::Connect, unasked, DESCRIPTOR_PATIENCE);
+        report_starved(&ctx, ScannerKind::Connect, unasked, descriptors::PATIENCE);
     }
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);
     Ok(())
@@ -676,7 +677,7 @@ async fn port_prober(
         })
     };
 
-    let (result, _descriptor) = match dial(&handle, DESCRIPTOR_PATIENCE, || {
+    let (result, _descriptor) = match dial(&handle, descriptors::PATIENCE, || {
         connect(egress, socket_addr, shaping)
     })
     .await
@@ -843,7 +844,7 @@ async fn udp_port_prober(
     // outcome is `Unroutable` rather than `Unasked` for the reason the TCP
     // prober gives: this host gave up, which the next sitting may not.
     let refused = Attempt::Refused;
-    let (socket, _descriptor) = match dial(&handle, DESCRIPTOR_PATIENCE, || {
+    let (socket, _descriptor) = match dial(&handle, descriptors::PATIENCE, || {
         egress.udp_shaped(target.ip, shaping)
     })
     .await
@@ -950,15 +951,6 @@ async fn udp_port_prober(
     }
 }
 
-/// The first pause before a probe refused a socket asks for one again. Short,
-/// because the descriptor it waits for is freed by whichever probe finishes
-/// next, which on a busy sweep is a matter of milliseconds.
-const FIRST_PAUSE: Duration = Duration::from_millis(10);
-
-/// The longest pause between two asks, so a probe notices a freed descriptor
-/// within a fraction of a connect's own budget however long it has waited.
-const LONGEST_PAUSE: Duration = Duration::from_millis(250);
-
 /// What asking the process for a socket, and then using it, came to.
 enum Dialled<T> {
     /// A socket was had and the attempt ran.
@@ -993,13 +985,18 @@ enum Dialled<T> {
 ///
 /// Each attempt's own time budget starts only once it has its socket, so no
 /// part of the wait is ever read as a target's silence.
+///
+/// The same wait as [`descriptors::patiently`], every other connection's, in a
+/// loop of its own because a sweep keeps thousands of these in flight: each
+/// gives its descriptor back while it waits, so a queued probe can use it, and
+/// asks the scan's stop before it asks again.
 async fn dial<T, F, Fut>(handle: &ScanHandle, patience: Duration, mut attempt: F) -> Dialled<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = io::Result<T>>,
 {
     let mut refused_since: Option<Instant> = None;
-    let mut pause = FIRST_PAUSE;
+    let mut pause = descriptors::FIRST_PAUSE;
     loop {
         let descriptor = descriptors::gate()
             .acquire()
@@ -1016,7 +1013,7 @@ where
                     return Dialled::Starved;
                 }
                 tokio::time::sleep(pause).await;
-                pause = (pause * 2).min(LONGEST_PAUSE);
+                pause = (pause * 2).min(descriptors::LONGEST_PAUSE);
             }
             result => {
                 return Dialled::Ran {
@@ -1048,16 +1045,9 @@ async fn connect(egress: Egress, addr: SocketAddr, shaping: Shaping) -> io::Resu
 /// engine's, which reads the file limit and does not raise it.
 /// `unasked` names what was left, counted.
 fn report_starved(ctx: &ScanContext, scanner: ScannerKind, unasked: String, patience: Duration) {
-    let limit = descriptors::soft_limit()
-        .map(|limit| format!(" of {limit}"))
-        .unwrap_or_default();
     ctx.record_failure(
         scanner,
-        format!(
-            "{unasked} left unasked: the process reached its file descriptor \
-             limit{limit} and no socket came free within {patience:?}; raise \
-             the limit and scan again"
-        ),
+        format!("{unasked} left unasked: {}", descriptors::starved(patience)),
     );
 }
 
@@ -1105,7 +1095,7 @@ pub async fn discover(
     ctx: ScanContext,
     evasion: &EvasionProfile,
 ) -> Result<(), StrategyError> {
-    sweep(ips, ctx, evasion, DESCRIPTOR_PATIENCE).await
+    sweep(ips, ctx, evasion, descriptors::PATIENCE).await
 }
 
 /// [`discover`], waiting at most `patience` for a socket the process has none

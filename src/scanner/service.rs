@@ -30,7 +30,6 @@
 
 use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
-use tokio::time::timeout;
 
 use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
@@ -38,6 +37,7 @@ use crate::model::port::{Port, PortState, Protocol};
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Stage};
+use crate::system::descriptors;
 use crate::system::dial::Egress;
 
 /// Fingerprints every open port currently in the store worth an exchange,
@@ -287,22 +287,30 @@ async fn fingerprint_one(
     // refine it over the live exchange.
     let port = crate::fingerprint::baseline_port(port_number, protocol, PortState::Open);
 
+    // One socket's share of the process's budget, held for the whole of the
+    // port's identification. Its connections are made one after another, so
+    // one share covers them; see `descriptors`.
+    let _descriptor = descriptors::gate()
+        .acquire()
+        .await
+        .expect("the descriptor gate is never closed");
+
     let (port, about_the_host, banners) = match protocol {
         Protocol::Tcp => {
-            let stream = match timeout(CONNECT_PROBE_TIMEOUT, egress.connect(addr)).await {
-                Ok(Ok(stream)) => stream,
-                Ok(Err(e)) => {
-                    return Attempt::Unreachable {
-                        ip: target,
-                        number: port_number,
-                        reason: e.to_string(),
+            let stream = match egress.connect_timed(addr, CONNECT_PROBE_TIMEOUT).await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    let reason = if descriptors::exhausted(&e) {
+                        descriptors::starved(descriptors::PATIENCE)
+                    } else if e.kind() == std::io::ErrorKind::TimedOut {
+                        format!("no answer within {CONNECT_PROBE_TIMEOUT:?}")
+                    } else {
+                        e.to_string()
                     };
-                }
-                Err(_) => {
                     return Attempt::Unreachable {
                         ip: target,
                         number: port_number,
-                        reason: format!("no answer within {CONNECT_PROBE_TIMEOUT:?}"),
+                        reason,
                     };
                 }
             };

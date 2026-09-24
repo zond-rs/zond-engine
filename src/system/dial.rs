@@ -32,7 +32,15 @@
 //! before the connect, whoever is connecting and whatever it wants to learn;
 //! see `dial/syn_retries.rs`, compiled for Windows and for the tests only.
 //!
-//! A caller that opened its own socket would be the one that forgot either.
+//! A third thing is not the caller's either: a socket refused because the
+//! process's descriptor table is full says nothing about the target, so it is
+//! asked for again for a while rather than handed back as the connection's
+//! outcome; see [`descriptors`]. How many sockets a scan holds at once is not
+//! decided here. Each pass takes its share of the process's budget for the
+//! connections it makes.
+//!
+//! A caller that opened its own socket would be the one that forgot any of
+//! these.
 //! What a caller does choose is [`Shaping`]: a source port and a hop limit,
 //! which only the connect scanner's probes carry. With nothing forced, nothing
 //! chosen, and on a platform that needs nothing set, a connect is exactly a
@@ -52,6 +60,7 @@ use socket2::{Domain, Socket, Type};
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
 use crate::logging::info;
+use crate::system::descriptors;
 use crate::system::interface::{Link, LinkAddress};
 
 #[cfg(any(windows, test))]
@@ -215,12 +224,50 @@ impl Egress {
     /// Wherever the routing table sends it.
     pub(crate) const KERNEL: Self = Self { pin: None };
 
-    /// Connects to `addr`.
+    /// Connects to `addr`, waiting out a full descriptor table first.
+    ///
+    /// A socket refused because the process holds too many is asked for again
+    /// for up to [`descriptors::PATIENCE`] rather than returned as a failed
+    /// connection, which a caller would read as something the target did; see
+    /// [`descriptors::patiently`]. Past that the refusal is returned, and
+    /// [`descriptors::exhausted`] names it. Unbounded otherwise, as
+    /// [`TcpStream::connect`] is: a caller with a budget for the connection
+    /// takes [`connect_timed`](Self::connect_timed), whose budget the wait does
+    /// not come out of.
     pub(crate) async fn connect(self, addr: SocketAddr) -> io::Result<TcpStream> {
-        self.connect_shaped(addr, Shaping::default()).await
+        descriptors::patiently(descriptors::PATIENCE, || {
+            self.connect_shaped(addr, Shaping::default())
+        })
+        .await
     }
 
-    /// Connects to `addr`, honouring `shaping`.
+    /// [`connect`](Self::connect), giving the connection itself `timeout`.
+    ///
+    /// The budget is the connection's and not the wait's: each attempt is
+    /// timed on its own, and one refused a socket is refused before its clock
+    /// has run. A connection that outlasts it comes back as
+    /// [`ErrorKind::TimedOut`](io::ErrorKind::TimedOut), the stack giving up
+    /// first and the budget running out being the same outcome, a SYN out and
+    /// nothing back.
+    pub(crate) async fn connect_timed(
+        self,
+        addr: SocketAddr,
+        timeout: Duration,
+    ) -> io::Result<TcpStream> {
+        descriptors::patiently(descriptors::PATIENCE, || async move {
+            tokio::time::timeout(timeout, self.connect_shaped(addr, Shaping::default()))
+                .await
+                .unwrap_or_else(|_elapsed| Err(io::ErrorKind::TimedOut.into()))
+        })
+        .await
+    }
+
+    /// Connects to `addr` once, honouring `shaping`.
+    ///
+    /// One attempt, a refusal of a socket included, for the connect scanner,
+    /// which waits out a full table itself because it gives its descriptor back
+    /// between attempts and answers to the scan's stop while it waits. Every
+    /// other caller takes [`connect`](Self::connect).
     ///
     /// Unpinned, unshaped and on Unix this is exactly [`TcpStream::connect`],
     /// so a connection that chose nothing sends the SYN it always would, byte
@@ -241,32 +288,43 @@ impl Egress {
             .await
     }
 
-    /// Connects to `addr` on the calling thread, giving up after `timeout`.
+    /// Connects to `addr` on the calling thread, giving the connection
+    /// `timeout`.
     ///
     /// For a caller that holds a blocking socket, which is a detection running
     /// on the blocking pool. The same socket [`connect`](Self::connect) would
     /// build, connected the way [`std::net::TcpStream::connect_timeout`]
-    /// connects one.
+    /// connects one, and a full descriptor table waited out the same way
+    /// before it, outside `timeout`.
     pub(crate) fn connect_within(
         self,
         addr: SocketAddr,
         timeout: Duration,
     ) -> io::Result<std::net::TcpStream> {
-        if self.tcp_is_plain(Shaping::default()) {
-            return std::net::TcpStream::connect_timeout(&addr, timeout);
-        }
-        let socket = self.socket(addr.ip(), Protocol::Tcp, Shaping::default())?;
-        socket.connect_timeout(&addr.into(), timeout)?;
-        Ok(socket.into())
+        descriptors::patiently_blocking(descriptors::PATIENCE, || {
+            if self.tcp_is_plain(Shaping::default()) {
+                return std::net::TcpStream::connect_timeout(&addr, timeout);
+            }
+            let socket = self.socket(addr.ip(), Protocol::Tcp, Shaping::default())?;
+            socket.connect_timeout(&addr.into(), timeout)?;
+            Ok(socket.into())
+        })
     }
 
-    /// A UDP socket bound for `peer`, ready to be connected to it.
+    /// A UDP socket bound for `peer`, ready to be connected to it, with a full
+    /// descriptor table waited out as [`connect`](Self::connect) waits it out.
     pub(crate) async fn udp(self, peer: IpAddr) -> io::Result<UdpSocket> {
-        self.udp_shaped(peer, Shaping::default()).await
+        descriptors::patiently(descriptors::PATIENCE, || {
+            self.udp_shaped(peer, Shaping::default())
+        })
+        .await
     }
 
     /// A UDP socket bound for `peer` and honouring `shaping`, ready to be
     /// connected to it.
+    ///
+    /// One attempt, for the connect scanner's own wait; see
+    /// [`connect_shaped`](Self::connect_shaped).
     ///
     /// Unpinned and unshaped, this is the plain ephemeral bind. Otherwise the
     /// socket carries its pin, the chosen hop limit, and the chosen source port
@@ -282,10 +340,12 @@ impl Egress {
 
     /// [`udp`](Self::udp), for a caller holding a blocking socket.
     pub(crate) fn udp_blocking(self, peer: IpAddr) -> io::Result<std::net::UdpSocket> {
-        if self.pin.is_none() {
-            return std::net::UdpSocket::bind(wildcard(peer, 0));
-        }
-        Ok(self.socket(peer, Protocol::Udp, Shaping::default())?.into())
+        descriptors::patiently_blocking(descriptors::PATIENCE, || {
+            if self.pin.is_none() {
+                return std::net::UdpSocket::bind(wildcard(peer, 0));
+            }
+            Ok(self.socket(peer, Protocol::Udp, Shaping::default())?.into())
+        })
     }
 
     /// Whether a TCP socket carrying `shaping` can be left to

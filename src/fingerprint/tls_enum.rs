@@ -82,6 +82,7 @@ use crate::model::tls::{
     CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
 };
 use crate::protocols::tls::{self, Offer, RECORD_HEADER_LEN, ServerResponse};
+use crate::system::descriptors;
 use crate::system::dial::Egress;
 use crate::{info, warn};
 
@@ -437,8 +438,17 @@ enum Exchange {
 async fn exchange(addr: SocketAddr, egress: Egress, offer: &Offer<'_>) -> Exchange {
     let hello = tls::client_hello(offer);
 
+    // The five versions' walks each hold a connection at once, so each offer
+    // takes its own share of the process's descriptor budget. Taken before the
+    // offer's clock starts, so a queue for a socket is never read as an
+    // endpoint that did not answer.
+    let _descriptor = descriptors::gate()
+        .acquire()
+        .await
+        .expect("the descriptor gate is never closed");
+
     timeout(EXCHANGE_TIMEOUT, async {
-        let Ok(Ok(mut stream)) = timeout(CONNECT_PROBE_TIMEOUT, egress.connect(addr)).await else {
+        let Ok(mut stream) = egress.connect_timed(addr, CONNECT_PROBE_TIMEOUT).await else {
             return Exchange::Lost;
         };
         if stream.write_all(&hello).await.is_err() {
