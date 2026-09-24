@@ -1356,7 +1356,8 @@ pub struct PhaseRecord {
     /// as a refusal now.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refusals: Vec<RefusalRecord>,
-    /// Addresses the scanning host had no route to.
+    /// Addresses the scanning host could not reach, so no probe was sent to
+    /// them.
     #[serde(default)]
     pub unroutable: Vec<IpAddr>,
     /// Addresses the sitting left before it had finished with them, because
@@ -2088,7 +2089,8 @@ pub struct ProbeStatsRecord {
     pub elapsed: Duration,
     /// How many sends it attempted.
     pub sends_attempted: u64,
-    /// How many the host refused.
+    /// How many never left this host, refused or unable to reach their
+    /// address.
     pub sends_failed: u64,
     /// How many were seen leaving on the wire. Defaulted, so an older record
     /// reads as a run that witnessed nothing.

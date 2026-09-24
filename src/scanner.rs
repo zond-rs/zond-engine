@@ -663,9 +663,7 @@ fn spawn_discovery(
     cfg: &ZondConfig,
     ctx: ScanContext,
 ) -> JoinHandle<ScanReport> {
-    // A sweep is asked about addresses and never about ports, so it names no
-    // UDP port to probe.
-    let caps = ScanCapabilities::resolve(cfg, false);
+    let caps = ScanCapabilities::resolve(cfg, orchestrator::Probing::sweep());
 
     // Narrows `targets` as it records them, so nothing below can probe an
     // excluded address. Addresses a sweep finds for itself never pass through
@@ -1188,7 +1186,7 @@ fn spawn_scan(
     ctx: ScanContext,
     settled: Checkpoint,
 ) -> JoinHandle<ScanReport> {
-    let caps = ScanCapabilities::resolve(cfg, target_map.names(crate::model::port::Protocol::Udp));
+    let caps = ScanCapabilities::resolve(cfg, orchestrator::Probing::ports(cfg, &target_map));
     let cfg = cfg.clone();
 
     tokio::spawn(async move {

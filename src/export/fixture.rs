@@ -237,7 +237,7 @@ fn bare_host() -> Host {
 }
 
 /// The counters a routed sweep that ran out of time would file.
-fn probe_stats() -> ProbeStats {
+pub(crate) fn probe_stats() -> ProbeStats {
     let mut found_at = [0u64; BUCKET_BOUNDS_MS.len() + 1];
     found_at[0] = 4;
     found_at[3] = 3;

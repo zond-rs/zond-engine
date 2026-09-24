@@ -546,8 +546,9 @@ pub struct PhaseDto<'a> {
     /// recur, and a refusal will recur every time the same scan is run.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub refusals: Vec<RefusalDto<'a>>,
-    /// Addresses this host had no route to, so nothing was sent to them,
-    /// ascending.
+    /// Addresses this host could not reach, so no probe was sent to them,
+    /// ascending: no route or source address led to them, or they are
+    /// neighbours on a local segment that never answered address resolution.
     ///
     /// Not failures and not listed among them: no strategy broke and the result
     /// is not partial because of these. They are here because the caller named
@@ -1216,8 +1217,9 @@ pub struct ProbeStatsDto {
     pub elapsed_us: u64,
     /// Probes the scanner tried to put on the wire.
     pub sends_attempted: u64,
-    /// Of those, ones the sender refused. Non-zero means the shortfall starts
-    /// at home, before the network is implicated at all.
+    /// Of those, ones that never left this host: the sender refused them, or
+    /// could not reach their address. Non-zero means the shortfall
+    /// starts at home, before the network is implicated at all.
     pub sends_failed: u64,
     /// Of those, ones seen leaving on the wire. The gap below `sends_attempted`
     /// is probes the OS took and dropped; zero means no egress capture.

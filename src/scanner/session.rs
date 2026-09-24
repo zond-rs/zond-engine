@@ -885,14 +885,14 @@ impl RefusalLog {
     }
 }
 
-/// Addresses this host had no route to, gathered across a phase.
+/// Addresses this host could not reach, gathered across a phase.
 ///
 /// A set, so a target probed several times is named once, and ordered so two
 /// runs of the same scan report them the same way.
 ///
 /// Kept apart from [`FailureLog`] because the two are different findings. A
 /// strategy that could not run means the scan covered less than it was asked
-/// to and its result is partial; an address with no route means that address is
+/// to and its result is partial; an unreachable address means that address is
 /// not reachable from this machine, which is an ordinary fact about a
 /// dual-stack name on a single-stack network and says nothing about the rest of
 /// the scan.
@@ -1371,7 +1371,7 @@ pub struct ScanContext {
     /// Ground this scan declined to cover before sending anything.
     pub(crate) refusals: Arc<RefusalLog>,
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
-    /// Addresses this host has no route to, so nothing could be sent to them.
+    /// Addresses this host could not reach, so no probe was sent to them.
     pub(crate) unroutable: Arc<UnroutableLog>,
     /// Addresses the scan stopped working on because their budget ran out.
     pub(crate) timed_out: Arc<TimedOutLog>,
@@ -1862,8 +1862,9 @@ impl ScanContext {
         self.failures.drain()
     }
 
-    /// Records that this host has no route to `address`, so nothing was sent to
-    /// it.
+    /// Records that this host could not reach `address`, so no probe was sent
+    /// to it: no route or source address led there, or the neighbour never
+    /// answered address resolution.
     ///
     /// Not a failure and not an event: no strategy broke and nothing about the
     /// scan's standing changes. It is recorded because the address was asked

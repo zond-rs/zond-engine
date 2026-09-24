@@ -1276,7 +1276,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         let addresses: Vec<String> = phase.unroutable.iter().map(|ip| esc(ip)).collect();
         fact(
             out,
-            "no route",
+            "unreachable",
             &format!(
                 "{}{}",
                 addresses.join(", "),
@@ -1511,8 +1511,10 @@ fn write_probe_stats(out: &mut dyn Write, stats: &ProbeStatsDto) -> Result<(), E
     )?;
 
     let mut sends = vec![format!("{} attempted", stats.sends_attempted)];
+    // Not "refused": the count holds sends to an address this host could not
+    // reach beside the ones the sender turned down, and neither left it.
     if stats.sends_failed > 0 {
-        sends.push(format!("{} refused by the sender", stats.sends_failed));
+        sends.push(format!("{} never left this host", stats.sends_failed));
     }
     fact(out, "probes", &sends.join(" · "))?;
 
@@ -1843,6 +1845,23 @@ mod tests {
             rest = &rest[end..];
         }
         found
+    }
+
+    /// A send that never left counts a probe to an address this host could
+    /// not reach as well as one the sender refused, so the page says what both
+    /// have in common. Called refused by the sender, a scan of a name whose
+    /// other family has no route from here reads as a broken send path.
+    #[test]
+    fn sends_that_never_left_are_not_all_called_refused() {
+        let mut stats = fixture::probe_stats();
+        stats.sends_failed = 3;
+
+        let mut bytes = Vec::new();
+        write_probe_stats(&mut bytes, &ProbeStatsDto::new(&stats)).expect("the block renders");
+        let block = String::from_utf8(bytes).expect("utf-8");
+
+        assert!(block.contains("3 never left this host"), "{block}");
+        assert!(!block.contains("refused"), "{block}");
     }
 
     /// What a browser needs before it will render anything at all, and the

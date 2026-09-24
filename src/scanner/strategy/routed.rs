@@ -868,26 +868,29 @@ impl RoutedScanner {
             );
         }
 
-        // Said once, at the level a person watching a scan sees: an address they
-        // named was not covered, and nothing else in the output would tell them
-        // so. Nothing is wrong with the scan, so it carries neither an error
-        // prefix nor the operating system's errno, that is a diagnostic detail
-        // and it is on the verbose line beside the send that failed.
-        //
-        // The address and nothing else. That it went unscanned follows from
-        // there being no route to it, and saying so out loud is a line of
-        // output that tells a reader what they have just read.
+        // Against the address, where a report counts what it did not cover and
+        // a front end says so beside its result.
         for address in &self.faults.addresses {
             self.ctx.record_unroutable(*address);
         }
 
-        // Addresses rather than failed sends, since an attempt at one address
-        // is a packet per port and each of them fails.
+        // Which address it was, at the level that says what went uncovered and
+        // why: the default console already has the count from the report, and
+        // a second line there would say the same thing twice. Addresses rather
+        // than failed sends, since an attempt at one address is a packet per
+        // port and each of them fails. "Unreachable" rather than "no route",
+        // since a neighbour that never answered its address resolution is
+        // filed here too, and it has a route. Nothing is wrong with the scan,
+        // so the line carries no error prefix and no errno; that detail is on
+        // the line beside the send that failed.
         if let Some((address, _)) = &self.faults.unroutable {
             match self.faults.addresses.len().saturating_sub(1) {
-                0 => info!("no route to {address}"),
-                1 => info!("no route to {address} and 1 other address"),
-                more => info!("no route to {address} and {more} other addresses"),
+                0 => info!(verbosity = 1, "{address} unreachable"),
+                1 => info!(verbosity = 1, "{address} and 1 other address unreachable"),
+                more => info!(
+                    verbosity = 1,
+                    "{address} and {more} other addresses unreachable"
+                ),
             }
         }
 
@@ -1307,6 +1310,37 @@ mod tests {
             unswept,
             "the one still mid-schedule has no verdict either"
         );
+    }
+
+    /// An unreachable address is recorded against the address, which a front
+    /// end counts beside its result, and named at the verbosity that says
+    /// what went uncovered. A default console that printed the name as
+    /// well would say the same thing twice, once in the engine's words and
+    /// once in the front end's.
+    #[test]
+    fn an_unreachable_address_is_named_only_beyond_the_default_console() {
+        let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, THREE.len());
+        let [first, second, _] = THREE;
+        scanner.faults.unroutable = Some((first.into(), "no route to host".to_owned()));
+        scanner.faults.unroutable_count = 2;
+        scanner.faults.addresses = [first.into(), second.into()].into();
+
+        let said = crate::logging::logged(|| scanner.finish(StopReason::AttemptsSpent));
+
+        let unroutable: Vec<_> = said
+            .iter()
+            .filter(|line| line.message.contains("unreachable"))
+            .collect();
+        assert_eq!(unroutable.len(), 1, "said once: {said:?}");
+        assert_eq!(
+            unroutable[0].message,
+            "198.51.100.1 and 1 other address unreachable"
+        );
+        assert!(
+            unroutable[0].verbosity >= 1,
+            "a default console already has the count: {said:?}"
+        );
+        assert_eq!(ctx.take_unroutable().len(), 2, "both are recorded");
     }
 
     /// A caller who stopped the scan knows why it ended, so the sweep files no

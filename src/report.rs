@@ -1042,8 +1042,11 @@ impl ProbeStats {
         self.sends_attempted
     }
 
-    /// Of those, ones the sender refused. A non-zero count means the shortfall
-    /// starts at home, before the network is implicated at all.
+    /// Of those, ones that never left this host: the sender refused them, or
+    /// could not reach their address. A non-zero count means the shortfall
+    /// starts at home, before the network is implicated at all. The addresses
+    /// it could not reach are named in the phase's
+    /// [`unroutable`](ScanPhase::unroutable) list.
     pub fn sends_failed(&self) -> u64 {
         self.sends_failed
     }
@@ -1335,7 +1338,8 @@ pub struct ProbeStatsParts {
     pub elapsed: Duration,
     /// How many sends it attempted.
     pub sends_attempted: u64,
-    /// How many of those the host refused.
+    /// How many of those never left this host, refused or unable to reach
+    /// their address.
     pub sends_failed: u64,
     /// How many of those were seen leaving on the wire.
     pub sends_witnessed: u64,
@@ -1630,7 +1634,7 @@ pub struct PhaseParts {
     pub failures: Vec<ScannerFailure>,
     /// Ground the phase declined before sending anything.
     pub refusals: Vec<Refusal>,
-    /// Addresses this host had no route to.
+    /// Addresses this host could not reach, so no probe was sent to them.
     pub unroutable: Vec<IpAddr>,
     /// Addresses whose per-host budget ran out before the phase finished with
     /// them.
@@ -1695,7 +1699,9 @@ pub struct ScanPhase {
     targets: TargetScope,
     settings: ScanSettings,
     failures: Vec<ScannerFailure>,
-    /// Addresses this host had no route to, so nothing was sent to them.
+    /// Addresses this host could not reach, so no probe was sent to them: no
+    /// route or source address led to them, or they are neighbours on a local
+    /// segment that never answered address resolution.
     ///
     /// Distinct from a host that answered nothing, and the distinction is the
     /// whole reason it is recorded: an address that went unprobed because there
@@ -1795,7 +1801,14 @@ impl ScanPhase {
         &self.settings
     }
 
-    /// Strategies that did not run to completion.
+    /// Addresses this host could not reach, so no probe was sent to them,
+    /// ascending: no route or source address led to them, or they are
+    /// neighbours on a local segment that never answered address resolution.
+    ///
+    /// Not [`failures`](Self::failures): no strategy broke, and the result is
+    /// not partial because of these. An address here was never probed, which
+    /// is a different finding from one probed that stayed silent, and why
+    /// scanning it on trust cannot reach it either.
     pub fn unroutable(&self) -> &[IpAddr] {
         &self.unroutable
     }
@@ -2252,7 +2265,7 @@ impl ScanReport {
     /// sitting of the scan as written.
     ///
     /// Two things narrow a result and are not counted, because neither is
-    /// coverage that fell short. An address this host had no route to
+    /// coverage that fell short. An address this host could not reach
     /// ([`ScanPhase::unroutable`]) was never coverable from here, and a port
     /// left unasked on one is the same fact; an address an exclusion policy
     /// withheld was never asked for. Counting either would leave a sweep of a
@@ -2272,7 +2285,7 @@ impl ScanReport {
     ///
     /// A phase decided an address it walked and did not name as undecided,
     /// and the report decided one it holds a live host at or that some phase
-    /// found no route to. So the second sitting of a resumed job closes what
+    /// could not reach. So the second sitting of a resumed job closes what
     /// the first left open, and so does a later sweep merged with a stopped
     /// one. Each phase keeps its own list as the record of that phase; this is
     /// what the report as a whole left open, and what

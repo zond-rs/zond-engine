@@ -59,7 +59,7 @@
       "$ref": "#/$defs/duration_us"
     },
     "partial": {
-      "description": "True if the findings are narrower than the caller asked for: a strategy failed to run to completion, a phase declined ground (`refusals`), a host's own budget left it early (`timed_out`), a discovery phase reached no verdict on an address (`undecided`), or a port a reachable host was scanned for went `unasked`. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart. An address with no route (`unroutable`) and one an exclusion withheld do not make a report partial, since neither was coverable ground that went uncovered.",
+      "description": "True if the findings are narrower than the caller asked for: a strategy failed to run to completion, a phase declined ground (`refusals`), a host's own budget left it early (`timed_out`), a discovery phase reached no verdict on an address (`undecided`), or a port a reachable host was scanned for went `unasked`. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart. An address this host could not reach (`unroutable`) and one an exclusion withheld do not make a report partial, since neither was coverable ground that went uncovered.",
       "type": "boolean"
     },
     "summary": {
@@ -844,7 +844,7 @@
           }
         },
         "unroutable": {
-          "description": "Addresses this host had no route to, so nothing was sent to them, ascending. Not failures and not listed among them: no strategy broke and the result is not partial because of these. An address here was never probed at all, which is a different finding from one that was probed and stayed silent - and it is why advice to scan it on trust cannot apply.",
+          "description": "Addresses this host could not reach, so no probe was sent to them, ascending: no route or source address led to them, or they are neighbours on a local segment that never answered address resolution. Not failures and not listed among them: no strategy broke and the result is not partial because of these. An address here was never probed at all, which is a different finding from one that was probed and stayed silent - and it is why advice to scan it on trust cannot apply.",
           "type": "array",
           "items": {
             "type": "string",
@@ -1143,7 +1143,7 @@
           "$ref": "#/$defs/count"
         },
         "sends_failed": {
-          "description": "Probes the sender refused. Non-zero means the shortfall starts at home, before the network is implicated at all.",
+          "description": "Probes that never left this host: the sender refused them, or could not reach their address. Non-zero means the shortfall starts at home, before the network is implicated at all.",
           "$ref": "#/$defs/count"
         },
         "sends_witnessed": {

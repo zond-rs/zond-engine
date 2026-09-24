@@ -55,7 +55,7 @@ use crate::model::{
     ip::set::IpSet,
     port::{Discovery as PortDiscovery, Port, PortState, Protocol, ScanResponse},
     target::{PlannedTarget, TargetIndex, TargetMap, TargetSet},
-    technique::TcpScanTechnique,
+    technique::{SctpScanTechnique, TcpScanTechnique},
 };
 use crate::report::{ScannerKind, TargetScope};
 use crate::scanner::pool::ProbePool;
@@ -153,9 +153,9 @@ impl ScanCapabilities {
     /// announces the scanning mode they imply once, here, rather than from the
     /// code that later acts on them.
     ///
-    /// `probes_udp` is whether the run names a UDP port, which only a port scan
-    /// can: it is what the announcement of the unprivileged mode depends on.
-    pub(super) fn resolve(cfg: &ZondConfig, probes_udp: bool) -> Self {
+    /// `probing` is what the run sends beyond its liveness probes, which is
+    /// what the announcement names.
+    pub(super) fn resolve(cfg: &ZondConfig, probing: Probing) -> Self {
         let privilege = Privilege::current();
         let mode = cfg.evasion.effective_send_mode(cfg.send_mode);
         let frames_only =
@@ -166,24 +166,24 @@ impl ScanCapabilities {
             frames_only,
             dns: !cfg.no_dns,
         };
-        caps.announce(probes_udp);
+        caps.announce(probing, privilege::can_send_raw());
         caps
     }
 
     /// Says what the privilege this run holds lets it probe with.
-    fn announce(self, probes_udp: bool) {
+    ///
+    /// `raw_sockets` is which of the two routes to raw probing carried it,
+    /// because on macOS the link layer alone is what an unprivileged run gets,
+    /// and a reader who expected to need sudo should see why they did not.
+    fn announce(self, probing: Probing, raw_sockets: bool) {
         if self.privilege.is_raw() {
-            // Which of the two routes carried it, because on macOS the second
-            // one is what an unprivileged run gets and a reader who expected to
-            // need sudo should see why they did not.
-            if privilege::can_send_raw() {
-                success!("raw sockets available: probing with ARP, ICMPv6 and SYN");
+            let route = if raw_sockets {
+                "raw sockets"
             } else {
-                success!(
-                    "link-layer access: probing with ARP, ICMPv6 and SYN as self-built frames"
-                );
-            }
-        } else if probes_udp {
+                "link-layer frames"
+            };
+            success!("probing with {} ({route})", probing.raw_probes());
+        } else if probing.udp {
             // The UDP ports go to ordinary sockets, which need no privilege, so
             // a line saying TCP connect alone would be one saying less than the
             // run does.
@@ -209,6 +209,59 @@ impl ScanCapabilities {
             return interface::BeyondFrames::default();
         }
         interface::beyond_frames(targets.clone(), forced, sender)
+    }
+}
+
+/// What a run probes its ports with, beside the ARP, ICMPv6 and SYN every
+/// liveness pass and sweep sends: the part of its opening line the run's own
+/// choices decide.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Probing {
+    /// The technique its TCP ports are probed with, where it names one.
+    tcp: Option<TcpScanTechnique>,
+    /// Whether it names a UDP port.
+    udp: bool,
+    /// The technique its SCTP ports are probed with, where it names one.
+    sctp: Option<SctpScanTechnique>,
+}
+
+impl Probing {
+    /// A sweep's: it asks about addresses and never about ports.
+    pub(super) fn sweep() -> Self {
+        Self::default()
+    }
+
+    /// A port scan's: the protocols `map` names a port on, each with the
+    /// technique `cfg` probes it with.
+    pub(super) fn ports(cfg: &ZondConfig, map: &TargetMap) -> Self {
+        Self {
+            tcp: map.names(Protocol::Tcp).then_some(cfg.tcp_technique),
+            udp: map.names(Protocol::Udp),
+            sctp: map.names(Protocol::Sctp).then_some(cfg.sctp_technique),
+        }
+    }
+
+    /// The probes a raw run sends, as its opening line lists them: `ARP,
+    /// ICMPv6, SYN, FIN and UDP`.
+    ///
+    /// SYN is always among them, since the liveness probes to common ports
+    /// are SYNs whichever technique the ports are probed with, and a SYN port
+    /// scan is named once.
+    fn raw_probes(self) -> String {
+        let mut probes = vec!["ARP".to_owned(), "ICMPv6".to_owned(), "SYN".to_owned()];
+        if let Some(tcp) = self.tcp
+            && tcp != TcpScanTechnique::Syn
+        {
+            probes.push(tcp.name().to_uppercase());
+        }
+        if self.udp {
+            probes.push("UDP".to_owned());
+        }
+        if let Some(sctp) = self.sctp {
+            probes.push(format!("SCTP {}", sctp.name().to_uppercase()));
+        }
+        let last = probes.pop().expect("SYN is always listed");
+        format!("{} and {last}", probes.join(", "))
     }
 }
 
@@ -2840,18 +2893,82 @@ mod tests {
             dns: false,
         };
 
-        for (probes_udp, expected) in [
+        for (udp, expected) in [
             (
                 true,
                 "no raw sockets: probing with TCP connect and plain UDP datagrams",
             ),
             (false, "no raw sockets: probing with TCP connect only"),
         ] {
+            let probing = Probing {
+                udp,
+                ..Probing::sweep()
+            };
             let heard = Heard::default();
-            tracing::subscriber::with_default(heard.clone(), || unprivileged.announce(probes_udp));
+            tracing::subscriber::with_default(heard.clone(), || {
+                unprivileged.announce(probing, false);
+            });
 
             let said = heard.0.lock().expect("an unpoisoned log").clone();
-            assert_eq!(said, [expected], "probing udp: {probes_udp}");
+            assert_eq!(said, [expected], "probing udp: {udp}");
+        }
+    }
+
+    /// A raw run's opening line names the probes its ports are sent, beside
+    /// the liveness pass's SYN, and each of them once. A FIN scan announced
+    /// as probing with SYN, with its UDP and SCTP ports left out, tells its
+    /// reader the scan asked a different question than it did.
+    #[test]
+    fn a_raw_run_names_the_technique_and_every_protocol_it_probes() {
+        let raw = ScanCapabilities {
+            privilege: Privilege::Raw,
+            frames_only: false,
+            dns: false,
+        };
+        let unit = |ports: &str| {
+            let mut map = TargetMap::new();
+            map.add_unit(crate::model::target::TargetSet::new(
+                "192.0.2.1".parse().expect("an address"),
+                ports.parse().expect("a specification"),
+            ));
+            map
+        };
+        let map = unit("22, u:53, s:2905");
+        let fin = ZondConfig {
+            tcp_technique: TcpScanTechnique::Fin,
+            ..ZondConfig::default()
+        };
+        let udp_only = unit("u:53");
+
+        for (probing, raw_sockets, expected) in [
+            (
+                Probing::sweep(),
+                true,
+                "probing with ARP, ICMPv6 and SYN (raw sockets)",
+            ),
+            (
+                Probing::ports(&ZondConfig::default(), &map),
+                true,
+                "probing with ARP, ICMPv6, SYN, UDP and SCTP INIT (raw sockets)",
+            ),
+            (
+                Probing::ports(&fin, &map),
+                false,
+                "probing with ARP, ICMPv6, SYN, FIN, UDP and SCTP INIT (link-layer frames)",
+            ),
+            (
+                Probing::ports(&fin, &udp_only),
+                true,
+                "probing with ARP, ICMPv6, SYN and UDP (raw sockets)",
+            ),
+        ] {
+            let heard = Heard::default();
+            tracing::subscriber::with_default(heard.clone(), || {
+                raw.announce(probing, raw_sockets);
+            });
+
+            let said = heard.0.lock().expect("an unpoisoned log").clone();
+            assert_eq!(said, [expected], "{probing:?}");
         }
     }
 

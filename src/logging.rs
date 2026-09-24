@@ -105,6 +105,77 @@ pub(crate) fn counted(count: u128, one: &str, many: &str) -> String {
     }
 }
 
+/// One event a closure emitted, as a front end reads it.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Logged {
+    /// The `verbosity` field, 0 for a line a default run shows.
+    pub(crate) verbosity: u64,
+    /// The formatted message.
+    pub(crate) message: String,
+}
+
+#[cfg(test)]
+impl tracing::field::Visit for Logged {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{value:?}");
+        }
+    }
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "verbosity" {
+            self.verbosity = value;
+        }
+    }
+    // An unsuffixed literal is recorded signed.
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        if field.name() == "verbosity" {
+            self.verbosity = u64::try_from(value).unwrap_or(u64::MAX);
+        }
+    }
+}
+
+/// The events `run` emits on this thread, with the verbosity each was given,
+/// which is what decides whether a default console shows it.
+#[cfg(test)]
+pub(crate) fn logged(run: impl FnOnce()) -> Vec<Logged> {
+    use std::sync::{Arc, Mutex};
+    use tracing::span::{Attributes, Id, Record};
+
+    struct Recorder(Arc<Mutex<Vec<Logged>>>);
+
+    impl tracing::Subscriber for Recorder {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+        fn record(&self, _: &Id, _: &Record<'_>) {}
+        fn record_follows_from(&self, _: &Id, _: &Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut logged = Logged {
+                verbosity: 0,
+                message: String::new(),
+            };
+            event.record(&mut logged);
+            self.0
+                .lock()
+                .unwrap_or_else(|held| held.into_inner())
+                .push(logged);
+        }
+        fn enter(&self, _: &Id) {}
+        fn exit(&self, _: &Id) {}
+    }
+
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    tracing::subscriber::with_default(Recorder(Arc::clone(&lines)), run);
+    lines
+        .lock()
+        .unwrap_or_else(|held| held.into_inner())
+        .clone()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
