@@ -31,6 +31,12 @@
 //! [`ports`](super::ports) holds the profiles that belong to a port scan, and
 //! the UDP scanner keeps its own outright, because an ICMP rate limiter is not
 //! a property of the path.
+//!
+//! `neighbors` is the one piece every raw pass shares in full: how a probe
+//! waits for the hardware address of the neighbour it is framed to, rather
+//! than being sent where the send would wait on it or be lost behind it.
+
+pub(super) mod neighbors;
 
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -589,6 +595,15 @@ impl SendFaults {
         } else {
             self.broken.get_or_insert_with(|| error.to_string());
         }
+    }
+
+    /// Files `target` as an address nothing reaches, on the pass's own
+    /// reading rather than a refused send: its neighbour did not answer while
+    /// the pass held its probe, so nothing was handed to the sender to refuse
+    /// and nothing is counted as a send. See [`neighbors`].
+    pub(super) fn record_unreached(&mut self, target: IpAddr, reason: String) {
+        self.addresses.insert(target);
+        self.unroutable.get_or_insert((target, reason));
     }
 
     /// Says what a pass's refused sends came to, each kind where it belongs:

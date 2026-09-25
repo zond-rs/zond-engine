@@ -59,9 +59,11 @@ use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::raw::SendFaults;
+use crate::scanner::strategy::raw::neighbors::{Admission, NeighborGates, RESOLUTION_BUDGET};
 use crate::scanner::strategy::sweep::HostSweep;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
+use crate::transport::kernel_neighbors::NeighborState;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{info, success};
 
@@ -113,29 +115,6 @@ fn local_millis_since_midnight() -> u32 {
         .unwrap_or(0)
 }
 
-/// The first address in `queue` whose host may be probed now, rotating past the
-/// ones that may not.
-///
-/// [`None`] means every address in the queue was asked too recently for the gap
-/// the scan keeps. The queue keeps every address it had, in a different order:
-/// one turned away goes to the back rather than out, because a probe dropped on
-/// this answer is a host the pass silently stops asking about.
-///
-/// The walk is bounded by the queue's length at entry, so a queue in which
-/// nothing is ready costs one pass over it rather than being walked until
-/// something becomes ready. Free-standing rather than a method because it is
-/// called on each of two queues while the context is borrowed.
-fn take_ready(queue: &mut VecDeque<IpAddr>, ctx: &ScanContext, now: Instant) -> Option<IpAddr> {
-    for _ in 0..queue.len() {
-        let candidate = queue.pop_front()?;
-        if ctx.host_ready_at(candidate, now).is_none() {
-            return Some(candidate);
-        }
-        queue.push_back(candidate);
-    }
-    None
-}
-
 /// Sends one ICMP echo per host where passive evidence named nothing, and files
 /// what the replies say.
 ///
@@ -160,6 +139,10 @@ pub struct OsEchoScanner {
     next_sequence: u16,
     /// Targets not yet asked.
     pending: VecDeque<IpAddr>,
+    /// How far this pass has read the resolution of each target's neighbour,
+    /// so no request is handed to a transport whose send would wait on one
+    /// or be lost behind it. See [`NeighborGates`].
+    neighbors: NeighborGates,
     /// The outstanding probes, the retry queue and the run's counters, shared
     /// with the two discovery sweeps. The ledger carries the sequence of the
     /// attempt, so a round trip is measured against the send it answers.
@@ -170,7 +153,8 @@ pub struct OsEchoScanner {
     /// The hard ceiling on this run, derived from the longest a probe's
     /// schedule can take: every attempt at the retry ceiling, which is where
     /// hosts that answered slowly time the rest, or at the gap the scan keeps
-    /// between two probes at one host where that is longer.
+    /// between two probes at one host where that is longer, behind the
+    /// longest its first attempt can be held while its neighbour is asked for.
     deadline: Instant,
     /// Why requests did not leave, split by whose fact it was: this host's
     /// send path, or an address nothing reaches from here.
@@ -220,6 +204,11 @@ impl OsEchoScanner {
         let send_duration = SEND_TICK.saturating_mul(targets.len() as u32);
         let target_count = targets.len();
         let probe_lifetime = RETRY_POLICY.longest_spaced_probe_lifetime(ctx.host_probe_interval());
+        let held = if transport.neighbors().is_some() {
+            RESOLUTION_BUDGET
+        } else {
+            Duration::ZERO
+        };
 
         // Timed from what the phases before this one measured, since every
         // target is a host the scan already found and most were timed finding
@@ -246,9 +235,10 @@ impl OsEchoScanner {
             identifier,
             next_sequence: 0,
             pending: targets.into(),
+            neighbors: NeighborGates::default(),
             sweep: HostSweep::new(ledger),
             by_sequence: HashMap::with_capacity(target_count),
-            deadline: Instant::now() + probe_lifetime + send_duration + QUIET_FLOOR,
+            deadline: Instant::now() + held + probe_lifetime + send_duration + QUIET_FLOOR,
             faults: SendFaults::default(),
         }
     }
@@ -278,9 +268,9 @@ impl OsEchoScanner {
         self.sweep
             .retries
             .retain(|target| self.sweep.ledger.contains(target));
-        let (target, retry) = match take_ready(&mut self.sweep.retries, &self.ctx, now) {
+        let (target, retry) = match self.take_ready(true, now) {
             Some(target) => (target, true),
-            None => match take_ready(&mut self.pending, &self.ctx, now) {
+            None => match self.take_ready(false, now) {
                 Some(target) => (target, false),
                 None => return,
             },
@@ -295,6 +285,68 @@ impl OsEchoScanner {
             Some(sequence) => self.sweep.ledger.arm(target, target, sequence, (), now),
             None if retry => self.sweep.ledger.resume(&target, now),
             None => {}
+        }
+    }
+
+    /// The first address in the retry queue, or with `retries` false the
+    /// queue of targets not yet asked, whose host may be probed now, rotating
+    /// past the ones that may not.
+    ///
+    /// Two things may turn one away: the gap the scan keeps between probes at
+    /// one host, and a neighbour still being asked for (see
+    /// [`NeighborGates::admit`]). Either sends it to the back rather than out,
+    /// because a probe dropped on that answer is a host the pass silently
+    /// stops asking about. A target whose neighbour never answered is taken
+    /// out and filed unreached, with nothing sent it.
+    ///
+    /// The walk is bounded by the queue's length at entry, so a queue in which
+    /// nothing is ready costs one pass over it rather than being walked until
+    /// something becomes ready. Walked past the targets held for their
+    /// neighbour rather than stopping at the first, so every new neighbour in
+    /// the queue is asked for on one call and a wave of them costs one wait,
+    /// and a held retry does not keep the targets behind it unasked.
+    fn take_ready(&mut self, retries: bool, now: Instant) -> Option<IpAddr> {
+        let waiting = self.queue(retries).len();
+        for _ in 0..waiting {
+            let candidate = self.queue(retries).pop_front()?;
+            if self.ctx.host_ready_at(candidate, now).is_some() {
+                self.queue(retries).push_back(candidate);
+                continue;
+            }
+            let watch = self.transport.neighbors();
+            match self
+                .neighbors
+                .admit(watch, &mut self.resolver, candidate, now)
+            {
+                Admission::Send => return Some(candidate),
+                Admission::Hold(_) => self.queue(retries).push_back(candidate),
+                Admission::Unreachable => self.unreached(candidate, retries, now),
+            }
+        }
+        None
+    }
+
+    /// The retry queue, or with `retries` false the targets not yet asked.
+    fn queue(&mut self, retries: bool) -> &mut VecDeque<IpAddr> {
+        if retries {
+            &mut self.sweep.retries
+        } else {
+            &mut self.pending
+        }
+    }
+
+    /// Files `target` as an address nothing reaches: its neighbour did not
+    /// answer, so no request was sent it. A retry's probe restarts its clock
+    /// from now, with the attempt it was charged still counted, so it runs
+    /// out on schedule rather than waiting outstanding.
+    fn unreached(&mut self, target: IpAddr, retry: bool, now: Instant) {
+        let why = self.neighbors.unreached(target, NeighborState::Failed);
+        if self.faults.unroutable.is_none() {
+            info!(verbosity = 2, "{target} unreachable ({why})");
+        }
+        self.faults.record_unreached(target, why);
+        if retry {
+            self.sweep.ledger.resume(&target, now);
         }
     }
 
@@ -1246,6 +1298,56 @@ mod tests {
         assert!(
             session.hosts().get(TARGET).is_none(),
             "a stranger's reply found a host"
+        );
+    }
+
+    /// Echo requests through a frame sender go to no neighbour still being
+    /// asked for: every new neighbour is asked for at once, the ones that never
+    /// answer are reported unreached with nothing sent them, and a live one
+    /// among them is asked.
+    ///
+    /// A frame sender resolves a neighbour nobody asked for ahead inside the
+    /// send and holds the pass for the whole wait, which for a neighbour that
+    /// never answers is the resolution's whole budget, paid again for each one
+    /// in turn.
+    #[tokio::test]
+    async fn neighbours_behind_a_frame_sender_are_asked_for_together() {
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::link::{LinkNeighbors, SIMULATED_HOST};
+        use crate::transport::probe::MockSender;
+
+        const LIVE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 61);
+        let dead: Vec<IpAddr> = (171..=190)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport = ProbeTransport::from_parts(Box::new(sender), rx)
+            .with_link_neighbors(LinkNeighbors::on_simulated_segment("sim-echo0", &[LIVE]));
+        let targets = dead.iter().copied().chain([IpAddr::V4(LIVE)]).collect();
+        let mut scanner = OsEchoScanner::with_transport(ctx.clone(), targets, transport);
+        scanner.resolver = SourceResolver::from_links(&[Link::new("test0", 0)
+            .with_addresses(vec![LinkAddress::new(IpAddr::V4(SIMULATED_HOST), 24)])]);
+
+        scanner.probe().await.expect("the phase runs");
+
+        let sent = sent.lock().unwrap();
+        assert!(!sent.is_empty(), "the live neighbour is asked");
+        assert!(
+            sent.iter().all(|(_, _, dst)| *dst == IpAddr::V4(LIVE)),
+            "a request was handed to the sender for a neighbour nobody had resolved"
+        );
+        let mut unreached = ctx.take_unroutable();
+        unreached.sort();
+        assert_eq!(
+            unreached, dead,
+            "every dead neighbour is reported unreached"
+        );
+        assert!(
+            ctx.failures_snapshot().is_empty(),
+            "and nothing failed here"
         );
     }
 }

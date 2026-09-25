@@ -128,6 +128,7 @@ use crate::scanner::audit::ProbeAudit;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::raw::SendFaults;
+use crate::scanner::strategy::raw::neighbors::resolve_ahead;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
@@ -419,6 +420,35 @@ impl OsSeriesScanner {
         self.file_queued();
     }
 
+    /// `batch`, less the hosts nothing reaches, once the neighbour of every
+    /// host in it has answered or been given up.
+    ///
+    /// Asked for all at once and waited for before the first sample, rather
+    /// than met one at a time by the sends: a sweep that waited inside a send
+    /// for a neighbour to answer would overrun the spacing the samples are
+    /// read across, for every host in the batch. A host whose neighbour never
+    /// answered is filed unreached and sent nothing. See
+    /// [`resolve_ahead`].
+    async fn resolve_neighbors(&mut self, batch: Vec<SeriesTarget>) -> Vec<SeriesTarget> {
+        let unreached = resolve_ahead(
+            &self.ctx,
+            self.transport.neighbors(),
+            &mut self.resolver,
+            batch.iter().map(|target| target.address.addr()),
+        )
+        .await;
+        for (address, why) in &unreached {
+            if self.faults.unroutable.is_none() {
+                info!(verbosity = 2, "{address} unreachable ({why})");
+            }
+            self.faults.record_unreached(*address, why.clone());
+        }
+        batch
+            .into_iter()
+            .filter(|target| !unreached.contains_key(&target.address.addr()))
+            .collect()
+    }
+
     /// Puts one probe on the wire and records the nonce it went out under.
     fn send_one(&mut self, source: IpAddr, address: IpAddr, source_port: u16, port: u16) {
         let nonce: u32 = rand::random();
@@ -657,6 +687,7 @@ impl OsSeriesScanner {
                 reason = cause.into();
                 break;
             }
+            let batch = self.resolve_neighbors(batch).await;
 
             for _ in 0..self.samples {
                 let began = Instant::now();
@@ -1232,6 +1263,75 @@ mod tests {
         assert!(
             session.hosts().get(TARGET).is_none(),
             "a segment answering no probe of ours records nothing whatsoever"
+        );
+    }
+
+    /// A batch through a frame sender waits for every new neighbour in it
+    /// before its first sample, all of them asked for at once: the ones that
+    /// never answer are reported unreached with nothing sent them, and a live
+    /// one among them has every sample leave.
+    ///
+    /// A frame sender resolves a neighbour nobody asked for ahead inside the
+    /// send, and a sweep held there for the resolution's budget overruns the
+    /// spacing the samples are read across, for every host in the batch.
+    #[tokio::test]
+    async fn neighbours_behind_a_frame_sender_are_asked_for_before_the_first_sample() {
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::link::{LinkNeighbors, SIMULATED_HOST};
+        use crate::transport::probe::MockSender;
+
+        const LIVE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 62);
+        const SAMPLES: usize = 3;
+        let dead: Vec<IpAddr> = (191..=200)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport = ProbeTransport::from_parts(Box::new(sender), rx as CaptureStream)
+            .with_link_neighbors(LinkNeighbors::on_simulated_segment("sim-series0", &[LIVE]));
+        let targets = dead
+            .iter()
+            .copied()
+            .chain([IpAddr::V4(LIVE)])
+            .map(|address| SeriesTarget {
+                address: ScopedIp::unscoped(address),
+                open: Some(OPEN),
+                closed: Some(CLOSED),
+            })
+            .collect();
+        let mut scanner = OsSeriesScanner::with_transport(
+            ctx.clone(),
+            targets,
+            SAMPLES,
+            transport,
+            Emission::routed(),
+        );
+        scanner.resolver = SourceResolver::from_links(&[Link::new("test0", 0)
+            .with_addresses(vec![LinkAddress::new(IpAddr::V4(SIMULATED_HOST), 24)])]);
+
+        scanner.probe().await.expect("the phase runs");
+
+        let sent = sent.lock().unwrap();
+        assert!(
+            sent.iter().all(|(_, _, dst)| *dst == IpAddr::V4(LIVE)),
+            "a probe was handed to the sender for a neighbour nobody had resolved"
+        );
+        assert_eq!(
+            sent.len(),
+            SAMPLES * 2,
+            "every sample of the live host leaves"
+        );
+        let mut unreached = ctx.take_unroutable();
+        unreached.sort();
+        assert_eq!(
+            unreached, dead,
+            "every dead neighbour is reported unreached"
+        );
+        assert!(
+            ctx.failures_snapshot().is_empty(),
+            "and nothing failed here"
         );
     }
 }

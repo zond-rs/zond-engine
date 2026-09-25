@@ -35,7 +35,7 @@
 //! a filter that answers without acknowledging the probe is missed rather than
 //! guessed at, the safe direction for a claim made only when it is proven.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -45,9 +45,10 @@ use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
+use crate::scanner::strategy::raw::neighbors::resolve_ahead;
 use crate::system::interface::SourceResolver;
 use crate::transport::link::EthernetSender;
-use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
+use crate::transport::probe::{Emission, NeighborWatch, ProbeKind, ProbeSender, ProbeTransport};
 use crate::{counted, info};
 
 /// How long to listen for replies once the last diagnostic probe has left. A
@@ -104,8 +105,6 @@ pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
         }
     };
 
-    let mut resolver = SourceResolver::from_system();
-
     // A self-built Ethernet sender for the one probe that needs one: the
     // fragmented stateless probe, which a raw socket cannot place. `None` where
     // this host has no Ethernet path at all, and even when it is `Some` a send
@@ -113,30 +112,95 @@ pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
     // stateless conclusion simply goes undrawn there, while the raw probes below
     // still reach every host.
     let ethernet = EthernetSender::from_system(ProbeKind::TcpSyn.ip_protocols());
+    let fragmenting = ethernet.as_ref().map(|sender| Fragmenting {
+        sender,
+        neighbors: NeighborWatch::Frames(sender.neighbors()),
+    });
 
     info!(
         "characterising the filter in front of {}",
         counted(subjects.len() as u128, "host", "hosts")
     );
 
+    run(
+        ctx,
+        &mut transport,
+        fragmenting.as_ref(),
+        &mut SourceResolver::from_system(),
+        subjects,
+    )
+    .await;
+}
+
+/// The sender the fragmented stateless probe leaves on, which frames it
+/// itself because a raw socket cannot place it, and where that sender's
+/// address resolutions stand.
+struct Fragmenting<'a> {
+    sender: &'a dyn ProbeSender,
+    neighbors: NeighborWatch,
+}
+
+/// Sends every subject its probes, once the neighbour each is framed to has
+/// been asked for, and folds in what the replies prove.
+///
+/// Every neighbour is asked for at once and waited for before the first probe,
+/// on the transport's resolution and then on the fragmenting sender's, which
+/// runs its own: probes sent host by host through a sender that met each new
+/// neighbour inside the send would wait out a resolution per host in turn. A
+/// host whose neighbour never answered is sent nothing on that sender.
+async fn run(
+    ctx: &ScanContext,
+    transport: &mut ProbeTransport,
+    fragmenting: Option<&Fragmenting<'_>>,
+    resolver: &mut SourceResolver,
+    subjects: Vec<Subject>,
+) {
+    let hosts = subjects.iter().map(|subject| subject.host);
+    let unreached = resolve_ahead(ctx, transport.neighbors(), resolver, hosts).await;
+    for (host, why) in &unreached {
+        info!(
+            verbosity = 2,
+            "{host} not characterised: unreachable ({why})"
+        );
+    }
+    let subjects: Vec<Subject> = subjects
+        .into_iter()
+        .filter(|subject| !unreached.contains_key(&subject.host))
+        .collect();
+
+    let unframed = match fragmenting {
+        Some(fragmenting) => {
+            let filtered = subjects
+                .iter()
+                .filter(|subject| subject.filtered_port.is_some())
+                .map(|subject| subject.host);
+            resolve_ahead(ctx, Some(&fragmenting.neighbors), resolver, filtered).await
+        }
+        None => BTreeMap::new(),
+    };
+
     let awaiting = send_diagnostics(
         &subjects,
         transport.tx.as_ref(),
-        ethernet.as_ref(),
-        &mut resolver,
+        fragmenting.map(|fragmenting| fragmenting.sender),
+        &unframed,
+        resolver,
     );
-    collect_replies(ctx, &mut transport, &awaiting).await;
+    collect_replies(ctx, transport, &awaiting).await;
 }
 
 /// Sends every subject the probes its ports allow, and returns what a reply to
 /// each would prove.
 ///
 /// A host with no source address to send from is passed over: a probe that
-/// never left proves nothing about the filter in front of it.
+/// never left proves nothing about the filter in front of it. So is the
+/// fragmented probe to a host in `unframed`, whose neighbour did not answer
+/// the fragmenting sender.
 fn send_diagnostics(
     subjects: &[Subject],
     sender: &dyn ProbeSender,
-    ethernet: Option<&EthernetSender>,
+    fragmenting: Option<&dyn ProbeSender>,
+    unframed: &BTreeMap<IpAddr, String>,
     resolver: &mut SourceResolver,
 ) -> Awaiting {
     let mut awaiting = Awaiting::new();
@@ -156,8 +220,10 @@ fn send_diagnostics(
 
         probe_stateful_filter(sender, &mut awaiting, source, subject.host, port);
         probe_port_trusting_acl(sender, &mut awaiting, source, subject.host, port);
-        if let Some(ethernet) = ethernet {
-            probe_stateless_filter(ethernet, &mut awaiting, source, subject.host, port);
+        if let Some(fragmenting) = fragmenting
+            && !unframed.contains_key(&subject.host)
+        {
+            probe_stateless_filter(fragmenting, &mut awaiting, source, subject.host, port);
         }
     }
 
@@ -259,7 +325,7 @@ fn probe_port_trusting_acl(
 /// Ethernet path, and a host that path cannot route to goes without this one
 /// conclusion.
 fn probe_stateless_filter(
-    ethernet: &EthernetSender,
+    sender: &dyn ProbeSender,
     awaiting: &mut Awaiting,
     source: IpAddr,
     host: IpAddr,
@@ -268,7 +334,7 @@ fn probe_stateless_filter(
     let nonce: u32 = rand::random();
     let src_port: u16 = rand::random_range(50_000..u16::MAX);
     send_diagnostic(
-        ethernet,
+        sender,
         awaiting,
         source,
         host,
@@ -427,5 +493,77 @@ mod tests {
         );
         // Bytes too short to be a TCP header name no host rather than panicking.
         assert_eq!(matched_conclusion(&[0u8; 4], &awaiting), None);
+    }
+
+    /// The fragmented probe, which goes out on a frame sender of its own
+    /// whatever the transport, is sent to no neighbour that sender is still
+    /// asking for: every one is asked for at once, before the first probe, and
+    /// one that never answers is sent none.
+    ///
+    /// A frame sender resolves a neighbour nobody asked for ahead inside the
+    /// send and holds the pass for the whole wait, which for a neighbour that
+    /// never answers is the resolution's whole budget, paid again for each one
+    /// in turn.
+    #[tokio::test]
+    async fn neighbours_behind_the_fragmenting_sender_are_asked_for_before_the_first_probe() {
+        use crate::scanner::session::ScanSession;
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::link::{LinkNeighbors, SIMULATED_HOST};
+        use crate::transport::probe::MockSender;
+
+        const LIVE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 64);
+        let dead: Vec<IpAddr> = (211..=220)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = tokio::sync::mpsc::channel(1024);
+        let raw = MockSender::default();
+        let asked = raw.sent.clone();
+        let mut transport = ProbeTransport::from_parts(Box::new(raw), rx);
+        let frames = MockSender::default();
+        let framed = frames.sent.clone();
+        let fragmenting = Fragmenting {
+            sender: &frames,
+            neighbors: NeighborWatch::Frames(LinkNeighbors::on_simulated_segment(
+                "sim-filter0",
+                &[LIVE],
+            )),
+        };
+        let subjects = dead
+            .iter()
+            .copied()
+            .chain([IpAddr::V4(LIVE)])
+            .map(|host| Subject {
+                host,
+                open_port: Some(80),
+                filtered_port: Some(81),
+            })
+            .collect();
+        let mut resolver = SourceResolver::from_links(&[Link::new("test0", 0)
+            .with_addresses(vec![LinkAddress::new(IpAddr::V4(SIMULATED_HOST), 24)])]);
+
+        run(
+            &ctx,
+            &mut transport,
+            Some(&fragmenting),
+            &mut resolver,
+            subjects,
+        )
+        .await;
+
+        let framed = framed.lock().unwrap();
+        assert!(
+            !framed.is_empty(),
+            "the live neighbour is sent the fragmented probe"
+        );
+        assert!(
+            framed.iter().all(|(_, _, dst)| *dst == IpAddr::V4(LIVE)),
+            "a fragmented probe was handed to the sender for a neighbour nobody had resolved"
+        );
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            (dead.len() + 1) * 3,
+            "the raw probes, through a transport with nothing to read, go to every host"
+        );
     }
 }

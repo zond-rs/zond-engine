@@ -21,12 +21,13 @@
 //! nothing else up, the budget can be as long as the slowest live neighbour
 //! needs; see [`ARP_TIMEOUT`].
 //!
-//! Two ways in. A caller that can hold its probe asks where the resolution
-//! stands with [`Resolutions::state`], which starts one where nothing is
-//! known, and holds the probe while it runs: the port scans, whose admission
-//! reads the frame path's resolutions as it reads the kernel's table on
-//! Linux's raw path. A caller that cannot hold a probe waits for it with
-//! [`Resolutions::resolve`].
+//! Two ways in. A scan asks where the resolution stands with
+//! [`Resolutions::state`], which starts one where nothing is known, and sends
+//! nothing towards the neighbour while it runs, holding a probe or asking for
+//! all its hosts before its first: the port scans, the operating-system
+//! probes and the path probes, which read the frame path's resolutions as
+//! they read the kernel's table on Linux's raw path. A send that nothing asked
+//! ahead of waits for the resolution with [`Resolutions::resolve`].
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -57,9 +58,9 @@ use crate::transport::probe::SendError;
 /// which is the verdict a scan on Linux's raw path reads from the kernel's
 /// table: a dead neighbour is judged on the same evidence whichever path asks.
 ///
-/// Affordable because resolutions run together and a port scan holds a host's
-/// probes while its neighbour is asked, so the budget is paid once for a wave
-/// of dead neighbours rather than once for each. A caller that waits on a
+/// Affordable because resolutions run together and a scan sends nothing
+/// towards a neighbour while it is asked, so the budget is paid once for a
+/// wave of dead neighbours rather than once for each. A send that waits on a
 /// resolution pays it once per dead neighbour, and not again for
 /// [`NEIGHBOR_UNREACHABLE_TTL`].
 pub(crate) const ARP_TIMEOUT: Duration = Duration::from_secs(3);

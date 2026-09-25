@@ -34,7 +34,6 @@
 
 mod resolution;
 
-#[cfg(test)]
 pub(crate) use resolution::ARP_TIMEOUT;
 #[cfg(test)]
 pub(crate) use resolution::tests::{Answers, Segment};
@@ -176,10 +175,10 @@ fn ask_for(route: &LinkRoute) -> Result<Ask, SendError> {
 
 /// Where a frame sender's resolution of each destination's next hop stands.
 ///
-/// What a port scan reads before it hands a probe to a frame sender, as it
-/// reads the kernel's neighbour table before handing one to a raw socket on
-/// Linux: a host whose next hop is still being asked for has its probes held
-/// rather than sent, so no send waits on a resolution and every neighbour a
+/// What a scan reads before it hands a probe to a frame sender, as it reads
+/// the kernel's neighbour table before handing one to a raw socket on Linux:
+/// a host whose next hop is still being asked for is sent nothing until the
+/// asking concludes, so no send waits on a resolution and every neighbour a
 /// scan meets is asked at once. A send that did wait would hold the whole scan
 /// for each dead neighbour in turn.
 #[derive(Clone)]
@@ -225,7 +224,40 @@ impl LinkNeighbors {
             }))),
         }
     }
+
+    /// A frame sender's view of 192.0.2.0/24 simulated on `interface`, with
+    /// this host at [`SIMULATED_HOST`] and only the neighbours in `live`
+    /// answering, each the first request it is sent, in real time.
+    ///
+    /// The interface names the neighbours' learned addresses, which the
+    /// process shares, so each test names one of its own.
+    pub(crate) fn on_simulated_segment(interface: &str, live: &[std::net::Ipv4Addr]) -> Self {
+        use crate::system::interface::LinkAddress;
+
+        let segment = NeighborResolver::on_segment(
+            interface,
+            MacAddr::new(0x02, 0, 0, 0, 0, 0x50),
+            LinkAddress::new(IpAddr::V4(SIMULATED_HOST), 24),
+        );
+        let live = live.to_vec();
+        Self::simulated(segment, move |_| {
+            live.iter()
+                .fold(Segment::new().in_real_time(), |segment, ip| {
+                    let [.., last] = ip.octets();
+                    segment.with(
+                        *ip,
+                        MacAddr::new(0x02, 0, 0, 0, 0, last),
+                        Answers::Request(1),
+                    )
+                })
+        })
+    }
 }
+
+/// This host's address on the segment
+/// [`LinkNeighbors::on_simulated_segment`] builds.
+#[cfg(test)]
+pub(crate) const SIMULATED_HOST: std::net::Ipv4Addr = std::net::Ipv4Addr::new(192, 0, 2, 50);
 
 impl ProbeSender for EthernetSender {
     /// The zone is unused here. A frame this sender builds leaves on the

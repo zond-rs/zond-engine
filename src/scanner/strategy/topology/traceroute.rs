@@ -83,6 +83,7 @@ use crate::model::port::{PortState, Protocol};
 use crate::protocols::{icmp, tcp};
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
+use crate::scanner::strategy::raw::neighbors::resolve_ahead;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::frame::IpSegment;
@@ -651,7 +652,27 @@ pub async fn trace(ctx: &ScanContext, targets: Vec<IpAddr>) {
 
 impl Tracer {
     /// Traces every host in `group`.
+    ///
+    /// The neighbour of every host is asked for first, all at once, and waited
+    /// for before the first probe: a trace is a walk, a round per distance,
+    /// and one that met each new neighbour inside a send would wait out a
+    /// resolution per host in turn. A host whose neighbour never answered is
+    /// not traced.
     async fn run(&mut self, group: Vec<IpAddr>) {
+        let unreached = resolve_ahead(
+            &self.ctx,
+            self.transport.neighbors(),
+            &mut self.resolver,
+            group.iter().copied(),
+        )
+        .await;
+        for (target, why) in &unreached {
+            info!(verbosity = 2, "{target} not traced: unreachable ({why})");
+        }
+        let group: Vec<IpAddr> = group
+            .into_iter()
+            .filter(|target| !unreached.contains_key(target))
+            .collect();
         let distances = self.measure_distances(&group).await;
 
         for (target, distance) in distances {
@@ -1684,5 +1705,50 @@ mod tests {
         assert_eq!(prefix.len(), 2);
         assert_eq!(prefix[1].distance(), 2);
         assert_eq!(prefix[1].address(), None, "the hole is still a hole");
+    }
+
+    /// A trace through a frame sender asks for the neighbour of every host it
+    /// was handed at once, before its first probe, and sends nothing towards a
+    /// neighbour that never answers.
+    ///
+    /// A frame sender resolves a neighbour nobody asked for ahead inside the
+    /// send and holds the trace for the whole wait, which for a neighbour that
+    /// never answers is the resolution's whole budget, paid again for each one
+    /// in turn.
+    #[tokio::test]
+    async fn neighbours_behind_a_frame_sender_are_asked_for_before_the_trace() {
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::link::{LinkNeighbors, SIMULATED_HOST};
+
+        const LIVE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 63);
+        let dead: Vec<IpAddr> = (201..=210)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport = ProbeTransport::from_parts(Box::new(sender), rx)
+            .with_link_neighbors(LinkNeighbors::on_simulated_segment("sim-trace0", &[LIVE]));
+        let mut tracer = Tracer::new(
+            ctx.clone(),
+            transport,
+            TraceProbe::Echo,
+            41_234,
+            PathCache::new(),
+        );
+        tracer.resolver = SourceResolver::from_links(&[Link::new("test0", 0)
+            .with_addresses(vec![LinkAddress::new(IpAddr::V4(SIMULATED_HOST), 24)])]);
+
+        tracer
+            .run(dead.iter().copied().chain([IpAddr::V4(LIVE)]).collect())
+            .await;
+
+        let sent = sent.lock().unwrap();
+        assert!(!sent.is_empty(), "the live neighbour is traced");
+        assert!(
+            sent.iter().all(|(_, _, dst)| *dst == IpAddr::V4(LIVE)),
+            "a probe was handed to the sender for a neighbour nobody had resolved"
+        );
     }
 }
