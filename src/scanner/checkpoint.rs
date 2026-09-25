@@ -161,6 +161,13 @@ impl Writer {
         }
         .and_then(|()| journal.write_cursor(&cut.cursor));
 
+        // What this checkpoint took is written by the next one that can write,
+        // or a later cursor would settle the targets behind it with nothing on
+        // file to show for them.
+        if outcome.is_err() {
+            ctx.hand_back(&cut.changed);
+        }
+
         match outcome {
             Err(error) if !self.failing => {
                 self.failing = true;
@@ -335,6 +342,53 @@ mod tests {
             ctx.record_outcome(Outcome::Answered { position: 0 });
         });
         writer.write(&progress, cut);
+        drop(writer);
+
+        let (resumed, checkpoint) =
+            Journal::resume(&directory, &plan, Privilege::Raw).expect("resumes");
+        assert!(
+            holds_the_open_port(resumed.restored()) || !checkpoint.is_settled(0),
+            "the resume skips port 80 and restores no finding for it: {checkpoint:?}"
+        );
+        drop(resumed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Findings a checkpoint could not write are written by the next one that
+    /// can.
+    ///
+    /// A checkpoint takes the hosts that changed before it writes them. Lost
+    /// with a failed write, they would be on record nowhere, and the next
+    /// checkpoint that succeeds writes a cursor settling the targets that
+    /// found them: a scan killed after that resumes past them and never
+    /// reports them. The findings file is moved aside for one checkpoint,
+    /// which fails that write the way a full disk or a revoked permission
+    /// does.
+    #[test]
+    fn findings_a_failed_checkpoint_took_are_written_by_the_next_one() {
+        use crate::journal::settle::Outcome;
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let root = scratch("handed-back");
+        let plan = one_target();
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "test").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let findings = directory.join("hosts.jsonl");
+        let aside = directory.join("hosts.jsonl-aside");
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let progress = ctx.progress();
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+
+        ctx.update_host(ip, |host| {
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        });
+        ctx.record_outcome(Outcome::Answered { position: 0 });
+
+        let mut writer = Writer::new(journal);
+        std::fs::rename(&findings, &aside).expect("moves the findings aside");
+        writer.checkpoint(&progress);
+        std::fs::rename(&aside, &findings).expect("puts them back");
+        writer.checkpoint(&progress);
         drop(writer);
 
         let (resumed, checkpoint) =

@@ -1328,6 +1328,19 @@ impl ScanProgress {
         findings
     }
 
+    /// Marks `hosts` changed again, for a journal whose write of them failed.
+    ///
+    /// Taking the changed hosts clears their marks, so a write that fails
+    /// after it would otherwise leave them on record nowhere: the next write
+    /// takes only what changed since, and its cursor settles the targets
+    /// behind the ones that were lost. Handed back, they go out with the next
+    /// write that succeeds, in their state as of then.
+    pub(crate) fn hand_back(&self, hosts: &[Host]) {
+        for host in hosts {
+            self.changed.insert(host.scoped_ip());
+        }
+    }
+
     /// Every host found so far that is a finding to write down, ordered by the
     /// address each is keyed under: all of them, less the records held back
     /// while a port phase standing in for a liveness pass has yet to decide
