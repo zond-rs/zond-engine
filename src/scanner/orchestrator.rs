@@ -166,15 +166,14 @@ impl ScanCapabilities {
             frames_only,
             dns: !cfg.no_dns,
         };
-        caps.announce(probing, privilege::can_send_raw());
+        caps.announce(probing, by_raw_socket(mode, privilege::can_send_raw()));
         caps
     }
 
     /// Says what the privilege this run holds lets it probe with.
     ///
-    /// `raw_sockets` is which of the two routes to raw probing carried it,
-    /// because on macOS the link layer alone is what an unprivileged run gets,
-    /// and a reader who expected to need sudo should see why they did not.
+    /// `raw_sockets` is which of the two routes to raw probing carries the
+    /// probes; see [`by_raw_socket`].
     ///
     /// Without raw sockets the line carries what root would add, in brackets,
     /// and is the only place a run says so: a front end reading the report
@@ -223,6 +222,22 @@ impl ScanCapabilities {
         }
         interface::beyond_frames(targets.clone(), forced, sender)
     }
+}
+
+/// Whether a raw run's probes leave by raw socket rather than as frames it
+/// builds itself, given the send mode it runs in and whether this process may
+/// open a raw socket.
+///
+/// The route the probes take, not the one the privilege came from, since the
+/// two part in both directions. On macOS the link layer alone is what an
+/// unprivileged run gets, and a reader who expected to need sudo should see
+/// why they did not. A root run told to send its own frames, or one on
+/// Windows, where the frames are all a scan sends, holds raw sockets and puts
+/// none of its probes through one: it cannot reach loopback or a tunnel, and a
+/// neighbour that never answers ARP is one it could not frame to rather than
+/// one the kernel failed to route to.
+fn by_raw_socket(mode: SendMode, raw_sockets: bool) -> bool {
+    raw_sockets && mode.reaches_past_frames()
 }
 
 /// What a run probes its ports with, beside the ARP, ICMPv6 and SYN every
@@ -3210,6 +3225,21 @@ mod tests {
             let said = heard.0.lock().expect("an unpoisoned log").clone();
             assert_eq!(said, [expected], "{probing:?}");
         }
+    }
+
+    /// The opening line names the route the probes leave by, not the one the
+    /// privilege came from. A root run told to build its own frames sends no
+    /// segment through a raw socket, and meets a neighbour that never answers
+    /// ARP as one it could not frame to; told "raw sockets", its reader looks
+    /// for the kernel's routing and finds none.
+    #[test]
+    fn a_run_sending_its_own_frames_names_them_whatever_its_privilege() {
+        assert!(!by_raw_socket(SendMode::Ethernet, true));
+        assert!(!by_raw_socket(SendMode::Ethernet, false));
+        assert!(by_raw_socket(SendMode::RawSocket, true));
+        // No socket to send by, whatever was asked for: frames are all the
+        // run has.
+        assert!(!by_raw_socket(SendMode::RawSocket, false));
     }
 
     /// A frames-only run whose every target is out of a frame's reach refuses
