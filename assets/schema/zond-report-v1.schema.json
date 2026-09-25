@@ -59,8 +59,27 @@
       "$ref": "#/$defs/duration_us"
     },
     "partial": {
-      "description": "True if the findings are narrower than the caller asked for: a strategy failed to run to completion, a phase declined ground (`refusals`), a host's own budget left it early (`timed_out`), a discovery phase reached no verdict on an address (`undecided`), or a port a reachable host was scanned for went `unasked`. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart. An address this host could not reach (`unroutable`) and one an exclusion withheld do not make a report partial, since neither was coverable ground that went uncovered.",
+      "description": "True if the findings are narrower than the caller asked for: a strategy failed to run to completion, a phase declined ground (`refusals`), a host's own budget left it early and no phase finished it (`timed_out`), no phase reached a verdict on an address (`undecided`), a port a reachable host was scanned for went `unasked`, or a stopped walk never reached part of a port phase's plan (`unreached`). The three in brackets are this document's own top-level fields, read across every phase: a resumed job's later sitting, or a merged document's scan, can close what an earlier phase's own list still names. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart. An address this host could not reach (`unroutable`) and one an exclusion withheld do not make a report partial, since neither was coverable ground that went uncovered.",
       "type": "boolean"
+    },
+    "timed_out": {
+      "description": "Addresses a phase's own time budget left early and no phase of the same kind finished, ascending: the report's reading across its phases, which `partial` reads. A phase finished an address where it walked it and did not run out of time on it, so a resumed job whose later sitting finished a host an earlier one cut short lists nothing here, while that earlier phase's own `timed_out` still names it as the record of that phase. Absent where there are none.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "undecided": {
+      "description": "Addresses whose presence no phase reached a verdict on, ascending: named `undecided` by some phase and decided by none. A phase decided an address it walked and did not name undecided, and the report decided one it lists a live host at or that some phase could not reach, so a resumed job's later sitting closes what an earlier one left open. The report's reading across its phases, which `partial` reads. Absent where there are none.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/range"
+      }
+    },
+    "unreached": {
+      "description": "How many port targets the phases' walks never reached and no later sitting of the same job took up: a phase's own `unreached` stands until a later `port_scan` phase from the same document, which walked what it left, so the counts of a job resumed and stopped again are not added. Across documents a count stands, since it names no targets. The report's reading across its phases, which `partial` reads. Absent when none.",
+      "$ref": "#/$defs/count_string"
     },
     "summary": {
       "$ref": "#/$defs/summary"
@@ -853,7 +872,7 @@
           }
         },
         "timed_out": {
-          "description": "Addresses this phase stopped working on because their own wall-clock budget ran out, ascending. Absent where none did, which is every phase that set no per-host budget. An address here carries whatever the phase managed to ask about and nothing after that: the ports it never reached are present with the scan's silence verdict, so without this list a page of `filtered` reads as a quiet machine rather than as a scan that ran out of time.",
+          "description": "Addresses this phase stopped working on because their own wall-clock budget ran out, ascending. Absent where none did, which is every phase that set no per-host budget. An address here carries whatever the phase managed to ask about and nothing after that: the ports it never reached are present with the scan's silence verdict, so without this list a page of `filtered` reads as a quiet machine rather than as a scan that ran out of time. The record of this phase: what the report as a whole left early is the document's own `timed_out`.",
           "type": "array",
           "items": {
             "type": "string",
@@ -876,7 +895,7 @@
           }
         },
         "undecided": {
-          "description": "Addresses in this phase's scope whose presence it reached no verdict on, ascending. Absent where there were none, which is every phase that finished its question and every phase that is not a `discovery`. An address here neither answered nor was asked as many times as the phase's policy allows: the phase stopped before it asked or while it still owed attempts, had no strategy that could ask, was refused the range, or ran out of the address's own time budget. None of those is silence, so an address here is not a host found down, and a port scan following the phase left it unprobed rather than written off. Disjoint from `unroutable`; an address may also be in `timed_out`, which then says why.",
+          "description": "Addresses in this phase's scope whose presence it reached no verdict on, ascending. Absent where there were none, which is every phase that finished its question and every phase that is not a `discovery`. An address here neither answered nor was asked as many times as the phase's policy allows: the phase stopped before it asked or while it still owed attempts, had no strategy that could ask, was refused the range, or ran out of the address's own time budget. None of those is silence, so an address here is not a host found down, and a port scan following the phase left it unprobed rather than written off. Disjoint from `unroutable`; an address may also be in `timed_out`, which then says why. The record of this phase: what the report as a whole left undecided is the document's own `undecided`.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/range"
@@ -897,7 +916,7 @@
           ]
         },
         "unreached": {
-          "description": "How many of this port phase's targets its walk never reached, because the scan was stopped first. Absent when none were, which is every phase whose walk ran to its end and every phase that is not a `port_scan`. A count rather than a list: what a stop leaves is scattered across the plan, and every target the phase set out to cover is probed, on its host as `unasked`, or counted here.",
+          "description": "How many of this port phase's targets its walk never reached, because the scan was stopped first. Absent when none were, which is every phase whose walk ran to its end and every phase that is not a `port_scan`. A count rather than a list: what a stop leaves is scattered across the plan, and every target the phase set out to cover is probed, on its host as `unasked`, or counted here. The record of this phase: what the job as a whole has left is the document's own `unreached`.",
           "$ref": "#/$defs/count_string"
         },
         "unheard_probes": {

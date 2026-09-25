@@ -164,6 +164,73 @@ mod tests {
         assert_eq!(document["produced_by"], "nmap 7.94");
     }
 
+    /// **The document says what the report as a whole left open, beside the
+    /// flag that reads it.** A resumed job carries the stopped sitting's phase,
+    /// whose own lists still name the host its budget cut short and the targets
+    /// its walk never reached, beside the sitting that finished both. `partial`
+    /// reads the report and says nothing is open; a consumer reading the
+    /// phases would have to know the rule that closes one account with
+    /// another to agree with it, so the report's own reading is written out.
+    #[test]
+    fn the_document_names_what_the_report_left_open_across_its_sittings() {
+        use crate::report::{PhaseParts, ScanPhase};
+
+        let stopped = fixture::report();
+        let document = exported(&stopped);
+        assert_eq!(document["timed_out"], serde_json::json!(["203.0.113.9"]));
+        assert_eq!(document["unreached"], "1024");
+
+        let first = &stopped.phases()[0];
+        let finished = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: first.kind(),
+            started_at: first.started_at(),
+            elapsed: first.elapsed(),
+            privilege: first.privilege(),
+            targets: first.targets().clone(),
+            settings: first.settings().clone(),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: first.unroutable().to_vec(),
+            timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: first.liveness_skipped(),
+            silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
+            unheard_probes: 0,
+            probes: Vec::new(),
+            origin: None,
+        });
+        let mut resumed = stopped.clone();
+        resumed.merge(ScanReport::new(finished, []));
+        let document = exported(&resumed);
+
+        assert_eq!(
+            document["phases"][0]["timed_out"],
+            serde_json::json!(["203.0.113.9"]),
+            "the stopped sitting's record stands"
+        );
+        assert!(
+            document.get("timed_out").is_none(),
+            "{}",
+            document["timed_out"]
+        );
+        assert!(
+            document.get("unreached").is_none(),
+            "{}",
+            document["unreached"]
+        );
+        assert!(
+            document.get("undecided").is_none(),
+            "{}",
+            document["undecided"]
+        );
+        assert_eq!(document["partial"], resumed.is_partial());
+    }
+
     /// The header is the part a consumer reads before it decides whether it can
     /// read the rest, so every field in it has to be there.
     #[test]

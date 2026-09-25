@@ -307,8 +307,8 @@ pub fn total_elapsed_us(phases: &[PhaseDto<'_>]) -> u64 {
         .fold(0u64, |total, phase| total.saturating_add(phase.elapsed_us))
 }
 
-/// How many fields [`write_header`] emits.
-const HEADER_FIELDS: usize = 9;
+/// How many fields [`write_header`] emits, at most.
+const HEADER_FIELDS: usize = 12;
 
 /// Emits the fields every rendering of a report starts with.
 fn write_header<S: serde::ser::SerializeStruct>(
@@ -337,6 +337,32 @@ fn write_header<S: serde::ser::SerializeStruct>(
     doc.serialize_field("started_at", &rfc3339(report.started_at()))?;
     doc.serialize_field("elapsed_us", &elapsed_us)?;
     doc.serialize_field("partial", &report.is_partial())?;
+
+    // What the report as a whole left open, which is what `partial` reads,
+    // beside it. Each phase's own lists are the record of that phase, and a
+    // report holding several accounts of the same ground, a resumed job's
+    // sittings or a merge's sources, closes in one what another left open.
+    // Read off the phases, a consumer would have to apply that rule to agree
+    // with the flag. Left out when empty, as the phases' own lists are.
+    let timed_out = report.timed_out();
+    if timed_out.is_empty() {
+        doc.skip_field("timed_out")?;
+    } else {
+        let timed_out: Vec<String> = timed_out.iter().map(ToString::to_string).collect();
+        doc.serialize_field("timed_out", &timed_out)?;
+    }
+    let undecided = report.undecided();
+    if undecided.is_empty() {
+        doc.skip_field("undecided")?;
+    } else {
+        let undecided: Vec<RangeDto> = undecided.iter().map(RangeDto::new).collect();
+        doc.serialize_field("undecided", &undecided)?;
+    }
+    match report.unreached() {
+        0 => doc.skip_field("unreached")?,
+        unreached => doc.serialize_field("unreached", &unreached.to_string())?,
+    }
+
     doc.serialize_field("summary", &SummaryDto::new(&report.summary()))?;
     doc.serialize_field("phases", &phases)?;
 
@@ -567,6 +593,9 @@ pub struct PhaseDto<'a> {
     /// nothing after that: the ports it never reached are present with the
     /// scan's silence verdict, so without this list a page of `filtered` reads
     /// as a quiet machine rather than as a scan that ran out of time.
+    ///
+    /// The record of this phase. What the report as a whole left early, read
+    /// across its phases, is the document's own `timed_out`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub timed_out: Vec<String>,
     /// Addresses whose ICMP errors the phase found rate-limited, ascending.
@@ -596,6 +625,9 @@ pub struct PhaseDto<'a> {
     /// first, had no strategy for it, was refused it, or ran out of its time.
     /// So it is not a host found down, and a port scan's absence of a record
     /// there says nothing about the network. Disjoint from `unroutable`.
+    ///
+    /// The record of this phase. What the report as a whole left undecided,
+    /// read across its phases, is the document's own `undecided`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub undecided: Vec<RangeDto>,
     /// Why this port phase ran with no liveness pass in front of it, by name.
@@ -634,6 +666,9 @@ pub struct PhaseDto<'a> {
     /// what a stop leaves is scattered across the plan, and every target the
     /// phase set out to cover is probed, on its host as `unasked`, or counted
     /// here.
+    ///
+    /// The record of this phase. What the job as a whole has left, read across
+    /// its sittings, is the document's own `unreached`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unreached: Option<String>,
     /// How many of this port phase's targets it asked at the addresses it

@@ -505,7 +505,7 @@ fn an_ordinary_report_matches_the_schema() {
 /// not on this list breaks that promise silently.
 #[test]
 fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
-    /// `$defs` entry, then field.
+    /// `$defs` entry, or `report` for the document itself, then field.
     const OMITTED: &[(&str, &str)] = &[
         // A version whose every accepted suite is one this build carries, which
         // is every version against every server anyone has configured.
@@ -564,6 +564,12 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // A phase whose walk ran to its end leaves this out, and so does every
         // phase that is not a port scan.
         ("phase", "unreached"),
+        // What the report as a whole left open, left out where nothing is, as
+        // the phases' own lists are: a scan that finished everything it was
+        // asked has none of the three.
+        ("report", "timed_out"),
+        ("report", "undecided"),
+        ("report", "unreached"),
         ("scope", "listened"),
         // A port on a scan that did not enumerate, which is the default.
         ("security", "accepts"),
@@ -584,7 +590,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         .expect("the schema defines types");
 
     let mut optional: Vec<(String, String)> = Vec::new();
-    for (name, definition) in definitions {
+    // The document itself, beside the types it is built from.
+    let report = String::from("report");
+    for (name, definition) in definitions.iter().chain([(&report, &schema)]) {
         let Some(properties) = definition["properties"].as_object() else {
             continue;
         };

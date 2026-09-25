@@ -53,6 +53,15 @@
         "partial": {
           "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/partial"
         },
+        "timed_out": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/timed_out"
+        },
+        "undecided": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/undecided"
+        },
+        "unreached": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/unreached"
+        },
         "summary": {
           "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/summary"
         },
