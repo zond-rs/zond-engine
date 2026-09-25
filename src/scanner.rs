@@ -1686,7 +1686,14 @@ fn spawn_scan(
             // Over the addresses this sitting still has a target at, so a
             // resumed one asks nothing of a host an earlier sitting finished,
             // and its phase describes what it covered rather than the plan.
-            let mut ips = orchestrator::unsettled_ips(&target_map, &settled);
+            // Read in the numbering the positions count, which is what the
+            // policy leaves, and taken from the plan as it was asked, so the
+            // scope still counts what the policy withheld.
+            let unnumbered = Checkpoint::default();
+            let mut finished = orchestrator::unsettled_ips(&numbered, &unnumbered);
+            finished.subtract(&orchestrator::unsettled_ips(&numbered, &settled));
+            let mut ips = orchestrator::unsettled_ips(&target_map, &unnumbered);
+            ips.subtract(&finished);
             let scope = address_scope(&mut ips, &ctx);
             let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg)
                 .opening_in(&ctx);
@@ -2081,6 +2088,72 @@ mod tests {
             refused.err()
         );
 
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A resumed sitting handed the plan as it was named, beside the policy
+    /// that withholds part of it, asks the liveness pass about exactly the
+    /// addresses the job has a target left at.
+    ///
+    /// Positions count what the policy leaves, so read against the plan
+    /// before the policy they name other addresses: here the pass would ask
+    /// again about an address the first sitting settled.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_resumed_liveness_pass_counts_what_the_policy_leaves() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::journal::settle::{Outcome, Settlements};
+        use crate::model::exclusion::Exclusions;
+        use crate::model::target::TargetSet;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1-127.0.0.4".parse().expect("addresses"),
+            // More than the pass asks, so it earns its place.
+            "1-100".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            // What is asserted is the pass's scope, which is fixed before it
+            // sends anything; the addresses past 127.0.0.1 answer nothing.
+            scan_timeout: Some(std::time::Duration::from_secs(1)),
+            exclusions: Exclusions::new("127.0.0.1".parse().expect("an address")),
+            ..ZondConfig::default()
+        };
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+
+        let root = journal_root("liveness-numbering");
+        let mut journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        // Every target at the first two addresses the policy leaves, 127.0.0.2
+        // and .3, which counted before the policy are those at .1 and .2.
+        let settlements = Settlements::default();
+        for position in 0..200 {
+            settlements.record(Outcome::Answered { position });
+        }
+        journal.checkpoint(&settlements).expect("checkpoints");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+        let (_session, task) = scan_with_journal(map, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the sitting starts");
+        let report = task.join().await.expect("the sitting ends");
+
+        let liveness = report
+            .phases()
+            .iter()
+            .find(|phase| phase.kind() == ScanKind::Discovery)
+            .expect("a liveness pass ran");
+        assert_eq!(
+            liveness.targets().addresses(),
+            1,
+            "{:?}",
+            liveness.targets().ranges()
+        );
+        assert_eq!(liveness.targets().withheld(), 1, "the policy's cost went");
         std::fs::remove_dir_all(&root).ok();
     }
 
