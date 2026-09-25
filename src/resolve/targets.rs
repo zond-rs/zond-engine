@@ -22,6 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use tokio::task::JoinSet;
 
@@ -37,7 +38,7 @@ use crate::model::target::TargetMap;
 use crate::system::interface;
 use crate::warn;
 
-use super::Resolver;
+use super::{Resolver, Snapshot};
 
 /// How many names are resolved at once.
 ///
@@ -442,11 +443,14 @@ async fn resolve_all(names: Vec<String>, resolver: &Resolver) -> HashMap<String,
         written.push(name);
     }
 
+    // Read once, so every name in the list is answered from the same hosts
+    // file and asked of the same servers.
+    let snapshot = Arc::new(resolver.snapshot());
     let mut set: JoinSet<(String, Vec<IpAddr>)> = JoinSet::new();
     let mut pending = order.into_iter();
 
     for name in pending.by_ref().take(MAX_CONCURRENT_LOOKUPS) {
-        spawn_lookup(&mut set, resolver, name);
+        spawn_lookup(&mut set, resolver, &snapshot, name);
     }
 
     while let Some(joined) = set.join_next().await {
@@ -464,18 +468,25 @@ async fn resolve_all(names: Vec<String>, resolver: &Resolver) -> HashMap<String,
         }
 
         if let Some(name) = pending.next() {
-            spawn_lookup(&mut set, resolver, name);
+            spawn_lookup(&mut set, resolver, &snapshot, name);
         }
     }
 
     resolved
 }
 
-/// Spawns one lookup, cloning the resolver into the task so the set owns it.
-fn spawn_lookup(set: &mut JoinSet<(String, Vec<IpAddr>)>, resolver: &Resolver, name: String) {
+/// Spawns one lookup, cloning the resolver and the pass's snapshot into the
+/// task so the set owns them.
+fn spawn_lookup(
+    set: &mut JoinSet<(String, Vec<IpAddr>)>,
+    resolver: &Resolver,
+    snapshot: &Arc<Snapshot>,
+    name: String,
+) {
     let resolver = resolver.clone();
+    let snapshot = Arc::clone(snapshot);
     set.spawn(async move {
-        let addresses = resolver.resolve(&name).await;
+        let addresses = resolver.resolve_in(&snapshot, &name).await;
         (name, addresses)
     });
 }

@@ -14587,8 +14587,8 @@ impl core::marker::Send for zond_engine::resolve::Resolver
 impl core::marker::Sync for zond_engine::resolve::Resolver
 impl core::marker::Unpin for zond_engine::resolve::Resolver
 impl core::marker::UnsafeUnpin for zond_engine::resolve::Resolver
-impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::Resolver
-impl !core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::Resolver
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::Resolver
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::Resolver
 pub async fn zond_engine::resolve::for_discovery<S: core::convert::AsRef<str>>(&[S], core::option::Option<&zond_engine::resolve::Resolver>) -> core::result::Result<zond_engine::resolve::DiscoveryTargets, zond_engine::model::parse::target::TargetParseError>
 pub async fn zond_engine::resolve::for_discovery_with<S: core::convert::AsRef<str>>(&[S], core::option::Option<&zond_engine::resolve::Resolver>, core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>, core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'_>>) -> core::result::Result<zond_engine::resolve::DiscoveryTargets, zond_engine::model::parse::target::TargetParseError>
 pub async fn zond_engine::resolve::for_exclusion<S: core::convert::AsRef<str>>(&[S], core::option::Option<&zond_engine::resolve::Resolver>) -> core::result::Result<zond_engine::model::exclusion::Exclusions, zond_engine::model::parse::target::TargetParseError>
@@ -18431,8 +18431,8 @@ impl core::marker::Send for zond_engine::resolve::Resolver
 impl core::marker::Sync for zond_engine::resolve::Resolver
 impl core::marker::Unpin for zond_engine::resolve::Resolver
 impl core::marker::UnsafeUnpin for zond_engine::resolve::Resolver
-impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::Resolver
-impl !core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::Resolver
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::Resolver
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::Resolver
 #[non_exhaustive] pub struct zond_engine::RetryConfig
 pub zond_engine::RetryConfig::dampen_silent_hosts: bool
 pub zond_engine::RetryConfig::effort: zond_engine::config::ScanEffort

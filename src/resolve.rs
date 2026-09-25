@@ -15,21 +15,29 @@
 //! attaches names to hosts a scan has already found, lives in
 //! [`crate::scanner::rdns`] and answers the opposite question.
 //!
-//! ## Three kinds of name, one entry point
+//! ## Where a name is answered
 //!
 //! [`Resolver::resolve`] routes a name by how it is resolved, not by asking the
-//! caller to know:
+//! caller to know, in the order the host's own lookups take:
 //!
+//! - The hosts file first, for every name. A name it lists is answered from it
+//!   and asked of nobody, which is how a lab box with no DNS of its own gets a
+//!   name, `.local` suffix or not; see `hosts` for why the engine reads it
+//!   rather than its DNS client.
 //! - A `.local` name is a multicast name (RFC 6762): it is resolved by asking
-//!   the link over multicast DNS, not by asking a unicast server. A unicast
-//!   lookup of one fails everywhere the host has no mDNS-aware resolver, which
-//!   on Linux is the common case, so the engine speaks mDNS itself rather than
-//!   hoping the system does.
+//!   the link over multicast DNS. A unicast lookup of one fails everywhere the
+//!   host has no mDNS-aware resolver, which on Linux is the common case, so the
+//!   engine speaks mDNS itself rather than hoping the system does.
 //! - Any other name goes to the system's unicast resolver, which applies the
 //!   host's own search domains and returns A and AAAA records alike.
 //! - A single-label name (`nas`) is tried unicast first, and if nothing answers
 //!   and mDNS is enabled, again as `nas.local`, which on a home network is often
 //!   what the author meant by it.
+//!
+//! The hosts file and the resolver configuration are read afresh at every
+//! resolution pass, so a front end that runs for hours resolves a name the way
+//! the host does now, and nothing a pass learned, a failure included, is kept
+//! for the next.
 //!
 //! Every lookup leaves by the routing table. A scan forced to a source pins its
 //! probes and connections, not the questions asked before it starts; see
@@ -73,9 +81,11 @@
 //! [`NoHostLookup`](crate::model::parse::target::TargetParseError::NoHostLookup)
 //! rather than covering less than its input said.
 
+mod hosts;
 mod links;
 mod mdns;
 mod targets;
+mod unicast;
 
 pub use links::{LinkError, for_listening, for_listening_on};
 pub use targets::{
@@ -87,9 +97,10 @@ use std::fmt;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use hickory_resolver::TokioResolver;
-
 use crate::warn;
+
+use hosts::HostsTable;
+use unicast::{DnsConfig, Unicast};
 
 /// The default mDNS reply window. See [`ResolveConfig::mdns_timeout`] for why it
 /// is a whole second.
@@ -118,10 +129,10 @@ pub struct ResolveConfig {
     /// Whether `.local` names are resolved over multicast, and whether a
     /// single-label name falls back to one.
     ///
-    /// Off leaves a `.local` name unresolved rather than silently sending it to
+    /// Off leaves a `.local` name to the hosts file, rather than sending it to
     /// a unicast server that will answer NXDOMAIN for it. For an environment
-    /// where multicast is filtered or unwanted, or where the only names in play
-    /// are global.
+    /// where multicast is filtered or unwanted, or where the only names in
+    /// play are global.
     pub mdns: bool,
 
     /// How long to listen for mDNS replies before accepting that a `.local`
@@ -149,28 +160,46 @@ impl Default for ResolveConfig {
     }
 }
 
-/// Resolves names to addresses over unicast DNS and multicast DNS.
+/// Resolves names to addresses from the hosts file, unicast DNS and multicast
+/// DNS.
 ///
-/// Cheap to clone, the unicast resolver it holds being reference-counted, so it
-/// can be shared across the concurrent lookups [`resolve_names`] runs.
+/// Holds no state of the host's: the hosts file and the resolver
+/// configuration are read at each resolution pass, so one resolver kept for
+/// the life of a front end resolves as the host does at the time. Cheap to
+/// clone, and shared across the concurrent lookups [`resolve_names`] runs.
 #[derive(Clone)]
 pub struct Resolver {
-    /// The system unicast resolver, or `None` when the host's resolver
-    /// configuration could not be read. A resolver with no unicast half still
-    /// answers `.local` names; it simply has nothing to ask for the rest.
-    unicast: Option<TokioResolver>,
+    origin: Origin,
     config: ResolveConfig,
 }
 
+/// Where a resolver reads what the host says about names.
+#[derive(Clone)]
+enum Origin {
+    /// The system's hosts file and resolver configuration.
+    System,
+    /// Given in their place, so a test decides what a pass reads and which
+    /// servers it may ask, and no query leaves the machine.
+    #[cfg(test)]
+    Given(std::sync::Arc<dyn Fn() -> (String, DnsConfig) + Send + Sync>),
+}
+
+/// What the host says about names at one moment: the hosts file and the
+/// unicast servers, read once and shared by every lookup of a pass.
+pub(crate) struct Snapshot {
+    hosts: HostsTable,
+    unicast: Unicast,
+}
+
 impl Resolver {
-    /// Builds a resolver from the host's own unicast configuration, with mDNS
+    /// Builds a resolver from the host's own configuration, with mDNS
     /// enabled.
     ///
-    /// Reading the resolver configuration can fail, as in a container with no
-    /// `resolv.conf`, and that is not fatal: the resolver is returned with no
-    /// unicast half, so `.local` names still resolve while global names come
-    /// back empty. The failure is logged rather than raised, because a scan that
-    /// resolves fewer names is still a scan.
+    /// A host whose resolver configuration cannot be read, as in a container
+    /// or a lab VM with no name server in `resolv.conf`, still resolves: names
+    /// in its hosts file and `.local` names answer as ever, and a name that
+    /// needed a DNS server comes back empty, with a warning saying why. A
+    /// scan that resolves fewer names is still a scan.
     pub fn from_system() -> Self {
         Self::with_config(ResolveConfig::default())
     }
@@ -178,8 +207,41 @@ impl Resolver {
     /// Builds a resolver with an explicit [`ResolveConfig`].
     pub fn with_config(config: ResolveConfig) -> Self {
         Self {
-            unicast: build_unicast(),
+            origin: Origin::System,
             config,
+        }
+    }
+
+    /// A resolver reading the hosts file text and unicast configuration
+    /// `read` returns, at each pass, instead of the system's.
+    #[cfg(test)]
+    pub(crate) fn given(
+        config: ResolveConfig,
+        read: impl Fn() -> (String, DnsConfig) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            origin: Origin::Given(std::sync::Arc::new(read)),
+            config,
+        }
+    }
+
+    /// Reads what the host says about names now, for one resolution pass.
+    ///
+    /// A caller resolving many names reads it once and resolves them all
+    /// against it with [`resolve_in`](Self::resolve_in), so every name in a
+    /// target list sees the same file and the same servers.
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        let (hosts, dns) = match &self.origin {
+            Origin::System => (HostsTable::read_system(), DnsConfig::read_system()),
+            #[cfg(test)]
+            Origin::Given(read) => {
+                let (hosts, dns) = read();
+                (HostsTable::parse(&hosts), dns)
+            }
+        };
+        Snapshot {
+            hosts,
+            unicast: Unicast::from_config(dns),
         }
     }
 
@@ -187,16 +249,26 @@ impl Resolver {
     ///
     /// An empty result means nothing answered for the name, which a caller treats
     /// the same as a name that resolved to nothing, since both are a target that
-    /// is not there. Routing is by name: see the module
-    /// documentation for how `.local`, global, and single-label names differ.
+    /// is not there. Routing is by name: see the module documentation for where
+    /// each kind is answered. Reads the host's configuration for this one name;
+    /// a caller with many wants [`resolve_names`], which reads it once.
     pub async fn resolve(&self, name: &str) -> Vec<IpAddr> {
+        self.resolve_in(&self.snapshot(), name).await
+    }
+
+    /// [`resolve`](Self::resolve), against a configuration already read.
+    pub(crate) async fn resolve_in(&self, snapshot: &Snapshot, name: &str) -> Vec<IpAddr> {
         let name = name.trim_end_matches('.');
+
+        if let Some(listed) = from_hosts(snapshot, name) {
+            return listed;
+        }
 
         if is_multicast_local(name) {
             return self.resolve_mdns(name).await;
         }
 
-        let unicast = self.resolve_unicast(name).await;
+        let unicast = snapshot.unicast.lookup(name).await;
         if !unicast.is_empty() || !is_single_label(name) {
             return unicast;
         }
@@ -204,23 +276,11 @@ impl Resolver {
         // A bare `nas` that unicast could not place is, on a home or office
         // segment, most often `nas.local`. Tried only after unicast so a real
         // search-domain match is never shadowed by a multicast one.
-        self.resolve_mdns(&format!("{name}.local")).await
-    }
-
-    /// The unicast half: A and AAAA through the system resolver, or nothing when
-    /// there is no resolver or the name has no records.
-    async fn resolve_unicast(&self, name: &str) -> Vec<IpAddr> {
-        let Some(resolver) = &self.unicast else {
-            return Vec::new();
-        };
-
-        match resolver.lookup_ip(name).await {
-            Ok(lookup) => lookup.iter().collect(),
-            // A name with no records is an ordinary answer, not a failure worth
-            // surfacing: it resolves to nothing, which is what an empty vector
-            // says.
-            Err(_) => Vec::new(),
+        let local = format!("{name}.local");
+        if let Some(listed) = from_hosts(snapshot, &local) {
+            return listed;
         }
+        self.resolve_mdns(&local).await
     }
 
     /// The multicast half, honouring the config's mDNS switch.
@@ -233,34 +293,34 @@ impl Resolver {
     }
 }
 
+/// What the hosts file answers for `name`, saying so when a later line for it
+/// goes unused.
+///
+/// Said at the default verbosity because it changes what is scanned: a stale
+/// line left above a new one for the same box sends the scan to the old
+/// address, and only the user can say which line is right.
+fn from_hosts(snapshot: &Snapshot, name: &str) -> Option<Vec<IpAddr>> {
+    let answer = snapshot.hosts.lookup(name)?;
+    for unused in &answer.shadowed {
+        warn!("{name}: hosts line for {unused} ignored (earlier line wins)");
+    }
+    Some(answer.addresses)
+}
+
 impl fmt::Debug for Resolver {
-    /// Says what this resolver can do rather than dumping the unicast client.
-    ///
-    /// Hand-written because the type it holds is a third party's and printing
-    /// its internals would put that crate's shape in this one's output. What a
-    /// caller debugging a resolution wants is the two facts that decide where a
-    /// name goes: whether there is a unicast half at all, and whether multicast
-    /// is on.
+    /// Says what this resolver reads and whether multicast is on, which with
+    /// the host's own configuration decide where a name goes.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let origin = match self.origin {
+            Origin::System => "system",
+            #[cfg(test)]
+            Origin::Given(_) => "given",
+        };
         f.debug_struct("Resolver")
-            .field("unicast", &self.unicast.is_some())
+            .field("origin", &origin)
             .field("config", &self.config)
             .finish()
     }
-}
-
-/// Builds the system unicast resolver, logging and swallowing the two failures
-/// that leave a host unable to resolve global names.
-fn build_unicast() -> Option<TokioResolver> {
-    let Ok(builder) = TokioResolver::builder_tokio() else {
-        warn!("no system resolver configuration found; global names will not resolve");
-        return None;
-    };
-    let Ok(resolver) = builder.build() else {
-        warn!("could not build the system resolver; global names will not resolve");
-        return None;
-    };
-    Some(resolver)
 }
 
 /// Whether `name` is resolved over multicast: a multi-label name whose last
@@ -338,14 +398,14 @@ mod tests {
         );
     }
 
-    /// A resolver says what it can do rather than printing a third party's
-    /// client, and it says it at all, which it could not before.
+    /// A resolver says what it reads and whether multicast is on, which is
+    /// what a caller debugging a resolution needs from it.
     #[test]
-    fn a_resolver_reports_the_two_facts_that_decide_where_a_name_goes() {
+    fn a_resolver_reports_what_it_reads_and_whether_multicast_is_on() {
         let rendered = format!("{:?}", Resolver::with_config(ResolveConfig::default()));
 
         assert!(rendered.starts_with("Resolver"), "{rendered}");
-        assert!(rendered.contains("unicast"), "{rendered}");
+        assert!(rendered.contains("origin: \"system\""), "{rendered}");
         assert!(rendered.contains("mdns: true"), "{rendered}");
     }
 
@@ -355,5 +415,315 @@ mod tests {
         assert!(!is_single_label("nas.local"));
         assert!(!is_single_label("example.com"));
         assert!(!is_single_label(""));
+    }
+
+    // ── Where a name is answered ────────────────────────────────────────────
+    //
+    // Each test below hands a resolver its hosts file and its servers, and the
+    // servers are fakes on loopback, so what a lookup asks, and of whom, is
+    // observed rather than sent anywhere. mDNS is off throughout: a `.local`
+    // name that reached the link would be a multicast packet leaving the test.
+
+    use std::collections::HashMap;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::sync::{Arc, Mutex};
+
+    use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
+    use hickory_resolver::proto::op::{Message, MessageType, ResponseCode};
+    use hickory_resolver::proto::rr::rdata::{A, SOA};
+    use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
+
+    use crate::logging::logged;
+
+    /// A name server on loopback that answers A queries for the names it
+    /// holds and NXDOMAIN for any other, noting every question it is asked.
+    ///
+    /// Its NXDOMAIN carries the zone's SOA, as a real server's does, because
+    /// that is what lets a client cache the failure: an answer without one
+    /// would hide a client that holds failures across passes.
+    struct FakeDns {
+        at: SocketAddr,
+        records: Arc<Mutex<HashMap<String, Ipv4Addr>>>,
+        asked: Arc<Mutex<Vec<String>>>,
+        serving: tokio::task::JoinHandle<()>,
+    }
+
+    impl FakeDns {
+        async fn start(records: &[(&str, Ipv4Addr)]) -> Self {
+            let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+                .await
+                .expect("a loopback socket binds");
+            let at = socket.local_addr().expect("a bound socket has an address");
+            let records = Arc::new(Mutex::new(
+                records
+                    .iter()
+                    .map(|(name, ip)| (format!("{name}."), *ip))
+                    .collect::<HashMap<_, _>>(),
+            ));
+            let asked = Arc::new(Mutex::new(Vec::new()));
+
+            let (held, noted) = (Arc::clone(&records), Arc::clone(&asked));
+            let serving = tokio::spawn(async move {
+                let mut buf = [0u8; 1500];
+                while let Ok((len, from)) = socket.recv_from(&mut buf).await {
+                    let Ok(query) = Message::from_vec(&buf[..len]) else {
+                        continue;
+                    };
+                    let Some(question) = query.queries.first().cloned() else {
+                        continue;
+                    };
+                    let name = question.name().to_ascii().to_ascii_lowercase();
+                    noted
+                        .lock()
+                        .expect("unpoisoned")
+                        .push(format!("{name} {}", question.query_type()));
+
+                    let known = held.lock().expect("unpoisoned").get(&name).copied();
+                    let mut reply = Message::response(query.metadata.id, query.metadata.op_code);
+                    reply.metadata.message_type = MessageType::Response;
+                    reply.metadata.recursion_desired = query.metadata.recursion_desired;
+                    reply.metadata.recursion_available = true;
+                    reply.add_query(question.clone());
+                    match known {
+                        Some(ip) if question.query_type() == RecordType::A => {
+                            reply.add_answer(Record::from_rdata(
+                                question.name().clone(),
+                                300,
+                                RData::A(A(ip)),
+                            ));
+                        }
+                        Some(_) => {}
+                        None => {
+                            reply.metadata.response_code = ResponseCode::NXDomain;
+                            let zone = Name::from_ascii("example.").expect("a zone name");
+                            let soa =
+                                SOA::new(zone.clone(), zone.clone(), 1, 3600, 600, 86400, 3600);
+                            reply.add_authority(Record::from_rdata(zone, 3600, RData::SOA(soa)));
+                        }
+                    }
+                    let bytes = reply.to_vec().expect("a reply encodes");
+                    let _ = socket.send_to(&bytes, from).await;
+                }
+            });
+
+            Self {
+                at,
+                records,
+                asked,
+                serving,
+            }
+        }
+
+        /// The questions this server has been asked, as `name. TYPE`.
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().expect("unpoisoned").clone()
+        }
+
+        /// Starts answering for `name`.
+        fn add(&self, name: &str, ip: Ipv4Addr) {
+            self.records
+                .lock()
+                .expect("unpoisoned")
+                .insert(format!("{name}."), ip);
+        }
+
+        /// A global configuration naming this server, with `search` as its
+        /// search list.
+        fn as_global(&self, search: &[&str]) -> (ResolverConfig, ResolverOpts) {
+            let mut server = NameServerConfig::udp(self.at.ip());
+            for connection in &mut server.connections {
+                connection.port = self.at.port();
+            }
+            let search = search
+                .iter()
+                .map(|s| s.parse().expect("a search domain parses"))
+                .collect();
+            let mut opts = ResolverOpts::default();
+            opts.attempts = 1;
+            (ResolverConfig::from_parts(None, search, vec![server]), opts)
+        }
+    }
+
+    impl Drop for FakeDns {
+        fn drop(&mut self) {
+            self.serving.abort();
+        }
+    }
+
+    fn no_mdns() -> ResolveConfig {
+        ResolveConfig {
+            mdns: false,
+            ..ResolveConfig::default()
+        }
+    }
+
+    fn v4(s: &str) -> IpAddr {
+        s.parse().expect("a test address parses")
+    }
+
+    /// A resolver reading `hosts` and asking `global`.
+    fn resolver_over(
+        hosts: &str,
+        global: Result<(ResolverConfig, ResolverOpts), String>,
+    ) -> Resolver {
+        let hosts = hosts.to_owned();
+        Resolver::given(no_mdns(), move || {
+            (
+                hosts.clone(),
+                DnsConfig {
+                    global: global.clone(),
+                },
+            )
+        })
+    }
+
+    /// A name the hosts file lists is answered from it and asked of no server,
+    /// in either family.
+    ///
+    /// The file lists an A address; a lookup that consulted it per record type
+    /// would still ask upstream for AAAA, telling a resolver somebody else
+    /// operates which lab box is being scanned, and on a network where that
+    /// resolver is unreachable, waiting out its whole timeout first.
+    #[tokio::test]
+    async fn a_name_the_hosts_file_lists_is_answered_without_asking_dns() {
+        let dns = FakeDns::start(&[]).await;
+        let resolver = resolver_over("198.51.100.7 box.example\n", Ok(dns.as_global(&[])));
+
+        assert_eq!(
+            resolver.resolve("box.example").await,
+            vec![v4("198.51.100.7")]
+        );
+        assert_eq!(
+            dns.asked(),
+            Vec::<String>::new(),
+            "the hosts name reached DNS"
+        );
+    }
+
+    /// Of two hosts lines for one name, the first is scanned and the second is
+    /// named in a warning.
+    ///
+    /// An old box and its replacement both left in the file is the usual way a
+    /// name gets two lines, and scanning both covers a host nobody meant; the
+    /// warning is what lets the user delete the right one.
+    #[test]
+    fn a_stale_hosts_line_for_a_name_is_neither_scanned_nor_silent() {
+        let resolver = resolver_over(
+            "198.51.100.23 box.example\n198.51.100.99 box.example\n",
+            Err("none configured".into()),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime builds");
+
+        let mut resolved = Vec::new();
+        let lines = logged(|| resolved = runtime.block_on(resolver.resolve("box.example")));
+
+        assert_eq!(resolved, vec![v4("198.51.100.23")]);
+        let warned: Vec<_> = lines.iter().filter(|l| l.verbosity == 0).collect();
+        assert!(
+            warned
+                .iter()
+                .any(|l| l.message.contains("box.example") && l.message.contains("198.51.100.99")),
+            "no default-verbosity line names the unused address: {lines:?}"
+        );
+    }
+
+    /// A `.local` name the hosts file lists resolves from it, as it does for
+    /// `ping` and `ssh`.
+    ///
+    /// Lab domains such as `htb.local` exist only as hosts lines on the
+    /// attacker's machine; asking the link for them finds nothing.
+    #[tokio::test]
+    async fn a_local_name_the_hosts_file_lists_resolves_from_it() {
+        let resolver = resolver_over(
+            "198.51.100.161 forest.corp.local corp.local\n",
+            Err("none configured".into()),
+        );
+
+        for name in ["forest.corp.local", "corp.local"] {
+            assert_eq!(
+                resolver.resolve(name).await,
+                vec![v4("198.51.100.161")],
+                "{name}"
+            );
+        }
+    }
+
+    /// With no DNS server configured, the hosts file still answers, and a name
+    /// that needed a server comes back empty with a warning saying why.
+    ///
+    /// A host-only lab VM often has a `resolv.conf` with no name server; its
+    /// hosts file is then the only way its boxes have names at all.
+    #[test]
+    fn the_hosts_file_answers_when_no_dns_server_is_configured() {
+        let resolver = resolver_over(
+            "198.51.100.5 hostsonly\n",
+            Err("no nameservers found in config".into()),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime builds");
+
+        let (mut listed, mut global) = (Vec::new(), Vec::new());
+        let lines = logged(|| {
+            listed = runtime.block_on(resolver.resolve("hostsonly"));
+            global = runtime.block_on(resolver.resolve("www.example"));
+        });
+
+        assert_eq!(listed, vec![v4("198.51.100.5")]);
+        assert_eq!(global, Vec::<IpAddr>::new());
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.verbosity == 0 && l.message.contains("no DNS server configured")),
+            "{lines:?}"
+        );
+    }
+
+    /// One resolver kept across passes sees a hosts line added after it was
+    /// built, and asks again for a name DNS did not answer before.
+    ///
+    /// The loop a long-lived front end serves is: a box comes up, its line goes
+    /// into the hosts file or its record into DNS, and the scan runs. A
+    /// resolver holding the file it read at construction, or a cached failure,
+    /// would miss the box until the front end restarted.
+    #[tokio::test]
+    async fn a_kept_resolver_sees_names_that_appeared_after_it_was_built() {
+        let dns = FakeDns::start(&[]).await;
+        let hosts = Arc::new(Mutex::new(String::new()));
+        let global = dns.as_global(&[]);
+        let file = Arc::clone(&hosts);
+        let resolver = Resolver::given(no_mdns(), move || {
+            (
+                file.lock().expect("unpoisoned").clone(),
+                DnsConfig {
+                    global: Ok(global.clone()),
+                },
+            )
+        });
+
+        assert_eq!(
+            resolver.resolve("newbox.example").await,
+            Vec::<IpAddr>::new()
+        );
+        assert_eq!(
+            resolver.resolve("record.example").await,
+            Vec::<IpAddr>::new()
+        );
+
+        *hosts.lock().expect("unpoisoned") = "198.51.100.44 newbox.example\n".into();
+        dns.add("record.example", Ipv4Addr::new(198, 51, 100, 45));
+
+        assert_eq!(
+            resolver.resolve("record.example").await,
+            vec![v4("198.51.100.45")]
+        );
+        assert_eq!(
+            resolver.resolve("newbox.example").await,
+            vec![v4("198.51.100.44")]
+        );
     }
 }
