@@ -243,12 +243,21 @@ pub struct Port {
     state: PortState,
 
     /// What is listening, and how sure the identification is.
-    service: Option<Service>,
+    ///
+    /// Boxed, as [`security`](Self::security) is, because a record is kept for
+    /// every port asked and only the few that answered have either. A
+    /// full-range scan of one host holds 65,535 of these, nearly all closed or
+    /// filtered, and inline the two halves they leave empty would be most of
+    /// what each of them occupies.
+    service: Option<Box<Service>>,
 
     /// What a TLS handshake negotiated, for an endpoint that completed one.
-    security: Option<Security>,
+    security: Option<Box<Security>>,
 
     /// The packet that settled [`state`](Self::state), and what it carried.
+    ///
+    /// Inline, unlike the two above: nearly every port asked has one, and a
+    /// box would add an allocation to each of them.
     discovery: Option<Discovery>,
 
     /// What a detection concluded was wrong with this endpoint, keyed on the
@@ -302,7 +311,7 @@ impl Port {
 
     /// What is listening, if anything identified it.
     pub fn service(&self) -> Option<&Service> {
-        self.service.as_ref()
+        self.service.as_deref()
     }
 
     /// Returns the high-level service name (e.g. `"ssh"`), if one was
@@ -320,17 +329,17 @@ impl Port {
     /// A caller refining an identification rather than replacing it should
     /// merge into [`service`](Self::service) instead; see [`Service::merge`].
     pub fn set_service(&mut self, service: Service) {
-        self.service = Some(service);
+        self.service = Some(Box::new(service));
     }
 
     /// What a TLS handshake negotiated here, if one completed.
     pub fn security(&self) -> Option<&Security> {
-        self.security.as_ref()
+        self.security.as_deref()
     }
 
     /// Records what a handshake negotiated, replacing anything already held.
     pub fn set_security(&mut self, security: Security) {
-        self.security = Some(security);
+        self.security = Some(Box::new(security));
     }
 
     /// The account of the packet that settled this port's state, if there is
@@ -341,13 +350,13 @@ impl Port {
 
     /// Builder form of [`set_service`](Self::set_service).
     pub fn with_service(mut self, service: Service) -> Self {
-        self.service = Some(service);
+        self.set_service(service);
         self
     }
 
     /// Builder form of [`set_security`](Self::set_security).
     pub fn with_security(mut self, security: Security) -> Self {
-        self.security = Some(security);
+        self.set_security(security);
         self
     }
 
@@ -432,14 +441,14 @@ impl Port {
 
         if let Some(service) = service {
             match &mut self.service {
-                Some(recorded) => recorded.merge(service),
+                Some(recorded) => recorded.merge(*service),
                 None => self.service = Some(service),
             }
         }
 
         if let Some(security) = security {
             match &mut self.security {
-                Some(recorded) => recorded.merge(security),
+                Some(recorded) => recorded.merge(*security),
                 None => self.security = Some(security),
             }
         }
@@ -590,6 +599,28 @@ mod tests {
         assert_eq!(
             p_filtered.discovery().unwrap().reason(),
             &ScanResponse::TcpSynAck
+        );
+    }
+
+    /// A port nothing answered on carries a state and the account of the
+    /// packet that settled it, and pays at most a pointer for each half it
+    /// leaves empty. A full-range scan keeps 65,535 of these per host, in the
+    /// live store and again in the report, and a service or a TLS record held
+    /// inline is several hundred bytes on every one of them.
+    #[test]
+    fn an_unanswered_port_pays_a_pointer_for_what_it_did_not_learn() {
+        use std::mem::size_of;
+
+        let carried = size_of::<(u16, Protocol, PortState)>()
+            + size_of::<Option<Discovery>>()
+            + size_of::<BTreeMap<ClaimId, Finding>>();
+        let absent = 2 * size_of::<usize>();
+        let padding = std::mem::align_of::<Port>();
+
+        assert!(
+            size_of::<Port>() <= carried + absent + padding,
+            "a port record is {} bytes where what an unanswered port holds is {carried}",
+            size_of::<Port>(),
         );
     }
 
