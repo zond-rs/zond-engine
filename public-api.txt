@@ -3584,9 +3584,11 @@ pub zond_engine::export::schema::PhaseDto::refusals: alloc::vec::Vec<zond_engine
 pub zond_engine::export::schema::PhaseDto::settings: zond_engine::export::schema::SettingsDto
 pub zond_engine::export::schema::PhaseDto::silent: alloc::vec::Vec<zond_engine::export::schema::RangeDto>
 pub zond_engine::export::schema::PhaseDto::started_at: alloc::string::String
+pub zond_engine::export::schema::PhaseDto::stopped: core::option::Option<&'static str>
 pub zond_engine::export::schema::PhaseDto::targets: zond_engine::export::schema::ScopeDto
 pub zond_engine::export::schema::PhaseDto::timed_out: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::export::schema::PhaseDto::undecided: alloc::vec::Vec<zond_engine::export::schema::RangeDto>
+pub zond_engine::export::schema::PhaseDto::unreached: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::PhaseDto::unroutable: alloc::vec::Vec<alloc::string::String>
 impl<'a> zond_engine::export::schema::PhaseDto<'a>
 pub fn zond_engine::export::schema::PhaseDto<'a>::new(&'a zond_engine::report::ScanPhase, &zond_engine::export::ExportOptions) -> Self
@@ -13284,9 +13286,11 @@ pub zond_engine::record::PhaseRecord::refusals: alloc::vec::Vec<zond_engine::rec
 pub zond_engine::record::PhaseRecord::settings: zond_engine::record::SettingsRecord
 pub zond_engine::record::PhaseRecord::silent: alloc::vec::Vec<zond_engine::record::RangeRecord>
 pub zond_engine::record::PhaseRecord::started_at: std::time::SystemTime
+pub zond_engine::record::PhaseRecord::stopped: core::option::Option<alloc::string::String>
 pub zond_engine::record::PhaseRecord::targets: zond_engine::record::ScopeRecord
 pub zond_engine::record::PhaseRecord::timed_out: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::record::PhaseRecord::undecided: alloc::vec::Vec<zond_engine::record::RangeRecord>
+pub zond_engine::record::PhaseRecord::unreached: u128
 pub zond_engine::record::PhaseRecord::unroutable: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 impl core::clone::Clone for zond_engine::record::PhaseRecord
 pub fn zond_engine::record::PhaseRecord::clone(&self) -> zond_engine::record::PhaseRecord
@@ -14119,9 +14123,11 @@ pub zond_engine::report::PhaseParts::refusals: alloc::vec::Vec<zond_engine::repo
 pub zond_engine::report::PhaseParts::settings: zond_engine::report::ScanSettings
 pub zond_engine::report::PhaseParts::silent: alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
 pub zond_engine::report::PhaseParts::started_at: std::time::SystemTime
+pub zond_engine::report::PhaseParts::stopped: core::option::Option<zond_engine::report::StopReason>
 pub zond_engine::report::PhaseParts::targets: zond_engine::report::TargetScope
 pub zond_engine::report::PhaseParts::timed_out: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::report::PhaseParts::undecided: alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
+pub zond_engine::report::PhaseParts::unreached: u128
 pub zond_engine::report::PhaseParts::unroutable: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 impl core::clone::Clone for zond_engine::report::PhaseParts
 pub fn zond_engine::report::PhaseParts::clone(&self) -> zond_engine::report::PhaseParts
@@ -14252,9 +14258,11 @@ pub fn zond_engine::report::ScanPhase::refusals(&self) -> &[zond_engine::report:
 pub fn zond_engine::report::ScanPhase::settings(&self) -> &zond_engine::report::ScanSettings
 pub fn zond_engine::report::ScanPhase::silent(&self) -> &[zond_engine::model::ip::range::IpRange]
 pub fn zond_engine::report::ScanPhase::started_at(&self) -> std::time::SystemTime
+pub fn zond_engine::report::ScanPhase::stopped(&self) -> core::option::Option<zond_engine::report::StopReason>
 pub fn zond_engine::report::ScanPhase::targets(&self) -> &zond_engine::report::TargetScope
 pub fn zond_engine::report::ScanPhase::timed_out(&self) -> &[core::net::ip_addr::IpAddr]
 pub fn zond_engine::report::ScanPhase::undecided(&self) -> &[zond_engine::model::ip::range::IpRange]
+pub fn zond_engine::report::ScanPhase::unreached(&self) -> u128
 pub fn zond_engine::report::ScanPhase::unroutable(&self) -> &[core::net::ip_addr::IpAddr]
 impl zond_engine::report::ScanPhase
 pub fn zond_engine::report::ScanPhase::attribute(&mut self, zond_engine::report::PhaseOrigin)
@@ -14300,6 +14308,7 @@ pub fn zond_engine::report::ScanReport::started_at(&self) -> std::time::SystemTi
 pub fn zond_engine::report::ScanReport::summary(&self) -> zond_engine::report::ScanSummary
 pub fn zond_engine::report::ScanReport::timed_out(&self) -> alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub fn zond_engine::report::ScanReport::undecided(&self) -> alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
+pub fn zond_engine::report::ScanReport::unreached(&self) -> u128
 impl core::clone::Clone for zond_engine::report::ScanReport
 pub fn zond_engine::report::ScanReport::clone(&self) -> zond_engine::report::ScanReport
 impl core::fmt::Debug for zond_engine::report::ScanReport
@@ -18499,6 +18508,7 @@ pub fn zond_engine::report::ScanReport::started_at(&self) -> std::time::SystemTi
 pub fn zond_engine::report::ScanReport::summary(&self) -> zond_engine::report::ScanSummary
 pub fn zond_engine::report::ScanReport::timed_out(&self) -> alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub fn zond_engine::report::ScanReport::undecided(&self) -> alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
+pub fn zond_engine::report::ScanReport::unreached(&self) -> u128
 impl core::clone::Clone for zond_engine::report::ScanReport
 pub fn zond_engine::report::ScanReport::clone(&self) -> zond_engine::report::ScanReport
 impl core::fmt::Debug for zond_engine::report::ScanReport

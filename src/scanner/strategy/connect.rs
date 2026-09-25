@@ -595,7 +595,9 @@ impl PortScanner for ConnectUdpPortScanner {
         // Anything still queued was never sent, and carries no position to
         // settle. The TCP scan above does the same; leaving it out here would
         // both lose the ports and leave the sitting's settlement counts short
-        // of the targets it was handed.
+        // of the targets it was handed. Closed first, for the reason it is
+        // there.
+        rx.close();
         while let Ok(target) = rx.try_recv() {
             record_unasked(&self.ctx, &target);
         }
@@ -670,6 +672,11 @@ pub async fn scan(
     }
 
     // Anything still queued was never sent, and carries no position to settle.
+    // Closed first: the probes still in flight are waited out below with the
+    // receiver alive, and a router handing over a target meanwhile would put
+    // it in a queue nothing reads, to be dropped with it. Closed, the router
+    // finds this scanner gone and records the target unasked itself.
+    rx.close();
     while let Ok(target) = rx.try_recv() {
         record_unasked(&ctx, &target);
     }

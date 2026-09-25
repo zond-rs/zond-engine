@@ -1408,6 +1408,20 @@ pub struct PhaseRecord {
     /// sitting already journalled at such an address out of the report.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub silent: Vec<RangeRecord>,
+    /// Why the scan was stopped while this sitting ran, by wire name.
+    ///
+    /// Skipped when absent, which is every sitting that ended on its own, and
+    /// defaulted on the way in. A name this build does not know reads back as
+    /// absent: the marker qualifies the findings and changes none of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<String>,
+    /// How many of a port sitting's targets its walk never reached.
+    ///
+    /// Skipped when zero, and defaulted on the way in. Read back, it is what
+    /// keeps a job resumed and stopped again reporting its remainder, since
+    /// the targets are on no host.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unreached: u128,
     /// What each strategy recorded about its own run.
     #[serde(default)]
     pub probe_stats: Vec<ProbeStatsRecord>,
@@ -1530,6 +1544,12 @@ impl From<&PhaseOriginRecord> for PhaseOrigin {
     }
 }
 
+/// Whether a count is zero, for leaving it out of a record that has nothing to
+/// say with it.
+fn is_zero(count: &u128) -> bool {
+    *count == 0
+}
+
 impl From<&ScanPhase> for PhaseRecord {
     fn from(phase: &ScanPhase) -> Self {
         Self {
@@ -1554,6 +1574,10 @@ impl From<&ScanPhase> for PhaseRecord {
                 .liveness_skipped()
                 .map(|skip| wire::liveness_skip_name(skip).to_owned()),
             silent: phase.silent().iter().map(RangeRecord::from).collect(),
+            stopped: phase
+                .stopped()
+                .map(|reason| wire::stop_reason_name(reason).to_owned()),
+            unreached: phase.unreached(),
             probe_stats: phase
                 .probe_stats()
                 .iter()
@@ -1612,6 +1636,8 @@ impl From<&PhaseRecord> for ScanPhase {
                 .iter()
                 .filter_map(RangeRecord::rebuild)
                 .collect(),
+            stopped: record.stopped.as_deref().and_then(wire::stop_reason),
+            unreached: record.unreached,
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(PhaseOrigin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),

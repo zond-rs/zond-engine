@@ -1403,6 +1403,8 @@ pub struct ScanContext {
     /// Addresses a port phase standing in for a liveness pass heard nothing
     /// from without finishing asking them.
     pub(crate) undecided: Arc<SilenceLog>,
+    /// How many of the plan's targets a port phase's walk stopped short of.
+    pub(crate) unreached: Arc<AtomicU64>,
     /// Which stage's unit the plan, and so the settlements, are counted in.
     pub(crate) plan_stage: Stage,
     /// When each host's budget started, for a scan that set one.
@@ -2006,6 +2008,23 @@ impl ScanContext {
     /// merged and taken.
     pub(crate) fn take_undecided(&self) -> IpSet {
         self.undecided.drain()
+    }
+
+    /// Records that the walk of a port phase stopped with `count` of the
+    /// plan's targets neither emitted nor settled.
+    ///
+    /// A count rather than the targets: a walk stopped early on a wide plan
+    /// leaves them scattered across all of it, and naming each would cost a
+    /// record per target the scan never touched. They stay unsettled, so a
+    /// resume asks them. See
+    /// [`ScanPhase::unreached`](crate::report::ScanPhase::unreached).
+    pub(crate) fn record_unreached(&self, count: u64) {
+        self.unreached.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// The count [`record_unreached`](Self::record_unreached) filed, taken.
+    pub(crate) fn take_unreached(&self) -> u64 {
+        self.unreached.swap(0, Ordering::Relaxed)
     }
 
     /// Whether `address` has spent the per-host budget this scan was given,
@@ -2711,6 +2730,7 @@ impl SessionBuilder {
             reached_by_connect: Arc::new(ConnectLog::default()),
             silent: Arc::new(SilenceLog::default()),
             undecided: Arc::new(SilenceLog::default()),
+            unreached: Arc::new(AtomicU64::new(0)),
             plan_stage: self.plan_stage,
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,

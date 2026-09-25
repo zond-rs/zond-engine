@@ -671,6 +671,8 @@ mod tests {
                 .copied()
                 .map(crate::model::ip::range::IpRange::V4)
                 .collect(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -711,6 +713,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -756,6 +760,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -798,6 +804,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });

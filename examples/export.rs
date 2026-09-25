@@ -800,6 +800,8 @@ fn phase() -> ScanPhase {
         undecided: Vec::new(),
         liveness_skipped: None,
         silent: Vec::new(),
+        stopped: None,
+        unreached: 0,
     })
 }
 

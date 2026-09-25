@@ -161,12 +161,12 @@ pub(crate) fn dispatch_addresses_of(
             if batch.len() < batch_size {
                 continue;
             }
-            if !drain(&mut batch, &tx, &scan_handle).await {
+            if !drain(&mut batch, &tx, &scan_handle, &mut 0).await {
                 return;
             }
         }
 
-        drain(&mut batch, &tx, &scan_handle).await;
+        drain(&mut batch, &tx, &scan_handle, &mut 0).await;
     });
 
     rx
@@ -180,10 +180,22 @@ pub(crate) fn dispatch_addresses_of(
 /// and a port scan in numbered targets. One function serves both the full batch
 /// and the flush, because spelling it out twice inline would be two places for
 /// the stop check to be got wrong.
-async fn drain<T>(batch: &mut Vec<T>, tx: &mpsc::Sender<T>, scan_handle: &ScanHandle) -> bool {
+///
+/// `sent` counts what reached the channel, which is how a port scan's walk
+/// knows what a stop left of the batch it was sending.
+async fn drain<T>(
+    batch: &mut Vec<T>,
+    tx: &mpsc::Sender<T>,
+    scan_handle: &ScanHandle,
+    sent: &mut u64,
+) -> bool {
     batch.shuffle(&mut rand::rng());
     for item in batch.drain(..) {
-        if tx.send(item).await.is_err() || scan_handle.should_stop() {
+        if tx.send(item).await.is_err() {
+            return false;
+        }
+        *sent += 1;
+        if scan_handle.should_stop() {
             return false;
         }
     }
@@ -300,7 +312,9 @@ impl Dispatcher {
     /// The channel holds up to twice the batch size, so the producer can prepare
     /// the next batch while the current one is still being consumed without letting
     /// the buffer grow without bound. The task stops early if the receiver is
-    /// dropped or the scan signals a stop.
+    /// dropped or the scan signals a stop, and counts on `ctx` how many of the
+    /// plan's targets it left neither emitted nor settled, for the phase to
+    /// record as [`unreached`](crate::report::ScanPhase::unreached).
     ///
     /// The task settles the targets it does not emit as it walks past them, so
     /// a caller that checkpoints the scan should drain the receiver to its end
@@ -322,9 +336,30 @@ impl Dispatcher {
         let scan_handle = ctx.handle.clone();
         let order = self.order(ctx.order_seed);
         let ctx = ctx.clone();
+        // What the walk owes an account of: every target of the plan an
+        // earlier sitting did not settle. Where it stops early, what it gave
+        // no account of is that less what it emitted and what it settled or
+        // left undecided for the screen, which is a subtraction rather than a
+        // walk of the rest. A plan too large to count has no such total, and
+        // its phase says only that it stopped.
+        let owed = match &order {
+            Some((_, order)) => Some(order.len()),
+            None => self
+                .target_map
+                .gross_targets()
+                .ok()
+                .and_then(|total| u64::try_from(total).ok()),
+        }
+        .map(|total| total.saturating_sub(self.settled.settled_count()));
 
         let walk = tokio::spawn(async move {
             let mut batch = Vec::with_capacity(batch_size);
+            let mut accounted = 0u64;
+            let stopped_short = |accounted: u64| {
+                if let Some(owed) = owed {
+                    ctx.record_unreached(owed.saturating_sub(accounted));
+                }
+            };
 
             // Numbered by position in the plan whichever way they arrive, so
             // nothing downstream has to re-derive one and no sitting counts
@@ -371,7 +406,7 @@ impl Dispatcher {
                     // otherwise walk the rest of the plan before noticing. What
                     // it leaves is unsettled, and is asked again.
                     if scan_handle.should_stop() {
-                        return;
+                        return stopped_short(accounted);
                     }
                     ctx.record_outcome(if screen.silent.contains(&planned.target.ip) {
                         Outcome::Skipped {
@@ -380,17 +415,22 @@ impl Dispatcher {
                     } else {
                         Outcome::Undecided
                     });
+                    accounted += 1;
                     continue;
                 }
 
                 batch.push(planned);
 
-                if batch.len() >= batch_size && !drain(&mut batch, &tx, &scan_handle).await {
-                    return;
+                if batch.len() >= batch_size
+                    && !drain(&mut batch, &tx, &scan_handle, &mut accounted).await
+                {
+                    return stopped_short(accounted);
                 }
             }
 
-            drain(&mut batch, &tx, &scan_handle).await;
+            if !drain(&mut batch, &tx, &scan_handle, &mut accounted).await {
+                stopped_short(accounted);
+            }
         });
 
         (rx, walk)
@@ -940,6 +980,82 @@ mod tests {
         let expected: Vec<u64> = (0..4_096).filter(|p| !settled.is_settled(*p)).collect();
         assert_eq!(expected.len(), 4_096 - 2_503);
         assert_eq!(positions, expected);
+    }
+
+    /// Receives `take` of what `dispatcher` emits, stops the scan, and drains
+    /// the rest, handing back how many it received and how many the walk says
+    /// it never reached.
+    async fn stopped_after(
+        dispatcher: Dispatcher,
+        session: &ScanSession,
+        ctx: &ScanContext,
+        take: usize,
+    ) -> (u64, u64) {
+        let (mut rx, walk) = dispatcher.spawn(ctx);
+        let mut received = 0u64;
+        while received < take as u64 && rx.recv().await.is_some() {
+            received += 1;
+        }
+        session.handle().abort();
+        while rx.recv().await.is_some() {
+            received += 1;
+        }
+        walk.await.expect("the walk ends");
+        (received, ctx.take_unreached())
+    }
+
+    /// **A walk the scan stopped counts what it never reached.**
+    ///
+    /// Every target the plan holds is emitted, settled or counted here: the
+    /// report's account of a stopped port phase is the targets it probed, the
+    /// ports on their hosts as unasked, and this count. Without it the rest of
+    /// the plan is on no host and in no count, and a scan of every port of a
+    /// host stopped a second in reads thousands of targets short of what it
+    /// was asked, with nothing saying where they went. In both of the orders a
+    /// plan is walked in.
+    #[tokio::test]
+    async fn a_stopped_walk_counts_the_targets_it_never_reached() {
+        for seed in [Some(0x5EED), None] {
+            let (session, ctx) = ScanSession::builder().ordering(seed).build();
+            let dispatcher = Dispatcher::new(wide(20)).with_batch_size(64);
+
+            let (received, unreached) = stopped_after(dispatcher, &session, &ctx, 1_000).await;
+
+            assert!(unreached > 0, "{seed:?}: a stop a quarter in left nothing");
+            assert_eq!(received + unreached, 4_096, "{seed:?}");
+        }
+    }
+
+    /// A resumed and screened walk owes an account only of what an earlier
+    /// sitting left, and gives one of what it settled for the screen as well
+    /// as what it emitted, so the count is the rest and nothing else.
+    #[tokio::test]
+    async fn a_stopped_resumed_walk_counts_only_what_it_owed() {
+        use crate::journal::cursor::Cursor;
+
+        let order = Permutation::new(0x1234, 4_096);
+        let mut earlier = Cursor::walking(order);
+        for position in order.iter().take(1_500) {
+            earlier.settle(position);
+        }
+        let settled = earlier.checkpoint();
+
+        let (session, ctx) = ordered(0x1234);
+        // Half the plan's addresses live, a quarter found silent and the rest
+        // undecided, so the walk settles both ways as it passes.
+        let live: IpSet = "192.0.0.0/21".parse().expect("a prefix");
+        let silent: IpSet = "192.0.8.0/22".parse().expect("a prefix");
+        let dispatcher = Dispatcher::new(wide(20))
+            .resuming(settled)
+            .screened(live, silent)
+            .with_batch_size(64);
+
+        let (received, unreached) = stopped_after(dispatcher, &session, &ctx, 300).await;
+
+        let screened = ctx.settlements().count(Outcome::Skipped { position: 0 })
+            + ctx.settlements().count(Outcome::Undecided);
+        assert!(unreached > 0, "a stop part way left nothing");
+        assert_eq!(received + screened + unreached, 4_096 - 1_500);
     }
 
     /// A sweep counted in a plan's addresses walks the plan's order over

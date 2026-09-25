@@ -20,7 +20,7 @@ use crate::support::fake_net::unsendable_transport;
 use crate::support::*;
 use zond_engine::model::host::HostStatus;
 use zond_engine::model::port::{PortState, Protocol};
-use zond_engine::report::{ENGINE_VERSION, ScanKind};
+use zond_engine::report::{ENGINE_VERSION, ScanKind, StopReason};
 use zond_engine::scanner;
 use zond_engine::scanner::session::{ScanEvent, ScanSession};
 use zond_engine::scanner::strategy::HostScanner;
@@ -234,6 +234,58 @@ async fn an_aborted_scan_still_reports() {
     // gap between it and the host count is the point of recording both.
     assert_eq!(report.phases()[0].targets().addresses(), 1024);
     assert_eq!(report.phases().len(), 1);
+}
+
+/// **A port scan stopped part way accounts for every target it was asked
+/// about.** Each port is on the host, probed or unasked, or counted among the
+/// targets the stop left unreached, and the phase names the stop.
+///
+/// Without the count the rest of the plan is nowhere: a scan of every port of
+/// one host stopped a second in read thousands of targets short of 65,535, and
+/// nothing in the report said where they went.
+#[tokio::test]
+async fn an_aborted_port_scan_accounts_for_its_whole_plan() {
+    let mut cfg = test_config();
+    cfg.assume_up = true;
+    let (session, task) = scanner::scan(
+        target_map(LOOPBACK, "1-65535"),
+        &cfg,
+        zond_engine::detect::Detections::embedded(),
+    )
+    .await
+    .expect("the scan starts");
+
+    // Stopped once the first ports have settled, which is long before the
+    // walk can have reached the end: it runs at most a few buffers' worth of
+    // targets ahead of the probes, and the plan is several times that.
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while session.progress().settled() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the first ports settle");
+    session.handle().abort();
+    let report = tokio::time::timeout(Duration::from_secs(60), task.join())
+        .await
+        .expect("the scan unwinds")
+        .expect("an aborted scan still joins Ok");
+
+    let on_the_host = report.host(&LOOPBACK).map_or(0, |host| host.port_count()) as u128;
+    let phase = report
+        .phases()
+        .iter()
+        .find(|phase| phase.kind() == ScanKind::PortScan)
+        .expect("a port phase");
+    assert_eq!(
+        on_the_host + phase.unreached(),
+        65_535,
+        "{on_the_host} ports on the host and {} unreached",
+        phase.unreached()
+    );
+    assert_eq!(phase.stopped(), Some(StopReason::Aborted));
+    assert!(phase.unreached() > 0, "the stop came after the walk ended");
+    assert!(report.is_partial());
 }
 
 /// Discovery followed by a port scan is one job, and merging their reports must

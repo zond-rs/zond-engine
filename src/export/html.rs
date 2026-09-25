@@ -1354,6 +1354,31 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
+    // Why the scan was stopped during this phase, and what of the plan its
+    // walk never reached. Those targets are on no host below, so without this
+    // line the ports listed read as all the phase set out to ask.
+    if let Some(stopped) = phase.stopped {
+        let why = match stopped {
+            "timed_out" => "scan budget spent",
+            _ => "aborted by the caller",
+        };
+        let unreached = phase.unreached.as_deref().map(|count| {
+            esc(&format!(
+                "{count} {} never reached",
+                if count == "1" { "target" } else { "targets" }
+            ))
+        });
+        fact(
+            out,
+            "stopped",
+            &format!(
+                "{}{}",
+                esc(why),
+                dim(&unreached.into_iter().collect::<Vec<_>>())
+            ),
+        )?;
+    }
+
     // Why a port phase ran with no liveness pass. The phase list reads the same
     // for all three, and the reason is what says how to read the hosts below.
     if let Some(skip) = phase.liveness_skipped {
@@ -1798,6 +1823,9 @@ fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
     }
     if report.left_ports_unasked() {
         causes.push("ports went unasked");
+    }
+    if report.unreached() > 0 {
+        causes.push("a stop left targets unreached");
     }
     causes
 }

@@ -23,7 +23,8 @@ use crate::config::ZondConfig;
 use crate::model::ip::range::IpRange;
 use crate::model::ip::set::IpSet;
 use crate::report::{
-    LivenessSkip, PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope,
+    LivenessSkip, PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, StopReason,
+    TargetScope,
 };
 use crate::scanner::orchestrator::Liveness;
 use crate::scanner::session::ScanContext;
@@ -215,6 +216,15 @@ impl PhaseRecorder {
             undecided,
             liveness_skipped: self.liveness_skipped,
             silent,
+            // A watch runs until it is stopped, so that is its end rather than
+            // anything that cut it short.
+            stopped: match self.kind {
+                ScanKind::Listen => None,
+                _ => ctx.handle.stopped().map(StopReason::from),
+            },
+            // Taken whatever the kind, so a context reused for another phase
+            // starts from nothing.
+            unreached: u128::from(ctx.take_unreached()),
             probes: ctx.take_probe_stats(),
             origin: None,
             attachments: ctx.take_attachments(),

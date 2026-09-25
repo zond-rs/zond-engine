@@ -1743,6 +1743,12 @@ pub struct PhaseParts {
     /// Addresses a port phase standing in for its liveness pass asked on every
     /// port and heard nothing from. See [`ScanPhase::silent`].
     pub silent: Vec<IpRange>,
+    /// Why the scan was stopped while the phase was running, or `None`. See
+    /// [`ScanPhase::stopped`].
+    pub stopped: Option<StopReason>,
+    /// How many of a port phase's targets its walk never reached. See
+    /// [`ScanPhase::unreached`].
+    pub unreached: u128,
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
@@ -1775,6 +1781,8 @@ impl ScanPhase {
             undecided: parts.undecided,
             liveness_skipped: parts.liveness_skipped,
             silent: parts.silent,
+            stopped: parts.stopped,
+            unreached: parts.unreached,
             probes: parts.probes,
             origin: parts.origin,
             attachments: parts.attachments,
@@ -1849,6 +1857,12 @@ pub struct ScanPhase {
     /// Addresses asked on every port that answered none, and so no host. See
     /// [`silent`](Self::silent).
     silent: Vec<IpRange>,
+    /// Why the scan was stopped while this phase ran. See
+    /// [`stopped`](Self::stopped).
+    stopped: Option<StopReason>,
+    /// Targets of the plan the walk never reached. See
+    /// [`unreached`](Self::unreached).
+    unreached: u128,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<PhaseOrigin>,
@@ -2047,6 +2061,47 @@ impl ScanPhase {
     /// each one with the silence its ports drew.
     pub fn silent(&self) -> &[IpRange] {
         &self.silent
+    }
+
+    /// Why the scan was stopped while this phase was running: the caller
+    /// asked ([`Aborted`](StopReason::Aborted)), or the scan's own budget ran
+    /// out ([`TimedOut`](StopReason::TimedOut)).
+    ///
+    /// `None` for a phase that ended on its own, and for every
+    /// [`Listen`](ScanKind::Listen) phase, since stopping is how a watch ends
+    /// rather than something that cut one short.
+    ///
+    /// A marker, not a verdict on the findings. A phase stopped once it had
+    /// asked everything is as complete as one that was not, and a stop that
+    /// did cut it short shows as what it cut: [`unreached`](Self::unreached)
+    /// targets, unasked ports and undecided addresses, which is what
+    /// [`ScanReport::is_partial`] reads. What this adds is the reason, which
+    /// none of those carries: a reader told the scan was stopped knows a
+    /// short count for the budget or the interruption it was, rather than
+    /// having to guess it from the probe counters.
+    pub fn stopped(&self) -> Option<StopReason> {
+        self.stopped
+    }
+
+    /// How many of this port phase's targets its walk never reached: neither
+    /// sent to a scanner nor settled, because the scan was stopped before the
+    /// walk got to them.
+    ///
+    /// A count and not a list. A scan walks its plan in a permutation, so what
+    /// a stop leaves is scattered across every address, and naming each target
+    /// would cost a record per probe the scan never sent; a `/16` on every port
+    /// stopped a minute in would write billions. They are not on any host as
+    /// [`Unasked`](crate::model::port::PortState::Unasked) for the same
+    /// reason. What this count adds to those is the rest of the plan: every
+    /// target this phase set out to cover was probed, is on its host unasked,
+    /// or is counted here.
+    ///
+    /// Unsettled, so a resumed job asks every one of them. Zero for a phase
+    /// whose walk ran to its end, and for every phase that is not a
+    /// [`PortScan`](ScanKind::PortScan). See [`ScanReport::unreached`] for
+    /// what a report holding several sittings has left.
+    pub fn unreached(&self) -> u128 {
+        self.unreached
     }
 
     /// The strategies in this phase that could not do their job.
@@ -2428,8 +2483,10 @@ impl ScanReport {
     /// a strategy that did not run to completion, ground a phase declined
     /// ([`refusals`](Self::refusals)), a host its own budget left early and no
     /// phase finished ([`timed_out`](Self::timed_out)), an address no phase
-    /// reached a verdict on ([`undecided`](Self::undecided)), or a port
-    /// recorded [`Unasked`](crate::model::port::PortState::Unasked). Each of
+    /// reached a verdict on ([`undecided`](Self::undecided)), a port
+    /// recorded [`Unasked`](crate::model::port::PortState::Unasked), or a
+    /// target a stopped walk never reached ([`unreached`](Self::unreached)).
+    /// Each of
     /// those is the report covering less than it set out to, and a consumer
     /// handed `false` for any of them would take a cut-short run as a
     /// complete one.
@@ -2455,6 +2512,36 @@ impl ScanReport {
             || !self.timed_out().is_empty()
             || !self.undecided().is_empty()
             || self.left_ports_unasked()
+            || self.unreached() > 0
+    }
+
+    /// How many port targets this report's phases never reached and no later
+    /// sitting of the same account took up.
+    ///
+    /// A phase's [`unreached`](ScanPhase::unreached) count stands until a
+    /// later phase of the same kind from the same account: a resumed job's
+    /// next sitting walks what the earlier one left, so what it left is the
+    /// job's remainder in its place, and the earlier count is not added to
+    /// it. The account is the document a phase came from, or this engine's
+    /// own run for a phase with no [`origin`](ScanPhase::origin), which is
+    /// every sitting of a job resumed from its journal.
+    ///
+    /// Across accounts a count stands. It names no targets, so a report
+    /// merged from another document's scan of the same ground cannot say
+    /// which of them that scan covered, and reading them as covered would
+    /// call the merge complete on no evidence.
+    pub fn unreached(&self) -> u128 {
+        self.phases
+            .iter()
+            .enumerate()
+            .filter(|(at, phase)| {
+                phase.unreached > 0
+                    && !self.phases[at + 1..]
+                        .iter()
+                        .any(|later| later.kind == phase.kind && later.origin == phase.origin)
+            })
+            .map(|(_, phase)| phase.unreached)
+            .fold(0u128, u128::saturating_add)
     }
 
     /// The addresses whose presence this report reached no verdict on,
@@ -3116,6 +3203,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         }
@@ -3504,6 +3593,73 @@ mod tests {
         left.timed_out.push(ip(1));
 
         assert!(ScanReport::new(left, [Host::new(ip(1))]).is_partial());
+    }
+
+    /// **A port phase whose walk a stop cut short leaves its report
+    /// partial.** The targets it never reached are on no host, so nothing else
+    /// in the record says they went unasked: a caller that aborts a scan
+    /// between two batches, with nothing queued, was told the run was complete.
+    #[test]
+    fn a_phase_that_never_reached_part_of_its_plan_is_partial() {
+        let mut stopped = phase(ScanKind::PortScan);
+        stopped.stopped = Some(StopReason::Aborted);
+        stopped.unreached = 6_600;
+
+        let report = ScanReport::new(stopped, []);
+
+        assert!(report.is_partial());
+        assert_eq!(report.unreached(), 6_600);
+    }
+
+    /// A stop is a marker and not a shortfall: a phase stopped once its walk
+    /// had reached everything covered all it set out to.
+    #[test]
+    fn a_phase_stopped_with_nothing_left_unreached_is_not_partial() {
+        let mut stopped = phase(ScanKind::PortScan);
+        stopped.stopped = Some(StopReason::TimedOut);
+
+        assert!(!ScanReport::new(stopped, []).is_partial());
+    }
+
+    /// **A later sitting of the same job takes up what an earlier one never
+    /// reached.** It walks what the earlier left, so its own count is the
+    /// job's remainder: none where it finished, and not the two added where it
+    /// was stopped again.
+    #[test]
+    fn a_later_sitting_takes_up_what_an_earlier_one_never_reached() {
+        let mut first = phase(ScanKind::PortScan);
+        first.stopped = Some(StopReason::Aborted);
+        first.unreached = 6_600;
+
+        let mut finished = ScanReport::new(first.clone(), []);
+        finished.merge(ScanReport::new(phase(ScanKind::Discovery), []));
+        finished.merge(ScanReport::new(phase(ScanKind::PortScan), []));
+        assert_eq!(finished.unreached(), 0);
+        assert!(!finished.is_partial());
+
+        let mut again = phase(ScanKind::PortScan);
+        again.stopped = Some(StopReason::Aborted);
+        again.unreached = 1_200;
+        let mut stopped_twice = ScanReport::new(first, []);
+        stopped_twice.merge(ScanReport::new(again, []));
+        assert_eq!(stopped_twice.unreached(), 1_200);
+    }
+
+    /// Across documents a count stands: it names no targets, so another
+    /// document's scan cannot be read as having covered them.
+    #[test]
+    fn another_documents_scan_does_not_take_up_a_count() {
+        let mut first = phase(ScanKind::PortScan);
+        first.unreached = 6_600;
+        first.origin = Some(PhaseOrigin::new("0.18.0").with_label("monday.json"));
+        let mut later = phase(ScanKind::PortScan);
+        later.origin = Some(PhaseOrigin::new("0.18.0").with_label("tuesday.json"));
+
+        let mut merged = ScanReport::new(first, []);
+        merged.merge(ScanReport::new(later, []));
+
+        assert_eq!(merged.unreached(), 6_600);
+        assert!(merged.is_partial());
     }
 
     /// A port-scan phase that walked `walked` and left `left` early, begun

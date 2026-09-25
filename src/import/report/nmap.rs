@@ -764,6 +764,8 @@ impl Run {
             // what it concluded, so no reason is claimed.
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });

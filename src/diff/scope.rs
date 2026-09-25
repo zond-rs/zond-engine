@@ -265,6 +265,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -295,6 +297,8 @@ mod tests {
             undecided: open.v4().iter().copied().map(IpRange::V4).collect(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         })
@@ -326,6 +330,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: Some(crate::report::LivenessSkip::PortsNoDearer),
             silent: silent.v4().iter().copied().map(IpRange::V4).collect(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });

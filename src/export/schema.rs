@@ -616,6 +616,26 @@ pub struct PhaseDto<'a> {
     /// as a host, and is not undecided: its ports were asked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub silent: Vec<RangeDto>,
+    /// Why the scan was stopped while this phase ran, `aborted` or
+    /// `timed_out`.
+    ///
+    /// Left out for a phase that ended on its own, and for every listen phase,
+    /// which a stop ends rather than cuts short. A marker rather than a verdict:
+    /// what a stop cost is `unreached`, the ports on their hosts as `unasked`
+    /// and `undecided`, and a phase stopped once it had asked everything is
+    /// complete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<&'static str>,
+    /// How many of this port phase's targets its walk never reached, because
+    /// the scan was stopped first, as a decimal string.
+    ///
+    /// Left out when none were, which is every phase whose walk ran to its
+    /// end and every phase that is not a port scan. A count rather than a list:
+    /// what a stop leaves is scattered across the plan, and every target the
+    /// phase set out to cover is probed, on its host as `unasked`, or counted
+    /// here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreached: Option<String>,
     /// What each instrumented scanner observed about its own run. Empty where
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
@@ -718,6 +738,8 @@ impl<'a> PhaseDto<'a> {
             undecided: phase.undecided().iter().map(RangeDto::new).collect(),
             liveness_skipped: phase.liveness_skipped().map(liveness_skip_name),
             silent: phase.silent().iter().map(RangeDto::new).collect(),
+            stopped: phase.stopped().map(stop_reason_name),
+            unreached: (phase.unreached() > 0).then(|| phase.unreached().to_string()),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
             origin: phase.origin().map(|origin| PhaseOriginDto {
                 label: origin.label(),

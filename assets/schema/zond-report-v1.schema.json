@@ -889,6 +889,17 @@
             "$ref": "#/$defs/range"
           }
         },
+        "stopped": {
+          "description": "Why the scan was stopped while this phase ran: `aborted`, the caller asked, or `timed_out`, the scan's own budget ran out. Absent for a phase that ended on its own, and for every `listen` phase, which a stop ends rather than cuts short. A marker rather than a verdict: what a stop cost is `unreached`, the ports on their hosts as `unasked` and `undecided`, and a phase stopped once it had asked everything is complete.",
+          "enum": [
+            "aborted",
+            "timed_out"
+          ]
+        },
+        "unreached": {
+          "description": "How many of this port phase's targets its walk never reached, because the scan was stopped first. Absent when none were, which is every phase whose walk ran to its end and every phase that is not a `port_scan`. A count rather than a list: what a stop leaves is scattered across the plan, and every target the phase set out to cover is probed, on its host as `unasked`, or counted here.",
+          "$ref": "#/$defs/count_string"
+        },
         "liveness_skipped": {
           "description": "Why this port phase ran with no liveness pass in front of it. Absent where one preceded it, which the report carries as a `discovery` phase of its own, and on every phase that is not a `port_scan`. `assume_up`: the caller declined the pass and asked for every address to be probed as a host that is there. `idle_scan`: the scan was an idle scan, whose every probe is forged from its zombie, and a liveness pass would have been this host asking the target directly. `ports_no_dearer`: the engine dropped the pass because the scan named no more ports per address than the pass would have asked, so an answer on any port, open or closed, is what found a host.",
           "enum": [

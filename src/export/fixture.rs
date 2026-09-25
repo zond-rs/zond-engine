@@ -390,6 +390,12 @@ pub(crate) fn report() -> ScanReport {
         crate::cve::correlate(entry.value_mut());
     }
 
+    // For the schema, as the idle-scan record is: a phase stopped with part
+    // of its walk still ahead carries the reason and the count, so every
+    // writer and reader is held to both.
+    ctx.record_unreached(1_024);
+    ctx.handle.abort();
+
     recorder.finish(&ctx)
 }
 
@@ -464,6 +470,8 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         undecided: Vec::new(),
         liveness_skipped: None,
         silent: Vec::new(),
+        stopped: None,
+        unreached: 0,
         probes: Vec::new(),
         origin: None,
     });

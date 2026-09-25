@@ -602,6 +602,8 @@ struct PhaseDto {
     undecided: Vec<RangeDto>,
     liveness_skipped: Option<String>,
     silent: Vec<RangeDto>,
+    stopped: Option<String>,
+    unreached: Option<String>,
     origin: Option<PhaseOriginDto>,
 }
 
@@ -618,6 +620,9 @@ impl PhaseDto {
         known(wire::scan_kind(&self.kind), "a scan phase", &self.kind)?;
         if let Some(skip) = &self.liveness_skipped {
             known(wire::liveness_skip(skip), "a liveness skip", skip)?;
+        }
+        if let Some(stopped) = &self.stopped {
+            known(wire::stop_reason(stopped), "a stop reason", stopped)?;
         }
 
         Ok(PhaseRecord {
@@ -672,6 +677,13 @@ impl PhaseDto {
                 .into_iter()
                 .map(RangeDto::record)
                 .collect::<Result<_, _>>()?,
+            stopped: self.stopped,
+            unreached: self
+                .unreached
+                .as_deref()
+                .map(count)
+                .transpose()?
+                .unwrap_or(0),
             probe_stats: self
                 .probe_stats
                 .into_iter()
@@ -2258,6 +2270,16 @@ mod tests {
                 "why a phase ran with no liveness pass is what says how to read its hosts"
             );
             assert_eq!(
+                after.stopped(),
+                before.stopped(),
+                "a phase the scan was stopped in says so"
+            );
+            assert_eq!(
+                after.unreached(),
+                before.unreached(),
+                "the targets a stop left unreached are on no host, only here"
+            );
+            assert_eq!(
                 after.silent(),
                 before.silent(),
                 "an address asked and silent is accounted for, not lost"
@@ -2319,6 +2341,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: Some(LivenessSkip::PortsNoDearer),
             silent: vec![IpRange::V4(Ipv4Range::new(at(5), at(6)).expect("a range"))],
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });
