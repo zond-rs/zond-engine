@@ -36,6 +36,25 @@
 //! minus a `/24` would enumerate sixteen million addresses in order to discard
 //! two hundred and fifty-four of them.
 //!
+//! ## An address names a machine
+//!
+//! On a segment a machine answers at several addresses, and a sweep hears the
+//! IPv6 ones from the all-nodes echo and neighbour discovery, which no
+//! exclusion can aim at. Held to its addresses alone, a policy excluding a
+//! machine's IPv4 address would still report it under its link-local one. So
+//! a scan reads the host's own neighbour tables when it starts, learns which
+//! hardware address answers for each excluded address there without sending
+//! it anything, and holds every address answering from that hardware to the
+//! policy as well. A finding from one is dropped at the third point above, the address is
+//! refused a probe at the second from then on, and the phase lists it among
+//! its [`excluded`](crate::report::TargetScope::excluded) ranges, so the
+//! report still accounts for everything it left out.
+//!
+//! The tables are the only source. A machine this host has not spoken to
+//! recently has no entry there, and nothing else ties its addresses together
+//! before a packet to the excluded one would; it stays excluded by the address
+//! alone. The IPv6 table is not read on Linux, and neither table on Windows.
+//!
 //! ## What it can and cannot promise
 //!
 //! It promises that no packet is addressed to an excluded address, and that no
@@ -64,10 +83,12 @@
 //! the two readings differ this is the one that withholds more, which is the
 //! only direction a safety control may err in.
 
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 use crate::model::ip::range::{IpRange, Ipv6Range};
 use crate::model::ip::set::IpSet;
+use crate::model::mac::MacAddr;
 use crate::model::target::{TargetMap, TargetSet};
 
 /// The addresses a scan is forbidden to probe or to record.
@@ -191,6 +212,42 @@ impl Exclusions {
         self.twins = twins_of(&self.set);
     }
 
+    /// The hardware addresses `table` says answer for an address this policy
+    /// excludes: the machines it names, as a link sees them. Each entry of
+    /// `table` is an address a neighbour table lists and the hardware address
+    /// it resolved to, `None` where it has not.
+    ///
+    /// An exclusion names an address and means a machine. On a segment a
+    /// machine answers at several addresses, an IPv4 one and a link-local and
+    /// global IPv6 or two, and a sweep hears the ones nobody could name in
+    /// advance from the all-nodes echo and neighbour discovery, which no
+    /// exclusion can aim at. What ties those to the excluded one is the
+    /// hardware address, and the host's own neighbour table is where it is
+    /// learned without a packet to the excluded address, which the policy
+    /// forbids. A scan holds every address answering from one of these to the
+    /// policy as it holds the excluded one; see
+    /// [`ScanContext::write_host`](crate::scanner::session::ScanContext::write_host).
+    ///
+    /// An entry still being resolved has no hardware address and gives none,
+    /// and neither does a group address, which answers for no one machine. A
+    /// device several addresses share, a router answering ARP for what stands
+    /// behind it, is withheld whole, which errs the one way a safety control
+    /// may.
+    pub(crate) fn hardware_in(
+        &self,
+        table: impl IntoIterator<Item = (IpAddr, Option<MacAddr>)>,
+    ) -> BTreeSet<MacAddr> {
+        if self.is_empty() {
+            return BTreeSet::new();
+        }
+        table
+            .into_iter()
+            .filter(|(ip, _)| self.excludes(ip))
+            .filter_map(|(_, mac)| mac)
+            .filter(|mac| !mac.is_multicast() && <[u8; 6]>::from(*mac) != [0; 6])
+            .collect()
+    }
+
     /// Removes every excluded address from `ips`, returning how many it lost.
     ///
     /// The planning-time half of the enforcement. Call it before the target set
@@ -286,6 +343,38 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
+
+    /// **An exclusion names the machine its address answers from.** The
+    /// neighbour table ties an excluded address to a hardware address, and
+    /// every other address the machine holds to the same one. An entry the
+    /// kernel is still resolving ties nothing, nor does a group address, and
+    /// an address the policy does not name gives its machine nothing to
+    /// answer for.
+    #[test]
+    fn an_exclusion_names_the_hardware_its_address_answers_from() {
+        let at = |ip: &str, mac: Option<MacAddr>| (ip.parse().expect("literal"), mac);
+        let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
+        let table = [
+            at("192.0.2.30", Some(machine)),
+            at("192.0.2.31", Some(MacAddr::new(0x02, 0, 0, 0, 0, 0x31))),
+            at("192.0.2.32", None),
+            at(
+                "192.0.2.255",
+                Some(MacAddr::new(0xff, 0xff, 0xff, 0xff, 0xff, 0xff)),
+            ),
+            at("2001:db8::30", Some(machine)),
+        ];
+        let mut ips = IpSet::new();
+        for excluded in ["192.0.2.30", "192.0.2.32", "192.0.2.255"] {
+            ips.insert(excluded.parse().expect("literal"));
+        }
+
+        assert_eq!(
+            Exclusions::new(ips).hardware_in(table),
+            BTreeSet::from([machine])
+        );
+        assert!(Exclusions::none().hardware_in(table).is_empty());
+    }
     use crate::model::ip::range::Ipv6Range;
     use crate::model::port::PortSet;
 

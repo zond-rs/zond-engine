@@ -161,6 +161,7 @@ impl PhaseRecorder {
         // ground no target set named.
         let mut targets = self.targets;
         targets.record_sweeps(ctx.take_swept_links());
+        targets.record_withheld_machines(ctx.withheld_by_hardware());
 
         let unroutable = ctx.take_unroutable();
         // Taken whatever the kind, so a context reused for another phase starts

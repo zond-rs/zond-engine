@@ -82,6 +82,46 @@ pub fn ipv6_neighbors() -> Vec<Neighbor> {
     platform::ipv6_neighbors()
 }
 
+/// Every IPv4 neighbour this host currently knows of: its ARP table.
+///
+/// Read for what it ties together rather than as a source of leads, since an
+/// IPv4 segment is swept whole anyway: which hardware address answers for an
+/// address, learned for no packets. Empty rather than an error where the table
+/// cannot be read, for the reason [`ipv6_neighbors`] gives.
+pub(crate) fn ipv4_neighbors() -> Vec<Neighbor> {
+    platform::ipv4_neighbors()
+}
+
+/// The entries of a `/proc/net/arp` listing, each device named turned into
+/// its index by `index_of`.
+///
+/// One header line, then one entry a line: the address, the hardware type,
+/// the flags, the hardware address, a mask and the device. An entry whose
+/// flags lack `ATF_COM` is one the kernel is still resolving, and its
+/// hardware address is a placeholder of zeroes, so it is kept with none.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_proc_arp(text: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec<Neighbor> {
+    const ATF_COM: u32 = 0x2;
+
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let [ip, _, flags, mac, _, device] = fields[..] else {
+                return None;
+            };
+            let ip = ip.parse().ok()?;
+            let flags = u32::from_str_radix(flags.trim_start_matches("0x"), 16).ok()?;
+            let mac = (flags & ATF_COM != 0).then(|| mac.parse().ok()).flatten();
+            Some(Neighbor {
+                ip,
+                mac,
+                interface_index: index_of(device)?,
+            })
+        })
+        .collect()
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // macOS and BSD
 // ══════════════════════════════════════════════════════════════════════════════
@@ -93,12 +133,13 @@ pub fn ipv6_neighbors() -> Vec<Neighbor> {
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
 mod platform {
     use std::mem;
-    use std::net::{IpAddr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use crate::model::mac::MacAddr;
     use libc::{
-        AF_INET6, AF_LINK, CTL_NET, NET_RT_FLAGS, PF_ROUTE, RTA_DST, RTA_GATEWAY, RTF_LLINFO,
-        c_int, c_void, rt_msghdr, size_t, sockaddr, sockaddr_dl, sockaddr_in6,
+        AF_INET, AF_INET6, AF_LINK, CTL_NET, NET_RT_FLAGS, PF_ROUTE, RTA_DST, RTA_GATEWAY,
+        RTF_LLINFO, c_int, c_void, rt_msghdr, size_t, sockaddr, sockaddr_dl, sockaddr_in,
+        sockaddr_in6,
     };
 
     use super::Neighbor;
@@ -123,11 +164,23 @@ mod platform {
     /// A `sysctl` walk over `NET_RT_FLAGS`, which hands back a run of routing
     /// messages that have to be stepped through by their own length fields.
     pub(super) fn ipv6_neighbors() -> Vec<Neighbor> {
+        neighbors(AF_INET6, "IPv6 neighbour table")
+    }
+
+    /// The ARP table, which the same routing socket reports the same way under
+    /// the other family.
+    pub(super) fn ipv4_neighbors() -> Vec<Neighbor> {
+        neighbors(AF_INET, "ARP table")
+    }
+
+    /// The entries of `family` carrying link-layer information, `table` naming
+    /// them for a warning.
+    fn neighbors(family: c_int, table: &str) -> Vec<Neighbor> {
         let mut mib: [c_int; 6] = [
             CTL_NET,
             PF_ROUTE,
             0,
-            AF_INET6,
+            family,
             NET_RT_FLAGS,
             RTF_LLINFO as c_int,
         ];
@@ -135,10 +188,7 @@ mod platform {
         let buffer = match dump(&mut mib) {
             Ok(buffer) => buffer,
             Err(e) => {
-                warn!(
-                    verbosity = 1,
-                    "could not read the IPv6 neighbour table: {e}"
-                );
+                warn!(verbosity = 1, "could not read the {table}: {e}");
                 return Vec::new();
             }
         };
@@ -281,6 +331,7 @@ mod platform {
 
             match (flag, c_int::from(sa.sa_family)) {
                 (RTA_DST, AF_INET6) => ip = read_ipv6(&block[..sa_len]),
+                (RTA_DST, AF_INET) => ip = read_ipv4(&block[..sa_len]),
                 (RTA_GATEWAY, AF_LINK) => mac = read_mac(&block[..sa_len]),
                 _ => {}
             }
@@ -293,6 +344,18 @@ mod platform {
             mac,
             interface_index,
         })
+    }
+
+    fn read_ipv4(bytes: &[u8]) -> Option<IpAddr> {
+        if bytes.len() < mem::size_of::<sockaddr_in>() {
+            return None;
+        }
+        // SAFETY: the length check guarantees a whole `sockaddr_in`.
+        let sin: sockaddr_in =
+            unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const sockaddr_in) };
+        Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
+            sin.sin_addr.s_addr,
+        ))))
     }
 
     fn read_ipv6(bytes: &[u8]) -> Option<IpAddr> {
@@ -477,19 +540,49 @@ mod platform {
 // Everywhere else
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Platforms whose neighbour table this does not read yet.
+/// Platforms whose neighbour table this does not read yet, and Linux's ARP
+/// table, which it does.
 ///
 /// Reported once rather than silently returning nothing, because an empty table
 /// and an unread one lead to the same host count and mean entirely different
 /// things: the distinction this whole engine is built to preserve.
 ///
-/// Linux keeps its table behind netlink (`RTM_GETNEIGH`) and Windows behind
-/// `GetIpNetTable2`; both are a self-contained piece of work against an
-/// interface neither shares with the other.
+/// Linux keeps its IPv6 table behind netlink (`RTM_GETNEIGH`) and Windows both
+/// behind `GetIpNetTable2`; each is a self-contained piece of work against an
+/// interface neither shares with the other. Linux also publishes its ARP table
+/// as text in `/proc/net/arp`, which needs neither.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
 mod platform {
     use super::Neighbor;
     use crate::warn;
+
+    /// Linux's ARP table, as `/proc/net/arp` lists it.
+    #[cfg(target_os = "linux")]
+    pub(super) fn ipv4_neighbors() -> Vec<Neighbor> {
+        match std::fs::read_to_string("/proc/net/arp") {
+            Ok(text) => super::parse_proc_arp(&text, |device| {
+                let name = std::ffi::CString::new(device).ok()?;
+                // SAFETY: `name` is a valid NUL-terminated string for the
+                // length of the call.
+                let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+                (index != 0).then_some(index)
+            }),
+            Err(e) => {
+                warn!(verbosity = 1, "could not read the ARP table: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Nothing, where the ARP table is not read.
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn ipv4_neighbors() -> Vec<Neighbor> {
+        warn!(
+            verbosity = 1,
+            "reading the ARP table is not implemented on this platform"
+        );
+        Vec::new()
+    }
 
     /// Nothing, on a platform whose neighbour table this engine cannot read.
     ///
@@ -519,6 +612,37 @@ mod platform {
 mod tests {
     use super::*;
 
+    /// Linux's ARP table as its text lists it: each complete entry with its
+    /// hardware address and its device's index, one still being resolved
+    /// with none, and a line of any other shape passed over.
+    #[test]
+    fn a_proc_arp_listing_reads_as_its_entries() {
+        let text = "\
+IP address       HW type     Flags       HW address            Mask     Device
+192.0.2.1        0x1         0x2         02:00:00:00:00:01     *        eth0
+192.0.2.7        0x1         0x0         00:00:00:00:00:00     *        eth0
+192.0.2.9        0x1         0x2         02:00:00:00:00:09     *        gone0
+not an entry
+";
+        let entries = parse_proc_arp(text, |device| (device == "eth0").then_some(2));
+
+        assert_eq!(
+            entries,
+            [
+                Neighbor {
+                    ip: "192.0.2.1".parse().expect("literal"),
+                    mac: Some(MacAddr::new(0x02, 0, 0, 0, 0, 0x01)),
+                    interface_index: 2,
+                },
+                Neighbor {
+                    ip: "192.0.2.7".parse().expect("literal"),
+                    mac: None,
+                    interface_index: 2,
+                },
+            ]
+        );
+    }
+
     /// Reading the table must not panic, whatever the host looks like, and must
     /// answer with something usable rather than an error a caller has to handle.
     ///
@@ -533,6 +657,19 @@ mod tests {
             assert!(
                 neighbor.ip.is_ipv6(),
                 "the IPv6 table yielded {}",
+                neighbor.ip
+            );
+        }
+    }
+
+    /// The ARP table reads without failing and yields IPv4 entries alone, for
+    /// the reason the IPv6 table's test gives about contents.
+    #[test]
+    fn reading_the_arp_table_is_infallible() {
+        for neighbor in ipv4_neighbors() {
+            assert!(
+                neighbor.ip.is_ipv4(),
+                "the ARP table yielded {}",
                 neighbor.ip
             );
         }

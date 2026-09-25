@@ -89,6 +89,7 @@ use crate::model::host::Host;
 use crate::model::ip::range::IpRange;
 use crate::model::ip::scoped::{ScopedIp, Zone, ZoneMap};
 use crate::model::ip::set::{IpSet, Positions};
+use crate::model::mac::MacAddr;
 use crate::model::port::Protocol;
 use crate::report::ScannerKind;
 use crate::report::{Attachment, AttachmentSource, ProbeStats, Refusal, ScannerFailure};
@@ -1425,6 +1426,9 @@ pub struct ScanContext {
     /// Behind an `Arc` because a context is cloned once per strategy and the
     /// policy is read, never written, by all of them.
     pub(crate) exclusions: Arc<Exclusions>,
+    /// The machines `exclusions` names, by hardware address, and the other
+    /// addresses they have been heard at; see [`Exclusions::hardware_in`].
+    pub(crate) hardware: Arc<WithheldHardware>,
     /// Which hosts have findings a journal has not written down yet.
     ///
     /// Marked on every write, which is *not* the condition that
@@ -1562,8 +1566,12 @@ impl ScanContext {
     /// Asked by whoever turns a learned address into a probe, at the moment it
     /// does. A target the caller named has already been withheld and need not
     /// ask again.
+    ///
+    /// An address a machine the policy names was heard answering at is held to
+    /// it as well, once it has been; see
+    /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
     pub fn may_probe(&self, address: &IpAddr) -> bool {
-        !self.exclusions.excludes(address)
+        !self.exclusions.excludes(address) && !self.hardware.withholds(address)
     }
 
     /// The single place a host finding enters the store.
@@ -1614,6 +1622,13 @@ impl ScanContext {
     /// scanner cannot forget to apply the policy, because a scanner is not where
     /// it is applied.
     ///
+    /// A host whose record, once `edit` has run, holds the hardware address of
+    /// a machine the policy names is that machine at another address, and is
+    /// dropped whole: its record leaves the store, no event is emitted, and
+    /// every address it held is refused a probe from then on and listed with
+    /// the phase's exclusions. See
+    /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
+    ///
     /// A drop is logged rather than counted. The property worth checking is that
     /// no excluded address appears in the report, and a reader can confirm that
     /// against the ranges the report already records, which is a better
@@ -1626,7 +1641,7 @@ impl ScanContext {
         let key = self.key(key);
         let ip = key.addr();
 
-        if self.exclusions.excludes(&ip) {
+        if self.exclusions.excludes(&ip) || self.hardware.withholds(&ip) {
             // Ordinary on a sweep, which cannot address its all-nodes echo away
             // from an excluded neighbour, and worth a line either way: it is the
             // record that the gate did something, on the one path where a
@@ -1672,6 +1687,17 @@ impl ScanContext {
                     verbosity = 2,
                     "an excluded router answered for a probe to {ip}; withholding its address"
                 );
+            }
+            if self.hardware.names(&host) {
+                let addresses = host.ips().clone();
+                drop(host);
+                self.store.remove(&key);
+                info!(
+                    verbosity = 2,
+                    "{ip} answered from an excluded machine's hardware address; dropping it"
+                );
+                self.hardware.withhold(addresses);
+                return false;
             }
         }
         drop(host);
@@ -1901,6 +1927,14 @@ impl ScanContext {
     /// caller to work out from a host count why one of their targets is missing.
     pub fn record_unroutable(&self, address: IpAddr) {
         self.unroutable.insert(address);
+    }
+
+    /// Every address withheld so far for answering from the hardware of a
+    /// machine the exclusions name, ascending. Read rather than taken: the
+    /// policy holds for the whole scan, and every phase after the one that
+    /// heard an address lists it among its exclusions too.
+    pub(crate) fn withheld_by_hardware(&self) -> Vec<IpAddr> {
+        self.hardware.addresses()
     }
 
     /// The unroutable addresses filed so far, taken.
@@ -2338,6 +2372,73 @@ impl ScanContext {
     }
 }
 
+/// The machines a scan's exclusions name, by hardware address, and every other
+/// address one of them has been heard answering at.
+///
+/// Read once, when the scan starts, from the host's neighbour tables, and
+/// fixed from then on: the hardware is how the policy's reach is decided, and
+/// a scan that learned more of it partway through would hold its first and
+/// last findings to different policies. The addresses grow as the scan hears
+/// them. See [`Exclusions::hardware_in`].
+#[derive(Debug, Default)]
+pub(crate) struct WithheldHardware {
+    macs: BTreeSet<MacAddr>,
+    addresses: Mutex<BTreeSet<IpAddr>>,
+}
+
+impl WithheldHardware {
+    /// Withholds the machines at `macs`.
+    fn new(macs: BTreeSet<MacAddr>) -> Self {
+        if !macs.is_empty() {
+            info!(
+                verbosity = 1,
+                "excluding {} by hardware address too",
+                crate::counted(macs.len() as u128, "machine", "machines")
+            );
+        }
+        Self {
+            macs,
+            addresses: Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    /// Whether `host` answered from the hardware of a machine withheld here.
+    fn names(&self, host: &Host) -> bool {
+        !self.macs.is_empty()
+            && host
+                .hardware()
+                .is_some_and(|hardware| hardware.macs().keys().any(|mac| self.macs.contains(mac)))
+    }
+
+    /// Whether `address` was heard answering from such hardware.
+    fn withholds(&self, address: &IpAddr) -> bool {
+        !self.macs.is_empty()
+            && self
+                .addresses
+                .lock()
+                .expect("the withheld addresses are never poisoned")
+                .contains(address)
+    }
+
+    /// Records `addresses` as heard from such hardware.
+    fn withhold(&self, addresses: impl IntoIterator<Item = IpAddr>) {
+        self.addresses
+            .lock()
+            .expect("the withheld addresses are never poisoned")
+            .extend(addresses);
+    }
+
+    /// Every address heard from such hardware so far, ascending.
+    fn addresses(&self) -> Vec<IpAddr> {
+        self.addresses
+            .lock()
+            .expect("the withheld addresses are never poisoned")
+            .iter()
+            .copied()
+            .collect()
+    }
+}
+
 /// Builds a [`ScanSession`] and the [`ScanContext`] the strategies behind it
 /// write into.
 ///
@@ -2371,6 +2472,9 @@ pub struct SessionBuilder {
     send_source: Vec<IpAddr>,
     /// `None` for the default, [`RAW_PRINT_PORTS`](crate::config::RAW_PRINT_PORTS).
     listen_only: Option<BTreeSet<u16>>,
+    /// The machines the exclusions name, by hardware address, where a caller
+    /// has already learned them; `None` to read the host's neighbour tables.
+    hardware: Option<BTreeSet<MacAddr>>,
 }
 
 impl SessionBuilder {
@@ -2381,8 +2485,21 @@ impl SessionBuilder {
     /// list: the subtraction covers the addresses they named, and a segment
     /// sweep does not confine itself to those. See [`Exclusions`] for what each
     /// of the two enforcements is for.
+    ///
+    /// A policy naming an address on a segment this host has spoken to
+    /// recently names the machine there too, whatever other addresses it
+    /// answers at: [`build`](Self::build) reads the host's neighbour tables for
+    /// its hardware address. See [`Exclusions`].
     pub fn excluding(mut self, exclusions: Exclusions) -> Self {
         self.exclusions = exclusions;
+        self
+    }
+
+    /// The machines the exclusions name, by hardware address, in place of what
+    /// the host's neighbour tables say.
+    #[cfg(test)]
+    pub(crate) fn excluding_hardware(mut self, macs: BTreeSet<MacAddr>) -> Self {
+        self.hardware = Some(macs);
         self
     }
 
@@ -2602,6 +2719,15 @@ impl SessionBuilder {
             zones: Arc::new(OnceLock::new()),
             swept_links: Arc::new(SweptLinks::default()),
             attachments: Arc::new(Attachments::default()),
+            hardware: Arc::new(WithheldHardware::new(self.hardware.unwrap_or_else(|| {
+                if self.exclusions.is_empty() {
+                    return BTreeSet::new();
+                }
+                let mut table = crate::system::neighbor_cache::ipv4_neighbors();
+                table.extend(crate::system::neighbor_cache::ipv6_neighbors());
+                self.exclusions
+                    .hardware_in(table.iter().map(|entry| (entry.ip, entry.mac)))
+            }))),
             exclusions: Arc::new(self.exclusions),
             changed: Arc::new(ChangedHosts::default()),
             stages,
@@ -3622,6 +3748,81 @@ mod tests {
             .expect("the permitted key is recorded");
         assert!(!ips.contains(&excluded), "{ips:?}");
         assert!(ips.contains(&key));
+    }
+
+    /// **A machine an exclusion names is withheld at every address it answers
+    /// from.** A sweep of a LAN excluding a device's IPv4 address still heard
+    /// the device answer the all-nodes echo and neighbour discovery from its
+    /// IPv6 addresses, which no exclusion can aim at, and listed it there. The
+    /// hardware address its excluded one answers from is what ties them, so a
+    /// finding carrying it is dropped whole, the address is asked nothing
+    /// more, and the phase lists it among what the policy left out. A
+    /// neighbour with other hardware is kept, and so is its address.
+    #[test]
+    fn a_machine_an_exclusion_names_is_withheld_at_its_other_addresses() {
+        use crate::model::mac::MacAddr;
+        use crate::report::{ScanKind, TargetScope};
+        use crate::scanner::recorder::PhaseRecorder;
+
+        let excluded: IpAddr = "192.0.2.30".parse().expect("literal");
+        let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
+        let neighbour_mac = MacAddr::new(0x02, 0, 0, 0, 0, 0x31);
+        let (link_local, global, neighbour): (IpAddr, IpAddr, IpAddr) = (
+            "2001:db8::30".parse().expect("literal"),
+            "2001:db8::3030".parse().expect("literal"),
+            "2001:db8::31".parse().expect("literal"),
+        );
+        let mut ips = IpSet::new();
+        ips.insert(excluded);
+        let (session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(ips))
+            .excluding_hardware(BTreeSet::from([machine]))
+            .build();
+        let mut scope_ips = IpSet::new();
+        scope_ips.insert(neighbour);
+        let recorder = PhaseRecorder::start(
+            ScanKind::Discovery,
+            crate::system::privilege::Privilege::Raw,
+            TargetScope::from_ip_set(&mut scope_ips, &ctx.exclusions),
+            &crate::config::ZondConfig::default(),
+        );
+
+        // An echo reply off the segment: the source address, and the frame's.
+        let answered = |address: IpAddr, mac: MacAddr| {
+            ctx.write_host(address, |host| {
+                host.set_status(crate::model::host::HostStatus::Up);
+                host.record_mac(mac);
+                true
+            });
+        };
+        answered(link_local, machine);
+        answered(neighbour, neighbour_mac);
+        // Found by address first, its hardware arriving with a later frame.
+        ctx.update_host(global, |host| {
+            host.set_status(crate::model::host::HostStatus::Up)
+        });
+        answered(global, machine);
+
+        for address in [link_local, global] {
+            assert!(
+                session.hosts().get(address).is_none(),
+                "{address} answered from the excluded machine and was recorded"
+            );
+            assert!(!ctx.may_probe(&address), "{address} may still be asked");
+        }
+        assert!(session.hosts().get(neighbour).is_some());
+        assert!(ctx.may_probe(&neighbour));
+
+        let report = recorder.finish(&ctx);
+        let listed: Vec<IpAddr> = report.phases()[0]
+            .targets()
+            .excluded()
+            .iter()
+            .map(|range| range.start_addr())
+            .collect();
+        for address in [excluded, link_local, global] {
+            assert!(listed.contains(&address), "{address} not in {listed:?}");
+        }
     }
 
     /// An excluded address never leads a host, which is the half that matters

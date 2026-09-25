@@ -51,7 +51,7 @@
 //! what the engine means to do, not a guarantee about a machine it does not
 //! control.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -62,6 +62,7 @@ use crate::model::exclusion::Exclusions;
 use crate::model::ip::range::{IpRange, Ipv6Range};
 use crate::model::ip::scoped::ZoneMap;
 use crate::model::ip::set::IpSet;
+use crate::model::mac::MacAddr;
 use crate::model::port::Protocol;
 use crate::model::technique::TcpScanTechnique;
 use crate::report::ScannerKind;
@@ -1311,17 +1312,36 @@ fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
 fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>, exclusions: &Exclusions) {
     let table = neighbor_cache::ipv6_neighbors();
     if !table.is_empty() {
-        seed_from_neighbor_table_with(local, &table, exclusions);
+        // The machines the policy names, read off both tables, since an
+        // excluded IPv4 address is tied to its machine's IPv6 ones by nothing
+        // but the hardware address they share.
+        let machines = if exclusions.is_empty() {
+            BTreeSet::new()
+        } else {
+            let v4 = neighbor_cache::ipv4_neighbors();
+            exclusions.hardware_in(v4.iter().chain(&table).map(|entry| (entry.ip, entry.mac)))
+        };
+        seed_from_neighbor_table_with(local, &table, exclusions, &machines);
     }
 }
 
 /// [`seed_from_neighbor_table`] against an explicit table, so the exclusions can
 /// be tested without a host that happens to have the right neighbours.
+///
+/// `machines` are the hardware addresses of the machines the exclusions name,
+/// and an entry answering from one is held to the policy as its excluded
+/// address is; see [`Exclusions::hardware_in`].
 fn seed_from_neighbor_table_with(
     local: &mut HashMap<Link, IpSet>,
     table: &[neighbor_cache::Neighbor],
     exclusions: &Exclusions,
+    machines: &BTreeSet<MacAddr>,
 ) {
+    let withheld: HashSet<IpAddr> = table
+        .iter()
+        .filter(|entry| entry.mac.is_some_and(|mac| machines.contains(&mac)))
+        .map(|entry| entry.ip)
+        .collect();
     for (intf, targets) in local.iter_mut() {
         let mut seeded = 0usize;
         for addr in candidates_for(intf, table) {
@@ -1340,7 +1360,7 @@ fn seed_from_neighbor_table_with(
             // `write_host` would then drop the finding, so the *report* would
             // stay clean and the packet would still go out — which is the half
             // of the promise that cannot be checked from the report afterwards.
-            if exclusions.excludes(&addr) {
+            if exclusions.excludes(&addr) || withheld.contains(&addr) {
                 info!(
                     verbosity = 2,
                     "neighbour {addr} is excluded, so it is not taken as a candidate"
@@ -1928,7 +1948,7 @@ mod tests {
         let table = vec![entry("fe80::bb", 7), entry("2001:db8::aa", 7)];
         let mut local = std::collections::HashMap::from([(intf, IpSet::new())]);
 
-        seed_from_neighbor_table_with(&mut local, &table, &Exclusions::none());
+        seed_from_neighbor_table_with(&mut local, &table, &Exclusions::none(), &BTreeSet::new());
 
         let targets = local.into_values().next().unwrap();
         let zones: Vec<Option<u32>> = targets.v6().iter().map(|range| range.zone()).collect();
@@ -2074,6 +2094,48 @@ mod tests {
         assert!(!plan.covers(Protocol::Udp));
     }
 
+    /// **A sweep takes no candidate from the machine an exclusion names.** An
+    /// excluded IPv4 address and the IPv6 addresses the same machine holds
+    /// share nothing but the hardware address the neighbour tables list them
+    /// under, and a sweep that took those from the table solicited the
+    /// machine the operator excluded, at an address the policy never named.
+    #[test]
+    fn a_swept_plan_takes_no_candidate_from_an_excluded_machine() {
+        let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
+        let other = MacAddr::new(0x02, 0, 0, 0, 0, 0x31);
+        let at = |ip: &str, mac| neighbor_cache::Neighbor {
+            mac: Some(mac),
+            ..entry(ip, 7)
+        };
+        let v4 = neighbor_cache::Neighbor {
+            ip: "192.0.2.30".parse().expect("literal"),
+            mac: Some(machine),
+            interface_index: 7,
+        };
+        let v6_table = vec![at("2001:db8::30", machine), at("2001:db8::31", other)];
+
+        let mut forbidden = IpSet::new();
+        forbidden.insert(v4.ip);
+        let exclusions = Exclusions::new(forbidden);
+        let mut both = vec![v4];
+        both.extend(v6_table.iter().cloned());
+        let machines = exclusions.hardware_in(both.iter().map(|entry| (entry.ip, entry.mac)));
+
+        let intf = interface_with(7, "en0", Vec::new());
+        let mut local = std::collections::HashMap::from([(intf, IpSet::new())]);
+        seed_from_neighbor_table_with(&mut local, &v6_table, &exclusions, &machines);
+
+        let targets = local.into_values().next().expect("the one interface");
+        assert!(
+            !targets.contains(&v6("2001:db8::30")),
+            "the excluded machine's IPv6 address became a target"
+        );
+        assert!(
+            targets.contains(&v6("2001:db8::31")),
+            "and its neighbour did"
+        );
+    }
+
     /// **A sweep does not take an excluded neighbour as a candidate.**
     ///
     /// The target list is withheld against the exclusions before a plan is
@@ -2094,7 +2156,12 @@ mod tests {
 
         let mut forbidden = IpSet::new();
         forbidden.insert_range("2001:db8::/64".parse().expect("a valid range"));
-        seed_from_neighbor_table_with(&mut local, &table, &Exclusions::new(forbidden));
+        seed_from_neighbor_table_with(
+            &mut local,
+            &table,
+            &Exclusions::new(forbidden),
+            &BTreeSet::new(),
+        );
 
         let targets = local.into_values().next().expect("the one interface");
         let carried: Vec<std::net::Ipv6Addr> = targets

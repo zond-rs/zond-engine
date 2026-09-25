@@ -509,6 +509,30 @@ impl TargetScope {
         }
     }
 
+    /// Records `addresses` among what this phase's policy excluded: the other
+    /// addresses of a machine it names, heard during the phase and withheld
+    /// for the hardware they answered from. See
+    /// [`Exclusions::hardware_in`](crate::model::exclusion::Exclusions::hardware_in).
+    ///
+    /// Called once a phase is over, for the reason
+    /// [`record_sweeps`](Self::record_sweeps) is. They are not counted in
+    /// [`withheld`](Self::withheld), which measures the policy against the
+    /// targets the phase was handed, and none of these was one.
+    pub(crate) fn record_withheld_machines(&mut self, addresses: Vec<IpAddr>) {
+        if addresses.is_empty() {
+            return;
+        }
+        let mut excluded = IpSet::new();
+        for range in self.excluded.drain(..) {
+            excluded.insert_range(range);
+        }
+        for address in addresses {
+            excluded.insert(address);
+        }
+        excluded.canonicalize();
+        self.excluded = ip_set_ranges(&excluded);
+    }
+
     /// Which ports the phase walked, and whether it walked the same ones for
     /// every address.
     ///
@@ -538,6 +562,11 @@ impl TargetScope {
     /// This is the half of the record a reader can check the engine against.
     /// Every range here is ground the report promises it did not cover, and no
     /// host in the report may fall inside one.
+    ///
+    /// Beside what the policy named are the other addresses of a machine it
+    /// names that the phase heard, at the hardware address the policy's own
+    /// address answers from; see
+    /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
     pub fn excluded(&self) -> &[IpRange] {
         &self.excluded
     }
