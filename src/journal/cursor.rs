@@ -485,6 +485,10 @@ impl Checkpoint {
     /// the day, so the answer that gates those probes is one the sitting has to
     /// establish for itself rather than inherit.
     ///
+    /// Read host by host rather than target by target where that is cheaper,
+    /// which for a scan resumed part way is by far: see
+    /// [`left_along`](Self::left_along).
+    ///
     /// `index` has to number the plan this checkpoint was written against, as
     /// for [`remaining`](Self::remaining). Every address of a unit the index
     /// could not number comes back, since no position names a target there and
@@ -492,7 +496,7 @@ impl Checkpoint {
     pub(crate) fn remaining_hosts(&self, index: &TargetIndex) -> IpSet {
         let mut remaining = IpSet::new();
 
-        for span in self.unsettled_spans(index.total()) {
+        for span in self.left_in(index) {
             for range in index.addresses_in(span) {
                 remaining.insert_range(range);
             }
@@ -506,59 +510,93 @@ impl Checkpoint {
     }
 
     /// The stretches of `0..total` this checkpoint leaves unsettled, ascending
-    /// and never empty.
-    ///
-    /// Everything below the watermark is settled, and above it only the
-    /// positions that settled out of order are, so the stretches are the gaps
-    /// between those: one more span than there are such positions.
+    /// and never empty: the positions of a plan in which each is a host of its
+    /// own, as a sweep's are.
     fn unsettled_spans(&self, total: u64) -> Vec<Range<u64>> {
+        self.left_in(&Alone(total))
+    }
+
+    /// Stretches of `runs`' positions, ascending and never empty, that hold
+    /// every position this checkpoint leaves unsettled and touch only hosts
+    /// with one.
+    ///
+    /// Everything below the watermark is settled. Above it, a checkpoint
+    /// counted in plan order alone settled only the positions its list names,
+    /// so the stretches are the gaps between those, one more than it names.
+    /// One counted along a walk is read by [`left_along`](Self::left_along).
+    fn left_in(&self, runs: &impl HostRuns) -> Vec<Range<u64>> {
         match self.walked {
-            Some(walked) => self.unwalked_spans(walked.clamped(self.watermark), total),
-            None => self.spans_between(total),
+            Some(walked) => self.left_along(walked.clamped(self.watermark), runs),
+            None => self.spans_between(runs.total()),
         }
     }
 
-    /// The unsettled stretches of a checkpoint counted along a walk.
+    /// The hosts of `runs` a checkpoint counted along `walked` leaves a target
+    /// at, as stretches of their whole runs of positions.
     ///
-    /// What the walk has not reached is scattered across the plan, so this
-    /// costs what is left rather than what the list holds, read whichever way
-    /// is shorter. Early in a scan that is the plan past the watermark, each
-    /// position asked whether the walk passed it. Late in one it is the walk's
-    /// own tail, which names exactly the positions it has yet to reach.
-    fn unwalked_spans(&self, walked: Walked, total: u64) -> Vec<Range<u64>> {
-        let past_watermark = total.saturating_sub(self.watermark);
+    /// What the walk has not reached is scattered across the plan, so there are
+    /// two ways to find it, and each is cheap where the other is dear.
+    ///
+    /// **Host by host.** Each host past the watermark is asked, one position of
+    /// its run at a time, whether that position is settled, and the first that
+    /// is not answers for the host. A host with `u` of its positions left is
+    /// answered after about `1 / u` of them, so a scan resumed with half its
+    /// plan left costs about two questions a host whatever it asks each host,
+    /// and nothing is held but the answer. What it costs grows as the plan
+    /// empties: a host the walk finished is asked every position it has.
+    ///
+    /// **Along the walk's tail.** The positions the walk has yet to reach are
+    /// exactly the ones it names from `reached` on, so reading them and marking
+    /// each one's host costs what is left and a bit a host. That is the cheap
+    /// way late in a scan, and the dear one early: a `/8` on a thousand ports
+    /// resumed half way has eight billion positions in its tail and sixteen
+    /// million hosts.
+    ///
+    /// With `h` hosts and `n` positions past the watermark, and `t` of them in
+    /// the tail, the first costs about `h * min(n / h, n / t)` questions and
+    /// the second `t`, so the tail is the cheaper exactly when `t * t < h * n`.
+    /// The worst either reaches, at the crossing, is `h` times the square root
+    /// of a host's ports. The tail is marked a bit a host, far less than the
+    /// ranges handed back hold once many hosts are left; past
+    /// [`MARKED_AT_MOST`] hosts no bitmap is built and the plan is read host
+    /// by host, which holds nothing.
+    fn left_along(&self, walked: Walked, runs: &impl HostRuns) -> Vec<Range<u64>> {
+        let total = runs.total();
+        if self.watermark >= total {
+            return Vec::new();
+        }
+
+        let first = runs.host_of(self.watermark);
+        let hosts = runs.hosts() - first;
+        let past = total - self.watermark;
         let tail = walked.len - walked.reached;
 
-        let mut spans: Vec<Range<u64>> = Vec::new();
-        let mut extend = |position: u64| match spans.last_mut() {
-            Some(span) if span.end == position => span.end += 1,
-            _ => spans.push(position..position + 1),
+        let order = walked.order();
+        let listed = |position: u64| self.settled_above.binary_search(&position).is_ok();
+
+        if reads_the_tail(tail, hosts, past) {
+            let reached = order
+                .iter_from(walked.reached)
+                .filter(|position| *position >= self.watermark && *position < total)
+                .filter(|position| !listed(*position));
+            // A plan longer than the walk, which only a damaged file
+            // describes: the walk names nothing past its end, so only the list
+            // can have settled any of it.
+            let unwalked = self
+                .gaps_from(walked.len.max(self.watermark), total)
+                .into_iter()
+                .flatten();
+            return marked(runs, first, hosts, reached.chain(unwalked));
+        }
+
+        let unsettled = |position: u64| {
+            position >= self.watermark
+                && !listed(position)
+                && !order
+                    .index_of(position)
+                    .is_some_and(|index| index < walked.reached)
         };
-
-        if past_watermark <= tail {
-            for position in self.watermark..total {
-                if !self.is_settled(position) {
-                    extend(position);
-                }
-            }
-            return spans;
-        }
-
-        let mut left: Vec<u64> = walked
-            .order()
-            .iter_from(walked.reached)
-            .filter(|position| *position >= self.watermark && *position < total)
-            .filter(|position| self.settled_above.binary_search(position).is_err())
-            .collect();
-        left.sort_unstable();
-        for position in left {
-            extend(position);
-        }
-        // A plan longer than the walk, which only a damaged file describes:
-        // the walk names nothing past its end, so only the list can have
-        // settled any of it.
-        spans.extend(self.gaps_from(walked.len.max(self.watermark), total));
-        spans
+        host_by_host(runs, first..runs.hosts(), unsettled)
     }
 
     /// The unsettled stretches of a checkpoint counted in plan order alone:
@@ -618,6 +656,141 @@ impl Checkpoint {
             .enumerate()
             .map(|(position, target)| PlannedTarget::new(position as u64, target))
             .filter(move |planned| !self.is_settled(planned.position))
+    }
+}
+
+/// The most hosts [`Checkpoint::left_along`] marks in a bitmap, a bit each:
+/// 128 MiB, which is every address of a quarter of IPv4.
+///
+/// A plan with more reads host by host instead, which holds nothing. Only a
+/// plan with an IPv6 range among its units comes near it, and one that wide
+/// is a plan no scan finishes.
+const MARKED_AT_MOST: u64 = 1 << 30;
+
+/// Whether [`Checkpoint::left_along`] reads the walk's tail of `tail`
+/// positions rather than asking `hosts` hosts holding `past` positions one by
+/// one: where the tail is the cheaper, and its bitmap is within
+/// [`MARKED_AT_MOST`].
+fn reads_the_tail(tail: u64, hosts: u64, past: u64) -> bool {
+    let tail = u128::from(tail);
+    tail * tail < u128::from(hosts) * u128::from(past) && hosts <= MARKED_AT_MOST
+}
+
+/// A numbering of targets seen host by host: every host's targets hold a
+/// contiguous run of positions, and the runs are ascending.
+///
+/// A port plan's are its addresses, each with a run of its ports, since the
+/// port index runs fastest; see [`TargetIndex`]. A sweep's are its addresses,
+/// each a run of one.
+trait HostRuns {
+    /// How many positions are numbered.
+    fn total(&self) -> u64;
+    /// How many hosts hold them.
+    fn hosts(&self) -> u64;
+    /// The positions of the host numbered `host`, which is below
+    /// [`hosts`](Self::hosts).
+    fn run(&self, host: u64) -> Range<u64>;
+    /// The host whose run holds `position`, which is below
+    /// [`total`](Self::total).
+    fn host_of(&self, position: u64) -> u64;
+}
+
+impl HostRuns for TargetIndex {
+    fn total(&self) -> u64 {
+        TargetIndex::total(self)
+    }
+
+    fn hosts(&self) -> u64 {
+        TargetIndex::hosts(self)
+    }
+
+    fn run(&self, host: u64) -> Range<u64> {
+        self.host_run(host)
+    }
+
+    fn host_of(&self, position: u64) -> u64 {
+        TargetIndex::host_of(self, position)
+    }
+}
+
+/// `0..n` with every position a host of its own, as a sweep numbers its
+/// addresses.
+struct Alone(u64);
+
+impl HostRuns for Alone {
+    fn total(&self) -> u64 {
+        self.0
+    }
+
+    fn hosts(&self) -> u64 {
+        self.0
+    }
+
+    fn run(&self, host: u64) -> Range<u64> {
+        host..host + 1
+    }
+
+    fn host_of(&self, position: u64) -> u64 {
+        position
+    }
+}
+
+/// The runs of the hosts in `hosts` with a position `unsettled` answers for,
+/// merged where they meet.
+///
+/// Each host is asked about one position at a time, in plan order, and the
+/// first unsettled one answers for it; see [`Checkpoint::left_along`].
+fn host_by_host(
+    runs: &impl HostRuns,
+    hosts: Range<u64>,
+    mut unsettled: impl FnMut(u64) -> bool,
+) -> Vec<Range<u64>> {
+    let mut spans = Vec::new();
+    for host in hosts {
+        let run = runs.run(host);
+        if run.clone().any(&mut unsettled) {
+            extend(&mut spans, run);
+        }
+    }
+    spans
+}
+
+/// The runs of the hosts holding any of `positions`, merged where they meet,
+/// for `hosts` hosts numbered from `first`.
+///
+/// Marked in a bitmap as they arrive, in whatever order, and read back in
+/// plan order; see [`Checkpoint::left_along`].
+fn marked(
+    runs: &impl HostRuns,
+    first: u64,
+    hosts: u64,
+    positions: impl Iterator<Item = u64>,
+) -> Vec<Range<u64>> {
+    // Within `MARKED_AT_MOST`, so the words fit in memory and their count in
+    // a `usize`.
+    let mut bits = vec![0u64; hosts.div_ceil(64) as usize];
+    for position in positions {
+        let host = runs.host_of(position) - first;
+        bits[(host / 64) as usize] |= 1 << (host % 64);
+    }
+
+    let mut spans = Vec::new();
+    for (at, word) in bits.iter().enumerate() {
+        let mut word = *word;
+        while word != 0 {
+            let host = first + at as u64 * 64 + u64::from(word.trailing_zeros());
+            extend(&mut spans, runs.run(host));
+            word &= word - 1;
+        }
+    }
+    spans
+}
+
+/// Appends `run` to `spans`, joining the last one where the two meet.
+fn extend(spans: &mut Vec<Range<u64>>, run: Range<u64>) {
+    match spans.last_mut() {
+        Some(span) if span.end == run.start => span.end = run.end,
+        _ => spans.push(run),
     }
 }
 
@@ -878,6 +1051,61 @@ mod tests {
         );
     }
 
+    /// A walked checkpoint over a numbering of `len` positions that reached
+    /// `reached` of them, with `watermark` and `above` settled in plan order.
+    fn walked(seed: u64, len: u64, reached: u64, watermark: u64, above: Vec<u64>) -> Checkpoint {
+        Checkpoint {
+            walked: Some(Walked {
+                seed,
+                len,
+                reached,
+                ahead: 0,
+            }),
+            ..Checkpoint::new(watermark, above)
+        }
+    }
+
+    /// **A scan resumed part way is read host by host, and one nearly done
+    /// along its tail.** The tail of a shuffled walk half way through a `/8`
+    /// on a thousand ports is eight billion positions: minutes to read and
+    /// gigabytes to hold before the resumed sitting sends anything. Asked host
+    /// by host it is about two questions for each of sixteen million. Near the end the tail is the short read and the hosts, most of
+    /// them finished, the long one. A sweep, whose hosts are its positions,
+    /// reads whichever part is left.
+    #[test]
+    fn a_resume_reads_whichever_of_the_hosts_and_the_tail_is_shorter() {
+        let hosts: u64 = 1 << 24;
+        let plan = hosts * 1_000;
+
+        assert!(!reads_the_tail(plan / 2, hosts, plan), "half way");
+        assert!(!reads_the_tail(plan / 16, hosts, plan), "a sixteenth left");
+        assert!(
+            reads_the_tail(plan / 64, hosts, plan),
+            "a sixty-fourth left"
+        );
+        assert!(reads_the_tail(plan / 10_000, hosts, plan), "nearly done");
+
+        assert!(reads_the_tail(hosts / 2, hosts, hosts), "a sweep half way");
+        assert!(
+            !reads_the_tail(1, MARKED_AT_MOST + 1, MARKED_AT_MOST + 1),
+            "more hosts than a bitmap is kept for"
+        );
+    }
+
+    /// Half way through a `/16` on 1,024 ports, every host still has a target
+    /// left, and the answer comes back without the tail's 33 million
+    /// positions being read or held.
+    #[test]
+    fn a_wide_port_scan_resumed_half_way_sweeps_every_host() {
+        let map = plan("198.51.0.0/16", "1-1024");
+        let index = TargetIndex::of(&map);
+        let len = index.total();
+
+        let remaining = walked(0x5EED, len, len / 2, 0, Vec::new()).remaining_hosts(&index);
+
+        assert_eq!(remaining, addresses("198.51.0.0/16"));
+    }
+
     /// A port scan whose first sitting settled everything has no host left to
     /// sweep, so a resumed sitting puts nothing on the wire beside its (empty)
     /// port scan.
@@ -907,6 +1135,30 @@ mod tests {
     }
 
     proptest::proptest! {
+        /// Whatever a walk had reached, the hosts a resumed sitting sweeps are
+        /// exactly the addresses of the targets it still probes, read along
+        /// the tail late in the walk and host by host early in it. A walk
+        /// shorter than the plan, which only a damaged file describes, leaves
+        /// the rest to the list.
+        #[test]
+        fn the_hosts_swept_after_a_walk_are_the_addresses_of_what_is_left(
+            seed in proptest::prelude::any::<u64>(),
+            reached in 0u64..=72,
+            short in 0u64..4,
+            watermark in 0u64..70,
+            above in proptest::collection::vec(0u64..72, 0..24),
+        ) {
+            let map = ports_plan();
+            let index = TargetIndex::of(&map);
+            let len = index.total() - short;
+            let checkpoint = walked(seed, len, reached.min(len), watermark, above);
+
+            proptest::prop_assert_eq!(
+                checkpoint.remaining_hosts(&index),
+                hosts_of_remaining(&checkpoint, &map)
+            );
+        }
+
         /// Whatever an earlier sitting settled, the hosts a resumed sitting
         /// sweeps are exactly the addresses of the targets it still probes.
         ///

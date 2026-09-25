@@ -308,6 +308,8 @@ pub struct TargetIndex {
     units: Vec<UnitIndex>,
     /// How many targets are numbered.
     total: u64,
+    /// How many hosts hold them; see [`hosts`](Self::hosts).
+    hosts: u64,
     /// Whether that is every target the map holds.
     complete: bool,
     /// The addresses of the units the numbering stopped at and after, which is
@@ -326,6 +328,8 @@ struct UnitIndex {
     start: u64,
     /// How many targets it holds: its addresses times its ports.
     len: u64,
+    /// The number of the unit's first host; see [`TargetIndex::hosts`].
+    first_host: u64,
 }
 
 impl TargetIndex {
@@ -344,6 +348,7 @@ impl TargetIndex {
     pub fn of(map: &TargetMap) -> Self {
         let mut units = Vec::with_capacity(map.units.len());
         let mut total: u64 = 0;
+        let mut hosts: u64 = 0;
         let mut complete = true;
         let mut unnumbered = Vec::new();
 
@@ -377,11 +382,15 @@ impl TargetIndex {
                 break;
             };
 
+            let first_host = hosts;
+            // No more hosts than targets, which fit.
+            hosts += addresses.total();
             units.push(UnitIndex {
                 addresses,
                 ports,
                 start: total,
                 len,
+                first_host,
             });
             total += len;
         }
@@ -389,6 +398,7 @@ impl TargetIndex {
         Self {
             units,
             total,
+            hosts,
             complete,
             unnumbered,
         }
@@ -462,6 +472,40 @@ impl TargetIndex {
         }
 
         found
+    }
+
+    /// How many hosts the numbering holds: an address of a unit and every port
+    /// the unit pairs it with.
+    ///
+    /// Numbered in plan order, and each holds a contiguous run of positions,
+    /// since a unit pairs an address with every port before moving to the
+    /// next; see [`host_run`](Self::host_run). An address two units name is
+    /// two hosts here, each with its own run.
+    pub(crate) fn hosts(&self) -> u64 {
+        self.hosts
+    }
+
+    /// The positions of the host numbered `host`, which is below
+    /// [`hosts`](Self::hosts); an empty run past the end.
+    pub(crate) fn host_run(&self, host: u64) -> Range<u64> {
+        let at = self
+            .units
+            .partition_point(|unit| unit.first_host + unit.addresses.total() <= host);
+        let Some(unit) = self.units.get(at) else {
+            return self.total..self.total;
+        };
+        let ports = unit.ports.len() as u64;
+        let start = unit.start + (host - unit.first_host) * ports;
+        start..start + ports
+    }
+
+    /// The host whose run holds `position`, which is below
+    /// [`total`](Self::total); [`hosts`](Self::hosts) past the end.
+    pub(crate) fn host_of(&self, position: u64) -> u64 {
+        match self.unit_at(position) {
+            Some(unit) => unit.first_host + (position - unit.start) / unit.ports.len() as u64,
+            None => self.hosts,
+        }
     }
 
     /// The addresses of every unit the numbering could not reach, which is
@@ -556,6 +600,32 @@ mod tests {
             );
         }
         assert_eq!(index.target_at(index.total()), None, "past the end");
+    }
+
+    /// Seen host by host, the numbering is the same one: every host's run is
+    /// the positions of one address's targets in one unit, the runs tile the
+    /// numbering in order, and each position's host is the run holding it.
+    /// A resume reads which hosts have work left by these, and a run one port
+    /// short or long sweeps a host with nothing left or misses one with some.
+    #[test]
+    fn the_hosts_tile_the_numbering_one_address_each() {
+        let index = TargetIndex::of(&awkward());
+
+        let mut next = 0;
+        for host in 0..index.hosts() {
+            let run = index.host_run(host);
+            assert_eq!(run.start, next, "host {host} starts where the last ended");
+            assert!(!run.is_empty());
+            let first = index.target_at(run.start).expect("inside the numbering");
+            for position in run.clone() {
+                assert_eq!(index.host_of(position), host, "position {position}");
+                let target = index.target_at(position).expect("inside the numbering");
+                assert_eq!(target.ip, first.ip, "position {position}");
+            }
+            next = run.end;
+        }
+        assert_eq!(next, index.total(), "and cover it");
+        assert_eq!(index.host_of(index.total()), index.hosts(), "past the end");
     }
 
     /// A unit naming no port yields no target, so it takes no positions.
