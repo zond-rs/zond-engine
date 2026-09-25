@@ -435,9 +435,17 @@ impl Journal {
     /// list however large the scan is, and the write is a rename over a small
     /// file. See [`Checkpoint::write_atomically`].
     pub fn checkpoint(&mut self, settlements: &Settlements) -> Result<(), JournalError> {
-        settlements
-            .checkpoint()
-            .write_atomically(&self.directory.join(CURSOR))?;
+        self.write_cursor(&settlements.checkpoint())
+    }
+
+    /// Writes `cursor` as how far the scan has got, and reports the writer is
+    /// alive.
+    ///
+    /// For a writer that read the cursor before taking the findings it wrote
+    /// beside it, which is the order a running scan needs; see
+    /// [`checkpoint`](crate::scanner::checkpoint).
+    pub(crate) fn write_cursor(&mut self, cursor: &Checkpoint) -> Result<(), JournalError> {
+        cursor.write_atomically(&self.directory.join(CURSOR))?;
         self.lock.beat()
     }
 
@@ -446,6 +454,11 @@ impl Journal {
     /// Findings first. A cursor claiming a target is settled, beside a file
     /// missing what settling it produced, is the one ordering that loses a
     /// finding. The other way round costs a target being probed twice.
+    ///
+    /// The cursor is read here, after `hosts` were taken, so this suits a scan
+    /// that has stopped settling targets. While one is running, a target can
+    /// settle between the two readings with its finding in neither; the
+    /// scanner's own checkpoints read the cursor first for that reason.
     pub fn record(
         &mut self,
         hosts: &[Host],

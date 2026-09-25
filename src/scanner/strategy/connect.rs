@@ -734,7 +734,6 @@ fn absorb_probe(
     }
     shortfall.count(probed.ip, &probed.attempt);
     shortfall.identified_in_part += u128::from(probed.identified_in_part);
-    ctx.record_outcome(probed.outcome);
     if probed.answered {
         // A connect probe carries no attempt token: the retransmission that may
         // have produced this answer was the host stack's, on its own schedule
@@ -742,6 +741,15 @@ fn absorb_probe(
         // not knowable from here.
         audit.record_host_found(None);
     }
+    // Settled once what it found is stored; see `ScanContext::record_outcome`.
+    let outcome = probed.outcome;
+    file_probe(ctx, probed);
+    ctx.record_outcome(outcome);
+}
+
+/// The store's half of [`absorb_probe`]: the port, the responses and what the
+/// exchange proved about the host.
+fn file_probe(ctx: &ScanContext, probed: Probed) {
     if probed.port.is_none() && !probed.answered && probed.role.is_none() {
         return;
     }
@@ -1662,8 +1670,8 @@ fn absorb_host(
             // See `absorb_probe`: this path has no attempt to attribute the
             // answer to, so every host it finds is counted as unattributed.
             audit.record_host_found(None);
-            ctx.settle_address(probed.ip, Settled::Answered);
             ctx.update_host(ip, |existing| existing.merge(*host));
+            ctx.settle_address(probed.ip, Settled::Answered);
         }
         Fate::Exhausted => {
             audit.record_send(true);

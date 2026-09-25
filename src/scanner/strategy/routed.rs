@@ -958,9 +958,6 @@ impl RoutedScanner {
             return;
         }
 
-        // The address answered, which is a verdict however the reply was timed.
-        self.ctx.settle_address(ip, Settled::Answered);
-
         let resolution = self.resolve_probe(ip, &reply.bytes, now);
         let rtt = resolution.and_then(|resolution| resolution.rtt);
         if rtt.is_none() {
@@ -988,6 +985,9 @@ impl RoutedScanner {
             }
             !was_up
         });
+        // The address answered, which is a verdict however the reply was timed.
+        // Settled once the answer is stored; see `ScanContext::record_outcome`.
+        self.ctx.settle_address(ip, Settled::Answered);
 
         if self.sweep.responded.insert(ip) {
             self.sweep

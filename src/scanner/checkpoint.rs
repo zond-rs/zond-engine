@@ -23,10 +23,29 @@
 //! runs one way, which is what it always was in substance.
 //!
 //! The journal keeps everything about *how* a scan is written down. What is here
-//! is when.
+//! is when, and in what order.
+//!
+//! ## The cursor is read before the findings are taken
+//!
+//! A checkpoint writes two things a running scan goes on changing while it
+//! reads them: the hosts whose findings changed, and the cursor saying which
+//! targets are settled. A resume skips what the cursor names and restores what
+//! the findings file holds, so a position the cursor names whose finding the
+//! file lacks is a target the resumed scan neither asks nor reports.
+//!
+//! Every strategy records a finding in the store before it settles the
+//! target that produced it; see
+//! [`ScanContext::record_outcome`](crate::scanner::session::ScanContext::record_outcome).
+//! So a checkpoint reads the cursor first and takes the changed hosts after:
+//! whatever the cursor it read names as settled was stored before it was read,
+//! and so before the hosts were taken. A target settled between the two
+//! readings has its finding written and its position left out, and costs one
+//! probe on a resume rather than a finding.
 
 use crate::journal::Journal;
+use crate::journal::cursor::Checkpoint;
 use crate::journal::format::JournalError;
+use crate::model::host::Host;
 use crate::report::{ScanPhase, ScannerKind, Unheard};
 use crate::scanner::session::ScanProgress;
 
@@ -124,18 +143,23 @@ impl Writer {
     /// the previous one still stands, and the scan is still producing results.
     /// Reported through the same channel every other narrowing uses.
     fn checkpoint(&mut self, ctx: &ScanProgress) {
+        let cut = Cut::take(ctx);
+        self.write(ctx, cut);
+    }
+
+    /// Writes `cut`: the findings first and the cursor after, so a cursor is
+    /// never on disk beside a findings file missing what it settled.
+    fn write(&mut self, ctx: &ScanProgress, cut: Cut) {
         let journal = &mut self.journal;
-        // Findings only: a record a port phase may yet forget as heard nothing
-        // from waits for its verdict. See `ScanContext::await_verdicts`.
-        let changed = ctx.take_changed_findings();
         let outcome = if journal.should_compact(ctx.host_count()) {
-            // The snapshot covers `changed` as well, so nothing is lost by not
-            // appending them.
+            // Taken after the cursor was read, as `cut.changed` was, so it
+            // covers everything that cursor settled and nothing is lost by not
+            // appending `cut.changed`.
             journal.compact(&ctx.findings_snapshot())
         } else {
-            journal.record_hosts(&changed)
+            journal.record_hosts(&cut.changed)
         }
-        .and_then(|()| journal.checkpoint(ctx.settlements()));
+        .and_then(|()| journal.write_cursor(&cut.cursor));
 
         match outcome {
             Err(error) if !self.failing => {
@@ -167,16 +191,44 @@ impl Writer {
     fn close(mut self, ctx: &ScanProgress, phases: &[ScanPhase]) {
         let journal = &mut self.journal;
         let unheard = Unheard::of(journal.earlier_phases().iter().chain(phases));
+        let cut = Cut::take(ctx);
         let _ = if unheard.is_empty() {
-            journal.record_hosts(&ctx.take_changed_findings())
+            journal.record_hosts(&cut.changed)
         } else {
             let mut kept = ctx.findings_snapshot();
             kept.retain(|host| !unheard.drops(host));
             journal.compact(&kept)
         }
-        .and_then(|()| journal.checkpoint(ctx.settlements()));
+        .and_then(|()| journal.write_cursor(&cut.cursor));
         let _ = journal.record_detections(&ctx.take_tapes());
         let _ = self.journal.close();
+    }
+}
+
+/// What one checkpoint writes down: how far the scan got, and the findings
+/// that changed on the way there.
+struct Cut {
+    cursor: Checkpoint,
+    /// Findings only: a record a port phase may yet forget as heard nothing
+    /// from waits for its verdict. See `ScanContext::await_verdicts`.
+    changed: Vec<Host>,
+}
+
+impl Cut {
+    /// Reads the cursor, then takes the hosts that changed, in that order.
+    /// See the module documentation for why the order is the whole point.
+    fn take(ctx: &ScanProgress) -> Self {
+        Self::taking(ctx, || {})
+    }
+
+    /// [`take`](Self::take), running `between` after the cursor is read and
+    /// before the hosts are taken: the moment a test has to reach to show a
+    /// target settling there costs no finding.
+    fn taking(ctx: &ScanProgress, between: impl FnOnce()) -> Self {
+        let cursor = ctx.settlements().checkpoint();
+        between();
+        let changed = ctx.take_changed_findings();
+        Self { cursor, changed }
     }
 }
 
@@ -221,6 +273,80 @@ mod tests {
     use crate::model::technique::TcpScanTechnique;
     use crate::system::privilege::Privilege;
 
+    /// A scratch root for one test's journals, emptied first.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("zond-checkpoint-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch root");
+        root
+    }
+
+    /// A port scan of one address on port 80: one target, at position 0.
+    fn one_target() -> Plan {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1".parse().expect("an address"),
+            "80".parse().expect("ports"),
+        ));
+        Plan::port_scan(&map, &Exclusions::none(), TcpScanTechnique::Syn)
+    }
+
+    /// Whether `hosts` hold port 80 open.
+    fn holds_the_open_port(hosts: &[Host]) -> bool {
+        hosts.iter().any(|host| {
+            host.ports().any(|port| {
+                port.number() == 80 && port.state() == crate::model::port::PortState::Open
+            })
+        })
+    }
+
+    /// A target that settles while a checkpoint is being cut is either written
+    /// with its finding or left for a resume to ask again, never skipped
+    /// without it.
+    ///
+    /// A checkpoint reads two things a running scan goes on changing: the
+    /// hosts that changed and the cursor. Read hosts-first, a port found and
+    /// settled between the two readings is named settled by the cursor while
+    /// its finding waits for the next checkpoint, and a scan killed before that
+    /// one resumes past a port it never reports. The kill is the writer dropped
+    /// without its closing write, which is what a process killed outright
+    /// leaves.
+    #[test]
+    fn a_target_settled_while_a_checkpoint_is_cut_is_not_skipped_without_its_finding() {
+        use crate::journal::settle::Outcome;
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let root = scratch("cut");
+        let plan = one_target();
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "test").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let progress = ctx.progress();
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+
+        let mut writer = Writer::new(journal);
+        // A strategy finds the port open and settles it, in the order every
+        // strategy keeps, at the one moment a checkpoint is exposed to.
+        let cut = Cut::taking(&progress, || {
+            ctx.update_host(ip, |host| {
+                host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+            });
+            ctx.record_outcome(Outcome::Answered { position: 0 });
+        });
+        writer.write(&progress, cut);
+        drop(writer);
+
+        let (resumed, checkpoint) =
+            Journal::resume(&directory, &plan, Privilege::Raw).expect("resumes");
+        assert!(
+            holds_the_open_port(resumed.restored()) || !checkpoint.is_settled(0),
+            "the resume skips port 80 and restores no finding for it: {checkpoint:?}"
+        );
+        drop(resumed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// A journal that cannot be written is told once, in one short line, however
     /// many checkpoints fail after it.
     ///
@@ -230,9 +356,7 @@ mod tests {
     /// repeated is the one a reader stops reading.
     #[test]
     fn a_journal_that_cannot_be_written_is_told_once_and_short() {
-        let root = std::env::temp_dir().join(format!("zond-checkpoint-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("scratch root");
+        let root = scratch("told-once");
         let mut map = TargetMap::new();
         map.add_unit(TargetSet::new(
             "192.0.2.1-192.0.2.4".parse().expect("a range"),

@@ -2325,6 +2325,15 @@ impl ScanContext {
     /// Not the same question as the verdict: a target reaches the store with a
     /// port state, and this says whether the scan *earned* it or assigned it
     /// because the run ended. See [`Outcome`].
+    ///
+    /// Called once whatever the target produced is in the store, never
+    /// before. A journal's checkpoint reads the settlements before it takes
+    /// the changed hosts, so a settlement it reads has its finding in what it
+    /// takes only where the finding was stored first. Settled the other way
+    /// round, a checkpoint landing between the two writes a cursor that skips
+    /// the target beside a findings file without it, and a scan killed then
+    /// resumes past a finding it never reports. See
+    /// [`checkpoint`](crate::scanner::checkpoint).
     pub fn record_outcome(&self, outcome: Outcome) {
         self.settlements.record(outcome);
     }
@@ -2394,6 +2403,9 @@ impl ScanContext {
     /// names the addresses it reached no verdict on, which is its scope less
     /// what answered and what was asked to exhaustion; see
     /// [`ScanPhase::undecided`](crate::report::ScanPhase::undecided).
+    ///
+    /// Called once whatever the answer established is in the store, for the
+    /// reason [`record_outcome`](Self::record_outcome) gives.
     pub fn settle_address(&self, ip: IpAddr, settled: Settled) {
         if let Some(position) = self.positions.find(ip) {
             self.record_outcome(settled.at(position));

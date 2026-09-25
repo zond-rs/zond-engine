@@ -1733,12 +1733,6 @@ impl LocalScanner {
         // Keyed on the MAC rather than the address because a device answering
         // at three addresses is one device found once, which is the unit the
         // roster and the audit both count in.
-        // The address answered, which is a verdict this sweep earned however the
-        // reply was timed and whether it was solicited or overheard. It is the
-        // address that answered rather than the host's primary: a device
-        // reachable at three addresses answered at this one.
-        self.ctx.settle_address(source_addr, Settled::Answered);
-
         let first_sighting = !self.mac_to_ip.contains_key(&source_mac);
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
 
@@ -1815,6 +1809,12 @@ impl LocalScanner {
 
                 changed
             });
+        // The address answered, which is a verdict this sweep earned however the
+        // reply was timed and whether it was solicited or overheard. It is the
+        // address that answered rather than the host's primary: a device
+        // reachable at three addresses answered at this one. Settled once the
+        // answer is stored; see `ScanContext::record_outcome`.
+        self.ctx.settle_address(source_addr, Settled::Answered);
 
         if is_new_host {
             self.deadline.mark_activity();
