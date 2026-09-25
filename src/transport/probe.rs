@@ -43,7 +43,7 @@ use crate::model::ip::scoped::Zone;
 use crate::model::mac::MacAddr;
 use crate::transport::capture::{self, CaptureGuard, CaptureOptions, CaptureStream};
 use crate::transport::kernel_neighbors::KernelNeighbors;
-use crate::transport::link::EthernetSender;
+use crate::transport::link::{EthernetSender, LinkNeighbors};
 use crate::transport::raw::{self, TransportSenderHandle, TransportType};
 
 /// How many captured segments may wait for a scanner to read them.
@@ -861,15 +861,30 @@ pub struct ProbeTransport {
     /// Keeps the capture threads alive for this transport's lifetime, and holds
     /// the counters they publish.
     capture: CaptureGuard,
-    /// The kernel's neighbour table, where the send half hands its writes to
-    /// the kernel's own address resolution and the kernel will not say how
-    /// that went: a raw socket on Linux. `None` everywhere else, where a
-    /// neighbour that does not answer is refused at the send. See
-    /// [`KernelNeighbors`].
+    /// Where the send half's address resolution stands, for a scan that holds
+    /// a host's probes while its neighbour is asked for. See [`NeighborWatch`].
+    /// `None` where a neighbour that does not answer is refused at the send,
+    /// with nothing to read beforehand: a raw socket on macOS.
     ///
-    /// Boxed so the table's lock sits behind a pointer rather than inside the
-    /// transport, whose auto traits are public and would otherwise carry it.
-    neighbors: Option<Box<KernelNeighbors>>,
+    /// Boxed so the watch's locks sit behind a pointer rather than inside the
+    /// transport, whose auto traits are public and would otherwise carry them.
+    neighbors: Option<Box<NeighborWatch>>,
+}
+
+/// Where the address resolution a transport's sends depend on stands, read by
+/// a scan before it hands a probe over.
+///
+/// Two kinds, because who asks for a neighbour decides what a scan can see of
+/// it and when the asking starts.
+pub(crate) enum NeighborWatch {
+    /// The kernel's own resolution, behind a raw socket on Linux. A write to a
+    /// neighbour starts it, and the kernel says nothing to the socket of how
+    /// it went; its table does. See [`KernelNeighbors`].
+    Kernel(KernelNeighbors),
+    /// A frame sender's own resolution. Asking where it stands starts it, and
+    /// a send to a neighbour still being resolved waits for it. See
+    /// [`LinkNeighbors`].
+    Frames(LinkNeighbors),
 }
 
 impl ProbeTransport {
@@ -885,16 +900,23 @@ impl ProbeTransport {
         self.capture.counts()
     }
 
-    /// The kernel's neighbour table, where this transport's writes wait on a
-    /// resolution the kernel keeps to itself. See [`KernelNeighbors`].
-    pub(crate) fn kernel_neighbors(&self) -> Option<&KernelNeighbors> {
+    /// Where the address resolution this transport's sends wait on stands.
+    /// See [`NeighborWatch`].
+    pub(crate) fn neighbors(&self) -> Option<&NeighborWatch> {
         self.neighbors.as_deref()
     }
 
     /// This transport, reading `neighbors` as the kernel's neighbour table.
     #[cfg(test)]
     pub(crate) fn with_kernel_neighbors(mut self, neighbors: KernelNeighbors) -> Self {
-        self.neighbors = Some(Box::new(neighbors));
+        self.neighbors = Some(Box::new(NeighborWatch::Kernel(neighbors)));
+        self
+    }
+
+    /// This transport, reading `neighbors` as its frame sender's resolutions.
+    #[cfg(test)]
+    pub(crate) fn with_link_neighbors(mut self, neighbors: LinkNeighbors) -> Self {
+        self.neighbors = Some(Box::new(NeighborWatch::Frames(neighbors)));
         self
     }
     /// Opens a transport for `kind` with the platform-default send backend
@@ -946,7 +968,8 @@ impl ProbeTransport {
             tx,
             rx,
             capture,
-            neighbors: KernelNeighbors::from_system().map(Box::new),
+            neighbors: KernelNeighbors::from_system()
+                .map(|table| Box::new(NeighborWatch::Kernel(table))),
         })
     }
 
@@ -962,6 +985,7 @@ impl ProbeTransport {
             &CaptureOptions::for_replies(kind.filter()),
             REPLY_QUEUE_DEPTH,
         )?;
+        let neighbors = Some(Box::new(NeighborWatch::Frames(link.neighbors())));
         Ok(Self {
             tx: Box::new(LinkLayerFirst {
                 link,
@@ -973,7 +997,7 @@ impl ProbeTransport {
             }),
             rx,
             capture,
-            neighbors: None,
+            neighbors,
         })
     }
 
@@ -995,11 +1019,12 @@ impl ProbeTransport {
             &CaptureOptions::for_replies(kind.filter()),
             REPLY_QUEUE_DEPTH,
         )?;
+        let neighbors = Some(Box::new(NeighborWatch::Frames(sender.neighbors())));
         Ok(Self {
             tx: Box::new(sender),
             rx,
             capture,
-            neighbors: None,
+            neighbors,
         })
     }
 

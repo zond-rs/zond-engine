@@ -1974,6 +1974,115 @@ mod tests {
         );
     }
 
+    /// A scan through a frame sender asks for every dead neighbour it meets at
+    /// once and waits about one resolution for all of them, sending none of
+    /// their probes, while a live neighbour behind them is asked everything.
+    ///
+    /// A frame sender resolving each neighbour inside the send held the whole
+    /// scan for every dead one in turn: two hundred dead addresses cost a
+    /// hundred seconds at half a second each, and the budget could not grow to
+    /// what a client asleep on Wi-Fi needs without multiplying that. Held
+    /// instead of sent while the resolutions run together, the wave costs one
+    /// budget, which the bound here allows ten of.
+    #[tokio::test]
+    async fn dead_neighbours_behind_a_frame_sender_are_asked_for_together() {
+        use crate::system::interface::LinkAddress;
+        use crate::transport::link::{ARP_TIMEOUT, Answers, LinkNeighbors, Segment};
+        use crate::transport::neighbor::NeighborResolver;
+        use pnet_base::MacAddr;
+
+        const LIVE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 60);
+        const LIVE_PORTS: u16 = 3;
+        let dead: Vec<IpAddr> = (101..=150)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+
+        let segment = NeighborResolver::on_segment(
+            "sim0",
+            MacAddr::new(0x02, 0, 0, 0, 0, 0x50),
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)), 24),
+        );
+        let neighbours = LinkNeighbors::simulated(segment, |_| {
+            Segment::new().in_real_time().with(
+                LIVE,
+                MacAddr::new(0x02, 0, 0, 0, 0, 0x60),
+                Answers::Request(1),
+            )
+        });
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport =
+            ProbeTransport::from_parts(Box::new(sender), reply_rx).with_link_neighbors(neighbours);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let targets_total = dead.len() + usize::from(LIVE_PORTS);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx.clone(),
+            TcpScanTechnique::Syn,
+            transport,
+            targets_total,
+        );
+
+        let (targets, stream) = tokio::sync::mpsc::channel(targets_total);
+        let plan = dead
+            .iter()
+            .map(|address| (*address, 80))
+            .chain((1..=LIVE_PORTS).map(|port| (IpAddr::V4(LIVE), port)));
+        for (position, (ip, port)) in plan.enumerate() {
+            targets
+                .send(PlannedTarget::new(
+                    position as u64,
+                    Target {
+                        ip,
+                        port,
+                        protocol: Protocol::Tcp,
+                    },
+                ))
+                .await
+                .expect("the stream is open");
+        }
+        drop(targets);
+        let started = Instant::now();
+        scanner.scan(stream).await.expect("the scan runs");
+        let took = started.elapsed();
+
+        let sent = sent.lock().unwrap();
+        assert!(
+            sent.iter().all(|(_, _, dst)| *dst == IpAddr::V4(LIVE)),
+            "a probe was handed to the sender for a neighbour nobody had resolved"
+        );
+        let live = session
+            .hosts()
+            .get(IpAddr::V4(LIVE))
+            .expect("the live host is recorded");
+        assert_eq!(live.ports().count(), usize::from(LIVE_PORTS));
+        assert!(
+            live.ports().all(|port| port.state() != PortState::Unasked),
+            "the live host is asked every port"
+        );
+        let mut unreached = ctx.take_unroutable();
+        unreached.sort();
+        assert_eq!(unreached, dead, "every dead neighbour is unreached");
+        assert!(
+            ctx.failures_snapshot().is_empty(),
+            "and nothing failed here"
+        );
+        assert!(
+            session
+                .hosts()
+                .get(dead[0])
+                .is_some_and(|host| host.ports().all(|port| port.state() == PortState::Unasked)),
+            "a dead neighbour's port is recorded unasked"
+        );
+        assert!(
+            took < ARP_TIMEOUT * 10,
+            "{} dead neighbours held the scan for {took:?}",
+            dead.len()
+        );
+    }
+
     /// Under a rate ceiling, the probes held while the kernel resolves dead
     /// neighbours spend none of it, and a live host behind them is asked every
     /// port.

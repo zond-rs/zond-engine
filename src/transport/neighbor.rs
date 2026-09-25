@@ -143,6 +143,23 @@ impl NeighborResolver {
         }
     }
 
+    /// A resolver for one Ethernet segment with no gateway, `interface`
+    /// holding `address` from `mac`, for a test that frames to neighbours on
+    /// it.
+    #[cfg(test)]
+    pub(crate) fn on_segment(interface: &str, mac: MacAddr, address: LinkAddress) -> Self {
+        let held = address.address();
+        let info = InterfaceInfo {
+            name: interface.to_owned(),
+            mac,
+            v4: vec![address],
+            v6: vec![],
+            gateway_v4: None,
+            gateway_v6: None,
+        };
+        Self::from_interfaces(vec![info], vec![], Box::new(move |_| Some(held)))
+    }
+
     /// Whether any Ethernet-capable interface exists at all. When false, the
     /// Ethernet sender has nothing to work with and the caller should use the
     /// raw-IP path instead.
@@ -310,7 +327,8 @@ const LEARNED_NEIGHBOR_TTL: Duration = Duration::from_secs(120);
 ///
 /// Written by whatever hears a neighbour give its address, an ARP frame read
 /// by a sweep or a resolution a sender ran, and read by every sender before it
-/// asks. Nothing is ever read from it older than [`LEARNED_NEIGHBOR_TTL`].
+/// asks. Nothing older than [`LEARNED_NEIGHBOR_TTL`] is framed to; an older
+/// entry says only where to ask first. See [`heard_neighbor`].
 static LEARNED_NEIGHBORS: Mutex<LearnedNeighbors> = Mutex::new(LearnedNeighbors::new());
 
 /// The table behind [`learn_neighbor`] and [`learned_neighbor`], apart from
@@ -334,6 +352,11 @@ impl LearnedNeighbors {
         let (mac, at) = self.heard.as_ref()?.get(&(interface.to_owned(), address))?;
         (now.saturating_duration_since(*at) < LEARNED_NEIGHBOR_TTL).then_some(*mac)
     }
+
+    fn last_heard(&self, interface: &str, address: IpAddr) -> Option<MacAddr> {
+        let (mac, _) = self.heard.as_ref()?.get(&(interface.to_owned(), address))?;
+        Some(*mac)
+    }
 }
 
 /// Records that `address` on `interface` is held by `mac`, as a neighbour has
@@ -342,13 +365,32 @@ impl LearnedNeighbors {
 /// A broadcast or multicast address is not recorded: no neighbour holds one,
 /// and a frame sent to it would reach every host on the segment.
 pub(crate) fn learn_neighbor(interface: &str, address: IpAddr, mac: MacAddr) {
+    learn_neighbor_at(interface, address, mac, Instant::now());
+}
+
+/// [`learn_neighbor`], as heard at `at`.
+pub(crate) fn learn_neighbor_at(interface: &str, address: IpAddr, mac: MacAddr, at: Instant) {
     if mac.is_broadcast() || mac.is_multicast() || mac == MacAddr::zero() {
         return;
     }
     LEARNED_NEIGHBORS
         .lock()
         .unwrap_or_else(|held| held.into_inner())
-        .learn(interface, address, mac, Instant::now());
+        .learn(interface, address, mac, at);
+}
+
+/// The hardware address a neighbour last gave for `address` on `interface`,
+/// however long ago.
+///
+/// Not good enough to frame a probe to once it is older than
+/// [`LEARNED_NEIGHBOR_TTL`], which is what [`learned_neighbor`] answers, but
+/// the address to ask the neighbour at when it is asked again: a frame for one
+/// host reaches a client asleep on Wi-Fi sooner than a broadcast does.
+pub(crate) fn heard_neighbor(interface: &str, address: IpAddr) -> Option<MacAddr> {
+    LEARNED_NEIGHBORS
+        .lock()
+        .unwrap_or_else(|held| held.into_inner())
+        .last_heard(interface, address)
 }
 
 /// The hardware address a neighbour gave for `address` on `interface` within

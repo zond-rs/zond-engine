@@ -41,21 +41,19 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// What the kernel's neighbour table says about one address.
-///
-/// Read only where there is a table to read, so elsewhere the two unresolved
-/// states are named by the scan that acts on them and built by nothing.
-#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+/// Where the resolution of one neighbour's hardware address stands, as the
+/// kernel's neighbour table says or as a frame sender's own resolution does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum NeighborState {
-    /// The kernel asked for the address and gave up (`FAILED`). A write to it
-    /// starts the asking over and is queued behind it.
+    /// The address was asked for and nobody answered (the kernel's
+    /// `FAILED`). A write to it on Linux starts the asking over and is queued
+    /// behind it.
     Failed,
-    /// The kernel is asking and has heard nothing yet (`INCOMPLETE`). A write
-    /// to it is queued, not sent.
+    /// The address is being asked for and nobody has answered yet (the
+    /// kernel's `INCOMPLETE`). A write to it on Linux is queued, not sent.
     Resolving,
-    /// The kernel holds a hardware address for it, confirmed lately or not. A
-    /// write to it leaves.
+    /// A hardware address is held for it, confirmed lately or not. A write to
+    /// it leaves.
     Resolved,
 }
 

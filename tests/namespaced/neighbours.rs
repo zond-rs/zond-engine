@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! On-link addresses nothing answers address resolution for, scanned beside a
-//! live host through the kernel's own resolution.
+//! live host through the kernel's own resolution and through a frame sender's.
 //!
 //! Only a kernel shows this. Linux takes a raw socket's write to a neighbour it
 //! is still asking for, queues it against the socket's buffer, and says nothing
@@ -17,6 +17,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU32;
+use std::time::{Duration, Instant};
 
 use crate::netns::{Segment, available};
 use crate::support::{run_scan, test_config};
@@ -24,6 +25,7 @@ use zond_engine::model::host::HostStatus;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::{PortSet, PortState};
 use zond_engine::model::target::{TargetMap, TargetSet};
+use zond_engine::transport::probe::SendMode;
 
 /// Ten on-link addresses nobody holds read as ten unreachable addresses, every
 /// port unasked, and the live host scanned beside them reads exactly as it
@@ -139,3 +141,87 @@ async fn scan_beside_dead_neighbours(rate: Option<NonZeroU32>) {
     }
     assert!(!phase.unroutable().contains(&live));
 }
+
+/// A scan that frames its own probes asks for every dead neighbour it meets at
+/// once, and waits about one resolution for all forty of them rather than one
+/// each, while the live host beside them is scanned as it would be alone.
+///
+/// A frame sender that resolved each neighbour inside the send held the scan
+/// for every dead one in turn, half a second apiece, and could not wait as
+/// long as a client asleep on Wi-Fi needs without multiplying that. Holding a
+/// host's probes while its neighbour is asked, the forty resolutions run
+/// together, and the bound here allows five of them.
+///
+/// On a thread and a runtime of its own, because a send that waits on a
+/// resolution blocks: a scan stuck in one holds its runtime's thread.
+#[test]
+fn a_framed_scan_asks_for_every_dead_neighbour_at_once() {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let live = segment.peer();
+    let IpAddr::V4(peer) = live else {
+        unreachable!("the segment is addressed in IPv4");
+    };
+    let open = segment.listen_tcp();
+    let dead: Vec<IpAddr> = (75..115)
+        .map(|offset| IpAddr::V4(Ipv4Addr::from(u32::from(peer) + offset)))
+        .collect();
+
+    let mut addresses = IpSet::new();
+    addresses.insert(live);
+    for address in &dead {
+        addresses.insert(*address);
+    }
+    let ports = PortSet::try_from(format!("1-3,{open}").as_str()).expect("a port list");
+    let mut map = TargetMap::new();
+    map.add_unit(TargetSet::new(addresses, ports));
+    let mut cfg = test_config();
+    cfg.send_mode = SendMode::Ethernet;
+    cfg.assume_up = true;
+
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().expect("a runtime starts");
+        let started = Instant::now();
+        let outcome = runtime.block_on(run_scan(map, &cfg));
+        let _ = done.send((outcome, started.elapsed()));
+    });
+    let (outcome, elapsed) = finished
+        .recv_timeout(Duration::from_secs(120))
+        .expect("the scan finishes");
+
+    let phase = outcome
+        .report
+        .phases()
+        .last()
+        .expect("the port scan recorded a phase");
+    assert!(
+        phase.failures().is_empty(),
+        "nothing on this host failed: {:?}",
+        phase.failures()
+    );
+    for address in &dead {
+        assert!(
+            phase.unroutable().contains(address),
+            "{address} is reported unreached: {:?}",
+            phase.unroutable()
+        );
+    }
+    assert_eq!(outcome.port_state(live, open), Some(PortState::Open));
+    for port in 1..=3 {
+        assert_eq!(outcome.port_state(live, port), Some(PortState::Closed));
+    }
+    assert!(
+        elapsed < RESOLUTION * 5,
+        "{} dead neighbours held a framed scan for {elapsed:?}",
+        dead.len()
+    );
+    drop(segment);
+}
+
+/// How long a frame sender waits for one neighbour to answer before giving
+/// it up.
+const RESOLUTION: Duration = Duration::from_secs(3);

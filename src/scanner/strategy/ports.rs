@@ -101,7 +101,7 @@ use crate::scanner::strategy::PortScanner;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::kernel_neighbors::NeighborState;
-use crate::transport::probe::{Emission, ProbeTransport, SendError};
+use crate::transport::probe::{Emission, NeighborWatch, ProbeTransport, SendError};
 use crate::{info, logging::error};
 
 // ---------------------------------------------------------------------------
@@ -383,9 +383,9 @@ pub struct RawProbeScan<T> {
     /// than as a scanner that failed. See
     /// [`is_unreachable`](Self::is_unreachable).
     pub unreachable: std::collections::BTreeSet<IpAddr>,
-    /// How far this scan has read the kernel's resolution of each on-link
-    /// host's hardware address, for a transport that leaves the resolution to
-    /// the kernel and is not told how it went. See [`admit`](Self::admit).
+    /// How far this scan has read the resolution of each host's neighbour,
+    /// for a transport whose sends wait on one it can read. See
+    /// [`admit`](Self::admit).
     pub(crate) neighbor_gates: std::collections::HashMap<IpAddr, NeighborGate>,
     /// Per-run counters, so a scan that classified fewer ports than it asked
     /// about can be attributed to loss, to its own deadline, or to correlation
@@ -827,41 +827,58 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// probe could only meet the same answer, or on Linux be taken and never
     /// sent.
     ///
-    /// The rest is for a transport whose writes wait on the kernel's own
-    /// address resolution, which on Linux takes a write to a neighbour it is
-    /// still asking for, queues it, and says nothing when the asking fails.
-    /// Written freely, the probes to a dead neighbour would read as silence
-    /// though none of them left, and they would stay charged to the socket
-    /// until the kernel gave up, so a few dead neighbours fill the send buffer
-    /// and the kernel refuses the socket's writes to every host, the live ones
-    /// too. So an on-link host that has not answered gets one probe, which
-    /// starts the resolution, and every probe behind it waits on the kernel's
-    /// table rather than joining the queue:
+    /// The rest is for a transport whose sends wait on an address resolution
+    /// the scan can read (see [`NeighborWatch`]), and it is the same for both
+    /// kinds: a host that has not answered is not sent a probe while its
+    /// neighbour is being asked for, and its probes wait on where the asking
+    /// stands:
     ///
-    /// - **resolved**, or no entry at all, and the host is asked freely from
+    /// - **resolved**, or nothing to go on, and the host is asked freely from
     ///   then on;
     /// - **still resolving**, and the probe is held for [`NEIGHBOR_RECHECK`]
     ///   and asks again;
-    /// - **failed**, and the address is filed unreachable: the kernel asked
-    ///   three times across three seconds and heard nothing.
+    /// - **failed**, and the address is filed unreachable: the neighbour was
+    ///   asked three times across three seconds and said nothing.
+    ///
+    /// The kernel on Linux takes a write to a neighbour it is still asking
+    /// for, queues it, and says nothing when the asking fails. Written freely,
+    /// the probes to a dead neighbour would read as silence though none of
+    /// them left, and they would stay charged to the socket until the kernel
+    /// gave up, so a few dead neighbours fill the send buffer and the kernel
+    /// refuses the socket's writes to every host, the live ones too. Its
+    /// asking starts with a write, so an on-link host gets one probe, which
+    /// starts it, and every probe behind that one waits on the kernel's table.
+    /// A host reached through a gateway has no neighbour entry of its own and
+    /// is not read about at all.
+    ///
+    /// A frame sender asks for a neighbour when it is asked where the
+    /// resolution stands, and a send to a neighbour still being asked for
+    /// waits the whole resolution out, holding the scan with it. So no probe
+    /// goes until the resolution concludes, and asking about every host as
+    /// its first probe comes up starts every resolution at once: a wave of
+    /// dead neighbours costs one resolution's wait, not one each.
     ///
     /// A live neighbour answers within a millisecond, so the cost to a live
-    /// host whose hardware address was not yet known is one short hold on its
-    /// second probe. A host that has answered anything is never gated, and a
-    /// host reached through a gateway has no neighbour entry of its own and is
-    /// not read about at all.
+    /// host whose hardware address was not yet known is one short hold. A host
+    /// that has answered anything is never gated.
     pub(crate) fn admit(&mut self, host: IpAddr, now: Instant) -> Admission {
         if self.is_unreachable(&host) {
             return Admission::Unreachable;
         }
-        if self.transport.kernel_neighbors().is_none()
-            || self.ledger.host_has_answered(&host)
-            || !self.resolver.is_on_link(host)
-        {
+        let Some(watch) = self.transport.neighbors() else {
+            return Admission::Send;
+        };
+        if self.ledger.host_has_answered(&host) {
             return Admission::Send;
         }
+        let kernel = matches!(watch, NeighborWatch::Kernel(_));
         let asked = match self.neighbor_gates.get(&host) {
-            None => {
+            Some(NeighborGate::Open) => return Admission::Send,
+            Some(NeighborGate::Asked { at }) => *at,
+            None if kernel => {
+                if !self.resolver.is_on_link(host) {
+                    return Admission::Send;
+                }
                 // Stamped here rather than from `now`, which the caller read
                 // before this batch of sends: the table has to be read after
                 // this probe's write to show the entry the write creates.
@@ -869,10 +886,13 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
                     .insert(host, NeighborGate::Asked { at: Instant::now() });
                 return Admission::Send;
             }
-            Some(NeighborGate::Open) => return Admission::Send,
-            Some(NeighborGate::Asked { at }) => *at,
+            None => {
+                let at = Instant::now();
+                self.neighbor_gates.insert(host, NeighborGate::Asked { at });
+                at
+            }
         };
-        match self.kernel_neighbor(host, asked) {
+        match self.neighbor_state(host, asked) {
             Some(NeighborState::Resolving) => Admission::Hold(now + NEIGHBOR_RECHECK),
             Some(NeighborState::Failed) => {
                 self.record_unresolved(host, NeighborState::Failed);
@@ -885,18 +905,29 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         }
     }
 
-    /// Reads what the kernel's table says about `host`, from a reading taken
-    /// after `asked` and no older than [`NEIGHBOR_RECHECK`].
-    fn kernel_neighbor(&self, host: IpAddr, asked: Instant) -> Option<NeighborState> {
-        let recent = Instant::now()
-            .checked_sub(NEIGHBOR_RECHECK)
-            .map_or(asked, |recent| recent.max(asked));
-        self.transport.kernel_neighbors()?.state(host, recent)
+    /// Where the resolution of `host`'s neighbour stands, asked as the
+    /// transport's [`NeighborWatch`] needs: the kernel's table from a reading
+    /// taken after `asked` and no older than [`NEIGHBOR_RECHECK`], or the
+    /// frame sender's resolution of the next hop a probe from this scan's
+    /// source to `host` is framed to.
+    fn neighbor_state(&mut self, host: IpAddr, asked: Instant) -> Option<NeighborState> {
+        match self.transport.neighbors()? {
+            NeighborWatch::Kernel(table) => {
+                let recent = Instant::now()
+                    .checked_sub(NEIGHBOR_RECHECK)
+                    .map_or(asked, |recent| recent.max(asked));
+                table.state(host, recent)
+            }
+            NeighborWatch::Frames(link) => {
+                let source = self.resolver.resolve(host)?;
+                link.state(source, host)
+            }
+        }
     }
 
-    /// Where the kernel's resolution of `host`'s neighbour stands, for a host
-    /// this scan sent one probe to and has been holding the rest of, and
-    /// `None` for any other host.
+    /// Where the resolution of `host`'s neighbour stands, for a host this
+    /// scan has been holding probes to while it runs, and `None` for any
+    /// other host.
     ///
     /// Read when that probe runs out of attempts or the scan runs out of time,
     /// because either can come before the kernel gives up: it asks three times
@@ -906,14 +937,14 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// about the port. What the caller makes of that depends on which of the
     /// two it was; see [`service_retries`](RawPortScan::service_retries) and
     /// [`conclude_pending_neighbors`](Self::conclude_pending_neighbors).
-    pub(crate) fn pending_neighbor(&self, host: IpAddr) -> Option<NeighborState> {
+    pub(crate) fn pending_neighbor(&mut self, host: IpAddr) -> Option<NeighborState> {
         let Some(NeighborGate::Asked { at }) = self.neighbor_gates.get(&host).copied() else {
             return None;
         };
         if self.is_unreachable(&host) || self.ledger.host_has_answered(&host) {
             return None;
         }
-        self.kernel_neighbor(host, at)
+        self.neighbor_state(host, at)
     }
 
     /// Files every host whose neighbour the kernel was still resolving, or had
@@ -1248,8 +1279,8 @@ fn take_ready_from(
     None
 }
 
-/// How long a probe to a host whose neighbour the kernel is still resolving
-/// is held before the kernel's table is read again.
+/// How long a probe to a host whose neighbour is still being resolved is held
+/// before the resolution is read again.
 ///
 /// Short, because a neighbour that is there answers in well under a
 /// millisecond and the hold is then the whole of what it cost; long enough
@@ -1258,19 +1289,20 @@ fn take_ready_from(
 /// answered from the same reading.
 const NEIGHBOR_RECHECK: Duration = Duration::from_millis(50);
 
-/// How far a scan has read the kernel's resolution of one host's neighbour.
-/// See [`RawProbeScan::admit`].
+/// How far a scan has read the resolution of one host's neighbour. See
+/// [`RawProbeScan::admit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NeighborGate {
-    /// One probe went to the kernel at `at`, and no reading since has shown
-    /// the neighbour answering.
+    /// The neighbour was asked for at `at`, by the one probe handed to the
+    /// kernel or by asking the frame sender, and no reading since has shown
+    /// it answering.
     Asked {
-        /// When that probe was handed over, which a reading has to postdate
-        /// to show the entry its write created.
+        /// When it was asked for, which a reading of the kernel's table has
+        /// to postdate to show the entry the probe's write created.
         at: Instant,
     },
-    /// The neighbour answered, or the kernel keeps no entry for it: the host
-    /// is asked freely.
+    /// The neighbour answered, or there is nothing to go on: the host is asked
+    /// freely.
     Open,
 }
 
@@ -1610,7 +1642,7 @@ pub trait RawPortScan: PortScanner {
                     // back to wait on the resolution as a first attempt, and
                     // the kernel's own verdict decides what becomes of it. One
                     // the kernel gave up on is an address nothing reaches.
-                    match self.core().pending_neighbor(ip) {
+                    match self.core_mut().pending_neighbor(ip) {
                         Some(NeighborState::Resolving) => {
                             self.core_mut()
                                 .hold(ip, port, Some(position), now + NEIGHBOR_RECHECK);
@@ -1765,9 +1797,10 @@ pub(crate) fn run_out<S: RawPortScan>(scanner: &mut S) {
 
 /// [`RawPortScan::send`], with the time it took given back to the deadline.
 ///
-/// A sender that frames its own probes resolves each new neighbour inline and
-/// holds the loop for the whole wait when nothing answers. See
-/// [`AdaptiveDeadline::allow_for_sending`].
+/// A sender that frames its own probes resolves a neighbour inside the send
+/// when [`RawProbeScan::admit`] could not hold the probe for it, as when the
+/// link would not carry the resolution it asked for, and holds the loop for
+/// the whole wait. See [`AdaptiveDeadline::allow_for_sending`].
 fn send_timed<S: RawPortScan + ?Sized>(
     scanner: &mut S,
     ip: IpAddr,

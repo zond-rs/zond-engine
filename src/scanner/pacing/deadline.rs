@@ -192,9 +192,10 @@ impl AdaptiveDeadline {
     /// Gives the hard deadline back the time the loop spent inside its own
     /// sender.
     ///
-    /// A send is ordinarily a few microseconds, and a sender that resolves a
-    /// neighbour before its first frame blocks the loop for the whole wait,
-    /// half a second for each address nothing answers. Neither is time spent
+    /// A send is ordinarily a few microseconds, and a frame sender that has to
+    /// resolve a neighbour before its first frame, where the scan could not
+    /// hold the probe while it asked, blocks the loop for the whole wait, up
+    /// to seconds for an address nothing answers. Neither is time spent
     /// waiting on the network, which is what the deadline is sized for, and a
     /// scan charged for it runs out with addresses it never reached, which
     /// then read as unasked for no reason of their own. Still bounded: every
