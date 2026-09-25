@@ -31,8 +31,9 @@
 //!   exception is a `.local` domain a unicast server is configured to answer
 //!   for, as an Active Directory domain named `corp.local` is: that name is
 //!   asked of the server first, and of the link only if it has no answer.
-//! - Any other name goes to the system's unicast resolver, which applies the
-//!   host's own search domains and returns A and AAAA records alike.
+//! - Any other name goes to unicast DNS as the host has it configured: to the
+//!   server a scoped resolver names for its domain, where the host has one, and
+//!   otherwise to the global resolvers with the host's own search domains.
 //! - A single-label name (`nas`) is tried unicast first, and if nothing answers
 //!   and mDNS is enabled, again as `nas.local`, which on a home network is often
 //!   what the author meant by it.
@@ -449,6 +450,7 @@ mod tests {
     use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
 
     use crate::logging::logged;
+    use unicast::ScopedServers;
 
     /// A name server on loopback that answers A queries for the names it
     /// holds and NXDOMAIN for any other, noting every question it is asked.
@@ -576,10 +578,12 @@ mod tests {
         s.parse().expect("a test address parses")
     }
 
-    /// A resolver reading `hosts` and asking `global`.
+    /// A resolver reading `hosts`, asking `global`, and asking `scoped` for
+    /// the names under their domains.
     fn resolver_over(
         hosts: &str,
         global: Result<(ResolverConfig, ResolverOpts), String>,
+        scoped: Vec<ScopedServers>,
     ) -> Resolver {
         let hosts = hosts.to_owned();
         Resolver::given(no_mdns(), move || {
@@ -587,6 +591,7 @@ mod tests {
                 hosts.clone(),
                 DnsConfig {
                     global: global.clone(),
+                    scoped: scoped.clone(),
                 },
             )
         })
@@ -602,7 +607,11 @@ mod tests {
     #[tokio::test]
     async fn a_name_the_hosts_file_lists_is_answered_without_asking_dns() {
         let dns = FakeDns::start(&[]).await;
-        let resolver = resolver_over("198.51.100.7 box.example\n", Ok(dns.as_global(&[])));
+        let resolver = resolver_over(
+            "198.51.100.7 box.example\n",
+            Ok(dns.as_global(&[])),
+            Vec::new(),
+        );
 
         assert_eq!(
             resolver.resolve("box.example").await,
@@ -626,6 +635,7 @@ mod tests {
         let resolver = resolver_over(
             "198.51.100.23 box.example\n198.51.100.99 box.example\n",
             Err("none configured".into()),
+            Vec::new(),
         );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -655,6 +665,7 @@ mod tests {
         let resolver = resolver_over(
             "198.51.100.161 forest.corp.local corp.local\n",
             Err("none configured".into()),
+            Vec::new(),
         );
 
         for name in ["forest.corp.local", "corp.local"] {
@@ -676,7 +687,7 @@ mod tests {
     #[tokio::test]
     async fn a_local_name_under_a_searched_domain_is_asked_of_unicast_dns() {
         let dns = FakeDns::start(&[("dc01.corp.local", Ipv4Addr::new(198, 51, 100, 10))]).await;
-        let resolver = resolver_over("", Ok(dns.as_global(&["corp.local"])));
+        let resolver = resolver_over("", Ok(dns.as_global(&["corp.local"])), Vec::new());
 
         assert_eq!(
             resolver.resolve("dc01.corp.local").await,
@@ -695,6 +706,47 @@ mod tests {
         );
     }
 
+    /// A name under a scoped resolver's domain is asked of that domain's server
+    /// alone, and any other name of the global one.
+    ///
+    /// A VPN's match domain is served by the VPN's resolver: the global one
+    /// cannot answer for it, and asking it would put a name from inside the
+    /// private network on the public path.
+    #[tokio::test]
+    async fn a_name_under_a_scoped_domain_is_asked_of_that_domains_server_alone() {
+        let global = FakeDns::start(&[("www.example", Ipv4Addr::new(203, 0, 113, 80))]).await;
+        let scoped =
+            FakeDns::start(&[("host.corp.example", Ipv4Addr::new(198, 51, 100, 20))]).await;
+        let resolver = resolver_over(
+            "",
+            Ok(global.as_global(&[])),
+            vec![ScopedServers {
+                domain: "corp.example".into(),
+                servers: vec![scoped.at],
+            }],
+        );
+
+        assert_eq!(
+            resolver.resolve("host.corp.example").await,
+            vec![v4("198.51.100.20")]
+        );
+        assert!(
+            global.asked().iter().all(|q| !q.contains("corp.example")),
+            "the scoped name reached the global server: {:?}",
+            global.asked()
+        );
+
+        assert_eq!(
+            resolver.resolve("www.example").await,
+            vec![v4("203.0.113.80")]
+        );
+        assert!(
+            scoped.asked().iter().all(|q| !q.contains("www.example")),
+            "a global name reached the scoped server: {:?}",
+            scoped.asked()
+        );
+    }
+
     /// With no DNS server configured, the hosts file still answers, and a name
     /// that needed a server comes back empty with a warning saying why.
     ///
@@ -705,6 +757,7 @@ mod tests {
         let resolver = resolver_over(
             "198.51.100.5 hostsonly\n",
             Err("no nameservers found in config".into()),
+            Vec::new(),
         );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -745,6 +798,7 @@ mod tests {
                 file.lock().expect("unpoisoned").clone(),
                 DnsConfig {
                     global: Ok(global.clone()),
+                    scoped: Vec::new(),
                 },
             )
         });
