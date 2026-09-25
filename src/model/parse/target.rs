@@ -273,13 +273,14 @@ pub enum TargetParseError {
     #[error("'{0}': this is a hostname, and no host lookup was supplied to resolve it")]
     NoHostLookup(String),
 
-    /// Digits and dots that are not an address.
+    /// Not an address or a range, and shaped like no host name either.
     ///
-    /// Reported instead of treating it as a hostname, because a top-level
-    /// domain cannot be entirely numeric: `192.0.2.300` is a typo, and
-    /// calling it an unresolvable name would send its author to look at their
-    /// DNS.
-    #[error("'{0}': not a valid address, and too numeric to be a hostname")]
+    /// Reported instead of treating it as a hostname, because it is a typo:
+    /// `192.0.2.300`, `10.10.10.*` and `10.10.10.0/` are each an address or a
+    /// range written wrong. Offering one to a lookup would send the range to a
+    /// resolver, and calling it an unresolvable name would send its author to
+    /// look at their DNS.
+    #[error("'{0}': not a valid address, range or hostname")]
     MistypedAddress(String),
 
     /// Something with colons in it that is neither an address nor bracketed.
@@ -742,34 +743,71 @@ impl TargetMapBuilder {
 /// Whether a token the address grammar refused is worth looking up as a host
 /// name, and if not, what it is instead.
 ///
-/// [`IpParseError::Malformed`] says only "this is not an address". Two kinds of
-/// token reach that verdict and are still not names, and telling the author what
-/// they wrote is worth more than a lookup that was always going to fail.
+/// [`IpParseError::Malformed`] says only "this is not an address". Plenty of
+/// tokens reach that verdict and are still not names, and telling the author
+/// what they wrote is worth more than a lookup that was always going to fail.
 ///
-/// Both passes ask this, which is the point of it being a function. The
-/// synchronous build asks before it consults the lookup, and
-/// `resolve::targets`'s collection pass asks before it puts a name on the
-/// network. Written out once each, the two would disagree: a collector taking
-/// `Malformed` as the whole answer turns a mistyped address into a query to a
-/// resolver somebody else operates, which the builder then refuses without ever
-/// looking it up.
+/// ## Only something shaped like a name is a name
+///
+/// A token is offered to a lookup only when it could be a host name: letters,
+/// digits, `-`, `_` and dots, with a last label holding at least one letter.
+/// Everything else is an address or a range with a slip in it.
+///
+/// The rule is drawn from the name's side because the typos are open-ended and
+/// the names are not. `10.10.10.*`, `10.10.1-5.1-254`, `10.10.10.0/` and `/0`
+/// fail in four different ways, and a list of ways to fail would be missing
+/// the fifth. What they share is that no name looks like them, and a lookup
+/// handed one does not refuse it: the system resolver accepts `*` and `-` in a
+/// label and asks upstream, which tells a resolver somebody else operates the
+/// range a scan was aimed at before failing with "no such host".
+///
+/// The last label is the top-level domain, or the whole name when it has one
+/// label, and RFC 1123 section 2.1 settles it: a host name's highest-level
+/// label is alphabetic, which is what keeps a name from ever reading as a
+/// dotted address. A letter anywhere in it is asked for rather than a letter
+/// first, so a single-label name like `nas-1` still resolves. `_` is allowed
+/// because hosts named with one exist on real networks and a resolver may
+/// answer for them; `*`, `/`, `%` and the rest are allowed by no naming scheme
+/// a resolver answers for. Letters and digits are not only ASCII, so a name
+/// written in its own script reaches a lookup that may know how to encode it.
+///
+/// ## Both passes ask this
+///
+/// That is the point of it being a function. The synchronous build asks before
+/// it consults the lookup, and `resolve::targets`'s collection pass asks before
+/// it puts a name on the network. Written out once each, the two would
+/// disagree: a collector taking `Malformed` as the whole answer turns a
+/// mistyped address into a query to a resolver somebody else operates, which
+/// the builder then refuses without ever looking it up.
 pub(crate) fn host_name(token: &str) -> HostName {
-    // A token with a colon in it is not a name. Sending it to a host lookup
-    // would report "no such host" for something that was never a host, and the
-    // author almost certainly wrote an IPv6 target without brackets.
-    if token.contains(':') {
-        return HostName::Unbracketed;
+    // A token with a colon in it is not a name. When what follows its last
+    // colon is a port specification, the author almost certainly wrote an
+    // IPv6 target and its ports without brackets, and the error for that says
+    // how to write it. Anything else after the colon is an IPv6 address or
+    // range that is wrong, where advice about brackets would mislead.
+    if let Some((_, tail)) = token.rsplit_once(':') {
+        return if PortSet::try_from(tail).is_ok() {
+            HostName::Unbracketed
+        } else {
+            HostName::Mistyped
+        };
     }
 
-    // Neither is a token made only of digits and dots: a top-level domain cannot
-    // be entirely numeric, so `192.0.2.300` is a mistyped address rather than
-    // a host to look up. Reporting it as an unresolvable name would send its
-    // author to check their DNS over a typo.
-    if !token.is_empty() && token.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        return HostName::Mistyped;
-    }
+    let name_character = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.');
+    // One trailing dot is how a fully qualified name is written, and it leaves
+    // an empty last label that says nothing about the name.
+    let last_label = token
+        .strip_suffix('.')
+        .unwrap_or(token)
+        .rsplit('.')
+        .next()
+        .unwrap_or_default();
 
-    HostName::Yes
+    if token.chars().all(name_character) && last_label.chars().any(char::is_alphabetic) {
+        HostName::Yes
+    } else {
+        HostName::Mistyped
+    }
 }
 
 /// What [`host_name`] concluded about a token the address grammar refused.
@@ -777,9 +815,9 @@ pub(crate) fn host_name(token: &str) -> HostName {
 pub(crate) enum HostName {
     /// Worth resolving.
     Yes,
-    /// An IPv6 address written without brackets.
+    /// An IPv6 address and ports, written without brackets.
     Unbracketed,
-    /// Digits and dots only: a mistyped address rather than a host.
+    /// Shaped like no name: an address or a range with a mistake in it.
     Mistyped,
 }
 
@@ -1159,6 +1197,61 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A range with a slip in it is not a hostname either. Offered to a
+    /// lookup, `10.10.10.*` becomes a query that tells a resolver somebody
+    /// else runs which network is being scanned, and then fails as a name the
+    /// author never meant to write.
+    #[test]
+    fn a_mistyped_range_is_refused_without_a_lookup() {
+        let lookup =
+            |name: &str| -> Option<Vec<IpAddr>> { panic!("{name} was offered to a host lookup") };
+        let ctx = TargetContext::new().with_hosts(&lookup);
+
+        for token in [
+            "10.10.10.*",
+            "10.10.1-5.1-254",
+            "10.10.10.1-256",
+            "10.10.10.0/",
+            "/0",
+            "192.0.2.300",
+            "2001:db8::1-ff",
+        ] {
+            let mut builder = TargetMapBuilder::new(ports("80"));
+            let err = builder.push(token, &ctx).expect_err(token);
+
+            assert!(
+                matches!(err, TargetParseError::MistypedAddress(ref t) if t == token),
+                "{token}: {err:?}"
+            );
+            // The collection pass that resolves names concurrently asks the
+            // same question before it puts anything on the network.
+            assert_eq!(host_name(token), HostName::Mistyped, "{token}");
+        }
+    }
+
+    /// The other half of the rule above: whatever a resolver would plausibly
+    /// answer for is still asked, including forms the rule has to step round,
+    /// a fully qualified name's trailing dot and a label that is not ASCII.
+    #[test]
+    fn a_name_of_any_ordinary_shape_still_reaches_the_lookup() {
+        for name in [
+            "printer",
+            "nas-1",
+            "scanme.example",
+            "scanme.example.",
+            "host_1.corp.example",
+            "3com.example",
+            "bücher.example",
+            "xn--bcher-kva.example",
+        ] {
+            assert_eq!(host_name(name), HostName::Yes, "{name}");
+        }
+
+        // A colon with a port specification after it is an IPv6 target that
+        // wanted brackets, which is the one case that error's advice fits.
+        assert_eq!(host_name("2001:db8::zz:443"), HostName::Unbracketed);
     }
 
     #[test]
