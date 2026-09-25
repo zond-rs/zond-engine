@@ -114,8 +114,9 @@
 //! few in a hundred of the ports asked at most, while loss that retries could
 //! not be counted on to recover was measured at a quarter. A scan whose
 //! silence is a verdict therefore cuts when silence makes up more than one in
-//! eight of the recent first outcomes from hosts that are answering. A lone open port moves nothing; a host being outrun still
-//! narrows the window, answered retries or not.
+//! eight of the recent first outcomes from hosts that are answering. A lone
+//! open port moves nothing; a host being outrun still narrows the window,
+//! answered retries or not.
 //!
 //! ## What occupies the window
 //!
