@@ -140,6 +140,14 @@ pub enum RequestError {
 /// Every field is optional and silence means the value already in the
 /// [`ZondConfig`] stands, which is what makes a request a layer rather than a
 /// replacement. See the module documentation for where that layer sits.
+///
+/// A request widens a scan by naming what to ask, and never by loosening what
+/// keeps it safe. So nothing here takes a port off
+/// [`ZondConfig::listen_only_ports`], for the reason nothing here drops an
+/// exclusion: a service handing requests on from somebody else must not find
+/// that one of them made every printer on a segment print its probes. A key
+/// added for that set may only add to it; clearing it is the caller's
+/// decision, made in code.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -482,6 +490,33 @@ mod tests {
             tcp_technique: TcpScanTechnique::Fin,
             send_source: vec!["198.51.100.1".parse().expect("literal")],
             ..Default::default()
+        }
+    }
+
+    /// No request takes a port off the list a scan only listens on, at its
+    /// top level or in its settings table, for the reason no request drops an
+    /// exclusion. Today no key reads the list, and one naming it is refused or
+    /// ignored; a key added for it that replaced the set fails here.
+    #[test]
+    fn no_request_can_take_a_port_off_the_listen_only_list() {
+        for text in [
+            "listen_only_ports = []\n",
+            "probe_print_ports = true\n",
+            "[settings]\nlisten_only_ports = []\n",
+        ] {
+            let Ok(request) = toml::from_str::<ScanRequest>(text) else {
+                // Refusing the request keeps the list whole as well.
+                continue;
+            };
+            let mut config = ZondConfig::default();
+            request.apply_to(&mut config);
+
+            for port in crate::config::RAW_PRINT_PORTS {
+                assert!(
+                    config.listen_only_ports.contains(&port),
+                    "{text:?} took {port} off the list"
+                );
+            }
         }
     }
 

@@ -334,6 +334,12 @@ impl SettingsDocument {
 ///   administrator with a range that must never be scanned has nowhere else to
 ///   put it. Layering it unions rather than overrides; see
 ///   [`overlay`](Self::overlay).
+/// - **`listen_only_ports` is missing**, and the same argument bounds any key
+///   added for it: one may add ports, unioned across layers as `exclude` is,
+///   and none may take a port off. That set is what keeps a scan from making
+///   every printer it finds print its probes, so shrinking it widens what a
+///   scan sends. Clearing it is the caller's decision, made in code or typed
+///   for one run, and never a file's.
 /// - **Nothing about presentation is here.** No banner, no verbosity, no terminal
 ///   handling. This document configures a scan, and how one is displayed belongs
 ///   to whatever program is displaying it, in a file of its own. See
@@ -1061,14 +1067,6 @@ mod tests {
         parse(text).expect("the document parses")
     }
 
-    /// Exclusions accumulate across every layer, where every other key is
-    /// replaced by the one above it.
-    ///
-    /// An administrator's system-wide file forbids the cardholder segment, a
-    /// user's file forbids a fragile appliance of their own, and a profile adds a
-    /// third range. Under the ordinary overlay rule the administrator's range
-    /// would be gone the moment the user named one, and the scan that followed
-    /// would look like a correct one.
     /// A value the engine cannot honour is refused where the document is read,
     /// rather than accepted, discarded where the schedule is built, and then
     /// written into the report as though it had applied.
@@ -1112,6 +1110,14 @@ mod tests {
         assert_eq!(settings.timeout_scale.map(TimeoutScale::get), Some(0.001));
     }
 
+    /// Exclusions accumulate across every layer, where every other key is
+    /// replaced by the one above it.
+    ///
+    /// An administrator's system-wide file forbids the cardholder segment, a
+    /// user's file forbids a fragile appliance of their own, and a profile adds a
+    /// third range. Under the ordinary overlay rule the administrator's range
+    /// would be gone the moment the user named one, and the scan that followed
+    /// would look like a correct one.
     #[test]
     fn every_layer_adds_its_exclusions_and_none_replaces_another() {
         let mut administrator = document(
@@ -1152,6 +1158,38 @@ mod tests {
                 .exclusions
                 .excludes(&"192.0.2.51".parse().expect("literal"))
         );
+    }
+
+    /// No settings document takes a port off the list a scan only listens on,
+    /// at any layer, under any name a key for it might take.
+    ///
+    /// Taking one off makes a printer behind it print every probe the scan
+    /// sends, and a document may narrow a scan but never widen one. Today no
+    /// key reads the list at all; a key added for it that replaced the set
+    /// rather than adding to it fails here.
+    #[test]
+    fn no_document_can_take_a_port_off_the_listen_only_list() {
+        for (text, profile) in [
+            ("[defaults]\nlisten_only_ports = []\n", None),
+            ("[defaults]\nlisten_only_ports = [9100]\n", None),
+            ("[profiles.p]\nlisten_only_ports = []\n", Some("p")),
+            ("[defaults]\nprobe_print_ports = true\n", None),
+        ] {
+            let Ok(loaded) = parse(text) else {
+                // Refusing the document keeps the list whole as well.
+                continue;
+            };
+            let settings = loaded.document.resolve(profile).expect("resolves");
+            let mut config = ZondConfig::default();
+            settings.apply_to(&mut config);
+
+            for port in crate::config::RAW_PRINT_PORTS {
+                assert!(
+                    config.listen_only_ports.contains(&port),
+                    "{text:?} took {port} off the list"
+                );
+            }
+        }
     }
 
     /// Applying a document adds to what the caller already forbade rather than
