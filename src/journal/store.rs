@@ -40,7 +40,7 @@ use super::file::{
 };
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
-use super::manifest::{JournalManifest, Plan, PlanChanged};
+use super::manifest::{JobOptions, JournalManifest, Plan, PlanChanged};
 use super::settle::Settlements;
 use crate::detect::compute::DetectionRunRecord;
 use crate::model::host::Host;
@@ -54,6 +54,9 @@ const HOSTS: &str = "hosts.jsonl";
 const PHASES: &str = "phases.jsonl";
 const DETECTIONS: &str = "detections.jsonl";
 const LOCK: &str = "LOCK";
+/// What the job runs under, written once, when its first sitting starts. See
+/// [`Journal::options`].
+const OPTIONS: &str = "options.json";
 
 /// Why a journal could not be opened for writing.
 #[non_exhaustive]
@@ -130,6 +133,7 @@ pub struct Journal {
     /// Whether this handle made the journal, rather than reopening one. See
     /// [`withdraw`](Journal::withdraw).
     created: bool,
+    options: Option<JobOptions>,
     /// How many host records have been appended since the file was last written
     /// whole. See [`should_compact`](Journal::should_compact).
     appended: usize,
@@ -182,6 +186,7 @@ impl Journal {
             restored: Vec::new(),
             earlier: Vec::new(),
             created: true,
+            options: None,
             appended: 0,
         };
         journal.open_findings()?;
@@ -235,6 +240,7 @@ impl Journal {
                 restored: read_findings(directory)?,
                 earlier: read_phases(directory)?,
                 created: false,
+                options: read_options(directory)?,
                 appended: 0,
             },
             checkpoint,
@@ -440,6 +446,47 @@ impl Journal {
         self.checkpoint(settlements)
     }
 
+    /// The options the job runs under, or `None` where they were never
+    /// recorded.
+    ///
+    /// Recorded by the engine when the journal's first sitting starts, from the
+    /// configuration it was handed, and never rewritten. A later sitting is
+    /// held to them, and a caller continuing a job by its id restores them with
+    /// [`JobOptions::apply_to`]; the type says which options those are.
+    ///
+    /// `None` for a journal whose first sitting ran on an engine that did not
+    /// record them, and for one no sitting has started yet. The first has no
+    /// record of what it ran under and is continued under whatever the caller
+    /// passes.
+    pub fn options(&self) -> Option<&JobOptions> {
+        self.options.as_ref()
+    }
+
+    /// Records the options the job runs under, where this is its first
+    /// sitting.
+    ///
+    /// Only then: a journal an earlier sitting ran against without recording
+    /// them ran under options nobody wrote down, and recording this sitting's
+    /// as the job's would claim the earlier one ran under them too.
+    pub(crate) fn record_options(&mut self, options: JobOptions) -> Result<(), JournalError> {
+        if self.options.is_some() || !self.is_untouched() {
+            return Ok(());
+        }
+
+        write_private(
+            &self.directory.join(OPTIONS),
+            &serde_json::to_vec(&options)?,
+        )?;
+        self.options = Some(options);
+        Ok(())
+    }
+
+    /// Whether no sitting has run against this journal: no cursor written, no
+    /// phase and no finding recorded.
+    fn is_untouched(&self) -> bool {
+        !self.directory.join(CURSOR).exists() && self.earlier.is_empty() && self.restored.is_empty()
+    }
+
     /// What this journal is a journal of.
     pub fn manifest(&self) -> &JournalManifest {
         &self.manifest
@@ -471,11 +518,7 @@ impl Journal {
     /// the decision and the removal. The lock file goes with the directory and
     /// the drop that follows finds nothing to release, which it tolerates.
     pub(crate) fn withdraw(self) {
-        let untouched = !self.directory.join(CURSOR).exists()
-            && self.earlier.is_empty()
-            && self.restored.is_empty();
-
-        if self.created && untouched {
+        if self.created && self.is_untouched() {
             // Best effort, as removing a half-made journal in `create` is: a
             // directory that will not go is a record of nothing, which is the
             // state this avoids rather than a reason to report the refusal
@@ -966,6 +1009,17 @@ fn last_whole_line(file: &mut fs::File, length: u64) -> Result<u64, JournalError
     Ok(0)
 }
 
+/// The options a journal's job runs under, or `None` where none were recorded.
+fn read_options(directory: &Path) -> Result<Option<JobOptions>, JournalError> {
+    let path = directory.join(OPTIONS);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let text = read_bounded(&path, "a journal's options")?;
+    Ok(Some(serde_json::from_str(&text)?))
+}
+
 /// Reads a journal's manifest, refusing one written by a newer format than this
 /// build understands rather than reading it approximately.
 fn read_manifest(directory: &Path) -> Result<JournalManifest, JournalError> {
@@ -1387,6 +1441,77 @@ mod tests {
         assert_eq!(checkpoint.watermark, 3);
         let remaining: Vec<_> = checkpoint.remaining(map.iter()).collect();
         assert_eq!(remaining.len(), 4, "eight targets, four settled");
+    }
+
+    /// A job's options are written by its first sitting and read back by
+    /// every later one, and nothing a later sitting runs under replaces them.
+    ///
+    /// Replaced, a sitting that changed its pace would become the record of
+    /// what the job asked, and the one after it would restore the change.
+    #[test]
+    fn a_jobs_options_are_written_by_its_first_sitting_and_kept() {
+        use crate::config::ZondConfig;
+
+        let root = scratch("options");
+        let map = plan("192.0.2.1-192.0.2.4", "80,443");
+        let first = ZondConfig {
+            assume_up: true,
+            traceroute: true,
+            ..ZondConfig::default()
+        };
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            assert!(journal.options().is_none(), "no sitting has started");
+            journal
+                .record_options(JobOptions::of(&first))
+                .expect("records");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let (mut journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
+        assert_eq!(journal.options(), Some(&JobOptions::of(&first)));
+
+        journal
+            .record_options(JobOptions::of(&ZondConfig::default()))
+            .expect("a second record is a no-op");
+        journal.close().expect("closes");
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
+        assert_eq!(journal.options(), Some(&JobOptions::of(&first)));
+    }
+
+    /// A journal an earlier sitting ran against without recording its options
+    /// is continued without any: this sitting's are not what that one ran
+    /// under, and recording them would say they were.
+    #[test]
+    fn a_journal_older_than_its_options_is_left_without_them() {
+        use crate::config::ZondConfig;
+
+        let root = scratch("options-older");
+        let map = plan("192.0.2.1-192.0.2.4", "80,443");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            let settlements = Settlements::default();
+            settlements.record(Outcome::Answered { position: 0 });
+            journal.checkpoint(&settlements).expect("checkpoints");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let (mut journal, checkpoint) = Journal::resume(&directory, &ports(&map), Privilege::Raw)
+            .expect("an older journal resumes");
+        assert_eq!(checkpoint.watermark, 1);
+        journal
+            .record_options(JobOptions::of(&ZondConfig::default()))
+            .expect("records nothing");
+        assert!(journal.options().is_none());
+        assert!(!directory.join(OPTIONS).exists());
     }
 
     /// A plan edited between sittings renumbers every position past the edit, so

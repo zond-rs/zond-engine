@@ -76,13 +76,15 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::ZondConfig;
+use crate::evasion::EvasionProfile;
 use crate::model::exclusion::Exclusions;
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::model::target::TargetMap;
 use crate::model::technique::TcpScanTechnique;
-use crate::record::{PlanRecord, wire};
-use crate::report::ScanKind;
+use crate::record::{PlanRecord, SettingsRecord, wire};
+use crate::report::{ScanKind, ScanSettings};
 use crate::system::privilege::Privilege;
 
 /// What a scan will actually walk, in the shape the phase it belongs to counts.
@@ -742,6 +744,210 @@ impl std::fmt::Display for PlanChanged {
 
 impl std::error::Error for PlanChanged {}
 
+/// The options a job runs under, as its journal records them.
+///
+/// A plan says which targets a job walks. This says how it asks them, so that a
+/// later sitting given nothing but the journal asks the rest the way the first
+/// sitting asked the start. Recorded by the engine when a journal's first
+/// sitting starts, from the configuration that sitting runs under; see
+/// [`Journal::options`](crate::journal::Journal::options).
+///
+/// # What is recorded, and what a later sitting may change
+///
+/// Three kinds of option, told apart by what changing one between two sittings
+/// would do to the job.
+///
+/// **What the job asks, and what its answers mean.** The TCP and SCTP
+/// techniques, the retry policy, whether a port scan asks first whether a host
+/// is there, the passes beyond the port scan (operating system and service
+/// identification, the detection ceiling, TLS enumeration, route tracing, filter
+/// characterisation and the IP protocol pass), the ports held back from probing,
+/// the evasion profile and an idle scan's zombie. A sitting under a different
+/// one answers a different question, and its answers would stand in one report
+/// beside the first sitting's as though they were answers to the same one.
+/// These are restored, and a sitting that asks for a different one is refused;
+/// see [`check`](Self::check).
+///
+/// **How fast, for how long, and what else goes on the wire.** The probe-rate
+/// ceiling and floor, the gap kept between probes at one host, the per-host and
+/// per-sitting budgets, how raw probes are placed on the wire, and whether the
+/// scan may send DNS queries of its own. These decide a sitting's pace and the
+/// traffic beside its probes, not what a probe asks or what an answer means,
+/// and each sitting's phase records the values it ran under. They are restored,
+/// so a sitting given nothing runs as the first did, and a caller may set them
+/// otherwise: a scan resumed after it upset a network is resumed slower.
+///
+/// **Not recorded.** Whether identifying detail is masked, and whether the
+/// capture keeps ICMP errors a technique did not need, which decide what a
+/// report shows rather than what the scan sends. The source addresses a scan
+/// was pinned to, which name this machine's interfaces and belong to the
+/// machine a sitting runs on. And the exclusion policy and the segment sweep,
+/// which are the plan's and checked there.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobOptions {
+    /// Every setting a sitting's phase records, in the form a journal writes
+    /// it. Carries both recorded kinds and the two that are not restored, since
+    /// it is one record and splitting it would give it a second vocabulary.
+    pub settings: SettingsRecord,
+    /// Whether a port scan probed every target without asking first whether
+    /// its host was there.
+    #[serde(default)]
+    pub assume_up: bool,
+}
+
+impl JobOptions {
+    /// The options `cfg` runs a job under.
+    pub fn of(cfg: &ZondConfig) -> Self {
+        Self {
+            settings: SettingsRecord::from(&ScanSettings::from(cfg)),
+            assume_up: cfg.assume_up,
+        }
+    }
+
+    /// Restores every recorded option onto `cfg`, leaving the ones that are not
+    /// recorded as they are.
+    ///
+    /// A caller continuing a job by its id starts from here, and lays whatever
+    /// its user set for this sitting on top: what the job asks is then checked
+    /// by [`check`](Self::check), and its pace is the user's to change.
+    pub fn apply_to(&self, cfg: &mut ZondConfig) {
+        let recorded = ScanSettings::from(&self.settings);
+
+        cfg.assume_up = self.assume_up;
+        cfg.tcp_technique = recorded.tcp_technique;
+        cfg.sctp_technique = recorded.sctp_technique;
+        cfg.retry = recorded.retry;
+        cfg.os_detection = recorded.os_detection;
+        cfg.service_detection = recorded.service_detection;
+        cfg.detection = recorded.detection;
+        cfg.traceroute = recorded.traceroute;
+        cfg.characterise = recorded.characterise;
+        cfg.ip_protocols = recorded.ip_protocols.into_iter().collect();
+        cfg.tls_enumeration = recorded.tls_enumeration;
+        cfg.listen_only_ports = recorded.listen_only_ports.into_iter().collect();
+        cfg.evasion = recorded
+            .evasion
+            .map(|evasion| EvasionProfile {
+                source_port: evasion.source_port,
+                ttl: evasion.ttl,
+                padding: evasion.padding,
+                bad_tcp_checksum: evasion.bad_tcp_checksum,
+                spoof_mac: evasion.spoof_mac,
+                fragment: evasion.fragment,
+                decoys: evasion.decoys,
+                flags: evasion.flags,
+            })
+            .unwrap_or_default();
+        cfg.idle_scan = recorded.idle_scan;
+
+        cfg.send_mode = recorded.send_mode;
+        cfg.max_probe_rate = recorded.max_probe_rate;
+        cfg.min_probe_rate = recorded.min_probe_rate;
+        cfg.host_probe_interval = recorded.host_probe_interval;
+        cfg.host_timeout = recorded.host_timeout;
+        cfg.scan_timeout = recorded.scan_timeout;
+        cfg.no_dns = !recorded.dns_enabled;
+    }
+
+    /// Whether a sitting under `cfg` asks what this job asks, naming the first
+    /// option where it does not.
+    ///
+    /// Only the options that decide what the job asks and what its answers
+    /// mean; the type's documentation lists them, and why the others may move.
+    /// Compared in the form the journal writes, so a value is the same value
+    /// however it was read back.
+    pub fn check(&self, cfg: &ZondConfig) -> Result<(), OptionChanged> {
+        let recorded = &self.settings;
+        let this = Self::of(cfg);
+        let offered = &this.settings;
+
+        let changed = [
+            ("assume_up", self.assume_up != this.assume_up),
+            (
+                "tcp_technique",
+                recorded.tcp_technique != offered.tcp_technique,
+            ),
+            (
+                "sctp_technique",
+                recorded.sctp_technique != offered.sctp_technique,
+            ),
+            (
+                "retry.effort",
+                recorded.retry_effort != offered.retry_effort,
+            ),
+            (
+                "retry.max_attempts",
+                recorded.retry_max_attempts != offered.retry_max_attempts,
+            ),
+            (
+                "retry.timeout_scale",
+                recorded.retry_timeout_scale != offered.retry_timeout_scale,
+            ),
+            (
+                "retry.dampen_silent_hosts",
+                recorded.retry_dampen_silent_hosts != offered.retry_dampen_silent_hosts,
+            ),
+            (
+                "os_detection",
+                recorded.os_detection != offered.os_detection,
+            ),
+            (
+                "service_detection",
+                recorded.service_detection != offered.service_detection,
+            ),
+            ("detection", recorded.detection != offered.detection),
+            ("traceroute", recorded.traceroute != offered.traceroute),
+            (
+                "characterise",
+                recorded.characterise != offered.characterise,
+            ),
+            (
+                "ip_protocols",
+                recorded.ip_protocols != offered.ip_protocols,
+            ),
+            (
+                "tls_enumeration",
+                recorded.tls_enumeration != offered.tls_enumeration,
+            ),
+            (
+                "listen_only_ports",
+                recorded.listen_only_ports != offered.listen_only_ports,
+            ),
+            ("evasion", recorded.evasion != offered.evasion),
+            ("idle_scan", recorded.idle_scan != offered.idle_scan),
+        ];
+
+        match changed.into_iter().find(|(_, changed)| *changed) {
+            Some((option, _)) => Err(OptionChanged { option }),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A sitting asks for an option the job it continues did not run under.
+///
+/// Names the option, by the name of the
+/// [`ZondConfig`] field that sets it, since that is what a caller changes to
+/// continue the job as it was recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptionChanged {
+    /// The option, as a [`ZondConfig`] field path: `assume_up`, `retry.effort`.
+    pub option: &'static str,
+}
+
+impl std::fmt::Display for OptionChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this sitting's {} is not the one the journal's scan ran under",
+            self.option
+        )
+    }
+}
+
+impl std::error::Error for OptionChanged {}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -1239,6 +1445,99 @@ mod tests {
             PlanFingerprint::of(&before, Privilege::Raw),
             PlanFingerprint::of(&after, Privilege::Raw),
         );
+    }
+
+    /// A configuration that sets something of every recorded kind.
+    fn set_apart() -> ZondConfig {
+        let mut cfg = ZondConfig {
+            assume_up: true,
+            traceroute: true,
+            tls_enumeration: true,
+            characterise: true,
+            no_dns: true,
+            redact: true,
+            icmp_evidence: true,
+            tcp_technique: TcpScanTechnique::Fin,
+            max_probe_rate: std::num::NonZeroU32::new(200),
+            scan_timeout: Some(std::time::Duration::from_secs(60)),
+            evasion: EvasionProfile::default().with_ttl(12).with_source_port(53),
+            ..ZondConfig::default()
+        };
+        cfg.retry.effort = crate::config::ScanEffort::Thorough;
+        cfg.ip_protocols = [1, 6].into_iter().collect();
+        cfg.listen_only_ports.clear();
+        cfg
+    }
+
+    /// Restored onto a configuration that set none of them, a job's options
+    /// ask what they asked, and hold its pace, and leave alone what a sitting
+    /// decides for itself.
+    #[test]
+    fn a_jobs_options_restore_what_it_asked_and_its_pace() {
+        let recorded = JobOptions::of(&set_apart());
+        let mut restored = ZondConfig {
+            redact: false,
+            icmp_evidence: false,
+            ..ZondConfig::default()
+        };
+        recorded.apply_to(&mut restored);
+
+        assert_eq!(recorded.check(&restored), Ok(()));
+        assert!(restored.assume_up);
+        assert_eq!(restored.tcp_technique, TcpScanTechnique::Fin);
+        assert_eq!(restored.evasion, set_apart().evasion);
+        assert_eq!(restored.ip_protocols, set_apart().ip_protocols);
+        assert!(restored.listen_only_ports.is_empty(), "print ports probed");
+        assert_eq!(restored.max_probe_rate, std::num::NonZeroU32::new(200));
+        assert_eq!(
+            restored.scan_timeout,
+            Some(std::time::Duration::from_secs(60))
+        );
+        assert!(restored.no_dns);
+
+        assert!(!restored.redact, "masking is what this sitting shows");
+        assert!(!restored.icmp_evidence, "and so is what the capture keeps");
+    }
+
+    /// Every option that decides what a job asks refuses a sitting that sets
+    /// it otherwise, by name; its pace does not.
+    #[test]
+    fn a_sitting_asking_something_else_is_refused_by_the_option_it_changed() {
+        let recorded = JobOptions::of(&ZondConfig::default());
+        let changed = |change: fn(&mut ZondConfig)| {
+            let mut cfg = ZondConfig::default();
+            change(&mut cfg);
+            recorded.check(&cfg).err().map(|changed| changed.option)
+        };
+
+        assert_eq!(changed(|cfg| cfg.assume_up = true), Some("assume_up"));
+        assert_eq!(
+            changed(|cfg| cfg.tcp_technique = TcpScanTechnique::Fin),
+            Some("tcp_technique")
+        );
+        assert_eq!(
+            changed(|cfg| cfg.retry.max_attempts = std::num::NonZeroU8::new(1)),
+            Some("retry.max_attempts")
+        );
+        assert_eq!(changed(|cfg| cfg.traceroute = true), Some("traceroute"));
+        assert_eq!(
+            changed(|cfg| cfg.listen_only_ports.clear()),
+            Some("listen_only_ports")
+        );
+        assert_eq!(
+            changed(|cfg| cfg.evasion = EvasionProfile::default().with_ttl(3)),
+            Some("evasion")
+        );
+
+        for pace in [
+            (|cfg: &mut ZondConfig| cfg.max_probe_rate = std::num::NonZeroU32::new(10))
+                as fn(&mut ZondConfig),
+            |cfg| cfg.host_timeout = Some(std::time::Duration::from_secs(5)),
+            |cfg| cfg.no_dns = true,
+            |cfg| cfg.redact = true,
+        ] {
+            assert_eq!(changed(pace), None);
+        }
     }
 
     /// The recorded plan has to survive the round trip through a manifest, or a

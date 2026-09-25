@@ -2609,6 +2609,8 @@ impl zond_engine::error::Coded for zond_engine::journal::format::JournalError
 pub fn zond_engine::journal::format::JournalError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::lock::LockRefused
 pub fn zond_engine::journal::lock::LockRefused::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::journal::manifest::OptionChanged
+pub fn zond_engine::journal::manifest::OptionChanged::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::manifest::PlanChanged
 pub fn zond_engine::journal::manifest::PlanChanged::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::store::OpenError
@@ -7064,6 +7066,31 @@ pub fn zond_engine::journal::lock::classify(&zond_engine::journal::lock::LockRec
 pub fn zond_engine::journal::lock::inspect(&std::path::Path) -> zond_engine::journal::lock::LockState
 pub fn zond_engine::journal::lock::pid_is_alive(u32) -> bool
 pub mod zond_engine::journal::manifest
+#[non_exhaustive] pub struct zond_engine::journal::manifest::JobOptions
+pub zond_engine::journal::manifest::JobOptions::assume_up: bool
+pub zond_engine::journal::manifest::JobOptions::settings: zond_engine::record::SettingsRecord
+impl zond_engine::journal::manifest::JobOptions
+pub fn zond_engine::journal::manifest::JobOptions::apply_to(&self, &mut zond_engine::config::ZondConfig)
+pub fn zond_engine::journal::manifest::JobOptions::check(&self, &zond_engine::config::ZondConfig) -> core::result::Result<(), zond_engine::journal::manifest::OptionChanged>
+pub fn zond_engine::journal::manifest::JobOptions::of(&zond_engine::config::ZondConfig) -> Self
+impl core::clone::Clone for zond_engine::journal::manifest::JobOptions
+pub fn zond_engine::journal::manifest::JobOptions::clone(&self) -> zond_engine::journal::manifest::JobOptions
+impl core::cmp::PartialEq for zond_engine::journal::manifest::JobOptions
+pub fn zond_engine::journal::manifest::JobOptions::eq(&self, &zond_engine::journal::manifest::JobOptions) -> bool
+impl core::fmt::Debug for zond_engine::journal::manifest::JobOptions
+pub fn zond_engine::journal::manifest::JobOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::journal::manifest::JobOptions
+impl serde_core::ser::Serialize for zond_engine::journal::manifest::JobOptions
+pub fn zond_engine::journal::manifest::JobOptions::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::journal::manifest::JobOptions
+pub fn zond_engine::journal::manifest::JobOptions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::journal::manifest::JobOptions
+impl core::marker::Send for zond_engine::journal::manifest::JobOptions
+impl core::marker::Sync for zond_engine::journal::manifest::JobOptions
+impl core::marker::Unpin for zond_engine::journal::manifest::JobOptions
+impl core::marker::UnsafeUnpin for zond_engine::journal::manifest::JobOptions
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::manifest::JobOptions
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::manifest::JobOptions
 #[non_exhaustive] pub struct zond_engine::journal::manifest::JournalManifest
 pub zond_engine::journal::manifest::JournalManifest::created_at: std::time::SystemTime
 pub zond_engine::journal::manifest::JournalManifest::engine_version: alloc::string::String
@@ -7104,6 +7131,31 @@ impl core::marker::Unpin for zond_engine::journal::manifest::JournalManifest
 impl core::marker::UnsafeUnpin for zond_engine::journal::manifest::JournalManifest
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::manifest::JournalManifest
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::manifest::JournalManifest
+pub struct zond_engine::journal::manifest::OptionChanged
+pub zond_engine::journal::manifest::OptionChanged::option: &'static str
+impl core::clone::Clone for zond_engine::journal::manifest::OptionChanged
+pub fn zond_engine::journal::manifest::OptionChanged::clone(&self) -> zond_engine::journal::manifest::OptionChanged
+impl core::cmp::Eq for zond_engine::journal::manifest::OptionChanged
+impl core::cmp::PartialEq for zond_engine::journal::manifest::OptionChanged
+pub fn zond_engine::journal::manifest::OptionChanged::eq(&self, &zond_engine::journal::manifest::OptionChanged) -> bool
+impl core::convert::From<zond_engine::journal::manifest::OptionChanged> for zond_engine::scanner::ScanError
+pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::OptionChanged) -> Self
+impl core::error::Error for zond_engine::journal::manifest::OptionChanged
+impl core::fmt::Debug for zond_engine::journal::manifest::OptionChanged
+pub fn zond_engine::journal::manifest::OptionChanged::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::journal::manifest::OptionChanged
+pub fn zond_engine::journal::manifest::OptionChanged::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::journal::manifest::OptionChanged
+impl core::marker::StructuralPartialEq for zond_engine::journal::manifest::OptionChanged
+impl zond_engine::error::Coded for zond_engine::journal::manifest::OptionChanged
+pub fn zond_engine::journal::manifest::OptionChanged::code(&self) -> &'static str
+impl core::marker::Freeze for zond_engine::journal::manifest::OptionChanged
+impl core::marker::Send for zond_engine::journal::manifest::OptionChanged
+impl core::marker::Sync for zond_engine::journal::manifest::OptionChanged
+impl core::marker::Unpin for zond_engine::journal::manifest::OptionChanged
+impl core::marker::UnsafeUnpin for zond_engine::journal::manifest::OptionChanged
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::manifest::OptionChanged
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::manifest::OptionChanged
 pub struct zond_engine::journal::manifest::Plan(_)
 impl zond_engine::journal::manifest::Plan
 pub fn zond_engine::journal::manifest::Plan::addresses(&self) -> core::option::Option<&zond_engine::model::ip::set::IpSet>
@@ -7367,6 +7419,7 @@ pub fn zond_engine::journal::store::Journal::create(&std::path::Path, &zond_engi
 pub fn zond_engine::journal::store::Journal::directory(&self) -> &std::path::Path
 pub fn zond_engine::journal::store::Journal::earlier_phases(&self) -> &[zond_engine::report::ScanPhase]
 pub fn zond_engine::journal::store::Journal::manifest(&self) -> &zond_engine::journal::manifest::JournalManifest
+pub fn zond_engine::journal::store::Journal::options(&self) -> core::option::Option<&zond_engine::journal::manifest::JobOptions>
 pub fn zond_engine::journal::store::Journal::record(&mut self, &[zond_engine::model::host::Host], &zond_engine::journal::settle::Settlements) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::record_detections(&mut self, &[zond_engine::detect::compute::DetectionRunRecord]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::record_hosts(&mut self, &[zond_engine::model::host::Host]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
@@ -7444,6 +7497,7 @@ pub fn zond_engine::journal::store::Journal::create(&std::path::Path, &zond_engi
 pub fn zond_engine::journal::store::Journal::directory(&self) -> &std::path::Path
 pub fn zond_engine::journal::store::Journal::earlier_phases(&self) -> &[zond_engine::report::ScanPhase]
 pub fn zond_engine::journal::store::Journal::manifest(&self) -> &zond_engine::journal::manifest::JournalManifest
+pub fn zond_engine::journal::store::Journal::options(&self) -> core::option::Option<&zond_engine::journal::manifest::JobOptions>
 pub fn zond_engine::journal::store::Journal::record(&mut self, &[zond_engine::model::host::Host], &zond_engine::journal::settle::Settlements) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::record_detections(&mut self, &[zond_engine::detect::compute::DetectionRunRecord]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::record_hosts(&mut self, &[zond_engine::model::host::Host]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
@@ -16475,6 +16529,7 @@ pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::scan<'life0, 
 pub fn zond_engine::scanner::strategy::ports::udp::UdpPortScanner::supported_protocols(&self) -> alloc::vec::Vec<zond_engine::model::port::Protocol>
 #[non_exhaustive] pub enum zond_engine::scanner::ScanError
 pub zond_engine::scanner::ScanError::Evasion(zond_engine::evasion::EvasionError)
+pub zond_engine::scanner::ScanError::OptionChanged(zond_engine::journal::manifest::OptionChanged)
 pub zond_engine::scanner::ScanError::PlanChanged(zond_engine::journal::manifest::PlanChanged)
 pub zond_engine::scanner::ScanError::TaskFailed
 pub zond_engine::scanner::ScanError::TaskFailed::detail: alloc::string::String
@@ -16485,6 +16540,8 @@ pub zond_engine::scanner::ScanError::TooFewDescriptors::needed: usize
 pub zond_engine::scanner::ScanError::WrongPhase
 impl core::convert::From<zond_engine::evasion::EvasionError> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::evasion::EvasionError) -> Self
+impl core::convert::From<zond_engine::journal::manifest::OptionChanged> for zond_engine::scanner::ScanError
+pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::OptionChanged) -> Self
 impl core::convert::From<zond_engine::journal::manifest::PlanChanged> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::PlanChanged) -> Self
 impl core::error::Error for zond_engine::scanner::ScanError
@@ -17730,6 +17787,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ScanEffort
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ScanEffort
 #[non_exhaustive] pub enum zond_engine::ScanError
 pub zond_engine::ScanError::Evasion(zond_engine::evasion::EvasionError)
+pub zond_engine::ScanError::OptionChanged(zond_engine::journal::manifest::OptionChanged)
 pub zond_engine::ScanError::PlanChanged(zond_engine::journal::manifest::PlanChanged)
 pub zond_engine::ScanError::TaskFailed
 pub zond_engine::ScanError::TaskFailed::detail: alloc::string::String
@@ -17740,6 +17798,8 @@ pub zond_engine::ScanError::TooFewDescriptors::needed: usize
 pub zond_engine::ScanError::WrongPhase
 impl core::convert::From<zond_engine::evasion::EvasionError> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::evasion::EvasionError) -> Self
+impl core::convert::From<zond_engine::journal::manifest::OptionChanged> for zond_engine::scanner::ScanError
+pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::OptionChanged) -> Self
 impl core::convert::From<zond_engine::journal::manifest::PlanChanged> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::PlanChanged) -> Self
 impl core::error::Error for zond_engine::scanner::ScanError
@@ -18766,6 +18826,8 @@ impl zond_engine::error::Coded for zond_engine::journal::format::JournalError
 pub fn zond_engine::journal::format::JournalError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::lock::LockRefused
 pub fn zond_engine::journal::lock::LockRefused::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::journal::manifest::OptionChanged
+pub fn zond_engine::journal::manifest::OptionChanged::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::manifest::PlanChanged
 pub fn zond_engine::journal::manifest::PlanChanged::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::store::OpenError

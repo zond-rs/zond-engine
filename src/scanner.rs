@@ -215,6 +215,19 @@ pub enum ScanError {
     #[error("{0}")]
     PlanChanged(#[from] crate::journal::manifest::PlanChanged),
 
+    /// This run asks for an option the job its journal records did not run
+    /// under.
+    ///
+    /// A sitting under a different technique, retry policy or set of passes
+    /// answers a different question, and its answers would stand in one report
+    /// beside the earlier sittings' as though they answered the same one. See
+    /// [`JobOptions`](crate::journal::manifest::JobOptions) for which options
+    /// are held, and [`JobOptions::apply_to`](crate::journal::manifest::JobOptions::apply_to)
+    /// for continuing a job under the ones it recorded.
+    #[cfg(feature = "journal-format")]
+    #[error("{0}")]
+    OptionChanged(#[from] crate::journal::manifest::OptionChanged),
+
     /// The evasion profile is not one a scan could put on the wire.
     ///
     /// Checked before a probe leaves rather than on each one, because every
@@ -261,6 +274,43 @@ fn accepted(
             Err(refused)
         }
     }
+}
+
+/// Refuses a sitting that asks what the job it continues did not; see
+/// [`JobOptions`](crate::journal::manifest::JobOptions) for which options
+/// those are.
+///
+/// A journal that recorded none is continued under `cfg` as it stands: its
+/// first sitting ran on an engine that did not record them, and nothing says
+/// what they were.
+#[cfg(feature = "journal-format")]
+fn under_the_recorded_options(
+    journal: &crate::journal::Journal,
+    cfg: &ZondConfig,
+) -> Result<(), ScanError> {
+    match journal.options() {
+        Some(options) => Ok(options.check(cfg)?),
+        None => Ok(()),
+    }
+}
+
+/// Writes down the options a journal's first sitting runs under, so every
+/// later sitting can be held to them.
+///
+/// A journal that cannot take them still scans. The sitting loses nothing it
+/// found; a later one is continued under what its caller passes, as a journal
+/// from before options were recorded is, and this says so.
+#[cfg(feature = "journal-format")]
+fn recording_options(
+    mut journal: crate::journal::Journal,
+    cfg: &ZondConfig,
+) -> crate::journal::Journal {
+    use crate::journal::manifest::JobOptions;
+
+    if let Err(e) = journal.record_options(JobOptions::of(cfg)) {
+        crate::warn!("options not recorded ({e})");
+    }
+    journal
 }
 
 /// Refuses a scan in a process whose descriptor limit leaves its connections
@@ -543,8 +593,10 @@ pub async fn discover_with_journal(
         if journal.manifest().kind() != ScanKind::Discovery {
             return Err(ScanError::WrongPhase);
         }
-        under_the_recorded_policy(journal, cfg)
+        under_the_recorded_policy(journal, cfg)?;
+        under_the_recorded_options(journal, cfg)
     })?;
+    let journal = recording_options(journal, cfg);
 
     let recorded = journal.manifest().recorded();
     let Some(addresses) = recorded.addresses() else {
@@ -1453,8 +1505,10 @@ pub async fn scan_with_journal(
         if journal.manifest().kind() != ScanKind::PortScan {
             return Err(ScanError::WrongPhase);
         }
-        under_the_recorded_policy(journal, cfg)
+        under_the_recorded_policy(journal, cfg)?;
+        under_the_recorded_options(journal, cfg)
     })?;
+    let journal = recording_options(journal, cfg);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
 
     let (session, ctx) = ScanSession::builder()
@@ -1701,6 +1755,52 @@ mod tests {
             refused.err()
         );
         assert!(!directory.exists(), "a sweep that never ran left a record");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A resumed sitting that asks something its job did not is refused by the
+    /// option it changed, before anything is sent, and the record of the
+    /// sitting before it is kept.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_resume_asking_what_its_job_did_not_is_refused_and_keeps_its_record() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::{JobOptions, OptionChanged, Plan};
+        use crate::journal::settle::{Outcome, Settlements};
+        use crate::model::ip::set::IpSet;
+
+        let root = journal_root("option-changed");
+        let addresses: IpSet = "192.0.2.1-192.0.2.4".parse().expect("addresses");
+        let first = ZondConfig {
+            traceroute: true,
+            ..ZondConfig::default()
+        };
+        let plan = Plan::discovery(&addresses, &first.exclusions, false);
+
+        let mut journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        journal
+            .record_options(JobOptions::of(&first))
+            .expect("records");
+        let settlements = Settlements::default();
+        settlements.record(Outcome::Answered { position: 0 });
+        journal.checkpoint(&settlements).expect("checkpoints");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let (journal, _) = Journal::resume(&directory, &plan, Privilege::Connect).expect("resumes");
+        let refused = discover_with_journal(addresses, &ZondConfig::default(), journal).await;
+        assert!(
+            matches!(
+                refused,
+                Err(ScanError::OptionChanged(OptionChanged {
+                    option: "traceroute"
+                }))
+            ),
+            "{:?}",
+            refused.err()
+        );
+        assert!(directory.join("manifest.json").exists(), "the record went");
 
         std::fs::remove_dir_all(&root).ok();
     }

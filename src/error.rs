@@ -55,7 +55,7 @@ use crate::journal::format::JournalError;
 #[cfg(feature = "journal-format")]
 use crate::journal::lock::LockRefused;
 #[cfg(feature = "journal-format")]
-use crate::journal::manifest::PlanChanged;
+use crate::journal::manifest::{OptionChanged, PlanChanged};
 #[cfg(feature = "journal-format")]
 use crate::journal::store::OpenError;
 use crate::model::parse::ip::IpParseError;
@@ -87,6 +87,8 @@ impl Coded for ScanError {
             ScanError::WrongPhase => "scan.wrong_phase",
             #[cfg(feature = "journal-format")]
             ScanError::PlanChanged(changed) => changed.code(),
+            #[cfg(feature = "journal-format")]
+            ScanError::OptionChanged(changed) => changed.code(),
             ScanError::Evasion(evasion) => evasion.code(),
             ScanError::TooFewDescriptors { .. } => "scan.too_few_descriptors",
             // A strategy that unwound is a defect in this crate, and a strategy
@@ -102,6 +104,13 @@ impl Coded for ScanError {
 impl Coded for PlanChanged {
     fn code(&self) -> &'static str {
         "journal.plan_changed"
+    }
+}
+
+#[cfg(feature = "journal-format")]
+impl Coded for OptionChanged {
+    fn code(&self) -> &'static str {
+        "journal.option_changed"
     }
 }
 
