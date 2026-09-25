@@ -492,6 +492,10 @@ impl HostScanner for RoutedScanner {
         // the code never actually took.
         let reason = loop {
             let now = Instant::now();
+            // Answers already waiting first, so one that arrived before its
+            // probe came due settles it before the timer can retire it; see
+            // the port scans' `read_waiting_replies`.
+            self.read_waiting_replies();
             // A sweep settles: it was asked whether an address is there and
             // has now asked as many times as the policy allows.
             self.sweep.service_retries(&self.ctx, now);
@@ -1010,6 +1014,24 @@ impl RoutedScanner {
             .or_else(|| self.sweep.ledger.resolve(&ip, None, now))
     }
 
+    /// Reads every reply already waiting in the capture stream, without
+    /// waiting for more, bounded by what is queued on entry.
+    ///
+    /// A loop held up past a timeout wakes to the answer and the expired timer
+    /// at once, and read in the other order an address's last attempt is
+    /// spent, the sweep finds nothing left to do and stops with the answer
+    /// unread: a live host reported absent.
+    fn read_waiting_replies(&mut self) {
+        let waiting = self.transport.rx.len();
+        for _ in 0..waiting {
+            let Ok(reply) = self.transport.rx.try_recv() else {
+                return;
+            };
+            self.sweep.audit.record_segment();
+            self.handle_discovery_reply(&reply, reply.received_at);
+        }
+    }
+
     /// Whether every probe this sweep intends to send has left.
     fn nothing_left_to_send(&self) -> bool {
         self.sweep.retries.is_empty() && self.pending.len() == 0
@@ -1510,6 +1532,102 @@ mod tests {
         assert!(
             scanner.sweep.ledger.contains(&IpAddr::from(TARGET)),
             "the probe was retired by an answer it never drew"
+        );
+    }
+
+    /// A path that answers the first SYN it is handed with a SYN+ACK the
+    /// moment it leaves, and then holds the sending thread for `stall`: the
+    /// sweep stopped in its tracks with the answer already waiting for it.
+    struct StalledAfterAnswering {
+        stall: Duration,
+        replies: tokio::sync::mpsc::Sender<CapturedSegment>,
+        answered: std::sync::atomic::AtomicBool,
+    }
+
+    impl crate::transport::probe::ProbeSender for StalledAfterAnswering {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            dst: IpAddr,
+            _zone: Option<u32>,
+            _emission: Emission,
+        ) -> Result<(), crate::transport::probe::SendError> {
+            if self
+                .answered
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                return Ok(());
+            }
+            let probe = protocol::tcp::parse(segment).expect("a whole segment");
+            let mut reply = vec![0u8; 20];
+            let mut tcp = pnet_packet::tcp::MutableTcpPacket::new(&mut reply).expect("20 bytes");
+            tcp.set_source(probe.destination_port());
+            tcp.set_destination(probe.source_port());
+            tcp.set_data_offset(5);
+            tcp.set_flags(pnet_packet::tcp::TcpFlags::SYN | pnet_packet::tcp::TcpFlags::ACK);
+            tcp.set_acknowledgement(probe.sequence().wrapping_add(1));
+            self.replies
+                .try_send(CapturedSegment::synthetic(
+                    dst,
+                    IpNextHeaderProtocols::Tcp,
+                    reply,
+                ))
+                .expect("room for the answer");
+            std::thread::sleep(self.stall);
+            Ok(())
+        }
+    }
+
+    /// An answer that was waiting before its probe ran out of attempts finds
+    /// its host, however late the loop gets round to either.
+    ///
+    /// A loop held up for longer than a timeout wakes to find both the answer
+    /// and the expired timer. Serviced timer first, the address's last attempt
+    /// is spent, nothing is left to send or wait for, and the sweep stops
+    /// without reading the answer behind it: a live host reported absent.
+    #[tokio::test]
+    async fn an_answer_waiting_when_its_probe_runs_out_still_finds_the_host() {
+        let (session, ctx) = ScanSession::new();
+        let (replies, rx) = tokio::sync::mpsc::channel(16);
+        let retry = RETRY_POLICY.configured(RetryConfig {
+            max_attempts: std::num::NonZeroU8::new(1),
+            ..RetryConfig::default()
+        });
+        // Longer than the longest first timeout an unmeasured address can draw.
+        let stall = retry.initial_rto.mul_f64(1.0 + retry.jitter) + Duration::from_millis(200);
+        let transport = ProbeTransport::from_parts(
+            Box::new(StalledAfterAnswering {
+                stall,
+                replies,
+                answered: std::sync::atomic::AtomicBool::new(false),
+            }),
+            rx,
+        );
+        let mut scanner = RoutedScanner::build(
+            vec![RoutedTarget {
+                target: TARGET.into(),
+                source: LOCAL.into(),
+            }],
+            ctx,
+            None,
+            transport,
+            SweepProbe::syn(None),
+            Emission::routed(),
+            SegmentShaping::default(),
+            Vec::new(),
+            retry,
+            PROBE_RATE_PER_SEC,
+        );
+
+        scanner.discover_hosts().await.expect("the sweep runs");
+
+        assert!(
+            session
+                .hosts()
+                .get(IpAddr::from(TARGET))
+                .is_some_and(|host| host.status().is_up()),
+            "the host answered and is not on record as up"
         );
     }
 }

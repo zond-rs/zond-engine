@@ -2568,6 +2568,96 @@ mod tests {
         }
     }
 
+    /// A path that answers every SYN with a SYN+ACK the moment it leaves, and
+    /// then holds the thread that sent it for `stall`: the scan loop stopped
+    /// in its tracks with the answer already waiting for it.
+    struct StalledAfterAnswering {
+        stall: Duration,
+        replies: mpsc::Sender<CapturedSegment>,
+    }
+
+    impl ProbeSender for StalledAfterAnswering {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            dst: IpAddr,
+            _zone: Option<u32>,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
+            let probe = tcp::parse(segment).expect("the scan sends whole segments");
+            let reply = segment_to(
+                probe.destination_port(),
+                probe.source_port(),
+                TcpScanTechnique::Syn,
+                TcpToken {
+                    nonce: probe.sequence(),
+                },
+                SYN | ACK,
+            );
+            self.replies
+                .try_send(CapturedSegment::synthetic(
+                    dst,
+                    IpNextHeaderProtocols::Tcp,
+                    reply,
+                ))
+                .expect("room for the answer");
+            std::thread::sleep(self.stall);
+            Ok(())
+        }
+    }
+
+    /// An answer that was waiting before its probe's timer came due is read
+    /// as the answer, however late the loop gets round to either.
+    ///
+    /// A loop held up for longer than a timeout, by a slow send or a starved
+    /// runtime, wakes to find both the answer and the expired timer. Serviced
+    /// timer first, the probe is written off before its answer is read, and
+    /// with one attempt that is an open port filed filtered on the strength
+    /// of a silence that never happened. The answer here arrived within
+    /// microseconds of the probe, so nothing but the order can make it late.
+    #[tokio::test]
+    async fn an_answer_waiting_when_its_probe_times_out_still_settles_the_port() {
+        let (session, ctx) = ScanSession::new();
+        let (replies, reply_rx) = mpsc::channel(16);
+        // Longer than the longest first timeout an unmeasured host can draw.
+        let first_timeout = PORT_RETRY_POLICY
+            .initial_rto
+            .mul_f64(1.0 + PORT_RETRY_POLICY.jitter);
+        let stall = first_timeout + Duration::from_millis(200);
+        let transport = ProbeTransport::from_parts(
+            Box::new(StalledAfterAnswering { stall, replies }),
+            reply_rx,
+        );
+        let mut tuning = ProbeTuning::default();
+        tuning.retry.max_attempts = std::num::NonZeroU8::new(1);
+        let mut scanner = TcpPortScanner::with_transport_tuned(
+            SourceResolver::from_links(&[on_link_interface()]),
+            ctx,
+            TcpScanTechnique::Syn,
+            transport,
+            1,
+            tuning,
+        );
+
+        let (queue, stream) = mpsc::channel(1);
+        queue
+            .send(PlannedTarget::new(
+                0,
+                Target {
+                    ip: TARGET,
+                    port: 80,
+                    protocol: Protocol::Tcp,
+                },
+            ))
+            .await
+            .expect("the stream is open");
+        drop(queue);
+        scanner.scan(stream).await.expect("the scan runs");
+
+        assert_eq!(port_state(&session, 80), Some(PortState::Open));
+    }
+
     /// When each probe left, and to which port.
     type Departures = std::sync::Arc<std::sync::Mutex<Vec<(u16, Instant)>>>;
 

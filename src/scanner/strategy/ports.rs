@@ -1781,6 +1781,38 @@ fn send_timed<S: RawPortScan + ?Sized>(
     scanner.core_mut().deadline.allow_for_sending(spent);
 }
 
+/// Reads every reply already waiting in `scanner`'s capture stream, without
+/// waiting for more.
+///
+/// Called before the loop services its timers, so an answer that arrived
+/// before its probe came due is read as the answer rather than after the
+/// probe has been written off. The loop can wake late to both at once: a
+/// send that blocked, a runtime starved of its thread, a machine under load.
+/// Serviced timer first, a probe with no attempts left is retired as silent
+/// and the answer waiting behind it finds nothing to resolve, which with one
+/// attempt files an open port filtered. Resolving is where a reply is timed
+/// from its own arrival, so reading it late costs nothing else.
+///
+/// Reading them first is enough, and comparing an answer's arrival with its
+/// probe's due time on resolving would add nothing: an answer the loop can
+/// see is in this queue, and one still inside the capture has not reached
+/// anything the loop could compare against. Bounded by what is queued on
+/// entry, so a stream arriving as fast as it is read cannot hold the loop
+/// here.
+fn read_waiting_replies<S: RawPortScan>(scanner: &mut S) {
+    let waiting = scanner.core().transport.rx.len();
+    for _ in 0..waiting {
+        let Ok(reply) = scanner.core_mut().transport.rx.try_recv() else {
+            // Empty after all, or closed, which the `select!` below reads as
+            // the stream ending.
+            return;
+        };
+        scanner.core_mut().audit.record_segment();
+        let received_at = reply.received_at;
+        scanner.handle_reply(&reply, received_at);
+    }
+}
+
 /// How a run names itself in the audit and in its own failure messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuditLabels {
@@ -1803,12 +1835,15 @@ pub struct AuditLabels {
 ///
 /// The shape of one iteration, and why it is that shape:
 ///
-/// 1. **Service retries first.** Probes come due on a timer, and queuing them
+/// 1. **Read the replies already waiting.** An answer that arrived before
+///    its probe came due has to settle it before the timer can; see
+///    `read_waiting_replies`.
+/// 2. **Then service retries.** Probes come due on a timer, and queuing them
 ///    before the stop conditions are read means the ledger is current when
 ///    those conditions ask whether anything is still outstanding.
-/// 2. **Then decide whether to stop**, on the four conditions
+/// 3. **Then decide whether to stop**, on the four conditions
 ///    [`RawProbeScan::stop_reason`] holds.
-/// 3. **Then wait on whichever of three things happens first**: another target
+/// 4. **Then wait on whichever of three things happens first**: another target
 ///    to probe, a reply to read, or the moment the next probe is due.
 ///
 /// Anything still outstanding when the loop ends, and anything still queued, is
@@ -1841,6 +1876,7 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
         // takes this path constantly, and the arithmetic below only needs the
         // instants to agree with each other.
         let now = Instant::now();
+        read_waiting_replies(scanner);
         scanner.service_retries(now);
 
         if let Some(reason) = scanner.core().stop_reason(sending_finished) {
