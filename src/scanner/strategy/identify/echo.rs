@@ -554,6 +554,25 @@ impl OsEchoScanner {
             os::identify(host, [verdict.as_evidence()]);
         });
     }
+
+    /// Reads every reply already waiting in the capture stream, without
+    /// waiting for more, bounded by what is queued on entry.
+    ///
+    /// A loop held up past a timeout wakes to the answer and the expired timer
+    /// at once, and read in the other order a host's last attempt is written
+    /// off before its answer is seen: the answer finds no probe, and the
+    /// reply this pass exists to read is dropped unread.
+    fn read_waiting_replies(&mut self) {
+        let waiting = self.transport.rx.len();
+        for _ in 0..waiting {
+            let Ok(reply) = self.transport.rx.try_recv() else {
+                return;
+            };
+            self.sweep.audit.record_segment();
+            let received_at = reply.received_at;
+            self.handle_reply(reply, received_at);
+        }
+    }
 }
 
 impl OsEchoScanner {
@@ -575,6 +594,10 @@ impl OsEchoScanner {
 
         let reason = loop {
             let now = Instant::now();
+            // Answers already waiting first, so one that arrived before its
+            // probe came due settles it before the timer can retire it; see
+            // the port scans' `read_waiting_replies`.
+            self.read_waiting_replies();
             // An exhausted probe settles nothing: this asks hosts the scan
             // already found what they run, and a scan not counted in addresses
             // has no position to settle against.
@@ -831,6 +854,78 @@ mod tests {
             "the finding says what it was read off: {found}"
         );
         assert_eq!(host.status(), HostStatus::Up);
+    }
+
+    /// A host whose first echo is lost and whose answer to the second arrives
+    /// while the sending thread is held for `stall`: the pass stopped in its
+    /// tracks with the answer already waiting for it.
+    struct StalledAfterAnswering {
+        stall: Duration,
+        replies: mpsc::Sender<CapturedSegment>,
+        echoes: std::sync::atomic::AtomicU32,
+    }
+
+    impl ProbeSender for StalledAfterAnswering {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            _dst: IpAddr,
+            _zone: Option<u32>,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
+            const ECHO_REQUEST: u8 = 8;
+            if segment.first() != Some(&ECHO_REQUEST) {
+                return Ok(());
+            }
+            let echo = self
+                .echoes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if echo == 1 {
+                self.replies
+                    .try_send(echo_reply(segment, 128))
+                    .expect("room for the answer");
+                std::thread::sleep(self.stall);
+            }
+            Ok(())
+        }
+    }
+
+    /// An answer that was waiting when its probe ran out of attempts is still
+    /// read as the answer, however late the loop gets round to either.
+    ///
+    /// A loop held up for longer than a timeout wakes to find both the answer
+    /// and the expired timer. Serviced timer first, the host's last attempt is
+    /// written off and the answer behind it finds no probe, so the one reply
+    /// this pass exists to read is dropped and the host goes unidentified.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_answer_waiting_when_its_probe_runs_out_is_still_read() {
+        let (session, ctx) = ScanSession::new();
+        let (tx, rx) = mpsc::channel(16);
+        // Longer than the second attempt's timeout, the one the answer is to.
+        let stall = RETRY_POLICY
+            .initial_rto
+            .mul_f64(RETRY_POLICY.backoff * (1.0 + RETRY_POLICY.jitter))
+            + Duration::from_millis(200);
+        let link = StalledAfterAnswering {
+            stall,
+            replies: tx,
+            echoes: std::sync::atomic::AtomicU32::new(0),
+        };
+        let transport = ProbeTransport::from_parts(Box::new(link), rx as CaptureStream);
+        let mut scanner = OsEchoScanner::with_transport(ctx.clone(), vec![TARGET], transport);
+
+        scanner.probe().await.expect("the phase runs");
+
+        let host = session
+            .hosts()
+            .get(TARGET)
+            .expect("the answer was dropped and the host is not on record");
+        assert_eq!(
+            host.os()
+                .and_then(|found| found.family().map(str::to_owned)),
+            Some("Windows".to_owned())
+        );
     }
 
     /// A Unix-alike hop counter names nothing, on purpose, and this is the

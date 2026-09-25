@@ -555,6 +555,10 @@ impl HostScanner for LocalScanner {
         // the code never actually took.
         let reason = loop {
             let now = Instant::now();
+            // Answers already waiting first, so one that arrived before its
+            // probe came due settles it before the timer can retire it; see
+            // the port scans' `read_waiting_replies`.
+            self.read_waiting_frames();
             // Both schedules, and a sweep settles: it was asked whether an
             // address is there and has asked as many times as it may.
             self.sweep.service_retries(&self.ctx, now);
@@ -707,6 +711,27 @@ impl LocalScanner {
             ipv6: Ipv6Discovery::new(target_count),
             send_failure: None,
         })
+    }
+
+    /// Reads every frame already waiting in the capture stream, without
+    /// waiting for more, bounded by what is queued on entry.
+    ///
+    /// A loop held up past a timeout wakes to the answer and the expired timer
+    /// at once. Read in the other order, an address's last attempt is spent
+    /// before the answer to it is seen, and the answer finds no probe to time:
+    /// the host is recorded unmeasured, and its address settled as asked and
+    /// unanswered by a sweep that holds its answer.
+    fn read_waiting_frames(&mut self) {
+        let waiting = self.eth_handle.rx.len();
+        for _ in 0..waiting {
+            let Ok(frame) = self.eth_handle.rx.try_recv() else {
+                // Empty after all, or closed, which the `select!` reads as
+                // the stream ending.
+                return;
+            };
+            self.sweep.audit.record_segment();
+            _ = self.process_eth_packet(&frame, frame.received_at);
+        }
     }
 
     /// Why the loop should stop, if it should.
@@ -1909,6 +1934,106 @@ mod tests {
                  and the sweep is given {given:?}"
             );
         }
+    }
+
+    /// A segment whose first neighbour's answer arrives while the sweep is
+    /// asking the next one, and whose next send holds the sending thread for
+    /// `stall`: the sweep stopped in its tracks with the answer already
+    /// waiting for it.
+    struct StalledAfterAnswering {
+        stall: Duration,
+        frames: tokio::sync::mpsc::Sender<CapturedFrame>,
+        /// The first address asked about, whose answer is held for the next
+        /// request.
+        first: Option<Ipv4Addr>,
+        answered: bool,
+    }
+
+    impl crate::transport::capture::FrameSink for StalledAfterAnswering {
+        fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+            let asked = ethernet::parse(frame)
+                .ok()
+                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp)
+                .and_then(|frame| pnet_packet::arp::ArpPacket::owned(frame.payload().to_vec()))
+                .map(|request| request.get_target_proto_addr());
+            let Some(target) = asked.filter(|_| !self.answered) else {
+                return Ok(());
+            };
+            let Some(first) = self.first else {
+                self.first = Some(target);
+                return Ok(());
+            };
+            self.answered = true;
+            self.frames
+                .try_send(CapturedFrame {
+                    zone: Zone::new(7, "sim0"),
+                    link: LinkType::Ethernet,
+                    bytes: arp_reply_frame(first),
+                    observed_at: std::time::SystemTime::now(),
+                    received_at: Instant::now(),
+                })
+                .expect("room for the answer");
+            std::thread::sleep(self.stall);
+            Ok(())
+        }
+    }
+
+    /// An answer that was waiting when its probe ran out of attempts still
+    /// times its host, however late the loop gets round to either.
+    ///
+    /// A loop held up for longer than a timeout wakes to find both the answer
+    /// and the expired timer. Serviced timer first, the address's one attempt
+    /// is spent and the answer behind it finds no probe to be timed against,
+    /// so the host is recorded unmeasured and its address settled as asked
+    /// and unanswered.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_answer_waiting_when_its_probe_runs_out_still_times_the_host() {
+        use crate::system::interface::LinkAddress;
+
+        // Asked in address order, so the answer is the first one's and the
+        // stall comes on asking the second.
+        let target = Ipv4Addr::new(192, 0, 2, 10);
+        let silent = Ipv4Addr::new(192, 0, 2, 11);
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        let retry = RETRY_POLICY.configured(RetryConfig {
+            max_attempts: std::num::NonZeroU8::new(1),
+            ..RetryConfig::default()
+        });
+        let (frames, rx) = tokio::sync::mpsc::channel(16);
+        // Longer than the longest first timeout an unmeasured address draws.
+        let stall = retry.initial_rto.mul_f64(1.0 + retry.jitter) + Duration::from_millis(200);
+        let handle = EthernetHandle::from_parts(
+            Box::new(StalledAfterAnswering {
+                stall,
+                frames,
+                first: None,
+                answered: false,
+            }),
+            rx,
+        );
+        let link = Link::new("sim0", 7)
+            .with_mac(LOCAL_MAC.into_core())
+            .with_addresses(vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                24,
+            )]);
+        let mut targets = IpSet::new();
+        targets.insert(IpAddr::V4(target));
+        targets.insert(IpAddr::V4(silent));
+        let mut scanner =
+            LocalScanner::build(link, targets, ctx, None, Scope::Targeted, handle, retry)
+                .expect("a scanner over the simulated segment");
+
+        scanner.discover_hosts().await.expect("the sweep runs");
+
+        let host = session
+            .hosts()
+            .get(IpAddr::V4(target))
+            .expect("the host answered and is not on record");
+        assert!(
+            host.min_rtt().is_some(),
+            "the answer was read after its probe was written off"
+        );
     }
 
     /// The sweep's capture narrows in the kernel, so a frame the filter does not
