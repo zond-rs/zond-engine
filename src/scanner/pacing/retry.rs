@@ -147,6 +147,15 @@ pub struct RetryPolicy {
     /// Load-bearing rather than decorative. Probes admitted together time out
     /// together, and an unjittered retry turns that into a synchronized burst
     /// at the moment the path is least able to absorb one.
+    ///
+    /// Upward only: a deadline is drawn from itself to itself lengthened by
+    /// this fraction, never shortened. What jitter is for is that deadlines
+    /// armed together differ, which a spread above the deadline does as well
+    /// as one around it. Spread below it, a deadline can land under the floor
+    /// or under what the host's round trips have shown an answer needs, and a
+    /// probe timed there gives up on answers still on their way: with one
+    /// attempt behind a 20 ms path, a 30% spread down from a 25 ms floor read
+    /// about one open port in five as filtered.
     pub jitter: f64,
     /// How the budget is cut for hosts that never answer, if at all.
     pub silent_host: Option<SilentHostPolicy>,
@@ -1068,7 +1077,7 @@ where
     }
 
     /// The timeout for `attempt` against `host`: what has been measured, backed
-    /// off for the attempt number, bounded, and spread.
+    /// off for the attempt number, bounded, and spread upward.
     fn timeout_for(&mut self, host: IpAddr, attempt: u8) -> Duration {
         let measured = self
             .hosts
@@ -1162,14 +1171,17 @@ impl Jitter {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    /// `base` scaled by a factor drawn uniformly from `[1 - spread, 1 + spread]`.
+    /// `base` scaled by a factor drawn uniformly from `[1, 1 + spread]`.
+    ///
+    /// Never below `base`, which is already the shortest wait the schedule
+    /// allows; see [`RetryPolicy::jitter`].
     fn spread(&mut self, base: Duration, spread: f64) -> Duration {
         if spread <= 0.0 {
             return base;
         }
         let spread = spread.min(1.0);
-        let factor = 1.0 + (self.next_unit() * 2.0 - 1.0) * spread;
-        saturating_mul(base, factor.max(0.0))
+        let factor = 1.0 + self.next_unit() * spread;
+        saturating_mul(base, factor)
     }
 }
 
@@ -1985,9 +1997,80 @@ mod tests {
 
             let due = ledger.next_due().unwrap().saturating_duration_since(t0);
             assert!(
-                due >= Duration::from_millis(75) && due <= Duration::from_millis(125),
+                due >= Duration::from_millis(100) && due <= Duration::from_millis(125),
                 "seed {seed} produced {due:?}"
             );
+        }
+    }
+
+    /// A ledger whose `HOST` has answered forty probes, each in exactly `rtt`,
+    /// seeded with `seed`, and the instant it was left at with nothing
+    /// outstanding and no stale timer queued.
+    ///
+    /// Forty identical samples leave the estimator's variation at nothing, so
+    /// its timeout is the round trip itself: the tightest schedule measurement
+    /// can produce.
+    fn measured_at(
+        policy: RetryPolicy,
+        seed: u64,
+        rtt: Duration,
+    ) -> (ProbeLedger<(IpAddr, u16), u32>, Instant) {
+        let mut ledger: ProbeLedger<(IpAddr, u16), u32> = ProbeLedger::seeded(policy, 64, seed);
+        let mut now = Instant::now();
+        for port in 0..40u16 {
+            ledger.arm(HOST, (HOST, port), u32::from(port), (), now);
+            ledger
+                .resolve(&(HOST, port), Some(u32::from(port)), now + rtt)
+                .expect("the answer names the attempt");
+            now += Duration::from_secs(10);
+        }
+        due_at(&mut ledger, now);
+        (ledger, now)
+    }
+
+    /// Jitter lengthens a timeout and never shortens it: no probe is timed
+    /// below the floor, or below what its host's round trips have shown an
+    /// answer needs.
+    ///
+    /// Both are the shortest wait at which silence means anything. A probe
+    /// timed below either gives up on answers that are on their way, and with
+    /// one attempt that is an open port read filtered: behind a 20 ms path,
+    /// spread both ways from the 25 ms floor, 56 of 300 were.
+    #[test]
+    fn jitter_never_times_a_probe_below_the_floor_or_what_was_measured() {
+        // The port scan's own numbers: a 25 ms floor and a 30% spread.
+        let policy = RetryPolicy::new(
+            1,
+            Duration::from_millis(200),
+            Duration::from_millis(25),
+            Duration::from_secs(2),
+            3.0,
+            0.3,
+            None,
+        );
+
+        for (rtt, least) in [
+            // Measured below the floor, which is then what holds.
+            (Duration::from_millis(20), Duration::from_millis(25)),
+            // Measured above it, where the measurement is what holds.
+            (Duration::from_millis(100), Duration::from_millis(100)),
+        ] {
+            for seed in 0..64u64 {
+                let (mut ledger, now) = measured_at(policy, seed, rtt);
+                let needed = ledger.hosts[&HOST].estimator.timeout().expect("measured");
+                assert!(needed >= rtt, "test premise: {needed:?} for {rtt:?}");
+
+                ledger.arm(HOST, (HOST, 1_000), 1_000, (), now);
+                let timeout = ledger
+                    .next_due()
+                    .expect("one probe outstanding")
+                    .saturating_duration_since(now);
+                assert!(
+                    timeout >= least && timeout >= needed,
+                    "seed {seed}: timed at {timeout:?} against a {rtt:?} path \
+                     that needs {needed:?}, floor 25ms"
+                );
+            }
         }
     }
 
@@ -2011,8 +2094,8 @@ mod tests {
             ledger.arm(HOST, (HOST, port), u32::from(port), (), t0);
         }
 
-        // Far fewer than all 64 should be due at the unjittered deadline.
-        let due = due_at(&mut ledger, t0 + Duration::from_millis(100));
+        // Far fewer than all 64 should be due halfway through the spread.
+        let due = due_at(&mut ledger, t0 + Duration::from_millis(112));
         assert!(
             due.len() < 64,
             "every probe came due at once despite jitter"
