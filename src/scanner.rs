@@ -1307,6 +1307,23 @@ pub async fn listen(
 ///
 /// [`Plan::listen`](crate::journal::manifest::Plan::listen) has the rest of the
 /// argument, including why the links alone identify the job.
+///
+/// # A watch records no options
+///
+/// A scan's journal records the options its first sitting ran under and holds
+/// every later one to them, because a sitting asking another way would file
+/// answers to another question as the same job's; see
+/// [`JobOptions`](crate::journal::manifest::JobOptions). A watch asks nothing.
+/// It sends no probe, so no technique, retry policy, evasion profile or
+/// probing pass reaches the wire from it, and what it hears is what the link
+/// carried whatever it was configured with. What its configuration does
+/// decide, whether heard traffic is read for an operating system and how far
+/// a service it names is correlated, is how the answers are read rather than
+/// what was asked: in a scan those settings send probes of their own, and in
+/// a watch they send none. Each sitting's phase records the settings it ran
+/// under, so a report shows which sitting read its traffic which way. Held to
+/// a scan's options, a resumed watch would be refused over settings it never
+/// reads.
 #[cfg(feature = "journal-format")]
 pub async fn listen_with_journal(
     scope: ListenScope,
@@ -1874,6 +1891,48 @@ mod tests {
             .find(|phase| phase.kind() == ScanKind::PortScan)
             .expect("a port phase");
         assert_eq!(ports.settings().tcp_technique, TcpScanTechnique::Ack);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A watch's journal records no options, so a watch resumed under other
+    /// settings is continued rather than refused over options it never reads.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_watch_records_no_options_to_hold_a_later_sitting_to() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::ip::scoped::Zone;
+
+        let root = journal_root("watch-options");
+        // A link no machine has, so the watch ends as soon as its capture is
+        // refused, having sent nothing and heard nothing.
+        let links = vec![Zone::new(u32::MAX, "zond-no-such-link")];
+        let plan = Plan::listen(links.clone());
+        let scope =
+            || ListenScope::on(links.clone()).for_at_most(std::time::Duration::from_millis(1));
+
+        let journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let (_session, task) = listen_with_journal(scope(), &ZondConfig::default(), journal)
+            .await
+            .expect("the watch starts");
+        let _ = task.join().await.expect("it ends");
+        assert!(
+            !directory.join("options.json").exists(),
+            "a watch recorded options"
+        );
+
+        let (journal, _) = Journal::resume(&directory, &plan, Privilege::Connect).expect("resumes");
+        let other = ZondConfig {
+            traceroute: true,
+            tcp_technique: crate::model::technique::TcpScanTechnique::Fin,
+            ..ZondConfig::default()
+        };
+        let (_session, task) = listen_with_journal(scope(), &other, journal)
+            .await
+            .expect("a watch resumed under other settings continues");
+        let _ = task.join().await.expect("it ends");
 
         std::fs::remove_dir_all(&root).ok();
     }

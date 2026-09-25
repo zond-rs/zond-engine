@@ -455,9 +455,9 @@ impl Journal {
     /// [`JobOptions::apply_to`]; the type says which options those are.
     ///
     /// `None` for a journal whose first sitting ran on an engine that did not
-    /// record them, and for one no sitting has started yet. The first has no
-    /// record of what it ran under and is continued under whatever the caller
-    /// passes.
+    /// record them, for one no sitting has started yet, and for a watch's,
+    /// which asks nothing for them to decide. The first has no record of what
+    /// it ran under and is continued under whatever the caller passes.
     pub fn options(&self) -> Option<&JobOptions> {
         self.options.as_ref()
     }

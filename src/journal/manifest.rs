@@ -783,6 +783,10 @@ impl std::error::Error for PlanChanged {}
 /// was pinned to, which name this machine's interfaces and belong to the
 /// machine a sitting runs on. And the exclusion policy and the segment sweep,
 /// which are the plan's and checked there.
+///
+/// A watch records none of them. It sends nothing, so nothing here decides
+/// what it asks; see
+/// [`listen_with_journal`](crate::scanner::listen_with_journal).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JobOptions {
