@@ -1354,9 +1354,23 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Why the scan was stopped during this phase, and what of the plan its
-    // walk never reached. Those targets are on no host below, so without this
-    // line the ports listed read as all the phase set out to ask.
+    // Why the scan was stopped during this phase, and what of the plan it
+    // never asked and holds on no host. Those targets are on no host below,
+    // so without this line the ports listed read as all the phase set out to
+    // ask. A phase that was not stopped can leave some too, passed for an
+    // address its liveness pass never decided, and says so on its own.
+    if phase.stopped.is_none()
+        && let Some(count) = phase.unreached.as_deref()
+    {
+        fact(
+            out,
+            "never asked",
+            &esc(&format!(
+                "{count} {}",
+                if count == "1" { "target" } else { "targets" }
+            )),
+        )?;
+    }
     if let Some(stopped) = phase.stopped {
         let why = match stopped {
             "timed_out" => "scan budget spent",
@@ -1364,7 +1378,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         };
         let unreached = phase.unreached.as_deref().map(|count| {
             esc(&format!(
-                "{count} {} never reached",
+                "{count} {} never asked",
                 if count == "1" { "target" } else { "targets" }
             ))
         });
@@ -1825,7 +1839,7 @@ fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
         causes.push("ports went unasked");
     }
     if report.unreached() > 0 {
-        causes.push("a stop left targets unreached");
+        causes.push("targets were never asked");
     }
     causes
 }

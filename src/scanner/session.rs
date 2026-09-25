@@ -2064,15 +2064,20 @@ impl ScanContext {
         }
     }
 
-    /// Drops the record at `key`, counting the ports it had been asked.
+    /// Drops the record at `key`, counting the ports it had been asked as
+    /// [`unheard_probes`](crate::report::ScanPhase::unheard_probes) and the
+    /// ones it had not with the targets the phase never reached: either way
+    /// they are on no host once it goes, and the two counts are how the phase
+    /// still accounts for every one. See
+    /// [`ScanPhase::unreached`](crate::report::ScanPhase::unreached).
     fn forget_unheard(&self, key: &ScopedIp) {
         if let Some((_, host)) = self.store.remove(key) {
-            let asked = host
+            let (unasked, asked): (Vec<_>, Vec<_>) = host
                 .ports()
-                .filter(|port| port.state() != PortState::Unasked)
-                .count();
+                .partition(|port| port.state() == PortState::Unasked);
             self.unheard_probes
-                .fetch_add(asked as u64, Ordering::Relaxed);
+                .fetch_add(asked.len() as u64, Ordering::Relaxed);
+            self.record_unreached(unasked.len() as u64);
         }
     }
 
@@ -2082,8 +2087,9 @@ impl ScanContext {
         self.undecided.drain()
     }
 
-    /// Records that the walk of a port phase stopped with `count` of the
-    /// plan's targets neither emitted nor settled.
+    /// Records `count` of a port phase's targets as ones it never asked and
+    /// holds on no host: passed by its walk undecided, left by a walk that
+    /// stopped, or left unasked at an address whose record it dropped.
     ///
     /// A count rather than the targets: a walk stopped early on a wide plan
     /// leaves them scattered across all of it, and naming each would cost a

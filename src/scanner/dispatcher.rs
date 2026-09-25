@@ -468,14 +468,24 @@ impl Dispatcher {
                     if scan_handle.should_stop() {
                         return stopped_short(accounted);
                     }
-                    ctx.record_outcome(if screen.silent.contains(&planned.target.ip) {
-                        Outcome::Skipped {
-                            position: planned.position,
-                        }
-                    } else {
-                        Outcome::Undecided
-                    });
                     accounted += 1;
+                    // Settled already where the pass filed its address as one
+                    // no route leads to, which settles every port of it.
+                    if ctx.settlements().is_settled(planned.position) {
+                        continue;
+                    }
+                    if screen.silent.contains(&planned.target.ip) {
+                        ctx.record_outcome(Outcome::Skipped {
+                            position: planned.position,
+                        });
+                    } else {
+                        // Neither emitted nor settled, and on no host: never
+                        // reached, as far as the phase's account goes, and
+                        // counted so its probed and unasked ports still add up
+                        // to what it was handed.
+                        ctx.record_outcome(Outcome::Undecided);
+                        ctx.record_unreached(1);
+                    }
                     continue;
                 }
 
@@ -777,6 +787,40 @@ mod tests {
         let settlements = ctx.settlements();
         assert_eq!(settlements.count(Outcome::Withheld { position: 0 }), 2);
         assert_eq!(settlements.count(Outcome::Undecided), 0);
+    }
+
+    /// **A target the liveness pass left undecided is counted as never
+    /// reached.** It was neither emitted nor settled, and the port phase holds
+    /// no host for it, so without the count the scan's tally of probed and
+    /// unasked ports came up short of the plan by every port of it. A target
+    /// the pass settled as it filed the address, one no route leads to, is
+    /// neither.
+    #[tokio::test]
+    async fn a_target_the_liveness_pass_left_undecided_is_counted_unreached() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1-192.0.2.3".parse::<IpSet>().expect("a range"),
+            "80,443".parse::<PortSet>().expect("ports"),
+        ));
+        let (_session, ctx) = context();
+        // .1 answered, .2 no route leads to, .3 was never asked.
+        ctx.number_targets(crate::model::target::TargetIndex::of(&map));
+        ctx.record_unroutable("192.0.2.2".parse().expect("an address"));
+
+        let mut rx = Dispatcher::new(map)
+            .screened(
+                "192.0.2.1".parse::<IpSet>().expect("an address"),
+                IpSet::new(),
+            )
+            .run(&ctx);
+        let mut emitted = 0;
+        while rx.recv().await.is_some() {
+            emitted += 1;
+        }
+
+        assert_eq!(emitted, 2);
+        assert_eq!(ctx.take_unreached(), 2, "the undecided host's two ports");
+        assert_eq!(ctx.settlements().count(Outcome::Undecided), 2);
     }
 
     /// A target whose host answered nothing is settled where it stands. Dropped
@@ -1141,8 +1185,9 @@ mod tests {
     }
 
     /// A resumed and screened walk owes an account only of what an earlier
-    /// sitting left, and gives one of what it settled for the screen as well
-    /// as what it emitted, so the count is the rest and nothing else.
+    /// sitting left: what it emitted, what it settled for the screen, and the
+    /// rest counted as never reached, which holds what it left undecided for
+    /// the screen as well as what the stop cut off.
     #[tokio::test]
     async fn a_stopped_resumed_walk_counts_only_what_it_owed() {
         use crate::journal::cursor::Cursor;
@@ -1166,10 +1211,10 @@ mod tests {
 
         let (received, unreached) = stopped_after(dispatcher, &session, &ctx, 300).await;
 
-        let screened = ctx.settlements().count(Outcome::Skipped { position: 0 })
-            + ctx.settlements().count(Outcome::Undecided);
-        assert!(unreached > 0, "a stop part way left nothing");
-        assert_eq!(received + screened + unreached, 4_096 - 1_500);
+        let skipped = ctx.settlements().count(Outcome::Skipped { position: 0 });
+        let undecided = ctx.settlements().count(Outcome::Undecided);
+        assert!(unreached > undecided, "a stop part way left nothing");
+        assert_eq!(received + skipped + unreached, 4_096 - 1_500);
     }
 
     /// A sweep counted in a plan's addresses walks the plan's order over

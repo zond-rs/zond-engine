@@ -272,6 +272,12 @@ impl Settlements {
         }
     }
 
+    /// Whether the target at `position` is settled, by this sitting or an
+    /// earlier one.
+    pub(crate) fn is_settled(&self, position: u64) -> bool {
+        self.with_cursor(|cursor| cursor.is_settled(position))
+    }
+
     /// Records `outcome`, a settled one, unless its target is settled
     /// already.
     ///

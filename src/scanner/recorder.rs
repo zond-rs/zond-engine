@@ -671,6 +671,38 @@ mod tests {
         );
     }
 
+    /// **The ports an undecided address was left unasked are counted with the
+    /// targets the phase never reached.** Its record is dropped, so they are
+    /// on no host as unasked, and a scan stopped part way through a range
+    /// said how many ports it probed and nothing of the rest: `150 probed` of
+    /// three thousand, and no count to add up to the plan.
+    #[test]
+    fn a_port_phase_counts_the_ports_it_left_unasked_where_it_heard_nothing() {
+        use crate::model::ip::scoped::ScopedIp;
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .skipping_liveness(LivenessSkip::PortsNoDearer);
+        ctx.update_host(ip(3), |host| {
+            host.add_port(Port::new(22, Protocol::Tcp, PortState::Filtered));
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Unasked));
+            host.add_port(Port::new(443, Protocol::Tcp, PortState::Unasked));
+        });
+        ctx.record_unreached(5);
+        ctx.forget_undecided(vec![ScopedIp::from(ip(3))]);
+
+        let report = recorder.finish(&ctx);
+        let phase = &report.phases()[0];
+        assert_eq!(phase.unheard_probes(), 1);
+        assert_eq!(
+            phase.unreached(),
+            5 + 2,
+            "the walk's five and the two left unasked"
+        );
+    }
+
     /// Silence is a discovery phase's evidence and nobody else's. A port phase
     /// that did not stand in for one names no address undecided, and silence a
     /// context heard in one phase is not carried into the next one's verdicts.

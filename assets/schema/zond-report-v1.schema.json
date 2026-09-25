@@ -59,7 +59,7 @@
       "$ref": "#/$defs/duration_us"
     },
     "partial": {
-      "description": "True if the findings are narrower than the caller asked for: a strategy failed to run to completion, a phase declined ground (`refusals`), a host's own budget left it early and no phase finished it (`timed_out`), no phase reached a verdict on an address (`undecided`), a port a reachable host was scanned for went `unasked`, or a stopped walk never reached part of a port phase's plan (`unreached`). The three in brackets are this document's own top-level fields, read across every phase: a resumed job's later sitting, or a merged document's scan, can close what an earlier phase's own list still names. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart. An address this host could not reach (`unroutable`) and one an exclusion withheld do not make a report partial, since neither was coverable ground that went uncovered.",
+      "description": "True if the findings are narrower than the caller asked for: a strategy failed to run to completion, a phase declined ground (`refusals`), a host's own budget left it early and no phase finished it (`timed_out`), no phase reached a verdict on an address (`undecided`), a port a reachable host was scanned for went `unasked`, or a port phase left targets unasked that no host holds (`unreached`). The three in brackets are this document's own top-level fields, read across every phase: a resumed job's later sitting, or a merged document's scan, can close what an earlier phase's own list still names. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart. An address this host could not reach (`unroutable`) and one an exclusion withheld do not make a report partial, since neither was coverable ground that went uncovered.",
       "type": "boolean"
     },
     "timed_out": {
@@ -78,7 +78,7 @@
       }
     },
     "unreached": {
-      "description": "How many port targets the phases' walks never reached and no later sitting of the same job took up: a phase's own `unreached` stands until a later `port_scan` phase from the same document, which walked what it left, so the counts of a job resumed and stopped again are not added. Across documents a count stands, since it names no targets. The report's reading across its phases, which `partial` reads. Absent when none.",
+      "description": "How many port targets the phases never asked and hold on no host, and no later sitting of the same job took up: a phase's own `unreached` stands until a later `port_scan` phase from the same document, which walked what it left, so the counts of a job resumed and stopped again are not added. Across documents a count stands, since it names no targets. The report's reading across its phases, which `partial` reads. Absent when none.",
       "$ref": "#/$defs/count_string"
     },
     "summary": {
@@ -916,7 +916,7 @@
           ]
         },
         "unreached": {
-          "description": "How many of this port phase's targets its walk never reached, because the scan was stopped first. Absent when none were, which is every phase whose walk ran to its end and every phase that is not a `port_scan`. A count rather than a list: what a stop leaves is scattered across the plan, and every target the phase set out to cover is probed, on its host as `unasked`, or counted here. The record of this phase: what the job as a whole has left is the document's own `unreached`.",
+          "description": "How many of this port phase's targets it never asked and holds on no host: never reached by its walk because the scan was stopped first, passed for an address its liveness pass reached no verdict on, or left unasked at an address it names `undecided`. Absent when none were, which is every phase that asked everything it was handed and every phase that is not a `port_scan`. A count rather than a list: what a stop leaves is scattered across the plan, and every target the phase was handed is probed, on its host as `unasked`, counted here, or settled unprobed for an address its liveness pass found silent or could not reach. The record of this phase: what the job as a whole has left is the document's own `unreached`.",
           "$ref": "#/$defs/count_string"
         },
         "unheard_probes": {

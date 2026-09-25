@@ -658,14 +658,17 @@ pub struct PhaseDto<'a> {
     /// complete.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stopped: Option<&'static str>,
-    /// How many of this port phase's targets its walk never reached, because
-    /// the scan was stopped first, as a decimal string.
+    /// How many of this port phase's targets it never asked and holds on no
+    /// host, as a decimal string: never reached by its walk because the scan
+    /// was stopped first, passed for an address its liveness pass reached no
+    /// verdict on, or left unasked at an address it names `undecided`.
     ///
-    /// Left out when none were, which is every phase whose walk ran to its
-    /// end and every phase that is not a port scan. A count rather than a list:
-    /// what a stop leaves is scattered across the plan, and every target the
-    /// phase set out to cover is probed, on its host as `unasked`, or counted
-    /// here.
+    /// Left out when none were, which is every phase that asked everything it
+    /// was handed and every phase that is not a port scan. A count rather than
+    /// a list: what a stop leaves is scattered across the plan, and every
+    /// target the phase was handed is probed, on its host as `unasked`,
+    /// counted here, or settled unprobed for an address its liveness pass
+    /// found silent or could not reach.
     ///
     /// The record of this phase. What the job as a whole has left, read across
     /// its sittings, is the document's own `unreached`.

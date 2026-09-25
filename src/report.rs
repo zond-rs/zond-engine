@@ -1749,8 +1749,8 @@ pub struct PhaseParts {
     /// Why the scan was stopped while the phase was running, or `None`. See
     /// [`ScanPhase::stopped`].
     pub stopped: Option<StopReason>,
-    /// How many of a port phase's targets its walk never reached. See
-    /// [`ScanPhase::unreached`].
+    /// How many of a port phase's targets it never asked and holds on no
+    /// host. See [`ScanPhase::unreached`].
     pub unreached: u128,
     /// How many of a port phase's targets it asked at the addresses it lists
     /// no host at. See [`ScanPhase::unheard_probes`].
@@ -1867,7 +1867,7 @@ pub struct ScanPhase {
     /// Why the scan was stopped while this phase ran. See
     /// [`stopped`](Self::stopped).
     stopped: Option<StopReason>,
-    /// Targets of the plan the walk never reached. See
+    /// Targets it never asked and holds on no host. See
     /// [`unreached`](Self::unreached).
     unreached: u128,
     /// Targets asked at addresses the phase lists no host at. See
@@ -2093,9 +2093,11 @@ impl ScanPhase {
         self.stopped
     }
 
-    /// How many of this port phase's targets its walk never reached: neither
-    /// sent to a scanner nor settled, because the scan was stopped before the
-    /// walk got to them.
+    /// How many of this port phase's targets it never asked and holds on no
+    /// host: the ones its walk never reached because the scan was stopped
+    /// first, the ones it passed for an address its liveness pass reached no
+    /// verdict on, and the ones left unasked at an address it then listed no
+    /// host at, being [`undecided`](Self::undecided).
     ///
     /// A count and not a list. A scan walks its plan in a permutation, so what
     /// a stop leaves is scattered across every address, and naming each target
@@ -2103,11 +2105,14 @@ impl ScanPhase {
     /// stopped a minute in would write billions. They are not on any host as
     /// [`Unasked`](crate::model::port::PortState::Unasked) for the same
     /// reason. What this count adds to those is the rest of the plan: every
-    /// target this phase set out to cover was probed, is on its host unasked,
-    /// or is counted here.
+    /// target this phase was handed was probed, which its hosts and
+    /// [`unheard_probes`](Self::unheard_probes) count, is on its host
+    /// unasked, is counted here, or was settled without a probe for an
+    /// address its liveness pass found silent, could not reach, or the
+    /// exclusions withheld.
     ///
     /// Unsettled, so a resumed job asks every one of them. Zero for a phase
-    /// whose walk ran to its end, and for every phase that is not a
+    /// that asked everything it was handed, and for every phase that is not a
     /// [`PortScan`](ScanKind::PortScan). See [`ScanReport::unreached`] for
     /// what a report holding several sittings has left.
     pub fn unreached(&self) -> u128 {
@@ -2519,7 +2524,7 @@ impl ScanReport {
     /// phase finished ([`timed_out`](Self::timed_out)), an address no phase
     /// reached a verdict on ([`undecided`](Self::undecided)), a port
     /// recorded [`Unasked`](crate::model::port::PortState::Unasked), or a
-    /// target a stopped walk never reached ([`unreached`](Self::unreached)).
+    /// target never asked that no host holds ([`unreached`](Self::unreached)).
     /// Each of
     /// those is the report covering less than it set out to, and a consumer
     /// handed `false` for any of them would take a cut-short run as a
@@ -2549,8 +2554,8 @@ impl ScanReport {
             || self.unreached() > 0
     }
 
-    /// How many port targets this report's phases never reached and no later
-    /// sitting of the same account took up.
+    /// How many port targets this report's phases never asked and hold on no
+    /// host, and no later sitting of the same account took up.
     ///
     /// A phase's [`unreached`](ScanPhase::unreached) count stands until a
     /// later phase of the same kind from the same account: a resumed job's

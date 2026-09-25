@@ -1415,7 +1415,8 @@ pub struct PhaseRecord {
     /// absent: the marker qualifies the findings and changes none of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped: Option<String>,
-    /// How many of a port sitting's targets its walk never reached.
+    /// How many of a port sitting's targets it never asked and holds on no
+    /// host.
     ///
     /// Skipped when zero, and defaulted on the way in. Read back, it is what
     /// keeps a job resumed and stopped again reporting its remainder, since
