@@ -1994,6 +1994,48 @@ mod tests {
         assert_eq!(refused.len(), 1, "{:?}", report.phases());
     }
 
+    /// A scan stopped before it reached its ports starts none of the passes
+    /// that follow them. Each announces its stage before it sends anything,
+    /// so a stage announced after the stop is a pass that went on to open its
+    /// sockets and send its first burst to a caller who asked for an end.
+    #[tokio::test]
+    async fn a_scan_stopped_before_its_ports_starts_no_later_pass() {
+        use crate::model::target::TargetSet;
+        use crate::scanner::session::ScanEvent;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1".parse().expect("an address"),
+            "1-16".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            os_detection: crate::config::OsDetection::Active,
+            traceroute: true,
+            tls_enumeration: true,
+            ..ZondConfig::default()
+        };
+
+        let (mut session, task) = scan(map, &cfg, Detections::embedded())
+            .await
+            .expect("the scan starts");
+        session.handle().abort();
+        let _report = task.await.expect("the scan ran");
+
+        let mut stages = Vec::new();
+        while let Some(event) = session.events().try_recv() {
+            if let ScanEvent::StageChanged { stage } = event {
+                stages.push(stage);
+            }
+        }
+        assert!(
+            stages
+                .iter()
+                .all(|stage| matches!(stage, Stage::Discovery | Stage::Ports | Stage::Finishing)),
+            "a pass began after the stop: {stages:?}"
+        );
+    }
+
     /// A resumed sitting that asks something its job did not is refused by the
     /// option it changed, before anything is sent, and the record of the
     /// sitting before it is kept.

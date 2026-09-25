@@ -336,7 +336,9 @@ fn open(
 ///
 /// A host with no source address to send from is passed over entirely: a probe
 /// that never left proves nothing, and recording silence for it would report the
-/// scanner's own reach as the host's policy.
+/// scanner's own reach as the host's policy. The stop is read before each host,
+/// so a pass over many hosts does not send its whole burst after the caller
+/// asked it to stop.
 fn send_probes(
     ctx: &ScanContext,
     targets: &[IpAddr],
@@ -345,6 +347,17 @@ fn send_probes(
     keys: &mut Correlation,
 ) {
     for &host in targets {
+        // A host the pass had not reached when the scan was stopped is sent
+        // nothing, and every protocol is recorded unasked of it, which is what
+        // it was.
+        if ctx.handle.should_stop() {
+            ctx.update_host(host, |host| {
+                for &number in senders.keys() {
+                    host.record_ip_protocol(number, IpProtocolState::Unasked);
+                }
+            });
+            continue;
+        }
         let Some(source) = resolver.resolve(host) else {
             continue;
         };

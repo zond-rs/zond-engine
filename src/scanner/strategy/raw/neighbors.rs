@@ -353,8 +353,8 @@ pub(crate) async fn admit_waiting(
 /// neighbour has answered and waits one [`NEIGHBOR_RECHECK`] for the rest, so
 /// the first probes of every new neighbour start their resolutions together
 /// and a wave of them costs one resolution's wait. For a pass that sends each
-/// probe once and reads nothing from when it left, the filter probes. Held
-/// probes still waiting when the scan is stopped are dropped.
+/// probe once and reads nothing from when it left, the filter probes. Probes
+/// not yet sent when the scan is stopped are dropped.
 pub(crate) async fn send_when_admitted<P>(
     gates: &mut NeighborGates,
     ctx: &ScanContext,
@@ -371,6 +371,11 @@ pub(crate) async fn send_when_admitted<P>(
         for (host, probe) in held {
             if unreached.contains_key(&host) {
                 continue;
+            }
+            // Read before each probe rather than once a pass, since a pass
+            // can hold every probe of a wide scan at once.
+            if ctx.handle.should_stop() {
+                return unreached;
             }
             match gates.admit(watch, resolver, host, now) {
                 Admission::Send => send(host, probe),

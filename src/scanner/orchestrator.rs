@@ -945,6 +945,19 @@ pub(super) struct BuiltPortScan {
     reached_by_connect: bool,
 }
 
+/// Whether the scan was asked to stop, or ran out of budget, before a pass
+/// that sends anything began.
+///
+/// Every such pass asks this first, ahead of announcing its stage: a scan the
+/// caller stopped is owed a prompt end and nothing further on the wire, and a
+/// pass that only checked its stop between the hosts it probes would still
+/// open its sockets, announce itself and send its first burst. The passes that
+/// only read the store, correlation and the rest, run whatever happened, since
+/// what they conclude is part of the partial report a stop still produces.
+fn stopped(ctx: &ScanContext) -> bool {
+    ctx.handle.should_stop()
+}
+
 /// Drives one port-scan strategy to completion. It streams targets through the
 /// strategy, and when the strategy succeeds and the scan was not aborted, lets
 /// the strategy run its own service-detection pass (a no-op for strategies that
@@ -1088,7 +1101,7 @@ pub(super) async fn run_active_os_series(
     tuning: ProbeTuning,
     caps: ScanCapabilities,
 ) {
-    if !os_detection.is_active() {
+    if !os_detection.is_active() || stopped(ctx) {
         return;
     }
 
@@ -1216,7 +1229,7 @@ pub(super) async fn run_active_os_series(
 /// as `Linux · Debian 13` has been named perfectly well and still has nothing to
 /// say about its kernel, so it is exactly the host worth asking.
 pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetection) {
-    if !os_detection.is_active() {
+    if !os_detection.is_active() || stopped(ctx) {
         return;
     }
 
@@ -1336,7 +1349,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
 /// the device-info question asks what the machine is rather than what it is
 /// called, of the host the scan is already probing.
 pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetection, names: bool) {
-    if !os_detection.is_active() {
+    if !os_detection.is_active() || stopped(ctx) {
         return;
     }
 
@@ -1525,7 +1538,7 @@ pub(super) async fn run_traceroute(
     cfg: &crate::config::ZondConfig,
     caps: ScanCapabilities,
 ) {
-    if !cfg.traceroute {
+    if !cfg.traceroute || stopped(ctx) {
         return;
     }
 
@@ -1644,7 +1657,7 @@ pub(super) async fn run_characterise(
     cfg: &crate::config::ZondConfig,
     caps: ScanCapabilities,
 ) {
-    if !cfg.characterise {
+    if !cfg.characterise || stopped(ctx) {
         return;
     }
 
@@ -1708,7 +1721,7 @@ pub(super) async fn run_characterise(
 /// ports; a host with nothing open is exactly the one worth asking, because a
 /// tunnel endpoint or a router terminates a protocol and listens on nothing.
 pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
-    if cfg.ip_protocols.is_empty() {
+    if cfg.ip_protocols.is_empty() || stopped(ctx) {
         return;
     }
 
@@ -1754,7 +1767,7 @@ pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::Zon
 /// question is put again before every offer of a walk, so a budget that runs
 /// out part way through one ends it there.
 pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
-    if !cfg.tls_enumeration {
+    if !cfg.tls_enumeration || stopped(ctx) {
         return;
     }
 
@@ -1923,7 +1936,7 @@ pub(super) async fn run_active_os_probe(
     tuning: ProbeTuning,
     caps: ScanCapabilities,
 ) {
-    if !os_detection.is_active() {
+    if !os_detection.is_active() || stopped(ctx) {
         return;
     }
 
@@ -2150,6 +2163,22 @@ pub(super) async fn run_port_phase(
     // Before any verdict is recorded: a finding written under a bare `fe80::…`
     // has to reach the host the sweep already found on that interface.
     ctx.learn_zones(zones.clone());
+
+    // A scan stopped before its ports were reached opens nothing to probe
+    // them with. The walk still runs, stopping at its first target, since
+    // that is what accounts for the plan as unreached rather than leaving it
+    // unsaid.
+    if stopped(ctx) {
+        let (rx, walk) = super::dispatcher::Dispatcher::new(target_map)
+            .resuming(settled)
+            .spawn(ctx);
+        drop(rx);
+        if let Err(error) = walk.await {
+            error!("the target walk ended abnormally: {error}");
+        }
+        run_passive_os_identification(ctx, cfg.os_detection);
+        return;
+    }
 
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
     // SCTP and UDP are both planned from the targets rather than from the

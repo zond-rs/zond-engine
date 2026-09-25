@@ -200,7 +200,9 @@ async fn run(
         );
     }
 
-    if let Some(fragmenting) = fragmenting {
+    if let Some(fragmenting) = fragmenting
+        && !ctx.handle.should_stop()
+    {
         send_fragmented(
             &subjects,
             fragmenting.sender,
