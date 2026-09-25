@@ -22,10 +22,24 @@ name = "rpcbind_dump"
 payload = 'zond\x00\x00\x00\x00\x00\x00\x00\x02\x00\x01\x86\xa0\x00\x00\x00\x02\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
 protocol = "udp"
 
+# The same call over TCP, where RFC 5531 §11 puts a record mark in front of
+# it: the top bit says this fragment is the last, and the rest is its length,
+# forty bytes.
+[[probe]]
+name = "rpcbind_dump_tcp"
+payload = '\x80\x00\x00\x28zond\x00\x00\x00\x00\x00\x00\x00\x02\x00\x01\x86\xa0\x00\x00\x00\x02\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+protocol = "tcp"
+
 [[match]]
 name = "rpc_tcp_fragment"
-pattern = '^[\x80-\xff][\x00-\xff]{3}'
+# A record mark for a last fragment, then the transaction id the call carried
+# and message type 1, a reply. Two or three characters for the three length
+# bytes, because two of them that happen to form a UTF-8 sequence read as one.
+# A high first byte alone is how a dozen binary protocols begin, and this rule
+# is matched on every port nothing else names.
+pattern = '(?s)^\x80.{2,3}zond\x00\x00\x00\x01'
 product = "rpcbind"
+example = "\u0080\u0000\u0000\u001czond\u0000\u0000\u0000\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
 
 # ── What the portmapper says it has ──────────────────────────────────────────
 #

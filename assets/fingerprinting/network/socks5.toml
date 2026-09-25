@@ -12,3 +12,6 @@ protocol = "tcp"
 name = "socks5_response"
 pattern = '^\x05[\x00\xff]'
 product = "socks5"
+# RFC 1928 §3: version 5, then the method chosen, 0xFF where none was
+# acceptable, which is how a proxy that wants a password refuses anonymity.
+example = "\u0005\u00ff"

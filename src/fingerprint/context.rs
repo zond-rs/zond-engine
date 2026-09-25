@@ -254,7 +254,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "rpc.program_dump",
         reach: Reach::Produced,
-        note: "the programs a portmapper says it has registered, rendered as `name version transport port` by `framed::rpc_program_dump`",
+        note: "the programs a portmapper says it has registered, rendered as `name version transport port` by `framed::rpc_program_dump`, from a datagram or from a TCP reply once `framed::rpc_record` has taken its record marks out",
     },
     Context {
         name: "rpc.versions",

@@ -15,3 +15,6 @@ protocol = "tcp"
 name = "start_control_connection_reply"
 pattern = '^\x00\x9c\x00\x01\x1a\x2b\x3c\x4d\x00\x02'
 product = "pptp"
+# RFC 2637 §2.2: the reply's length, a control message, the magic cookie, and
+# message type 2, then protocol version 1.0 and result code 1, success.
+example = "\u0000\u009c\u0000\u0001\u001a+<M\u0000\u0002\u0000\u0000\u0001\u0000\u0001\u0000"

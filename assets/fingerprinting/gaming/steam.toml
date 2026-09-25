@@ -13,3 +13,4 @@ protocol = "tcp"
 name = "source_response"
 pattern = '^\xff\xff\xff\xffI'
 product = "source_engine"
+example = "\u00ff\u00ff\u00ff\u00ffI\u0011zond test server\u0000"

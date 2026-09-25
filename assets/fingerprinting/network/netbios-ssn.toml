@@ -4,8 +4,9 @@ default_ports = [139]
 description = "NetBIOS session service"
 
 # A session request for the wildcard name `*SMBSERVER`, which is what a client
-# sends before SMB begins. The reply is one byte of type: 0x82 accepts, 0x83
-# refuses and states why.
+# sends before SMB begins. RFC 1002 §4.3 gives the two answers: a positive
+# response is type 0x82 with an empty body, and a negative one is type 0x83
+# carrying one byte saying why, from 0x80 to 0x8F.
 [[probe]]
 name = "session_request"
 payload = '\x81\x00\x00\x44\x20CKFDENECFDEFFCFGEFFCCACACACACACA\x00\x20CKFDENECFDEFFCFGEFFCCACACACACACA\x00'
@@ -13,5 +14,9 @@ protocol = "tcp"
 
 [[match]]
 name = "netbios_session_reply"
-pattern = '^\x82|^\x83'
+# Both answers whole, header and all. The type byte alone is also how a
+# Cassandra v2 frame and an SMB2 security blob begin, and a rule matched on
+# every port nothing else names has to say more than one byte.
+pattern = '^(?:\x82\x00\x00\x00|\x83\x00\x00\x01[\x80-\x8f])'
 product = "netbios-ssn"
+example = "\u0082\u0000\u0000\u0000"

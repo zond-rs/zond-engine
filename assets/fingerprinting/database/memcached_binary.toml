@@ -14,3 +14,5 @@ protocol = "tcp"
 name = "version_response"
 pattern = '^\x81\x0a'
 product = "memcached_binary"
+# The response magic, then the opcode the request carried back.
+example = "\u0081\u000a\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"

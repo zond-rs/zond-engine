@@ -12,3 +12,5 @@ protocol = "tcp"
 name = "native_protocol_error"
 pattern = '^[\x81-\x85]\x00\x00[\x00\x01]'
 product = "cassandra"
+# A version 4 response frame to stream 1: ERROR, with a body to follow.
+example = "\u0084\u0000\u0000\u0001\u0000\u0000\u0000\u0000\u0036\u0000\u0000\u0000\u000a"

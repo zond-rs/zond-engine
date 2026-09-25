@@ -12,3 +12,7 @@ protocol = "tcp"
 name = "bgp_header"
 pattern = '^\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff'
 product = "bgp"
+# RFC 4271 §4.5: the all-ones marker, a length of 21, NOTIFICATION, and Cease
+# with subcode 5, connection rejected, which is what a speaker sends a peer it
+# is not configured for.
+example = "\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u00ff\u0000\u0015\u0003\u0006\u0005"

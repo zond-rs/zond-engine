@@ -358,6 +358,32 @@ pub(super) fn rpc_version_range(datagram: &[u8]) -> Option<String> {
     (low <= high && high < 100).then(|| format!("versions {low}-{high}"))
 }
 
+/// The RPC message a TCP stream carries, its record marks taken out.
+///
+/// Over TCP, RFC 5531 §11 splits a message into fragments, each behind a
+/// four-byte mark whose top bit says it is the last and whose other bits give
+/// its length. What is left once the marks are gone is the message a datagram
+/// would have carried, so the readers written for UDP read it unchanged.
+///
+/// [`None`] for a stream that ends before its last fragment does, which is
+/// either not RPC or more than one read of it.
+#[must_use]
+pub(super) fn rpc_record(stream: &[u8]) -> Option<Vec<u8>> {
+    const LAST_FRAGMENT: u32 = 0x8000_0000;
+
+    let mut record = Vec::new();
+    let mut at = 0;
+    loop {
+        let mark = u32::from_be_bytes(stream.get(at..at + 4)?.try_into().ok()?);
+        let length = (mark & !LAST_FRAGMENT) as usize;
+        record.extend_from_slice(stream.get(at + 4..at + 4 + length)?);
+        at += 4 + length;
+        if mark & LAST_FRAGMENT != 0 {
+            return Some(record);
+        }
+    }
+}
+
 /// The body of an RPC reply that was accepted and succeeded.
 fn accepted_rpc_reply(datagram: &[u8]) -> Option<&[u8]> {
     match rpc_reply_status(datagram)? {
@@ -1270,6 +1296,34 @@ mod tests {
         out.extend_from_slice(&accept_status.to_be_bytes());
         out.extend_from_slice(body);
         out
+    }
+
+    /// Over TCP the same reply arrives behind record marks, here split in two
+    /// fragments, and reads as the datagram would once they are taken out.
+    #[test]
+    fn a_record_marked_reply_reads_as_its_datagram() {
+        let mut body = 1u32.to_be_bytes().to_vec();
+        for field in [100000u32, 2, 6, 111] {
+            body.extend_from_slice(&field.to_be_bytes());
+        }
+        body.extend_from_slice(&0u32.to_be_bytes());
+        let reply = rpc_reply(0, &body);
+
+        let (first, last) = reply.split_at(10);
+        let mut stream = (first.len() as u32).to_be_bytes().to_vec();
+        stream.extend_from_slice(first);
+        stream.extend_from_slice(&(0x8000_0000 | last.len() as u32).to_be_bytes());
+        stream.extend_from_slice(last);
+
+        assert_eq!(rpc_record(&stream).as_deref(), Some(reply.as_slice()));
+        assert_eq!(
+            crate::fingerprint::extract::from_stream(111, &stream),
+            ["portmapper 2 tcp 111"]
+        );
+        assert!(
+            rpc_record(&stream[..stream.len() - 1]).is_none(),
+            "a stream that ends inside its last fragment is not a record"
+        );
     }
 
     #[test]

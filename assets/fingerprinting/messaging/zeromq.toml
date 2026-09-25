@@ -12,5 +12,9 @@ protocol = "tcp"
 
 [[match]]
 name = "zmtp_response"
-pattern = '^\xff[\x00-\x0a]'
+# The ZMTP signature whole, as RFC 23 and its successors fix it: 0xFF, eight
+# bytes of padding, then 0x7F. The first two bytes alone are also how a
+# Minecraft server list answer begins.
+pattern = '(?s)^\xff.{8}\x7f'
 product = "zeromq"
+example = "\u00ff\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0001\u007f\u0003\u0000NULL"

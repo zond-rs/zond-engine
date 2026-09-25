@@ -7,6 +7,8 @@ description = "Telnet Protocol"
 name = "telnet_iac"
 pattern = '^[\xff][\xfb\xfc\xfd\xfe]'
 product = "telnet"
+# IAC DO TERMINAL-TYPE, IAC DO TERMINAL-SPEED: what a login server opens with.
+example = "\u00ff\u00fd\u0018\u00ff\u00fd\u0020"
 
 [[match]]
 name = "telnet_login"

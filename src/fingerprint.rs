@@ -1256,8 +1256,8 @@ async fn plaintext(
         let banners = collect_responses(&mut stream, port, probes, peer, listen).await;
         drop(stream);
         // Read back off the decoded text, which is sound only because every
-        // byte `looks_like_tls` constrains is under 0x80 and survives
-        // `from_utf8_lossy` unchanged.
+        // byte `looks_like_tls` constrains is under 0x80, comes first, and so
+        // survives `extract::reply_text` unchanged and in place.
         if banners
             .first()
             .is_some_and(|first| looks_like_tls(first.as_bytes()))
@@ -1328,7 +1328,7 @@ async fn ask_generically(
         return GenericReply::Tls;
     }
 
-    let first = String::from_utf8_lossy(&bytes).into_owned();
+    let first = extract::reply_text(&bytes);
 
     // A redirect is not an answer but a forwarding address, and for a great
     // many self-hosted applications it is the only thing the root serves. See
@@ -1592,9 +1592,9 @@ where
             continue;
         };
         // A reply this engine can read as structure is offered as the fields it
-        // holds, before the lossy text of the whole. See `extract::from_stream`.
+        // holds, before the text of the whole. See `extract::from_stream`.
         banners.extend(extract::from_stream(port, &bytes));
-        banners.push(String::from_utf8_lossy(&bytes).into_owned());
+        banners.push(extract::reply_text(&bytes));
     }
 
     banners
@@ -1827,7 +1827,7 @@ where
 {
     read_bytes(stream, wait, Duration::ZERO)
         .await
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .map(|bytes| extract::reply_text(&bytes))
 }
 
 /// [`read_response`], but reading on until the port goes quiet.
@@ -1847,7 +1847,7 @@ where
 {
     read_bytes(stream, wait, CONTINUATION_GRACE)
         .await
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .map(|bytes| extract::reply_text(&bytes))
 }
 
 /// Reads up to [`MAX_RESPONSE_BYTES`] of whatever the port sends, waiting `wait`
@@ -1863,7 +1863,8 @@ where
 /// wants. See [`read_response`] and [`read_document`].
 ///
 /// Bytes rather than text, because the caller sometimes has to tell a banner
-/// from a TLS alert and `from_utf8_lossy` destroys the difference.
+/// from a TLS alert, and a reading as text moves every byte behind the first
+/// one from 0x80 up.
 ///
 /// # Three bounds, each owning one thing
 ///

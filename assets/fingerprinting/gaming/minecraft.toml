@@ -10,5 +10,9 @@ protocol = "tcp"
 
 [[match]]
 name = "minecraft_response"
-pattern = '^\xff'
+# The kick packet a server answers the legacy list ping with: 0xFF, a length
+# in UTF-16 units, then the string, which opens `§1` and a NUL in UTF-16BE.
+# The packet id alone is also how telnet and ZMTP begin.
+pattern = '(?s)^\xff..\x00\xa7\x001\x00\x00'
 product = "minecraft"
+example = "\u00ff\u0000\u0016\u0000\u00a7\u00001\u0000\u0000\u00007\u00006\u00007\u0000\u0000\u00001\u0000.\u00002\u00000\u0000.\u00001"

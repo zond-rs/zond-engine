@@ -46,6 +46,39 @@ use std::borrow::Cow;
 
 use crate::model::port::Protocol;
 
+/// A reply as the text the corpus matches, every byte of it kept.
+///
+/// UTF-8 wherever the bytes are UTF-8, and every other byte as the code point
+/// of the same value, which is how Latin-1 reads it. So a pattern's `\x82`
+/// means the byte 0x82, as it does in the corpora the rules were written for,
+/// and a page that names itself in UTF-8 still reads as the words it wrote.
+///
+/// Both halves are needed. A binary protocol is identified by its bytes, and
+/// the answers that carry one high byte in a fixed place are exactly the ones
+/// a byte pattern is for: a NetBIOS session reply is one byte of type, a telnet
+/// negotiation opens on 0xFF, an Active Directory message states its length in
+/// four bytes behind 0x84. A decoder that replaces what is not UTF-8 turns
+/// every one of those into the same replacement character, and each rule
+/// written for them matches nothing. A decoder that read everything as Latin-1
+/// would keep them and garble every UTF-8 title and version string instead.
+///
+/// What this cannot do is tell a binary reply whose high bytes happen to form
+/// a UTF-8 sequence from text. Such a pair reads as one character where a byte
+/// pattern expects two. The rules here are written so they never meet that
+/// case: a high byte with a byte below 0x80 on either side of it belongs to no
+/// sequence, since a sequence needs a lead byte from 0xC2 up before a
+/// continuation and a continuation from 0x80 up after a lead, and the bytes
+/// 0xC0, 0xC1 and 0xF5 to 0xFF belong to none anywhere. A type or length field
+/// in a binary header is a high byte between low ones.
+pub(crate) fn reply_text(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        text.push_str(chunk.valid());
+        text.extend(chunk.invalid().iter().map(|&byte| char::from(byte)));
+    }
+    text
+}
+
 /// The texts one banner should be matched against, most complete first.
 ///
 /// Usually just the banner. A structured one also yields the fields the corpus
@@ -219,14 +252,14 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
 /// The counterpart to [`from_datagram`], keyed the same way and for the same
 /// reason. Almost every TCP service answers in text a banner grab can hand
 /// straight to the matcher, so this is empty for nearly all of them and the
-/// lossy conversion beside it does the work.
+/// [`reply_text`] beside it does the work.
 ///
 /// It exists for the ones that do not. An SMB session setup carries the
 /// operating system and the LAN manager dialect as UTF-16 inside a binary
-/// frame, and `from_utf8_lossy` turns the frame around them into replacement
-/// characters. Reading them wants the bytes.
+/// frame, which no reading of the whole as text can anchor a rule on. Reading
+/// them wants the bytes.
 ///
-/// Offered *beside* the lossy banner rather than instead of it, so nothing that
+/// Offered *beside* the whole reply rather than instead of it, so nothing that
 /// already matched stops matching.
 pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
     match port {
@@ -236,6 +269,11 @@ pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
         // An RTSP status line is not an HTTP one, so the HTTP reader declines
         // the response and the `Server` value would go unread.
         554 | 8554 => super::framed::rtsp_server(bytes).into_iter().collect(),
+        // The dump a datagram would carry, behind the record marks TCP adds.
+        111 => super::framed::rpc_record(bytes)
+            .and_then(|record| super::framed::rpc_program_dump(&record))
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -317,6 +355,24 @@ mod tests {
             texts("220 mail.example ESMTP Postfix"),
             ["220 mail.example ESMTP Postfix"]
         );
+    }
+
+    /// A byte that is not part of any UTF-8 sequence reaches the matcher as
+    /// the code point of its own value, which is what a pattern's `\x82`
+    /// names.
+    #[test]
+    fn a_byte_outside_utf8_reads_as_its_own_code_point() {
+        assert_eq!(reply_text(b"\x82\x00\x00\x00"), "\u{82}\0\0\0");
+        assert_eq!(reply_text(b"\xff\xfd\x18"), "\u{ff}\u{fd}\u{18}");
+    }
+
+    /// Text that is UTF-8 reads as the words it wrote, beside a byte that is
+    /// not, so a page titled in UTF-8 is not garbled for the sake of a binary
+    /// protocol.
+    #[test]
+    fn utf8_text_reads_as_written_beside_a_byte_that_is_not() {
+        assert_eq!(reply_text("Überblick".as_bytes()), "Überblick");
+        assert_eq!(reply_text(b"caf\xe9 \xc3\xa9t\xc3\xa9"), "café été");
     }
 
     /// A port with no decoder yields nothing rather than the datagram as text.
@@ -758,7 +814,7 @@ mod ldap_root_dse {
     /// directory.
     #[test]
     fn a_root_dse_result_names_the_directory() {
-        let text = String::from_utf8_lossy(ROOT_DSE);
+        let text = super::reply_text(ROOT_DSE);
         let evidence = SignatureDb::global()
             .identify(389, Protocol::Tcp, &text)
             .expect("the corpus names it");
@@ -767,16 +823,15 @@ mod ldap_root_dse {
         assert_eq!(evidence.vendor.as_deref(), Some("OpenLDAP"));
     }
 
-    /// The response carries bytes no UTF-8 decoder can render, and the rules are
-    /// written to match across them. A decode that refused would reach none.
+    /// The response carries bytes that are not UTF-8, and the rules are written
+    /// against them: each reaches the matcher as the code point of its own
+    /// value, and the text between them as it was written.
     #[test]
-    fn a_lossy_decode_still_carries_what_the_rules_read() {
-        let text = String::from_utf8_lossy(ROOT_DSE);
+    fn bytes_that_are_not_utf8_reach_the_rules_as_themselves() {
+        let text = super::reply_text(ROOT_DSE);
         assert!(text.contains("OpenLDAProotDSE"));
-        assert!(
-            text.contains(char::REPLACEMENT_CHARACTER),
-            "the fixture should exercise the lossy path"
-        );
+        assert!(text.starts_with("0\u{82}\u{3}Z\u{2}\u{1}\u{2}"));
+        assert!(!text.contains(char::REPLACEMENT_CHARACTER));
     }
 }
 

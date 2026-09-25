@@ -5,5 +5,10 @@ description = "Mumble / Murmur"
 
 [[match]]
 name = "mumble_banner"
+# What a server sends first once TLS is up: a Version message, which is type 0
+# and a four-byte length, then the protobuf body. The length is small, so the
+# type and its top half are four zero bytes, and the varint behind them has
+# its high bits set.
 pattern = '^\x00\x00\x00\x00[\x00-\xff]{8}'
 product = "mumble"
+example = "\u0000\u0000\u0000\u0000\u0000\u0013\u0008\u0080\u0088\u0004\u0012\u00071.4.287"

@@ -40,13 +40,16 @@ protocol = "tcp"
 name = "ldap_response"
 # RFC 4511 §4.1.1: an LDAPMessage is a SEQUENCE whose first element is the
 # message ID, an INTEGER. Requiring that header as well as the sequence tag is
-# what keeps this off ordinary text.
+# what keeps this off ordinary text: `\x30` is the character `0` and a short
+# length spans nearly all printable ASCII, so the tag and a length alone match
+# any text beginning with a zero. `\x02\x01` is STX then SOH, which text does
+# not carry.
 #
-# The sequence tag alone was the whole pattern until 2026-09-05. `\x30` is the
-# character `0` and `[\x0c-\x84]` spans nearly all printable ASCII, so the rule
-# matched any text beginning with a zero, and it began firing once the engine
-# started offering extracted fields to the matcher: Prometheus was reported as an
-# LDAP server on a web port. `\x02\x01` is STX then SOH, which text does not
-# carry.
-pattern = '^\x30[\x0c-\x84]\x02\x01' # SEQUENCE, then the message-ID INTEGER
+# The length comes in every form BER allows a message to take (X.690 §8.1.3):
+# one byte below 0x80, or 0x81, 0x82 or 0x84 and that many bytes behind it.
+# Active Directory writes every length in the four-byte form, so a rule that
+# took the length for one byte never read a domain controller.
+pattern = '(?s)^\x30(?:[\x0c-\x7f]|\x81.|\x82..|\x84....)\x02\x01'
 product = "ldap"
+# A bind response from Active Directory: success, no DN, no message.
+example = "0\u0084\u0000\u0000\u0000\u0010\u0002\u0001\u0001a\u0084\u0000\u0000\u0000\u0007\u000a\u0001\u0000\u0004\u0000\u0004\u0000"

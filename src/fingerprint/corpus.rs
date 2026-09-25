@@ -556,3 +556,181 @@ fn only_a_pjl_reply_is_named_a_raw_print_port() {
     let verdict = named(9100, Tcp, id);
     assert_eq!(verdict.service.as_deref(), Some("jetdirect"));
 }
+
+/// Every rule that reads a byte from 0x80 up ships an example, so the tests
+/// above run it.
+///
+/// Those are the rules a reading of the reply as text can lose: a decoder that
+/// turned such a byte into anything but its own code point left thirteen of
+/// them matching nothing, and none carried an example that would have said so.
+/// A rule of that kind without one is a rule nothing checks.
+#[test]
+fn every_rule_reading_a_high_byte_ships_an_example() {
+    /// Whether `pattern` names, by escape, a byte from 0x80 up.
+    fn names_a_high_byte(pattern: &str) -> bool {
+        pattern
+            .match_indices("\\x")
+            .filter_map(|(at, _)| pattern.get(at + 2..at + 4))
+            .filter_map(|digits| u8::from_str_radix(digits, 16).ok())
+            .any(|byte| byte >= 0x80)
+    }
+
+    let mut unexampled: Vec<String> = SignatureDb::embedded_definitions()
+        .iter()
+        .flat_map(|def| {
+            def.r#match
+                .iter()
+                .filter(|rule| names_a_high_byte(&rule.pattern))
+                .filter(|rule| rule.example.as_deref().is_none_or(str::is_empty))
+                .map(|rule| {
+                    format!(
+                        "{}#{}",
+                        def.service.name,
+                        rule.name.as_deref().unwrap_or("?")
+                    )
+                })
+        })
+        .collect();
+    unexampled.sort();
+
+    assert!(
+        unexampled.is_empty(),
+        "rules reading a high byte with no example: {unexampled:?}"
+    );
+}
+
+/// Binary replies reach the rules written for their bytes, read the way the
+/// transport reads them.
+///
+/// Each reply is built from the specification of its protocol and handed over
+/// as bytes, so the decoding between the socket and the matcher is under test
+/// as well as the rule: every one of these was once matched against text in
+/// which its high bytes had become the replacement character.
+#[test]
+fn binary_replies_reach_the_rules_written_for_their_bytes() {
+    use crate::model::port::Protocol::Tcp;
+
+    let replies: &[(u16, &[u8], &str)] = &[
+        // RFC 1002 §4.3.3: a positive session response.
+        (139, b"\x82\x00\x00\x00", "netbios-ssn"),
+        // RFC 1002 §4.3.4: a negative one, called name not present.
+        (139, b"\x83\x00\x00\x01\x82", "netbios-ssn"),
+        // RFC 854: IAC DO TERMINAL-TYPE.
+        (23, b"\xff\xfd\x18\xff\xfd\x20", "telnet"),
+        // An Active Directory bind response, every length in four bytes.
+        (
+            389,
+            b"\x30\x84\x00\x00\x00\x10\x02\x01\x01\x61\x84\x00\x00\x00\x07\x0a\x01\x00\x04\x00\x04\x00",
+            "ldap",
+        ),
+        // RFC 1928 §3: no acceptable method.
+        (1080, b"\x05\xff", "socks5"),
+        // RFC 4271 §4.5: NOTIFICATION, Cease.
+        (
+            179,
+            b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00\x15\x03\x06\x05",
+            "bgp",
+        ),
+        // RFC 2637 §2.2: Start-Control-Connection-Reply.
+        (
+            1723,
+            b"\x00\x9c\x00\x01\x1a\x2b\x3c\x4d\x00\x02\x00\x00\x01\x00\x01\x00",
+            "pptp",
+        ),
+        // ZMTP 3.0: the greeting's signature and version.
+        (5556, b"\xff\x00\x00\x00\x00\x00\x00\x00\x01\x7f\x03\x00", "zeromq"),
+        // A native protocol v4 ERROR frame.
+        (9042, b"\x84\x00\x00\x01\x00\x00\x00\x00\x10", "cassandra"),
+        // The legacy server list ping answered.
+        (
+            25565,
+            b"\xff\x00\x16\x00\xa7\x00\x31\x00\x00\x00\x37\x00\x36",
+            "minecraft",
+        ),
+        // A record-marked PMAPPROC_DUMP reply naming nothing.
+        (
+            111,
+            b"\x80\x00\x00\x1czond\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+            "rpcbind",
+        ),
+    ];
+
+    for (port, reply, service) in replies {
+        let text = super::extract::reply_text(reply);
+        let verdict = named(*port, Tcp, &text);
+        assert_eq!(
+            verdict.service.as_deref(),
+            Some(*service),
+            "{reply:02x?} on {port}"
+        );
+    }
+}
+
+/// A high first byte alone names nothing.
+///
+/// These rules are consulted on every port nothing else names, and a dozen
+/// binary protocols open on 0xFF or on a byte just past 0x80. Each is written
+/// against its protocol's header whole, so a reply that shares one byte with
+/// it is not taken for it.
+#[test]
+fn a_high_first_byte_alone_names_no_binary_protocol() {
+    use crate::model::port::Protocol::Tcp;
+
+    let others: &[&[u8]] = &[
+        b"\x82\x01\x02\x03 something else",
+        b"\x80\x00\x01\x00 not a reply to this engine",
+        b"\xff\x00\x10\x00\x41\x00\x42",
+    ];
+    for reply in others {
+        let verdict = named(51987, Tcp, &super::extract::reply_text(reply));
+        for claimed in ["netbios-ssn", "rpcbind", "minecraft", "zeromq"] {
+            assert!(
+                verdict
+                    .evidence
+                    .iter()
+                    .all(|evidence| evidence.service.as_deref() != Some(claimed)),
+                "{reply:02x?} was read as {claimed}: {verdict:?}"
+            );
+        }
+    }
+}
+
+/// A NetBIOS session service is named from its answer end to end, over a
+/// socket, the one path every other test here stands in for.
+#[tokio::test]
+async fn a_session_service_is_named_from_its_answer_over_a_socket() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    use crate::model::port::{PortState, Protocol};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
+    let addr = listener.local_addr().expect("its address");
+    let server = tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut request = [0u8; 128];
+        if sock.read(&mut request).await.is_ok_and(|read| read > 0) {
+            let _ = sock.write_all(b"\x82\x00\x00\x00").await;
+        }
+        let _ = sock.read(&mut request).await;
+    });
+
+    let stream = TcpStream::connect(addr).await.expect("connects");
+    let port = super::baseline_port(139, Protocol::Tcp, PortState::Open);
+    let identified =
+        super::fingerprint_tcp(stream, port, crate::config::ServiceDetection::Probe).await;
+    server.abort();
+
+    // Named above the label the port's number alone earns, which is what it
+    // carries before anything is asked.
+    let labelled = super::baseline_port(139, Protocol::Tcp, PortState::Open);
+    let label = labelled.service().map(|service| service.confidence());
+    let identified = identified.service().expect("the port is named");
+    assert_eq!(identified.name(), "netbios-ssn");
+    assert!(
+        Some(identified.confidence()) > label,
+        "{identified:?} is no more than the port's label"
+    );
+}
