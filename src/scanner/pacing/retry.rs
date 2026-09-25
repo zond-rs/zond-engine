@@ -1343,6 +1343,25 @@ mod tests {
         );
     }
 
+    /// A conversation with a service on a measured path allows for the path
+    /// exactly what a probe to a host seeded with the same round trip is
+    /// given, so the passes that talk to a service wait on a slow path as the
+    /// port scans that found it did.
+    #[test]
+    fn a_conversation_allows_for_a_path_what_a_seeded_probe_is_given() {
+        for millis in [1, 5, 140, 1_900] {
+            let round_trip = Duration::from_millis(millis);
+            let mut estimate = RttEstimator::default();
+            estimate.record(round_trip);
+            let allowance = crate::transport::dial::PathAllowance::of_round_trip(round_trip);
+            assert_eq!(
+                allowance.over(Duration::ZERO),
+                estimate.timeout().expect("one sample"),
+                "at {round_trip:?}"
+            );
+        }
+    }
+
     /// A sample this ledger took itself beats one it was handed: the seed is a
     /// starting point for a host nothing has asked yet, not a correction to what
     /// the scan is currently observing.

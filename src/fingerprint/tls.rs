@@ -173,8 +173,9 @@ pub async fn speculative_handshake(
     handshake_within(stream, peer, SPECULATIVE_TLS_TIMEOUT).await
 }
 
-/// Completes a TLS handshake over `stream` within `budget`, returning the live
-/// tunnel and the certificate chain the peer presented (owned DER).
+/// Completes a TLS handshake over `stream` within `budget`, which allows for
+/// the path (see [`on_path`](super::on_path)), returning the live tunnel and
+/// the certificate chain the peer presented (owned DER).
 ///
 /// `peer` is the address we connected to; it becomes the rustls server name, and
 /// an address is not a name, so **no SNI goes on the wire**. What comes back is
@@ -209,7 +210,7 @@ async fn handshake_within(
     let server_name = ServerName::IpAddress(peer.into());
     let connect = connector().connect(server_name, stream);
 
-    let tls = timeout(budget, connect).await.ok()?.ok()?;
+    let tls = timeout(super::on_path(budget), connect).await.ok()?.ok()?;
 
     let connection = tls.get_ref().1;
 
@@ -283,9 +284,12 @@ const LEGACY_CLIENT_HELLO: &[u8] = &[
 /// server that answers with an alert spoke TLS and refused these terms, which is
 /// itself an answer and is reported as [`REFUSED`].
 pub async fn legacy_version(stream: TcpStream) -> Option<&'static str> {
-    timeout(LEGACY_PROBE_TIMEOUT, legacy_exchange(stream))
-        .await
-        .unwrap_or_default()
+    timeout(
+        super::on_path(LEGACY_PROBE_TIMEOUT),
+        legacy_exchange(stream),
+    )
+    .await
+    .unwrap_or_default()
 }
 
 /// What a peer speaking TLS says when it will not accept the terms offered.

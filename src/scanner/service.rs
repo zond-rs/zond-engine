@@ -27,6 +27,15 @@
 //! are open is cheap and benefits from raw-packet speed, while identifying what
 //! runs on them needs a real conversation with the service. Splitting the two lets
 //! each use the transport that suits it.
+//!
+//! ## On a slow path
+//!
+//! The path to each host was measured finding it, and every wait on one of its
+//! ports allows for that path as the port scans' own probes do. The
+//! unprivileged port scan, which identifies each port over the connection that
+//! finds it open, allows for the round trip that connection took.
+
+use std::time::Duration;
 
 use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
@@ -39,6 +48,7 @@ use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Stage};
 use crate::system::descriptors;
 use crate::transport::dial::Egress;
+use crate::transport::dial::PathAllowance;
 
 /// Fingerprints every open port currently in the store worth an exchange,
 /// upgrading each port's service in place.
@@ -90,11 +100,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
                         identified_in_part,
                     } = *found;
                     if identified_in_part {
-                        in_part.record(
-                            &ip,
-                            port.number(),
-                            descriptors::starved(descriptors::PATIENCE),
-                        );
+                        in_part.record(&ip, port.number(), Unreached::Starved);
                     }
                     ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
                     write_back(ctx, ip, port, about_the_host);
@@ -107,21 +113,21 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
         },
     );
 
-    for (target, port, protocol) in targets {
+    for target in targets {
         if ctx.handle.should_stop() {
             break;
         }
+        let address = target.address.addr();
         // A host whose budget ran out during the port scan is not asked what
         // its open ports are running. The ports keep whatever the port phase
         // recorded, which is a state without a service name, and the phase has
         // already named the address as one it left early.
-        if ctx.host_expired(target.addr()) {
+        if ctx.host_expired(address) {
             continue;
         }
-        let egress = ctx.egress_toward(target.addr());
-        let detection = ctx.service_detection_on(detection, port, protocol);
-        pool.admit(fingerprint_one(target, port, protocol, detection, egress))
-            .await;
+        let egress = ctx.egress_toward(address);
+        let detection = ctx.service_detection_on(detection, target.number, target.protocol);
+        pool.admit(fingerprint_one(target, detection, egress)).await;
     }
 
     pool.drain().await;
@@ -155,12 +161,12 @@ struct QuietPorts {
     first: Option<String>,
     /// Why that one gave nothing back. The same reason for all of them wherever
     /// something on the path is answering instead of a service.
-    reason: Option<String>,
+    reason: Option<Unreached>,
 }
 
 impl QuietPorts {
     /// Files one port that could not be fingerprinted.
-    fn record(&mut self, ip: &ScopedIp, number: u16, reason: String) {
+    fn record(&mut self, ip: &ScopedIp, number: u16, reason: Unreached) {
         self.count += 1;
         if self.first.is_none() {
             self.first = Some(ip.endpoint(number));
@@ -168,12 +174,24 @@ impl QuietPorts {
         }
     }
 
-    /// The one line the ports amount to, named from the first of them.
-    fn summary(first: &str, reason: &str, count: usize) -> String {
+    /// The one entry the ports amount to in the report, named from the first
+    /// of them.
+    fn summary(first: &str, reason: &Unreached, count: usize) -> String {
         format!(
-            "{} could not be fingerprinted: {reason}",
-            Self::named(first, count)
+            "{} could not be fingerprinted: {}",
+            Self::named(first, count),
+            reason.said()
         )
+    }
+
+    /// The one console line they amount to: which ports, then why in a word or
+    /// two. The report's entry says the rest.
+    fn line(first: &str, reason: &Unreached, count: usize) -> String {
+        let ports = match count - 1 {
+            0 => first.to_string(),
+            rest => format!("{first} and {rest} more"),
+        };
+        format!("{ports} not fingerprinted ({})", reason.terse())
     }
 
     /// `count` ports, named from the first of them.
@@ -199,8 +217,9 @@ impl QuietPorts {
         ctx.record_failure(
             ScannerKind::Service,
             format!(
-                "{} identified in part: {reason}",
-                Self::named(first, self.count)
+                "{} identified in part: {}",
+                Self::named(first, self.count),
+                reason.said()
             ),
         );
     }
@@ -215,7 +234,11 @@ impl QuietPorts {
         // open and the scan did not learn what was behind them. One failure
         // rather than one per port, because a count of eighty-three strategies
         // that did not run describes a scan that broke, and this one did not.
-        ctx.record_failure(
+        // Nor did this pass: its connections went unanswered or were turned
+        // away, so the console says which ports and why, and not that a
+        // scanner failed.
+        warn!("{}", Self::line(first, reason, self.count));
+        ctx.file_cut_short(
             ScannerKind::Service,
             Self::summary(first, reason, self.count),
         );
@@ -223,9 +246,7 @@ impl QuietPorts {
         // A port answered for is a port that takes a SYN and then has nothing to
         // say. Every one of them behaving that way is the path, not the host.
         if self.count == asked && asked >= QUIET_PORTS_WORTH_A_WORD {
-            warn!(
-                "all {asked} open ports went silent on connect; likely a middlebox, not the host"
-            );
+            warn!("all {asked} open ports silent on connect (likely a middlebox)");
         }
     }
 }
@@ -248,20 +269,40 @@ impl QuietPorts {
 /// traffic spent to learn a fact already in hand.
 ///
 /// [`reads_replies`]: crate::fingerprint::reads_replies
-fn fingerprintable_ports(ctx: &ScanContext, over: Protocol) -> Vec<(ScopedIp, u16, Protocol)> {
+fn fingerprintable_ports(ctx: &ScanContext, over: Protocol) -> Vec<Target> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
         let address = host.value().scoped_ip();
+        let path = PathAllowance::of_median(host.value().median_rtt());
         for port in host.value().ports() {
             if port.protocol() == over
                 && port.state() == PortState::Open
                 && crate::fingerprint::reads_replies(port.number(), port.protocol())
             {
-                targets.push((address.clone(), port.number(), port.protocol()));
+                targets.push(Target {
+                    address: address.clone(),
+                    number: port.number(),
+                    protocol: port.protocol(),
+                    path,
+                });
             }
         }
     }
     targets
+}
+
+/// One open port to identify, and the path to it.
+struct Target {
+    /// The host's address, carrying the interface a link-local one was seen
+    /// on.
+    address: ScopedIp,
+    /// The port number.
+    number: u16,
+    /// The transport it was found open over.
+    protocol: Protocol,
+    /// What the path to the host, as the scan measured it finding the host
+    /// and its ports, adds to every wait on the port.
+    path: PathAllowance,
 }
 
 /// What one port's fingerprint attempt produced. [`Unreachable`](Self::Unreachable)
@@ -278,11 +319,70 @@ enum Attempt {
         ip: ScopedIp,
         /// The port number, named alongside the address in the reason.
         number: u16,
-        /// Why it failed, in the operating system's words.
-        reason: String,
+        /// Why it failed.
+        reason: Unreached,
     },
     /// Nothing was learned and nothing went wrong.
     Quiet,
+}
+
+/// Why an open port could not be asked what it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Unreached {
+    /// Nothing answered the connection within this long, which is the connect
+    /// budget with the path's allowance on top.
+    Silent(Duration),
+    /// The process had no socket to connect with, for as long as it waited
+    /// for one.
+    Starved,
+    /// The connection failed some other way.
+    Failed {
+        /// The kind of failure, which is what a console line names.
+        kind: std::io::ErrorKind,
+        /// The failure in the operating system's words.
+        said: String,
+    },
+}
+
+impl Unreached {
+    /// Why a connection given `within` to connect failed with `error`.
+    fn of(error: std::io::Error, within: Duration) -> Self {
+        if descriptors::exhausted(&error) {
+            Self::Starved
+        } else if error.kind() == std::io::ErrorKind::TimedOut {
+            Self::Silent(within)
+        } else {
+            Self::Failed {
+                kind: error.kind(),
+                said: error.to_string(),
+            }
+        }
+    }
+
+    /// The reason in the report's words, which a reader weighing the
+    /// shortfall reads whole.
+    fn said(&self) -> String {
+        match self {
+            Self::Silent(within) => format!("no answer within {:?}", tenths(*within)),
+            Self::Starved => descriptors::starved(descriptors::PATIENCE),
+            Self::Failed { said, .. } => said.clone(),
+        }
+    }
+
+    /// The reason in the few words a console line has room for.
+    fn terse(&self) -> String {
+        match self {
+            Self::Silent(within) => format!("no answer in {:?}", tenths(*within)),
+            Self::Starved => "file limit reached".to_string(),
+            Self::Failed { kind, .. } => kind.to_string(),
+        }
+    }
+}
+
+/// `duration` to the nearest tenth of a second, which is as finely as a
+/// connect budget with a measured path on top is worth naming.
+fn tenths(duration: Duration) -> Duration {
+    Duration::from_millis(((duration.as_millis() + 50) / 100 * 100) as u64)
 }
 
 /// What a port that answered said, for [`Attempt::Identified`].
@@ -307,14 +407,15 @@ struct Identified {
 /// connection anyway would fail with an error describing the network, which is a
 /// claim about the neighbour rather than about what this host knows.
 ///
-/// Every connection it makes to the port leaves by `egress`.
-async fn fingerprint_one(
-    target: ScopedIp,
-    port_number: u16,
-    protocol: Protocol,
-    detection: ServiceDetection,
-    egress: Egress,
-) -> Attempt {
+/// Every connection it makes to the port leaves by `egress`, and every wait on
+/// the port allows for the path the target carries.
+async fn fingerprint_one(target: Target, detection: ServiceDetection, egress: Egress) -> Attempt {
+    let Target {
+        address: target,
+        number: port_number,
+        protocol,
+        path,
+    } = target;
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
             verbosity = 2,
@@ -338,25 +439,20 @@ async fn fingerprint_one(
 
     let (port, about_the_host, banners, identified_in_part) = match protocol {
         Protocol::Tcp => {
-            let stream = match egress.connect_timed(addr, CONNECT_PROBE_TIMEOUT).await {
+            let within = path.over(CONNECT_PROBE_TIMEOUT);
+            let stream = match egress.connect_timed(addr, within).await {
                 Ok(stream) => stream,
                 Err(e) => {
-                    let reason = if descriptors::exhausted(&e) {
-                        descriptors::starved(descriptors::PATIENCE)
-                    } else if e.kind() == std::io::ErrorKind::TimedOut {
-                        format!("no answer within {CONNECT_PROBE_TIMEOUT:?}")
-                    } else {
-                        e.to_string()
-                    };
                     return Attempt::Unreachable {
                         ip: target,
                         number: port_number,
-                        reason,
+                        reason: Unreached::of(e, within),
                     };
                 }
             };
             let identified =
-                crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await;
+                crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress, path)
+                    .await;
             (
                 identified.port,
                 identified.about_the_host,
@@ -368,22 +464,24 @@ async fn fingerprint_one(
         // the scan what it had to. A port the process had no socket to ask
         // was told nothing, and is filed the way a connection refused a
         // socket is.
-        Protocol::Udp => match crate::fingerprint::fingerprint_udp_via(addr, port, egress).await {
-            Some(identified) if identified.starved => {
-                return Attempt::Unreachable {
-                    ip: target,
-                    number: port_number,
-                    reason: descriptors::starved(descriptors::PATIENCE),
-                };
+        Protocol::Udp => {
+            match crate::fingerprint::fingerprint_udp_on(addr, port, egress, path).await {
+                Some(identified) if identified.starved => {
+                    return Attempt::Unreachable {
+                        ip: target,
+                        number: port_number,
+                        reason: Unreached::Starved,
+                    };
+                }
+                Some(identified) => (
+                    identified.port,
+                    identified.about_the_host,
+                    identified.responses,
+                    false,
+                ),
+                None => return Attempt::Quiet,
             }
-            Some(identified) => (
-                identified.port,
-                identified.about_the_host,
-                identified.responses,
-                false,
-            ),
-            None => return Attempt::Quiet,
-        },
+        }
         // Nothing here speaks SCTP as a client, so an open SCTP port keeps the
         // name the scan gave it rather than being dialled for a banner.
         Protocol::Sctp => return Attempt::Quiet,
@@ -443,23 +541,29 @@ mod tests {
 
     /// Eighty-three ports reported one by one would be eighty-three report
     /// lines, and the count of strategies that did not run would go up by
-    /// eighty-three with them.
+    /// eighty-three with them. At the console they are one short line, the
+    /// ports and then why, and the report's entry says the rest.
     #[test]
     fn many_quiet_ports_collapse_into_one_line() {
         let mut quiet = QuietPorts::default();
         let ip: ScopedIp = "192.0.2.1".parse::<IpAddr>().expect("an address").into();
         for port in 0..83u16 {
-            quiet.record(&ip, 1000 + port, "no answer within 1.5s".to_string());
+            quiet.record(
+                &ip,
+                1000 + port,
+                Unreached::Silent(Duration::from_millis(1_500)),
+            );
         }
 
-        let summary = QuietPorts::summary(
-            quiet.first.as_deref().expect("a first port"),
-            quiet.reason.as_deref().expect("a reason"),
-            quiet.count,
+        let first = quiet.first.as_deref().expect("a first port");
+        let reason = quiet.reason.as_ref().expect("a reason");
+        assert_eq!(
+            QuietPorts::summary(first, reason, quiet.count),
+            "192.0.2.1:1000 and 82 other ports could not be fingerprinted: no answer within 1.5s"
         );
         assert_eq!(
-            summary,
-            "192.0.2.1:1000 and 82 other ports could not be fingerprinted: no answer within 1.5s"
+            QuietPorts::line(first, reason, quiet.count),
+            "192.0.2.1:1000 and 82 more not fingerprinted (no answer in 1.5s)"
         );
     }
 
@@ -473,7 +577,7 @@ mod tests {
         let mut in_part = QuietPorts::default();
         let ip: ScopedIp = "192.0.2.1".parse::<IpAddr>().expect("an address").into();
         for port in [443u16, 8443, 9443] {
-            in_part.record(&ip, port, descriptors::starved(descriptors::PATIENCE));
+            in_part.record(&ip, port, Unreached::Starved);
         }
 
         in_part.report_in_part(&ctx);
@@ -493,13 +597,21 @@ mod tests {
     /// One of them reads as itself rather than as "and 0 other ports".
     #[test]
     fn one_quiet_port_is_named_alone() {
+        let refused = Unreached::of(
+            std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused"),
+            CONNECT_PROBE_TIMEOUT,
+        );
         assert_eq!(
-            QuietPorts::summary("192.0.2.1:22", "connection refused", 1),
+            QuietPorts::summary("192.0.2.1:22", &refused, 1),
             "192.0.2.1:22 could not be fingerprinted: connection refused"
         );
         assert_eq!(
-            QuietPorts::summary("192.0.2.1:22", "connection refused", 2),
+            QuietPorts::summary("192.0.2.1:22", &refused, 2),
             "192.0.2.1:22 and 1 other port could not be fingerprinted: connection refused"
+        );
+        assert_eq!(
+            QuietPorts::line("192.0.2.1:22", &refused, 1),
+            "192.0.2.1:22 not fingerprinted (connection refused)"
         );
     }
 
@@ -509,7 +621,7 @@ mod tests {
     fn an_ipv6_endpoint_stays_bracketed() {
         let mut quiet = QuietPorts::default();
         let ip: ScopedIp = "2001:db8::1".parse::<IpAddr>().expect("an address").into();
-        quiet.record(&ip, 443, "no answer within 1.5s".to_string());
+        quiet.record(&ip, 443, Unreached::Silent(CONNECT_PROBE_TIMEOUT));
 
         assert_eq!(quiet.first.as_deref(), Some("[2001:db8::1]:443"));
     }
@@ -678,6 +790,81 @@ mod tests {
             failures[0].reason().contains(&addr.port().to_string()),
             "the failure names the port it is about: {}",
             failures[0].reason()
+        );
+    }
+
+    /// A loopback service that answers any request only after `delay`,
+    /// standing in for one behind a path that costs that much: the reply is
+    /// sent promptly and spends the rest on the way.
+    async fn behind_a_slow_path(delay: Duration) -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 1024];
+                    if !matches!(sock.read(&mut buffer).await, Ok(n) if n > 0) {
+                        return;
+                    }
+                    tokio::time::sleep(delay).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nServer: nginx/1.24.0\r\n\
+                              Content-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// An open port behind a path slower than a reply's own wait is
+    /// identified, every wait on it allowing for the round trip the scan
+    /// measured finding the host.
+    ///
+    /// A reply's wait is set for how long a service takes to answer, and a
+    /// path adds its round trip to every answer. Waited on as though the path
+    /// cost nothing, a service that answered at once behind a slow path is
+    /// reported as a port with nothing to say, though the port scan before
+    /// this pass had timed the path and found the port by it.
+    #[tokio::test]
+    async fn an_open_port_behind_a_slow_path_is_identified_within_the_round_trip_measured() {
+        let path = Duration::from_millis(600);
+        let addr = behind_a_slow_path(Duration::from_millis(1_300)).await;
+
+        let (session, ctx) = ScanSession::new();
+        let ip = addr.ip();
+        let mut host = Host::new(ip);
+        host.add_rtt(path);
+        host.add_port(Port::new(addr.port(), Protocol::Tcp, PortState::Open));
+        session.hosts().insert(ip, host);
+
+        detect(&ctx, ServiceDetection::default(), Protocol::Tcp).await;
+
+        let host = session.hosts().get(ip).unwrap();
+        let port = host
+            .ports()
+            .find(|p| p.number() == addr.port())
+            .expect("port present");
+        assert_eq!(
+            port.service().map(|service| service.name()),
+            Some("http"),
+            "a service answering behind a path of {path:?} went unheard"
+        );
+    }
+
+    /// A port that could not be connected to within the path's allowance is
+    /// reported with that allowance, which is the wait it was actually given.
+    #[test]
+    fn a_connect_behind_a_measured_path_names_the_wait_it_was_given() {
+        let within =
+            PathAllowance::of_round_trip(Duration::from_millis(1_900)).over(CONNECT_PROBE_TIMEOUT);
+        let silent = Unreached::of(std::io::ErrorKind::TimedOut.into(), within);
+        assert_eq!(silent.said(), "no answer within 7.2s");
+        assert_eq!(
+            QuietPorts::line("192.0.2.10:22", &silent, 1),
+            "192.0.2.10:22 not fingerprinted (no answer in 7.2s)"
         );
     }
 }

@@ -115,9 +115,14 @@ use tokio::time::timeout;
 use crate::config::ServiceDetection;
 use crate::model::port::{Port, PortState, Protocol, Service};
 use crate::system::descriptors;
+use crate::transport::dial::PathAllowance;
 use crate::transport::dial::{Egress, Shaping};
 
 /// How long to wait for a service to speak first (banner grab).
+///
+/// This and every wait below that waits on the peer is how long the service
+/// may take on a path that costs nothing. A scan that measured the path gives
+/// each its allowance on top; see [`on_path`].
 const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long to wait for a reply to an active probe.
 const PROBE_READ_TIMEOUT: Duration = Duration::from_millis(1_000);
@@ -211,7 +216,19 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// property. `read_bytes` grew a bound it did not have; the next stage to be
 /// added will be bounded by whoever writes it, and this is what makes the total
 /// somebody's responsibility rather than an emergent number.
+///
+/// Set for a path that costs nothing. On a measured one each wait along the
+/// walk allows for the path once, so the budget allows for it once per wait
+/// the longest walk makes; see [`COLLECTION_WAITS`].
 const COLLECTION_BUDGET: Duration = Duration::from_secs(30);
+
+/// The most waits on the peer any walk down the ladder in [`gather`] makes in
+/// a row, each a connection or a read that allows for the path, with room for
+/// probes still to be authored. The longest walk makes fifteen at the thorough
+/// level, two more for each probe authored for strangers;
+/// `the_collection_budget_covers_every_path_through_gather` holds the two
+/// together.
+const COLLECTION_WAITS: u32 = 20;
 
 /// Whether a reply from this port over this protocol is one the engine can read.
 ///
@@ -418,7 +435,7 @@ pub async fn fingerprint_tcp_detailed(
     port: Port,
     detection: ServiceDetection,
 ) -> Fingerprinted {
-    fingerprint_tcp_via(stream, port, detection, Egress::KERNEL).await
+    fingerprint_tcp_via(stream, port, detection, Egress::KERNEL, PathAllowance::NONE).await
 }
 
 /// What identifying one port came to: the port as it was named, what its
@@ -455,24 +472,30 @@ pub struct Fingerprinted {
 }
 
 /// [`fingerprint_tcp_detailed`], with every further connection to the port
-/// leaving by `egress`, which is how `stream` was reached, and with whether
-/// one of them was refused a socket.
+/// leaving by `egress`, which is how `stream` was reached, every wait on the
+/// port allowing for `path`, and with whether one of the connections was
+/// refused a socket.
 pub(crate) async fn fingerprint_tcp_via(
     stream: TcpStream,
     port: Port,
     detection: ServiceDetection,
     egress: Egress,
+    path: PathAllowance,
 ) -> Fingerprinted {
-    // Every connection after `stream` dials through this scope, which is also
-    // where a connection given up for want of a socket says so; see
-    // `DIALLING`.
+    // Every connection after `stream` dials through this scope, and every
+    // wait on the port is sized in it, which is also where a connection given
+    // up for want of a socket says so; see `DIALLING`.
     let starved = Arc::new(AtomicBool::new(false));
     let dialling = Dialling {
         egress,
+        path,
         starved: Arc::clone(&starved),
     };
     let (port, about_the_host, responses) = DIALLING
-        .scope(dialling, identify_tcp(stream, port, detection, egress))
+        .scope(
+            dialling,
+            identify_tcp(stream, port, detection, egress, path),
+        )
         .await;
     Fingerprinted {
         port,
@@ -488,6 +511,7 @@ async fn identify_tcp(
     mut port: Port,
     detection: ServiceDetection,
     egress: Egress,
+    path: PathAllowance,
 ) -> (Port, AboutTheHost, Vec<String>) {
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target. Only at a
@@ -499,7 +523,7 @@ async fn identify_tcp(
     // see [`COLLECTION_BUDGET`]. A port that runs out of it is left exactly as
     // the scan recorded it, which is what a port that said nothing gets.
     let Ok((responses, tunnel)) = timeout(
-        COLLECTION_BUDGET,
+        path.over_each(COLLECTION_BUDGET, COLLECTION_WAITS),
         gather(stream, port.number(), detection, egress),
     )
     .await
@@ -612,18 +636,29 @@ pub(crate) async fn fingerprint_udp_via(
     port: Port,
     egress: Egress,
 ) -> Option<Fingerprinted> {
-    fingerprint_udp_within(addr, port, egress, descriptors::PATIENCE).await
+    fingerprint_udp_on(addr, port, egress, PathAllowance::NONE).await
 }
 
-/// [`fingerprint_udp_via`], waiting out a full descriptor table for
+/// [`fingerprint_udp_via`], with each wait for a reply allowing for `path`.
+pub(crate) async fn fingerprint_udp_on(
+    addr: std::net::SocketAddr,
+    port: Port,
+    egress: Egress,
+    path: PathAllowance,
+) -> Option<Fingerprinted> {
+    fingerprint_udp_within(addr, port, egress, descriptors::PATIENCE, path).await
+}
+
+/// [`fingerprint_udp_on`], waiting out a full descriptor table for
 /// `patience` before a datagram is given up as starved.
 async fn fingerprint_udp_within(
     addr: std::net::SocketAddr,
     mut port: Port,
     egress: Egress,
     patience: Duration,
+    path: PathAllowance,
 ) -> Option<Fingerprinted> {
-    let texts = match probe_udp(addr, egress, patience).await {
+    let texts = match probe_udp(addr, egress, patience, path).await {
         Datagram::Reply(texts) => texts,
         Datagram::Silent => return None,
         Datagram::Starved => {
@@ -712,9 +747,10 @@ async fn probe_udp(
     addr: std::net::SocketAddr,
     egress: Egress,
     patience: Duration,
+    path: PathAllowance,
 ) -> Datagram<Vec<String>> {
     for payload in SignatureDb::global().udp_probe_payloads(addr.port()) {
-        match exchange_datagram(addr, payload, egress, patience).await {
+        match exchange_datagram(addr, payload, egress, patience, path).await {
             Datagram::Reply(reply) => {
                 let texts = extract::from_datagram(addr.port(), &reply);
                 if !texts.is_empty() {
@@ -776,7 +812,15 @@ pub(crate) async fn probe_udp_raw_via(
     payload: &[u8],
     egress: Egress,
 ) -> Option<Vec<u8>> {
-    match exchange_datagram(addr, payload, egress, descriptors::PATIENCE).await {
+    match exchange_datagram(
+        addr,
+        payload,
+        egress,
+        descriptors::PATIENCE,
+        PathAllowance::NONE,
+    )
+    .await
+    {
         Datagram::Reply(reply) => Some(reply),
         Datagram::Silent | Datagram::Starved => None,
     }
@@ -784,12 +828,14 @@ pub(crate) async fn probe_udp_raw_via(
 
 /// Sends `payload` to `addr` from a socket of its own and reads the one
 /// datagram that comes back, telling a port that said nothing from a process
-/// that had no socket to ask it with, after waiting `patience` for one.
+/// that had no socket to ask it with, after waiting `patience` for one. The
+/// wait for the reply allows for `path`.
 async fn exchange_datagram(
     addr: std::net::SocketAddr,
     payload: &[u8],
     egress: Egress,
     patience: Duration,
+    path: PathAllowance,
 ) -> Datagram<Vec<u8>> {
     let socket = match egress.udp(addr.ip(), patience).await {
         Ok(socket) => socket,
@@ -801,7 +847,7 @@ async fn exchange_datagram(
     }
 
     let mut buffer = vec![0u8; MAX_RESPONSE_BYTES];
-    match timeout(PROBE_READ_TIMEOUT, socket.recv(&mut buffer)).await {
+    match timeout(path.over(PROBE_READ_TIMEOUT), socket.recv(&mut buffer)).await {
         Ok(Ok(read)) => {
             buffer.truncate(read);
             Datagram::Reply(buffer)
@@ -884,15 +930,15 @@ async fn gather(
 /// A second connection to a port already reached once.
 ///
 /// The first one succeeded, so this either succeeds immediately or the port has
-/// stopped accepting; see [`CONNECT_RETRY_TIMEOUT`]. It leaves by `egress`, the
-/// way the first one did.
+/// stopped accepting; see [`CONNECT_RETRY_TIMEOUT`], which allows for the path.
+/// It leaves by `egress`, the way the first one did.
 ///
 /// No share of the process's descriptor budget of its own: the pass that
 /// fingerprints the port holds one for the whole identification, whose
 /// connections follow one another. A table full for other reasons is waited
 /// out before that timeout starts, not within it; see [`dial_again`].
 async fn redial(socket: SocketAddr, egress: Egress) -> Option<TcpStream> {
-    dial_again(socket, egress, Some(CONNECT_RETRY_TIMEOUT))
+    dial_again(socket, egress, Some(on_path(CONNECT_RETRY_TIMEOUT)))
         .await
         .ok()
 }
@@ -1295,7 +1341,7 @@ fn same_host_path(url: &str, peer: SocketAddr) -> Option<String> {
 /// never returns. One round trip, and only on a response that asked for it,
 /// leaving by `egress` as the connection that drew the redirect did.
 async fn follow_redirect(socket: SocketAddr, path: &str, egress: Egress) -> Option<String> {
-    let mut stream = dial_again(socket, egress, Some(CONNECT_RETRY_TIMEOUT))
+    let mut stream = dial_again(socket, egress, Some(on_path(CONNECT_RETRY_TIMEOUT)))
         .await
         .ok()?;
 
@@ -1404,14 +1450,33 @@ where
     banners
 }
 
-/// How the port being fingerprinted is dialled after its first connection.
+/// How the port being fingerprinted is dialled after its first connection,
+/// and how long it is waited on.
 struct Dialling {
     /// The egress the port was reached by, which every further connection
     /// leaves by.
     egress: Egress,
+    /// What the path to the port adds to every wait on it; see [`on_path`].
+    path: PathAllowance,
     /// Set when one of those connections was given up for want of a socket;
     /// see [`dial_again`].
     starved: Arc<AtomicBool>,
+}
+
+/// `wait`, which a path that costs nothing needs, on the path to the port
+/// being identified.
+///
+/// Every wait on the port, for a connection, a greeting, a reply or a
+/// handshake, is set for how long the service may take to answer. A path that
+/// costs a round trip adds it to each of them, and a wait that does not allow
+/// for it gives up on an answer still on its way: behind a path of two
+/// seconds, every greeting and every reply. The allowance is what the scan
+/// measured of the path, sized as the port scans size their own probes'; see
+/// [`PathAllowance`]. Outside an identification's scope the wait is as set.
+fn on_path(wait: Duration) -> Duration {
+    DIALLING
+        .try_with(|dialling| dialling.path.over(wait))
+        .unwrap_or(wait)
 }
 
 tokio::task_local! {
@@ -1614,7 +1679,8 @@ where
 }
 
 /// Reads up to [`MAX_RESPONSE_BYTES`] of whatever the port sends, waiting `wait`
-/// for the first byte and `grace` for each read after it.
+/// for the first byte, allowing for the path (see [`on_path`]), and `grace` for
+/// each read after it.
 ///
 /// A `grace` of zero reads exactly once, which is what a banner grab wants; a
 /// non-zero one reads on until the port goes quiet, which is what a document
@@ -1635,6 +1701,7 @@ async fn read_bytes<S>(stream: &mut S, wait: Duration, grace: Duration) -> Optio
 where
     S: AsyncRead + Unpin,
 {
+    let wait = on_path(wait);
     let mut collected: Vec<u8> = Vec::new();
     let mut buffer = [0u8; MAX_RESPONSE_BYTES];
     let mut budget = wait;
@@ -2227,8 +2294,33 @@ mod tests {
     /// The exception is a plaintext rung answered with a TLS record: bytes, so a
     /// continuation, and still nothing this rung can report. That is what
     /// `alert_then_tls` is.
+    ///
+    /// Each path is counted twice over: what it takes on a path that costs
+    /// nothing, and how many of its waits allow for a path that does. A
+    /// continuation is not one of them, since it starts once the answer has
+    /// already arrived. The budget covers every path on every path only when
+    /// it covers the first and allows for at least as many of the second.
     #[test]
     fn the_collection_budget_covers_every_path_through_gather() {
+        /// A walk: how long it takes on a path that costs nothing, and how
+        /// many of its waits allow for the path.
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        struct Walk(Duration, u32);
+        impl std::ops::Add for Walk {
+            type Output = Walk;
+            fn add(self, other: Walk) -> Walk {
+                Walk(self.0 + other.0, self.1 + other.1)
+            }
+        }
+        impl std::ops::Mul<u32> for Walk {
+            type Output = Walk;
+            fn mul(self, times: u32) -> Walk {
+                Walk(self.0 * times, self.1 * times)
+            }
+        }
+        let wait = |duration: Duration| Walk(duration, 1);
+        let continuation = Walk(MAX_CONTINUATION, 0);
+
         // The longest read a port's own probes can draw: at most two are
         // registered for any port in the shipped corpus, each its own wait plus
         // its continuation.
@@ -2238,23 +2330,25 @@ mod tests {
             .max()
             .unwrap_or(0)
             .max(1) as u32;
-        let spoke =
-            |count: u32| BANNER_READ_TIMEOUT + (PROBE_READ_TIMEOUT + MAX_CONTINUATION) * count;
-        let silent = |count: u32| BANNER_READ_TIMEOUT + PROBE_READ_TIMEOUT * count;
-        let read_once = PROBE_READ_TIMEOUT + MAX_CONTINUATION;
-        let rung = CONNECT_RETRY_TIMEOUT;
+        let spoke = |count: u32| {
+            wait(BANNER_READ_TIMEOUT) + (wait(PROBE_READ_TIMEOUT) + continuation) * count
+        };
+        let silent = |count: u32| wait(BANNER_READ_TIMEOUT) + wait(PROBE_READ_TIMEOUT) * count;
+        let read_once = wait(PROBE_READ_TIMEOUT) + continuation;
+        let rung = wait(CONNECT_RETRY_TIMEOUT);
+        let handshake = wait(tls::TLS_HANDSHAKE_TIMEOUT);
+        let legacy = wait(tls::LEGACY_PROBE_TIMEOUT);
+        let speculative = wait(tls::SPECULATIVE_TLS_TIMEOUT);
 
         // Numbered for TLS: [Tls, LegacyTls, Plaintext].
-        let tls_all_three =
-            tls::TLS_HANDSHAKE_TIMEOUT + rung + tls::LEGACY_PROBE_TIMEOUT + rung + spoke(probes);
-        let tls_then_silence =
-            tls::TLS_HANDSHAKE_TIMEOUT + rung + tls::LEGACY_PROBE_TIMEOUT + rung + silent(probes);
+        let tls_all_three = handshake + rung + legacy + rung + spoke(probes);
+        let tls_then_silence = handshake + rung + legacy + rung + silent(probes);
 
         // Numbered for anything else: [Plaintext, SpeculativeTls]. Inside the
         // tunnel a claimed port asks its own probes again and an unclaimed one
         // asks the single generic question.
-        let claimed_then_tls = silent(probes) + rung + tls::SPECULATIVE_TLS_TIMEOUT + spoke(probes);
-        let alert_then_tls = read_once + rung + tls::SPECULATIVE_TLS_TIMEOUT + spoke(1);
+        let claimed_then_tls = silent(probes) + rung + speculative + spoke(probes);
+        let alert_then_tls = read_once + rung + speculative + spoke(1);
         let unclaimed_then_redirect = read_once + rung + read_once;
 
         // And the last rung, which is a connection and a read per probe, for
@@ -2265,22 +2359,27 @@ mod tests {
             .max(1) as u32;
         let last_resort = (rung + read_once) * universal;
 
-        let worst = [
+        let paths = [
             tls_all_three + last_resort,
             tls_then_silence + last_resort,
             claimed_then_tls,
             alert_then_tls,
             unclaimed_then_redirect,
-            silent(probes) + rung + tls::SPECULATIVE_TLS_TIMEOUT + last_resort,
-        ]
-        .into_iter()
-        .max()
-        .expect("six paths");
+            silent(probes) + rung + speculative + last_resort,
+        ];
+        let longest = paths.iter().map(|walk| walk.0).max().expect("six paths");
+        let most_waits = paths.iter().map(|walk| walk.1).max().expect("six paths");
 
         assert!(
-            worst < COLLECTION_BUDGET,
+            longest < COLLECTION_BUDGET,
             "the budget ({COLLECTION_BUDGET:?}) is below the longest honest path \
-             ({worst:?}), so it would cut real scans short"
+             ({longest:?}), so it would cut real scans short"
+        );
+        assert!(
+            most_waits <= COLLECTION_WAITS,
+            "the budget allows for the path {COLLECTION_WAITS} times and a walk \
+             waits on it {most_waits} times, so it would cut scans on a slow \
+             path short"
         );
     }
 
@@ -2325,9 +2424,15 @@ mod tests {
 
         let stream = TcpStream::connect(addr).await.expect("connects");
         let port = baseline_port(22, Protocol::Tcp, PortState::Open);
-        let port = fingerprint_tcp_via(stream, port, ServiceDetection::Banner, Egress::KERNEL)
-            .await
-            .port;
+        let port = fingerprint_tcp_via(
+            stream,
+            port,
+            ServiceDetection::Banner,
+            Egress::KERNEL,
+            PathAllowance::NONE,
+        )
+        .await
+        .port;
         server.abort();
 
         assert_eq!(
@@ -2441,6 +2546,7 @@ mod tests {
             let starved = Arc::new(AtomicBool::new(false));
             let dialling = Dialling {
                 egress: Egress::KERNEL,
+                path: PathAllowance::NONE,
                 starved: Arc::clone(&starved),
             };
             let _ = DIALLING
@@ -2497,9 +2603,13 @@ mod tests {
         let patience = Duration::from_millis(50);
 
         let held = exhaust(64);
-        let unasked = fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience).await;
+        let unasked =
+            fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience, PathAllowance::NONE)
+                .await;
         drop(held);
-        let asked = fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience).await;
+        let asked =
+            fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience, PathAllowance::NONE)
+                .await;
 
         let unasked = unasked.expect("a datagram never sent was read as the port's silence");
         assert!(unasked.starved);

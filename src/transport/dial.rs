@@ -41,6 +41,11 @@
 //!
 //! A caller that opened its own socket would be the one that forgot any of
 //! these.
+//!
+//! How long a conversation over one of these sockets waits is the caller's,
+//! set for a path that costs nothing, and what a path the scan measured adds
+//! to each of those waits is a [`PathAllowance`], sized as the port scans size
+//! their own probes.
 //! What a caller does choose is [`Shaping`]: a source port and a hop limit,
 //! which only the connect scanner's probes carry, since an evasion profile
 //! shapes a scan's probes and not the conversations that follow them; see
@@ -68,6 +73,9 @@ use crate::system::interface::{Link, LinkAddress};
 
 #[cfg(any(windows, test))]
 mod syn_retries;
+
+mod allowance;
+pub(crate) use allowance::PathAllowance;
 
 /// What a caller has chosen about a socket beyond where it is going: a source
 /// port to leave from and a hop limit to carry.

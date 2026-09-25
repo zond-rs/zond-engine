@@ -65,6 +65,7 @@ use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::routed::SynPorts;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::descriptors::{self, Descriptor};
+use crate::transport::dial::PathAllowance;
 use crate::transport::dial::{Connecting, Egress, Holder, Shaping, SourcePortHeld};
 use async_trait::async_trait;
 use std::io::{self, ErrorKind};
@@ -867,6 +868,9 @@ fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
 /// `egress`. Its socket comes from the process's budget and is held until the
 /// fingerprint is done with it; a port the process has no socket for, or that
 /// the scan stopped before asking, is `Unasked` too.
+///
+/// An open port is identified with every wait on it allowing for the round
+/// trip its own handshake took.
 async fn port_prober(
     planned: PlannedTarget,
     detection: ServiceDetection,
@@ -950,8 +954,12 @@ async fn port_prober(
                 // phase can read without dialling again: the responses a
                 // passive detection needs, and what the same bytes said about
                 // the machine. The descriptor is held until it is done.
+                // The handshake is a round trip over the very path the
+                // conversation that follows takes, measured a moment ago.
+                let path = PathAllowance::of_round_trip(rtt);
                 let identified =
-                    crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await;
+                    crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress, path)
+                        .await;
                 drop(descriptor);
                 Some(Probed {
                     ip: target.ip,

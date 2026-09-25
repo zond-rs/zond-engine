@@ -48,7 +48,9 @@ use super::response::{Collected, ResponseSet};
 ///
 /// Shorter than a banner read, because this is a second request to a server that
 /// has already answered once: it is known reachable, and a server that has
-/// started responding and then stops is not worth waiting out.
+/// started responding and then stops is not worth waiting out. Set for a path
+/// that costs nothing; a scan allows for the path it measured on top (see
+/// [`on_path`](super::on_path)).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The most of a response body to read.
@@ -90,7 +92,7 @@ impl Analyzer for FaviconAnalyzer {
         };
         // One budget for the whole search, however many requests it takes, so a
         // slow server cannot cost more by declaring its icon than by not.
-        match timeout(FETCH_TIMEOUT, icon_of(addr, responses)).await {
+        match timeout(super::on_path(FETCH_TIMEOUT), icon_of(addr, responses)).await {
             Ok(Some(icon)) => Collected::from_frames(vec![icon]),
             _ => Collected::default(),
         }

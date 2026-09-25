@@ -94,7 +94,9 @@ pub(crate) fn software_version(line: &str) -> Option<&str> {
 const CLIENT_ID: &[u8] = b"SSH-2.0-Zond_1.0\r\n";
 
 /// Whole-exchange budget: connect, read the banner, read one packet. Kept
-/// tight, a reachable SSH server completes this well under a second.
+/// tight, a reachable SSH server completes this well under a second, on a
+/// path that costs nothing; a scan allows for the path it measured on top
+/// (see [`on_path`](super::on_path)).
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// RFC 4253 caps an (uncompressed) packet at 35 000 bytes; we never accept a
@@ -150,7 +152,7 @@ impl Analyzer for SshAnalyzer {
         let Some(addr) = ctx.addr else {
             return Collected::default();
         };
-        match timeout(EXCHANGE_TIMEOUT, kexinit_exchange(addr)).await {
+        match timeout(super::on_path(EXCHANGE_TIMEOUT), kexinit_exchange(addr)).await {
             Ok(Some(packet)) => Collected::from_frames(vec![packet]),
             _ => Collected::default(),
         }

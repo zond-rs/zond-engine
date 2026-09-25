@@ -62,7 +62,8 @@ use crate::protocols::tls;
 ///
 /// Ten of these run for every port that speaks TLS, so the budget is per probe
 /// and deliberately short: a server that has not answered a hello in this long
-/// is not going to.
+/// is not going to, on a path that costs nothing. A scan allows for the path it
+/// measured on top (see [`on_path`](super::on_path)).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// The most of a `ServerHello` worth reading. A record may be far larger, and
@@ -973,20 +974,18 @@ pub async fn fingerprint(addr: SocketAddr, host: &str) -> Option<String> {
 /// reference makes. What has arrived when the peer stops or the budget runs
 /// out is handed on, and the reader refuses it if it is short of a hello.
 async fn exchange(addr: SocketAddr, probe: &Probe, host: &str) -> Option<Vec<u8>> {
-    let mut stream = timeout(PROBE_TIMEOUT, super::analyzer_connect(addr))
+    let wait = super::on_path(PROBE_TIMEOUT);
+    let mut stream = timeout(wait, super::analyzer_connect(addr))
         .await
         .ok()?
         .ok()?;
     let hello = hello(probe, host, &Entropy::Live);
 
-    timeout(PROBE_TIMEOUT, stream.write_all(&hello))
-        .await
-        .ok()?
-        .ok()?;
+    timeout(wait, stream.write_all(&hello)).await.ok()?.ok()?;
 
     let mut reply = vec![0u8; MAX_REPLY_BYTES];
     let mut filled = 0;
-    let _ = timeout(PROBE_TIMEOUT, async {
+    let _ = timeout(wait, async {
         while filled < reply.len() && wants_more(&reply[..filled]) {
             match stream.read(&mut reply[filled..]).await {
                 Ok(0) | Err(_) => break,
