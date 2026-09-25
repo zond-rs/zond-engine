@@ -1654,7 +1654,7 @@ fn spawn_scan(
         // a name and answers a question neither of those can: macOS and iOS
         // share a kernel and are indistinguishable to a probe, while a
         // device-info record names the model outright.
-        orchestrator::run_active_os_mdns(&ctx, cfg.os_detection).await;
+        orchestrator::run_active_os_mdns(&ctx, cfg.os_detection, !cfg.no_dns).await;
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
         // Last: the ports are what decide a trace's shape.
         orchestrator::run_traceroute(&ctx, &cfg, caps).await;

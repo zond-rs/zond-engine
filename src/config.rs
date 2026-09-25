@@ -994,13 +994,22 @@ impl IdleScan {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ZondConfig {
-    /// Forbids the scan from generating any DNS traffic of its own: no A, AAAA
-    /// or PTR queries, and no name resolution to go with the addresses it finds.
+    /// Forbids the scan from asking any name of its own: no A, AAAA or PTR
+    /// query, whether of a resolver or of a host's own multicast DNS responder,
+    /// and so no name to go with the addresses it finds.
     ///
     /// Set when the traffic itself is the problem. A query to a resolver the
     /// target operates announces the scan to whoever runs it, and on an
     /// engagement that can be the whole of what goes wrong. The cost is hosts
-    /// reported by address alone.
+    /// reported by address alone, and active operating-system identification
+    /// asking a device-info record only of a host whose `.local` name the scan
+    /// already holds, since learning the name is a reverse query.
+    ///
+    /// Probing a port is the scan itself rather than a name query of its own,
+    /// so a UDP probe of a name service's port still carries the question that
+    /// service answers, and the device-info question, which asks a host the
+    /// scan is probing what machine it is rather than what it is called, is
+    /// still asked.
     ///
     /// It governs what this engine sends and nothing else. Traffic the host's
     /// own stack generates for its own reasons is outside anything this crate

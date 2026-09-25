@@ -1220,26 +1220,20 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
 /// the hosts something else happened to resolve under the right name. A host
 /// running no responder leaves the first question unanswered and is asked
 /// nothing more, one datagram in all.
-pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetection) {
+///
+/// That first question is a reverse-name query, and `names` says whether the
+/// scan may ask one. Where it may not, the scan was forbidden name queries of
+/// its own, and only the hosts it already holds a `.local` name for are asked:
+/// the device-info question asks what the machine is rather than what it is
+/// called, of the host the scan is already probing.
+pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetection, names: bool) {
     if !os_detection.is_active() {
         return;
     }
 
     ctx.enter_stage(Stage::Os, None);
 
-    let targets: Vec<(crate::model::ip::scoped::ScopedIp, Option<String>)> = ctx
-        .host_addresses()
-        .into_iter()
-        .filter(|ip| !ctx.host_expired(ip.addr()))
-        .filter_map(|ip| {
-            ctx.read_host(&ip, |host| {
-                let name = host.hostname().map(str::to_string);
-                host.status().is_up().then(|| (host.scoped_ip(), name))
-            })
-            .flatten()
-        })
-        .collect();
-
+    let targets = hardware_targets(ctx, names);
     if targets.is_empty() {
         return;
     }
@@ -1284,6 +1278,33 @@ pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetect
     }
 }
 
+/// The hosts [`run_active_os_mdns`] asks, each with the name it holds for
+/// them: every host that is up and has not run out of time, less, where
+/// `names` forbids asking one, those without a `.local` name to ask about.
+fn hardware_targets(
+    ctx: &ScanContext,
+    names: bool,
+) -> Vec<(crate::model::ip::scoped::ScopedIp, Option<String>)> {
+    ctx.host_addresses()
+        .into_iter()
+        .filter(|ip| !ctx.host_expired(ip.addr()))
+        .filter_map(|ip| {
+            ctx.read_host(&ip, |host| {
+                let name = host.hostname().map(str::to_string);
+                host.status().is_up().then(|| (host.scoped_ip(), name))
+            })
+            .flatten()
+        })
+        .filter(|(_, name)| names || name.as_deref().and_then(device_info_query).is_some())
+        .collect()
+}
+
+/// The device-info question for a host called `hostname`, or `None` where the
+/// name is not one a responder publishes the record under.
+fn device_info_query(hostname: &str) -> Option<Vec<u8>> {
+    crate::protocols::mdns::build_device_info_query(hostname)?.ok()
+}
+
 /// The port a Bonjour responder listens on.
 const MDNS_PORT: u16 = 5353;
 
@@ -1325,10 +1346,9 @@ async fn ask_what_hardware(
     // reached by address, and where what did resolve one was a unicast
     // resolver, whose zone publishes no record: a responder answers a reverse
     // lookup about its own address with the name it publishes under.
-    let question = |name: &str| crate::protocols::mdns::build_device_info_query(name)?.ok();
-    let query = match hostname.as_deref().and_then(question) {
+    let query = match hostname.as_deref().and_then(device_info_query) {
         Some(query) => query,
-        None => question(&own_name(addr, target.addr(), egress).await?)?,
+        None => device_info_query(&own_name(addr, target.addr(), egress).await?)?,
     };
 
     // Each `key=value` is its own claim: the model and the Darwin release are
@@ -2359,6 +2379,42 @@ fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A scan forbidden name queries asks no host its name.** The mDNS pass
+    /// learns what a nameless host calls itself by a reverse-name query, and a
+    /// scan told to send no name queries of its own sent one to every host it
+    /// found. What it still asks is the device-info record of a host whose
+    /// `.local` name it already holds, a question about the machine.
+    #[test]
+    fn a_scan_forbidden_name_queries_asks_the_hardware_pass_only_of_hosts_it_has_named() {
+        use crate::model::host::HostStatus;
+        use crate::scanner::session::ScanSession;
+        use std::net::Ipv4Addr;
+
+        let (_session, ctx) = ScanSession::new();
+        let at = |last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last));
+        for (last, name) in [
+            (1, None),
+            (2, Some("printer.local")),
+            (3, Some("host.example.com")),
+        ] {
+            ctx.update_host(at(last), |host| {
+                host.set_status(HostStatus::Up);
+                host.set_hostname(name.map(str::to_string));
+            });
+        }
+
+        let asked = |names| {
+            let mut asked: Vec<IpAddr> = hardware_targets(&ctx, names)
+                .iter()
+                .map(|(target, _)| target.addr())
+                .collect();
+            asked.sort_unstable();
+            asked
+        };
+        assert_eq!(asked(true), [at(1), at(2), at(3)]);
+        assert_eq!(asked(false), [at(2)], "only the host already named .local");
+    }
 
     /// Which SCTP port a sweep asks about, when the scan named several.
     ///
