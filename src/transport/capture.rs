@@ -52,10 +52,34 @@ use crate::transport::frame::{self, LinkType};
 use crate::{counted, info, warn};
 use pnet_base::MacAddr;
 
-/// Largest capture a scan's receive path ever needs: a reply is a bare TCP/UDP
-/// segment, but snapping generously costs nothing against a filter this narrow
-/// and avoids ever truncating one.
-pub const REPLY_SNAP_LEN: u32 = 65_535;
+/// How much of each frame a scan's receive path keeps: a whole frame at
+/// Ethernet's standard MTU, behind the deepest link header this crate strips.
+///
+/// Sized to the largest thing a reader of these captures reads whole. A probe's
+/// answer is a few headers; an ICMP error quotes at most 576 bytes over IPv4
+/// (RFC 1812) and 1,280 over IPv6 (RFC 4443); a UDP answer is read for a DNS
+/// header or a NetBIOS name table; and the DNS and mDNS answers the resolver
+/// sniffs, like the ARP, neighbour discovery, LLDP and CDP frames a segment
+/// sweep reads, are single frames on a standard link. Only jumbo frames,
+/// loopback and segments the interface's offloads coalesced are longer, and of
+/// those a reader gets the headers and the first stretch of the payload.
+///
+/// No larger, because on Linux the snapshot length is what the capture's ring
+/// is counted in. In immediate mode `libpcap` reads through a ring of fixed
+/// slots, one frame to a slot, each slot sized from the snapshot length; the
+/// link's MTU caps it only on an interface without segmentation offloads,
+/// which veth pairs and most server adapters are not. At `libpcap`'s default
+/// two-megabyte buffer this length makes 1,310 slots of 1,600 bytes, where a
+/// 65,535-byte one makes 32. A port probe costs up to three frames there: the
+/// probe seen leaving, its answer, and the reset the kernel sends a SYN-ACK
+/// nothing of its own asked for. Thirty-two slots overflow within a scan's
+/// first window, and every answer dropped is a port asked again and a
+/// congestion window halved on a host that answered.
+pub const REPLY_SNAP_LEN: u32 = (ETH_HDR_LEN + 2 * VLAN_TAG_LEN + ETHERNET_MTU) as u32;
+
+/// The largest IP packet a standard Ethernet link carries in one frame
+/// (IEEE 802.3).
+const ETHERNET_MTU: usize = 1_500;
 
 /// The shortest snapshot length worth opening a capture at.
 ///
@@ -142,13 +166,23 @@ impl CaptureOptions {
     /// only other people's traffic, filling the buffer this scan's own answers
     /// have to fit in.
     ///
-    /// The whole frame is kept ([`REPLY_SNAP_LEN`]). A reply is small and
-    /// the filter is narrow, so snapping generously costs almost nothing where
-    /// truncating one would cost an observation.
+    /// A whole frame at Ethernet's standard MTU is kept ([`REPLY_SNAP_LEN`]):
+    /// everything a reply is read for, and short enough that Linux's ring,
+    /// whose slots are sized from it, holds a scan's bursts.
     ///
-    /// The kernel's default buffer. These arrivals are bounded by the probes this
-    /// host sent, so there is a rate above which nothing comes, and the default
-    /// has been sufficient for it.
+    /// The platform's default buffer, because the snapshot length is what
+    /// decides how many replies fit it. On Linux the default two megabytes
+    /// hold 1,310 frames, about twenty milliseconds of arrivals at the 20,000
+    /// probes a second a full-range scan reaches over a veth pair, so the
+    /// reader has to fall behind by a scheduling delay's worth rather than a
+    /// round trip's before anything is lost; such a scan drops nothing, with
+    /// every processor busy or none. macOS's BPF and Windows' Npcap count their
+    /// buffers in bytes, each frame costing a small header and what was kept of
+    /// it, and their defaults, half a megabyte and one, hold thousands of
+    /// replies a few dozen bytes long. A larger buffer would buy Linux slots
+    /// too, but a capture is opened on every link that is up, so its size is
+    /// paid once per link on every open, where the snapshot length costs
+    /// nothing.
     pub fn for_replies(filter: impl Into<CaptureFilter>) -> Self {
         Self {
             filter: filter.into(),
@@ -218,7 +252,9 @@ impl CaptureOptions {
     /// The buffer is what absorbs the gap between a burst arriving and this
     /// process reading it, so it is the setting that decides whether a spike
     /// becomes a `dropped` count. Worth raising for any capture whose arrival
-    /// rate is set by the network rather than by probes this host sent.
+    /// rate is set by the network rather than by probes this host sent. On
+    /// Linux it is counted in slots sized from the snapshot length, so there
+    /// the two settings decide it together; see [`REPLY_SNAP_LEN`].
     pub fn with_buffer_bytes(mut self, bytes: u32) -> Self {
         self.buffer_bytes = Some(bytes);
         self
@@ -2347,6 +2383,46 @@ mod tests {
                     .with_snaplen(asked)
                     .snaplen,
                 asked
+            );
+        }
+    }
+
+    /// A scan's captures keep everything a reply is read for, and no more than
+    /// a standard Ethernet frame, at the platform's own buffer.
+    ///
+    /// The upper bound is the one a generous setting breaks. Linux sizes its
+    /// capture ring's slots from the snapshot length, so a capture keeping
+    /// whole 64 KB frames holds 32 of them at the default buffer, and a scan's
+    /// own bursts overflow it: answers dropped, ports asked again, the scan
+    /// twice as slow on a path that lost nothing. The lower bound is the
+    /// longest reply read whole, an ICMPv6 error, behind a doubly tagged
+    /// Ethernet header. The buffer is left to the platform because a capture is
+    /// opened on every link that is up and its buffer is paid on each.
+    ///
+    /// This pins the settings. That they hold a scan's bursts is a property of
+    /// the kernel's ring and is measured on the wire, by a full-range scan's
+    /// `dropped` count.
+    #[test]
+    fn a_scans_captures_keep_a_whole_standard_frame_and_no_more() {
+        const STANDARD_ETHERNET_FRAME: u32 = 14 + 2 * 4 + 1_500;
+        const LONGEST_ICMPV6_ERROR: u32 = 1_280;
+
+        for (opened, options) in [
+            ("replies", CaptureOptions::for_replies("tcp")),
+            ("link traffic", CaptureOptions::for_link_traffic("arp")),
+        ] {
+            assert!(
+                options.snaplen <= STANDARD_ETHERNET_FRAME,
+                "a capture of {opened} keeps {} bytes of a frame",
+                options.snaplen
+            );
+            assert!(
+                options.snaplen >= 14 + 2 * 4 + LONGEST_ICMPV6_ERROR,
+                "a capture of {opened} cuts the longest reply it reads whole"
+            );
+            assert_eq!(
+                options.buffer_bytes, None,
+                "a capture of {opened} sets a buffer paid on every link"
             );
         }
     }
