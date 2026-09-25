@@ -405,6 +405,20 @@ impl Segment {
         address
     }
 
+    /// Four addresses this process has no way to, one for each way its own
+    /// routing table can say so, and returns them: one no route covers, and
+    /// one each behind an `unreachable`, a `prohibit` and a `blackhole` route.
+    ///
+    /// The routes are this process's, so every refusal is raised by its own
+    /// kernel before anything is sent, and nothing reaches the peer.
+    pub fn refused_routes(&self) -> [Ipv4Addr; 4] {
+        let at = |last| Ipv4Addr::new(10, 97, self.index as u8, last);
+        for (kind, last) in [("unreachable", 2), ("prohibit", 3), ("blackhole", 4)] {
+            ip(&["route", "add", kind, &format!("{}/32", at(last))]);
+        }
+        [at(1), at(2), at(3), at(4)]
+    }
+
     /// Lifts the ration the peer's kernel sends its ICMP errors under, so it
     /// answers every closed UDP port it is asked about however fast.
     pub fn unrationed_icmp(&self) {

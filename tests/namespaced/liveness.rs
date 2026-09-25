@@ -18,7 +18,7 @@
 use std::net::IpAddr;
 
 use crate::netns::{Segment, available};
-use crate::support::{run_scan, target_map, test_config};
+use crate::support::{run_discover, run_scan, target_map, test_config};
 use zond_engine::model::port::PortState;
 use zond_engine::report::ScanKind;
 
@@ -260,4 +260,55 @@ async fn an_idle_scan_sends_its_target_nothing_from_this_host() {
         "a liveness sweep reached the target"
     );
     assert_eq!(segment.count_of(1), 0, "a port probe left from this host");
+}
+
+/// A sweep files an address this host has no route to as one it cannot
+/// reach, whichever way its routing table says so, and not as one it failed
+/// to decide.
+///
+/// With raw sockets, an address the planner finds no route for is left to a
+/// connect step, and the connect is refused before anything leaves: no route,
+/// or a route whose type refuses. Read as nothing, each address was counted
+/// among those without a verdict, the report was partial with no failure to
+/// say why, and every resume asked again. A port scan of the same address
+/// files it unreachable, and a sweep has to agree.
+#[tokio::test]
+async fn a_sweep_files_an_address_with_no_route_as_unroutable_whatever_refuses_it() {
+    use zond_engine::model::ip::set::IpSet;
+
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    let refused = segment.refused_routes();
+    let mut targets = IpSet::new();
+    for address in refused {
+        targets.insert(IpAddr::V4(address));
+    }
+
+    let outcome = run_discover(targets, &test_config()).await;
+
+    let phase = &outcome.report.phases()[0];
+    let mut unroutable = phase.unroutable().to_vec();
+    unroutable.sort_unstable();
+    assert_eq!(
+        unroutable,
+        refused.map(IpAddr::V4),
+        "no route, unreachable, prohibit and blackhole alike"
+    );
+    assert!(
+        phase.undecided().is_empty(),
+        "undecided: {:?}",
+        phase.undecided()
+    );
+    assert!(
+        phase.failures().is_empty(),
+        "nothing on this machine broke: {:?}",
+        phase.failures()
+    );
+    assert!(
+        !outcome.report.is_partial(),
+        "the sweep covered what it could"
+    );
 }

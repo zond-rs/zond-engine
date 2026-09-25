@@ -257,6 +257,10 @@ enum Refusal {
 
 impl Refusal {
     /// The refusal `error` is, raised before anything left this machine.
+    ///
+    /// A route that refuses by its type, `prohibit` or `blackhole`, arrives
+    /// as a host this machine cannot reach; see
+    /// [`Egress::start_connect`].
     fn of(error: &io::Error) -> Self {
         if let Some(held) = SourcePortHeld::of(error) {
             return Self::PortHeld(held.port, held.holder);
@@ -1378,16 +1382,6 @@ where
     }
 }
 
-/// One connect to `addr`, given [`CONNECT_PROBE_TIMEOUT`] to be answered.
-///
-/// The budget running out and the stack giving up first are the same outcome,
-/// a SYN out and nothing back, so both come back as [`ErrorKind::TimedOut`].
-async fn connect(egress: Egress, addr: SocketAddr, shaping: Shaping) -> io::Result<TcpStream> {
-    timeout(CONNECT_PROBE_TIMEOUT, egress.connect_shaped(addr, shaping))
-        .await
-        .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()))
-}
-
 /// Files the targets a run left unasked because the process had no socket to
 /// give them, once, as the failure it is. `patience` is how long each waited.
 ///
@@ -1494,13 +1488,16 @@ async fn sweep(
     );
     let folder = ctx.clone();
     let mut starved = 0u128;
+    let mut shortfall = Shortfall::default();
     // No more probes than the process has sockets for: past the budget a
     // probe would only queue at the gate, holding a task and nothing else.
     let mut pool = ProbePool::new(
         DISCOVERY_CONCURRENCY.min(descriptors::budget()),
         ctx.clone(),
         ScannerKind::Connect,
-        |probed, audit: &mut ProbeAudit| absorb_host(&folder, probed, audit, &mut starved),
+        |probed, audit: &mut ProbeAudit| {
+            absorb_host(&folder, probed, audit, &mut starved, &mut shortfall)
+        },
     );
 
     let mut probes = 0u128;
@@ -1538,6 +1535,7 @@ async fn sweep(
         let unasked = counted(starved, "address", "addresses");
         report_starved(&ctx, ScannerKind::Connect, unasked, patience);
     }
+    shortfall.report(&ctx, ScannerKind::Connect, "address", "addresses");
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);
     Ok(())
 }
@@ -1571,14 +1569,16 @@ enum Fate {
     /// Every port was asked once and not one of them answered. **Settled**: a
     /// connect gets one attempt per port and those were all of them.
     Exhausted,
-    /// Nothing this probe sent left the host, no route or no source to send
-    /// from, so the address proved nothing and the next sitting may get
-    /// further.
-    Unroutable,
+    /// This machine refused to send a probe, for the reason carried, so the
+    /// address proved nothing and the next sitting may get further. No route
+    /// leading to it is filed against the address, as the raw path files one;
+    /// any other refusal is this machine's, and the sweep reports it once it
+    /// has drained.
+    Refused(Refusal),
     /// The process had no socket to give the probe, for longer than it was
     /// willing to wait, so the address was never asked. Unsettled for the same
-    /// reason as [`Unroutable`](Self::Unroutable), and told apart from it
-    /// because the cause is this process's file limit, which the scan reports.
+    /// reason as [`Refused`](Self::Refused), and told apart from it because
+    /// the cause is this process's file limit, which the scan reports.
     Starved,
     /// The scan stopped while the address's ports were still being tried.
     Interrupted,
@@ -1598,9 +1598,16 @@ enum Fate {
 /// stayed silent, or it could not be asked from here at all. Only the first two
 /// are settled. see [`settle`](crate::journal::settle).
 ///
-/// An address starved of a socket is counted into `starved`, which the sweep
+/// An address starved of a socket is counted into `starved`, and one this
+/// machine refused to send to into `shortfall`, both of which the sweep
 /// reports once it has drained.
-fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit, starved: &mut u128) {
+fn absorb_host(
+    ctx: &ScanContext,
+    probed: ProbedHost,
+    audit: &mut ProbeAudit,
+    starved: &mut u128,
+    shortfall: &mut Shortfall,
+) {
     match probed.fate {
         Fate::Answered(host) => {
             let ip = host.primary_ip();
@@ -1615,8 +1622,9 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit, st
             audit.record_send(true);
             ctx.settle_address(probed.ip, Settled::Exhausted);
         }
-        Fate::Unroutable => {
+        Fate::Refused(refusal) => {
             audit.record_send(false);
+            shortfall.count(probed.ip, &Attempt::Refused(refusal));
             ctx.record_address_outcomes(Outcome::Unroutable, 1);
         }
         Fate::Starved => {
@@ -1635,15 +1643,24 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit, st
 /// Probes one address for presence, over each of `ports` in turn.
 ///
 /// Returns as soon as one of them answers at the TCP layer: a completed
-/// handshake, or a reset the kernel surfaced as a connection error. Any other
-/// failure says nothing about the address, only that this connect did not
-/// finish, so the next port is tried.
+/// handshake, or a reset the kernel surfaced as a connection error. Anything
+/// else is read as [`Knock::of`] reads it, and the next port is tried.
+///
+/// Each connect is made in the two halves the port scan makes it in (see
+/// [`Handshake`]), because the operating system names a missing route here
+/// and a filter's rejection on the far side with the same codes, and only
+/// where the code surfaced tells them apart. No route leads to the address
+/// from any of its ports, so the first refusal for that ends the probe and
+/// the address is filed as one this host cannot reach.
 ///
 /// The stop signal is checked between ports, not only between addresses.
 /// One task covers up to eight connects, and a sweep that only looked once
 /// per address would take eight timeouts to wind down rather than one. What has
 /// been asked so far decides how the address is filed: cut off part way through
-/// is not the same as asked and silent, and only the second is a verdict.
+/// is not the same as asked and silent, and only the second is a verdict. So
+/// does what was not: an address with a port this machine refused to send to
+/// was not asked everything, and is left for the next sitting, with the
+/// reason reported.
 ///
 /// Every connect leaves by `egress`, on a socket from the process's budget,
 /// and waits at most `patience` for one the process has none of.
@@ -1656,6 +1673,7 @@ async fn prober(
     patience: Duration,
 ) -> ProbedHost {
     let mut asked = false;
+    let mut refused = None;
     let cut_short = |asked| ProbedHost {
         ip,
         fate: if asked {
@@ -1666,20 +1684,35 @@ async fn prober(
     };
 
     for &port in ports.iter() {
-        if handle.should_stop() {
-            return cut_short(asked);
-        }
-
         let addr = SocketAddr::new(ip, port);
-        // The descriptor is held until the attempt's socket is dropped, at the
-        // end of this pass, so the budget counts every socket still open.
-        let (attempt, start, _descriptor) =
-            match dial(&handle, patience, || connect(egress, addr, shaping)).await {
+        let mut met_itself = None;
+        let mut knock = None;
+        for _ in 0..SELF_MEETINGS {
+            if handle.should_stop() {
+                return cut_short(asked);
+            }
+            // The descriptor is held until the attempt's socket is dropped,
+            // at the end of this pass, so the budget counts every socket still
+            // open.
+            let (handshake, start, _descriptor) = match dial(&handle, patience, || {
+                std::future::ready(egress.start_connect(addr, shaping))
+            })
+            .await
+            {
                 Dialled::Ran {
-                    result,
+                    result: Ok(connecting),
                     began,
                     descriptor,
-                } => (result, began, descriptor),
+                } => (
+                    Handshake::sent(handshake(connecting).await),
+                    began,
+                    Some(descriptor),
+                ),
+                Dialled::Ran {
+                    result: Err(e),
+                    began,
+                    ..
+                } => (Handshake::unsent(e), began, None),
                 Dialled::Stopped => return cut_short(asked),
                 Dialled::Starved => {
                     return ProbedHost {
@@ -1688,34 +1721,82 @@ async fn prober(
                     };
                 }
             };
+            match Knock::of(handshake) {
+                Knock::MetItself(e) => met_itself = Some(e),
+                other => {
+                    knock = Some((other, start));
+                    break;
+                }
+            }
+        }
 
-        match attempt {
-            // A completed handshake means the host is alive.
-            Ok(_) => return answered(ip, start),
-            Err(e) => match e.kind() {
-                // Only these TCP errors imply the host answered at the IP/TCP
-                // layer.
-                ErrorKind::ConnectionRefused
-                | ErrorKind::ConnectionReset
-                | ErrorKind::ConnectionAborted => return answered(ip, start),
-                // A timeout, the budget's or the stack's, is the probe going
-                // out and nothing coming back, which is the address being
-                // asked and declining to answer.
-                ErrorKind::TimedOut => asked = true,
-                // Any other is a local failure, no route, permission denied,
-                // and the probe never reached the wire.
-                _ => {}
-            },
+        match knock {
+            Some((Knock::Answered, start)) => return answered(ip, start),
+            Some((Knock::Asked, _)) => asked = true,
+            Some((Knock::Refused(Refusal::NoRoute), _)) => {
+                return ProbedHost {
+                    ip,
+                    fate: Fate::Refused(Refusal::NoRoute),
+                };
+            }
+            Some((Knock::Refused(refusal), _)) => {
+                refused.get_or_insert(refusal);
+            }
+            // Met itself every time, which only a pinned source port equal
+            // to the one asked, on this machine's own address, can do.
+            Some((Knock::MetItself(_), _)) | None => {
+                let why = met_itself.map_or_else(String::new, |e| e.to_string());
+                refused.get_or_insert(Refusal::Local(why));
+            }
         }
     }
 
     ProbedHost {
         ip,
-        fate: if asked {
-            Fate::Exhausted
-        } else {
-            Fate::Unroutable
+        fate: match refused {
+            Some(refusal) => Fate::Refused(refusal),
+            None if asked => Fate::Exhausted,
+            None => Fate::Unasked,
         },
+    }
+}
+
+/// What one connect of a liveness probe says about the address it knocked on.
+#[derive(Debug)]
+enum Knock {
+    /// Something at the address answered at the TCP layer: a completed
+    /// handshake, a refusal, or a reset. A refusal is almost always the
+    /// target's own reset, as the port scan reads one.
+    Answered,
+    /// The SYN left and nothing that proves a host came back: silence, an
+    /// ICMP error from a filter or a router on the way, whose sender this path
+    /// cannot see, or a failure that names no packet.
+    Asked,
+    /// This machine refused the connect before anything left it.
+    Refused(Refusal),
+    /// The connect reached its own socket, which says nothing about the
+    /// address; a fresh socket is given another source.
+    MetItself(io::Error),
+}
+
+impl Knock {
+    /// Reads `handshake` for what it says about the address rather than the
+    /// port.
+    fn of(handshake: Handshake) -> Self {
+        match handshake {
+            Handshake::Accepted(_) | Handshake::Refused => Self::Answered,
+            Handshake::Failed(e)
+                if matches!(
+                    e.kind(),
+                    ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+                ) =>
+            {
+                Self::Answered
+            }
+            Handshake::Unreachable | Handshake::Silent | Handshake::Failed(_) => Self::Asked,
+            Handshake::MetItself(e) => Self::MetItself(e),
+            Handshake::NotSent(e) => Self::Refused(Refusal::of(&e)),
+        }
     }
 }
 
@@ -2234,6 +2315,117 @@ mod tests {
                 "one address, asked once it had a socket"
             );
         });
+    }
+
+    /// **A liveness connect that reaches its own socket finds no host.** A
+    /// connect given its target's port as its source completes a handshake
+    /// with itself on Linux, and on macOS over IPv6, and a sweep that took
+    /// the completed connect for an answer reported a host nothing proved was
+    /// there. macOS refuses the same connect over IPv4, and a sweep that read
+    /// the refusal as nothing at all left the address undecided with no reason
+    /// given. Pinned to the port it asks, every attempt meets itself, so the
+    /// address stays unsettled and the report says why.
+    #[tokio::test]
+    async fn a_sweep_connect_that_reaches_itself_finds_no_host_and_says_why() {
+        for ip in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ] {
+            let port = std::net::TcpListener::bind((ip, 0))
+                .and_then(|free| free.local_addr())
+                .expect("a free port")
+                .port();
+            let evasion = EvasionProfile {
+                source_port: Some(port),
+                ..EvasionProfile::default()
+            };
+            let (session, ctx) = crate::scanner::session::ScanSession::new();
+
+            discover_on(IpSet::from(ip), ctx.clone(), &evasion, SynPorts::only(port))
+                .await
+                .expect("the sweep runs");
+
+            assert!(
+                !session
+                    .hosts()
+                    .read(ip, |host| host.status() == HostStatus::Up)
+                    .unwrap_or(false),
+                "{ip}: a connect that met itself proved a host"
+            );
+            assert_eq!(ctx.settlements().settled_count(), 0, "{ip}: nothing asked");
+            let failures = ctx.failures_snapshot();
+            assert!(
+                failures
+                    .iter()
+                    .any(|failure| failure.reason().contains("reached itself")),
+                "{ip}: the report says why, and has {failures:?}"
+            );
+        }
+    }
+
+    /// What a liveness connect says about the address rests on where its
+    /// error surfaced, as it does for a port.
+    ///
+    /// No route here is the address this machine cannot reach, filed against
+    /// it. The same code after the SYN left is a router or a filter answering
+    /// for the address, which asked it without proving a host. A refusal
+    /// proves one.
+    #[test]
+    fn a_liveness_knock_reads_an_unreachable_by_where_it_surfaced() {
+        for kind in [ErrorKind::HostUnreachable, ErrorKind::NetworkUnreachable] {
+            assert!(
+                matches!(
+                    Knock::of(Handshake::unsent(io::Error::from(kind))),
+                    Knock::Refused(Refusal::NoRoute)
+                ),
+                "{kind:?} before anything left"
+            );
+            assert!(
+                matches!(
+                    Knock::of(Handshake::sent(Err(io::Error::from(kind)))),
+                    Knock::Asked
+                ),
+                "{kind:?} after the SYN left"
+            );
+        }
+        assert!(matches!(
+            Knock::of(Handshake::sent(Err(io::Error::from(
+                ErrorKind::ConnectionRefused
+            )))),
+            Knock::Answered
+        ));
+        assert!(matches!(
+            Knock::of(Handshake::sent(Err(io::Error::from(ErrorKind::TimedOut)))),
+            Knock::Asked
+        ));
+    }
+
+    /// An address no route leads to is filed as one, against the address, and
+    /// is not an address the sweep failed to decide.
+    ///
+    /// Filed as nothing, it was counted among the addresses without a
+    /// verdict, the report called itself partial, and nothing said why.
+    #[test]
+    fn an_address_no_route_leads_to_is_filed_unroutable() {
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let mut audit = ProbeAudit::default();
+        let mut shortfall = Shortfall::default();
+
+        absorb_host(
+            &ctx,
+            ProbedHost {
+                ip,
+                fate: Fate::Refused(Refusal::NoRoute),
+            },
+            &mut audit,
+            &mut 0,
+            &mut shortfall,
+        );
+        shortfall.report(&ctx, ScannerKind::Connect, "address", "addresses");
+
+        assert!(ctx.is_unroutable(ip));
+        assert!(ctx.failures_snapshot().is_empty(), "nothing broke here");
     }
 
     /// A sweep that never gets a socket says so: the address is left

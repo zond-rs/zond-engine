@@ -342,6 +342,20 @@ impl Egress {
             {
                 return Err(SourcePortHeld::error(shaping, e, Holder::Closing));
             }
+            // Linux refuses a connect by the type of the route that matched,
+            // and names each type by its own code: no route, or an
+            // `unreachable` one, as a network or host it cannot reach, a
+            // `prohibit` route as permission denied and a `blackhole` route as
+            // an invalid argument. The last two are routes somebody wrote to
+            // say nothing goes there, as much a fact about the destination as
+            // the first, so they are handed on as the host this machine cannot
+            // reach, in the kernel's own words. A security module denying the
+            // connect is read the same way, and is the same fact from where
+            // this process stands: nothing it sends may go there.
+            #[cfg(target_os = "linux")]
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EACCES | libc::EINVAL)) => {
+                return Err(io::Error::new(io::ErrorKind::HostUnreachable, e));
+            }
             Err(e) => return Err(e),
         }
         Ok(Connecting {
