@@ -581,6 +581,11 @@ fn schedule(
     // indistinguishable from one with nothing on it, which is why it is
     // derived here rather than left to a constant that has to be remembered.
     //
+    // The schedule is taken at its longest, every attempt at the ceiling,
+    // rather than as an unmeasured path would run it. A sweep that has heard
+    // slow hosts times the rest from what it heard, at up to the ceiling on
+    // every attempt, the first included.
+    //
     // The send rate is the one that grows with the range, and it is counted
     // in every attempt rather than the first: a retry leaves through the same
     // ticker as a first attempt, so a silent range takes the ticker's time
@@ -594,7 +599,7 @@ fn schedule(
         SEND_SLACK * f64::from(retry.max_attempts) / f64::from(addresses_per_sec.get()),
     );
     let deadline_config = DEADLINE_CONFIG
-        .allowing_for(retry.worst_case_probe_lifetime())
+        .allowing_for(retry.longest_probe_lifetime())
         .allowing_pace_of(per_address, target_count);
 
     (send_tick, batch, deadline_config)
@@ -1259,6 +1264,34 @@ mod tests {
             assert!(
                 given >= needed,
                 "{case}: needs {needed:?} to send every attempt and is given {given:?}"
+            );
+        }
+    }
+
+    /// A sweep outlasts the schedule of the last address it asks, with every
+    /// attempt timed as long as measurement may make it.
+    ///
+    /// A sweep that has heard slow hosts times the rest at up to the retry
+    /// ceiling on every attempt, the first included, which is far longer than
+    /// the schedule an unmeasured path gets. Sized for the unmeasured one, the
+    /// deadline stops a small sweep of a slow path while its last address
+    /// still has attempts to spend, and that address reads as cut off.
+    #[test]
+    fn a_sweep_outlasts_a_probe_timed_at_the_ceiling_on_every_attempt() {
+        let thorough = RetryConfig {
+            effort: crate::config::ScanEffort::Thorough,
+            ..RetryConfig::default()
+        };
+        for (case, retry) in [
+            ("by default", RetryConfig::default()),
+            ("at thorough", thorough),
+        ] {
+            let needed = RETRY_POLICY.configured(retry).longest_probe_lifetime();
+            let given = hard_deadline(1, retry, PROBE_RATE_PER_SEC);
+            assert!(
+                given >= needed,
+                "one address {case}: its schedule at the ceiling takes {needed:?} \
+                 and the sweep is given {given:?}"
             );
         }
     }

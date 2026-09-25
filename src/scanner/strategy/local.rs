@@ -274,10 +274,13 @@ fn deadline_for(target_count: usize, retry: &RetryPolicy) -> AdaptiveDeadlineCon
     // the sweep has to outlive whichever probe it commits to last. Sized from
     // ARP alone, it ends while solicitations are still legitimately
     // outstanding, which is the shape of the bug `ipv6::NDP_RETRY_POLICY`
-    // exists to fix, arriving one layer up.
+    // exists to fix, arriving one layer up. Each is taken at its longest,
+    // every attempt at its ceiling, since a segment that answered slowly times
+    // its silent addresses from what it heard, up to the ceiling on every
+    // attempt, the first included.
     let probe_lifetime = retry
-        .worst_case_probe_lifetime()
-        .max(ipv6::NDP_RETRY_POLICY.worst_case_probe_lifetime());
+        .longest_probe_lifetime()
+        .max(ipv6::NDP_RETRY_POLICY.longest_probe_lifetime());
 
     // And its own pacing, or it stops mid-send. Every frame leaves through one
     // ticker at `SEND_INTERVAL`, a repeat as much as a first attempt, so an
@@ -705,16 +708,22 @@ impl LocalScanner {
 
     /// Why the loop should stop, if it should.
     ///
-    /// The order is the priority: a run somebody aborted, one whose wall-clock
-    /// budget ran out, and one whose own deadline expired are reported as such
-    /// even when the sweep had in fact finished, because the caller's next
-    /// question is whether the result is complete.
+    /// A run somebody aborted, or whose wall-clock budget ran out, is reported
+    /// as such whatever state the sweep was in, because the caller stopped it
+    /// rather than the sweep stopping itself. Otherwise the reason says
+    /// whether the sweep finished, which is the caller's next question.
+    ///
+    /// A sweep that has sent every first attempt and holds nothing
+    /// outstanding has asked every address as often as its schedule allows,
+    /// and stops as [`AttemptsSpent`](StopReason::AttemptsSpent) once the
+    /// segment has been quiet for its silence tolerance, or its hard deadline
+    /// passes first. It goes on listening that long, where the routed sweep
+    /// stops at once, but no probe of its own is waiting any more. Only a
+    /// sweep stopped with something unsent or outstanding is cut short, and
+    /// only that one reads [`DeadlineExpired`](StopReason::DeadlineExpired).
     fn stop_reason(&self, now: Instant, sending_finished: bool) -> Option<StopReason> {
         if let Some(cause) = self.ctx.handle.stopped() {
             return Some(cause.into());
-        }
-        if self.deadline.hard_deadline_passed() {
-            return Some(StopReason::DeadlineExpired);
         }
         if sending_finished && self.all_targets_responded() {
             return Some(StopReason::AllResponded);
@@ -722,8 +731,16 @@ impl LocalScanner {
         // Silence is only evidence once nothing is outstanding: with probes
         // still waiting on their timers, quiet is what the retry schedule
         // expects rather than a sign the segment has gone quiet.
-        if sending_finished && self.idle(now) && self.deadline.has_expired() {
-            return Some(StopReason::DeadlineExpired);
+        let spent = sending_finished && self.idle(now);
+        if self.deadline.hard_deadline_passed() {
+            return Some(if spent {
+                StopReason::AttemptsSpent
+            } else {
+                StopReason::DeadlineExpired
+            });
+        }
+        if spent && self.deadline.has_expired() {
+            return Some(StopReason::AttemptsSpent);
         }
 
         None
@@ -1835,6 +1852,37 @@ mod tests {
             assert!(
                 given >= needed,
                 "a /16 {case}: needs {needed:?} to send every attempt and is given {given:?}"
+            );
+        }
+    }
+
+    /// A segment sweep outlasts the schedule of the last address it asks, on
+    /// whichever of its two ledgers that schedule is longer, with every
+    /// attempt timed as long as measurement may make it.
+    ///
+    /// A segment that answered slowly, a wireless one of sleeping devices
+    /// say, times its silent addresses at up to the retry ceiling on every
+    /// attempt. Sized for an unmeasured schedule, the deadline stops a small
+    /// sweep of it while its last address still has attempts to spend.
+    #[test]
+    fn a_segment_sweep_outlasts_a_probe_timed_at_the_ceiling_on_every_attempt() {
+        let thorough = RetryConfig {
+            effort: crate::config::ScanEffort::Thorough,
+            ..RetryConfig::default()
+        };
+        for (case, retry) in [
+            ("by default", RetryConfig::default()),
+            ("at thorough", thorough),
+        ] {
+            let arp = RETRY_POLICY.configured(retry);
+            let needed = arp
+                .longest_probe_lifetime()
+                .max(ipv6::NDP_RETRY_POLICY.longest_probe_lifetime());
+            let given = deadline_for(1, &arp).max_budget.for_target_count(1);
+            assert!(
+                given >= needed,
+                "one address {case}: its schedule at the ceiling takes {needed:?} \
+                 and the sweep is given {given:?}"
             );
         }
     }

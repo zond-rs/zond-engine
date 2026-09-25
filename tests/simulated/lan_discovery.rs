@@ -29,7 +29,7 @@ use zond_engine::model::exclusion::Exclusions;
 use zond_engine::model::host::telemetry::RttSource;
 use zond_engine::model::host::{EvidenceSource, HostStatus, NetworkRole};
 use zond_engine::model::ip::set::IpSet;
-use zond_engine::report::{AttachmentSource, ScanKind, TargetScope};
+use zond_engine::report::{AttachmentSource, ScanKind, StopReason, TargetScope};
 use zond_engine::scanner::recorder::PhaseRecorder;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
@@ -1071,6 +1071,35 @@ async fn every_frame_the_sweep_sends_is_counted() {
         filed.sends_failed(),
         0,
         "the simulated segment accepts every frame"
+    );
+}
+
+/// A sweep that asked every address as often as its schedule allows, and
+/// waited out the silence after, says its attempts were spent rather than that
+/// its deadline expired.
+///
+/// The stop reason is how a reader tells a finished sweep from one cut short,
+/// and the two call for different things: a sweep cut short is run again with
+/// more time, and one that finished found everything it was going to. Nothing
+/// is on this segment, so every address runs its whole schedule and then the
+/// sweep has nothing left to do.
+#[tokio::test]
+async fn a_sweep_that_asked_everything_and_waited_says_its_attempts_were_spent() {
+    let targets = [v4(1), v4(2)];
+    let lan = FakeLan::new();
+
+    let (_session, ctx) = sweep_audited(&lan, &targets, Scope::Targeted).await;
+
+    let stats = ctx.probe_stats_snapshot();
+    let filed = stats.first().expect("the sweep files its counters");
+    assert!(
+        lan.arp_count(Ipv4Addr::new(192, 0, 2, 1)) >= 3,
+        "test premise: the silent address was asked its whole schedule"
+    );
+    assert_eq!(
+        filed.stop_reason(),
+        StopReason::AttemptsSpent,
+        "every address was asked every attempt and nothing was outstanding"
     );
 }
 
