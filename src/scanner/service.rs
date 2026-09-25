@@ -870,11 +870,11 @@ mod tests {
         assert_eq!(quiet.first.as_deref(), Some("[2001:db8::1]:443"));
     }
 
+    use crate::scanner::loopback::{SilentPort, accept_from_this_process, from_this_process};
     use crate::scanner::session::ScanSession;
     use std::collections::BTreeSet;
     use std::net::IpAddr;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -885,7 +885,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            if let Ok((mut sock, _)) = listener.accept().await {
+            if let Ok(mut sock) = accept_from_this_process(&listener).await {
                 let _ = sock.write_all(b"SSH-2.0-OpenSSH_9.6p1 Debian-3\r\n").await;
             }
         });
@@ -954,30 +954,6 @@ mod tests {
         assert!(port.service().is_none());
     }
 
-    /// A silent loopback listener that counts every byte any connection sends
-    /// it, standing in for a printer's raw-print port.
-    async fn counting_listener() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let received = Arc::new(AtomicUsize::new(0));
-        let count = Arc::clone(&received);
-        tokio::spawn(async move {
-            while let Ok((mut sock, _)) = listener.accept().await {
-                let count = Arc::clone(&count);
-                tokio::spawn(async move {
-                    let mut buffer = [0u8; 1024];
-                    while let Ok(n) = sock.read(&mut buffer).await {
-                        if n == 0 {
-                            break;
-                        }
-                        count.fetch_add(n, Ordering::SeqCst);
-                    }
-                });
-            }
-        });
-        (addr, received)
-    }
-
     /// The pass after a raw scan listens on a listen-only port and sends it
     /// nothing, at the most thorough level there is, where the same port off
     /// the list is asked everything.
@@ -988,7 +964,8 @@ mod tests {
     async fn a_listen_only_port_is_sent_nothing_where_any_other_is_asked() {
         let mut received = Vec::new();
         for listen_only in [true, false] {
-            let (addr, count) = counting_listener().await;
+            let silent = SilentPort::open();
+            let addr = silent.addr();
             let ports = match listen_only {
                 true => BTreeSet::from([addr.port()]),
                 false => BTreeSet::new(),
@@ -1000,7 +977,7 @@ mod tests {
             session.hosts().insert(ip, host);
 
             detect(&ctx, ServiceDetection::Thorough, Protocol::Tcp).await;
-            received.push(count.load(Ordering::SeqCst));
+            received.push(silent.heard());
         }
 
         assert_eq!(received[0], 0, "a listen-only port was sent a payload");
@@ -1044,7 +1021,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            while let Ok((mut sock, _)) = listener.accept().await {
+            while let Ok(mut sock) = accept_from_this_process(&listener).await {
                 tokio::spawn(async move {
                     let mut buffer = [0u8; 1024];
                     if !matches!(sock.read(&mut buffer).await, Ok(n) if n > 0) {
@@ -1135,7 +1112,7 @@ mod tests {
             numbers.push(number);
             let queue = queue.clone();
             std::thread::spawn(move || {
-                for sock in listener.incoming().flatten() {
+                for sock in from_this_process(&listener) {
                     if queue.send((number, sock)).is_err() {
                         break;
                     }
@@ -1223,22 +1200,22 @@ mod tests {
     #[tokio::test]
     async fn a_silent_port_beside_a_prompt_one_is_asked_once() {
         let (prompt, _) = one_worker(1, Duration::ZERO);
-        let (silent, asked) = counting_listener().await;
-        let (session, ctx) = open_on_loopback(&[prompt[0], silent.port()]);
+        let silent = SilentPort::open();
+        let (session, ctx) = open_on_loopback(&[prompt[0], silent.addr().port()]);
 
         detect(&ctx, ServiceDetection::default(), Protocol::Tcp).await;
 
         // What the port is sent over one identification is what it is sent
         // identified alone, and two would send it twice that.
-        let once = asked.load(Ordering::SeqCst);
+        let once = silent.heard();
         let generic: usize = crate::fingerprint::SignatureDb::global()
             .generic_tcp_probe_payloads()
             .iter()
             .map(Vec::len)
             .sum();
-        let (alone_session, alone_ctx) = open_on_loopback(&[silent.port()]);
+        let (alone_session, alone_ctx) = open_on_loopback(&[silent.addr().port()]);
         detect(&alone_ctx, ServiceDetection::default(), Protocol::Tcp).await;
-        let alone = asked.load(Ordering::SeqCst) - once;
+        let alone = silent.heard() - once;
         assert!(generic > 0 && alone >= generic);
         assert_eq!(
             once, alone,
@@ -1248,14 +1225,10 @@ mod tests {
         drop((session, alone_session));
     }
 
-    /// What one identification of the silent port at `addr` sends it, in
-    /// `crowd`, and the bytes the port had been sent when it returned.
-    async fn identified_in(
-        crowd: &Crowd,
-        addr: std::net::SocketAddr,
-        asked: &AtomicUsize,
-    ) -> usize {
-        let before = asked.load(Ordering::SeqCst);
+    /// What one identification of `silent` in `crowd` sends it.
+    async fn identified_in(crowd: &Crowd, silent: &SilentPort) -> usize {
+        let before = silent.heard();
+        let addr = silent.addr();
         let stream = TcpStream::connect(addr).await.unwrap();
         let port = crate::fingerprint::baseline_port(addr.port(), Protocol::Tcp, PortState::Open);
         let found = crowd
@@ -1269,9 +1242,7 @@ mod tests {
             )
             .await;
         assert!(found.responses.is_empty(), "the port says nothing");
-        // Read, not answered: what the port was sent may still be arriving.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        asked.load(Ordering::SeqCst) - before
+        silent.heard() - before
     }
 
     /// A port whose identification drew nothing in company, on a host that
@@ -1282,16 +1253,16 @@ mod tests {
     /// it on a wide scan for a socket it did not have open.
     #[tokio::test]
     async fn a_port_owed_a_second_asking_is_handed_back_before_it_is_asked_again() {
-        let (silent, asked) = counting_listener().await;
+        let silent = SilentPort::open();
 
         let crowd = Crowd::default();
         crowd.answered_late.store(true, Ordering::Relaxed);
         // Another of the host's ports, still being identified.
         let company = crowd.contention.enter();
-        let in_company = identified_in(&crowd, silent, &asked).await;
+        let in_company = identified_in(&crowd, &silent).await;
         drop(company);
 
-        let alone = identified_in(&Crowd::default(), silent, &asked).await;
+        let alone = identified_in(&Crowd::default(), &silent).await;
         assert!(alone > 0);
         assert_eq!(
             in_company, alone,
@@ -1304,19 +1275,18 @@ mod tests {
     /// whole of its identification a second time, with the host to itself.
     #[tokio::test]
     async fn a_port_owed_a_second_asking_is_asked_again_once_the_pass_is_done() {
-        let (silent, asked) = counting_listener().await;
+        let silent = SilentPort::open();
         let (_session, ctx) = ScanSession::new();
         let crowds = Crowds::default();
-        let crowd = crowds.of(silent.ip());
+        let crowd = crowds.of(silent.addr().ip());
         crowd.answered_late.store(true, Ordering::Relaxed);
 
         let company = crowd.contention.enter();
-        let first = identified_in(&crowd, silent, &asked).await;
+        let first = identified_in(&crowd, &silent).await;
         drop(company);
         crowds.ask_again(&ctx, ScannerKind::Service).await;
-        tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(first > 0);
-        assert_eq!(asked.load(Ordering::SeqCst), first * 2, "asked once again");
+        assert_eq!(silent.heard(), first * 2, "asked once again");
     }
 }

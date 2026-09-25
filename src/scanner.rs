@@ -181,6 +181,11 @@ pub mod service;
 mod orchestrator;
 mod vantage;
 
+// Loopback services for the tests of the passes above, which hear only this
+// process however many other scanners share the machine's loopback.
+#[cfg(test)]
+pub(crate) mod loopback;
+
 /// An error returned when a scan fails to run to completion.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]

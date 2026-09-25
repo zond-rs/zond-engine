@@ -994,7 +994,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            if let Ok((mut sock, _)) = listener.accept().await {
+            if let Ok(mut sock) =
+                crate::scanner::loopback::accept_from_this_process(&listener).await
+            {
                 let mut probe = [0u8; 64];
                 let _ = sock.read(&mut probe).await;
                 let _ = sock.write_all(b"# Server\r\nredis_version:7.2.4\r\n").await;
