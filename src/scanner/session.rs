@@ -1254,6 +1254,7 @@ fn changed_since(store: &DashMap<ScopedIp, Host>, changed: &ChangedHosts) -> Vec
 /// Whether `host` is a record a port phase standing in for a liveness pass may
 /// yet forget: one nothing has answered at. The phase decides these at its end,
 /// and only these; see [`ScanContext::await_verdicts`].
+#[cfg(feature = "journal-format")]
 fn awaits_verdict(host: &Host) -> bool {
     host.status() == crate::model::host::HostStatus::Unknown
 }
@@ -1268,6 +1269,9 @@ pub struct ScanProgress {
     settlements: Arc<Settlements>,
     failures: Arc<FailureLog>,
     tapes: Arc<Tapes>,
+    /// Whether a port phase standing in for a liveness pass has yet to reach
+    /// its verdicts, which only a journal's writer asks.
+    #[cfg(feature = "journal-format")]
     verdicts_pending: Arc<AtomicBool>,
 }
 
@@ -1314,6 +1318,7 @@ impl ScanProgress {
     /// record on disk with nothing to drop it by. Held rather than taken, so
     /// the record is written once the phase keeps it or something answers.
     /// See [`ScanContext::await_verdicts`].
+    #[cfg(feature = "journal-format")]
     pub(crate) fn take_changed_findings(&self) -> Vec<Host> {
         if !self.verdicts_pending.load(Ordering::Acquire) {
             return self.take_changed_hosts();
@@ -1335,6 +1340,7 @@ impl ScanProgress {
     /// takes only what changed since, and its cursor settles the targets
     /// behind the ones that were lost. Handed back, they go out with the next
     /// write that succeeds, in their state as of then.
+    #[cfg(feature = "journal-format")]
     pub(crate) fn hand_back(&self, hosts: &[Host]) {
         for host in hosts {
             self.changed.insert(host.scoped_ip());
@@ -1346,6 +1352,7 @@ impl ScanProgress {
     /// while a port phase standing in for a liveness pass has yet to decide
     /// them. What a journal compacts its findings to; see
     /// [`take_changed_findings`](Self::take_changed_findings).
+    #[cfg(feature = "journal-format")]
     pub(crate) fn findings_snapshot(&self) -> Vec<Host> {
         let mut hosts = self.hosts_snapshot();
         if self.verdicts_pending.load(Ordering::Acquire) {
@@ -2515,6 +2522,7 @@ impl ScanContext {
             settlements: Arc::clone(&self.settlements),
             failures: Arc::clone(&self.failures),
             tapes: Arc::clone(&self.tapes),
+            #[cfg(feature = "journal-format")]
             verdicts_pending: Arc::clone(&self.verdicts_pending),
         }
     }
