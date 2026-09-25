@@ -167,8 +167,9 @@ pub struct OsEchoScanner {
     /// Which host each sequence went to, since a reply names its attempt, not
     /// its target.
     by_sequence: HashMap<u16, IpAddr>,
-    /// The hard ceiling on this run, derived from the worst case a retry can
-    /// still be answered within.
+    /// The hard ceiling on this run, derived from the longest a probe's
+    /// schedule can take: every attempt at the retry ceiling, which is where
+    /// hosts that answered slowly time the rest.
     deadline: Instant,
     /// Why requests did not leave, split by whose fact it was: this host's
     /// send path, or an address nothing reaches from here.
@@ -228,7 +229,7 @@ impl OsEchoScanner {
             sweep: HostSweep::new(ProbeLedger::new(RETRY_POLICY, 256)),
             by_sequence: HashMap::with_capacity(target_count),
             deadline: Instant::now()
-                + RETRY_POLICY.worst_case_probe_lifetime()
+                + RETRY_POLICY.longest_probe_lifetime()
                 + send_duration
                 + QUIET_FLOOR,
             faults: SendFaults::default(),
@@ -696,6 +697,28 @@ mod tests {
             OsEchoScanner::with_transport(ctx.clone(), vec![TARGET], transport),
             tx,
         )
+    }
+
+    /// The pass outlasts the schedule of the last host it asks, with every
+    /// attempt timed as long as measurement may make it.
+    ///
+    /// Hosts that answered slowly time the rest from what they showed, at up
+    /// to the retry ceiling on every attempt, the first included. A deadline
+    /// sized for an unmeasured schedule stops the pass while its last host
+    /// still has attempts to spend, and that host goes unidentified.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_pass_outlasts_a_probe_timed_at_the_ceiling_on_every_attempt() {
+        let (_session, ctx) = ScanSession::new();
+        let built = Instant::now();
+        let (scanner, _tx) = scanner(&ctx, 64);
+
+        let needed = RETRY_POLICY.longest_probe_lifetime();
+        let given = scanner.deadline.saturating_duration_since(built);
+        assert!(
+            given >= needed,
+            "one host's schedule at the ceiling takes {needed:?} and the pass \
+             is given {given:?}"
+        );
     }
 
     /// The whole path this scanner exists for: a host that answered nothing a
