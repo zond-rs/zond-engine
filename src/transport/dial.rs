@@ -330,6 +330,18 @@ impl Egress {
             {
                 return Err(io::Error::other(MetItself));
             }
+            // The bind above let the pinned port be shared, so a refusal here
+            // is the whole four-tuple taken: macOS says it is in use, Linux
+            // that it is not available. What holds it is almost always this
+            // same connection made a moment ago, still closing.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::AddrInUse | io::ErrorKind::AddrNotAvailable
+                ) && shaping.source_port.is_some() =>
+            {
+                return Err(SourcePortHeld::error(shaping, e, Holder::Closing));
+            }
             Err(e) => return Err(e),
         }
         Ok(Connecting {
@@ -459,14 +471,87 @@ impl Egress {
         }
 
         let port = shaping.source_port.unwrap_or(0);
-        match self.pin {
-            Some(pin) => pin.bind(&socket, target, port)?,
+        let bound = match self.pin {
+            Some(pin) => pin.bind(&socket, target, port),
             None if protocol == Protocol::Udp || shaping.source_port.is_some() => {
-                socket.bind(&wildcard(target, port).into())?;
+                socket.bind(&wildcard(target, port).into())
             }
-            None => {}
+            None => Ok(()),
+        };
+        match bound {
+            // Refused although this socket shares the port, so another holds
+            // it without sharing.
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse && shaping.source_port.is_some() => {
+                Err(SourcePortHeld::error(shaping, e, Holder::Socket))
+            }
+            Err(e) => Err(e),
+            Ok(()) => Ok(socket),
         }
-        Ok(socket)
+    }
+}
+
+/// A connection or datagram refused its pinned source port, because something
+/// on this machine already held it.
+///
+/// Named apart from every other refusal because the remedy is the caller's and
+/// specific. A port pinned for every probe is taken by each of them in turn,
+/// and a connection keeps its four-tuple in `TIME_WAIT` after it ends, a
+/// minute on Linux and half that on macOS, so the same port asked again inside
+/// that wait from the same pinned port is refused. Nothing is sent, the port
+/// is left unasked, and a scan run again once the wait is over asks it.
+/// Waiting it out here would stall the scan on every such port, and ending
+/// each connection with a reset to skip the wait would change what every
+/// pinned probe puts on the wire.
+#[derive(Debug)]
+pub(crate) struct SourcePortHeld {
+    /// The pinned port.
+    pub(crate) port: u16,
+    /// What held it.
+    pub(crate) holder: Holder,
+    /// The operating system's own error.
+    cause: io::Error,
+}
+
+/// What held a pinned source port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Holder {
+    /// A connection from the port to the same destination, as a rule this
+    /// scan's own, still in its closing wait.
+    Closing,
+    /// Another socket on this machine, bound to the port without sharing it.
+    Socket,
+}
+
+impl SourcePortHeld {
+    /// The refusal `cause`, of `shaping`'s pinned port, as an error that says
+    /// so.
+    fn error(shaping: Shaping, cause: io::Error, holder: Holder) -> io::Error {
+        let kind = cause.kind();
+        io::Error::new(
+            kind,
+            Self {
+                port: shaping.source_port.unwrap_or_default(),
+                holder,
+                cause,
+            },
+        )
+    }
+
+    /// The refusal `error` is, where it is a pinned source port held.
+    pub(crate) fn of(error: &io::Error) -> Option<&Self> {
+        error.get_ref()?.downcast_ref::<Self>()
+    }
+}
+
+impl std::fmt::Display for SourcePortHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "source port {} in use: {}", self.port, self.cause)
+    }
+}
+
+impl std::error::Error for SourcePortHeld {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
     }
 }
 

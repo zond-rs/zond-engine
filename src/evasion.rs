@@ -118,6 +118,12 @@ pub struct EvasionProfile {
     /// included. The conversations that follow a probe over connections of
     /// their own leave from ports the operating system chooses; see
     /// [what a profile shapes](self#a-profile-shapes-the-probes).
+    ///
+    /// A connect probe asks a port once from this one, and its connection
+    /// holds the pair in `TIME_WAIT` for a while after it closes. A scan that
+    /// asks the same port of the same target from the same source port inside
+    /// that wait, run again straight after, cannot connect: the port is left
+    /// unasked and the report names the source port held.
     pub source_port: Option<u16>,
 
     /// The hop limit (IPv4 TTL / IPv6 hop limit) written into every ordinary

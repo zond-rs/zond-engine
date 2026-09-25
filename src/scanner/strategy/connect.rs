@@ -53,7 +53,7 @@ use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::routed::SynPorts;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::descriptors::{self, Descriptor};
-use crate::transport::dial::{Connecting, Egress, Shaping};
+use crate::transport::dial::{Connecting, Egress, Holder, Shaping, SourcePortHeld};
 use async_trait::async_trait;
 use std::io::{self, ErrorKind};
 use std::net::{IpAddr, SocketAddr};
@@ -244,6 +244,11 @@ enum Refusal {
     /// No route leads to the address. A fact about the address as seen from
     /// here rather than a fault, and reported against the address.
     NoRoute,
+    /// The source port every probe is pinned to was held; see
+    /// [`SourcePortHeld`]. Named apart from [`Local`](Self::Local) because
+    /// the operating system's words for it name neither the port nor the
+    /// wait, and those are what a reader acts on.
+    PortHeld(u16, Holder),
     /// Anything else: no source to send from, no local port, a probe that met
     /// itself on every try. This machine's failure, in the operating system's
     /// own words, which is the part a reader asking why can act on.
@@ -253,6 +258,9 @@ enum Refusal {
 impl Refusal {
     /// The refusal `error` is, raised before anything left this machine.
     fn of(error: &io::Error) -> Self {
+        if let Some(held) = SourcePortHeld::of(error) {
+            return Self::PortHeld(held.port, held.holder);
+        }
         match error.kind() {
             ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => Self::NoRoute,
             _ => Self::Local(error.to_string()),
@@ -274,6 +282,10 @@ struct Shortfall {
     identified_in_part: u128,
     /// Addresses no route led to.
     unroutable: std::collections::BTreeSet<IpAddr>,
+    /// Targets the pinned source port was held for.
+    port_held: u128,
+    /// The pinned port, and what held it the first time.
+    held: Option<(u16, Holder)>,
     /// Targets this machine refused for any other reason.
     refused: u128,
     /// The first of those refusals, in the operating system's words.
@@ -287,6 +299,10 @@ impl Shortfall {
             Attempt::Starved => self.starved += 1,
             Attempt::Refused(Refusal::NoRoute) => {
                 self.unroutable.insert(ip);
+            }
+            Attempt::Refused(Refusal::PortHeld(port, holder)) => {
+                self.port_held += 1;
+                self.held.get_or_insert((*port, *holder));
             }
             Attempt::Refused(Refusal::Local(why)) => {
                 self.refused += 1;
@@ -324,6 +340,19 @@ impl Shortfall {
             if !reached {
                 ctx.record_unroutable(address);
             }
+        }
+        if let Some((port, holder)) = self.held {
+            let by = match holder {
+                Holder::Closing => "still closing",
+                Holder::Socket => "held elsewhere",
+            };
+            ctx.record_failure(
+                scanner,
+                format!(
+                    "{} left unasked: source port {port} {by}",
+                    counted(self.port_held, unit, units)
+                ),
+            );
         }
         if self.refused > 0 {
             let cause = self.first_refusal.as_deref().unwrap_or("cause unrecorded");
@@ -2035,6 +2064,77 @@ mod tests {
             (1, 1),
             "a send this machine refused is a send that failed"
         );
+    }
+
+    /// **A port asked again from a pinned source port inside the closing wait
+    /// of the last connection to it is asked, or the report names the port.**
+    /// The connection just made from that port to that port keeps its
+    /// four-tuple for up to a minute after it ends, and macOS refuses the next
+    /// connect with it, as Linux does beyond loopback. Filed with the system's
+    /// "address in use" alone, the scan read as this machine failing for no
+    /// reason the caller could act on.
+    #[tokio::test]
+    async fn a_pinned_source_port_still_closing_is_named_as_the_reason_a_port_went_unasked() {
+        use tokio::io::AsyncReadExt;
+
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let listener = tokio::net::TcpListener::bind((ip, 0)).await.expect("bind");
+        let port = listener.local_addr().expect("bound").port();
+        // Held until the scanner closes first, so the closing wait is its.
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 256];
+                    while matches!(stream.read(&mut buf).await, Ok(read) if read > 0) {}
+                });
+            }
+        });
+        let pinned = std::net::TcpListener::bind((ip, 0))
+            .and_then(|free| free.local_addr())
+            .expect("a free port to pin")
+            .port();
+        let evasion = EvasionProfile {
+            source_port: Some(pinned),
+            ..EvasionProfile::default()
+        };
+
+        let run = || async {
+            let (session, ctx) = crate::scanner::session::ScanSession::new();
+            let (tx, rx) = mpsc::channel(1);
+            tx.send(tcp_target(ip, port)).await.expect("queued");
+            drop(tx);
+            scan(
+                rx,
+                1,
+                ctx.clone(),
+                ServiceDetection::Off,
+                &evasion,
+                &ZoneMap::new(),
+            )
+            .await
+            .expect("the scan runs");
+            let state = session
+                .hosts()
+                .read(ip, |host| host.ports().map(Port::state).next())
+                .flatten();
+            let reasons: Vec<String> = ctx
+                .failures_snapshot()
+                .iter()
+                .map(|failure| failure.reason().to_string())
+                .collect();
+            (state, reasons)
+        };
+
+        assert_eq!(run().await.0, Some(PortState::Open), "the first run");
+        match run().await {
+            (Some(PortState::Open), _) => {}
+            (Some(PortState::Unasked), reasons) => assert!(
+                reasons.iter().any(|reason| reason
+                    == &format!("1 port left unasked: source port {pinned} still closing")),
+                "the report names the pinned port, and has {reasons:?}"
+            ),
+            other => panic!("the port was neither asked nor unasked: {other:?}"),
+        }
     }
 
     /// TCP targets belong to the connect scanner next door; this prober must
