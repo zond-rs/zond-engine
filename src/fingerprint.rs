@@ -220,6 +220,13 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// Set for a path that costs nothing. On a measured one each wait along the
 /// walk allows for the path once, so the budget allows for it once per wait
 /// the longest walk makes; see [`COLLECTION_WAITS`].
+///
+/// So it has no ceiling of its own in wall time, and grows to minutes behind
+/// a slow path. The honest walk grows with it: behind a round trip of two
+/// seconds the longest runs near two minutes, every wait on it bounded and
+/// every one allowing for the path, and a ceiling beneath that would cut short
+/// the identifications the allowance exists to finish. What the backstop is
+/// for is a stage with no bound, which a slow path does not make likelier.
 const COLLECTION_BUDGET: Duration = Duration::from_secs(30);
 
 /// The most waits on the peer any walk down the ladder in [`gather`] makes in

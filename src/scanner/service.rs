@@ -151,6 +151,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
 
     pool.drain().await;
     drop(pool);
+    crowds.ask_again(ctx, ScannerKind::Service).await;
 
     quiet.report(ctx, asked);
     in_part.report_in_part(ctx);
@@ -475,7 +476,9 @@ async fn fingerprint_one(
                     };
                 }
             };
-            let identified = crowd.identify(stream, port, detection, egress, path).await;
+            let identified = crowd
+                .identify(target.clone(), stream, port, detection, egress, path)
+                .await;
             (
                 identified.port,
                 identified.about_the_host,
@@ -534,6 +537,41 @@ impl Crowds {
         let mut hosts = self.hosts.lock().unwrap_or_else(|held| held.into_inner());
         Arc::clone(hosts.entry(host).or_default())
     }
+
+    /// Asks again, each with its host to itself, every port a [`Crowd`] owes
+    /// a second asking, and files what each draws, for a pass `kind` whose
+    /// identifications have all finished.
+    ///
+    /// A host's ports one after another, and hosts side by side, as many at
+    /// once as the pass identifies ports. Each takes one socket's share of the
+    /// process's budget for its connection. A scan told to stop asks nothing
+    /// more, and the ports keep what their first identification drew.
+    pub(crate) async fn ask_again(&self, ctx: &ScanContext, kind: ScannerKind) {
+        let crowds: Vec<Arc<Crowd>> = {
+            let hosts = self.hosts.lock().unwrap_or_else(|held| held.into_inner());
+            hosts.values().cloned().collect()
+        };
+        let mut pool = ProbePool::new(
+            CONNECT_CONCURRENCY,
+            ctx.clone(),
+            kind,
+            |named: Vec<(ScopedIp, Fingerprinted)>, _audit| {
+                for (key, found) in named {
+                    let (number, protocol) = (found.port.number(), found.port.protocol());
+                    ctx.record_responses(key.clone(), number, protocol, found.responses);
+                    write_back(ctx, key, found.port, found.about_the_host);
+                }
+            },
+        );
+        for crowd in crowds {
+            let owed = crowd.owed();
+            if owed.is_empty() {
+                continue;
+            }
+            pool.admit(crowd.ask_alone(owed, ctx.handle.clone())).await;
+        }
+        pool.drain().await;
+    }
 }
 
 /// The identifications of one host's ports in one pass, which the host
@@ -558,33 +596,49 @@ impl Crowds {
 /// twice for nothing. Asked alone, a single-worker host answers each port as
 /// it would were it the only one.
 ///
+/// The second asking waits until the pass has finished every first one; see
+/// [`Crowds::ask_again`]. By then the host has nothing else of the pass's
+/// to answer, and its lateness has been heard from every port. The port is
+/// handed back to its pass meanwhile, with what its first identification
+/// drew, so the wait holds no place in the pass and no socket's share of the
+/// process's budget: a pass identifying ports of many such hosts would
+/// otherwise have its places held by ports waiting on their neighbours.
+///
 /// Whether an identification had company is counted as the detection stage
 /// counts it, per host; see [`HostContention`].
 #[derive(Debug, Default)]
 pub(crate) struct Crowd {
     /// The host's identifications in flight and begun.
     contention: HostContention,
-    /// Held shared by every identification of the host and alone by one asked
-    /// again, which so waits for those in flight to finish and holds back
-    /// those not yet begun.
-    turns: tokio::sync::RwLock<()>,
     /// Whether the host answered one of the pass's questions only after more
     /// than half the wait it was given; see [`Fingerprinted::answered_late`].
     answered_late: AtomicBool,
+    /// The ports owed a second asking, in the order their first ended.
+    owed: Mutex<Vec<Owed>>,
+}
+
+/// A port a [`Crowd`] owes a second asking, and what that asking needs.
+#[derive(Debug)]
+struct Owed {
+    /// What the port's findings are filed under.
+    key: ScopedIp,
+    /// Where it was reached.
+    addr: std::net::SocketAddr,
+    /// The port as the scan recorded it, before its identification.
+    port: Port,
+    detection: ServiceDetection,
+    egress: Egress,
+    path: PathAllowance,
 }
 
 impl Crowd {
     /// Identifies the port `stream` reached, as
     /// [`fingerprint_tcp_via`](crate::fingerprint::fingerprint_tcp_via) does,
-    /// and asks it again alone where the first identification's silence may
-    /// have been its host's queue.
-    ///
-    /// The second identification dials the port afresh, given the connect
-    /// budget and the path's allowance, and stands in the first's place,
-    /// having had the host to itself; a port that no longer takes the
-    /// connection keeps what the first drew.
+    /// and owes it a second asking where the identification's silence may
+    /// have been its host's queue. Its findings are filed under `key`.
     pub(crate) async fn identify(
         &self,
+        key: ScopedIp,
         stream: TcpStream,
         port: Port,
         detection: ServiceDetection,
@@ -592,44 +646,89 @@ impl Crowd {
         path: PathAllowance,
     ) -> Fingerprinted {
         let addr = stream.peer_addr().ok();
-        let (first, alone) = {
-            let _turn = self.turns.read().await;
-            let visit = self.contention.enter();
-            let found = crate::fingerprint::fingerprint_tcp_via(
-                stream,
-                port.clone(),
-                detection,
-                egress,
-                path,
-            )
-            .await;
-            (found, visit.leave())
-        };
-        self.heard(&first);
-        let (Some(addr), false) = (addr, alone) else {
-            return first;
-        };
-        if !first.responses.is_empty() || !first.ran_out_waiting {
-            return first;
+        let visit = self.contention.enter();
+        let found =
+            crate::fingerprint::fingerprint_tcp_via(stream, port.clone(), detection, egress, path)
+                .await;
+        let alone = visit.leave();
+        self.heard(&found);
+        if let (Some(addr), false, true, true) = (
+            addr,
+            alone,
+            found.responses.is_empty(),
+            found.ran_out_waiting,
+        ) {
+            self.owed
+                .lock()
+                .unwrap_or_else(|held| held.into_inner())
+                .push(Owed {
+                    key,
+                    addr,
+                    port,
+                    detection,
+                    egress,
+                    path,
+                });
         }
+        found
+    }
 
-        // Taken before the host's lateness is read, so every identification
-        // that was in flight beside this one has finished and said how the
-        // host answered it.
-        let _alone = self.turns.write().await;
-        if !self.answered_late.load(Ordering::Relaxed) {
-            return first;
+    /// The ports this crowd owes a second asking, taken, or none where the
+    /// host never answered late.
+    fn owed(&self) -> Vec<Owed> {
+        let owed = std::mem::take(&mut *self.owed.lock().unwrap_or_else(|held| held.into_inner()));
+        match self.answered_late.load(Ordering::Relaxed) {
+            true => owed,
+            false => Vec::new(),
         }
-        let Ok(stream) = egress
-            .connect_timed(addr, path.over(CONNECT_PROBE_TIMEOUT))
-            .await
-        else {
-            return first;
-        };
-        let again =
-            crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress, path).await;
-        self.heard(&again);
-        again
+    }
+
+    /// Asks each of `owed` again in turn, with the host to itself, and hands
+    /// back what drew anything, under the key each is filed under. A port
+    /// that no longer takes the connection, or draws nothing again, keeps what
+    /// its first identification drew.
+    ///
+    /// Each dials the port afresh, given the connect budget and the path's
+    /// allowance.
+    async fn ask_alone(
+        self: Arc<Self>,
+        owed: Vec<Owed>,
+        handle: crate::scanner::handle::ScanHandle,
+    ) -> Vec<(ScopedIp, Fingerprinted)> {
+        let mut named = Vec::new();
+        for Owed {
+            key,
+            addr,
+            port,
+            detection,
+            egress,
+            path,
+        } in owed
+        {
+            if handle.should_stop() {
+                break;
+            }
+            // One socket's share, for the connections the identification
+            // makes one after another; see `descriptors`.
+            let _descriptor = descriptors::gate()
+                .acquire()
+                .await
+                .expect("the descriptor gate is never closed");
+            let Ok(stream) = egress
+                .connect_timed(addr, path.over(CONNECT_PROBE_TIMEOUT))
+                .await
+            else {
+                continue;
+            };
+            let again =
+                crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress, path)
+                    .await;
+            self.heard(&again);
+            if !again.responses.is_empty() {
+                named.push((key, again));
+            }
+        }
+        named
     }
 
     /// Notes how the host answered one of its identifications.
@@ -1144,5 +1243,77 @@ mod tests {
              {alone} alone, so it was identified more than once"
         );
         drop((session, alone_session));
+    }
+
+    /// What one identification of the silent port at `addr` sends it, in
+    /// `crowd`, and the bytes the port had been sent when it returned.
+    async fn identified_in(
+        crowd: &Crowd,
+        addr: std::net::SocketAddr,
+        asked: &AtomicUsize,
+    ) -> usize {
+        let before = asked.load(Ordering::SeqCst);
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let port = crate::fingerprint::baseline_port(addr.port(), Protocol::Tcp, PortState::Open);
+        let found = crowd
+            .identify(
+                addr.ip().into(),
+                stream,
+                port,
+                ServiceDetection::default(),
+                Egress::KERNEL,
+                PathAllowance::NONE,
+            )
+            .await;
+        assert!(found.responses.is_empty(), "the port says nothing");
+        // Read, not answered: what the port was sent may still be arriving.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        asked.load(Ordering::SeqCst) - before
+    }
+
+    /// A port whose identification drew nothing in company, on a host that
+    /// answers late, is handed back once its own walk is done, and asked
+    /// again only when the pass's other identifications are: waiting for them
+    /// inside its identification, it held its place in the pass and its
+    /// descriptor through all of theirs, holding up every port queued behind
+    /// it on a wide scan for a socket it did not have open.
+    #[tokio::test]
+    async fn a_port_owed_a_second_asking_is_handed_back_before_it_is_asked_again() {
+        let (silent, asked) = counting_listener().await;
+
+        let crowd = Crowd::default();
+        crowd.answered_late.store(true, Ordering::Relaxed);
+        // Another of the host's ports, still being identified.
+        let company = crowd.contention.enter();
+        let in_company = identified_in(&crowd, silent, &asked).await;
+        drop(company);
+
+        let alone = identified_in(&Crowd::default(), silent, &asked).await;
+        assert!(alone > 0);
+        assert_eq!(
+            in_company, alone,
+            "the port was sent {in_company} bytes before it was handed back \
+             and {alone} identified once, so it was asked again inside"
+        );
+    }
+
+    /// And the port is asked again once the pass is done with its host, the
+    /// whole of its identification a second time, with the host to itself.
+    #[tokio::test]
+    async fn a_port_owed_a_second_asking_is_asked_again_once_the_pass_is_done() {
+        let (silent, asked) = counting_listener().await;
+        let (_session, ctx) = ScanSession::new();
+        let crowds = Crowds::default();
+        let crowd = crowds.of(silent.ip());
+        crowd.answered_late.store(true, Ordering::Relaxed);
+
+        let company = crowd.contention.enter();
+        let first = identified_in(&crowd, silent, &asked).await;
+        drop(company);
+        crowds.ask_again(&ctx, ScannerKind::Service).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(first > 0);
+        assert_eq!(asked.load(Ordering::SeqCst), first * 2, "asked once again");
     }
 }

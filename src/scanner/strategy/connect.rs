@@ -691,9 +691,11 @@ pub async fn scan(
         record_unasked(&ctx, &target);
     }
 
-    // Every target dispatched; wait out the probes still in flight.
+    // Every target dispatched; wait out the probes still in flight, then the
+    // second askings they left owed.
     pool.drain().await;
     let audit = pool.into_audit();
+    crowds.ask_again(&ctx, ScannerKind::Connect).await;
     shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);
     Ok(())
@@ -944,7 +946,9 @@ async fn port_prober(
                 // The handshake is a round trip over the very path the
                 // conversation that follows takes, measured a moment ago.
                 let path = PathAllowance::of_round_trip(rtt);
-                let identified = crowd.identify(stream, port, detection, egress, path).await;
+                let identified = crowd
+                    .identify(target.ip.into(), stream, port, detection, egress, path)
+                    .await;
                 drop(descriptor);
                 Some(Probed {
                     ip: target.ip,
