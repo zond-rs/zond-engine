@@ -120,11 +120,10 @@ pub enum JournalError {
 /// the kernel intervenes, and that this crate applies one standard to reading
 /// something it did not write.
 ///
-/// 256 MiB, matching the import readers' default document ceiling, and past
-/// anything a journal holds. The largest record is one host with every port on
-/// both transports and the service detail behind each; the manifest is a plan and
-/// the cursor is a watermark with the out-of-order window beside it. None of them
-/// approaches this.
+/// 256 MiB, past anything a journal holds. The largest record is one host with
+/// every port on both transports and the service detail behind each; the
+/// manifest is a plan and the cursor is a watermark with the out-of-order window
+/// beside it. None of them approaches this.
 pub(super) const MAX_READ_BYTES: u64 = 256 * 1024 * 1024;
 
 /// What a journal file being past [`MAX_READ_BYTES`] is reported as.

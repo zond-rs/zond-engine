@@ -92,10 +92,11 @@ pub struct ReportOptions {
     /// report is a document with a shape and a target list is a stream of
     /// expressions. [`max_addresses`](ImportLimits::max_addresses) bounds the
     /// hosts a document may name and binds both readers.
-    /// [`max_line_bytes`](ImportLimits::max_line_bytes) binds the line-oriented
-    /// nmap reader; a JSON document is one value and has no lines to bound, so
-    /// [`max_document_bytes`](Self::max_document_bytes) is what stands in its
-    /// place. [`max_tokens`](ImportLimits::max_tokens) counts target
+    /// [`max_line_bytes`](ImportLimits::max_line_bytes) bounds one element's
+    /// markup in the nmap reader. A JSON document is one value with no lines
+    /// to bound, and a record-per-line one has lines as long as a host's port
+    /// list, so [`max_document_bytes`](Self::max_document_bytes) is what bounds
+    /// both. [`max_tokens`](ImportLimits::max_tokens) counts target
     /// expressions and a report holds none, so nothing here reads it.
     pub limits: ImportLimits,
 
@@ -108,24 +109,30 @@ pub struct ReportOptions {
     ///
     /// It bounds the document, and the process holds a multiple of it. Size
     /// this to what the process can afford rather than to a file you are willing
-    /// to read. Measured, one host whose `ips` array carries four million
-    /// addresses: 59.9 MB of document, 502 MB resident at the peak, 8.4 times. A
-    /// `Vec<String>` of pointer-sized headers plus a heap allocation per address,
-    /// then the same strings moved into the record, then a `BTreeSet<IpAddr>`
-    /// built beside them before the record is freed. Nothing there is unbounded
-    /// or non-linear and the ratio is a constant, but at the 256 MiB default a
-    /// document this admits can leave the process holding something like 2 GB.
+    /// to read. Measured, in the shapes that cost most per byte: one host whose
+    /// `ips` array carries four million addresses, 59.9 MB of document and 6.6
+    /// times that resident at the peak; twenty hosts each listing every TCP
+    /// port in the fewest bytes a port entry can take, 64 MB and 5.8 times. A
+    /// document repeating one port entry costs one port, since a host's ports
+    /// are folded by endpoint as they are read. So at the default a hostile
+    /// document can leave the process holding about 7 GiB, and a caller reading
+    /// documents from strangers on a small machine should lower this.
     ///
-    /// The default is 256 MiB. An exported report of a hundred thousand hosts
-    /// with their services and findings runs to a few tens of megabytes, so the
-    /// ceiling is several times past anything a scan produces and still a
-    /// bound. Raise it with [`with_max_document_bytes`](Self::with_max_document_bytes)
-    /// for a document that has been vetted, or pass [`u64::MAX`] to lift it.
+    /// The default is 1 GiB, sized to read back what this engine writes. One
+    /// host scanned across the whole TCP range and found closed is 26 MB of
+    /// the indented JSON the exporter writes by default, 14 MB of JSON lines
+    /// and 6.5 MB of nmap XML, about 400, 216 and 99 bytes a port. The default
+    /// admits 32 such hosts in the first, 64 in the second and 128 in the
+    /// third, each with a margin for the services and findings on their open
+    /// ports, and reading them back holds less than the document in JSON and
+    /// about three times it in XML. Raise it with
+    /// [`with_max_document_bytes`](Self::with_max_document_bytes) for a document
+    /// that has been vetted, or pass [`u64::MAX`] to lift it.
     pub max_document_bytes: u64,
 }
 
-/// 256 MiB. See [`ReportOptions::max_document_bytes`].
-const DEFAULT_MAX_DOCUMENT_BYTES: u64 = 256 * 1024 * 1024;
+/// 1 GiB. See [`ReportOptions::max_document_bytes`].
+const DEFAULT_MAX_DOCUMENT_BYTES: u64 = 1024 * 1024 * 1024;
 
 impl Default for ReportOptions {
     fn default() -> Self {
@@ -493,6 +500,119 @@ mod tests {
             format.read(&mut input, ReportOptions::new()).is_ok(),
             "the format was recognised and then refused the same bytes"
         );
+    }
+
+    /// What the export writers under test need, beyond the readers this module
+    /// is built with.
+    #[cfg(all(
+        feature = "export-json",
+        feature = "export-jsonl",
+        feature = "export-nmap"
+    ))]
+    mod own_exports {
+        use std::io::Cursor;
+        use std::net::{IpAddr, Ipv4Addr};
+        use std::time::Duration;
+
+        use super::super::*;
+        use crate::export::{
+            ExportOptions, Exporter, JsonExporter, JsonLinesExporter, NmapXmlExporter,
+        };
+        use crate::import::xml::MAX_ELEMENTS;
+        use crate::model::host::Host;
+        use crate::model::port::{Discovery, Port, PortState, Protocol, ScanResponse};
+
+        /// How many hosts scanned across the full TCP range the documentation
+        /// of [`ReportOptions::max_document_bytes`] says the default admits, in
+        /// each format this engine writes a report in. Each leaves 15% or more
+        /// of the ceiling for what the open ports on real hosts add.
+        const FULL_RANGE_HOSTS_AS_JSON: u64 = 32;
+        const FULL_RANGE_HOSTS_AS_JSON_LINES: u64 = 64;
+        const FULL_RANGE_HOSTS_AS_XML: u64 = 128;
+
+        /// A host scanned across the whole TCP range with every port closed,
+        /// each carrying the fullest account a raw probe writes: the reset, its
+        /// round trip and its TTL. The largest record per port a scan leaves
+        /// when it finds nothing, which is what a full-range export is made of.
+        fn full_range_report() -> ScanReport {
+            let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+            let mut host = Host::new(ip);
+            for number in 1..=u16::MAX {
+                host.add_port(
+                    Port::new(number, Protocol::Tcp, PortState::Closed).with_discovery(
+                        Discovery::new(ScanResponse::TcpRst)
+                            .with_rtt(Duration::from_micros(1_234))
+                            .with_ttl(64),
+                    ),
+                );
+            }
+            ScanReport::recorded("zond", Vec::new(), vec![host])
+        }
+
+        fn written(exporter: &dyn Exporter, report: &ScanReport) -> Vec<u8> {
+            let mut out = Vec::new();
+            exporter.export(report, &mut out).expect("exports");
+            out
+        }
+
+        /// A record-per-line host is as long as its port list, and a
+        /// full-range one is megabytes on one line. The line is part of a
+        /// document, so the document's ceiling is what bounds it; the few
+        /// kilobytes a target expression is allowed would refuse any host
+        /// scanned across more than a few hundred ports.
+        #[test]
+        fn a_full_range_host_reads_back_from_its_own_record_per_line_export() {
+            let report = full_range_report();
+            let document = written(&JsonLinesExporter::new(ExportOptions::new()), &report);
+
+            let restored = ReportFormat::JsonLines
+                .read(&mut Cursor::new(document), ReportOptions::new())
+                .expect("a document this engine wrote reads back");
+
+            let host = restored.hosts().next().expect("the host");
+            assert_eq!(host.port_count(), usize::from(u16::MAX));
+        }
+
+        /// The default ceiling is sized in hosts scanned across the full TCP
+        /// range, and these are the counts its documentation promises, held
+        /// against what the writers produce today. A writer that grows, or a
+        /// ceiling that shrinks, fails here rather than in front of somebody
+        /// comparing last month's engagement with this one's.
+        #[test]
+        fn the_default_ceiling_admits_the_full_range_hosts_it_promises() {
+            let report = full_range_report();
+            let ceiling = ReportOptions::new().max_document_bytes;
+
+            let json = written(&JsonExporter::new(ExportOptions::new()), &report).len() as u64;
+            let lines =
+                written(&JsonLinesExporter::new(ExportOptions::new()), &report).len() as u64;
+            let xml = written(&NmapXmlExporter::new(ExportOptions::new()), &report);
+            let elements = xml
+                .windows(2)
+                .filter(|pair| pair[0] == b'<' && pair[1].is_ascii_alphabetic())
+                .count() as u64;
+            let xml = xml.len() as u64;
+
+            for (format, bytes, promised) in [
+                ("indented JSON", json, FULL_RANGE_HOSTS_AS_JSON),
+                ("JSON lines", lines, FULL_RANGE_HOSTS_AS_JSON_LINES),
+                ("nmap XML", xml, FULL_RANGE_HOSTS_AS_XML),
+            ] {
+                assert!(
+                    bytes * promised <= ceiling,
+                    "{promised} full-range hosts of {format} are {} bytes, past the {ceiling}-byte ceiling",
+                    bytes * promised,
+                );
+            }
+
+            // The element count is not the bound this engine's own XML meets
+            // first: every document the byte ceiling admits is under it.
+            assert!(
+                ceiling / xml * elements <= MAX_ELEMENTS,
+                "a document of full-range hosts at the byte ceiling holds {} elements, past {MAX_ELEMENTS}",
+                ceiling / xml * elements,
+            );
+        }
     }
 
     /// The extension is what the person who saved the file meant.

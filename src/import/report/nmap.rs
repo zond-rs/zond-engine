@@ -86,6 +86,7 @@
 //! difference between a readable comparison and a wall of endpoints that appear
 //! to have opened.
 
+use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -102,7 +103,7 @@ use crate::model::host::{Host, HostStatus, IpProtocolState, StatusProtocol, Stat
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::discovery::{Discovery, ScanResponse};
-use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
+use crate::model::port::{self, Port, PortSet, PortState, Protocol, Service};
 use crate::model::technique::TcpScanTechnique;
 use crate::report::{
     PhaseParts, PortScope, ScanKind, ScanPhase, ScanReport, ScanSettings, ScopeParts, TargetScope,
@@ -396,7 +397,7 @@ impl State {
                 if let (Some(host), Some(port)) = (self.host.as_mut(), self.port.take()) {
                     match port.ip_protocol {
                         true => host.ip_protocols.push(port.into_ip_protocol()),
-                        false => host.ports.push(port.into_port()),
+                        false => port::fold(&mut host.ports, port.into_port()),
                     }
                 }
             }
@@ -827,7 +828,11 @@ struct HostAcc {
     hostname: Option<String>,
     state: Option<String>,
     reason: Option<String>,
-    ports: Vec<Port>,
+    /// Keyed as the host keys them, and folded as they are read, so a
+    /// document naming one endpoint many times, in `<port>` elements or in
+    /// an `<extrareasons>` list, builds it once rather than growing a list
+    /// the host would have collapsed anyway.
+    ports: BTreeMap<(u16, Protocol), Port>,
     ip_protocols: Vec<(u8, IpProtocolState)>,
     os: Option<OsFingerprint>,
     started: Option<SystemTime>,
@@ -902,7 +907,7 @@ impl HostAcc {
             if let Some(reason) = &reason {
                 port = port.with_discovery(Discovery::new(scan_response(reason)));
             }
-            self.ports.push(port);
+            port::fold(&mut self.ports, port);
         }
     }
 
@@ -976,9 +981,9 @@ impl HostAcc {
 
         let answered = self
             .ports
-            .iter()
+            .values()
             .any(|port| matches!(port.state(), PortState::Open | PortState::Closed));
-        for port in self.ports {
+        for port in self.ports.into_values() {
             host.add_port(port);
         }
         for (number, state) in self.ip_protocols {

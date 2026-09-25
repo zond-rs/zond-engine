@@ -225,6 +225,22 @@ impl PortState {
     ];
 }
 
+/// Folds `port` into `ports`, merging it into the record already held for the
+/// same endpoint, keyed as [`Host`](crate::model::host::Host) keys its own.
+///
+/// For a reader gathering a host's ports before the host exists. Folding as
+/// they arrive rather than collecting them keeps what a host costs bounded by
+/// the endpoints it can have, where a list grows with every entry a document
+/// repeats.
+pub(crate) fn fold(ports: &mut BTreeMap<(u16, Protocol), Port>, port: Port) {
+    match ports.entry((port.number, port.protocol)) {
+        std::collections::btree_map::Entry::Occupied(slot) => slot.into_mut().merge(port),
+        std::collections::btree_map::Entry::Vacant(slot) => {
+            slot.insert(port);
+        }
+    }
+}
+
 /// One transport endpoint on one host, and everything a scan learned about it.
 ///
 /// The number and protocol identify it; everything else is a finding, and is

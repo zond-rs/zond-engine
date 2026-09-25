@@ -67,7 +67,10 @@
 //! ## Streaming, and the ceiling on it
 //!
 //! Hosts are converted one at a time as the array is parsed, so a report of a /16
-//! costs one host's worth of document on top of the report being built.
+//! costs one host's worth of document on top of the report being built. A
+//! host's ports are too, and folded by endpoint as they arrive, so a host
+//! scanned across the full range is never held as a list of its ports beside
+//! the host they become.
 //!
 //! [`ImportLimits::max_addresses`](crate::import::ImportLimits::max_addresses)
 //! is counted against as they arrive rather than against the finished list. A
@@ -82,6 +85,7 @@
 //! line is the document's host object with a `type` field added. Only how the
 //! records are found in the bytes differs.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::BufRead;
 use std::net::IpAddr;
@@ -99,7 +103,7 @@ use crate::import::report::{ReportOptions, ReportReader};
 use crate::import::{ImportError, ImportOrigin};
 use crate::model::host::Host;
 use crate::model::mac::MacAddr;
-use crate::model::port::PortSet;
+use crate::model::port::{self, Port, PortSet, Protocol};
 use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::model::tls::{Interruption, TlsVersion};
 use crate::record::wire;
@@ -123,6 +127,9 @@ const LINES_FORMAT: &str = "JSON Lines";
 /// What a record-per-line document calls its header record. Compact JSON has no
 /// spaces in it, so this is exactly how the exporter writes it.
 const REPORT_RECORD: &str = "report";
+
+/// What a record-per-line document calls a host's record.
+const HOST_RECORD: &str = "host";
 
 /// Reads this engine's exported JSON report back as the report it was written
 /// from.
@@ -188,6 +195,13 @@ impl ReportReader for JsonLinesReportReader {
         crate::import::skip_bom(input)?;
 
         let max_hosts = self.options.limits.max_addresses;
+        // A line here is a record of a document, and a host record is as long
+        // as its port list: megabytes for one scanned across the full range.
+        // So the document's ceiling bounds it, which also holds for a caller
+        // reading through this type rather than through the dispatch that
+        // wraps the input. The target readers' line limit is sized for an
+        // expression and would refuse any host past a few hundred ports.
+        let max_line_bytes = usize::try_from(self.options.max_document_bytes).unwrap_or(usize::MAX);
         let mut buffer = Vec::new();
         let mut line_number = 0u64;
         let mut header: Option<HeaderDto> = None;
@@ -198,12 +212,7 @@ impl ReportReader for JsonLinesReportReader {
             line_number += 1;
             let origin = ImportOrigin::line(line_number);
 
-            if !crate::import::list::read_line(
-                input,
-                &mut buffer,
-                self.options.limits.max_line_bytes,
-                origin,
-            )? {
+            if !crate::import::list::read_line(input, &mut buffer, max_line_bytes, origin)? {
                 break;
             }
 
@@ -213,12 +222,11 @@ impl ReportReader for JsonLinesReportReader {
                 continue;
             }
 
-            let record: LineRecord =
-                serde_json::from_str(text).map_err(|error| ImportError::Malformed {
-                    format: LINES_FORMAT,
-                    origin,
-                    message: error.to_string(),
-                })?;
+            let record = LineRecord::parse(text).map_err(|error| ImportError::Malformed {
+                format: LINES_FORMAT,
+                origin,
+                message: error.to_string(),
+            })?;
 
             match record {
                 // Wherever it appears, not necessarily first: a record means
@@ -242,12 +250,12 @@ impl ReportReader for JsonLinesReportReader {
                     if hosts.len() as u128 >= max_hosts {
                         return Err(ImportError::TooManyHosts { limit: max_hosts });
                     }
-                    let record = dto.record().map_err(|message| ImportError::Malformed {
+                    let host = dto.into_host().map_err(|message| ImportError::Malformed {
                         format: LINES_FORMAT,
                         origin,
                         message,
                     })?;
-                    hosts.push(Host::from(&record));
+                    hosts.push(host);
                 }
                 // A record kind this build does not know, skipped so a newer
                 // engine's output stays readable.
@@ -277,18 +285,41 @@ impl ReportReader for JsonLinesReportReader {
 }
 
 /// One line of a record-per-line document, told apart by its `type`.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug)]
 enum LineRecord {
     /// The header, which carries everything the document says about the scan.
-    #[serde(rename = "report")]
     Report(Box<HeaderDto>),
     /// One host, whose fields are the document's host object exactly.
-    #[serde(rename = "host")]
     Host(Box<HostDto>),
     /// A record kind this build does not know.
-    #[serde(other)]
     Unknown,
+}
+
+impl LineRecord {
+    /// Reads one line: its `type` first, then the whole of it as the record
+    /// that names.
+    ///
+    /// Two passes rather than the tagged enum serde derives, because that one
+    /// reads a record into a generic tree of its values before it knows which
+    /// record it is, and a host record is as long as its port list. Read that
+    /// way a full-range host costs several times its line in the tree alone,
+    /// and entries repeated along it are all kept before [`PortsDto`] could
+    /// fold them. The first pass keeps nothing but the one value it looks for.
+    fn parse(text: &str) -> serde_json::Result<Self> {
+        let LineKind { kind } = serde_json::from_str(text)?;
+        Ok(match kind.as_str() {
+            REPORT_RECORD => Self::Report(serde_json::from_str(text)?),
+            HOST_RECORD => Self::Host(serde_json::from_str(text)?),
+            _ => Self::Unknown,
+        })
+    }
+}
+
+/// The one field [`LineRecord::parse`] reads before it knows what a line is.
+#[derive(Deserialize)]
+struct LineKind {
+    #[serde(rename = "type")]
+    kind: String,
 }
 
 /// What a record-per-line document states once, in its `report` record: every
@@ -506,8 +537,7 @@ impl<'de> Visitor<'de> for HostsSeed<'_> {
                 self.overrun.set(true);
                 return Err(de::Error::custom("more hosts than the limit allows"));
             }
-            let record = dto.record().map_err(de::Error::custom)?;
-            hosts.push(Host::from(&record));
+            hosts.push(dto.into_host().map_err(de::Error::custom)?);
         }
 
         Ok(hosts)
@@ -1222,7 +1252,7 @@ struct HostDto {
     os: Option<OsDto>,
     hardware: Option<HardwareDto>,
     telemetry: TelemetryDto,
-    ports: Vec<PortDto>,
+    ports: PortsDto,
     first_seen: String,
     last_seen: String,
     path: Vec<HopDto>,
@@ -1230,6 +1260,17 @@ struct HostDto {
 }
 
 impl HostDto {
+    /// The host this entry describes.
+    ///
+    /// Its ports were rebuilt as the array was parsed, so they join the host
+    /// directly rather than passing through the record the rest of it does.
+    fn into_host(mut self) -> Result<Host, String> {
+        let ports = std::mem::take(&mut self.ports);
+        Ok(self.record()?.rebuild_with(ports.0.into_values()))
+    }
+
+    /// Everything but the ports, which [`into_host`](Self::into_host) holds
+    /// already rebuilt.
     fn record(self) -> Result<HostRecord, String> {
         known(
             wire::host_status(&self.status),
@@ -1302,11 +1343,7 @@ impl HostDto {
                 .collect(),
             first_seen,
             last_seen,
-            ports: self
-                .ports
-                .into_iter()
-                .map(PortDto::record)
-                .collect::<Result<_, _>>()?,
+            ports: Vec::new(),
             findings: self
                 .findings
                 .into_iter()
@@ -1474,6 +1511,48 @@ impl HopDto {
             inferred: self.inferred,
             withheld: self.withheld,
         })
+    }
+}
+
+/// A host's `ports[]`, rebuilt as the array is parsed and keyed as the host
+/// keys them.
+///
+/// Converted an entry at a time for the reason the hosts are, and folded by
+/// endpoint as they arrive, so an entry the document repeats builds one port
+/// rather than another element of a list. A full-range host is 65,535 entries,
+/// and collected to be converted afterwards they would be held two and three
+/// times over at once. Keyed, a host costs at most the endpoints it can have
+/// however long its array runs.
+#[derive(Debug, Default)]
+struct PortsDto(BTreeMap<(u16, Protocol), Port>);
+
+impl<'de> Deserialize<'de> for PortsDto {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_seq(PortsVisitor)
+    }
+}
+
+/// Reads `ports[]` into a [`PortsDto`].
+struct PortsVisitor;
+
+impl<'de> Visitor<'de> for PortsVisitor {
+    type Value = PortsDto;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an array of ports")
+    }
+
+    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<PortsDto, S::Error> {
+        let mut ports = BTreeMap::new();
+        while let Some(dto) = seq.next_element::<PortDto>()? {
+            let record = dto.record().map_err(de::Error::custom)?;
+            // `record` refuses a transport this build cannot read, which is
+            // the one entry `rebuild` leaves out, so this skips nothing.
+            if let Some(port) = record.rebuild() {
+                port::fold(&mut ports, port);
+            }
+        }
+        Ok(PortsDto(ports))
     }
 }
 

@@ -97,7 +97,14 @@ pub(crate) const MAX_NAME_BYTES: usize = 64;
 pub(crate) const MAX_VALUE_BYTES: usize = 256;
 
 /// The most elements one document may contain.
-pub(crate) const MAX_ELEMENTS: u64 = 1 << 24;
+///
+/// A bound on work rather than on memory, since an element costs nothing
+/// held unless a reader builds something from it. Sized so that it is never
+/// what refuses this engine's own nmap XML: a host scanned across the full
+/// TCP range is 131,072 elements in 6.5 MB, a `<port>` and its `<state>` for
+/// each, so the report readers' byte ceiling admits about 165 such hosts and
+/// 21 million elements, and 2^25 is half as many again.
+pub(crate) const MAX_ELEMENTS: u64 = 1 << 25;
 
 /// The longest entity name accepted, in bytes, between the `&` and the `;`.
 pub(crate) const MAX_ENTITY_BYTES: usize = 16;

@@ -230,56 +230,13 @@ impl From<&Host> for HostRecord {
 
 impl From<&HostRecord> for Host {
     fn from(record: &HostRecord) -> Self {
-        let mut host = Host::new(record.primary_ip);
-
-        host.extend_ips(record.ips.iter().copied());
-        if let Some(hostname) = &record.hostname {
-            host.set_hostname(Some(hostname.clone()));
-        }
-        // An unrecognised name leaves the status where `Host::new` put it,
-        // which is `Unknown`, the reading that claims least.
-        if let Some(status) = wire::host_status(&record.status) {
-            host.set_status(status);
-        }
-        for reason in &record.reasons {
-            host.add_reason(reason.into());
-        }
-        if let Some(os) = &record.os {
-            host.set_os(os.into());
-        }
-        for evidence in &record.os_evidence {
-            host.record_os_evidence(evidence.into());
-        }
-        if let Some(hardware) = record.hardware.as_ref().and_then(HardwareRecord::rebuild) {
-            host.set_hardware(hardware);
-        }
-        if let Some(zone) = &record.zone {
-            host.set_zone(zone.into());
-        }
-
-        record.telemetry.restore(&mut host);
-        for hop in &record.path {
-            host.record_hop(hop.into());
-        }
-        for role in record.roles.iter().filter_map(|r| wire::network_role(r)) {
-            host.add_network_role(role);
-        }
-        for filtering in record.filtering.iter().filter_map(|f| wire::filtering(f)) {
-            host.add_filtering(filtering);
-        }
-        // A state name this build cannot read is one a later build wrote, and
-        // `Unasked` is the state that claims nothing, which is the same reading
-        // `PortRecord` gives an unrecognised port state.
-        for entry in &record.ip_protocols {
-            let state = wire::ip_protocol_state(&entry.state).unwrap_or(IpProtocolState::Unasked);
-            host.record_ip_protocol(entry.protocol, state);
-        }
         // A port under a transport this build cannot read is left out rather
         // than filed under one it can, for the reason `PortRecord::rebuild`
         // gives, and the omission is logged, since the host comes back with
         // fewer ports than the file holds.
-        for entry in &record.ports {
-            let Some(port) = entry.rebuild() else {
+        let ports = record.ports.iter().filter_map(|entry| {
+            let port = entry.rebuild();
+            if port.is_none() {
                 info!(
                     verbosity = 2,
                     "port {}/{} was recorded under a protocol this build cannot read; \
@@ -287,16 +244,74 @@ impl From<&HostRecord> for Host {
                     entry.port,
                     entry.protocol
                 );
-                continue;
-            };
+            }
+            port
+        });
+        record.rebuild_with(ports)
+    }
+}
+
+impl HostRecord {
+    /// This record as a host, holding `ports` in place of the ones it lists.
+    ///
+    /// For a reader that rebuilt a host's ports as it parsed them, which is
+    /// how a document of full-range hosts is read without holding each one's
+    /// port list twice. The ports land where they would have among the rest,
+    /// so a host rebuilt this way is the host its record describes.
+    pub(crate) fn rebuild_with(&self, ports: impl IntoIterator<Item = Port>) -> Host {
+        let mut host = Host::new(self.primary_ip);
+
+        host.extend_ips(self.ips.iter().copied());
+        if let Some(hostname) = &self.hostname {
+            host.set_hostname(Some(hostname.clone()));
+        }
+        // An unrecognised name leaves the status where `Host::new` put it,
+        // which is `Unknown`, the reading that claims least.
+        if let Some(status) = wire::host_status(&self.status) {
+            host.set_status(status);
+        }
+        for reason in &self.reasons {
+            host.add_reason(reason.into());
+        }
+        if let Some(os) = &self.os {
+            host.set_os(os.into());
+        }
+        for evidence in &self.os_evidence {
+            host.record_os_evidence(evidence.into());
+        }
+        if let Some(hardware) = self.hardware.as_ref().and_then(HardwareRecord::rebuild) {
+            host.set_hardware(hardware);
+        }
+        if let Some(zone) = &self.zone {
+            host.set_zone(zone.into());
+        }
+
+        self.telemetry.restore(&mut host);
+        for hop in &self.path {
+            host.record_hop(hop.into());
+        }
+        for role in self.roles.iter().filter_map(|r| wire::network_role(r)) {
+            host.add_network_role(role);
+        }
+        for filtering in self.filtering.iter().filter_map(|f| wire::filtering(f)) {
+            host.add_filtering(filtering);
+        }
+        // A state name this build cannot read is one a later build wrote, and
+        // `Unasked` is the state that claims nothing, which is the same reading
+        // `PortRecord` gives an unrecognised port state.
+        for entry in &self.ip_protocols {
+            let state = wire::ip_protocol_state(&entry.state).unwrap_or(IpProtocolState::Unasked);
+            host.record_ip_protocol(entry.protocol, state);
+        }
+        for port in ports {
             host.add_port(port);
         }
-        for finding in record.findings.iter().filter_map(FindingRecord::rebuild) {
+        for finding in self.findings.iter().filter_map(FindingRecord::rebuild) {
             host.add_finding(finding);
         }
 
         // Last, because everything above moves `last_seen` forward as it goes.
-        host.restore_seen(record.first_seen, record.last_seen);
+        host.restore_seen(self.first_seen, self.last_seen);
         host
     }
 }
