@@ -641,25 +641,43 @@ impl Entry {
 /// that left it to root. Claiming an already-correct directory is a `chown` to
 /// the owner it already has.
 ///
-/// Only the two this crate creates. The state directory above them may predate
-/// this engine by years and belongs to whoever made it.
+/// Above those two, only what this call created. A first run on a machine
+/// with no `~/.local/state` creates it and `~/.local` on the way, and left to
+/// root they are directories no other program of the user's can keep its state
+/// in. A state directory that was already there may predate this engine by
+/// years and belongs to whoever made it.
 ///
 /// Best effort, like every other claim here: a directory that cannot be given
 /// away is not worth failing a scan over, and an unprivileged run has no
 /// invoking user to give it to and no need of one.
 pub fn prepare_root(root: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(root)?;
+    let own = super::paths::root().as_deref() == Some(root);
+    prepare_root_with(root, own, claim_directory_for_invoking_user)
+}
 
-    // The parent only where `root` is this crate's own, which is the one case
-    // where it is known to be a directory this engine created. A caller that
-    // named its own location is telling us where to write, not handing us
-    // everything above it.
-    if super::paths::root().as_deref() == Some(root)
-        && let Some(above) = root.parent()
-    {
-        claim_directory_for_invoking_user(above);
+/// [`prepare_root`] with the claim passed in, so a test can see what would be
+/// given away without an elevated process to give it.
+///
+/// `own` says `root` is this crate's own location rather than one a caller
+/// named, which is the one case where what lies above it is known to be
+/// somewhere this engine may have created on the invoking user's behalf. A
+/// caller that named its own location is telling us where to write, not
+/// handing us everything above it.
+fn prepare_root_with(root: &Path, own: bool, mut claim: impl FnMut(&Path)) -> std::io::Result<()> {
+    let created = super::ownership::create_missing(root, None)?;
+
+    if own {
+        let above = root.parent();
+        for directory in &created {
+            if Some(directory.as_path()) != above && directory != root {
+                claim(directory);
+            }
+        }
+        if let Some(above) = above {
+            claim(above);
+        }
     }
-    claim_directory_for_invoking_user(root);
+    claim(root);
 
     Ok(())
 }
@@ -3002,6 +3020,57 @@ mod tests {
             .expect("a journal is created inside it")
             .close()
             .expect("it closes");
+    }
+
+    /// Everything a first run under `sudo` creates on the way to its journals
+    /// is given to the user who ran it, not only the two directories at the
+    /// end. A user with no `~/.local/state` who ran one scan would otherwise
+    /// own neither it nor `~/.local`, and every other program that keeps state
+    /// there would find it refused.
+    ///
+    /// Only what this call created: a directory that was already there
+    /// belongs to whoever made it, and the home above them is not the run's
+    /// to give.
+    #[test]
+    fn preparing_a_root_gives_away_every_directory_it_created() {
+        let home = scratch("prepare-root-home");
+        let root = home.join(".local/state/zond/journals");
+
+        let mut claimed = Vec::new();
+        prepare_root_with(&root, true, |path| claimed.push(path.to_path_buf()))
+            .expect("the path is created");
+        assert_eq!(
+            claimed,
+            [
+                ".local",
+                ".local/state",
+                ".local/state/zond",
+                ".local/state/zond/journals"
+            ]
+            .map(|below| home.join(below)),
+            "a directory created for the journal was left to root"
+        );
+
+        // With `~/.local/state` already there, it is not this run's to give,
+        // and the two directories this crate owns are repaired regardless.
+        fs::remove_dir_all(home.join(".local/state/zond")).expect("removes");
+        claimed.clear();
+        prepare_root_with(&root, true, |path| claimed.push(path.to_path_buf()))
+            .expect("the path is created");
+        assert_eq!(
+            claimed,
+            [".local/state/zond", ".local/state/zond/journals"].map(|below| home.join(below))
+        );
+
+        // A location the caller named is where to write, not everything above
+        // it: only the root itself is claimed.
+        claimed.clear();
+        let named = home.join("elsewhere/journals");
+        prepare_root_with(&named, false, |path| claimed.push(path.to_path_buf()))
+            .expect("the path is created");
+        assert_eq!(claimed, [named]);
+
+        let _ = fs::remove_dir_all(&home);
     }
 
     /// A watch is never finished, so a journal of one always offers a resume and
