@@ -132,6 +132,11 @@ pub struct ProbeSockets {
 /// cannot say which interface that is -- so the honest answer is that this
 /// function does not know. See
 /// [`OnLinkTable::source_for`](OnLinkTable::source_for).
+///
+/// An **IPv4 address written inside IPv6** is declined as IPv4 itself is. It
+/// is an IPv4 host, reached only by a dual-stack socket from an IPv4 source,
+/// and a global IPv6 address, the one thing the scope match below offers, is
+/// the one source that certainly cannot reach it.
 pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr> {
     let IpAddr::V6(target_v6) = target else {
         // IPv4 has no equivalent failure worth second-guessing: there is one
@@ -139,6 +144,9 @@ pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr>
         // host with no v4 connectivity.
         return None;
     };
+    if target_v6.to_ipv4_mapped().is_some() {
+        return None;
+    }
 
     // A link-local destination cannot be answered here for the reason
     // `OnLinkTable::source_for` gives: every interface holds one, so any answer
@@ -700,6 +708,25 @@ mod tests {
         assert_eq!(
             source, None,
             "a global was never offered, and now nor is a guess"
+        );
+    }
+
+    /// An IPv4 address written inside IPv6 is an IPv4 host, and a global IPv6
+    /// source can never reach it. Offered one, a probe to it would leave as an
+    /// IPv6 packet toward the router, the one place the host certainly is not.
+    #[test]
+    fn a_mapped_target_is_offered_no_ipv6_source() {
+        let intf = mock_interface(vec![
+            v4net(192, 0, 2, 50, 24),
+            v6net(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 64),
+        ]);
+
+        assert_eq!(
+            plausible_source(
+                std::slice::from_ref(&intf),
+                IpAddr::V6(Ipv4Addr::new(203, 0, 113, 1).to_ipv6_mapped())
+            ),
+            None
         );
     }
 
