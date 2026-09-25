@@ -8,7 +8,16 @@ description = "HP JetDirect / AppSocket"
 # this file. A port taken off that list is one the operator chose to probe, so
 # it is asked what any port nothing claims is asked.
 
+# What a raw-print port says back is PJL, whatever printer is behind it: a
+# status or information readback opens with the `@PJL` command it answers,
+# `@PJL INFO ID` before the model name or `@PJL USTATUS DEVICE` before a status
+# code, and a printer that frames it adds the Universal Exit Language escape in
+# front. Anchored at the start of the reply, because the rule is also consulted
+# across the whole corpus for a port nothing else named, and a vendor's name
+# found anywhere in a reply, `HP` inside every mention of PHP among them, says
+# nothing about what is listening.
 [[match]]
-name = "generic_printer"
-pattern = 'HP'
+name = "pjl_reply"
+pattern = '^(?:\x1b%-12345X)?@PJL [A-Z]+'
 product = "printer"
+example = "@PJL INFO ID\r\n\"HP LaserJet 4250\"\r\n\f"

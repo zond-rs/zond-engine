@@ -509,3 +509,42 @@ fn only_a_framed_zabbix_reply_is_named_zabbix() {
         assert_eq!(verdict.service.as_deref(), Some("zabbix"), "on {port}");
     }
 }
+
+/// A raw-print port is named by the PJL its printer answers in, and not by
+/// the two letters of a vendor's name wherever they fall.
+///
+/// A rule reading `HP` anywhere is consulted across the whole corpus for any
+/// port its own did not name, and reads every reply that mentions PHP, an
+/// `X-Powered-By` header or a page about it, as a JetDirect printer. What a
+/// printer on its raw port says of its own accord is a PJL reply, which opens
+/// with the `@PJL` command it answers.
+#[test]
+fn only_a_pjl_reply_is_named_a_raw_print_port() {
+    use crate::model::port::Protocol::Tcp;
+
+    let not_a_printer = [
+        (
+            8080,
+            "HTTP/1.1 200 OK\r\nServer: Apache\r\nX-Powered-By: PHP/8.1.2\r\n\
+             Content-Type: text/html\r\n\r\n<title>Welcome</title>",
+        ),
+        (51987, "X-Powered-By: PHP/8.1.2"),
+        (9100, "Powered by PHP"),
+    ];
+    for (port, banner) in not_a_printer {
+        let verdict = named(port, Tcp, banner);
+        assert!(
+            verdict
+                .evidence
+                .iter()
+                .all(|evidence| evidence.service.as_deref() != Some("jetdirect")),
+            "{banner:?} on {port} was read as a raw-print port: {verdict:?}"
+        );
+    }
+
+    // `@PJL INFO ID` answered: the command echoed, then the model in quotes
+    // and the form feed that ends every PJL reply.
+    let id = "@PJL INFO ID\r\n\"HP LaserJet 4250\"\r\n\u{c}";
+    let verdict = named(9100, Tcp, id);
+    assert_eq!(verdict.service.as_deref(), Some("jetdirect"));
+}
