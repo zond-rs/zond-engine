@@ -104,6 +104,8 @@ pub use tls_enum::{EXCHANGE_TIMEOUT, MAX_OFFERS_PER_VERSION, enumerate_tls};
 pub(crate) use tls_enum::enumerate_tls_while;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -112,7 +114,8 @@ use tokio::time::timeout;
 
 use crate::config::ServiceDetection;
 use crate::model::port::{Port, PortState, Protocol, Service};
-use crate::transport::dial::Egress;
+use crate::system::descriptors;
+use crate::transport::dial::{Egress, Shaping};
 
 /// How long to wait for a service to speak first (banner grab).
 const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);
@@ -412,12 +415,60 @@ pub async fn fingerprint_tcp_detailed(
     port: Port,
     detection: ServiceDetection,
 ) -> (Port, AboutTheHost, Vec<String>) {
-    fingerprint_tcp_via(stream, port, detection, Egress::KERNEL).await
+    let fingerprinted = fingerprint_tcp_via(stream, port, detection, Egress::KERNEL).await;
+    (
+        fingerprinted.port,
+        fingerprinted.about_the_host,
+        fingerprinted.responses,
+    )
+}
+
+/// What identifying one TCP port came to, as a scan files it.
+pub(crate) struct Fingerprinted {
+    /// The port, its service refined where anything named it.
+    pub(crate) port: Port,
+    /// What the port's service said about the machine behind it.
+    pub(crate) about_the_host: AboutTheHost,
+    /// The responses gathered, for a later detection to read.
+    pub(crate) responses: Vec<String>,
+    /// Whether a connection the identification went on to make, a later
+    /// question, a redirect followed or an analyzer's own, was given up
+    /// because the process had no socket to give it. What was learned is
+    /// kept, and is a floor: the question that connection carried went
+    /// unasked for a reason that is this machine's rather than the port's.
+    pub(crate) starved: bool,
 }
 
 /// [`fingerprint_tcp_detailed`], with every further connection to the port
-/// leaving by `egress`, which is how `stream` was reached.
+/// leaving by `egress`, which is how `stream` was reached, and with whether
+/// one of them was refused a socket.
 pub(crate) async fn fingerprint_tcp_via(
+    stream: TcpStream,
+    port: Port,
+    detection: ServiceDetection,
+    egress: Egress,
+) -> Fingerprinted {
+    // Every connection after `stream` dials through this scope, which is also
+    // where a connection given up for want of a socket says so; see
+    // `DIALLING`.
+    let starved = Arc::new(AtomicBool::new(false));
+    let dialling = Dialling {
+        egress,
+        starved: Arc::clone(&starved),
+    };
+    let (port, about_the_host, responses) = DIALLING
+        .scope(dialling, identify_tcp(stream, port, detection, egress))
+        .await;
+    Fingerprinted {
+        port,
+        about_the_host,
+        responses,
+        starved: starved.load(Ordering::Relaxed),
+    }
+}
+
+/// The identification [`fingerprint_tcp_via`] runs inside its dialling scope.
+async fn identify_tcp(
     stream: TcpStream,
     mut port: Port,
     detection: ServiceDetection,
@@ -461,20 +512,16 @@ pub(crate) async fn fingerprint_tcp_via(
     let mut about_the_host = AboutTheHost::default();
     // The analyzers dial through the port's egress. They are handed a context
     // whose shape is public and cannot carry it, so it reaches them as the
-    // scope their collection runs in; see `ANALYZING`.
-    let verdict = ANALYZING
-        .scope(
-            egress,
-            analyze(
-                port.number(),
-                Protocol::Tcp,
-                addr,
-                responses,
-                tunnel,
-                detection,
-            ),
-        )
-        .await;
+    // scope their collection runs in; see `DIALLING`.
+    let verdict = analyze(
+        port.number(),
+        Protocol::Tcp,
+        addr,
+        responses,
+        tunnel,
+        detection,
+    )
+    .await;
     match verdict {
         Some(verdict) if !verdict.is_empty() => {
             // Taken from the whole retained evidence set rather than from the
@@ -715,7 +762,7 @@ async fn gather(
     // name for a handshake, so the socket in hand is asked in the clear and that
     // is the whole of it.
     let Ok(socket) = stream.peer_addr() else {
-        return (plaintext(&mut stream, port, None, egress).await, None);
+        return (plaintext(stream, port, None, egress).await, None);
     };
 
     // The first rung inherits the connection the caller opened. Every rung after
@@ -749,12 +796,64 @@ async fn gather(
 /// No share of the process's descriptor budget of its own: the pass that
 /// fingerprints the port holds one for the whole identification, whose
 /// connections follow one another. A table full for other reasons is waited
-/// out before that timeout starts, not within it.
+/// out before that timeout starts, not within it; see [`dial_again`].
 async fn redial(socket: SocketAddr, egress: Egress) -> Option<TcpStream> {
-    egress
-        .connect_timed(socket, CONNECT_RETRY_TIMEOUT)
+    dial_again(socket, egress, Some(CONNECT_RETRY_TIMEOUT))
         .await
         .ok()
+}
+
+/// A further connection to the port being identified, leaving by `egress`
+/// and given `limit` to connect where one is set.
+///
+/// Every connection an identification makes after its first comes through
+/// here, so that one given up for want of a socket is never read as a port
+/// that said nothing. A socket the process refuses is asked for again for up
+/// to [`PATIENCE`](descriptors::PATIENCE), each attempt on a clock of its own.
+/// Should the table stay full past that, or the caller's own clock run out
+/// while this still waits on it, the identification is marked starved on the
+/// way out, which is what its caller files: whatever the connection was to
+/// ask went unasked, and raising the limit is the remedy.
+async fn dial_again(
+    addr: SocketAddr,
+    egress: Egress,
+    limit: Option<Duration>,
+) -> std::io::Result<TcpStream> {
+    let refused = Refused::default();
+    let refused = &refused;
+    descriptors::patiently(descriptors::PATIENCE, || async move {
+        let attempt = match limit {
+            Some(limit) => timeout(limit, egress.connect_shaped(addr, Shaping::default()))
+                .await
+                .unwrap_or_else(|_elapsed| Err(std::io::ErrorKind::TimedOut.into())),
+            None => egress.connect_shaped(addr, Shaping::default()).await,
+        };
+        refused.saw(&attempt);
+        attempt
+    })
+    .await
+}
+
+/// Whether the connection [`dial_again`] is making was last refused a socket,
+/// which it reports to the identification's scope if it ends that way, by
+/// giving up or by being dropped while it waits.
+#[derive(Default)]
+struct Refused(AtomicBool);
+
+impl Refused {
+    /// Notes how one attempt went.
+    fn saw(&self, attempt: &std::io::Result<TcpStream>) {
+        let refused = attempt.as_ref().is_err_and(descriptors::exhausted);
+        self.0.store(refused, Ordering::Relaxed);
+    }
+}
+
+impl Drop for Refused {
+    fn drop(&mut self) {
+        if self.0.load(Ordering::Relaxed) {
+            let _ = DIALLING.try_with(|dialling| dialling.starved.store(true, Ordering::Relaxed));
+        }
+    }
 }
 
 /// One question a port can be asked, and the unit [`gather`] falls through.
@@ -816,7 +915,7 @@ impl Rung {
     /// leaves the socket unusable for the next.
     async fn ask(
         self,
-        mut stream: TcpStream,
+        stream: TcpStream,
         port: u16,
         socket: SocketAddr,
         detection: ServiceDetection,
@@ -828,10 +927,7 @@ impl Rung {
                 tunneled(tls::speculative_handshake(stream, socket.ip()).await, port).await
             }
             Rung::LegacyTls => (legacy_tls(stream).await, None),
-            Rung::Plaintext => (
-                plaintext(&mut stream, port, Some(socket), egress).await,
-                None,
-            ),
+            Rung::Plaintext => (plaintext(stream, port, Some(socket), egress).await, None),
             Rung::LastResort => (
                 last_resort(stream, socket, port, detection, egress).await,
                 None,
@@ -900,14 +996,14 @@ async fn last_resort(
 /// on either shape. The port spoke, but not in this rung's language, and the
 /// ladder has a rung that can read it.
 async fn plaintext(
-    stream: &mut TcpStream,
+    mut stream: TcpStream,
     port: u16,
     socket: Option<SocketAddr>,
     egress: Egress,
 ) -> ResponseSet {
     let probes = SignatureDb::global().tcp_probe_payloads(port);
     if !probes.is_empty() {
-        let banners = collect_responses(stream, port, probes).await;
+        let banners = collect_responses(&mut stream, port, probes).await;
         // Read back off the decoded text, which is sound only because every
         // byte `looks_like_tls` constrains is under 0x80 and survives
         // `from_utf8_lossy` unchanged.
@@ -953,8 +1049,12 @@ enum GenericReply {
 /// unidentified port. Measured against one ordinary home server, that was seven
 /// of its eleven open ports, to learn nothing about any of them. An HTTP request
 /// answers in a round trip and names most of them.
+///
+/// The stream is closed once its reply is read, before a redirect is followed
+/// over a connection of its own, so the identification holds one socket at a
+/// time, which is the one share of the descriptor budget its pass took.
 async fn ask_generically(
-    stream: &mut TcpStream,
+    mut stream: TcpStream,
     socket: Option<SocketAddr>,
     egress: Egress,
 ) -> GenericReply {
@@ -964,7 +1064,9 @@ async fn ask_generically(
         }
     }
 
-    let Some(bytes) = read_bytes(stream, PROBE_READ_TIMEOUT, CONTINUATION_GRACE).await else {
+    let read = read_bytes(&mut stream, PROBE_READ_TIMEOUT, CONTINUATION_GRACE).await;
+    drop(stream);
+    let Some(bytes) = read else {
         return GenericReply::Silent;
     };
     if looks_like_tls(&bytes) {
@@ -1099,8 +1201,7 @@ fn same_host_path(url: &str, peer: SocketAddr) -> Option<String> {
 /// never returns. One round trip, and only on a response that asked for it,
 /// leaving by `egress` as the connection that drew the redirect did.
 async fn follow_redirect(socket: SocketAddr, path: &str, egress: Egress) -> Option<String> {
-    let mut stream = egress
-        .connect_timed(socket, CONNECT_RETRY_TIMEOUT)
+    let mut stream = dial_again(socket, egress, Some(CONNECT_RETRY_TIMEOUT))
         .await
         .ok()?;
 
@@ -1209,17 +1310,29 @@ where
     banners
 }
 
+/// How the port being fingerprinted is dialled after its first connection.
+struct Dialling {
+    /// The egress the port was reached by, which every further connection
+    /// leaves by.
+    egress: Egress,
+    /// Set when one of those connections was given up for want of a socket;
+    /// see [`dial_again`].
+    starved: Arc<AtomicBool>,
+}
+
 tokio::task_local! {
-    /// The egress the analyzers of the port being fingerprinted dial through.
+    /// How the port being fingerprinted is dialled, by its later questions
+    /// and by its analyzers.
     ///
     /// A scope rather than an argument because an analyzer is handed a
     /// [`PortContext`], which is public, non-exhaustive, and built by struct
-    /// literal throughout the crate; what an analyzer dials through is the
-    /// engine's business and not a field a caller outside it could fill. Set
-    /// around `analyze`, whose collection runs inline on the task that set it:
-    /// the one task it spawns is the CPU phase, which dials nothing, so no
-    /// analyzer dials from where the scope cannot reach.
-    static ANALYZING: Egress;
+    /// literal throughout the crate; what an analyzer dials through, and how
+    /// it reports a connection the process could not make, is the engine's
+    /// business and not a field a caller outside it could fill. Set around
+    /// the whole identification, whose collection runs inline on the task
+    /// that set it: the one task it spawns is the CPU phase, which dials
+    /// nothing, so no connection is made from where the scope cannot reach.
+    static DIALLING: Dialling;
 }
 
 /// Connects to `addr` for an analyzer, the way the port it is examining was
@@ -1227,13 +1340,13 @@ tokio::task_local! {
 ///
 /// Outside a fingerprint's collection, which is an analyzer driven directly
 /// through [`analyze_with`], the routing table decides, as it does for any
-/// public entry point here.
+/// public entry point here, and a connection refused a socket has no scan to
+/// report to.
 pub(crate) async fn analyzer_connect(addr: SocketAddr) -> std::io::Result<TcpStream> {
-    ANALYZING
-        .try_with(|egress| *egress)
-        .unwrap_or(Egress::KERNEL)
-        .connect(addr)
-        .await
+    let egress = DIALLING
+        .try_with(|dialling| dialling.egress)
+        .unwrap_or(Egress::KERNEL);
+    dial_again(addr, egress, None).await
 }
 
 /// The analyzer registry. New evidence sources (HTTP, JARM, SNMP, nerva binary
@@ -2118,8 +2231,9 @@ mod tests {
 
         let stream = TcpStream::connect(addr).await.expect("connects");
         let port = baseline_port(22, Protocol::Tcp, PortState::Open);
-        let (port, _, _) =
-            fingerprint_tcp_via(stream, port, ServiceDetection::Banner, Egress::KERNEL).await;
+        let port = fingerprint_tcp_via(stream, port, ServiceDetection::Banner, Egress::KERNEL)
+            .await
+            .port;
         server.abort();
 
         assert_eq!(
@@ -2155,9 +2269,8 @@ mod tests {
             received
         });
 
-        let mut stream = TcpStream::connect(addr).await.expect("connects");
-        plaintext(&mut stream, number, Some(addr), Egress::KERNEL).await;
-        drop(stream);
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        plaintext(stream, number, Some(addr), Egress::KERNEL).await;
         server.await.expect("the listener finishes")
     }
 
@@ -2195,6 +2308,116 @@ mod tests {
             String::from_utf8_lossy(&print),
             String::from_utf8_lossy(&expected),
             "the raw-print port was asked something else"
+        );
+    }
+
+    /// A connection an identification gives up for want of a socket marks
+    /// the identification starved, and one that fails for any other reason
+    /// does not.
+    ///
+    /// An analyzer's connection is made inside a clock of the analyzer's own,
+    /// the SSH key exchange's or a favicon fetch's, which a full table runs
+    /// out while the connection still waits for a descriptor. Unmarked, the
+    /// port reads as one with nothing more to say where the question that
+    /// would have said it was never put. A port that refuses the connection
+    /// has answered, and is no shortfall of this machine's.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connection_given_up_for_want_of_a_socket_marks_the_identification_starved() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "a_connection_given_up_for_want_of_a_socket_marks_the_identification_starved",
+        ) {
+            return;
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let open = listener.local_addr().expect("a local address");
+        let closed = {
+            let gone = std::net::TcpListener::bind("127.0.0.1:0").expect("binds loopback");
+            gone.local_addr().expect("a local address")
+        };
+
+        // Dialled the way an analyzer dials, inside the identification's
+        // scope and inside a clock of its own.
+        let dial = |addr: SocketAddr| async move {
+            let starved = Arc::new(AtomicBool::new(false));
+            let dialling = Dialling {
+                egress: Egress::KERNEL,
+                starved: Arc::clone(&starved),
+            };
+            let _ = DIALLING
+                .scope(
+                    dialling,
+                    timeout(Duration::from_millis(300), analyzer_connect(addr)),
+                )
+                .await;
+            starved.load(Ordering::Relaxed)
+        };
+
+        let held = exhaust(64);
+        let refused_a_socket = dial(open).await;
+        drop(held);
+        let refused_by_the_port = dial(closed).await;
+        drop(listener);
+
+        assert!(
+            refused_a_socket,
+            "a connection the process had no socket for was read as the port's silence"
+        );
+        assert!(
+            !refused_by_the_port,
+            "a port that refused the connection was blamed on the file limit"
+        );
+    }
+
+    /// A redirect is followed once the connection that drew it is closed, so
+    /// an identification holds the one socket its pass took a share of the
+    /// descriptor budget for, and never two.
+    #[tokio::test]
+    async fn a_redirect_is_followed_after_the_connection_that_drew_it_is_closed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let addr = listener.local_addr().expect("a local address");
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.expect("the first connection");
+            let mut buffer = [0u8; 1024];
+            let _ = first.read(&mut buffer).await;
+            // Held open, as a server keeping the connection alive does.
+            let _ = first
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            let (mut second, _) = listener.accept().await.expect("the redirect followed");
+            // By now the first has to have been let go.
+            let first_open = !matches!(
+                tokio::time::timeout(Duration::from_millis(500), first.read(&mut buffer)).await,
+                Ok(Ok(0))
+            );
+            let _ = second.read(&mut buffer).await;
+            let _ = second
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            first_open
+        });
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let banners = plaintext(stream, 51987, Some(addr), Egress::KERNEL)
+            .await
+            .banners;
+        let first_open = server.await.expect("the listener finishes");
+
+        assert_eq!(
+            banners.len(),
+            2,
+            "the redirect was not followed: {banners:?}"
+        );
+        assert!(
+            !first_open,
+            "the redirect was followed while the connection that drew it was held"
         );
     }
 

@@ -83,7 +83,7 @@ use crate::model::tls::{
 };
 use crate::protocols::tls::{self, Offer, RECORD_HEADER_LEN, ServerResponse};
 use crate::system::descriptors;
-use crate::transport::dial::Egress;
+use crate::transport::dial::{Egress, Shaping};
 use crate::{info, warn};
 
 /// The most offers put to one endpoint under one version.
@@ -236,7 +236,15 @@ async fn walk(
             server_name: None,
         };
 
-        let (named, suite, retry) = match ask(addr, egress, &offer, control, may_probe).await {
+        let asked = ask(
+            addr,
+            egress,
+            &offer,
+            control,
+            may_probe,
+            descriptors::PATIENCE,
+        );
+        let (named, suite, retry) = match asked.await {
             Answer::Hello {
                 version,
                 suite,
@@ -247,12 +255,19 @@ async fn walk(
             Answer::Declined => break,
             Answer::Interrupted(why) => {
                 // A stop is the caller's, which says so itself; a silence is
-                // this endpoint's, and nothing else will mention it.
-                if why == Interruption::Unanswered {
-                    warn!(
+                // this endpoint's, and a full table this machine's, and
+                // nothing else will mention either.
+                match why {
+                    Interruption::Unanswered => warn!(
                         verbosity = 2,
                         "{addr} stopped answering under {version}; its enumeration there is incomplete"
-                    );
+                    ),
+                    Interruption::FileLimit => warn!(
+                        verbosity = 2,
+                        "{addr} not asked under {version}: {}",
+                        descriptors::starved(descriptors::PATIENCE)
+                    ),
+                    _ => {}
                 }
                 interruption = Some(UnfinishedVersion::new(version, why));
                 break;
@@ -362,12 +377,17 @@ enum Answer {
 /// known to answer there is no evidence the other way.
 ///
 /// `may_probe` is asked before every connection, the control's included.
+///
+/// An offer the process had no socket for within `patience` is not put again:
+/// the wait for one was already as long as any offer waits, and a full table
+/// is this machine's, so a pause says nothing more about the endpoint.
 async fn ask(
     addr: SocketAddr,
     egress: Egress,
     offer: &Offer<'_>,
     control: &OnceLock<Control>,
     may_probe: &impl Fn() -> bool,
+    patience: Duration,
 ) -> Answer {
     let mut hung_up = false;
     let mut pauses = RETRY_PAUSES.into_iter();
@@ -376,7 +396,7 @@ async fn ask(
         if !may_probe() {
             return Answer::Interrupted(Interruption::Stopped);
         }
-        match exchange(addr, egress, offer).await {
+        match exchange(addr, egress, offer, patience).await {
             Exchange::Answered(ServerResponse::Hello {
                 version,
                 suite,
@@ -397,14 +417,15 @@ async fn ask(
                 if !may_probe() {
                     return Answer::Interrupted(Interruption::Stopped);
                 }
-                if let Exchange::Answered(ServerResponse::Hello { .. }) =
-                    exchange(addr, egress, &control.offer()).await
-                {
-                    return Answer::Declined;
+                match exchange(addr, egress, &control.offer(), patience).await {
+                    Exchange::Answered(ServerResponse::Hello { .. }) => return Answer::Declined,
+                    Exchange::Starved => return Answer::Interrupted(Interruption::FileLimit),
+                    _ => {}
                 }
             }
             Exchange::HungUp => hung_up = true,
             Exchange::Lost => {}
+            Exchange::Starved => return Answer::Interrupted(Interruption::FileLimit),
         }
 
         let Some(pause) = pauses.next() else {
@@ -428,6 +449,9 @@ enum Exchange {
     /// No question was put or no answer came: the connection could not be
     /// made, the hello could not be sent, or nothing arrived in time.
     Lost,
+    /// No question was put because the process had no socket to put it on,
+    /// for as long as the offer would wait for one.
+    Starved,
 }
 
 /// One offer: connect, send the hello, read the first record back, hang up.
@@ -435,7 +459,18 @@ enum Exchange {
 /// The connection is dropped as soon as the answer is read. Nothing is
 /// completed, so the endpoint sees a client that opened a connection, asked what
 /// it would accept, and left. It leaves by `egress`.
-async fn exchange(addr: SocketAddr, egress: Egress, offer: &Offer<'_>) -> Exchange {
+///
+/// A socket the process refuses is asked for again for up to `patience`, and
+/// each attempt runs on a clock of its own: a refusal comes back before
+/// anything is sent, so the wait for a descriptor never comes out of the time
+/// the endpoint has to answer, and a table still full past `patience` is
+/// [`Exchange::Starved`] rather than an offer lost on the endpoint's account.
+async fn exchange(
+    addr: SocketAddr,
+    egress: Egress,
+    offer: &Offer<'_>,
+    patience: Duration,
+) -> Exchange {
     let hello = tls::client_hello(offer);
 
     // The five versions' walks each hold a connection at once, so each offer
@@ -447,28 +482,42 @@ async fn exchange(addr: SocketAddr, egress: Egress, offer: &Offer<'_>) -> Exchan
         .await
         .expect("the descriptor gate is never closed");
 
-    timeout(EXCHANGE_TIMEOUT, async {
-        let Ok(mut stream) = egress.connect_timed(addr, CONNECT_PROBE_TIMEOUT).await else {
-            return Exchange::Lost;
-        };
-        if stream.write_all(&hello).await.is_err() {
-            return Exchange::Lost;
-        }
-        match first_record(&mut stream).await {
-            Record::Whole(record) => {
-                tls::read_response(&record).map_or(Exchange::Unreadable, Exchange::Answered)
+    let hello = &hello;
+    let exchanged = descriptors::patiently(patience, || async move {
+        timeout(EXCHANGE_TIMEOUT, async {
+            let connected = timeout(
+                CONNECT_PROBE_TIMEOUT,
+                egress.connect_shaped(addr, Shaping::default()),
+            )
+            .await;
+            let mut stream = match connected {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(e)) if descriptors::exhausted(&e) => return Err(e),
+                _ => return Ok(Exchange::Lost),
+            };
+            if stream.write_all(hello).await.is_err() {
+                return Ok(Exchange::Lost);
             }
-            // A record cut short can still hold a whole ServerHello, where the
-            // server coalesced more messages behind it, and that is an answer.
-            // The parser refuses anything short of one.
-            Record::Cut(partial) => {
-                tls::read_response(&partial).map_or(Exchange::HungUp, Exchange::Answered)
-            }
-            Record::Oversized => Exchange::Unreadable,
-        }
+            Ok(match first_record(&mut stream).await {
+                Record::Whole(record) => {
+                    tls::read_response(&record).map_or(Exchange::Unreadable, Exchange::Answered)
+                }
+                // A record cut short can still hold a whole ServerHello, where
+                // the server coalesced more messages behind it, and that is an
+                // answer. The parser refuses anything short of one.
+                Record::Cut(partial) => {
+                    tls::read_response(&partial).map_or(Exchange::HungUp, Exchange::Answered)
+                }
+                Record::Oversized => Exchange::Unreadable,
+            })
+        })
+        .await
+        .unwrap_or(Ok(Exchange::Lost))
     })
-    .await
-    .unwrap_or(Exchange::Lost)
+    .await;
+    // Only a refusal of a socket comes back as an error, and only once
+    // `patience` has passed.
+    exchanged.unwrap_or(Exchange::Starved)
 }
 
 /// What arrived on a connection, read as far as the first record.
@@ -1050,6 +1099,55 @@ mod tests {
             )],
             "the walk it cut short is named, and no other"
         );
+    }
+
+    /// An offer the process had no socket for is named for the file limit, not
+    /// for the endpoint.
+    ///
+    /// Nothing reached the endpoint, so reading the refusal as its silence
+    /// would send a reader to a slower scan, which gets past a rate limiter
+    /// and not past a full descriptor table; the remedy is a higher limit, and
+    /// only a cause naming it says so. Nor is such an offer put again after a
+    /// pause: the wait for a socket was already as long as an offer waits.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_offer_with_no_socket_to_put_it_on_is_named_for_the_file_limit() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "an_offer_with_no_socket_to_put_it_on_is_named_for_the_file_limit",
+        ) {
+            return;
+        }
+        // Listening before the table fills; nothing will reach it.
+        let (addr, seen) = FakeTlsServer::new(0x0303, [0xC02F]).spawn().await;
+        let suites: Vec<CipherSuite> = CipherSuite::offered_under(TlsVersion::Tls12).collect();
+        let offer = Offer {
+            version: TlsVersion::Tls12,
+            suites: &suites,
+            server_name: None,
+        };
+        let held = exhaust(64);
+
+        let answer = ask(
+            addr,
+            Egress::KERNEL,
+            &offer,
+            &OnceLock::new(),
+            &|| true,
+            Duration::from_millis(200),
+        )
+        .await;
+        drop(held);
+
+        let cause = match answer {
+            Answer::Interrupted(why) => why.name(),
+            Answer::Hello { .. } => "a hello",
+            Answer::Declined => "declined",
+        };
+        assert_eq!(cause, Interruption::FileLimit.name());
+        assert_eq!(seen.load(Ordering::SeqCst), 0, "the endpoint was reached");
     }
 
     /// A server that declines by hanging up rather than by alert is declining,

@@ -11060,10 +11060,11 @@ impl core::marker::UnsafeUnpin for zond_engine::model::tls::BulkCipher
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::BulkCipher
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::BulkCipher
 #[non_exhaustive] pub enum zond_engine::model::tls::Interruption
+pub zond_engine::model::tls::Interruption::FileLimit
 pub zond_engine::model::tls::Interruption::Stopped
 pub zond_engine::model::tls::Interruption::Unanswered
 impl zond_engine::model::tls::Interruption
-pub const zond_engine::model::tls::Interruption::ALL: [Self; 2]
+pub const zond_engine::model::tls::Interruption::ALL: [Self; 3]
 pub const fn zond_engine::model::tls::Interruption::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::tls::Interruption
 pub fn zond_engine::model::tls::Interruption::clone(&self) -> zond_engine::model::tls::Interruption

@@ -1585,10 +1585,11 @@
           ]
         },
         "interruption": {
-          "description": "`unanswered` where the endpoint stopped answering and went on not answering when the offer was put again, which is usually a rate limiter or a busy embedded stack; `stopped` where the scan stopped asking, because the host's budget ran out, which puts its address in the phase's `timed_out` list as well, or because the scan itself was stopped.",
+          "description": "`unanswered` where the endpoint stopped answering and went on not answering when the offer was put again, which is usually a rate limiter or a busy embedded stack; `stopped` where the scan stopped asking, because the host's budget ran out, which puts its address in the phase's `timed_out` list as well, or because the scan itself was stopped; `file-limit` where the scanning process held as many files as its descriptor limit allows for as long as an offer would wait for a socket, so the endpoint was not asked, which a higher limit gets past.",
           "enum": [
             "unanswered",
-            "stopped"
+            "stopped",
+            "file-limit"
           ]
         }
       }

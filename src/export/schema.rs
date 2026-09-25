@@ -2152,7 +2152,9 @@ pub struct UnfinishedVersionDto {
     /// `unanswered` where the endpoint stopped answering and went on not
     /// answering when asked again; `stopped` where the scan stopped asking,
     /// because the host's budget ran out, which also puts its address in the
-    /// phase's `timed_out`, or because the scan itself was stopped.
+    /// phase's `timed_out`, or because the scan itself was stopped;
+    /// `file-limit` where the scanning process had no socket to put an offer
+    /// on for as long as the offer would wait, so the endpoint was not asked.
     pub interruption: &'static str,
 }
 

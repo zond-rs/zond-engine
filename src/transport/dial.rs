@@ -227,24 +227,14 @@ impl Egress {
     /// Wherever the routing table sends it.
     pub(crate) const KERNEL: Self = Self { pin: None };
 
-    /// Connects to `addr`, waiting out a full descriptor table first.
+    /// Connects to `addr`, waiting out a full descriptor table first, and
+    /// giving the connection itself `timeout`.
     ///
     /// A socket refused because the process holds too many is asked for again
     /// for up to [`descriptors::PATIENCE`] rather than returned as a failed
     /// connection, which a caller would read as something the target did; see
     /// [`descriptors::patiently`]. Past that the refusal is returned, and
-    /// [`descriptors::exhausted`] names it. Unbounded otherwise, as
-    /// [`TcpStream::connect`] is: a caller with a budget for the connection
-    /// takes [`connect_timed`](Self::connect_timed), whose budget the wait does
-    /// not come out of.
-    pub(crate) async fn connect(self, addr: SocketAddr) -> io::Result<TcpStream> {
-        descriptors::patiently(descriptors::PATIENCE, || {
-            self.connect_shaped(addr, Shaping::default())
-        })
-        .await
-    }
-
-    /// [`connect`](Self::connect), giving the connection itself `timeout`.
+    /// [`descriptors::exhausted`] names it.
     ///
     /// The budget is the connection's and not the wait's: each attempt is
     /// timed on its own, and one refused a socket is refused before its clock
@@ -269,8 +259,9 @@ impl Egress {
     ///
     /// One attempt, a refusal of a socket included, for the connect scanner,
     /// which waits out a full table itself because it gives its descriptor back
-    /// between attempts and answers to the scan's stop while it waits. Every
-    /// other caller takes [`connect`](Self::connect).
+    /// between attempts and answers to the scan's stop while it waits, and for
+    /// a caller that has to know which of its attempts a full table refused.
+    /// Every other caller takes [`connect_timed`](Self::connect_timed).
     ///
     /// Unpinned, unshaped and on Unix this is exactly [`TcpStream::connect`],
     /// so a connection that chose nothing sends the SYN it always would, byte
@@ -350,7 +341,7 @@ impl Egress {
     /// `timeout` and a full descriptor table `patience`.
     ///
     /// For a caller that holds a blocking socket, which is a detection running
-    /// on the blocking pool. The same socket [`connect`](Self::connect) would
+    /// on the blocking pool. The same socket [`connect_timed`](Self::connect_timed) would
     /// build, connected the way [`std::net::TcpStream::connect_timeout`]
     /// connects one, and a full descriptor table waited out the same way
     /// before it, outside `timeout`. The patience is the caller's, because a
@@ -373,7 +364,8 @@ impl Egress {
     }
 
     /// A UDP socket bound for `peer`, ready to be connected to it, with a full
-    /// descriptor table waited out as [`connect`](Self::connect) waits it out.
+    /// descriptor table waited out as [`connect_timed`](Self::connect_timed)
+    /// waits it out.
     pub(crate) async fn udp(self, peer: IpAddr) -> io::Result<UdpSocket> {
         descriptors::patiently(descriptors::PATIENCE, || {
             self.udp_shaped(peer, Shaping::default())
@@ -922,7 +914,10 @@ mod tests {
         assert_eq!(egress, pinned(v4(192, 0, 2, 99), 0));
 
         assert!(
-            egress.connect(addr).await.is_err(),
+            egress
+                .connect_timed(addr, crate::config::limits::CONNECT_PROBE_TIMEOUT)
+                .await
+                .is_err(),
             "a connection forced to an address this host does not hold went out anyway"
         );
     }
@@ -973,9 +968,13 @@ mod tests {
             let (_, second) = listener.accept().await.expect("the plain connection");
             (first, second)
         });
-        let pinned = egress.connect(addr).await.expect("the pinned connect");
+        let within = crate::config::limits::CONNECT_PROBE_TIMEOUT;
+        let pinned = egress
+            .connect_timed(addr, within)
+            .await
+            .expect("the pinned connect");
         let plain = Egress::KERNEL
-            .connect(addr)
+            .connect_timed(addr, within)
             .await
             .expect("the plain connect");
         let (first, second) = accept.await.expect("the accept task joins");

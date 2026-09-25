@@ -1514,8 +1514,9 @@ impl VersionSupport {
 /// only then are the suites it found the whole of what it accepts. A walk that
 /// ended any other way found a floor, and what it missed is the tail of the
 /// server's own preference order, where a legacy configuration keeps its worst
-/// suites. The two causes are kept apart because they are acted on apart: one
-/// is a property of the path to the endpoint, the other of the scan's budget.
+/// suites. The causes are kept apart because they are acted on apart: one is a
+/// property of the path to the endpoint, one of the scan's budget, and one of
+/// the machine the scan ran on.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Interruption {
@@ -1529,17 +1530,23 @@ pub enum Interruption {
     /// [`timed_out`](crate::report::ScanPhase::timed_out) list, or the scan
     /// itself was stopped.
     Stopped,
+    /// The scan had no socket to put the offer on: the process held as many
+    /// files as its descriptor limit allows for as long as the offer would
+    /// wait for one. Nothing was asked of the endpoint, so this says nothing
+    /// about it, and raising the limit is the remedy.
+    FileLimit,
 }
 
 impl Interruption {
     /// Every cause, in the order the enum declares them.
-    pub const ALL: [Self; 2] = [Self::Unanswered, Self::Stopped];
+    pub const ALL: [Self; 3] = [Self::Unanswered, Self::Stopped, Self::FileLimit];
 
     /// The name this cause is written under wherever it reaches text.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Unanswered => "unanswered",
             Self::Stopped => "stopped",
+            Self::FileLimit => "file-limit",
         }
     }
 

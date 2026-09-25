@@ -178,6 +178,10 @@ struct Probed {
     /// Empty for every probe that drew nothing, and for every verdict that came
     /// from the kernel rather than from a conversation.
     about_the_host: crate::fingerprint::AboutTheHost,
+    /// Whether identifying the port lost a later connection for want of a
+    /// socket, so that what it names is a floor; see
+    /// [`Fingerprinted::starved`](crate::fingerprint::Fingerprinted::starved).
+    identified_in_part: bool,
     /// Whether the host answered. The kernel hands back a completed handshake or
     /// a `ConnectionRefused` only when something came back, and a refusal is
     /// almost always the target's own RST, so either is read as a live stack;
@@ -265,6 +269,9 @@ impl Refusal {
 struct Shortfall {
     /// Targets the process had no socket for.
     starved: u128,
+    /// Ports identified in part, a later connection of theirs refused a
+    /// socket.
+    identified_in_part: u128,
     /// Addresses no route led to.
     unroutable: std::collections::BTreeSet<IpAddr>,
     /// Targets this machine refused for any other reason.
@@ -299,6 +306,16 @@ impl Shortfall {
         if self.starved > 0 {
             let unasked = counted(self.starved, unit, units);
             report_starved(ctx, scanner, unasked, descriptors::PATIENCE);
+        }
+        if self.identified_in_part > 0 {
+            ctx.record_failure(
+                scanner,
+                format!(
+                    "{} identified in part: {}",
+                    counted(self.identified_in_part, "port", "ports"),
+                    descriptors::starved(descriptors::PATIENCE)
+                ),
+            );
         }
         for address in self.unroutable {
             let reached = ctx
@@ -652,6 +669,7 @@ fn absorb_probe(
         Attempt::Unmade => {}
     }
     shortfall.count(probed.ip, &probed.attempt);
+    shortfall.identified_in_part += u128::from(probed.identified_in_part);
     ctx.record_outcome(probed.outcome);
     if probed.answered {
         // A connect probe carries no attempt token: the retransmission that may
@@ -790,6 +808,7 @@ async fn port_prober(
             port: Some(settled(target.port, state, reason)),
             responses: Vec::new(),
             about_the_host: crate::fingerprint::AboutTheHost::default(),
+            identified_in_part: false,
             answered,
             rtt,
             outcome,
@@ -803,6 +822,7 @@ async fn port_prober(
             port: Some(settled(target.port, PortState::Unasked, None)),
             responses: Vec::new(),
             about_the_host: crate::fingerprint::AboutTheHost::default(),
+            identified_in_part: false,
             answered: false,
             rtt: None,
             outcome,
@@ -848,14 +868,15 @@ async fn port_prober(
                 // phase can read without dialling again: the responses a
                 // passive detection needs, and what the same bytes said about
                 // the machine. The descriptor is held until it is done.
-                let (port, about_the_host, responses) =
+                let identified =
                     crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await;
                 drop(descriptor);
                 Some(Probed {
                     ip: target.ip,
-                    port: Some(port),
-                    responses,
-                    about_the_host,
+                    port: Some(identified.port),
+                    responses: identified.responses,
+                    about_the_host: identified.about_the_host,
+                    identified_in_part: identified.starved,
                     answered: true,
                     rtt: Some(rtt),
                     outcome: Outcome::Answered { position },
@@ -1117,6 +1138,7 @@ async fn udp_port_prober(
             // reads: the reply is read for the role it declares and no more.
             responses: Vec::new(),
             about_the_host: crate::fingerprint::AboutTheHost::default(),
+            identified_in_part: false,
             answered,
             // A datagram's reply is the service's as much as the path's, so no
             // round trip is read from it.

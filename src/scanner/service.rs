@@ -71,6 +71,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
 
     let asked = targets.len();
     let mut quiet = QuietPorts::default();
+    let mut in_part = QuietPorts::default();
 
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
@@ -86,7 +87,15 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
                         port,
                         about_the_host,
                         banners,
+                        identified_in_part,
                     } = *found;
+                    if identified_in_part {
+                        in_part.record(
+                            &ip,
+                            port.number(),
+                            descriptors::starved(descriptors::PATIENCE),
+                        );
+                    }
                     ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
                     write_back(ctx, ip, port, about_the_host);
                 }
@@ -119,6 +128,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     drop(pool);
 
     quiet.report(ctx, asked);
+    in_part.report_in_part(ctx);
 }
 
 /// How many silent ports it takes before silence is worth a word about the path.
@@ -160,11 +170,39 @@ impl QuietPorts {
 
     /// The one line the ports amount to, named from the first of them.
     fn summary(first: &str, reason: &str, count: usize) -> String {
+        format!(
+            "{} could not be fingerprinted: {reason}",
+            Self::named(first, count)
+        )
+    }
+
+    /// `count` ports, named from the first of them.
+    fn named(first: &str, count: usize) -> String {
         match count - 1 {
-            0 => format!("{first} could not be fingerprinted: {reason}"),
-            1 => format!("{first} and 1 other port could not be fingerprinted: {reason}"),
-            rest => format!("{first} and {rest} other ports could not be fingerprinted: {reason}"),
+            0 => first.to_string(),
+            1 => format!("{first} and 1 other port"),
+            rest => format!("{first} and {rest} other ports"),
         }
+    }
+
+    /// Says once that these ports were identified only in part, a later
+    /// connection of theirs refused a socket.
+    ///
+    /// A failure for the reason every connection refused a socket is one:
+    /// what those ports were asked is a floor, the questions that went
+    /// unasked went unasked for this machine's file limit, and a report that
+    /// did not say so would read as ports that had nothing more to say.
+    fn report_in_part(&self, ctx: &ScanContext) {
+        let (Some(first), Some(reason)) = (&self.first, &self.reason) else {
+            return;
+        };
+        ctx.record_failure(
+            ScannerKind::Service,
+            format!(
+                "{} identified in part: {reason}",
+                Self::named(first, self.count)
+            ),
+        );
     }
 
     /// Says it once, against `asked` open ports the phase set out to identify.
@@ -257,6 +295,9 @@ struct Identified {
     about_the_host: crate::fingerprint::AboutTheHost,
     /// The responses it drew, kept for the detection phase to read.
     banners: Vec<String>,
+    /// Whether a later connection of the identification's was refused a
+    /// socket, so that what it names is a floor.
+    identified_in_part: bool,
 }
 
 /// Connects to one open port and fingerprints it.
@@ -295,7 +336,7 @@ async fn fingerprint_one(
         .await
         .expect("the descriptor gate is never closed");
 
-    let (port, about_the_host, banners) = match protocol {
+    let (port, about_the_host, banners, identified_in_part) = match protocol {
         Protocol::Tcp => {
             let stream = match egress.connect_timed(addr, CONNECT_PROBE_TIMEOUT).await {
                 Ok(stream) => stream,
@@ -314,12 +355,19 @@ async fn fingerprint_one(
                     };
                 }
             };
-            crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await
+            let identified =
+                crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress).await;
+            (
+                identified.port,
+                identified.about_the_host,
+                identified.responses,
+                identified.starved,
+            )
         }
         // Silence is not a failure here: a UDP port that says nothing has told
         // the scan what it had to.
         Protocol::Udp => match crate::fingerprint::fingerprint_udp_via(addr, port, egress).await {
-            Some(fingerprinted) => fingerprinted,
+            Some((port, about_the_host, banners)) => (port, about_the_host, banners, false),
             None => return Attempt::Quiet,
         },
         // Nothing here speaks SCTP as a client, so an open SCTP port keeps the
@@ -334,6 +382,7 @@ async fn fingerprint_one(
         port,
         about_the_host,
         banners,
+        identified_in_part,
     }))
 }
 
@@ -398,6 +447,33 @@ mod tests {
             summary,
             "192.0.2.1:1000 and 82 other ports could not be fingerprinted: no answer within 1.5s"
         );
+    }
+
+    /// Ports whose identification lost a later connection to a full table are
+    /// one failure between them, naming the first, the count and the limit,
+    /// so what they were identified by reads as a floor rather than as all
+    /// they had to say.
+    #[test]
+    fn ports_identified_in_part_are_one_failure_naming_the_limit() {
+        let (session, ctx) = ScanSession::new();
+        let mut in_part = QuietPorts::default();
+        let ip: ScopedIp = "192.0.2.1".parse::<IpAddr>().expect("an address").into();
+        for port in [443u16, 8443, 9443] {
+            in_part.record(&ip, port, descriptors::starved(descriptors::PATIENCE));
+        }
+
+        in_part.report_in_part(&ctx);
+
+        let failures = ctx.take_failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].reason().starts_with(
+                "192.0.2.1:443 and 2 other ports identified in part: file descriptor limit"
+            ),
+            "{}",
+            failures[0].reason()
+        );
+        drop(session);
     }
 
     /// One of them reads as itself rather than as "and 0 other ports".
