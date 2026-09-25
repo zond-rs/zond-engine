@@ -1032,6 +1032,16 @@ impl fmt::Display for StopReason {
     }
 }
 
+/// `sends` over `elapsed`, per second, or `None` where no time passed.
+///
+/// The one division behind both a report's
+/// [`achieved_send_rate`](ProbeStats::achieved_send_rate) and a scanner's audit
+/// line, so the two cannot disagree about what a run managed.
+pub(crate) fn send_rate(sends: u64, elapsed: Duration) -> Option<f64> {
+    let seconds = elapsed.as_secs_f64();
+    (seconds > 0.0).then(|| sends as f64 / seconds)
+}
+
 /// What one raw scanner observed about its own run.
 ///
 /// A host count on its own cannot say why a sweep came back short, and the three
@@ -1106,6 +1116,19 @@ impl ProbeStats {
     /// Probes the scanner tried to put on the wire.
     pub fn sends_attempted(&self) -> u64 {
         self.sends_attempted
+    }
+
+    /// Probes per second the scanner put on the wire over its whole run:
+    /// [`sends_attempted`](Self::sends_attempted) over
+    /// [`elapsed`](Self::elapsed). `None` for a run with no time to divide by.
+    ///
+    /// Read against the rate the scan was configured for. A scanner's send
+    /// timer never makes up a tick it missed while the loop was busy with
+    /// replies, since catching up would release the burst pacing exists to
+    /// prevent, so a busy run sends slower than asked. This is what it managed,
+    /// and the gap is otherwise hidden in the elapsed time.
+    pub fn achieved_send_rate(&self) -> Option<f64> {
+        send_rate(self.sends_attempted, self.elapsed)
     }
 
     /// Of those, ones that never left this host: the sender refused them, or
@@ -2996,6 +3019,20 @@ impl fmt::Display for WindowSummary {
 
 #[cfg(test)]
 mod tests {
+
+    /// A scanner's achieved rate is its sends over its run, and a run with no
+    /// time to divide by has none rather than an infinite one or a zero that
+    /// reads as a scan that sent nothing.
+    #[test]
+    fn a_scanners_achieved_send_rate_is_its_sends_over_its_run() {
+        let mut stats = crate::export::fixture::probe_stats();
+        stats.sends_attempted = 500;
+        stats.elapsed = Duration::from_millis(250);
+        assert_eq!(stats.achieved_send_rate(), Some(2000.0));
+
+        stats.elapsed = Duration::ZERO;
+        assert_eq!(stats.achieved_send_rate(), None);
+    }
 
     /// A phase given one port set for every address can say a particular
     /// endpoint was probed. One given different sets cannot, and the union it

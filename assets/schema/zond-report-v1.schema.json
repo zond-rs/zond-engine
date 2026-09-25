@@ -1123,6 +1123,7 @@
         "complete",
         "elapsed_us",
         "sends_attempted",
+        "achieved_send_rate",
         "sends_failed",
         "sends_witnessed",
         "segments_seen",
@@ -1165,6 +1166,13 @@
         },
         "sends_attempted": {
           "$ref": "#/$defs/count"
+        },
+        "achieved_send_rate": {
+          "description": "Probes per second the scanner put on the wire over its whole run: sends_attempted over elapsed_us, carried so a consumer comparing it with the configured rate need not divide. Null for a run with no time to divide by.",
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "sends_failed": {
           "description": "Probes that never left this host: the sender refused them, or could not reach their address. Non-zero means the shortfall starts at home, before the network is implicated at all.",

@@ -3682,6 +3682,7 @@ impl core::marker::UnsafeUnpin for zond_engine::export::schema::PortStateCounts
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::PortStateCounts
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::PortStateCounts
 #[non_exhaustive] pub struct zond_engine::export::schema::ProbeStatsDto
+pub zond_engine::export::schema::ProbeStatsDto::achieved_send_rate: core::option::Option<f64>
 pub zond_engine::export::schema::ProbeStatsDto::answered_on: alloc::vec::Vec<zond_engine::export::schema::AttemptCountDto>
 pub zond_engine::export::schema::ProbeStatsDto::answered_unattributed: u64
 pub zond_engine::export::schema::ProbeStatsDto::capture: core::option::Option<zond_engine::export::schema::CaptureDto>
@@ -14135,6 +14136,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::PhaseParts
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::PhaseParts
 pub struct zond_engine::report::ProbeStats
 impl zond_engine::report::ProbeStats
+pub fn zond_engine::report::ProbeStats::achieved_send_rate(&self) -> core::option::Option<f64>
 pub fn zond_engine::report::ProbeStats::answered_on(&self) -> &[u64]
 pub fn zond_engine::report::ProbeStats::answered_unattributed(&self) -> u64
 pub fn zond_engine::report::ProbeStats::capture(&self) -> core::option::Option<zond_engine::model::capture::CaptureCounts>

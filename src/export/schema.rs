@@ -1251,6 +1251,12 @@ pub struct ProbeStatsDto {
     pub elapsed_us: u64,
     /// Probes the scanner tried to put on the wire.
     pub sends_attempted: u64,
+    /// Probes per second the scanner put on the wire over its whole run, or
+    /// `null` for a run with no time to divide by. Derived from
+    /// `sends_attempted` and `elapsed_us`, and carried so a consumer reading
+    /// the rate a scan managed against the rate it was configured for need not
+    /// divide.
+    pub achieved_send_rate: Option<f64>,
     /// Of those, ones that never left this host: the sender refused them, or
     /// could not reach their address. Non-zero means the shortfall
     /// starts at home, before the network is implicated at all.
@@ -1350,6 +1356,7 @@ impl ProbeStatsDto {
             complete: stats.stop_reason().is_complete(),
             elapsed_us: micros(stats.elapsed()),
             sends_attempted: stats.sends_attempted(),
+            achieved_send_rate: stats.achieved_send_rate(),
             sends_failed: stats.sends_failed(),
             sends_witnessed: stats.sends_witnessed(),
             segments_seen: stats.segments_seen(),

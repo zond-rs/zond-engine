@@ -1584,6 +1584,14 @@ fn write_probe_stats(out: &mut dyn Write, stats: &ProbeStatsDto) -> Result<(), E
     if stats.sends_failed > 0 {
         sends.push(format!("{} never left this host", stats.sends_failed));
     }
+    // Whole probes a second, except below ten, where a whole number would read
+    // a trickle as nothing at all.
+    if let Some(rate) = stats.achieved_send_rate {
+        sends.push(match rate {
+            10.0.. => format!("{rate:.0}/s"),
+            _ => format!("{rate:.1}/s"),
+        });
+    }
     fact(out, "probes", &sends.join(" · "))?;
 
     let mut seen = vec![format!("{} seen", stats.segments_seen)];
@@ -1930,6 +1938,22 @@ mod tests {
 
         assert!(block.contains("3 never left this host"), "{block}");
         assert!(!block.contains("refused"), "{block}");
+    }
+
+    /// The rate a scanner managed stands beside the probes it sent, so a page
+    /// read against the configured rate shows how far short the run fell
+    /// without a reader dividing the elapsed time out by hand.
+    #[test]
+    fn a_scanners_block_says_how_fast_it_sent() {
+        let mut stats = fixture::probe_stats();
+        stats.sends_attempted = 500;
+        stats.elapsed = std::time::Duration::from_millis(250);
+
+        let mut bytes = Vec::new();
+        write_probe_stats(&mut bytes, &ProbeStatsDto::new(&stats)).expect("the block renders");
+        let block = String::from_utf8(bytes).expect("utf-8");
+
+        assert!(block.contains("500 attempted · 2000/s"), "{block}");
     }
 
     /// What a browser needs before it will render anything at all, and the

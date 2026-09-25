@@ -255,13 +255,11 @@ impl ProbeAudit {
     /// the burst the pace exists to prevent, so a busy sweep runs slower than
     /// asked and the deadline is sized to allow for it. This is what it managed,
     /// so the gap between it and the configured rate is readable rather than
-    /// hidden in the elapsed time. Zero for a run too short to divide by.
+    /// hidden in the elapsed time. Zero for a run too short to divide by. See
+    /// [`ProbeStats::achieved_send_rate`], which reads the same division off a
+    /// report.
     fn achieved_send_rate(&self) -> f64 {
-        let seconds = self.started.elapsed().as_secs_f64();
-        if seconds <= 0.0 {
-            return 0.0;
-        }
-        self.sends_attempted as f64 / seconds
+        crate::report::send_rate(self.sends_attempted, self.started.elapsed()).unwrap_or(0.0)
     }
 
     /// Probes this run tried to put on the wire.
