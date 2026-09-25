@@ -41,6 +41,7 @@ use tokio::time::timeout;
 use std::time::Duration;
 
 use super::analyzer::{Analyzer, PortContext};
+use super::authority::Authority;
 use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
 
@@ -243,7 +244,7 @@ async fn page_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> (Option
     // names it. The banner is still consulted for a redirect first, so an
     // unclaimed port that already fetched `/` spends no request re-fetching it.
     let path = first
-        .and_then(|page| super::redirect_path(page, Some(addr)))
+        .and_then(|page| super::redirect_path(page, Some(&Authority::new(addr))))
         .unwrap_or_else(|| root.clone());
     let Some(page) = fetch_text(addr, &path).await else {
         return (first.cloned(), root);
@@ -251,7 +252,7 @@ async fn page_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> (Option
 
     // The root may redirect on this request rather than on the scan's. One hop,
     // because a chain is a server that does not want to be read.
-    match super::redirect_path(&page, Some(addr)) {
+    match super::redirect_path(&page, Some(&Authority::new(addr))) {
         Some(next) => match fetch_text(addr, &next).await {
             Some(followed) => (Some(followed), next),
             None => (Some(page), path),
@@ -355,7 +356,7 @@ async fn fetch(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
     }
 
     let head = String::from_utf8_lossy(&response);
-    let next = super::redirect_path(&head, Some(addr))?;
+    let next = super::redirect_path(&head, Some(&Authority::new(addr)))?;
     let followed = exchange(addr, &next).await?;
     body_of(&followed).map(<[u8]>::to_vec)
 }

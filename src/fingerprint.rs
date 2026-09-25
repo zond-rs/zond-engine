@@ -41,6 +41,7 @@ pub mod model;
 pub mod os;
 
 mod analyzer;
+mod authority;
 mod context;
 mod db;
 mod extract;
@@ -117,6 +118,7 @@ use crate::model::port::{Port, PortState, Protocol, Service};
 use crate::system::descriptors;
 use crate::transport::dial::PathAllowance;
 use crate::transport::dial::{Egress, Shaping};
+use authority::Authority;
 
 /// How long to wait for a service to speak first (banner grab).
 ///
@@ -1093,7 +1095,10 @@ impl Rung {
                 tunneled(tls::speculative_handshake(stream, socket.ip()).await, port).await
             }
             Rung::LegacyTls => (legacy_tls(stream).await, None),
-            Rung::Plaintext => (plaintext(stream, port, Some(socket), egress).await, None),
+            Rung::Plaintext => (
+                plaintext(stream, port, Some(&Authority::new(socket)), egress).await,
+                None,
+            ),
             Rung::LastResort => (
                 last_resort(stream, socket, port, detection, egress).await,
                 None,
@@ -1164,7 +1169,7 @@ async fn last_resort(
 async fn plaintext(
     mut stream: TcpStream,
     port: u16,
-    socket: Option<SocketAddr>,
+    peer: Option<&Authority>,
     egress: Egress,
 ) -> ResponseSet {
     let probes = SignatureDb::global().tcp_probe_payloads(port);
@@ -1182,7 +1187,7 @@ async fn plaintext(
         return ResponseSet::from_banners(banners);
     }
 
-    match ask_generically(stream, socket, egress).await {
+    match ask_generically(stream, peer, egress).await {
         GenericReply::Spoke(banners) => ResponseSet::from_banners(banners),
         GenericReply::Tls | GenericReply::Silent => ResponseSet::default(),
     }
@@ -1221,7 +1226,7 @@ enum GenericReply {
 /// time, which is the one share of the descriptor budget its pass took.
 async fn ask_generically(
     mut stream: TcpStream,
-    socket: Option<SocketAddr>,
+    peer: Option<&Authority>,
     egress: Egress,
 ) -> GenericReply {
     for payload in SignatureDb::global().generic_tcp_probe_payloads() {
@@ -1244,8 +1249,8 @@ async fn ask_generically(
     // A redirect is not an answer but a forwarding address, and for a great
     // many self-hosted applications it is the only thing the root serves. See
     // `redirect_path`.
-    let followed = match (socket, redirect_path(&first, socket)) {
-        (Some(socket), Some(path)) => follow_redirect(socket, &path, egress).await,
+    let followed = match (peer, redirect_path(&first, peer)) {
+        (Some(peer), Some(path)) => follow_redirect(peer, &path, egress).await,
         _ => None,
     };
 
@@ -1261,14 +1266,14 @@ async fn ask_generically(
 /// stops at the first response sees only the framework underneath, which for
 /// both of those and a dozen others is `Kestrel`.
 ///
-/// Refused unless the destination is on the host already being scanned. A
+/// Refused unless the destination is the port already being identified. A
 /// redirect naming somewhere else is an instruction to go and talk to a third
 /// party, which is not something a scan of *this* address should do on its own
 /// account: it would put traffic on somebody uninvolved and attribute what came
-/// back to a host that never served it. A scheme change is refused on the same
-/// reasoning: `https://` would need a handshake this path has no socket for, and
-/// guessing is worse than declining.
-fn redirect_path(response: &str, peer: Option<SocketAddr>) -> Option<String> {
+/// back to a host that never served it. Which URLs lead back is
+/// [`Authority::path_of`]'s to say, so the check and the `Host` the redirect is
+/// then asked with name the port the same way.
+fn redirect_path(response: &str, peer: Option<&Authority>) -> Option<String> {
     let (status, headers) = response.split_once("\r\n").or(response.split_once('\n'))?;
     // `HTTP/1.1 302 Found`: the code is the second field.
     let code: u16 = status.split_whitespace().nth(1)?.parse().ok()?;
@@ -1303,11 +1308,11 @@ fn redirect_path(response: &str, peer: Option<SocketAddr>) -> Option<String> {
         // self-hosted applications unidentified on a test segment, because the
         // page that names them is the one behind the redirect.
         //
-        // So the host is compared rather than the shape. `peer` is the address
-        // being scanned, and only a URL naming it is followed; anything else is
-        // somebody else's, and a scan of one address has no business putting
+        // So the host is compared rather than the shape. `peer` is the port
+        // being identified, and only a URL naming it is followed; anything else
+        // is somebody else's, and a scan of one address has no business putting
         // traffic on an uninvolved host.
-        url if url.contains("://") || url.starts_with("//") => same_host_path(url, peer?),
+        url if url.contains("://") || url.starts_with("//") => peer?.path_of(url),
         // Same host by construction: a path is relative to where it was served.
         path if path.starts_with('/') => Some(path.to_string()),
         // A relative reference, which RFC 7231 §7.1.2 permits and RFC 2616 did
@@ -1320,45 +1325,7 @@ fn redirect_path(response: &str, peer: Option<SocketAddr>) -> Option<String> {
     }
 }
 
-/// The path of an absolute `url`, when its authority is `peer` and not somebody
-/// else's.
-///
-/// Compared on host and port, so a redirect from `:8080` to `:443` on the same
-/// address is declined too: a different port is a different service, reached
-/// over a connection this path has not made and may not be able to.
-///
-/// The scheme is checked only for being one this path can speak. `https://`
-/// needs a handshake there is no socket for here, and guessing is worse than
-/// declining.
-fn same_host_path(url: &str, peer: SocketAddr) -> Option<String> {
-    let after_scheme = match url.split_once("://") {
-        Some(("http", rest)) => rest,
-        // A protocol-relative reference inherits the scheme it was served over,
-        // which for this path is always plain HTTP.
-        None => url.strip_prefix("//")?,
-        Some(_) => return None,
-    };
-
-    let (authority, path) = match after_scheme.find('/') {
-        Some(at) => after_scheme.split_at(at),
-        None => (after_scheme, "/"),
-    };
-
-    let expected = [
-        format!("{}:{}", peer.ip(), peer.port()),
-        // The port is omitted where it is the scheme's default.
-        match peer.port() {
-            80 => peer.ip().to_string(),
-            _ => String::new(),
-        },
-    ];
-    expected
-        .iter()
-        .any(|name| !name.is_empty() && name.eq_ignore_ascii_case(authority))
-        .then(|| path.to_string())
-}
-
-/// Fetches `path` from `socket` over a fresh connection and returns whatever
+/// Fetches `path` from `peer` over a fresh connection and returns whatever
 /// came back.
 ///
 /// A new connection rather than the one in hand: the response carrying the
@@ -1366,17 +1333,17 @@ fn same_host_path(url: &str, peer: SocketAddr) -> Option<String> {
 /// peer has already gone away from is a write that succeeds and a read that
 /// never returns. One round trip, and only on a response that asked for it,
 /// leaving by `egress` as the connection that drew the redirect did.
-async fn follow_redirect(socket: SocketAddr, path: &str, egress: Egress) -> Option<String> {
-    let mut stream = dial_again(socket, egress, Some(on_path(CONNECT_RETRY_TIMEOUT)))
+async fn follow_redirect(peer: &Authority, path: &str, egress: Egress) -> Option<String> {
+    let mut stream = dial_again(peer.socket(), egress, Some(on_path(CONNECT_RETRY_TIMEOUT)))
         .await
         .ok()?;
 
-    // `Host` names the address actually being scanned, which is what a virtual
+    // `Host` names the port actually being identified, which is what a virtual
     // host would route on and is in any case more truthful than a placeholder.
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n\
          Accept: */*\r\nConnection: close\r\n\r\n",
-        socket.ip()
+        peer.header()
     );
     stream.write_all(request.as_bytes()).await.ok()?;
 
@@ -1916,14 +1883,14 @@ mod tests {
              Location: /web/index.html\r\n\
              Server: Kestrel\r\n\r\n";
         assert_eq!(
-            redirect_path(jellyfin, Some(peer())).as_deref(),
+            redirect_path(jellyfin, Some(&peer())).as_deref(),
             Some("/web/index.html")
         );
     }
 
-    /// The address a redirect test pretends to be scanning.
-    fn peer() -> std::net::SocketAddr {
-        "127.0.0.1:8096".parse().expect("a literal address")
+    /// The port a redirect test pretends to be identifying.
+    fn peer() -> Authority {
+        Authority::new("127.0.0.1:8096".parse().expect("a literal address"))
     }
 
     /// RFC 7231 §7.1.2 permits a relative reference, which RFC 2616 did not, and
@@ -1935,7 +1902,7 @@ mod tests {
     fn a_relative_location_resolves_against_the_root_it_was_served_from() {
         let jellyfin = "HTTP/1.1 302 Found\r\nLocation: web/\r\nServer: Kestrel\r\n\r\n";
         assert_eq!(
-            redirect_path(jellyfin, Some(peer())).as_deref(),
+            redirect_path(jellyfin, Some(&peer())).as_deref(),
             Some("/web/")
         );
     }
@@ -1947,13 +1914,13 @@ mod tests {
     fn an_absolute_location_naming_the_scanned_host_is_followed() {
         let grafana = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8096/login\r\n\r\n";
         assert_eq!(
-            redirect_path(grafana, Some(peer())).as_deref(),
+            redirect_path(grafana, Some(&peer())).as_deref(),
             Some("/login")
         );
 
         // No path is the root, not an empty request line.
         let bare = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8096\r\n\r\n";
-        assert_eq!(redirect_path(bare, Some(peer())).as_deref(), Some("/"));
+        assert_eq!(redirect_path(bare, Some(&peer())).as_deref(), Some("/"));
     }
 
     /// A different port is a different service, over a connection this path has
@@ -1961,14 +1928,14 @@ mod tests {
     #[test]
     fn an_absolute_location_on_another_port_is_declined() {
         let elsewhere = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9999/x\r\n\r\n";
-        assert_eq!(redirect_path(elsewhere, Some(peer())), None);
+        assert_eq!(redirect_path(elsewhere, Some(&peer())), None);
     }
 
     /// A scheme this path cannot speak needs a handshake there is no socket for.
     #[test]
     fn an_upgrade_to_https_is_declined_rather_than_guessed() {
         let upgrade = "HTTP/1.1 301 Moved\r\nLocation: https://127.0.0.1:8096/\r\n\r\n";
-        assert_eq!(redirect_path(upgrade, Some(peer())), None);
+        assert_eq!(redirect_path(upgrade, Some(&peer())), None);
     }
 
     /// With no address to compare against, an absolute URL cannot be shown to be
@@ -1984,11 +1951,11 @@ mod tests {
     #[test]
     fn a_scheme_relative_location_is_declined_like_any_other_host() {
         let elsewhere = "HTTP/1.1 302 Found\r\nLocation: //cdn.example/web/\r\n\r\n";
-        assert_eq!(redirect_path(elsewhere, Some(peer())), None);
+        assert_eq!(redirect_path(elsewhere, Some(&peer())), None);
 
         // The same spelling, naming the host in hand, is followed.
         let here = "HTTP/1.1 302 Found\r\nLocation: //127.0.0.1:8096/web/\r\n\r\n";
-        assert_eq!(redirect_path(here, Some(peer())).as_deref(), Some("/web/"));
+        assert_eq!(redirect_path(here, Some(&peer())).as_deref(), Some("/web/"));
     }
 
     /// A redirect somewhere else is an instruction to go and talk to a third
@@ -2010,7 +1977,7 @@ mod tests {
         ] {
             let response = format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\n\r\n");
             assert_eq!(
-                redirect_path(&response, Some(peer())),
+                redirect_path(&response, Some(&peer())),
                 None,
                 "`{location}` is not somewhere this scan may follow"
             );
@@ -2023,21 +1990,75 @@ mod tests {
         assert_eq!(
             redirect_path(
                 "HTTP/1.1 200 OK\r\nLocation: /ignored\r\n\r\n",
-                Some(peer())
+                Some(&peer())
             ),
             None,
             "a 200 is an answer, whatever else it carries"
         );
         assert_eq!(
-            redirect_path("HTTP/1.1 302 Found\r\nServer: nginx\r\n\r\n", Some(peer())),
+            redirect_path("HTTP/1.1 302 Found\r\nServer: nginx\r\n\r\n", Some(&peer())),
             None,
             "and a redirect naming nowhere leads nowhere"
         );
         assert_eq!(
-            redirect_path("SSH-2.0-OpenSSH_9.2p1\r\n", Some(peer())),
+            redirect_path("SSH-2.0-OpenSSH_9.2p1\r\n", Some(&peer())),
             None
         );
-        assert_eq!(redirect_path("", Some(peer())), None);
+        assert_eq!(redirect_path("", Some(&peer())), None);
+    }
+
+    /// An IPv6 address is written in brackets wherever a port may follow it,
+    /// so a server naming itself by its IPv6 address names it bracketed, and a
+    /// scan of that address follows the redirect as it would an IPv4 one.
+    #[test]
+    fn an_ipv6_redirect_naming_the_scanned_host_is_followed() {
+        let peer: SocketAddr = "[2001:db8::1]:8096".parse().expect("a literal address");
+        let grafana = "HTTP/1.1 302 Found\r\nLocation: http://[2001:db8::1]:8096/login\r\n\r\n";
+        assert_eq!(
+            redirect_path(grafana, Some(&Authority::new(peer))).as_deref(),
+            Some("/login")
+        );
+
+        let elsewhere = "HTTP/1.1 302 Found\r\nLocation: http://[2001:db8::2]:8096/login\r\n\r\n";
+        assert_eq!(redirect_path(elsewhere, Some(&Authority::new(peer))), None);
+    }
+
+    /// The `Host` a redirect is followed with names an IPv6 address in
+    /// brackets. Unbracketed, its last group reads as a port, and a server
+    /// either refuses the request or routes it to a site that is not there.
+    #[tokio::test]
+    async fn a_redirect_on_ipv6_is_asked_for_by_a_bracketed_host() {
+        let Ok(listener) = tokio::net::TcpListener::bind("[::1]:0").await else {
+            eprintln!("SKIP: no IPv6 loopback on this machine");
+            return;
+        };
+        let addr = listener.local_addr().expect("a local address");
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.expect("the first connection");
+            let mut buffer = [0u8; 1024];
+            let _ = first.read(&mut buffer).await;
+            let _ = first
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            drop(first);
+            let (mut second, _) = listener.accept().await.expect("the redirect followed");
+            let read = second.read(&mut buffer).await.unwrap_or(0);
+            let _ = second
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            String::from_utf8_lossy(&buffer[..read]).into_owned()
+        });
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let _ = plaintext(stream, 51987, Some(&Authority::new(addr)), Egress::KERNEL).await;
+        let request = server.await.expect("the listener finishes");
+
+        let host = format!("\r\nHost: [::1]:{}\r\n", addr.port());
+        assert!(
+            request.contains(&host),
+            "the redirect was asked for without `{}`: {request:?}",
+            host.trim()
+        );
     }
 
     /// A TLS record is not a banner, and reading one as text loses exactly the
@@ -2531,7 +2552,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).await.expect("connects");
-        plaintext(stream, number, Some(addr), Egress::KERNEL).await;
+        plaintext(stream, number, Some(&Authority::new(addr)), Egress::KERNEL).await;
         server.await.expect("the listener finishes")
     }
 
@@ -2713,7 +2734,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).await.expect("connects");
-        let banners = plaintext(stream, 51987, Some(addr), Egress::KERNEL)
+        let banners = plaintext(stream, 51987, Some(&Authority::new(addr)), Egress::KERNEL)
             .await
             .banners;
         let first_open = server.await.expect("the listener finishes");
