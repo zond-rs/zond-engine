@@ -7046,6 +7046,7 @@ pub fn zond_engine::journal::lock::Lock::beat(&mut self) -> core::result::Result
 pub fn zond_engine::journal::lock::Lock::force(&std::path::Path) -> core::result::Result<Self, zond_engine::journal::lock::LockRefused>
 pub fn zond_engine::journal::lock::Lock::record(&self) -> &zond_engine::journal::lock::LockRecord
 pub fn zond_engine::journal::lock::Lock::release(self) -> core::result::Result<(), zond_engine::journal::format::JournalError>
+pub fn zond_engine::journal::lock::Lock::take_over(&std::path::Path) -> core::result::Result<Self, zond_engine::journal::lock::LockRefused>
 impl core::fmt::Debug for zond_engine::journal::lock::Lock
 pub fn zond_engine::journal::lock::Lock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for zond_engine::journal::lock::Lock
@@ -7457,6 +7458,7 @@ pub fn zond_engine::journal::store::Journal::restored(&self) -> &[zond_engine::m
 pub fn zond_engine::journal::store::Journal::resume(&std::path::Path, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::resume_point(&self) -> &zond_engine::journal::cursor::Checkpoint
 pub fn zond_engine::journal::store::Journal::should_compact(&self) -> bool
+pub fn zond_engine::journal::store::Journal::take_over(&std::path::Path, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint, zond_engine::journal::manifest::Plan), zond_engine::journal::store::OpenError>
 impl core::fmt::Debug for zond_engine::journal::store::Journal
 pub fn zond_engine::journal::store::Journal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for zond_engine::journal::store::Journal
@@ -7535,6 +7537,7 @@ pub fn zond_engine::journal::store::Journal::restored(&self) -> &[zond_engine::m
 pub fn zond_engine::journal::store::Journal::resume(&std::path::Path, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::resume_point(&self) -> &zond_engine::journal::cursor::Checkpoint
 pub fn zond_engine::journal::store::Journal::should_compact(&self) -> bool
+pub fn zond_engine::journal::store::Journal::take_over(&std::path::Path, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint, zond_engine::journal::manifest::Plan), zond_engine::journal::store::OpenError>
 impl core::fmt::Debug for zond_engine::journal::store::Journal
 pub fn zond_engine::journal::store::Journal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for zond_engine::journal::store::Journal

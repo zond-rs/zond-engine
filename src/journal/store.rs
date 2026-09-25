@@ -228,6 +228,16 @@ impl Journal {
         plan: &Plan,
         privilege: Privilege,
     ) -> Result<(Self, Checkpoint), OpenError> {
+        Self::resume_locking(directory, plan, privilege, Lock::acquire)
+    }
+
+    /// [`resume`](Self::resume), taking the lock by `lock`.
+    fn resume_locking(
+        directory: &Path,
+        plan: &Plan,
+        privilege: Privilege,
+        lock: fn(&Path) -> Result<Lock, LockRefused>,
+    ) -> Result<(Self, Checkpoint), OpenError> {
         let manifest = read_manifest(directory)?;
         // The format before anything about the plan, since it decides whether
         // the fingerprint below is a value this build can recompute. A journal
@@ -253,7 +263,7 @@ impl Journal {
         // nothing.
         manifest.covers(plan, privilege)?;
 
-        let lock = Lock::acquire(&directory.join(LOCK))?;
+        let lock = lock(&directory.join(LOCK))?;
         let checkpoint = read_checkpoint(directory)?;
         let earlier = read_phases(directory)?;
         // Less the records the earlier sittings heard nothing from, which a
@@ -308,6 +318,25 @@ impl Journal {
     ) -> Result<(Self, Checkpoint, Plan), OpenError> {
         let plan = read_manifest(directory)?.recorded();
         let (journal, checkpoint) = Self::resume(directory, &plan, privilege)?;
+        Ok((journal, checkpoint, plan))
+    }
+
+    /// [`reopen`](Self::reopen), taking over a lock whose holder has stopped
+    /// checkpointing.
+    ///
+    /// For the refusal [`LockState::Stale`] names: a live process holds the
+    /// number the lock records, and nothing here can tell whether it is the
+    /// scan, hung, or an unrelated process the number was reissued to after
+    /// the scan died. A caller who knows which it is can continue the job
+    /// here instead of removing the lock by hand. A lock whose holder is
+    /// checkpointing now is still refused. See [`Lock::take_over`].
+    pub fn take_over(
+        directory: &Path,
+        privilege: Privilege,
+    ) -> Result<(Self, Checkpoint, Plan), OpenError> {
+        let plan = read_manifest(directory)?.recorded();
+        let (journal, checkpoint) =
+            Self::resume_locking(directory, &plan, privilege, Lock::take_over)?;
         Ok((journal, checkpoint, plan))
     }
 
@@ -2031,6 +2060,46 @@ mod tests {
     }
 
     /// A journal being written must not be resumed underneath its writer.
+    /// A journal whose lock names a live process that stopped checkpointing
+    /// is refused as it stands and can be taken over when asked.
+    ///
+    /// A crashed scan's number reissued to another process leaves exactly
+    /// this, and the refusal says to take the journal over. With nothing to
+    /// take it over by, the job could be continued only by deleting the lock
+    /// by hand. This process stands in for the reissued number.
+    #[test]
+    fn a_journal_whose_lock_went_stale_can_be_taken_over() {
+        let root = scratch("stale-lock");
+        let map = plan("192.0.2.1", "80");
+        let directory = {
+            let journal = begin(&root, &map);
+            journal.directory().to_path_buf()
+        };
+        let stale = super::super::lock::LockRecord {
+            pid: std::process::id(),
+            boot: super::super::lock::boot_identity(),
+            started_at: SystemTime::now() - Duration::from_secs(3_600),
+            heartbeat: SystemTime::now() - Duration::from_secs(600),
+        };
+        fs::write(
+            directory.join(LOCK),
+            serde_json::to_string(&stale).expect("json"),
+        )
+        .expect("writes");
+
+        assert!(matches!(
+            Journal::reopen(&directory, Privilege::Raw),
+            Err(OpenError::Locked(LockRefused::Held(
+                LockState::Stale { .. }
+            )))
+        ));
+        let (journal, _, _) =
+            Journal::take_over(&directory, Privilege::Raw).expect("takes the journal over");
+        journal.close().expect("closes");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn a_live_journal_is_not_resumable() {
         let root = scratch("live");

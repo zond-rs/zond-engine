@@ -51,6 +51,12 @@
 //!
 //! Every refusal is overridable. A stale lock left by a defect this engine has
 //! not thought of would otherwise make a journal unusable forever.
+//!
+//! The ambiguous case has an override of its own, [`Lock::take_over`], because
+//! it is a judgement a user can make and this engine cannot: whether the
+//! process holding the number is the scan. [`Lock::force`] overrides a writer
+//! that is checkpointing now as well, which no user who can see the journal
+//! beating has a reason to ask for.
 
 use std::time::{Duration, SystemTime};
 
@@ -173,7 +179,7 @@ impl LockState {
             LockState::Stale { pid, last_beat } => Some(format!(
                 "this journal is locked by process {pid}, which has not checkpointed for {}s — \
                  it is either hung or the number was reissued to something else. \
-                 Stop it, or take the lock forcibly if you are sure it is not scanning",
+                 Stop it, or take the journal over if you are sure it is not scanning",
                 last_beat.as_secs()
             )),
         }
@@ -436,7 +442,19 @@ mod persistence {
         /// that fails, to decide whether the existing lock is one that may be
         /// broken.
         pub fn acquire(path: &Path) -> Result<Self, LockRefused> {
-            Self::acquire_inner(path, false)
+            Self::acquire_inner(path, Breaks::Dead)
+        }
+
+        /// [`acquire`](Self::acquire), breaking a
+        /// [`Stale`](LockState::Stale) lock as well as a dead one.
+        ///
+        /// For a caller who has judged what this engine cannot: that the
+        /// process holding the number in a lock that stopped beating is not
+        /// the scan, usually because the number was reissued after a crash.
+        /// A lock whose writer is checkpointing now is still refused, since
+        /// that is no judgement at all.
+        pub fn take_over(path: &Path) -> Result<Self, LockRefused> {
+            Self::acquire_inner(path, Breaks::Stale)
         }
 
         /// [`acquire`](Self::acquire), overriding a refusal.
@@ -445,7 +463,7 @@ mod persistence {
         /// nothing here anticipated, which would otherwise make the journal
         /// unusable forever.
         pub fn force(path: &Path) -> Result<Self, LockRefused> {
-            Self::acquire_inner(path, true)
+            Self::acquire_inner(path, Breaks::Anything)
         }
 
         /// How many times a break is retried before giving up.
@@ -457,7 +475,7 @@ mod persistence {
         /// locks in a loop, and refusing is better than joining in.
         const BREAK_ATTEMPTS: usize = 3;
 
-        fn acquire_inner(path: &Path, force: bool) -> Result<Self, LockRefused> {
+        fn acquire_inner(path: &Path, breaks: Breaks) -> Result<Self, LockRefused> {
             // Built only once the create has succeeded, never before: `Lock`
             // removes its file on drop, so an attempt that lost the create and
             // then dropped one would delete the winner's lock on its way out.
@@ -502,7 +520,7 @@ mod persistence {
                 // this process may have taken the journal in the meantime: what
                 // was crashed a moment ago is now a scan that is running.
                 let state = inspect(path);
-                if !force && !state.is_resumable() {
+                if !breaks.permits(&state) {
                     return Err(LockRefused::Held(state));
                 }
 
@@ -633,6 +651,27 @@ mod persistence {
             // The lock becomes the temporary's inode, ownership and all.
             fs::rename(&temporary, path)?;
             Ok(())
+        }
+    }
+
+    /// Which locks an attempt to take one may break.
+    #[derive(Debug, Clone, Copy)]
+    enum Breaks {
+        /// Only one nothing holds: free, crashed, or from before a reboot.
+        Dead,
+        /// Those, and one whose holder stopped checkpointing.
+        Stale,
+        /// Whatever is there.
+        Anything,
+    }
+
+    impl Breaks {
+        fn permits(self, state: &LockState) -> bool {
+            match self {
+                Breaks::Dead => state.is_resumable(),
+                Breaks::Stale => state.is_resumable() || matches!(state, LockState::Stale { .. }),
+                Breaks::Anything => true,
+            }
         }
     }
 
@@ -812,7 +851,11 @@ mod tests {
 
         assert!(matches!(state, LockState::Stale { pid: 4_242, .. }));
         assert!(!state.is_resumable(), "hung and reused look the same here");
-        assert!(state.refusal().is_some_and(|r| r.contains("forcibly")));
+        assert!(
+            state
+                .refusal()
+                .is_some_and(|r| r.contains("take the journal over"))
+        );
     }
 
     /// A beat exactly at the threshold is not yet stale. Asserted because the
@@ -940,6 +983,46 @@ mod file_tests {
         let forced = Lock::force(&path).expect("force overrides");
         drop(forced);
         drop(first);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A lock whose holder stopped beating can be taken over by a caller who
+    /// judges it is not the scan, and one whose holder is beating cannot.
+    ///
+    /// Within one boot a crashed scan's number can be reissued, and the lock
+    /// then names a live process that never checkpoints. That is refused
+    /// rather than guessed at, so taking it over has to be something a caller
+    /// can ask for; asked only for the whole override, a user who can see the
+    /// lock is not beating had nothing that stopped short of breaking a lock
+    /// that is. This process stands in for the reissued number.
+    #[test]
+    fn a_stale_lock_can_be_taken_over_and_a_beating_one_cannot() {
+        let dir = scratch("stale");
+        let path = dir.join("LOCK");
+
+        let stale = LockRecord {
+            pid: std::process::id(),
+            boot: boot_identity(),
+            started_at: SystemTime::now() - Duration::from_secs(3_600),
+            heartbeat: SystemTime::now() - Duration::from_secs(600),
+        };
+        std::fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("writes");
+        assert!(matches!(inspect(&path), LockState::Stale { .. }));
+        assert!(
+            Lock::acquire(&path).is_err(),
+            "a stale lock is refused unasked"
+        );
+
+        let taken = Lock::take_over(&path).expect("a stale lock is taken over");
+        assert!(
+            matches!(
+                Lock::take_over(&path),
+                Err(LockRefused::Held(LockState::Held { .. }))
+            ),
+            "a lock beating now is not taken over"
+        );
+        drop(taken);
 
         std::fs::remove_dir_all(&dir).ok();
     }
