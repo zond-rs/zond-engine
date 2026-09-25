@@ -12,9 +12,10 @@
 //! them. Two independent paths live here, chosen by whether the scan is privileged.
 //!
 //! [`HostnameResolver`] drives the privileged path, which is both passive and
-//! active at once. It sends reverse DNS (PTR) queries for each IP handed to it
-//! and, in parallel, sniffs raw UDP traffic for DNS (port 53) and mDNS (port
-//! 5353) responses that other activity on the network happens to surface.
+//! active at once. It sends reverse DNS (PTR) queries for each IP handed to it,
+//! as many at a time as the other path asks, and, in parallel, sniffs raw UDP
+//! traffic for DNS (port 53) and mDNS (port 5353) responses that other activity
+//! on the network happens to surface.
 //! Whatever it learns is cached until [`HostnameResolver::resolve_hosts`] folds
 //! it into the shared host store.
 //!
@@ -54,7 +55,7 @@ use hickory_resolver::config::ProtocolConfig;
 use hickory_resolver::system_conf::read_system_conf;
 use std::net::SocketAddr;
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
     net::IpAddr,
     sync::atomic::{AtomicU16, Ordering},
     time::Duration,
@@ -72,6 +73,7 @@ use pnet_packet::{Packet, udp::UdpPacket};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::Instant;
 
 use crate::transport::probe::{ProbeKind, ProbeTransport, TransportError};
 
@@ -86,7 +88,23 @@ const MAX_DNS_DATAGRAM: usize = 4096;
 
 /// How long the resolver keeps listening after the last IP has been queried, so
 /// replies still in flight are not thrown away with the scan that asked for them.
+///
+/// Once the stream of addresses has closed, it is also as long as any query
+/// still unanswered holds its place among [`REVERSE_LOOKUPS_IN_FLIGHT`]: the
+/// scan is waiting on the resolver then, and a query a resolver has let lie
+/// that long is one it is not answering.
 const REPLY_GRACE: Duration = Duration::from_millis(250);
+
+/// How long a query holds its place among [`REVERSE_LOOKUPS_IN_FLIGHT`] while
+/// the scan is still running, unanswered, before the place goes to the next
+/// address.
+///
+/// A resolver answers a PTR in milliseconds from its leases or its cache, and
+/// one that asks upstream within a second or so; past two, the question is
+/// one it is not going to answer soon, and the addresses behind it should not
+/// wait on it. Giving the place up is not giving the question up: its ID stays
+/// outstanding, so an answer arriving later still names the address.
+const QUERY_PATIENCE: Duration = Duration::from_secs(2);
 
 /// A name as it came off the wire, already trimmed of its trailing root label.
 type Hostname = String;
@@ -120,6 +138,45 @@ type TransID = u16;
 struct QueryTarget {
     server: SocketAddr,
     socket: Arc<UdpSocket>,
+    /// Whether this resolver has answered any query, which is what keeps it
+    /// asked however many others it let lie.
+    answered: bool,
+    /// How many of its queries gave up their place unanswered.
+    unanswered: usize,
+}
+
+impl QueryTarget {
+    /// Whether this resolver is still sent queries.
+    ///
+    /// Not once it has let a whole window of them, [`REVERSE_LOOKUPS_IN_FLIGHT`],
+    /// give up their places without answering one: a resolver that has
+    /// answered nothing by then is not answering, and asking it on would hold
+    /// every address behind it for [`QUERY_PATIENCE`], or at the end of a scan
+    /// for [`REPLY_GRACE`], window after window. The common case is a second
+    /// resolver the host is configured with that is not there, beside a first
+    /// that answers everything; one that answers slowly has answered, and is
+    /// asked on.
+    fn is_asked(&self) -> bool {
+        self.answered || self.unanswered < REVERSE_LOOKUPS_IN_FLIGHT
+    }
+}
+
+/// A query sent and not yet answered: the address it asks about, and which of
+/// the resolver's [`QueryTarget`]s it went to.
+#[derive(Debug, Clone, Copy)]
+struct Query {
+    ip: IpAddr,
+    target: usize,
+}
+
+/// An address being asked about, holding one of the places
+/// [`REVERSE_LOOKUPS_IN_FLIGHT`] allows.
+#[derive(Debug)]
+struct Asking {
+    /// The IDs of its queries still unanswered, one per resolver asked.
+    ids: Vec<TransID>,
+    /// When it gives its place up, answered or not.
+    until: Instant,
 }
 
 /// Passive-and-active hostname resolver for the privileged scan path.
@@ -135,11 +192,16 @@ pub struct HostnameResolver {
     /// Every resolver each reverse query goes to, with the socket to send it on.
     query_targets: Vec<QueryTarget>,
     /// Outstanding PTR queries, keyed by transaction ID so a reply can be matched
-    /// back to the IP it was asked about.
-    dns_map: HashMap<TransID, IpAddr>,
-    /// IPs already queried, so a host reported by more than one scanning strategy
-    /// is asked about once rather than once per report.
+    /// back to the IP it was asked about and the resolver it was asked of.
+    dns_map: HashMap<TransID, Query>,
+    /// IPs already queried or waiting to be, so a host reported by more than
+    /// one scanning strategy is asked about once rather than once per report.
     queried: HashSet<IpAddr>,
+    /// IPs waiting for a place among [`REVERSE_LOOKUPS_IN_FLIGHT`], in the
+    /// order they arrived.
+    waiting: VecDeque<IpAddr>,
+    /// The IPs being asked about, each holding a place.
+    asking: HashMap<IpAddr, Asking>,
     /// mDNS records collected from sniffed traffic, each under every address
     /// it names. See [`file_mdns`](Self::file_mdns).
     mdns_cache: HashMap<IpAddr, MdnsHost>,
@@ -220,6 +282,8 @@ impl HostnameResolver {
             query_targets,
             dns_map: HashMap::new(),
             queried: HashSet::new(),
+            waiting: VecDeque::new(),
+            asking: HashMap::new(),
             mdns_cache: HashMap::new(),
             hostname_map: HashMap::new(),
             name_servers: HashSet::new(),
@@ -228,13 +292,18 @@ impl HostnameResolver {
         })
     }
 
-    /// Runs the resolver's event loop until the IP stream closes.
+    /// Runs the resolver's event loop until the IP stream closes and every
+    /// address it carried has been asked about.
     ///
-    /// On each turn it does one of three things: send PTR queries for a newly
-    /// arrived IP, read a reply to a query it sent, or absorb a DNS or mDNS packet
-    /// sniffed off the wire. Once `dns_rx` closes, it waits `REPLY_GRACE` for any
-    /// PTR queries still in flight before returning itself, so the caller can hand
-    /// the collected names to [`resolve_hosts`](Self::resolve_hosts).
+    /// On each turn it does one of four things: take a newly arrived IP, read a
+    /// reply to a query it sent, absorb a DNS or mDNS packet sniffed off the
+    /// wire, or give up the place of a query left unanswered too long. Between
+    /// turns it asks about as many waiting IPs as there are places free, which
+    /// is as many as the unprivileged path asks about at once. Once `dns_rx`
+    /// closes, the queries still in flight have a short grace to be answered,
+    /// and the IPs still waiting are asked in turn, before it returns itself,
+    /// so the caller can hand the collected names to
+    /// [`resolve_hosts`](Self::resolve_hosts).
     pub async fn run(mut self) -> Self {
         let (v4, v6) = self.reply_sockets();
         // Whether the capture still has anything to give. A closed stream is
@@ -242,13 +311,24 @@ impl HostnameResolver {
         // left enabled it would spin the loop instead of waiting in it, and end
         // the reply window the moment it was entered.
         let mut sniffing = true;
+        // Whether more IPs may arrive, switched off for the same reason.
+        let mut arriving = true;
 
         loop {
+            self.ask_waiting(arriving).await;
+            if !arriving && self.waiting.is_empty() && self.asking.is_empty() {
+                break;
+            }
+            let next_expiry = self.asking.values().map(|asking| asking.until).min();
+
             tokio::select! {
-                res = self.dns_rx.recv() => {
+                res = self.dns_rx.recv(), if arriving => {
                     match res {
-                        Some(ip) => self.query(ip).await,
-                        None => break,
+                        Some(ip) => self.enqueue(ip),
+                        None => {
+                            arriving = false;
+                            self.hurry(Instant::now() + REPLY_GRACE);
+                        }
                     }
                 }
                 (payload, from) = recv_reply(&v4) => self.absorb_reply(&payload, from),
@@ -259,27 +339,9 @@ impl HostnameResolver {
                         None => sniffing = false,
                     }
                 }
+                () = tokio::time::sleep_until(next_expiry.unwrap_or_else(Instant::now)),
+                    if next_expiry.is_some() => self.expire(Instant::now()),
             }
-        }
-
-        // The IP stream has closed, but replies to the last queries may still be
-        // arriving. Give them a short window to land before giving up on them.
-        if !self.dns_map.is_empty() {
-            let _ = tokio::time::timeout(REPLY_GRACE, async {
-                while !self.dns_map.is_empty() {
-                    tokio::select! {
-                        (payload, from) = recv_reply(&v4) => self.absorb_reply(&payload, from),
-                        (payload, from) = recv_reply(&v6) => self.absorb_reply(&payload, from),
-                        pkt = self.transport.rx.recv(), if sniffing => {
-                            match pkt {
-                                Some(reply) => self.absorb_sniffed(&reply.bytes, reply.source),
-                                None => sniffing = false,
-                            }
-                        }
-                    }
-                }
-            })
-            .await;
         }
 
         // Frames the capture lifted off the wire before the scan ended may still
@@ -293,42 +355,112 @@ impl HostnameResolver {
         self
     }
 
-    /// Queries every configured resolver about `ip`, unless it is an address no
-    /// reverse lookup can answer for or one already asked about.
-    async fn query(&mut self, ip: IpAddr) {
-        if !is_queryable(&ip) || !self.queried.insert(ip) {
-            return;
-        }
-
-        match self.send_dns_query(&ip).await {
-            Ok(count) => info!(
-                outgoing,
-                verbosity = 2,
-                "reverse query for {ip} sent to {}",
-                counted(count as u128, "resolver", "resolvers")
-            ),
-            Err(e) => error!("reverse query for {ip} failed: {e}"),
+    /// Puts `ip` in line to be asked about, unless it is an address no reverse
+    /// lookup can answer for or one already asked about.
+    fn enqueue(&mut self, ip: IpAddr) {
+        if is_queryable(&ip) && self.queried.insert(ip) {
+            self.waiting.push_back(ip);
         }
     }
 
-    /// Sends a reverse (PTR) query for `ip` to every configured resolver and
+    /// Asks about waiting IPs until every place is taken or none is left
+    /// waiting, each given [`QUERY_PATIENCE`] to be answered while more IPs
+    /// may be `arriving` and [`REPLY_GRACE`] once none will.
+    ///
+    /// With no resolver left that is still asked (see
+    /// [`QueryTarget::is_asked`]), the waiting IPs are let go: there is nobody
+    /// to ask.
+    async fn ask_waiting(&mut self, arriving: bool) {
+        if !self.query_targets.iter().any(QueryTarget::is_asked) {
+            self.waiting.clear();
+            return;
+        }
+        let patience = if arriving {
+            QUERY_PATIENCE
+        } else {
+            REPLY_GRACE
+        };
+        while self.asking.len() < REVERSE_LOOKUPS_IN_FLIGHT
+            && let Some(ip) = self.waiting.pop_front()
+        {
+            match self.send_dns_query(&ip).await {
+                Ok(ids) => {
+                    info!(
+                        outgoing,
+                        verbosity = 2,
+                        "reverse query for {ip} sent to {}",
+                        counted(ids.len() as u128, "resolver", "resolvers")
+                    );
+                    let until = Instant::now() + patience;
+                    self.asking.insert(ip, Asking { ids, until });
+                }
+                Err(e) => error!("reverse query for {ip} failed: {e}"),
+            }
+        }
+    }
+
+    /// Brings every place's end forward to `until` where it is later, for
+    /// the stream of IPs having closed: see [`REPLY_GRACE`].
+    fn hurry(&mut self, until: Instant) {
+        for asking in self.asking.values_mut() {
+            asking.until = asking.until.min(until);
+        }
+    }
+
+    /// Gives up the place of every IP whose time ran out by `now`, counting
+    /// each query of it still unanswered against the resolver it went to.
+    ///
+    /// The queries themselves stay outstanding, so a late answer still names
+    /// the address; see [`QUERY_PATIENCE`].
+    fn expire(&mut self, now: Instant) {
+        let expired: Vec<IpAddr> = self
+            .asking
+            .iter()
+            .filter(|(_, asking)| asking.until <= now)
+            .map(|(ip, _)| *ip)
+            .collect();
+        for ip in expired {
+            let Some(asking) = self.asking.remove(&ip) else {
+                continue;
+            };
+            for id in asking.ids {
+                let Some(query) = self.dns_map.get(&id) else {
+                    continue;
+                };
+                let target = &mut self.query_targets[query.target];
+                let was_asked = target.is_asked();
+                target.unanswered += 1;
+                if was_asked && !target.is_asked() {
+                    info!(
+                        verbosity = 1,
+                        "{} answered no reverse query; asking it no more", target.server
+                    );
+                }
+            }
+        }
+    }
+
+    /// Sends a reverse (PTR) query for `ip` to every resolver still asked and
     /// records each transaction ID, so the matching reply can later be tied back
-    /// to this IP. Returns how many resolvers were reached.
+    /// to this IP. Returns the IDs, one per resolver reached.
     ///
     /// Every resolver is asked rather than the first that answers, because a
     /// negative answer is not evidence that the name does not exist: a resolver
     /// that declines to serve a reverse zone (see [`dns_server_candidates`])
     /// answers exactly as fast, and exactly as confidently, as one that has
     /// looked and found nothing.
-    async fn send_dns_query(&mut self, ip: &IpAddr) -> std::io::Result<usize> {
+    async fn send_dns_query(&mut self, ip: &IpAddr) -> std::io::Result<Vec<TransID>> {
         let mut sent = Vec::with_capacity(self.query_targets.len());
         let mut last_error = None;
 
-        for target in &self.query_targets {
+        for (index, target) in self.query_targets.iter().enumerate() {
+            if !target.is_asked() {
+                continue;
+            }
             let id = self.get_next_trans_id();
             let packet = dns::build_ptr_packet(*ip, id);
             match target.socket.send_to(&packet, target.server).await {
-                Ok(_) => sent.push(id),
+                Ok(_) => sent.push((id, index)),
                 // The server is named here because the error will not say which
                 // of several this was.
                 Err(error) => {
@@ -346,24 +478,24 @@ impl HostnameResolver {
             }));
         }
 
-        for id in sent.iter().copied() {
-            self.dns_map.insert(id, *ip);
+        for (id, target) in sent.iter().copied() {
+            self.dns_map.insert(id, Query { ip: *ip, target });
         }
 
-        Ok(sent.len())
+        Ok(sent.into_iter().map(|(id, _)| id).collect())
     }
 
     /// Handles a reply that arrived on a query socket.
     ///
-    /// A reply counts only when it comes from a resolver that was asked, carries
-    /// a transaction ID still outstanding, *and* answers the question that ID was
-    /// spent on. All three have to agree: the ID is a 16-bit counter and the
-    /// socket is open to the whole network, so the question name is what makes a
+    /// A reply counts only when it comes from the resolver a transaction ID
+    /// still outstanding was sent to, *and* answers the question that ID was
+    /// spent on. Both have to agree: the ID is a 16-bit counter and the socket
+    /// is open to the whole network, so the question name is what makes a
     /// forged or stale reply fail to match rather than rename a host.
     fn absorb_reply(&mut self, payload: &[u8], from: SocketAddr) {
-        if !self.query_targets.iter().any(|t| t.server == from) {
+        let Some(asked) = self.query_targets.iter().position(|t| t.server == from) else {
             return;
-        }
+        };
 
         let response = match dns::parse_ptr_response(payload) {
             Ok(response) => response,
@@ -378,17 +510,25 @@ impl HostnameResolver {
         // resolver that declines the question, or answers one we are no longer
         // waiting on, is a name server either way.
         self.name_servers.insert(from.ip());
+        self.query_targets[asked].answered = true;
 
-        let Some(ip) = self.dns_map.get(&response.id).copied() else {
+        let Some(Query { ip, target }) = self.dns_map.get(&response.id).copied() else {
             return;
         };
-        if response.subject != Some(ip) {
+        if target != asked || response.subject != Some(ip) {
             return;
         }
 
         // The question has been answered, one way or the other; the other
-        // resolvers asked about this IP are still outstanding on their own IDs.
+        // resolvers asked about this IP are still outstanding on their own IDs,
+        // and the IP holds its place until they have answered too.
         self.dns_map.remove(&response.id);
+        if let Some(asking) = self.asking.get_mut(&ip) {
+            asking.ids.retain(|id| *id != response.id);
+            if asking.ids.is_empty() {
+                self.asking.remove(&ip);
+            }
+        }
 
         match response.hostname {
             // A name that is the address written again is declined here rather
@@ -672,6 +812,8 @@ fn bind_query_targets(servers: &[SocketAddr]) -> Result<Vec<QueryTarget>, Resolv
             Some(QueryTarget {
                 server: *server,
                 socket: Arc::clone(socket.as_ref()?),
+                answered: false,
+                unanswered: 0,
             })
         })
         .collect();
@@ -846,21 +988,26 @@ fn to_resolve(ctx: &ScanContext, unheard: Unheard) -> Vec<crate::model::ip::scop
         .collect()
 }
 
-/// How many reverse lookups through the system resolver are in flight at once.
+/// How many addresses a reverse lookup asks about at once, on either path.
 ///
-/// One lookup per host that answered, or per address under a scan that lists
-/// every address as a host, so a wide range asks tens of thousands, and all of
-/// them at once would flood the one resolver the whole network shares and fill
-/// this process's descriptor table. Each lookup holds a UDP socket for every
+/// One lookup per host found, or per address under a scan that lists every
+/// address as a host, so a wide range asks tens of thousands, and all of them
+/// at once would flood the one resolver the whole network shares. The resolver
+/// on a home router forwards at most 150 queries at once for everyone behind
+/// it by default, and this leaves it most of that. A resolver answers a PTR in
+/// milliseconds, from its leases or its cache, so thirty-two in flight still
+/// name thousands of hosts a second; only a resolver that answers nothing makes
+/// the bound what a scan waits on.
+///
+/// Through the system resolver each lookup also holds a UDP socket for every
 /// name server it asks in parallel, two by the resolver library's default, so
 /// thirty-two hold sixty-four descriptors: inside the half of even a 256-file
 /// limit the process keeps for itself, beside connections that may still be
-/// open. The resolver on a home router forwards at most 150 queries at once
-/// for everyone behind it by default, and this leaves it most of that. A
-/// resolver answers a PTR in milliseconds, from its leases or its cache, so
-/// thirty-two in flight still name thousands of hosts a second; only a
-/// resolver that answers nothing, each lookup waiting out its ten seconds of
-/// retries, makes the bound what a scan waits on.
+/// open. Each waits out its ten seconds of retries on a resolver that does not
+/// answer. [`HostnameResolver`] asks on one socket per family, and an address
+/// it asks about gives its place up after [`QUERY_PATIENCE`], or stops being
+/// asked of a resolver that answers nothing at all; see
+/// [`QueryTarget::is_asked`].
 const REVERSE_LOOKUPS_IN_FLIGHT: usize = 32;
 
 /// [`resolve_hosts_async`], naming the hosts nothing was heard from where
@@ -1017,6 +1164,7 @@ mod tests {
     use crate::scanner::session::{ScanEvent, ScanSession};
     use crate::transport::probe::{Emission, ProbeSender, SendError};
     use std::net::Ipv4Addr;
+    use tokio::sync::mpsc::UnboundedSender;
 
     /// A reverse lookup names the hosts that answered and leaves the records
     /// nothing was heard from alone, unless the caller asked for every
@@ -1531,7 +1679,12 @@ mod tests {
     /// A PTR response for `subject` carrying `name`, which the fixtures above
     /// have no way to build: `dns_response` deliberately answers nothing.
     fn named_response(subject: IpAddr, name: &str) -> Vec<u8> {
-        let mut message = dns::build_ptr_packet(subject, 0x1234);
+        answer(&dns::build_ptr_packet(subject, 0x1234), name)
+    }
+
+    /// `query` answered with `name`, as a name server answers it.
+    fn answer(query: &[u8], name: &str) -> Vec<u8> {
+        let mut message = query.to_vec();
         message[2] |= 0b1000_0000; // QR: a response
         message[6..8].copy_from_slice(&1u16.to_be_bytes()); // one answer
 
@@ -1549,6 +1702,128 @@ mod tests {
         message.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
         message.extend_from_slice(&rdata);
         message
+    }
+
+    /// A resolver sending its queries to `server`, fed by the sender returned.
+    fn resolver_fed(server: SocketAddr) -> (UnboundedSender<IpAddr>, HostnameResolver) {
+        let (tx, dns_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Closed at once: nothing is sniffed, and the resolver stops listening.
+        let (_, reply_rx) = tokio::sync::mpsc::channel(1);
+        let resolver = HostnameResolver::with_transport(
+            dns_rx,
+            ProbeTransport::from_parts(Box::new(Silent), reply_rx),
+            vec![server],
+        )
+        .expect("a query target binds");
+        (tx, resolver)
+    }
+
+    /// A name server on loopback that answers nothing, and where to reach it.
+    async fn silent_server() -> (UdpSocket, SocketAddr) {
+        let socket = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback socket binds");
+        let at = socket.local_addr().expect("a bound socket has an address");
+        (socket, at)
+    }
+
+    /// How many queries `server` holds unread.
+    fn queries_held(server: &UdpSocket) -> usize {
+        let mut buf = [0u8; MAX_DNS_DATAGRAM];
+        std::iter::from_fn(|| server.try_recv_from(&mut buf).ok()).count()
+    }
+
+    /// The privileged resolver asks about as many addresses at once as the
+    /// unprivileged path does and no more, however many the scan hands it.
+    /// Every host a sweep finds is handed over as it is found, so a wide range
+    /// would otherwise put a query per host in front of the one resolver the
+    /// network shares, all at once.
+    #[tokio::test]
+    async fn the_privileged_resolver_asks_about_a_bounded_number_of_addresses_at_once() {
+        let (server, at) = silent_server().await;
+        let (tx, resolver) = resolver_fed(at);
+        for last in 1..=100 {
+            tx.send(v4(198, 51, 100, last))
+                .expect("the resolver is listening");
+        }
+        let running = tokio::spawn(resolver.run());
+
+        let mut buf = [0u8; MAX_DNS_DATAGRAM];
+        for _ in 0..REVERSE_LOOKUPS_IN_FLIGHT {
+            tokio::time::timeout(Duration::from_secs(30), server.recv_from(&mut buf))
+                .await
+                .expect("the first queries arrive")
+                .expect("a query reads");
+        }
+        // Long enough for every query sent at once to have arrived, and far
+        // inside the patience that would free a place.
+        tokio::time::sleep(QUERY_PATIENCE / 10).await;
+        assert_eq!(
+            queries_held(&server),
+            0,
+            "more than {REVERSE_LOOKUPS_IN_FLIGHT} addresses were asked about at once"
+        );
+
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(60), running)
+            .await
+            .expect("the resolver finishes")
+            .expect("the resolver does not panic");
+    }
+
+    /// A resolver that answers nothing is asked one window of queries and then
+    /// no more, and the scan's end waits on it no longer than the reply grace.
+    /// A host configured with a second resolver that is not there would
+    /// otherwise hold every address behind it in turn.
+    #[tokio::test]
+    async fn a_resolver_that_answers_nothing_is_asked_one_window_and_no_more() {
+        let (server, at) = silent_server().await;
+        let (tx, resolver) = resolver_fed(at);
+        for last in 1..=100 {
+            tx.send(v4(198, 51, 100, last))
+                .expect("the resolver is listening");
+        }
+        drop(tx);
+
+        tokio::time::timeout(Duration::from_secs(60), resolver.run())
+            .await
+            .expect("the resolver finishes");
+
+        assert_eq!(queries_held(&server), REVERSE_LOOKUPS_IN_FLIGHT);
+    }
+
+    /// Every address waiting behind the bound is still asked about, and each
+    /// answer names its own: a bound that let the addresses past the first
+    /// window go would name thirty-two hosts of any scan.
+    #[tokio::test]
+    async fn every_address_behind_the_bound_is_asked_and_named() {
+        let server = Arc::new(silent_server().await.0);
+        let at = server.local_addr().expect("a bound socket has an address");
+        let answering = Arc::clone(&server);
+        let answerer = tokio::spawn(async move {
+            let mut buf = [0u8; MAX_DNS_DATAGRAM];
+            loop {
+                let (len, from) = answering.recv_from(&mut buf).await.expect("a query reads");
+                let reply = answer(&buf[..len], "host.example.com");
+                answering
+                    .send_to(&reply, from)
+                    .await
+                    .expect("a reply sends");
+            }
+        });
+        let (tx, resolver) = resolver_fed(at);
+        for last in 1..=100 {
+            tx.send(v4(198, 51, 100, last))
+                .expect("the resolver is listening");
+        }
+        drop(tx);
+
+        let resolver = tokio::time::timeout(Duration::from_secs(60), resolver.run())
+            .await
+            .expect("the resolver finishes");
+        answerer.abort();
+
+        assert_eq!(resolver.hostname_map.len(), 100);
     }
 
     /// **An overheard name does not displace one a resolver answered for.**
@@ -1593,7 +1868,7 @@ mod tests {
 
         let mut resolver = resolver_asking(vec![server]);
         // The query this scan sent about `ip`, which `named_response` answers.
-        resolver.dns_map.insert(0x1234, ip);
+        resolver.dns_map.insert(0x1234, Query { ip, target: 0 });
 
         resolver.absorb_sniffed(
             &from_port(DNS_PORT, named_response(ip, "attacker-chosen.example.com")),
@@ -1627,9 +1902,13 @@ mod tests {
         let second: SocketAddr = "127.0.0.2:53".parse().expect("a valid socket address");
         let mut resolver = resolver_asking(vec![first, second]);
 
-        for (server, name) in [(first, "first.example.com"), (second, "second.example.com")] {
+        for (target, (server, name)) in
+            [(first, "first.example.com"), (second, "second.example.com")]
+                .into_iter()
+                .enumerate()
+        {
             // Each resolver was asked on its own ID; `named_response` answers one.
-            resolver.dns_map.insert(0x1234, ip);
+            resolver.dns_map.insert(0x1234, Query { ip, target });
             resolver.absorb_reply(&named_response(ip, name), server);
         }
 
