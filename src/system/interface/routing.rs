@@ -468,15 +468,87 @@ impl BeyondFrames {
             .collect()
     }
 
-    /// One reason and the addresses it covers.
+    /// These, together with every address of `unmapped` they do not already
+    /// hold, each under the reason nothing routes a frame to it.
+    ///
+    /// For a phase whose connect step holds both what a frame cannot reach
+    /// and what the routing table left without a route, loopback among it,
+    /// whatever the privilege: the second is classified from the address
+    /// alone, since the routing table has already been asked about it.
+    pub(crate) fn and_unmapped(mut self, unmapped: &IpSet) -> Self {
+        let mut rest = unmapped.clone();
+        rest.subtract(&self.targets);
+        for (reason, targets) in unmapped_reasons(rest) {
+            self.note(reason, targets);
+        }
+        self.targets.canonicalize();
+        self
+    }
+
+    /// One reason and the addresses it covers, joined to those it already
+    /// covers where it has been noted before.
     fn note(&mut self, reason: Unframed, mut targets: IpSet) {
         targets.canonicalize();
         if targets.is_empty() {
             return;
         }
         extend(&mut self.targets, &targets);
-        self.reasons.push((reason, targets));
+        match self.reasons.iter_mut().find(|(held, _)| *held == reason) {
+            Some((_, held)) => {
+                extend(held, &targets);
+                held.canonicalize();
+            }
+            None => self.reasons.push((reason, targets)),
+        }
     }
+}
+
+/// Why no frame reaches each of `unmapped`, addresses the routing table found
+/// no link for, split by reason: loopback, IPv4-mapped, and no route.
+///
+/// Split by block rather than address by address, since an unrouted range can
+/// be as wide as the target list, and none of the three needs the routing
+/// table asked again. Loopback is `127.0.0.0/8` and `::1`, as
+/// [`IpAddr::is_loopback`] has it; an IPv4 loopback address written in the
+/// mapped block is mapped.
+fn unmapped_reasons(unmapped: IpSet) -> Vec<(Unframed, IpSet)> {
+    let block = |ranges: &[IpRange]| {
+        let mut set = IpSet::new();
+        for range in ranges {
+            set.insert_range(*range);
+        }
+        set
+    };
+    let v4 = |start: [u8; 4], end: [u8; 4]| {
+        V4(Ipv4Range::new(start.into(), end.into()).expect("an ordered range"))
+    };
+    let v6 = |start: u128, end: u128| {
+        V6(Ipv6Range::new(start.into(), end.into()).expect("an ordered range"))
+    };
+    let blocks = [
+        (
+            Unframed::Loopback,
+            block(&[v4([127, 0, 0, 0], [127, 255, 255, 255]), v6(1, 1)]),
+        ),
+        (
+            Unframed::Mapped,
+            block(&[v6(0xffff_0000_0000, 0xffff_ffff_ffff)]),
+        ),
+    ];
+
+    let mut reasons = Vec::new();
+    let mut rest = unmapped;
+    for (reason, block) in blocks {
+        let mut outside = rest.clone();
+        outside.subtract(&block);
+        let mut inside = rest;
+        inside.subtract(&outside);
+        reasons.push((reason, inside));
+        rest = outside;
+    }
+    reasons.push((Unframed::NoRoute, rest));
+    reasons.retain(|(_, targets)| !targets.is_empty());
+    reasons
 }
 
 /// Whether `target` is an IPv4 address written in the IPv4-mapped IPv6 block,
@@ -539,15 +611,13 @@ pub(crate) fn beyond_frames_with(
         }
     };
 
-    for address in unmapped.iter() {
-        let reason = if address.is_loopback() {
-            Unframed::Loopback
-        } else if is_ipv4_mapped(address) {
-            Unframed::Mapped
-        } else {
-            Unframed::NoRoute
-        };
-        add(reason, single(address));
+    for (reason, targets) in unmapped_reasons(unmapped) {
+        for range in targets.v4() {
+            add(reason.clone(), V4(*range));
+        }
+        for range in targets.v6() {
+            add(reason.clone(), V6(*range));
+        }
     }
     for range in ours.v4() {
         add(Unframed::Ours, V4(*range));
@@ -1017,6 +1087,40 @@ mod tests {
             beyond.summary(),
             vec![(Unframed::Mapped, ip("::ffff:198.51.100.7"), 1)]
         );
+    }
+
+    /// A connect step holds what a frame cannot reach and what no route leads
+    /// to, and a message about it names each address for what it is: loopback
+    /// as loopback, a mapped address as mapped, whichever block it was
+    /// written in, and the rest as having no route. An address already held
+    /// keeps the reason it was held for.
+    #[test]
+    fn what_no_route_leads_to_is_named_for_what_it_is() {
+        let held = beyond_frames_with(
+            set_of(&["::ffff:198.51.100.7"]),
+            vec![ethernet(&[("192.0.2.10", 24), ("2001:db8:1::10", 64)])],
+            &[],
+            FrameSender::Probe,
+        );
+
+        let all = held.and_unmapped(&set_of(&[
+            "::ffff:198.51.100.7",
+            "127.0.0.2",
+            "::1",
+            "::ffff:127.0.0.1",
+            "203.0.113.9",
+            "203.0.113.10",
+        ]));
+
+        assert_eq!(
+            all.summary(),
+            vec![
+                (Unframed::Mapped, ip("::ffff:127.0.0.1"), 2),
+                (Unframed::Loopback, ip("127.0.0.2"), 2),
+                (Unframed::NoRoute, ip("203.0.113.9"), 2),
+            ]
+        );
+        assert_eq!(all.targets.len(), 6);
     }
 
     /// What a frame reaches, which has to keep working for the split to be worth

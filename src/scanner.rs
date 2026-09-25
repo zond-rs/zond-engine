@@ -1120,11 +1120,7 @@ async fn run_discovery(
         if let Some(port) = sctp_port {
             plan.also_over_sctp(port);
         }
-        for step in plan.steps() {
-            if let plan::DiscoveryStep::Connect { targets, .. } = step {
-                ctx.record_reached_by_connect(targets);
-            }
-        }
+        orchestrator::reached_by_connect(&plan, unframed, ctx);
         let enrichment = Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await;
         finish_enrichment(Some(enrichment), caps, ctx, rdns::Unheard::Skipped).await;
     } else {

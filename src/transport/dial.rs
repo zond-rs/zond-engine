@@ -46,14 +46,15 @@
 //! set for a path that costs nothing, and what a path the scan measured adds
 //! to each of those waits is a [`PathAllowance`], sized as the port scans size
 //! their own probes.
+//!
 //! What a caller does choose is [`Shaping`]: a source port and a hop limit,
 //! which only the connect scanner's probes carry, since an evasion profile
 //! shapes a scan's probes and not the conversations that follow them; see
 //! [`crate::evasion`] for why the source port rules out the rest. With nothing
-//! forced, nothing
-//! chosen, and on a platform that needs nothing set, a connect is exactly a
-//! plain [`TcpStream::connect`] and a datagram socket a plain ephemeral bind,
-//! so the kernel sees what it would have seen from any other program.
+//! forced, nothing chosen, and on a platform that needs nothing set, a connect
+//! is exactly a plain [`TcpStream::connect`] and a datagram socket a plain
+//! ephemeral bind, so the kernel sees what it would have seen from any other
+//! program.
 //!
 //! `tests/hygiene/dialling.rs` holds the rest of the crate to this: a TCP or
 //! UDP socket opened anywhere else has to say why it is not a connection to a

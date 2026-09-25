@@ -507,30 +507,6 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
 
 #[cfg(test)]
 pub(crate) mod tests {
-
-    /// Real segments carry advertisements naming `fe80::`, and the host that
-    /// sent one would be credited with an address nothing can hold, which reads
-    /// as an address it has *gained* when the segment is swept again.
-    #[test]
-    fn an_advertisement_naming_an_address_nothing_can_hold_is_left_alone() {
-        use std::net::Ipv6Addr;
-
-        assert!(!is_assignable(Ipv6Addr::UNSPECIFIED));
-        assert!(
-            !is_assignable("fe80::".parse().expect("a valid address")),
-            "the link-local prefix is not an address in it"
-        );
-
-        assert!(is_assignable("fe80::1".parse().expect("a valid address")));
-        assert!(is_assignable(
-            "fe80::a8bb:ccff:fedd:eeff"
-                .parse()
-                .expect("a valid address")
-        ));
-        assert!(is_assignable(
-            "2001:db8::1".parse().expect("a valid address")
-        ));
-    }
     use super::*;
     use crate::protocols::{arp, ethernet, ip as ip_protocol};
     use pnet_base::MacAddr;
@@ -599,6 +575,28 @@ pub(crate) mod tests {
             icmp.set_icmpv6_type(Icmpv6Types::NeighborSolicit);
         }
         body
+    }
+
+    /// Real segments carry advertisements naming `fe80::`, and the host that
+    /// sent one would be credited with an address nothing can hold, which reads
+    /// as an address it has *gained* when the segment is swept again.
+    #[test]
+    fn an_advertisement_naming_an_address_nothing_can_hold_is_left_alone() {
+        assert!(!is_assignable(Ipv6Addr::UNSPECIFIED));
+        assert!(
+            !is_assignable("fe80::".parse().expect("a valid address")),
+            "the link-local prefix is not an address in it"
+        );
+
+        assert!(is_assignable("fe80::1".parse().expect("a valid address")));
+        assert!(is_assignable(
+            "fe80::a8bb:ccff:fedd:eeff"
+                .parse()
+                .expect("a valid address")
+        ));
+        assert!(is_assignable(
+            "2001:db8::1".parse().expect("a valid address")
+        ));
     }
 
     #[test]

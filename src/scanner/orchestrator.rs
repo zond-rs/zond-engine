@@ -347,13 +347,35 @@ fn within_frames<T>(
         .collect()
 }
 
-/// Names the targets the port scan reaches by connect, and why, for a reader
-/// asking for detail.
+/// Records what a raw discovery `plan` reaches by connect, and names it, and
+/// why, for a reader asking for detail.
 ///
-/// Detail rather than news: the scan answers these ports either way, and the
+/// Its connect step holds what no route leads to, loopback among it, whatever
+/// the privilege, and `unframed`, what a frames-only run moved there. The
+/// opening line names the route the raw probes take; these addresses are
+/// asked by connect beside them.
+pub(super) fn reached_by_connect(
+    plan: &plan::DiscoveryPlan,
+    unframed: interface::BeyondFrames,
+    ctx: &ScanContext,
+) {
+    let Some(targets) = plan.steps().iter().find_map(|step| match step {
+        plan::DiscoveryStep::Connect { targets, .. } => Some(targets),
+        _ => None,
+    }) else {
+        return;
+    };
+    ctx.record_reached_by_connect(targets);
+    announce_by_connect("sweep", &unframed.and_unmapped(targets));
+}
+
+/// Names the targets `phase` reaches by connect, and why, for a reader asking
+/// for detail.
+///
+/// Detail rather than news: the scan answers these either way, and the
 /// report's [`reached_by_connect`](crate::report::ScanPhase::reached_by_connect)
 /// is the record of it. One line, with one address named per reason.
-fn announce_beyond_frames(beyond: &interface::BeyondFrames) {
+fn announce_by_connect(phase: &str, beyond: &interface::BeyondFrames) {
     if beyond.is_empty() {
         return;
     }
@@ -365,11 +387,7 @@ fn announce_beyond_frames(beyond: &interface::BeyondFrames) {
             more => format!("{first} +{} ({reason})", more - 1),
         })
         .collect();
-    info!(
-        verbosity = 1,
-        "port scan by connect: {}",
-        reasons.join(", ")
-    );
+    info!(verbosity = 1, "{phase} by connect: {}", reasons.join(", "));
 }
 
 /// The privileged host-identification phase, shared by
@@ -2124,7 +2142,7 @@ pub(super) async fn run_port_phase(
     // connect form is refused on those targets instead, and nothing reaches
     // them by connect.
     if built.reached_by_connect {
-        announce_beyond_frames(&beyond);
+        announce_by_connect("port scan", &beyond);
     }
 
     // No sweep beside the ports, whatever it would add. With the liveness pass
@@ -3240,6 +3258,31 @@ mod tests {
         // No socket to send by, whatever was asked for: frames are all the
         // run has.
         assert!(!by_raw_socket(SendMode::RawSocket, false));
+    }
+
+    /// A raw sweep asks loopback, and whatever nothing routes to, by connect,
+    /// whatever its opening line names the raw probes as. A reader asking for
+    /// detail is told which addresses and why, as the port scan tells them of
+    /// its own; left unsaid, the raw sockets the opening line names are all
+    /// they have to go on, and a connect's answer reads as a SYN's.
+    #[test]
+    fn a_raw_sweep_names_what_it_asks_by_connect_and_why() {
+        let (_session, ctx) = ScanSession::new();
+        let plan = plan::DiscoveryPlan::build(
+            ip_set(&["127.0.0.1", "::1"]),
+            strategy::local::Scope::Targeted,
+            &crate::model::exclusion::Exclusions::default(),
+            &[],
+        );
+
+        let heard = Heard::default();
+        tracing::subscriber::with_default(heard.clone(), || {
+            reached_by_connect(&plan, interface::BeyondFrames::default(), &ctx);
+        });
+
+        let said = heard.0.lock().expect("an unpoisoned log").clone();
+        assert_eq!(said, ["sweep by connect: 127.0.0.1 +1 (loopback)"]);
+        assert_eq!(ctx.take_reached_by_connect().len(), 2);
     }
 
     /// A frames-only run whose every target is out of a frame's reach refuses
