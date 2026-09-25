@@ -1283,6 +1283,17 @@ pub struct ZondConfig {
     /// The shortest gap between two probes aimed at one host, or `None` to let
     /// every pass send as fast as its own pacing allows.
     ///
+    /// **Every length is read literally, `Duration::MAX` included.** The
+    /// largest gap is not "no limit", which is `None`: it admits one probe per
+    /// host and never another, so a scan asking a host more than one question
+    /// waits for a slot that never comes until it is stopped, by the caller or
+    /// by [`scan_timeout`](Self::scan_timeout), and files what it never asked
+    /// as [`Unasked`](crate::model::port::PortState::Unasked). Read as no gap,
+    /// the largest value would be the one duration where asking for a longer
+    /// gap spaces probes less, and a gap worked out by saturating arithmetic,
+    /// which lands on the largest value when it overflows, would switch
+    /// spacing off exactly when the caller asked for the most of it.
+    ///
     /// The knob for what an operator actually knows about a target: this
     /// appliance falls over above twenty probes a second, or this sensor fires
     /// at more than one every hundred milliseconds. Both of those are per source
@@ -1345,10 +1356,6 @@ pub struct ZondConfig {
     /// many packets a tenth of a second at one address while those run, and one
     /// everywhere else. The numbers are stated here rather than left for
     /// somebody to find in a capture.
-    ///
-    /// A gap longer than a clock can count from now, such as `Duration::MAX`,
-    /// holds every probe after a host's first until the scan is stopped: it is
-    /// the gap asked for, not the absence of one, which is `None`.
     pub host_probe_interval: Option<Duration>,
 
     /// The longest a scan will keep working on one host before leaving it with

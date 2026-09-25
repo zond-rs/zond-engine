@@ -332,6 +332,52 @@ async fn probes_still_held_when_a_scan_stops_are_recorded_as_never_asked() {
     );
 }
 
+/// The longest gap a caller can write is read as a gap: a host is asked once
+/// and the rest of what the scan has for it waits until the scan is stopped,
+/// then reads as never asked.
+///
+/// `Duration::MAX` is the obvious way to write "no limit", which is why the
+/// reading is pinned. Read as no gap, every port here would be asked at once
+/// and come back open, and a caller who computed the gap and landed on the
+/// largest value would get no spacing at all.
+#[tokio::test]
+async fn the_longest_gap_asks_a_host_once_and_leaves_the_rest_unasked() {
+    let ports: Vec<u16> = (FIRST..FIRST + 2).collect();
+
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for &port in &ports {
+        net = net.host(TARGET, port, Policy::open());
+    }
+
+    let (session, ctx) = ScanSession::builder()
+        .host_probe_interval(Some(Duration::MAX))
+        .scan_timeout(Some(Duration::from_millis(150)))
+        .build();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        ports.len(),
+    );
+
+    let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
+    run_port_scanner(&mut scanner, targets).await;
+
+    assert_eq!(
+        net.probes().len(),
+        1,
+        "one probe per host, and never another"
+    );
+    let host = session
+        .hosts()
+        .get(TARGET)
+        .expect("the first port answered");
+    let mut states: Vec<PortState> = host.ports().map(|port| port.state()).collect();
+    states.sort_by_key(|state| format!("{state:?}"));
+    assert_eq!(states, [PortState::Open, PortState::Unasked]);
+}
+
 /// A scan spaced at one host whose answers arrive after the first timeout
 /// still settles every port, and leaves nothing outstanding when it ends.
 ///

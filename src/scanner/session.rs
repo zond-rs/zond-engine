@@ -2547,6 +2547,10 @@ impl SessionBuilder {
     /// Every pass that sends reads it through
     /// [`ScanContext::host_ready_at`], which is also where what the two words
     /// mean for a probe that arrives early is written down.
+    ///
+    /// `None` is no gap. `Some(Duration::MAX)` is the longest gap there is,
+    /// one probe per host for the rest of the scan, and not a way to say no
+    /// limit; see the config field for why.
     pub fn host_probe_interval(mut self, minimum: Option<Duration>) -> Self {
         self.host_probe_interval = minimum;
         self
