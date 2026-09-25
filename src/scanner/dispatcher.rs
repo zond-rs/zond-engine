@@ -29,7 +29,11 @@
 //!
 //! The batch stays either way, because it has a second job: it is the unit the
 //! channel is sized against, and a rearranged stream is filled and drained
-//! through the same buffer.
+//! through the same buffer. Only the fallback shuffles it. A walk is already
+//! spread, and one reshuffled a batch at a time would be an order no seed
+//! names, whose answers arrive up to a batch out of the order the journal
+//! counts along and wait in its [`cursor`](crate::journal::cursor) until the
+//! walk catches up.
 //!
 //! The sweeps that hold their targets themselves rather than draw them off a
 //! stream, the ARP and neighbour sweep of a segment and the SYN sweep through a
@@ -166,12 +170,12 @@ pub(crate) fn dispatch_addresses_of(
             if batch.len() < batch_size {
                 continue;
             }
-            if !drain(&mut batch, &tx, &scan_handle, &mut 0).await {
+            if !drain(&mut batch, &tx, &scan_handle, &mut 0, numbered.is_none()).await {
                 return;
             }
         }
 
-        drain(&mut batch, &tx, &scan_handle, &mut 0).await;
+        drain(&mut batch, &tx, &scan_handle, &mut 0, numbered.is_none()).await;
     });
 
     rx
@@ -252,8 +256,9 @@ impl WalkOrder {
     }
 }
 
-/// Shuffles `batch` and sends it, reporting whether the receiver is still there
-/// and the scan still wanted.
+/// Sends `batch`, shuffled first where `shuffle` says the stream is the
+/// batch-local fallback rather than a walk, reporting whether the receiver is
+/// still there and the scan still wanted.
 ///
 /// Generic over what the batch carries because both streams here draw the same
 /// bargain and differ only in what they yield: a sweep is counted in addresses
@@ -268,8 +273,11 @@ async fn drain<T>(
     tx: &mpsc::Sender<T>,
     scan_handle: &ScanHandle,
     sent: &mut u64,
+    shuffle: bool,
 ) -> bool {
-    batch.shuffle(&mut rand::rng());
+    if shuffle {
+        batch.shuffle(&mut rand::rng());
+    }
     for item in batch.drain(..) {
         if tx.send(item).await.is_err() {
             return false;
@@ -526,13 +534,28 @@ impl Dispatcher {
                 batch.push(planned);
 
                 if batch.len() >= batch_size
-                    && !drain(&mut batch, &tx, &scan_handle, &mut accounted).await
+                    && !drain(
+                        &mut batch,
+                        &tx,
+                        &scan_handle,
+                        &mut accounted,
+                        order.is_none(),
+                    )
+                    .await
                 {
                     return stopped_short(accounted);
                 }
             }
 
-            if !drain(&mut batch, &tx, &scan_handle, &mut accounted).await {
+            if !drain(
+                &mut batch,
+                &tx,
+                &scan_handle,
+                &mut accounted,
+                order.is_none(),
+            )
+            .await
+            {
                 stopped_short(accounted);
             }
         });
@@ -1111,6 +1134,35 @@ mod tests {
             "only {beyond} of the first {BATCH} targets came from beyond the \
              first batch of the plan, which is a walk rather than a rearrangement"
         );
+    }
+
+    /// A seeded scan asks in exactly the order its seed names, batch or no
+    /// batch, and a cursor counting along that order holds nothing while it
+    /// settles.
+    ///
+    /// The cursor's set holds whatever settles ahead of its walk watermark, so
+    /// a batch reshuffled on its way out would keep up to a batch of positions
+    /// there, in memory and in every checkpoint, and a seed would name a
+    /// different order in every run.
+    #[tokio::test]
+    async fn a_seeded_scan_asks_in_the_seeds_order_and_its_cursor_stays_empty() {
+        use crate::journal::cursor::Cursor;
+
+        let (_session, ctx) = ordered(0x5EED);
+        let asked = emitted(wide(20), &ctx, 64).await;
+
+        let order = Permutation::new(0x5EED, 4_096);
+        let positions: Vec<u64> = asked.iter().map(|planned| planned.position).collect();
+        assert!(
+            positions.iter().copied().eq(order.iter()),
+            "not the seed's order"
+        );
+
+        let mut cursor = Cursor::walking(order);
+        for position in positions {
+            cursor.settle(position);
+            assert_eq!(cursor.pending_count(), 0, "{position} waited in the set");
+        }
     }
 
     /// A resumed sitting asks about what is left and nothing else, in whatever
