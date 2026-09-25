@@ -60,8 +60,10 @@
 //!   rather than scanned under its own address, which would betray the whole
 //!   point of the technique.
 //!
-//! Both refusals are recorded and no port is reported, because a silent
-//! fallback to an ordinary scan is the one outcome an idle scan must never have.
+//! Both refusals are recorded and no port is given a verdict, because a silent
+//! fallback to an ordinary scan is the one outcome an idle scan must never
+//! have. Every port the scan was handed is still recorded, unasked, so the
+//! target reaches the report as one nothing asked about.
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -85,7 +87,7 @@ use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::{PortScanner, StrategyError};
+use crate::scanner::strategy::{PortScanner, StrategyError, record_unasked};
 use crate::system::interface::SourceResolver;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 
@@ -443,7 +445,7 @@ impl PortScanner for IdlePortScanner {
                     self.zombie
                 ),
             );
-            drain(&mut targets);
+            refuse(&self.ctx, targets).await;
             return Ok(());
         };
 
@@ -456,7 +458,7 @@ impl PortScanner for IdlePortScanner {
                     unsuitable_zombie(class)
                 ),
             );
-            drain(&mut targets);
+            refuse(&self.ctx, targets).await;
             return Ok(());
         }
 
@@ -470,7 +472,7 @@ impl PortScanner for IdlePortScanner {
         while let Some(planned) = targets.recv().await {
             if let Some(cause) = self.ctx.handle.stopped() {
                 reason = cause.into();
-                self.ctx.record_outcome(Outcome::Unasked);
+                record_unasked(&self.ctx, &planned);
                 break;
             }
             let target = planned.target;
@@ -479,7 +481,7 @@ impl PortScanner for IdlePortScanner {
             // target this scan cannot read this way is left for no one: an idle
             // scan has, by design, no second way to reach it.
             if target.protocol != Protocol::Tcp || !target.ip.is_ipv4() || !self.zombie.is_ipv4() {
-                self.ctx.record_outcome(Outcome::Unasked);
+                record_unasked(&self.ctx, &planned);
                 continue;
             }
 
@@ -492,8 +494,12 @@ impl PortScanner for IdlePortScanner {
         }
 
         // Anything still queued when a stop cut the loop was never asked.
-        while targets.try_recv().is_ok() {
-            self.ctx.record_outcome(Outcome::Unasked);
+        // Closed first, so a target the router hands over meanwhile finds this
+        // scanner gone and is recorded by the router, rather than put in a
+        // queue nothing reads.
+        targets.close();
+        while let Ok(planned) = targets.try_recv() {
+            record_unasked(&self.ctx, &planned);
         }
 
         let capture = self.transport.capture_counts();
@@ -509,10 +515,19 @@ impl PortScanner for IdlePortScanner {
     }
 }
 
-/// Discards every target still queued, so a refused scan settles what it was
-/// handed as unasked rather than leaving it looking merely unfinished.
-fn drain(targets: &mut mpsc::Receiver<PlannedTarget>) {
-    while targets.try_recv().is_ok() {}
+/// Records every target a refused scan is handed as unasked on its host, read
+/// until the router has handed over the last one.
+///
+/// Read to the end rather than drained of what is queued and dropped: a
+/// target handed over after the drop finds no scanner and the router records
+/// it, while one queued before is lost with the queue, so which of them reach
+/// the report would turn on how the refusal and the routing interleave. Read
+/// here, every one is on its host with its ports unasked, and the refusal is
+/// the one failure the scan reports for them.
+async fn refuse(ctx: &ScanContext, mut targets: mpsc::Receiver<PlannedTarget>) {
+    while let Some(planned) = targets.recv().await {
+        record_unasked(ctx, &planned);
+    }
 }
 
 /// The flag a refusal names for a zombie whose IP-ID counter classified as
@@ -760,7 +775,8 @@ mod tests {
     /// measured, and the refusal is recorded against the idle scanner.
     ///
     /// The guard is that nothing is guessed: a constant counter carries no
-    /// signal, so the target is left with no verdict rather than a made-up one.
+    /// signal, so the target is left unasked rather than given a made-up
+    /// verdict.
     #[tokio::test]
     async fn a_zombie_whose_counter_does_not_move_is_refused() {
         let (session, ctx) = ScanSession::new();
@@ -768,7 +784,7 @@ mod tests {
 
         scan(&mut scanner, &[OPEN_PORT]).await;
 
-        assert_eq!(port_state(&session, OPEN_PORT), None);
+        assert_eq!(port_state(&session, OPEN_PORT), Some(PortState::Unasked));
         let failures = ctx.failures_snapshot();
         let refusal = failures
             .iter()
@@ -779,5 +795,51 @@ mod tests {
             "the refusal flags what the counter did, not \"a constant IP-ID counter\": {}",
             refusal.reason()
         );
+    }
+
+    /// A refused scan records every target it is handed as unasked on its
+    /// host, both the ones already queued when it refused and the ones the
+    /// router hands over after, so the target reaches the report with its
+    /// ports unasked however the refusal and the routing happen to interleave.
+    ///
+    /// Discarding the queue and dropping the receiver leaves the result to
+    /// timing: the targets queued in time vanish, while those routed later
+    /// find the scanner gone and are recorded by the router, so one run
+    /// reports the host and the next reports none.
+    #[tokio::test]
+    async fn a_refused_scan_records_every_target_it_is_handed_unasked() {
+        let (session, ctx) = ScanSession::new();
+        let mut scanner = scanner(&ctx, Counter::Constant, vec![OPEN_PORT]);
+        let (tx, rx) = mpsc::channel(4);
+        let target = |position, port| {
+            PlannedTarget::new(
+                position,
+                Target {
+                    ip: TARGET,
+                    port,
+                    protocol: Protocol::Tcp,
+                },
+            )
+        };
+        tx.send(target(0, OPEN_PORT)).await.expect("queued");
+        let scan = tokio::spawn(async move {
+            scanner.scan(rx).await.expect("the idle scan runs");
+        });
+        while !ctx
+            .failures_snapshot()
+            .iter()
+            .any(|failure| failure.scanner() == ScannerKind::Idle)
+        {
+            tokio::task::yield_now().await;
+        }
+
+        let late = tx.send(target(1, CLOSED_PORT)).await;
+        drop(tx);
+        scan.await.expect("the scan task ends");
+
+        assert!(late.is_ok(), "a target routed after the refusal is taken");
+        assert_eq!(port_state(&session, OPEN_PORT), Some(PortState::Unasked));
+        assert_eq!(port_state(&session, CLOSED_PORT), Some(PortState::Unasked));
+        assert_eq!(ctx.settlements().count(Outcome::Unasked), 2);
     }
 }

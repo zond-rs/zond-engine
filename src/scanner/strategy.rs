@@ -69,7 +69,8 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::model::port::Protocol;
+use crate::journal::settle::Outcome;
+use crate::model::port::{PortState, Protocol};
 use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
@@ -203,6 +204,26 @@ pub trait PortScanner: Send {
     /// keeps "does this strategy need a second pass?" in the type rather than in
     /// a branch at every call site.
     async fn detect_services(&mut self, _ctx: &ScanContext) {}
+}
+
+/// Records `target`, which no scanner asked about, as a port nobody asked
+/// about: on its host as [`PortState::Unasked`], and owed to a resume.
+///
+/// The one account of a port left unprobed that holds whoever leaves it: a
+/// scanner stopped with it still queued, a scanner that refused its whole
+/// plan, and a router with no scanner left to hand it to. Left off the host
+/// instead, a truncated port list reads the same as a complete one, a host the
+/// scan never reached is missing from the report altogether, and a port list
+/// whose shape depends on how a run ended reads, compared with another scan's,
+/// as the network moving. The outcome carries no position, so a resume asks
+/// the question this sitting did not.
+pub(crate) fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
+    let port =
+        crate::fingerprint::baseline_port(target.port(), target.protocol(), PortState::Unasked);
+    ctx.update_host(target.ip(), |host| {
+        host.add_port(port);
+    });
+    ctx.record_outcome(Outcome::Unasked);
 }
 
 pub mod composite;

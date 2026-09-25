@@ -34,7 +34,7 @@ use crate::model::port::Protocol;
 use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::{PortScanner, StrategyError};
+use crate::scanner::strategy::{PortScanner, StrategyError, record_unasked};
 use crate::{counted, info};
 
 /// How many targets one route holds while its scanner is busy.
@@ -301,24 +301,6 @@ impl PortScanner for CompositePortScanner {
             scanner.detect_services(ctx).await;
         }
     }
-}
-
-/// Records `target`, which reached no scanner, as a port nobody asked about.
-///
-/// The way every strategy records one, so a port the router could not hand
-/// over reads exactly as one a scanner had queued when it stopped: on the host
-/// as [`PortState::Unasked`](crate::model::port::PortState::Unasked), and owed
-/// to a resume.
-fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
-    let port = crate::fingerprint::baseline_port(
-        target.port(),
-        target.protocol(),
-        crate::model::port::PortState::Unasked,
-    );
-    ctx.update_host(target.ip(), |host| {
-        host.add_port(port);
-    });
-    ctx.record_outcome(Outcome::Unasked);
 }
 
 /// How a router reports the work it could not place.

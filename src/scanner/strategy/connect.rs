@@ -63,7 +63,7 @@ use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::routed::SynPorts;
-use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
+use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError, record_unasked};
 use crate::system::descriptors::{self, Descriptor};
 use crate::transport::dial::PathAllowance;
 use crate::transport::dial::{Connecting, Egress, Holder, Shaping, SourcePortHeld};
@@ -835,29 +835,6 @@ fn udp_evidence(state: PortState) -> Option<ScanResponse> {
         PortState::Closed | PortState::Filtered => Some(ScanResponse::IcmpUnreachable),
         _ => None,
     }
-}
-
-/// Records a planned target no probe was ever sent to.
-///
-/// Three ways one arises in this strategy: the scan stopped with targets still
-/// queued, the target's host had already spent
-/// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout), and
-/// this machine failed the connect locally before anything left it.
-///
-/// All three leave the port on the host rather than off it, for the reason
-/// [`port_prober`]'s refusal branch gives about `Closed`: a port list whose shape
-/// depends on how a run ended is a different answer rather than a smaller one,
-/// and a comparison of two scans reads the difference as the network moving.
-/// What the port says is [`PortState::Unasked`], which is the whole of what this
-/// run established about it, and the outcome carries no position, so a resume
-/// asks the question this sitting did not.
-fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
-    let port =
-        crate::fingerprint::baseline_port(target.port(), target.protocol(), PortState::Unasked);
-    ctx.update_host(target.ip(), |host| {
-        host.add_port(port);
-    });
-    ctx.record_outcome(Outcome::Unasked);
 }
 
 /// Probes a single [`PlannedTarget`] over a full TCP connect handshake and
