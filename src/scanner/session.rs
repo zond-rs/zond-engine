@@ -73,7 +73,7 @@
 use dashmap::DashMap;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -1251,6 +1251,13 @@ fn changed_since(store: &DashMap<ScopedIp, Host>, changed: &ChangedHosts) -> Vec
         .collect()
 }
 
+/// Whether `host` is a record a port phase standing in for a liveness pass may
+/// yet forget: one nothing has answered at. The phase decides these at its end,
+/// and only these; see [`ScanContext::await_verdicts`].
+fn awaits_verdict(host: &Host) -> bool {
+    host.status() == crate::model::host::HostStatus::Unknown
+}
+
 /// What a journal needs from a running scan, and nothing more.
 ///
 /// See [`ScanContext::progress`] for why this exists rather than a context.
@@ -1261,6 +1268,7 @@ pub struct ScanProgress {
     settlements: Arc<Settlements>,
     failures: Arc<FailureLog>,
     tapes: Arc<Tapes>,
+    verdicts_pending: Arc<AtomicBool>,
 }
 
 impl ScanProgress {
@@ -1293,6 +1301,44 @@ impl ScanProgress {
     /// How many hosts have been found so far.
     pub fn host_count(&self) -> usize {
         self.store.len()
+    }
+
+    /// Takes the hosts whose findings have changed since this was last called
+    /// and that are findings to write down, leaving the rest marked changed.
+    ///
+    /// What a journal appends as a scan runs. Every changed host, unless a
+    /// port phase standing in for a liveness pass has yet to reach its
+    /// verdicts: then a record nothing has answered at is held back until the
+    /// phase decides it, since the phase may yet forget it as silent or
+    /// undecided, and a sitting killed before it names which would leave the
+    /// record on disk with nothing to drop it by. Held rather than taken, so
+    /// the record is written once the phase keeps it or something answers.
+    /// See [`ScanContext::await_verdicts`].
+    pub(crate) fn take_changed_findings(&self) -> Vec<Host> {
+        if !self.verdicts_pending.load(Ordering::Acquire) {
+            return self.take_changed_hosts();
+        }
+        let (held, findings): (Vec<Host>, Vec<Host>) = self
+            .take_changed_hosts()
+            .into_iter()
+            .partition(awaits_verdict);
+        for host in held {
+            self.changed.insert(host.scoped_ip());
+        }
+        findings
+    }
+
+    /// Every host found so far that is a finding to write down, ordered by the
+    /// address each is keyed under: all of them, less the records held back
+    /// while a port phase standing in for a liveness pass has yet to decide
+    /// them. What a journal compacts its findings to; see
+    /// [`take_changed_findings`](Self::take_changed_findings).
+    pub(crate) fn findings_snapshot(&self) -> Vec<Host> {
+        let mut hosts = self.hosts_snapshot();
+        if self.verdicts_pending.load(Ordering::Acquire) {
+            hosts.retain(|host| !awaits_verdict(host));
+        }
+        hosts
     }
 
     /// Files a failure to the report. Not to the event stream; see
@@ -1411,6 +1457,10 @@ pub struct ScanContext {
     /// How many targets a port phase asked at the addresses whose records it
     /// forgot as heard nothing from.
     pub(crate) unheard_probes: Arc<AtomicU64>,
+    /// Whether a port phase standing in for a liveness pass has yet to decide
+    /// which of its records are hosts. See
+    /// [`await_verdicts`](Self::await_verdicts).
+    pub(crate) verdicts_pending: Arc<AtomicBool>,
     /// Which stage's unit the plan, and so the settlements, are counted in.
     pub(crate) plan_stage: Stage,
     /// When each host's budget started, for a scan that set one.
@@ -2021,6 +2071,28 @@ impl ScanContext {
         self.timed_out.contains(address)
     }
 
+    /// Holds back from the journal every record nothing has answered at, until
+    /// [`verdicts_reached`](Self::verdicts_reached).
+    ///
+    /// For a port phase standing in for a liveness pass, which decides only
+    /// at its end which of those records are hosts, forgetting the rest as
+    /// silent or undecided. The report drops a record the phase forgot by the
+    /// lists the phase is written down with, and a sitting killed outright is
+    /// never written down: a record a checkpoint had already put on disk would
+    /// come back on resume as a host nobody heard from, with nothing to drop
+    /// it by. Held back, a record reaches the disk when something answers at
+    /// it or the phase keeps it.
+    pub(crate) fn await_verdicts(&self) {
+        self.verdicts_pending.store(true, Ordering::Release);
+    }
+
+    /// Ends what [`await_verdicts`](Self::await_verdicts) began, once the phase
+    /// has forgotten the records it heard nothing from. The ones it kept are
+    /// still marked changed, so the next write takes them.
+    pub(crate) fn verdicts_reached(&self) {
+        self.verdicts_pending.store(false, Ordering::Release);
+    }
+
     /// Files the host records at `keys` as addresses a port phase standing in
     /// for its liveness pass asked on every port and heard nothing from, and
     /// forgets those records.
@@ -2416,6 +2488,7 @@ impl ScanContext {
             settlements: Arc::clone(&self.settlements),
             failures: Arc::clone(&self.failures),
             tapes: Arc::clone(&self.tapes),
+            verdicts_pending: Arc::clone(&self.verdicts_pending),
         }
     }
 
@@ -2826,6 +2899,7 @@ impl SessionBuilder {
             undecided: Arc::new(SilenceLog::default()),
             unreached: Arc::new(AtomicU64::new(0)),
             unheard_probes: Arc::new(AtomicU64::new(0)),
+            verdicts_pending: Arc::new(AtomicBool::new(false)),
             plan_stage: self.plan_stage,
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,

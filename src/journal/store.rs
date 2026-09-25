@@ -1551,6 +1551,89 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// **A sitting killed before its port phase decides what it heard nothing
+    /// from leaves no record of those addresses.** A phase standing in for a
+    /// liveness pass forgets its unanswered records only at its end, and the
+    /// report drops one only by the lists the phase is written down with; a
+    /// sitting killed outright writes no phase, so a record a checkpoint had
+    /// put on disk came back on resume as an unknown host nothing answered at.
+    #[tokio::test]
+    async fn a_sitting_killed_before_its_verdicts_leaves_no_unheard_record() {
+        let root = scratch("unheard-killed");
+        let map = plan("192.0.2.1-192.0.2.8", "80");
+        let journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        ctx.await_verdicts();
+        ctx.update_host(
+            "192.0.2.1".parse::<std::net::IpAddr>().expect("an address"),
+            |host| {
+                host.set_status(crate::model::host::HostStatus::Up);
+            },
+        );
+        ctx.write_host(
+            "192.0.2.5".parse::<std::net::IpAddr>().expect("an address"),
+            |host| {
+                *host = unheard("192.0.2.5");
+                true
+            },
+        );
+
+        // One checkpoint lands, and the process dies before the phase ends.
+        let ticker = spawn_checkpoints(journal, ctx.progress());
+        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
+        ticker.kill().await;
+
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
+        let restored: Vec<_> = journal.restored().iter().map(Host::primary_ip).collect();
+        assert_eq!(
+            restored,
+            ["192.0.2.1".parse::<std::net::IpAddr>().expect("an address")],
+            "only the host that answered is on disk"
+        );
+        journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **A record held for its verdict is written once the phase keeps it.**
+    /// Held back rather than taken, so an address the phase neither forgot
+    /// nor heard from, one no route led to, still reaches the findings when
+    /// the sitting ends.
+    #[tokio::test]
+    async fn a_record_held_for_its_verdict_is_written_once_the_phase_keeps_it() {
+        let root = scratch("unheard-kept");
+        let map = plan("192.0.2.1-192.0.2.8", "80");
+        let journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        ctx.await_verdicts();
+        ctx.write_host(
+            "192.0.2.5".parse::<std::net::IpAddr>().expect("an address"),
+            |host| {
+                *host = unheard("192.0.2.5");
+                true
+            },
+        );
+        let ticker = spawn_checkpoints(journal, ctx.progress());
+        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
+        ctx.verdicts_reached();
+        ticker.finish(&[]).await;
+
+        let kept: Vec<_> = read_findings(&directory)
+            .expect("reads")
+            .iter()
+            .map(Host::primary_ip)
+            .collect();
+        assert_eq!(
+            kept,
+            ["192.0.2.5".parse::<std::net::IpAddr>().expect("an address")]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// The whole cycle: begin a scan, settle part of it, come back and continue
     /// from exactly where it stopped.
     #[test]

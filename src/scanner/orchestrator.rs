@@ -2127,6 +2127,11 @@ pub(super) async fn run_port_phase(
     if let Some(Liveness { live, silent }) = liveness {
         dispatcher = dispatcher.screened(live, silent);
     }
+    // Held from the journal until the phase has decided which records nothing
+    // answered at are hosts, so a sitting killed first writes none of them.
+    if stands_in {
+        ctx.await_verdicts();
+    }
     let (rx, walk) = dispatcher.spawn(ctx);
 
     run_port_scan(built.scanner, rx, ctx, cfg.service_detection, cfg.detection).await;
@@ -2143,6 +2148,7 @@ pub(super) async fn run_port_phase(
     // address the scan found nothing at.
     if stands_in {
         forget_the_silent(ctx, &probed);
+        ctx.verdicts_reached();
     }
     let unheard = match cfg.assume_up {
         true => rdns::Unheard::Named,

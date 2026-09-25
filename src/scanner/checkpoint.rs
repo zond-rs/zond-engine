@@ -60,6 +60,14 @@ impl Checkpointing {
         let _ = self.done.send(phases.to_vec());
         let _ = self.task.await;
     }
+
+    /// Ends the writer where it stands, without its last write: what a
+    /// process killed outright leaves on disk.
+    #[cfg(test)]
+    pub(crate) async fn kill(self) {
+        self.task.abort();
+        let _ = self.task.await;
+    }
 }
 
 /// Starts checkpointing `journal` from `ctx`'s progress until told to stop.
@@ -74,11 +82,14 @@ pub fn spawn_checkpoints(mut journal: Journal, ctx: ScanProgress) -> Checkpointi
                     // scan over: the previous one still stands, and the scan is
                     // still producing results. Reported through the same channel
                     // every other narrowing uses.
-                    let changed = ctx.take_changed_hosts();
+                    // Findings only: a record a port phase may yet forget as
+                    // heard nothing from waits for its verdict. See
+                    // `ScanContext::await_verdicts`.
+                    let changed = ctx.take_changed_findings();
                     let outcome = if journal.should_compact(ctx.host_count()) {
                         // The snapshot covers `changed` as well, so nothing is
                         // lost by not appending them.
-                        journal.compact(&ctx.hosts_snapshot())
+                        journal.compact(&ctx.findings_snapshot())
                     } else {
                         journal.record_hosts(&changed)
                     }
@@ -112,9 +123,9 @@ pub fn spawn_checkpoints(mut journal: Journal, ctx: ScanProgress) -> Checkpointi
         // to, the file would keep what the job's report drops. See `Unheard`.
         let unheard = Unheard::of(journal.earlier_phases().iter().chain(&phases));
         let _ = if unheard.is_empty() {
-            journal.record_hosts(&ctx.take_changed_hosts())
+            journal.record_hosts(&ctx.take_changed_findings())
         } else {
-            let mut kept = ctx.hosts_snapshot();
+            let mut kept = ctx.findings_snapshot();
             kept.retain(|host| !unheard.drops(host));
             journal.compact(&kept)
         }
