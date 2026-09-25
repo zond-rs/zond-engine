@@ -364,13 +364,11 @@ impl Egress {
     }
 
     /// A UDP socket bound for `peer`, ready to be connected to it, with a full
-    /// descriptor table waited out as [`connect_timed`](Self::connect_timed)
-    /// waits it out.
-    pub(crate) async fn udp(self, peer: IpAddr) -> io::Result<UdpSocket> {
-        descriptors::patiently(descriptors::PATIENCE, || {
-            self.udp_shaped(peer, Shaping::default())
-        })
-        .await
+    /// descriptor table waited out for `patience`, as
+    /// [`connect_timed`](Self::connect_timed) waits it out for
+    /// [`PATIENCE`](descriptors::PATIENCE).
+    pub(crate) async fn udp(self, peer: IpAddr, patience: Duration) -> io::Result<UdpSocket> {
+        descriptors::patiently(patience, || self.udp_shaped(peer, Shaping::default())).await
     }
 
     /// A UDP socket bound for `peer` and honouring `shaping`, ready to be
@@ -1011,7 +1009,10 @@ mod tests {
 
         let server = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP server");
         let server_addr = server.local_addr().expect("its address");
-        let socket = egress.udp(server_addr.ip()).await.expect("a pinned socket");
+        let socket = egress
+            .udp(server_addr.ip(), descriptors::PATIENCE)
+            .await
+            .expect("a pinned socket");
         socket
             .connect(server_addr)
             .await

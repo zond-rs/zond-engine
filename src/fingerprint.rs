@@ -387,7 +387,7 @@ pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
 /// If nothing identifies, a trimmed printable banner is attached as a
 /// last-resort label rather than leaving the port unannotated.
 pub async fn fingerprint_tcp(stream: TcpStream, port: Port, detection: ServiceDetection) -> Port {
-    fingerprint_tcp_detailed(stream, port, detection).await.0
+    fingerprint_tcp_detailed(stream, port, detection).await.port
 }
 
 /// [`fingerprint_tcp`], also returning what the service said about the *machine*.
@@ -403,9 +403,11 @@ pub async fn fingerprint_tcp(stream: TcpStream, port: Port, detection: ServiceDe
 /// it implies about the operating system belongs to the host. A caller with no
 /// host to file it against should not have to handle it.
 ///
-/// The gathered responses are returned as a third value, for a caller that runs a
-/// later detection over them rather than redrawing them; it is empty when nothing
-/// was read.
+/// The gathered responses come back too, for a caller that runs a later
+/// detection over them rather than redrawing them; they are empty when nothing
+/// was read. So does whether the identification was starved of a socket, which
+/// is what separates a port that had nothing more to say from one that was
+/// never asked; see [`Fingerprinted::starved`].
 ///
 /// Every further connection it makes to the port, for a later question or an
 /// active analyzer, goes where the routing table sends it. A scan forced to a
@@ -414,29 +416,41 @@ pub async fn fingerprint_tcp_detailed(
     stream: TcpStream,
     port: Port,
     detection: ServiceDetection,
-) -> (Port, AboutTheHost, Vec<String>) {
-    let fingerprinted = fingerprint_tcp_via(stream, port, detection, Egress::KERNEL).await;
-    (
-        fingerprinted.port,
-        fingerprinted.about_the_host,
-        fingerprinted.responses,
-    )
+) -> Fingerprinted {
+    fingerprint_tcp_via(stream, port, detection, Egress::KERNEL).await
 }
 
-/// What identifying one TCP port came to, as a scan files it.
-pub(crate) struct Fingerprinted {
+/// What identifying one port came to: the port as it was named, what its
+/// service said about the machine, the responses it drew, and whether the
+/// process ran short of sockets while asking.
+///
+/// A struct with named fields rather than a tuple because the last of those is
+/// a different kind of fact from the rest, one about this machine rather than
+/// the port, and a caller has to be able to see it by name to act on it.
+/// Non-exhaustive, so a further fact the identification learns reaches callers
+/// as a field they may read rather than a change to a shape they destructure.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Fingerprinted {
     /// The port, its service refined where anything named it.
-    pub(crate) port: Port,
+    pub port: Port,
     /// What the port's service said about the machine behind it.
-    pub(crate) about_the_host: AboutTheHost,
+    pub about_the_host: AboutTheHost,
     /// The responses gathered, for a later detection to read.
-    pub(crate) responses: Vec<String>,
-    /// Whether a connection the identification went on to make, a later
-    /// question, a redirect followed or an analyzer's own, was given up
-    /// because the process had no socket to give it. What was learned is
-    /// kept, and is a floor: the question that connection carried went
-    /// unasked for a reason that is this machine's rather than the port's.
-    pub(crate) starved: bool,
+    pub responses: Vec<String>,
+    /// Whether a connection or datagram the identification needed was given
+    /// up because the process had no socket to give it, for as long as it
+    /// waited for one.
+    ///
+    /// What was learned is kept, and is a floor: the question that socket
+    /// would have carried went unasked for a reason that is this machine's
+    /// rather than the port's, and raising the process's file limit is its
+    /// remedy. Over TCP it is a later question, a redirect followed or an
+    /// analyzer's own connection, since the first connection is the caller's.
+    /// Over UDP it is a datagram, and as each is sent only after the one
+    /// before drew nothing readable, a starved UDP identification learned
+    /// nothing at all.
+    pub starved: bool,
 }
 
 /// [`fingerprint_tcp_detailed`], with every further connection to the port
@@ -576,22 +590,50 @@ async fn identify_tcp(
 /// behind it. A caller that dialled a port on its own account uses this to tell
 /// whether it found anything at all.
 ///
+/// Call it silence when it was not. A datagram the process had no socket for
+/// was never sent, and the port was never asked; that comes back as the port
+/// as it was given, with [`starved`](Fingerprinted::starved) set, since it is
+/// this machine's shortfall and a caller reading it as the port's would
+/// record a question as answered that was never put.
+///
 /// The datagram leaves where the routing table sends it; a scan forced to a
 /// source sends it from there instead.
 pub async fn fingerprint_udp_detailed(
     addr: std::net::SocketAddr,
     port: Port,
-) -> Option<(Port, AboutTheHost, Vec<String>)> {
+) -> Option<Fingerprinted> {
     fingerprint_udp_via(addr, port, Egress::KERNEL).await
 }
 
 /// [`fingerprint_udp_detailed`], with the datagram leaving by `egress`.
 pub(crate) async fn fingerprint_udp_via(
     addr: std::net::SocketAddr,
+    port: Port,
+    egress: Egress,
+) -> Option<Fingerprinted> {
+    fingerprint_udp_within(addr, port, egress, descriptors::PATIENCE).await
+}
+
+/// [`fingerprint_udp_via`], waiting out a full descriptor table for
+/// `patience` before a datagram is given up as starved.
+async fn fingerprint_udp_within(
+    addr: std::net::SocketAddr,
     mut port: Port,
     egress: Egress,
-) -> Option<(Port, AboutTheHost, Vec<String>)> {
-    let texts = probe_udp(addr, egress).await?;
+    patience: Duration,
+) -> Option<Fingerprinted> {
+    let texts = match probe_udp(addr, egress, patience).await {
+        Datagram::Reply(texts) => texts,
+        Datagram::Silent => return None,
+        Datagram::Starved => {
+            return Some(Fingerprinted {
+                port,
+                about_the_host: AboutTheHost::default(),
+                responses: Vec::new(),
+                starved: true,
+            });
+        }
+    };
     let responses = ResponseSet::from_banners(texts);
     let banners = responses.banners.clone();
 
@@ -616,7 +658,23 @@ pub(crate) async fn fingerprint_udp_via(
         port.set_service(service);
     }
 
-    Some((port, about_the_host, banners))
+    Some(Fingerprinted {
+        port,
+        about_the_host,
+        responses: banners,
+        starved: false,
+    })
+}
+
+/// What asking a UDP port came to.
+enum Datagram<T> {
+    /// It answered, with this.
+    Reply(T),
+    /// It was asked and said nothing, or nothing readable.
+    Silent,
+    /// The process had no socket to ask it with, for as long as it waited
+    /// for one, so it was never asked.
+    Starved,
 }
 
 /// Sends this port's registered probes and reads back whatever text a reply
@@ -645,14 +703,28 @@ pub(crate) async fn fingerprint_udp_via(
 /// So each registered probe is tried in turn and the first that yields text
 /// wins. A port registering one probe, which is nearly all of them, costs
 /// exactly what it did before.
-async fn probe_udp(addr: std::net::SocketAddr, egress: Egress) -> Option<Vec<String>> {
+///
+/// A probe the process had no socket for ends the walk as starved rather than
+/// passing on to the next: the table that refused one socket is the table the
+/// next would ask, and the port has not been asked anything yet.
+async fn probe_udp(
+    addr: std::net::SocketAddr,
+    egress: Egress,
+    patience: Duration,
+) -> Datagram<Vec<String>> {
     for payload in SignatureDb::global().udp_probe_payloads(addr.port()) {
-        let texts = probe_udp_with_via(addr, payload, egress).await;
-        if !texts.is_empty() {
-            return Some(texts);
+        match exchange_datagram(addr, payload, egress, patience).await {
+            Datagram::Reply(reply) => {
+                let texts = extract::from_datagram(addr.port(), &reply);
+                if !texts.is_empty() {
+                    return Datagram::Reply(texts);
+                }
+            }
+            Datagram::Silent => {}
+            Datagram::Starved => return Datagram::Starved,
         }
     }
-    None
+    Datagram::Silent
 }
 
 /// Sends `payload` to `addr` and reads back whatever text the reply carries.
@@ -703,17 +775,38 @@ pub(crate) async fn probe_udp_raw_via(
     payload: &[u8],
     egress: Egress,
 ) -> Option<Vec<u8>> {
-    let socket = egress.udp(addr.ip()).await.ok()?;
-    socket.connect(addr).await.ok()?;
-    socket.send(payload).await.ok()?;
+    match exchange_datagram(addr, payload, egress, descriptors::PATIENCE).await {
+        Datagram::Reply(reply) => Some(reply),
+        Datagram::Silent | Datagram::Starved => None,
+    }
+}
+
+/// Sends `payload` to `addr` from a socket of its own and reads the one
+/// datagram that comes back, telling a port that said nothing from a process
+/// that had no socket to ask it with, after waiting `patience` for one.
+async fn exchange_datagram(
+    addr: std::net::SocketAddr,
+    payload: &[u8],
+    egress: Egress,
+    patience: Duration,
+) -> Datagram<Vec<u8>> {
+    let socket = match egress.udp(addr.ip(), patience).await {
+        Ok(socket) => socket,
+        Err(e) if descriptors::exhausted(&e) => return Datagram::Starved,
+        Err(_) => return Datagram::Silent,
+    };
+    if socket.connect(addr).await.is_err() || socket.send(payload).await.is_err() {
+        return Datagram::Silent;
+    }
 
     let mut buffer = vec![0u8; MAX_RESPONSE_BYTES];
-    let read = timeout(PROBE_READ_TIMEOUT, socket.recv(&mut buffer))
-        .await
-        .ok()?
-        .ok()?;
-    buffer.truncate(read);
-    Some(buffer)
+    match timeout(PROBE_READ_TIMEOUT, socket.recv(&mut buffer)).await {
+        Ok(Ok(read)) => {
+            buffer.truncate(read);
+            Datagram::Reply(buffer)
+        }
+        _ => Datagram::Silent,
+    }
 }
 
 /// Collects everything the transport can learn from the port over the network,
@@ -2371,6 +2464,48 @@ mod tests {
         assert!(
             !refused_by_the_port,
             "a port that refused the connection was blamed on the file limit"
+        );
+    }
+
+    /// A UDP identification the process had no socket for says so, rather
+    /// than coming back as the silence an unanswered datagram is.
+    ///
+    /// Over UDP silence is the ordinary answer, so a datagram never sent reads
+    /// exactly like one the port ignored unless it is marked: the scan would
+    /// file the port as heard out when it was never asked. A port asked and
+    /// silent is still silence.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_udp_identification_refused_a_socket_is_starved_and_not_silent() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "a_udp_identification_refused_a_socket_is_starved_and_not_silent",
+        ) {
+            return;
+        }
+        // A port the corpus asks something of over UDP, with nothing on
+        // loopback listening there, so the one asked is refused or unanswered.
+        let snmp: SocketAddr = "127.0.0.1:161".parse().expect("an address");
+        assert!(
+            !SignatureDb::global().udp_probe_payloads(161).is_empty(),
+            "test assumes the corpus asks port 161 something over UDP"
+        );
+        let port = || baseline_port(161, Protocol::Udp, PortState::Open);
+        let patience = Duration::from_millis(50);
+
+        let held = exhaust(64);
+        let unasked = fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience).await;
+        drop(held);
+        let asked = fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience).await;
+
+        let unasked = unasked.expect("a datagram never sent was read as the port's silence");
+        assert!(unasked.starved);
+        assert!(unasked.responses.is_empty());
+        assert!(
+            asked.is_none(),
+            "a port asked and silent was not read as silence: {asked:?}"
         );
     }
 

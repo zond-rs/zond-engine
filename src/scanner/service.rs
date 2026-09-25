@@ -365,9 +365,23 @@ async fn fingerprint_one(
             )
         }
         // Silence is not a failure here: a UDP port that says nothing has told
-        // the scan what it had to.
+        // the scan what it had to. A port the process had no socket to ask
+        // was told nothing, and is filed the way a connection refused a
+        // socket is.
         Protocol::Udp => match crate::fingerprint::fingerprint_udp_via(addr, port, egress).await {
-            Some((port, about_the_host, banners)) => (port, about_the_host, banners, false),
+            Some(identified) if identified.starved => {
+                return Attempt::Unreachable {
+                    ip: target,
+                    number: port_number,
+                    reason: descriptors::starved(descriptors::PATIENCE),
+                };
+            }
+            Some(identified) => (
+                identified.port,
+                identified.about_the_host,
+                identified.responses,
+                false,
+            ),
             None => return Attempt::Quiet,
         },
         // Nothing here speaks SCTP as a client, so an open SCTP port keeps the

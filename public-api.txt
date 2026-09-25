@@ -5322,6 +5322,22 @@ impl core::marker::Unpin for zond_engine::fingerprint::FaviconAnalyzer
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::FaviconAnalyzer
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::FaviconAnalyzer
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::FaviconAnalyzer
+#[non_exhaustive] pub struct zond_engine::fingerprint::Fingerprinted
+pub zond_engine::fingerprint::Fingerprinted::about_the_host: zond_engine::fingerprint::AboutTheHost
+pub zond_engine::fingerprint::Fingerprinted::port: zond_engine::model::port::Port
+pub zond_engine::fingerprint::Fingerprinted::responses: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::fingerprint::Fingerprinted::starved: bool
+impl core::clone::Clone for zond_engine::fingerprint::Fingerprinted
+pub fn zond_engine::fingerprint::Fingerprinted::clone(&self) -> zond_engine::fingerprint::Fingerprinted
+impl core::fmt::Debug for zond_engine::fingerprint::Fingerprinted
+pub fn zond_engine::fingerprint::Fingerprinted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::fingerprint::Fingerprinted
+impl core::marker::Send for zond_engine::fingerprint::Fingerprinted
+impl core::marker::Sync for zond_engine::fingerprint::Fingerprinted
+impl core::marker::Unpin for zond_engine::fingerprint::Fingerprinted
+impl core::marker::UnsafeUnpin for zond_engine::fingerprint::Fingerprinted
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::Fingerprinted
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::Fingerprinted
 pub struct zond_engine::fingerprint::HttpHeadersAnalyzer
 impl zond_engine::fingerprint::Analyzer for zond_engine::fingerprint::HttpHeadersAnalyzer
 pub fn zond_engine::fingerprint::HttpHeadersAnalyzer::analyze(&self, &zond_engine::fingerprint::PortContext, &zond_engine::fingerprint::ResponseSet, &zond_engine::fingerprint::Collected) -> alloc::vec::Vec<zond_engine::fingerprint::model::Evidence>
@@ -5660,8 +5676,8 @@ pub fn zond_engine::fingerprint::decode_udp_reply(u16, &[u8]) -> alloc::vec::Vec
 pub async fn zond_engine::fingerprint::enumerate_tls(core::net::socket_addr::SocketAddr) -> zond_engine::model::tls::TlsSupport
 pub async fn zond_engine::fingerprint::favicon_digest(core::net::socket_addr::SocketAddr) -> core::option::Option<alloc::string::String>
 pub async fn zond_engine::fingerprint::fingerprint_tcp(tokio::net::tcp::stream::TcpStream, zond_engine::model::port::Port, zond_engine::config::ServiceDetection) -> zond_engine::model::port::Port
-pub async fn zond_engine::fingerprint::fingerprint_tcp_detailed(tokio::net::tcp::stream::TcpStream, zond_engine::model::port::Port, zond_engine::config::ServiceDetection) -> (zond_engine::model::port::Port, zond_engine::fingerprint::AboutTheHost, alloc::vec::Vec<alloc::string::String>)
-pub async fn zond_engine::fingerprint::fingerprint_udp_detailed(core::net::socket_addr::SocketAddr, zond_engine::model::port::Port) -> core::option::Option<(zond_engine::model::port::Port, zond_engine::fingerprint::AboutTheHost, alloc::vec::Vec<alloc::string::String>)>
+pub async fn zond_engine::fingerprint::fingerprint_tcp_detailed(tokio::net::tcp::stream::TcpStream, zond_engine::model::port::Port, zond_engine::config::ServiceDetection) -> zond_engine::fingerprint::Fingerprinted
+pub async fn zond_engine::fingerprint::fingerprint_udp_detailed(core::net::socket_addr::SocketAddr, zond_engine::model::port::Port) -> core::option::Option<zond_engine::fingerprint::Fingerprinted>
 pub fn zond_engine::fingerprint::lookup_service_name(u16) -> core::option::Option<alloc::string::String>
 pub async fn zond_engine::fingerprint::probe_udp_raw(core::net::socket_addr::SocketAddr, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub async fn zond_engine::fingerprint::probe_udp_with(core::net::socket_addr::SocketAddr, &[u8]) -> alloc::vec::Vec<alloc::string::String>

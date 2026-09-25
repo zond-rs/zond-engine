@@ -53,7 +53,7 @@ use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::{Zone, ZoneMap};
 use crate::model::{
     ip::set::IpSet,
-    port::{Discovery as PortDiscovery, Port, PortState, Protocol, ScanResponse},
+    port::{Discovery as PortDiscovery, PortState, Protocol, ScanResponse},
     target::{PlannedTarget, TargetIndex, TargetMap, TargetSet},
     technique::{SctpScanTechnique, TcpScanTechnique},
 };
@@ -1136,24 +1136,39 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
     );
 
     let mut named = 0usize;
+    // Hosts the process had no socket to ask, as a count and the first of
+    // them: one line for the lot, since a table full for one is full for all.
+    let mut unasked: Option<(String, usize)> = None;
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::OsSnmp,
         |found: Option<(
             crate::model::ip::scoped::ScopedIp,
-            Port,
-            crate::fingerprint::AboutTheHost,
+            crate::fingerprint::Fingerprinted,
         )>,
          _audit| {
-            if let Some((key, port, about)) = found {
-                ctx.update_host(key, |host| {
-                    host.add_port(port);
-                    if about.apply(host) {
-                        named += 1;
-                    }
-                });
+            let Some((key, found)) = found else {
+                return;
+            };
+            if found.starved {
+                unasked
+                    .get_or_insert_with(|| (key.endpoint(SNMP_PORT), 0))
+                    .1 += 1;
+                return;
             }
+            // Recorded with what found it, so a report can tell this port from
+            // one the port scan established, and never has to imply it was
+            // asked for.
+            let port = found
+                .port
+                .with_discovery(PortDiscovery::new(ScanResponse::UdpResponse));
+            ctx.update_host(key, |host| {
+                host.add_port(port);
+                if found.about_the_host.apply(host) {
+                    named += 1;
+                }
+            });
         },
     );
 
@@ -1165,6 +1180,21 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         pool.admit(ask_for_kernel(target, egress)).await;
     }
     pool.drain().await;
+    drop(pool);
+
+    if let Some((first, count)) = unasked {
+        let hosts = match count - 1 {
+            0 => first,
+            rest => format!("{first} and {}", counted(rest as u128, "other", "others")),
+        };
+        ctx.record_failure(
+            ScannerKind::OsSnmp,
+            format!(
+                "{hosts} not asked for a kernel: {}",
+                crate::system::descriptors::starved(crate::system::descriptors::PATIENCE)
+            ),
+        );
+    }
 
     if named > 0 {
         info!(
@@ -1334,21 +1364,17 @@ async fn ask_for_kernel(
     egress: crate::transport::dial::Egress,
 ) -> Option<(
     crate::model::ip::scoped::ScopedIp,
-    Port,
-    crate::fingerprint::AboutTheHost,
+    crate::fingerprint::Fingerprinted,
 )> {
     let addr = target.to_socket_addr(SNMP_PORT)?;
 
     let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);
-    let (port, evidence, _) = crate::fingerprint::fingerprint_udp_via(addr, port, egress).await?;
+    let found = crate::fingerprint::fingerprint_udp_via(addr, port, egress).await?;
 
-    // Recorded with what found it, so a report can tell this port from one the
-    // port scan established, and never has to imply it was asked for.
-    let port = port.with_discovery(PortDiscovery::new(ScanResponse::UdpResponse));
     // The key, not the address: an SNMP agent on a link-local neighbour is
     // reachable here, `to_socket_addr` put the scope id on the socket, and
     // writing the answer back bare would fork the host's record.
-    Some((target, port, evidence))
+    Some((target, found))
 }
 
 /// Measures the route to every host the scan found alive, when asked to.
