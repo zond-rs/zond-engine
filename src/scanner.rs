@@ -294,6 +294,34 @@ fn under_the_recorded_options(
     }
 }
 
+/// `cfg` with the TCP technique a port scan's journal was counted under, where
+/// the journal recorded no options to hold the sitting to.
+///
+/// The technique is part of the plan's fingerprint, so a journal that resumed
+/// at all was counted under the one its manifest names, whatever `cfg` asks.
+/// A job recorded with its options is held to that by
+/// [`under_the_recorded_options`], which refuses another. One recorded before
+/// options were has only the manifest to say what it asked, and a sitting run
+/// under `cfg`'s technique would file segments of another kind as the same
+/// job's answers. So it runs under the manifest's, and says so where that
+/// differs from what it was given.
+#[cfg(feature = "journal-format")]
+fn under_the_recorded_technique(journal: &crate::journal::Journal, cfg: &ZondConfig) -> ZondConfig {
+    let recorded = journal.manifest().technique();
+    if journal.options().is_some() || recorded == cfg.tcp_technique {
+        return cfg.clone();
+    }
+    crate::info!(
+        verbosity = 1,
+        "{recorded} scan, as the job recorded (not {})",
+        cfg.tcp_technique
+    );
+    ZondConfig {
+        tcp_technique: recorded,
+        ..cfg.clone()
+    }
+}
+
 /// Writes down the options a journal's first sitting runs under, so every
 /// later sitting can be held to them.
 ///
@@ -1500,6 +1528,7 @@ pub async fn scan_with_journal(
         under_the_recorded_policy(journal, cfg)?;
         under_the_recorded_options(journal, cfg)
     })?;
+    let cfg = &under_the_recorded_technique(&journal, cfg);
     let journal = recording_options(journal, cfg);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
 
@@ -1793,6 +1822,58 @@ mod tests {
             refused.err()
         );
         assert!(directory.join("manifest.json").exists(), "the record went");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **A job recorded before its options were resumes under the technique
+    /// its manifest names, not the one this sitting was handed.**
+    ///
+    /// The technique is part of what the job asks: a sitting under another
+    /// files segments of another kind as the same job's answers, and nothing
+    /// else refuses one that recorded no options to be held to. So a settings
+    /// file edited between sittings would change what an older job asks,
+    /// silently.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_job_recorded_without_options_resumes_under_its_manifests_technique() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::ip::set::IpSet;
+        use crate::model::target::TargetSet;
+        use crate::model::technique::TcpScanTechnique;
+
+        let root = journal_root("recorded-technique");
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1".parse::<IpSet>().expect("an address"),
+            "9".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            assume_up: true,
+            ..ZondConfig::default()
+        };
+        assert_ne!(cfg.tcp_technique, TcpScanTechnique::Ack, "test premise");
+
+        let plan = Plan::port_scan(&map, &cfg.exclusions, TcpScanTechnique::Ack);
+        let journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+        let (journal, _) = Journal::resume(&directory, &plan, Privilege::Connect).expect("resumes");
+        assert!(journal.options().is_none(), "test premise: no options");
+
+        let (_session, task) = scan_with_journal(map, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the sitting starts");
+        let report = task.join().await.expect("it finishes");
+
+        let ports = report
+            .phases()
+            .iter()
+            .find(|phase| phase.kind() == ScanKind::PortScan)
+            .expect("a port phase");
+        assert_eq!(ports.settings().tcp_technique, TcpScanTechnique::Ack);
 
         std::fs::remove_dir_all(&root).ok();
     }
