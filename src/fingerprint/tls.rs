@@ -210,7 +210,17 @@ async fn handshake_within(
     let server_name = ServerName::IpAddress(peer.into());
     let connect = connector().connect(server_name, stream);
 
-    let tls = timeout(super::on_path(budget), connect).await.ok()?.ok()?;
+    let Ok(done) = timeout(super::on_path(budget), connect).await else {
+        // A handshake with no answer in time, which the identification is
+        // told as it is told a read that heard nothing.
+        super::tell(|tally| {
+            tally
+                .ran_out_waiting
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        return None;
+    };
+    let tls = done.ok()?;
 
     let connection = tls.get_ref().1;
 

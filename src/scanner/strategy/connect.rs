@@ -632,6 +632,10 @@ pub async fn scan(
     let shaping = Shaping::from(evasion);
     let folder = ctx.clone();
     let mut shortfall = Shortfall::default();
+    // Each port is identified over the connection that finds it open, a host's
+    // ports side by side, so a host answering them in turn is seen for that;
+    // see [`Crowd`](crate::scanner::service::Crowd).
+    let crowds = crate::scanner::service::Crowds::default();
     let mut pool = ProbePool::new(
         concurrency_limit,
         ctx.clone(),
@@ -661,6 +665,7 @@ pub async fn scan(
         // Identified over the connection that finds the port open, so the
         // port's own cap applies here rather than in a pass of its own.
         let identify = ctx.service_detection_on(detection, target.port(), target.protocol());
+        let crowd = crowds.of(target.ip());
         pool.admit(port_prober(
             target,
             identify,
@@ -668,6 +673,7 @@ pub async fn scan(
             egress,
             endpoint,
             ctx.handle.clone(),
+            crowd,
         ))
         .await;
     }
@@ -869,8 +875,8 @@ fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
 /// fingerprint is done with it; a port the process has no socket for, or that
 /// the scan stopped before asking, is `Unasked` too.
 ///
-/// An open port is identified with every wait on it allowing for the round
-/// trip its own handshake took.
+/// An open port is identified in its host's `crowd`, every wait on it
+/// allowing for the round trip its own handshake took.
 async fn port_prober(
     planned: PlannedTarget,
     detection: ServiceDetection,
@@ -878,6 +884,7 @@ async fn port_prober(
     egress: Egress,
     socket_addr: SocketAddr,
     handle: ScanHandle,
+    crowd: std::sync::Arc<crate::scanner::service::Crowd>,
 ) -> ProbedPort {
     let target = planned.target;
     if target.protocol == Protocol::Udp {
@@ -957,9 +964,7 @@ async fn port_prober(
                 // The handshake is a round trip over the very path the
                 // conversation that follows takes, measured a moment ago.
                 let path = PathAllowance::of_round_trip(rtt);
-                let identified =
-                    crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress, path)
-                        .await;
+                let identified = crowd.identify(stream, port, detection, egress, path).await;
                 drop(descriptor);
                 Some(Probed {
                     ip: target.ip,
@@ -2029,6 +2034,7 @@ mod tests {
             Egress::KERNEL,
             SocketAddr::new(ip, port),
             ScanHandle::new(),
+            Default::default(),
         )
         .await;
         let (session, ctx) = crate::scanner::session::ScanSession::new();
@@ -2129,6 +2135,7 @@ mod tests {
                 Egress::KERNEL,
                 SocketAddr::new(ip, port),
                 ScanHandle::new(),
+                Default::default(),
             )
             .await
             .expect("a TCP target is probed");

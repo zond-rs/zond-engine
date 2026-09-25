@@ -72,6 +72,9 @@ pub mod manifest;
 // behind a `pub(crate)` stage. The corpus is the seam; the tier is an implementation.
 pub(crate) mod host;
 
+// Whether a conversation with a host had the host to itself, counted per host
+// by the flow stage and by the service pass that runs before it.
+pub(crate) mod contention;
 mod convert;
 // One request and its reply over a socket to the scanned port, which is what both
 // detection tiers reach the network through. Private: the two seams above it are

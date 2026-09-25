@@ -69,6 +69,7 @@ use crate::detect::compute::{
     Budget, BudgetTrap, CapError, CapTapeRecord, Capabilities, DetectionRunRecord,
     LiveCapabilities, RunOutcome, ScanInstant,
 };
+use crate::detect::contention::HostContention;
 use crate::detect::flow::stage::{Shortfall, Stopped};
 use crate::detect::flow::{Probe, ProbeRefusal, SocketProbe, stage};
 use crate::detect::host::stage as host_stage;
@@ -216,8 +217,8 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
     // One contention per host, shared by every port of it the pool runs, so a
     // flow waiting behind another of the host's ports on a shared single-worker
     // process is seen for that rather than written off as a dead port. See
-    // [`HostContention`](stage::HostContention).
-    let mut contention: std::collections::HashMap<ScopedIp, Arc<stage::HostContention>> =
+    // [`HostContention`].
+    let mut contention: std::collections::HashMap<ScopedIp, Arc<HostContention>> =
         std::collections::HashMap::new();
 
     for target in targets {
@@ -234,7 +235,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         let host_contention = Arc::clone(
             contention
                 .entry(target.address.clone())
-                .or_insert_with(|| Arc::new(stage::HostContention::default())),
+                .or_insert_with(|| Arc::new(HostContention::default())),
         );
         pool.admit(detect_one(
             target,
@@ -360,7 +361,7 @@ async fn detect_one(
     envelope: DetectionEnvelope,
     tapes: Arc<Tapes>,
     gate: Arc<Gate>,
-    contention: Arc<stage::HostContention>,
+    contention: Arc<HostContention>,
 ) -> Option<PortResult> {
     let PortTarget {
         address,

@@ -37,13 +37,14 @@ use crate::model::port::{Port, PortState, Protocol};
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use super::db::FlowDb;
 use super::schema::FlowDetection;
 use super::{FlowSeed, Probe, ProbeRefusal};
 use crate::config::limits::DETECTION_FLOW_CONCURRENCY;
+use crate::detect::contention::HostContention;
 use crate::detect::manifest::{
     CapabilitySpec, Class, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS,
 };
@@ -388,28 +389,6 @@ fn requests(flow: &FlowDetection) -> u32 {
     super::interp::exchanges(flow)
 }
 
-/// Contention is a fact about the host, not the port: one process may serve
-/// several of a host's ports from a single worker, and an exchange to one waits
-/// behind the exchanges to the others in that worker's queue. So the count of
-/// exchanges in flight, and of exchanges begun, is kept for the host and shared
-/// across the [`PortShare`]s of its ports, and an exchange is "alone" only when
-/// no exchange to any of the host's ports overlapped it.
-///
-/// What this decides is whether a slow exchange is written off as the port's
-/// silence or read as a queue the scan itself built. A port answering one
-/// request at a time is alive, and a wait behind another of the host's ports is
-/// the scan's doing, not the port's: counted against the host here, it narrows
-/// the port rather than striking it, so a single-worker host's ports are asked
-/// in turn instead of one of them written off for the others' traffic.
-#[derive(Default)]
-pub(crate) struct HostContention {
-    /// Exchanges to any of the host's ports right now.
-    in_flight: AtomicU32,
-    /// Exchanges to any of the host's ports ever begun, so one that ends can
-    /// tell whether another began and finished while it waited.
-    begun: AtomicU64,
-}
-
 /// What the flows run against one port share: the replies it has given, and
 /// the strikes it has drawn, over the host contention its exchanges join.
 struct PortShare<'h> {
@@ -422,8 +401,15 @@ struct PortShare<'h> {
     /// while its live neighbours are not.
     strikes: AtomicU32,
     /// The host's exchanges in flight and begun, shared with its other ports,
-    /// so a wait behind one of them is seen for what it is. See
-    /// [`HostContention`].
+    /// so a wait behind one of them is seen for what it is.
+    ///
+    /// What this decides is whether a slow exchange is written off as the
+    /// port's silence or read as a queue the scan itself built. A port
+    /// answering one request at a time is alive, and a wait behind another of
+    /// the host's ports is the scan's doing, not the port's: counted against
+    /// the host, it narrows the port rather than striking it, so a
+    /// single-worker host's ports are asked in turn instead of one of them
+    /// written off for the others' traffic. See [`HostContention`].
     contention: &'h HostContention,
 }
 
@@ -607,20 +593,11 @@ impl Probe for CachingProbe<'_> {
 
         // Alone means no exchange was in flight when this one began and none
         // began before it ended: the whole wait was the port's.
-        let company = self
-            .port
-            .contention
-            .in_flight
-            .fetch_add(1, Ordering::SeqCst);
-        let ticket = self.port.contention.begun.fetch_add(1, Ordering::SeqCst);
+        let visit = self.port.contention.enter();
         let started = Instant::now();
         let reply = self.inner.speak(bytes);
         let elapsed = started.elapsed();
-        let alone = company == 0 && self.port.contention.begun.load(Ordering::SeqCst) == ticket + 1;
-        self.port
-            .contention
-            .in_flight
-            .fetch_sub(1, Ordering::SeqCst);
+        let alone = visit.leave();
 
         self.crowded |= !alone;
         if elapsed >= self.dead_after {

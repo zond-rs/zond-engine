@@ -469,6 +469,18 @@ pub struct Fingerprinted {
     /// before drew nothing readable, a starved UDP identification learned
     /// nothing at all.
     pub starved: bool,
+    /// Whether a wait for the port to say something ran its clock out with
+    /// nothing heard: a greeting, a reply or a handshake that did not come.
+    ///
+    /// With nothing drawn, what separates a port that had nothing to say from
+    /// one whose answer was still queued behind another's when the clock ran
+    /// out. A port that closed on every question waited for nothing.
+    pub(crate) ran_out_waiting: bool,
+    /// Whether a reply came only after more than half the wait it was given.
+    ///
+    /// A service answering that late fits one answer in a wait and not two,
+    /// so a question queued behind one of its answers is not answered in time.
+    pub(crate) answered_late: bool,
 }
 
 /// [`fingerprint_tcp_detailed`], with every further connection to the port
@@ -484,12 +496,13 @@ pub(crate) async fn fingerprint_tcp_via(
 ) -> Fingerprinted {
     // Every connection after `stream` dials through this scope, and every
     // wait on the port is sized in it, which is also where a connection given
-    // up for want of a socket says so; see `DIALLING`.
-    let starved = Arc::new(AtomicBool::new(false));
+    // up for want of a socket, and how the port's replies came, are told; see
+    // `DIALLING`.
+    let tally = Arc::new(Tally::default());
     let dialling = Dialling {
         egress,
         path,
-        starved: Arc::clone(&starved),
+        tally: Arc::clone(&tally),
     };
     let (port, about_the_host, responses) = DIALLING
         .scope(
@@ -501,7 +514,9 @@ pub(crate) async fn fingerprint_tcp_via(
         port,
         about_the_host,
         responses,
-        starved: starved.load(Ordering::Relaxed),
+        starved: tally.starved.load(Ordering::Relaxed),
+        ran_out_waiting: tally.ran_out_waiting.load(Ordering::Relaxed),
+        answered_late: tally.answered_late.load(Ordering::Relaxed),
     }
 }
 
@@ -667,6 +682,8 @@ async fn fingerprint_udp_within(
                 about_the_host: AboutTheHost::default(),
                 responses: Vec::new(),
                 starved: true,
+                ran_out_waiting: false,
+                answered_late: false,
             });
         }
     };
@@ -699,6 +716,8 @@ async fn fingerprint_udp_within(
         about_the_host,
         responses: banners,
         starved: false,
+        ran_out_waiting: false,
+        answered_late: false,
     })
 }
 
@@ -991,7 +1010,7 @@ impl Refused {
 impl Drop for Refused {
     fn drop(&mut self) {
         if self.0.load(Ordering::Relaxed) {
-            let _ = DIALLING.try_with(|dialling| dialling.starved.store(true, Ordering::Relaxed));
+            tell(|tally| tally.starved.store(true, Ordering::Relaxed));
         }
     }
 }
@@ -1458,9 +1477,29 @@ struct Dialling {
     egress: Egress,
     /// What the path to the port adds to every wait on it; see [`on_path`].
     path: PathAllowance,
-    /// Set when one of those connections was given up for want of a socket;
-    /// see [`dial_again`].
-    starved: Arc<AtomicBool>,
+    /// What the identification's connections and reads came to, beyond what
+    /// they drew.
+    tally: Arc<Tally>,
+}
+
+/// What an identification's connections and reads came to beyond what they
+/// drew, told from wherever in its scope they happened; see [`Fingerprinted`].
+#[derive(Debug, Default)]
+struct Tally {
+    /// A connection was given up for want of a socket; see [`dial_again`].
+    starved: AtomicBool,
+    /// A wait for the port to say something ran its clock out with nothing
+    /// heard.
+    ran_out_waiting: AtomicBool,
+    /// A reply came only after more than half the wait it was given.
+    answered_late: AtomicBool,
+}
+
+/// Tells the identification whose scope this runs in something its
+/// connections or reads came to. Nothing is told outside one, which is an
+/// analyzer or a read driven directly rather than through a scan.
+fn tell(what: impl FnOnce(&Tally)) {
+    let _ = DIALLING.try_with(|dialling| what(&dialling.tally));
 }
 
 /// `wait`, which a path that costs nothing needs, on the path to the port
@@ -1682,6 +1721,10 @@ where
 /// for the first byte, allowing for the path (see [`on_path`]), and `grace` for
 /// each read after it.
 ///
+/// It tells the identification it reads for when the first byte came late in
+/// its wait or not at all; see [`Fingerprinted::answered_late`] and
+/// [`Fingerprinted::ran_out_waiting`].
+///
 /// A `grace` of zero reads exactly once, which is what a banner grab wants; a
 /// non-zero one reads on until the port goes quiet, which is what a document
 /// wants. See [`read_response`] and [`read_document`].
@@ -1702,6 +1745,7 @@ where
     S: AsyncRead + Unpin,
 {
     let wait = on_path(wait);
+    let asked = tokio::time::Instant::now();
     let mut collected: Vec<u8> = Vec::new();
     let mut buffer = [0u8; MAX_RESPONSE_BYTES];
     let mut budget = wait;
@@ -1710,8 +1754,12 @@ where
     let mut deadline = None;
 
     while collected.len() < MAX_RESPONSE_BYTES {
+        let first = collected.is_empty();
         match timeout(budget, stream.read(&mut buffer)).await {
             Ok(Ok(n)) if n > 0 => {
+                if first && asked.elapsed() > wait / 2 {
+                    tell(|tally| tally.answered_late.store(true, Ordering::Relaxed));
+                }
                 let room = MAX_RESPONSE_BYTES - collected.len();
                 collected.extend_from_slice(&buffer[..n.min(room)]);
                 if grace.is_zero() {
@@ -1724,6 +1772,13 @@ where
                     break;
                 }
                 budget = grace.min(remaining);
+            }
+            // Nothing at all within the wait, which the identification is
+            // told, since a port that said nothing in time may yet have been
+            // about to.
+            Err(_elapsed) if first => {
+                tell(|tally| tally.ran_out_waiting.store(true, Ordering::Relaxed));
+                break;
             }
             // A clean close, an error, or the port going quiet: whatever has
             // arrived is all there is.
@@ -2543,11 +2598,11 @@ mod tests {
         // Dialled the way an analyzer dials, inside the identification's
         // scope and inside a clock of its own.
         let dial = |addr: SocketAddr| async move {
-            let starved = Arc::new(AtomicBool::new(false));
+            let tally = Arc::new(Tally::default());
             let dialling = Dialling {
                 egress: Egress::KERNEL,
                 path: PathAllowance::NONE,
-                starved: Arc::clone(&starved),
+                tally: Arc::clone(&tally),
             };
             let _ = DIALLING
                 .scope(
@@ -2555,7 +2610,7 @@ mod tests {
                     timeout(Duration::from_millis(300), analyzer_connect(addr)),
                 )
                 .await;
-            starved.load(Ordering::Relaxed)
+            tally.starved.load(Ordering::Relaxed)
         };
 
         let held = exhaust(64);

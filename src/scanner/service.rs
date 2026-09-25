@@ -28,20 +28,32 @@
 //! runs on them needs a real conversation with the service. Splitting the two lets
 //! each use the transport that suits it.
 //!
-//! ## On a slow path
+//! ## On a slow or a crowded path
 //!
-//! The path to each host was measured finding it, and every wait on one of its
-//! ports allows for that path as the port scans' own probes do. The
-//! unprivileged port scan, which identifies each port over the connection that
-//! finds it open, allows for the round trip that connection took.
+//! Two things the scan knows by now decide how its conversations are waited
+//! on. The path to each host was measured finding it, and every wait on one of
+//! its ports allows for that path as the port scans' own probes do. And a
+//! host's ports are identified side by side, which a host serving them from
+//! one worker answers in turn: a port whose identification drew nothing while
+//! its host was answering another port late is asked again with the host to
+//! itself. Both are shared with the unprivileged port scan, which identifies
+//! each port over the connection that finds it open.
 
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use tokio::net::TcpStream;
 
 use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
 
 use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
+use crate::detect::contention::HostContention;
+use crate::fingerprint::Fingerprinted;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
@@ -82,6 +94,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     let asked = targets.len();
     let mut quiet = QuietPorts::default();
     let mut in_part = QuietPorts::default();
+    let crowds = Crowds::default();
 
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
@@ -127,7 +140,13 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
         }
         let egress = ctx.egress_toward(address);
         let detection = ctx.service_detection_on(detection, target.number, target.protocol);
-        pool.admit(fingerprint_one(target, detection, egress)).await;
+        pool.admit(fingerprint_one(
+            target,
+            detection,
+            egress,
+            crowds.of(address),
+        ))
+        .await;
     }
 
     pool.drain().await;
@@ -408,8 +427,14 @@ struct Identified {
 /// claim about the neighbour rather than about what this host knows.
 ///
 /// Every connection it makes to the port leaves by `egress`, and every wait on
-/// the port allows for the path the target carries.
-async fn fingerprint_one(target: Target, detection: ServiceDetection, egress: Egress) -> Attempt {
+/// the port allows for the path the target carries. A TCP port is identified
+/// in its host's `crowd`.
+async fn fingerprint_one(
+    target: Target,
+    detection: ServiceDetection,
+    egress: Egress,
+    crowd: Arc<Crowd>,
+) -> Attempt {
     let Target {
         address: target,
         number: port_number,
@@ -450,9 +475,7 @@ async fn fingerprint_one(target: Target, detection: ServiceDetection, egress: Eg
                     };
                 }
             };
-            let identified =
-                crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress, path)
-                    .await;
+            let identified = crowd.identify(stream, port, detection, egress, path).await;
             (
                 identified.port,
                 identified.about_the_host,
@@ -496,6 +519,125 @@ async fn fingerprint_one(target: Target, detection: ServiceDetection, egress: Eg
         banners,
         identified_in_part,
     }))
+}
+
+/// Every host a pass identifies ports of, each as the [`Crowd`] its
+/// identifications make.
+#[derive(Debug, Default)]
+pub(crate) struct Crowds {
+    hosts: Mutex<HashMap<IpAddr, Arc<Crowd>>>,
+}
+
+impl Crowds {
+    /// The crowd `host`'s identifications make in this pass.
+    pub(crate) fn of(&self, host: IpAddr) -> Arc<Crowd> {
+        let mut hosts = self.hosts.lock().unwrap_or_else(|held| held.into_inner());
+        Arc::clone(hosts.entry(host).or_default())
+    }
+}
+
+/// The identifications of one host's ports in one pass, which the host
+/// answers side by side or in turn as it is built to.
+///
+/// A pass identifies a host's ports at once, and most hosts answer them at
+/// once. One that serves several ports from a single worker answers them in
+/// turn instead, each question after every one queued ahead of it across all
+/// of its ports, and a port whose question queued behind an answer that took
+/// most of its wait runs out of wait itself: its identification draws nothing,
+/// and a live service is reported as a port with nothing to say. That wait is
+/// the pass's doing, not the port's.
+///
+/// So a port whose identification drew nothing, after waiting in vain, while
+/// another of its host's ports was being identified, is asked again with the
+/// host to itself, provided the host answered one of the pass's questions
+/// late. The two conditions keep the second asking where it can change the
+/// answer. A host that answers promptly has no queue a question could have
+/// waited out, and a port on it that said nothing in company says nothing
+/// alone; and a host that answered nothing at all, as when something on the
+/// path takes every connection and says nothing, would be asked everything
+/// twice for nothing. Asked alone, a single-worker host answers each port as
+/// it would were it the only one.
+///
+/// Whether an identification had company is counted as the detection stage
+/// counts it, per host; see [`HostContention`].
+#[derive(Debug, Default)]
+pub(crate) struct Crowd {
+    /// The host's identifications in flight and begun.
+    contention: HostContention,
+    /// Held shared by every identification of the host and alone by one asked
+    /// again, which so waits for those in flight to finish and holds back
+    /// those not yet begun.
+    turns: tokio::sync::RwLock<()>,
+    /// Whether the host answered one of the pass's questions only after more
+    /// than half the wait it was given; see [`Fingerprinted::answered_late`].
+    answered_late: AtomicBool,
+}
+
+impl Crowd {
+    /// Identifies the port `stream` reached, as
+    /// [`fingerprint_tcp_via`](crate::fingerprint::fingerprint_tcp_via) does,
+    /// and asks it again alone where the first identification's silence may
+    /// have been its host's queue.
+    ///
+    /// The second identification dials the port afresh, given the connect
+    /// budget and the path's allowance, and stands in the first's place,
+    /// having had the host to itself; a port that no longer takes the
+    /// connection keeps what the first drew.
+    pub(crate) async fn identify(
+        &self,
+        stream: TcpStream,
+        port: Port,
+        detection: ServiceDetection,
+        egress: Egress,
+        path: PathAllowance,
+    ) -> Fingerprinted {
+        let addr = stream.peer_addr().ok();
+        let (first, alone) = {
+            let _turn = self.turns.read().await;
+            let visit = self.contention.enter();
+            let found = crate::fingerprint::fingerprint_tcp_via(
+                stream,
+                port.clone(),
+                detection,
+                egress,
+                path,
+            )
+            .await;
+            (found, visit.leave())
+        };
+        self.heard(&first);
+        let (Some(addr), false) = (addr, alone) else {
+            return first;
+        };
+        if !first.responses.is_empty() || !first.ran_out_waiting {
+            return first;
+        }
+
+        // Taken before the host's lateness is read, so every identification
+        // that was in flight beside this one has finished and said how the
+        // host answered it.
+        let _alone = self.turns.write().await;
+        if !self.answered_late.load(Ordering::Relaxed) {
+            return first;
+        }
+        let Ok(stream) = egress
+            .connect_timed(addr, path.over(CONNECT_PROBE_TIMEOUT))
+            .await
+        else {
+            return first;
+        };
+        let again =
+            crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress, path).await;
+        self.heard(&again);
+        again
+    }
+
+    /// Notes how the host answered one of its identifications.
+    fn heard(&self, found: &Fingerprinted) {
+        if found.answered_late {
+            self.answered_late.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Folds a freshly fingerprinted port back into its host and announces the
@@ -866,5 +1008,141 @@ mod tests {
             QuietPorts::line("192.0.2.10:22", &silent, 1),
             "192.0.2.10:22 not fingerprinted (no answer in 7.2s)"
         );
+    }
+
+    /// The requests a [`one_worker`] host served, by port and first line.
+    type Served = Arc<std::sync::Mutex<Vec<(u16, String)>>>;
+
+    /// A loopback host serving `ports` ports from one worker, which takes the
+    /// requests of all of them in turn and spends `service` on each HTTP one,
+    /// the way a small embedded web server does. Anything but an HTTP request
+    /// is closed unanswered. Returns the ports and the requests served, by
+    /// port and first line.
+    ///
+    /// The worker is a thread of its own rather than a task on the runtime
+    /// the pass runs on, so how long it takes over a request is its own and
+    /// not the pass's.
+    fn one_worker(ports: usize, service: Duration) -> (Vec<u16>, Served) {
+        use std::io::{Read, Write};
+
+        let (queue, work) = std::sync::mpsc::channel();
+        let mut numbers = Vec::new();
+        for _ in 0..ports {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let number = listener.local_addr().unwrap().port();
+            numbers.push(number);
+            let queue = queue.clone();
+            std::thread::spawn(move || {
+                for sock in listener.incoming().flatten() {
+                    if queue.send((number, sock)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        let served = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = Arc::clone(&served);
+        std::thread::spawn(move || {
+            for (number, mut sock) in work {
+                let mut buffer = [0u8; 1024];
+                let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
+                let Ok(n) = sock.read(&mut buffer) else {
+                    continue;
+                };
+                let request = String::from_utf8_lossy(&buffer[..n]).into_owned();
+                if !request.starts_with("GET ") {
+                    continue;
+                }
+                std::thread::sleep(service);
+                let _ = sock.write_all(
+                    b"HTTP/1.1 200 OK\r\nServer: nginx/1.24.0\r\n\
+                      Content-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                let line = request.lines().next().unwrap_or_default().to_owned();
+                log.lock().unwrap().push((number, line));
+            }
+        });
+        (numbers, served)
+    }
+
+    /// `ports` of loopback, open in the store as a port scan leaves them, and
+    /// the session holding them.
+    fn open_on_loopback(ports: &[u16]) -> (ScanSession, ScanContext) {
+        let (session, ctx) = ScanSession::new();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let mut host = Host::new(ip);
+        for &number in ports {
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::Open));
+        }
+        session.hosts().insert(ip, host);
+        (session, ctx)
+    }
+
+    /// Two ports one worker serves in turn are both identified, the one whose
+    /// question queued behind the other's answer asked again with the host to
+    /// itself.
+    ///
+    /// Asked at once, the second port's request waits out the first one's
+    /// answer before its own begins, and a service taking most of a reply's
+    /// wait over each answers the second too late for it. That wait was the
+    /// pass's queue and not the port's silence, and a live service reported
+    /// as nothing is what it cost.
+    #[tokio::test]
+    async fn ports_one_worker_answers_in_turn_are_each_identified() {
+        let (ports, served) = one_worker(2, Duration::from_millis(750));
+        let (session, ctx) = open_on_loopback(&ports);
+
+        detect(&ctx, ServiceDetection::default(), Protocol::Tcp).await;
+
+        let host = session
+            .hosts()
+            .get("127.0.0.1".parse::<IpAddr>().unwrap())
+            .unwrap();
+        let named: Vec<Option<String>> = ports
+            .iter()
+            .map(|&number| {
+                host.ports()
+                    .find(|p| p.number() == number)
+                    .and_then(|p| p.service().map(|service| service.name().to_owned()))
+            })
+            .collect();
+        assert_eq!(
+            named,
+            vec![Some("http".to_owned()), Some("http".to_owned())],
+            "a port queued behind its neighbour went unnamed; served: {:?}",
+            served.lock().unwrap()
+        );
+    }
+
+    /// A port that says nothing beside one that answers promptly is asked
+    /// once: a host that answers in good time has no queue to wait out, and
+    /// asking the silent port again alone would cost its whole walk a second
+    /// time for the same silence.
+    #[tokio::test]
+    async fn a_silent_port_beside_a_prompt_one_is_asked_once() {
+        let (prompt, _) = one_worker(1, Duration::ZERO);
+        let (silent, asked) = counting_listener().await;
+        let (session, ctx) = open_on_loopback(&[prompt[0], silent.port()]);
+
+        detect(&ctx, ServiceDetection::default(), Protocol::Tcp).await;
+
+        // What the port is sent over one identification is what it is sent
+        // identified alone, and two would send it twice that.
+        let once = asked.load(Ordering::SeqCst);
+        let generic: usize = crate::fingerprint::SignatureDb::global()
+            .generic_tcp_probe_payloads()
+            .iter()
+            .map(Vec::len)
+            .sum();
+        let (alone_session, alone_ctx) = open_on_loopback(&[silent.port()]);
+        detect(&alone_ctx, ServiceDetection::default(), Protocol::Tcp).await;
+        let alone = asked.load(Ordering::SeqCst) - once;
+        assert!(generic > 0 && alone >= generic);
+        assert_eq!(
+            once, alone,
+            "the silent port was sent {once} bytes beside a prompt port and \
+             {alone} alone, so it was identified more than once"
+        );
+        drop((session, alone_session));
     }
 }
