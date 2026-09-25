@@ -7456,7 +7456,7 @@ pub fn zond_engine::journal::store::Journal::reopen(&std::path::Path, zond_engin
 pub fn zond_engine::journal::store::Journal::restored(&self) -> &[zond_engine::model::host::Host]
 pub fn zond_engine::journal::store::Journal::resume(&std::path::Path, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::resume_point(&self) -> &zond_engine::journal::cursor::Checkpoint
-pub fn zond_engine::journal::store::Journal::should_compact(&self, usize) -> bool
+pub fn zond_engine::journal::store::Journal::should_compact(&self) -> bool
 impl core::fmt::Debug for zond_engine::journal::store::Journal
 pub fn zond_engine::journal::store::Journal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for zond_engine::journal::store::Journal
@@ -7534,7 +7534,7 @@ pub fn zond_engine::journal::store::Journal::reopen(&std::path::Path, zond_engin
 pub fn zond_engine::journal::store::Journal::restored(&self) -> &[zond_engine::model::host::Host]
 pub fn zond_engine::journal::store::Journal::resume(&std::path::Path, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::resume_point(&self) -> &zond_engine::journal::cursor::Checkpoint
-pub fn zond_engine::journal::store::Journal::should_compact(&self, usize) -> bool
+pub fn zond_engine::journal::store::Journal::should_compact(&self) -> bool
 impl core::fmt::Debug for zond_engine::journal::store::Journal
 pub fn zond_engine::journal::store::Journal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for zond_engine::journal::store::Journal

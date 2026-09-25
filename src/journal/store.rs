@@ -19,8 +19,21 @@
 //!
 //! The cursor is rewritten because it describes one state, and the findings are
 //! appended because they accumulate. A host that changes appears more than once
-//! and the later record supersedes the earlier, which is what makes a torn tail
-//! survivable: the worst it costs is one host's most recent update.
+//! and the records fold together on reading, the later over the earlier, which
+//! is what makes a torn tail survivable: the worst it costs is one host's most
+//! recent update.
+//!
+//! ## A host is written by what changed in it
+//!
+//! A record carries the whole host but only the ports that differ from what
+//! the file already holds of them. A host scanned on every port holds tens of
+//! thousands of them, and written whole each time anything about it changed it
+//! was a record of megabytes every checkpoint, most of it a copy of the last.
+//! Folding is what makes leaving the rest out safe: a port's later record is
+//! merged over its earlier one, and a port a record leaves out keeps what the
+//! file already says of it. What the file holds of each port is remembered as a
+//! digest of the record written, so telling what changed costs no copy of the
+//! host.
 //!
 //! [`Journal::create`] begins one, [`Journal::resume`] continues one, and
 //! [`list`] enumerates them for a caller offering a choice.
@@ -44,6 +57,8 @@ use super::manifest::{JobOptions, JournalManifest, Plan, PlanChanged};
 use super::settle::Settlements;
 use crate::detect::compute::DetectionRunRecord;
 use crate::model::host::Host;
+use crate::model::ip::scoped::ScopedIp;
+use crate::model::port::Protocol;
 use crate::record::{HostRecord, PhaseRecord};
 use crate::report::{ScanKind, ScanPhase, ScanReport, Unheard};
 use crate::system::privilege::Privilege;
@@ -134,9 +149,11 @@ pub struct Journal {
     /// [`withdraw`](Journal::withdraw).
     created: bool,
     options: Option<JobOptions>,
-    /// How many host records have been appended since the file was last written
-    /// whole. See [`should_compact`](Journal::should_compact).
-    appended: usize,
+    /// What the findings file holds of each host, and how much of it later
+    /// records superseded. See [`record_hosts`](Journal::record_hosts).
+    written: Written,
+    /// How long the findings file is.
+    length: u64,
 }
 
 impl Journal {
@@ -187,9 +204,13 @@ impl Journal {
             earlier: Vec::new(),
             created: true,
             options: None,
-            appended: 0,
+            written: Written::default(),
+            length: 0,
         };
         journal.open_findings()?;
+        journal.length = fs::metadata(directory.join(HOSTS))
+            .map_err(JournalError::from)?
+            .len();
         Ok(journal)
     }
 
@@ -236,6 +257,16 @@ impl Journal {
         let unheard = Unheard::of(&earlier);
         let mut restored = read_findings(directory)?;
         restored.retain(|host| !unheard.drops(host));
+        // What the file already holds, so a restored host a new sitting changes
+        // is written by what changed in it rather than whole. Whatever the file
+        // holds beyond what those fold to is records they superseded. A file an
+        // earlier sitting left behind with nothing in it is no length at all.
+        let length = match fs::metadata(directory.join(HOSTS)) {
+            Ok(metadata) => metadata.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(JournalError::from(e).into()),
+        };
+        let written = Written::holding(&restored, length)?;
 
         Ok((
             Self {
@@ -247,7 +278,8 @@ impl Journal {
                 earlier,
                 created: false,
                 options: read_options(directory)?,
-                appended: 0,
+                written,
+                length,
             },
             checkpoint,
         ))
@@ -286,26 +318,39 @@ impl Journal {
         &self.restored
     }
 
-    /// Appends what `hosts` currently hold.
+    /// Appends what `hosts` currently hold that the file does not.
     ///
     /// Called with whatever
     /// [`take_changed_hosts`](crate::scanner::session::ScanContext::take_changed_hosts)
     /// yields, so a host is written once per change rather than once per
-    /// checkpoint for the rest of the run.
+    /// checkpoint for the rest of the run. Each record carries the host's own
+    /// fields and only the ports that changed since the file last held them;
+    /// see the module documentation for why that reads back as the whole host.
+    ///
+    /// What was written is remembered only once the write has succeeded, so a
+    /// failed one leaves every port it carried to be written again.
     pub fn record_hosts(&mut self, hosts: &[Host]) -> Result<(), JournalError> {
         if hosts.is_empty() {
             return Ok(());
         }
 
-        let file = open_for_append(&self.directory.join(HOSTS))?;
+        let path = self.directory.join(HOSTS);
+        let file = open_for_append(&path)?;
 
+        let mut deltas = Vec::with_capacity(hosts.len());
         let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
         for host in hosts {
-            writer.write(&HostRecord::from(host))?;
+            let (record, delta) = self.written.delta(host)?;
+            writer.write(&record)?;
+            deltas.push(delta);
         }
         writer.flush()?;
+        drop(writer);
 
-        self.appended += hosts.len();
+        for delta in deltas {
+            self.written.update(delta);
+        }
+        self.length = fs::metadata(&path)?.len();
         Ok(())
     }
 
@@ -343,20 +388,24 @@ impl Journal {
     /// Whether the findings file holds enough superseded records to be worth
     /// writing whole again.
     ///
-    /// A host is appended each interval in which anything about it changed, and
-    /// the dispatcher shuffles targets across the whole plan, so on a long scan
-    /// most hosts change in most intervals and the file grows with the scan's
-    /// duration rather than with what it found. Compaction bounds it to a
-    /// small multiple of the live state.
+    /// A host is appended each interval in which anything about it changed,
+    /// and the dispatcher shuffles targets across the whole plan, so on a long
+    /// scan most hosts change in most intervals. Their ports are written only
+    /// as they change, but each record repeats the host's own fields, so the
+    /// file grows with the scan's duration as well as with what it found.
+    /// Compaction bounds it.
     ///
-    /// `live` is how many hosts the scan has found. The threshold is generous
-    /// since rewriting is O(hosts) and appending is not: compaction should be
-    /// rare enough that its cost disappears against the scan.
-    pub fn should_compact(&self, live: usize) -> bool {
-        const FLOOR: usize = 256;
-        const MULTIPLE: usize = 8;
-
-        self.appended > FLOOR.max(live.saturating_mul(MULTIPLE))
+    /// Counted in bytes, since what a compaction costs and what it recovers
+    /// are both bytes, and a count of records says neither: one record can be
+    /// a line or a host's every port. What is counted is what later records
+    /// superseded, not what was appended, since a file growing by what the
+    /// scan found holds nothing a rewrite would drop. The file is rewritten
+    /// once the superseded part outgrows the rest, so it stays under twice
+    /// its live size, and a compaction writing the live part is paid for by
+    /// at least as much superseded since the last one. Below the floor a file
+    /// is not worth rewriting whatever it holds.
+    pub fn should_compact(&self) -> bool {
+        outgrown(self.length, self.written.superseded)
     }
 
     /// Writes the findings file whole, replacing everything superseded.
@@ -370,18 +419,24 @@ impl Journal {
         let destination = self.directory.join(HOSTS);
         let temporary = destination.with_extension("jsonl-tmp");
 
+        let mut written = Written::default();
         {
             let file = create_staged(&temporary)?;
             let mut writer = crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
             for host in all {
-                writer.write(&HostRecord::from(host))?;
+                // Measured against nothing written, so the record is the whole
+                // host and what it remembers is all of it.
+                let (record, delta) = Written::default().delta(host)?;
+                writer.write(&record)?;
+                written.update(delta);
             }
             writer.flush()?;
         }
 
         // The destination becomes the temporary's inode, ownership and all.
         fs::rename(&temporary, &destination)?;
-        self.appended = all.len();
+        self.written = written;
+        self.length = fs::metadata(&destination)?.len();
         Ok(())
     }
 
@@ -553,6 +608,174 @@ impl Journal {
     pub fn close(self) -> Result<(), JournalError> {
         self.lock.release()
     }
+}
+
+/// Whether a findings file `length` bytes long, `superseded` of them records
+/// something later superseded, is due to be written whole again. See
+/// [`Journal::should_compact`].
+fn outgrown(length: u64, superseded: u64) -> bool {
+    /// The size below which a findings file is not worth rewriting.
+    const FLOOR: u64 = 4 * 1024 * 1024;
+
+    superseded > FLOOR.max(length.saturating_sub(superseded))
+}
+
+/// What a journal's findings file holds of each host, and how many of its
+/// bytes later records superseded.
+///
+/// Each port is remembered as a digest of the record last written for it,
+/// rather than as the port, so remembering what was written costs a few bytes
+/// a port rather than a second copy of every host the scan holds. Kept for
+/// this process only and never written down, so the hasher need not be stable
+/// across builds.
+///
+/// Sizes are those of each piece as serialised, which is within a separator of
+/// what the line holds; the count they feed is a threshold, not an account.
+#[derive(Debug, Default)]
+struct Written {
+    hosts: std::collections::HashMap<ScopedIp, HeldHost>,
+    /// How many of the file's bytes hold what a later record superseded.
+    superseded: u64,
+}
+
+/// What the findings file holds of one host.
+#[derive(Debug, Default)]
+struct HeldHost {
+    /// How long its last record was, less its ports.
+    rest: u64,
+    ports: std::collections::HashMap<PortKey, Mark>,
+}
+
+/// A port as a host keys it: its number and its transport.
+type PortKey = (u16, Protocol);
+
+/// A record as written: a digest of it, and how long it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Mark {
+    digest: u64,
+    length: u32,
+}
+
+/// What one record wrote of one host, to remember once the write succeeds.
+#[derive(Debug)]
+struct Delta {
+    key: ScopedIp,
+    rest: u64,
+    ports: Vec<(PortKey, Mark)>,
+}
+
+impl Delta {
+    /// How many bytes the record holds, near enough.
+    fn length(&self) -> u64 {
+        self.rest
+            + self
+                .ports
+                .iter()
+                .map(|(_, mark)| u64::from(mark.length))
+                .sum::<u64>()
+    }
+}
+
+impl Written {
+    /// What a file `length` bytes long holds, where `hosts` are what it folds
+    /// to: those whole, and the rest of the file superseded.
+    fn holding(hosts: &[Host], length: u64) -> Result<Self, JournalError> {
+        let mut written = Self::default();
+        let mut live = 0;
+        for host in hosts {
+            let (_, delta) = Self::default().delta(host)?;
+            live += delta.length();
+            written.update(delta);
+        }
+        written.superseded = length.saturating_sub(live);
+        Ok(written)
+    }
+
+    /// `host` as a record carrying only the ports whose record differs from
+    /// what was last written of them, and what writing it would hold.
+    fn delta(&self, host: &Host) -> Result<(HostRecord, Delta), JournalError> {
+        let held = self.hosts.get(&host.scoped_ip());
+        let mut record = HostRecord::from(host);
+        // `HostRecord` lists the ports in the order the host yields them, so
+        // the two walk together.
+        let ports = std::mem::take(&mut record.ports);
+        let rest = u64::from(mark(&record)?.length);
+        let mut changed = Vec::new();
+        for (port, written) in host.ports().zip(ports) {
+            debug_assert_eq!(
+                port.number(),
+                written.port,
+                "a record lists its host's ports"
+            );
+            let key = (port.number(), port.protocol());
+            let mark = mark(&written)?;
+            let unchanged = held
+                .and_then(|held| held.ports.get(&key))
+                .is_some_and(|was| was.digest == mark.digest);
+            if !unchanged {
+                changed.push((key, mark));
+                record.ports.push(written);
+            }
+        }
+        let delta = Delta {
+            key: host.scoped_ip(),
+            rest,
+            ports: changed,
+        };
+        Ok((record, delta))
+    }
+
+    /// Records that the file holds what `delta` wrote, over whatever it held
+    /// of that host before, and counts what that superseded.
+    fn update(&mut self, delta: Delta) {
+        let held = match self.hosts.entry(delta.key) {
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                let held = slot.into_mut();
+                self.superseded += held.rest;
+                held
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(HeldHost::default()),
+        };
+        held.rest = delta.rest;
+        for (key, mark) in delta.ports {
+            if let Some(was) = held.ports.insert(key, mark) {
+                self.superseded += u64::from(was.length);
+            }
+        }
+    }
+}
+
+/// A digest of `record` as it is written, and its length: the same
+/// serialisation the file gets, fed to a hasher rather than to a buffer.
+fn mark(record: &impl serde::Serialize) -> Result<Mark, JournalError> {
+    use std::hash::Hasher;
+
+    struct Hashing {
+        hasher: std::collections::hash_map::DefaultHasher,
+        length: u64,
+    }
+    impl std::io::Write for Hashing {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.hasher.write(bytes);
+            self.length += bytes.len() as u64;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut hashing = Hashing {
+        hasher: std::collections::hash_map::DefaultHasher::new(),
+        length: 0,
+    };
+    serde_json::to_writer(&mut hashing, record)?;
+    Ok(Mark {
+        digest: hashing.hasher.finish(),
+        // A separator or a newline beside it, and saturated for a record past
+        // four gigabytes, which is past what a journal line is read in.
+        length: u32::try_from(hashing.length + 1).unwrap_or(u32::MAX),
+    })
 }
 
 /// A journal as it appears to a caller choosing between them. Read without
@@ -2892,6 +3115,126 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// A host written again carries only the ports that changed, and reads
+    /// back whole.
+    ///
+    /// A host scanned on every port holds tens of thousands of them. Written
+    /// whole each checkpoint in which anything about it changed, a journal of
+    /// one such host grew by megabytes every few seconds to record one port
+    /// opening, and compaction, counted in records, waited for hundreds of
+    /// them.
+    #[test]
+    fn a_host_written_again_carries_only_what_changed_in_it() {
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let root = scratch("delta");
+        let map = plan("192.0.2.1", "1-400");
+        let mut journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+        let length = || fs::metadata(directory.join(HOSTS)).expect("stats").len();
+
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+        let mut host = Host::new(ip);
+        for number in 1..=400 {
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::Closed));
+        }
+        let before = length();
+        journal
+            .record_hosts(std::slice::from_ref(&host))
+            .expect("records");
+        let first = length() - before;
+
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        let before = length();
+        journal
+            .record_hosts(std::slice::from_ref(&host))
+            .expect("records");
+        let second = length() - before;
+
+        assert!(
+            second * 20 < first,
+            "one port opening appended {second} bytes against the host's {first}"
+        );
+        journal.close().expect("closes");
+
+        let restored = read_findings(&directory).expect("reads");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].port_count(), 400, "every port read back");
+        let open: Vec<u16> = restored[0]
+            .ports()
+            .filter(|port| port.state() == PortState::Open)
+            .map(|port| port.number())
+            .collect();
+        assert_eq!(open, [22], "the change read back over what it changed");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// What a record supersedes is counted: the host's own fields of the record
+    /// before it, and the earlier record of each port it writes again, and
+    /// nothing a first record of a port adds.
+    ///
+    /// The count is what decides compaction, so one that missed what was
+    /// superseded would let the file grow without bound, and one that counted
+    /// new findings would rewrite a file with nothing in it to drop.
+    #[test]
+    fn a_record_counts_what_it_supersedes_and_not_what_it_adds() {
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+        let mut host = Host::new(ip);
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Closed));
+        let mut written = Written::default();
+
+        let (_, first) = written.delta(&host).expect("measures");
+        let (rest, port) = (first.rest, u64::from(first.ports[0].1.length));
+        written.update(first);
+        assert_eq!(written.superseded, 0, "a first record supersedes nothing");
+
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
+        let (_, second) = written.delta(&host).expect("measures");
+        assert_eq!(second.ports.len(), 1, "only the new port is written");
+        written.update(second);
+        assert_eq!(written.superseded, rest, "the host's own fields, again");
+
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        let (_, third) = written.delta(&host).expect("measures");
+        let rest_again = written.hosts[&host.scoped_ip()].rest;
+        written.update(third);
+        assert_eq!(
+            written.superseded,
+            rest + rest_again + port,
+            "and port 22's closed record under its open one"
+        );
+    }
+
+    /// A findings file is rewritten once what later records superseded in it
+    /// outgrows the rest, and not while it is small or merely growing.
+    ///
+    /// Counted in bytes: a count of records said nothing about either what a
+    /// compaction costs or what it recovers, and one record can be a host's
+    /// every port. And counted as what was superseded: a file that grew by a
+    /// host's every port the first time it was written holds nothing a
+    /// rewrite would drop, and rewriting it is the cost this bounds.
+    #[test]
+    fn a_findings_file_is_compacted_by_what_it_superseded() {
+        const MIB: u64 = 1024 * 1024;
+
+        assert!(
+            !outgrown(60 * MIB, 0),
+            "a file that grew by what the scan found holds nothing to drop"
+        );
+        assert!(!outgrown(6 * MIB, 3 * MIB), "a small file is left alone");
+        assert!(outgrown(9 * MIB, 5 * MIB), "past the floor it is rewritten");
+        assert!(
+            !outgrown(50 * MIB, 20 * MIB),
+            "twenty superseded beside thirty live is not yet worth it"
+        );
+        assert!(
+            outgrown(50 * MIB, 26 * MIB),
+            "twenty-six beside twenty-four is"
+        );
+    }
+
     /// A long scan appends a host each interval anything about it changes, so
     /// the findings file grows with the scan's duration rather than with what it
     /// found. Compaction bounds it, and must lose nothing doing so.
@@ -2919,12 +3262,8 @@ mod tests {
                 journal.record_hosts(&live).expect("records");
             }
 
-            assert!(
-                journal.should_compact(live.len()),
-                "280 records for four hosts is what compaction is for"
-            );
             journal.compact(&live).expect("compacts");
-            assert!(!journal.should_compact(live.len()));
+            assert!(!journal.should_compact(), "a file just written whole");
 
             let directory = journal.directory().to_path_buf();
             journal.close().expect("closes");

@@ -151,7 +151,7 @@ impl Writer {
     /// never on disk beside a findings file missing what it settled.
     fn write(&mut self, ctx: &ScanProgress, cut: Cut) {
         let journal = &mut self.journal;
-        let outcome = if journal.should_compact(ctx.host_count()) {
+        let outcome = if journal.should_compact() {
             // Taken after the cursor was read, as `cut.changed` was, so it
             // covers everything that cursor settled and nothing is lost by not
             // appending `cut.changed`.
