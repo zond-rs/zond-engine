@@ -157,6 +157,20 @@ pub const ACTIVE_SAMPLES: usize = 6;
 /// answer, which is why it is a level rather than the default.
 pub const AGGRESSIVE_SAMPLES: usize = 12;
 
+/// The source port after `port` in [`SOURCE_PORTS`], back to its start past
+/// its end.
+fn following(port: u16) -> u16 {
+    if port + 1 < SOURCE_PORTS.end {
+        port + 1
+    } else {
+        SOURCE_PORTS.start
+    }
+}
+
+/// The range a sweep's source port is taken from, clear of the well-known
+/// and most registered ports a reply could otherwise be mistaken for.
+const SOURCE_PORTS: std::ops::Range<u16> = 50_000..u16::MAX;
+
 /// The gap between one sweep and the next.
 ///
 /// A measurement parameter, not politeness. Too long and the identifier question
@@ -338,6 +352,17 @@ pub struct OsSeriesScanner {
     unreached: HashSet<IpAddr>,
     /// How many hosts this run managed to name, for the closing line.
     named: usize,
+    /// The source port the next sweep sends from.
+    ///
+    /// Drawn once and then counted up, rather than drawn per sweep: a sample
+    /// has to be a new connection attempt, and a second sweep drawing the
+    /// port an earlier one used repeats that sample's 4-tuple, so its SYN
+    /// describes the `SYN-RECEIVED` state the first left rather than the
+    /// stack. Counting gives every sweep of a run a port of its own, since a
+    /// run takes at most [`AGGRESSIVE_SAMPLES`] sweeps per batch against a
+    /// range of fifteen thousand; drawing the start keeps runs apart from each
+    /// other and from a fixed guess.
+    next_source_port: u16,
 }
 
 impl OsSeriesScanner {
@@ -397,6 +422,7 @@ impl OsSeriesScanner {
             neighbors: NeighborGates::default(),
             unreached: HashSet::new(),
             named: 0,
+            next_source_port: rand::random_range(SOURCE_PORTS),
         }
     }
 
@@ -419,8 +445,16 @@ impl OsSeriesScanner {
     /// thread gets to it rather than when it arrived. The filter admits more
     /// than this scan's own replies, so how soon that happens is the network's
     /// to decide.
+    /// The source port for one sweep, and the next one's after it, wrapping
+    /// within [`SOURCE_PORTS`].
+    fn take_source_port(&mut self) -> u16 {
+        let port = self.next_source_port;
+        self.next_source_port = following(port);
+        port
+    }
+
     async fn sweep(&mut self, batch: &[SeriesTarget]) {
-        let source_port: u16 = rand::random_range(50_000..u16::MAX);
+        let source_port = self.take_source_port();
         let mut tick = tokio::time::interval(SEND_TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
 
@@ -1173,6 +1207,29 @@ mod tests {
             "a repeated source port makes every sample after the first describe \
              a connection the previous one opened"
         );
+    }
+
+    /// Every sweep of a run takes a source port no other sweep of it took,
+    /// wherever in the range the run starts: drawn per sweep instead, two of
+    /// a dozen samples share a 4-tuple about once in two hundred and fifty runs.
+    #[test]
+    fn the_sweeps_of_a_run_never_share_a_source_port() {
+        for start in [
+            SOURCE_PORTS.start,
+            SOURCE_PORTS.end - AGGRESSIVE_SAMPLES as u16 / 2,
+            SOURCE_PORTS.end - 1,
+        ] {
+            let taken: Vec<u16> = std::iter::successors(Some(start), |&port| Some(following(port)))
+                .take(AGGRESSIVE_SAMPLES)
+                .collect();
+            let distinct: HashSet<u16> = taken.iter().copied().collect();
+            assert_eq!(
+                distinct.len(),
+                AGGRESSIVE_SAMPLES,
+                "from {start}: {taken:?}"
+            );
+            assert!(taken.iter().all(|port| SOURCE_PORTS.contains(port)));
+        }
     }
 
     /// A reply is timed by the capture that took it, not by when this scanner
