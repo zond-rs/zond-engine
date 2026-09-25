@@ -734,3 +734,85 @@ async fn a_session_service_is_named_from_its_answer_over_a_socket() {
         "{identified:?} is no more than the port's label"
     );
 }
+
+/// A server that answers the RDP negotiation is named, with the security layer
+/// it chose.
+///
+/// Every Windows release since Vista and xrdp answer a negotiation request
+/// with a 19-byte Connection Confirm (MS-RDPBCGR 2.2.1.2), and which layer the
+/// server selects is the question an assessor asks of it first: CredSSP
+/// authenticates before any session exists, and TLS alone puts a logon screen
+/// in front of whoever connects.
+#[test]
+fn an_rdp_negotiation_answer_names_the_security_layer() {
+    use crate::model::port::Protocol::Tcp;
+
+    let answers: &[(&[u8], Option<&str>)] = &[
+        (
+            b"\x03\x00\x00\x13\x0e\xd0\x00\x00\x12\x34\x00\x02\x1f\x08\x00\x02\x00\x00\x00",
+            Some("security layer: CredSSP (NLA)"),
+        ),
+        (
+            b"\x03\x00\x00\x13\x0e\xd0\x00\x00\x12\x34\x00\x02\x01\x08\x00\x01\x00\x00\x00",
+            Some("security layer: TLS without NLA"),
+        ),
+        (
+            b"\x03\x00\x00\x13\x0e\xd0\x00\x00\x12\x34\x00\x03\x00\x08\x00\x02\x00\x00\x00",
+            Some("security layer: standard RDP security only"),
+        ),
+        // A source reference whose two bytes form a UTF-8 sequence.
+        (
+            b"\x03\x00\x00\x13\x0e\xd0\x00\x00\xc3\xa9\x00\x02\x1f\x08\x00\x02\x00\x00\x00",
+            Some("security layer: CredSSP (NLA)"),
+        ),
+        // A server from before negotiation existed.
+        (b"\x03\x00\x00\x0b\x06\xd0\x00\x00\x12\x34\x00", None),
+    ];
+    for (answer, layer) in answers {
+        let verdict = named(3389, Tcp, &super::extract::reply_text(answer));
+        assert_eq!(verdict.service.as_deref(), Some("rdp"), "{answer:02x?}");
+        assert_eq!(verdict.extrainfo.as_deref(), *layer, "{answer:02x?}");
+    }
+}
+
+/// The same, end to end over a socket: the probe goes out, the confirm comes
+/// back, and the port is named from it.
+#[tokio::test]
+async fn an_rdp_server_is_named_from_its_negotiation_over_a_socket() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    use crate::model::port::{PortState, Protocol};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
+    let addr = listener.local_addr().expect("its address");
+    let server = tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut request = [0u8; 64];
+        // Answer only a negotiation request, as a real server does.
+        if sock
+            .read(&mut request)
+            .await
+            .is_ok_and(|read| read == 19 && request[5] == 0xe0)
+        {
+            let _ = sock
+                .write_all(
+                    b"\x03\x00\x00\x13\x0e\xd0\x00\x00\x12\x34\x00\x02\x1f\x08\x00\x02\x00\x00\x00",
+                )
+                .await;
+        }
+        let _ = sock.read(&mut request).await;
+    });
+
+    let stream = TcpStream::connect(addr).await.expect("connects");
+    let port = super::baseline_port(3389, Protocol::Tcp, PortState::Open);
+    let identified =
+        super::fingerprint_tcp(stream, port, crate::config::ServiceDetection::Probe).await;
+    server.abort();
+
+    let service = identified.service().expect("the port is named");
+    assert_eq!(service.name(), "rdp");
+    assert_eq!(service.extrainfo(), Some("security layer: CredSSP (NLA)"));
+}

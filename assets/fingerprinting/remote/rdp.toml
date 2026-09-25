@@ -3,13 +3,66 @@ name = "rdp"
 default_ports = [3389]
 description = "Remote Desktop Protocol"
 
-# RDP waits for a connection request.
+# An X.224 Connection Request carrying an RDP Negotiation Request
+# (MS-RDPBCGR 2.2.1.1) that offers TLS and CredSSP, which is what a current
+# client offers. A server answers before anything is authenticated, and the
+# answer says which security layer it chose.
+#
+#   03 00 00 13              TPKT, version 3, 19 bytes
+#   0e e0 00 00 00 00 00     X.224 CR: length 14, no references, class 0
+#   01 00 08 00 03 00 00 00  RDP_NEG_REQ: TLS | CredSSP
 [[probe]]
 name = "rdp_connect"
 payload = '\x03\x00\x00\x13\x0e\xe0\x00\x00\x00\x00\x00\x01\x00\x08\x00\x03\x00\x00\x00'
 protocol = "tcp"
 
+# A server older than Vista knows nothing of negotiation and answers with a
+# bare Connection Confirm: 11 bytes, X.224 length 6.
 [[match]]
 name = "rdp_negotiate_resp"
 pattern = '(?s)^\x03\x00\x00\x0b\x06.'
 product = "rdp"
+example = "\u0003\u0000\u0000\u000b\u0006Ð\u0000\u0000\u00124\u0000"
+
+# Everything since answers the negotiation (MS-RDPBCGR 2.2.1.2): a 19-byte
+# Connection Confirm, X.224 length 14 and code 0xD0, behind which is an
+# RDP_NEG_RSP naming the protocol it selected, or an RDP_NEG_FAILURE saying why
+# it would select none. Windows answers this way and so does xrdp.
+#
+#   03 00 00 13                TPKT, 19 bytes
+#   0e d0 00 00 12 34 00       X.224 CC: destination 0, a source of its own
+#   02 1f 08 00 02 00 00 00    RDP_NEG_RSP, flags, length 8, CredSSP
+#
+# The source reference is the server's to pick, so it is matched as one or two
+# characters: two bytes that happen to form a UTF-8 sequence read as one.
+#
+# The selected protocol is what the server will speak once asked for both:
+# CredSSP where it allows Network Level Authentication, which then happens
+# before any session exists, and TLS alone where it does not, which puts the
+# logon screen in front of anyone who connects.
+[[match]]
+name = "rdp_negotiated_credssp"
+pattern = '(?s)^\x03\x00\x00\x13\x0e\xd0\x00\x00.{1,2}\x00\x02.\x08\x00\x02\x00\x00\x00'
+metadata = { "service.extrainfo" = "security layer: CredSSP (NLA)" }
+example = "\u0003\u0000\u0000\u0013\u000eÐ\u0000\u0000\u00124\u0000\u0002\u001f\u0008\u0000\u0002\u0000\u0000\u0000"
+
+[[match]]
+name = "rdp_negotiated_tls"
+pattern = '(?s)^\x03\x00\x00\x13\x0e\xd0\x00\x00.{1,2}\x00\x02.\x08\x00\x01\x00\x00\x00'
+metadata = { "service.extrainfo" = "security layer: TLS without NLA" }
+example = "\u0003\u0000\u0000\u0013\u000eÐ\u0000\u0000\u00124\u0000\u0002\u001f\u0008\u0000\u0001\u0000\u0000\u0000"
+
+# A failure names what the server insists on instead. Code 2, TLS not allowed,
+# is a server that speaks only the original RDP security, whose certificate is
+# signed with a private key that has long been public, so anything on the path
+# can stand in for the server.
+[[match]]
+name = "rdp_negotiation_refused_legacy_security"
+pattern = '(?s)^\x03\x00\x00\x13\x0e\xd0\x00\x00.{1,2}\x00\x03.\x08\x00\x02\x00\x00\x00'
+metadata = { "service.extrainfo" = "security layer: standard RDP security only" }
+example = "\u0003\u0000\u0000\u0013\u000eÐ\u0000\u0000\u00124\u0000\u0003\u0000\u0008\u0000\u0002\u0000\u0000\u0000"
+
+[[match]]
+name = "rdp_negotiation_refused"
+pattern = '(?s)^\x03\x00\x00\x13\x0e\xd0\x00\x00.{1,2}\x00\x03.\x08\x00'
+example = "\u0003\u0000\u0000\u0013\u000eÐ\u0000\u0000\u00124\u0000\u0003\u0000\u0008\u0000\u0005\u0000\u0000\u0000"
