@@ -1304,7 +1304,10 @@ impl ScanProgress {
     /// way, and a line saying `journal` for all of them would tell a reader less
     /// than the name it already has.
     pub fn record_failure(&self, scanner: ScannerKind, reason: String) {
-        error!("{scanner:?} failed: {reason}");
+        error!(
+            "{} failed: {reason}",
+            crate::record::wire::scanner_kind_name(scanner)
+        );
         self.failures.push(ScannerFailure::new(scanner, reason));
     }
 }
@@ -1804,8 +1807,14 @@ impl ScanContext {
     /// file what went wrong the same way the engine's own orchestration does; a
     /// custom strategy that could not would produce a report claiming a clean
     /// run over a scan that lost half its work.
+    ///
+    /// The console line names the strategy as the report files it, then the
+    /// reason, which is what a reader acts on and so is given the line.
     pub fn record_failure(&self, scanner: ScannerKind, reason: String) {
-        error!("scanner {scanner:?} failed: {reason}");
+        error!(
+            "{} failed: {reason}",
+            crate::record::wire::scanner_kind_name(scanner)
+        );
         self.failures
             .push(ScannerFailure::new(scanner, reason.clone()));
         let _ = self
@@ -3404,6 +3413,20 @@ mod tests {
         assert_eq!(ctx.failures_snapshot().len(), 1);
         assert_eq!(ctx.failures_snapshot().len(), 1, "reading is not taking");
         assert_eq!(ctx.take_failures().len(), 1, "and the report still gets it");
+    }
+
+    /// A failure is said as the strategy's name in the report and the reason,
+    /// with nothing between them a reader has to read past: the reason is
+    /// what they act on, and a frame as long again pushes it off the line.
+    #[test]
+    fn a_failure_is_said_under_the_name_the_report_files_it_by() {
+        let (_session, ctx) = ScanSession::new();
+        let lines = crate::logging::logged(|| {
+            ctx.record_failure(ScannerKind::SynPort, "the capture would not open".into());
+        });
+
+        let said: Vec<&str> = lines.iter().map(|line| line.message.as_str()).collect();
+        assert_eq!(said, ["syn_port failed: the capture would not open"]);
     }
 
     #[test]

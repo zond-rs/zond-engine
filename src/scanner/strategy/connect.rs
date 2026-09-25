@@ -358,17 +358,20 @@ impl Shortfall {
                 ctx.record_unroutable(address);
             }
         }
+        // Filed, since those targets have no verdict, but warned in one short
+        // line rather than announced as a scanner that failed: nothing broke.
+        // The pinned port is still closing from the connection just made, or
+        // another socket holds it, and the remedy is to wait or pin another.
         if let Some((port, holder)) = self.held {
             let by = match holder {
                 Holder::Closing => "still closing",
                 Holder::Socket => "held elsewhere",
             };
-            ctx.record_failure(
+            let unasked = counted(self.port_held, unit, units);
+            crate::warn!("{unasked} unasked (source port {port} {by})");
+            ctx.file_cut_short(
                 scanner,
-                format!(
-                    "{} left unasked: source port {port} {by}",
-                    counted(self.port_held, unit, units)
-                ),
+                format!("{unasked} left unasked: source port {port} {by}"),
             );
         }
         if self.refused > 0 {
@@ -2320,6 +2323,43 @@ mod tests {
                 "the report names the pinned port, and has {reasons:?}"
             ),
             other => panic!("the port was neither asked nor unasked: {other:?}"),
+        }
+    }
+
+    /// **A pinned source port something still holds is a wait on this
+    /// machine, said in one short warning rather than as a scanner that
+    /// failed.** The ports it left unasked are still filed, since the result
+    /// is narrower for them, but nothing broke: the connection just made from
+    /// that port is closing, or another socket has it, and the remedy is to
+    /// wait or pin another. A line saying the scanner failed sends a reader
+    /// looking for a fault that is not there.
+    #[test]
+    fn a_pinned_source_port_held_is_warned_in_one_short_line_not_as_a_failure() {
+        for (holder, by) in [
+            (Holder::Closing, "still closing"),
+            (Holder::Socket, "held elsewhere"),
+        ] {
+            let (_session, ctx) = crate::scanner::session::ScanSession::new();
+            let mut shortfall = Shortfall::default();
+            let held = Attempt::Refused(Refusal::PortHeld(40404, holder));
+            shortfall.count(IpAddr::V4(Ipv4Addr::LOCALHOST), &held);
+            shortfall.count(IpAddr::V4(Ipv4Addr::LOCALHOST), &held);
+
+            let lines = crate::logging::logged(|| {
+                shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
+            });
+
+            let said: Vec<&str> = lines.iter().map(|line| line.message.as_str()).collect();
+            assert_eq!(said, [format!("2 ports unasked (source port 40404 {by})")]);
+            let filed: Vec<String> = ctx
+                .failures_snapshot()
+                .iter()
+                .map(|failure| failure.reason().to_string())
+                .collect();
+            assert_eq!(
+                filed,
+                [format!("2 ports left unasked: source port 40404 {by}")]
+            );
         }
     }
 
