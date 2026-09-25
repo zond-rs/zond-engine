@@ -194,7 +194,7 @@ pub mod store;
 pub use store::Journal;
 pub mod lock;
 pub mod manifest;
-#[cfg(feature = "journal-format")]
+#[cfg(any(feature = "journal-format", feature = "import-settings"))]
 pub(crate) mod ownership;
 pub mod paths;
 pub mod settle;

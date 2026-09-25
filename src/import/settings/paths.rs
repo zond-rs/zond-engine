@@ -8,17 +8,17 @@
 
 //! # Where a settings file lives
 //!
-//! Pure computation. Every function here reads environment variables and returns
-//! a path; none of them opens anything, checks whether anything exists, or
-//! creates anything. A caller can ask where its settings would be without the
-//! asking having a side effect, and the engine never touches a filesystem it was
-//! not pointed at.
+//! Pure computation. Every function here reads environment variables, and under
+//! `sudo` the password database, and returns a path; none of them opens
+//! anything, checks whether anything exists, or creates anything. A caller can
+//! ask where its settings would be without the asking having a side effect, and
+//! the engine never touches a filesystem it was not pointed at.
 //!
 //! ## The locations
 //!
 //! | | User | System |
 //! |---|---|---|
-//! | Unix | `$XDG_CONFIG_HOME/zond/engine.toml`, else `$HOME/.config/zond/engine.toml` | `/etc/zond/engine.toml` |
+//! | Unix | `$XDG_CONFIG_HOME/zond/engine.toml`, else `~/.config/zond/engine.toml` | `/etc/zond/engine.toml` |
 //! | Windows | `%APPDATA%\zond\engine.toml` | `%PROGRAMDATA%\zond\engine.toml` |
 //!
 //! `zond/` rather than `zond-engine/` because the engine is not the only thing
@@ -29,6 +29,26 @@
 //! people who write these files reach for `~/.config`, and a scanner's
 //! configuration sitting where every other command-line tool's sits is worth more
 //! than matching a convention aimed at bundled applications.
+//!
+//! ## Under `sudo`, the settings are the invoking user's
+//!
+//! `~` is the home of the user a run is on behalf of. Most scans need root and
+//! so run under `sudo`, which on Linux points `HOME` at root's home, and a
+//! missing settings file is not an error: every exclusion and profile the user
+//! wrote would vanish without a word. So an elevated process whose environment
+//! names the user who invoked it reads that user's file, found the way
+//! `journal::paths` finds that user's journals, from `SUDO_UID` and the
+//! password database, and for the same reasons. The two would otherwise
+//! disagree about whose run it is.
+//!
+//! Root reading a file its invoking user can write hands that user nothing the
+//! command line did not already give them. The file's vocabulary names no path
+//! and no command, and `sudo` sets `SUDO_UID` itself, so a user cannot point an
+//! elevated run at somebody else's file.
+//!
+//! A configuration root that survived into the elevated process still leads, as
+//! it does for the journal: somebody kept it on purpose, and it is what an
+//! unelevated run reads too.
 //!
 //! ## `$XDG_CONFIG_HOME` is only honoured when it is absolute
 //!
@@ -71,28 +91,34 @@ pub fn user_directory() -> Option<PathBuf> {
 }
 
 /// Where this user's settings *directory* would be: `$XDG_CONFIG_HOME/zond`
-/// where that variable names an absolute path, and `$HOME/.config/zond`
-/// otherwise.
+/// where that variable names an absolute path, and `.config/zond` under the
+/// home directory otherwise: the invoking user's under `sudo`, as the module
+/// note explains, and `$HOME` for anything else.
 ///
-/// `None` when neither variable holds an absolute path, which is what a
-/// container or a daemon with a cleared environment looks like. macOS lands
-/// here rather than under `~/Library/Application Support`; the module note says
-/// why.
+/// `None` when no home can be found, which is what a container or a daemon with
+/// a cleared environment looks like. macOS lands here rather than under
+/// `~/Library/Application Support`; the module note says why.
 #[cfg(not(windows))]
 pub fn user_directory() -> Option<PathBuf> {
-    // Only an absolute value counts, as the specification requires. A relative
-    // one would put the file wherever the process was started.
-    if let Some(configured) = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-    {
-        return Some(configured.join(DIRECTORY));
-    }
+    crate::journal::paths::base_directory("XDG_CONFIG_HOME", std::path::Path::new(".config"))
+        .map(|root| root.join(DIRECTORY))
+}
 
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .map(|home| home.join(".config").join(DIRECTORY))
+/// [`user_directory`]'s choice, from values rather than the environment, so a
+/// test can put it under `sudo`.
+#[cfg(all(test, not(windows)))]
+fn choose(
+    configured: Option<PathBuf>,
+    invoking_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    crate::journal::paths::choose(
+        configured,
+        invoking_home,
+        home,
+        std::path::Path::new(".config"),
+    )
+    .map(|root| root.join(DIRECTORY))
 }
 
 /// Where a host-wide settings file would be.
@@ -187,5 +213,37 @@ mod tests {
 
         let after = user().and_then(|path| path.parent().map(std::path::Path::exists));
         assert_eq!(before, after, "asking where the settings are created them");
+    }
+
+    /// Under `sudo` the settings that apply are the invoking user's, found the
+    /// way the journal finds its directory. Root's home is where a plain `sudo`
+    /// on Linux points `HOME`, and reading from there drops every exclusion
+    /// and profile the user wrote, with nothing said.
+    #[cfg(not(windows))]
+    #[test]
+    fn under_sudo_the_invoking_users_settings_are_the_ones_found() {
+        let erik = PathBuf::from("/home/erik");
+        let root = PathBuf::from("/root");
+        let configured = PathBuf::from("/config");
+
+        assert_eq!(
+            choose(None, Some(erik.clone()), Some(root.clone())),
+            Some(erik.join(".config").join(DIRECTORY)),
+            "an elevated run read root's settings"
+        );
+
+        // A configuration root that survived into the elevated process was
+        // kept on purpose, and it is what an unelevated run reads too.
+        assert_eq!(
+            choose(Some(configured.clone()), Some(erik.clone()), Some(root)),
+            Some(configured.join(DIRECTORY))
+        );
+
+        // Nothing elevated: this process's own home.
+        assert_eq!(
+            choose(None, None, Some(erik.clone())),
+            Some(erik.join(".config").join(DIRECTORY))
+        );
+        assert_eq!(choose(None, None, None), None);
     }
 }

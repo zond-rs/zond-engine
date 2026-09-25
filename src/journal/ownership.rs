@@ -9,19 +9,29 @@
 //! # Creating things in the invoking user's home
 //!
 //! An elevated run writes into the home of the user who invoked it: journals
-//! under `~/.local/state`. Whatever it creates there is root's unless it is
-//! given back, and a directory left to root in somebody's home breaks more than
-//! this crate: `~/.local/state` owned by root is one no other program of theirs
-//! can keep its state in.
+//! under `~/.local/state`, a first settings file under `~/.config`. Whatever it
+//! creates there is root's unless it is given back, and a directory left to
+//! root in somebody's home breaks more than this crate: `~/.local/state` owned
+//! by root is one no other program of theirs can keep its state in.
 //!
 //! So creating is split from giving. [`create_missing`] makes a path the way
 //! `create_dir_all` does and says which directories it made, since only those
 //! are this run's to give: a directory that was already there belongs to
-//! whoever made it. The caller then gives what it made.
+//! whoever made it. The caller then gives what it made, and [`give`] refuses
+//! anything outside the invoking user's home, so a path an administrator named,
+//! `/etc/zond` say, stays root's however it was created.
+//!
+//! Compiled for either of the two things that create there, the journal and
+//! the settings files, neither of which needs the other. Only the settings
+//! files give through [`give`]: the journal's own directories are claimed
+//! whatever their location, for the reasons `store::prepare_root` gives.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+#[cfg(all(unix, feature = "import-settings"))]
+use super::paths::InvokingUser;
 
 /// Creates `path` and every directory missing above it, and returns the ones
 /// this call created, outermost first.
@@ -78,6 +88,61 @@ pub(crate) fn create_missing(path: &Path, mode: Option<u32>) -> io::Result<Vec<P
     Ok(created)
 }
 
+/// Gives something this run created to the user who invoked it, when it lies
+/// in that user's home.
+///
+/// Best effort. Something left to root is worth trying to avoid and not worth
+/// failing a run over, and an unelevated run has nobody to give it to.
+#[cfg(all(unix, feature = "import-settings"))]
+pub(crate) fn give(path: &Path) {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let invoking = super::paths::invoking_user();
+    let Some((uid, gid)) = owner_for(invoking.as_ref(), path) else {
+        return;
+    };
+
+    // Through a handle rather than by name, refusing a link in the last
+    // position, so the name cannot be repointed between the check above and
+    // the change of owner.
+    let Ok(opened) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    else {
+        return;
+    };
+
+    // SAFETY: the descriptor is owned by `opened` and open for the call, and
+    // `fchown` reads it and nothing else.
+    unsafe {
+        libc::fchown(opened.as_raw_fd(), uid, gid);
+    }
+}
+
+/// The platforms with no `sudo`, where what a run creates is already the
+/// invoking user's.
+#[cfg(all(not(unix), feature = "import-settings"))]
+pub(crate) fn give(_path: &Path) {}
+
+/// Who `path` should be given to: the invoking user, when there is one and
+/// the path lies strictly inside their home.
+///
+/// Strictly inside, because the home itself is theirs already and was not
+/// this run's to create. A path that climbs out with `..` is refused rather
+/// than resolved, since what it reaches is not decided by how it is spelled.
+#[cfg(all(unix, feature = "import-settings"))]
+fn owner_for(invoking: Option<&InvokingUser>, path: &Path) -> Option<(u32, u32)> {
+    let user = invoking?;
+
+    let climbs = path
+        .components()
+        .any(|part| part == std::path::Component::ParentDir);
+
+    (!climbs && path != user.home && path.starts_with(&user.home)).then_some((user.uid, user.gid))
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -128,5 +193,41 @@ mod tests {
         assert!(create_missing(&file, None).is_err());
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    /// What an elevated run creates goes to the user who invoked it only
+    /// inside their home. A settings directory an administrator keeps, or one
+    /// named past the home with `..`, stays root's.
+    #[cfg(all(unix, feature = "import-settings"))]
+    #[test]
+    fn only_what_lies_inside_the_invoking_users_home_is_given_to_them() {
+        let erik = InvokingUser {
+            uid: 1000,
+            gid: 1000,
+            home: PathBuf::from("/home/erik"),
+        };
+
+        for inside in ["/home/erik/.local", "/home/erik/.config/zond/engine.toml"] {
+            assert_eq!(
+                owner_for(Some(&erik), Path::new(inside)),
+                Some((1000, 1000)),
+                "{inside}"
+            );
+        }
+        for outside in [
+            "/etc/zond",
+            "/home/erik",
+            "/home/erikb/.config",
+            "/home/erik/../root/.config",
+        ] {
+            assert_eq!(
+                owner_for(Some(&erik), Path::new(outside)),
+                None,
+                "{outside}"
+            );
+        }
+
+        // Nothing elevated: nobody to give anything to.
+        assert_eq!(owner_for(None, Path::new("/home/erik/.local")), None);
     }
 }

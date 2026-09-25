@@ -746,9 +746,20 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// Parent directories are created as needed. On Unix the directory is created
 /// `0700` and the file `0600`: a settings file records which networks somebody
 /// scans and how, which is nobody else's business on a shared host.
+///
+/// Under `sudo`, what this creates inside the invoking user's home is given to
+/// them: the file, and every directory this call made on the way to it. Left to
+/// root, a `0700` directory and a `0600` file are ones their owner can neither
+/// open nor edit, and a `~/.config` made on the way is one no other program of
+/// theirs can write to either. Anything outside that home, the system file
+/// included, stays root's.
 pub fn provision(path: &Path) -> Result<Provisioned, SettingsError> {
-    if let Some(parent) = path.parent() {
-        create_directory(parent)?;
+    let created = match path.parent() {
+        Some(parent) => create_directory(parent)?,
+        None => Vec::new(),
+    };
+    for directory in &created {
+        crate::journal::ownership::give(directory);
     }
 
     let mut options = std::fs::OpenOptions::new();
@@ -768,6 +779,7 @@ pub fn provision(path: &Path) -> Result<Provisioned, SettingsError> {
                     path: path.to_path_buf(),
                     source,
                 })?;
+            crate::journal::ownership::give(path);
             Ok(Provisioned::Created)
         }
         // The one error that is not a failure: somebody else's file, or this
@@ -780,20 +792,14 @@ pub fn provision(path: &Path) -> Result<Provisioned, SettingsError> {
     }
 }
 
-/// Creates a directory and its parents, with restrictive permissions on Unix.
-fn create_directory(path: &Path) -> Result<(), SettingsError> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-
-    builder.create(path).map_err(|source| SettingsError::Io {
-        path: path.to_path_buf(),
-        source,
+/// Creates a directory and its parents, with restrictive permissions on Unix,
+/// and returns the directories it created.
+fn create_directory(path: &Path) -> Result<Vec<PathBuf>, SettingsError> {
+    crate::journal::ownership::create_missing(path, Some(0o700)).map_err(|source| {
+        SettingsError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
     })
 }
 

@@ -143,9 +143,23 @@ fn state_root() -> Option<PathBuf> {
 /// Where journals live on this platform, by the XDG state specification.
 #[cfg(not(windows))]
 fn state_root() -> Option<PathBuf> {
+    base_directory("XDG_STATE_HOME", std::path::Path::new(".local/state"))
+}
+
+/// A per-user base directory by the XDG rule, for whoever this run is on
+/// behalf of: `$variable` where it names an absolute path, else `fallback`
+/// under the invoking user's home, else under this process's own.
+///
+/// Shared with the settings module, which asks it for `XDG_CONFIG_HOME` and
+/// `.config`. A settings file and a journal found by two rules would disagree
+/// under `sudo` about whose home a run belongs to, and the one that got it
+/// wrong would do so silently: a settings file that is not there is not an
+/// error.
+#[cfg(not(windows))]
+pub(crate) fn base_directory(variable: &str, fallback: &std::path::Path) -> Option<PathBuf> {
     // Only an absolute value counts, as the specification requires. A relative
-    // one would put the journal wherever the process started, which for a tool
-    // run with `sudo` from an arbitrary shell is not a location anybody
+    // one would put the directory wherever the process started, which for a
+    // tool run with `sudo` from an arbitrary shell is not a location anybody
     // chose.
     let absolute = |name| {
         std::env::var_os(name)
@@ -154,37 +168,35 @@ fn state_root() -> Option<PathBuf> {
     };
 
     choose(
-        absolute("XDG_STATE_HOME"),
+        absolute(variable),
         invoking_user().map(|user| user.home),
         absolute("HOME"),
+        fallback,
     )
 }
 
-/// Picks the state root from the three places it can come from.
+/// Picks a base directory from the three places it can come from.
 ///
 /// Pure, so the precedence can be tested without a process's environment, which
 /// is shared and which a test cannot change without changing it for every other
 /// test running beside it.
 ///
-/// `XDG_STATE_HOME` leads, including under `sudo`. It reaches an elevated process
-/// only if somebody preserved it deliberately, and honouring it is what makes an
-/// elevated scan and an unelevated listing agree. Reading the invoking user first
-/// meant a scan run with `sudo` wrote under `~/.local/state` while a
-/// listing read `$XDG_STATE_HOME`, and the listing reported no scans at all.
+/// The configured directory leads, including under `sudo`. It reaches an
+/// elevated process only if somebody preserved it deliberately, and honouring
+/// it is what makes an elevated run and an unelevated one agree: a scan run
+/// with `sudo` that wrote under `~/.local/state` while a listing read
+/// `$XDG_STATE_HOME` would leave the listing reporting no scans at all.
 ///
 /// After that the invoking user comes before this process's own `HOME`, which
 /// under `sudo` is root's and is not who asked.
 #[cfg(not(windows))]
-fn choose(
+pub(crate) fn choose(
     configured: Option<PathBuf>,
     invoking_home: Option<PathBuf>,
     home: Option<PathBuf>,
+    fallback: &std::path::Path,
 ) -> Option<PathBuf> {
-    configured.or_else(|| {
-        invoking_home
-            .or(home)
-            .map(|home| home.join(".local").join("state"))
-    })
+    configured.or_else(|| invoking_home.or(home).map(|home| home.join(fallback)))
 }
 
 /// The user who invoked this process, when it is running elevated on their
@@ -427,6 +439,14 @@ mod tests {
         let configured = PathBuf::from("/state");
         let erik = PathBuf::from("/home/erik");
         let root = PathBuf::from("/root");
+        let choose = |configured, invoking, home| {
+            choose(
+                configured,
+                invoking,
+                home,
+                std::path::Path::new(".local/state"),
+            )
+        };
 
         // Under `sudo -E`, where the variable survived: both agree.
         assert_eq!(
@@ -453,6 +473,9 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn an_empty_environment_names_no_root() {
-        assert_eq!(choose(None, None, None), None);
+        assert_eq!(
+            choose(None, None, None, std::path::Path::new(".local/state")),
+            None
+        );
     }
 }
