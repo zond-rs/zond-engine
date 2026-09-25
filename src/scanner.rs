@@ -242,6 +242,27 @@ pub enum ScanError {
     },
 }
 
+/// Runs a journalled phase's up-front checks, and gives the journal up if they
+/// refuse, so a scan that never started leaves no record of itself.
+///
+/// Every check a journalled entry point makes before it starts belongs in
+/// `checks`, which is what keeps a refusal added later from leaving a record
+/// behind. See [`Journal::withdraw`](crate::journal::Journal::withdraw) for
+/// which records go.
+#[cfg(feature = "journal-format")]
+fn accepted(
+    journal: crate::journal::Journal,
+    checks: impl FnOnce(&crate::journal::Journal) -> Result<(), ScanError>,
+) -> Result<crate::journal::Journal, ScanError> {
+    match checks(&journal) {
+        Ok(()) => Ok(journal),
+        Err(refused) => {
+            journal.withdraw();
+            Err(refused)
+        }
+    }
+}
+
 /// Refuses a scan in a process whose descriptor limit leaves its connections
 /// no socket; see [`ScanError::TooFewDescriptors`].
 fn enough_descriptors() -> Result<(), ScanError> {
@@ -516,14 +537,19 @@ pub async fn discover_with_journal(
     cfg: &ZondConfig,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
-    cfg.evasion.validate()?;
-    enough_descriptors()?;
+    let journal = accepted(journal, |journal| {
+        cfg.evasion.validate()?;
+        enough_descriptors()?;
+        if journal.manifest().kind() != ScanKind::Discovery {
+            return Err(ScanError::WrongPhase);
+        }
+        under_the_recorded_policy(journal, cfg)
+    })?;
 
     let recorded = journal.manifest().recorded();
     let Some(addresses) = recorded.addresses() else {
         return Err(ScanError::WrongPhase);
     };
-    under_the_recorded_policy(&journal, cfg)?;
 
     // Numbered over the whole plan, whichever part of it this sitting sweeps.
     // Numbering the remainder afresh would give position 0 to whatever happens
@@ -1215,10 +1241,12 @@ pub async fn listen_with_journal(
     cfg: &ZondConfig,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
-    let recorded = journal.manifest().recorded();
-    if recorded.kind() != ScanKind::Listen {
-        return Err(ScanError::WrongPhase);
-    }
+    let journal = accepted(journal, |journal| {
+        if journal.manifest().kind() != ScanKind::Listen {
+            return Err(ScanError::WrongPhase);
+        }
+        Ok(())
+    })?;
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
@@ -1419,9 +1447,14 @@ pub async fn scan_with_journal(
     detections: Detections,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
-    cfg.evasion.validate()?;
-    enough_descriptors()?;
-    under_the_recorded_policy(&journal, cfg)?;
+    let journal = accepted(journal, |journal| {
+        cfg.evasion.validate()?;
+        enough_descriptors()?;
+        if journal.manifest().kind() != ScanKind::PortScan {
+            return Err(ScanError::WrongPhase);
+        }
+        under_the_recorded_policy(journal, cfg)
+    })?;
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
 
     let (session, ctx) = ScanSession::builder()
@@ -1601,6 +1634,146 @@ fn spawn_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch journal root, removed and made again for each test that
+    /// names it.
+    #[cfg(feature = "journal-format")]
+    fn journal_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("zond-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch root");
+        root
+    }
+
+    /// A configuration every scan refuses before it sends anything.
+    fn refused_up_front() -> ZondConfig {
+        ZondConfig {
+            evasion: crate::evasion::EvasionProfile::default().with_ttl(0),
+            ..ZondConfig::default()
+        }
+    }
+
+    /// **A scan refused before it starts leaves no record of itself.**
+    ///
+    /// A journal handed to a scan that then refuses would otherwise stay
+    /// behind as a job nobody ran, listed as resumable with nothing done, and
+    /// counted against however many records a front end keeps, so each refusal
+    /// pushes out a record of a scan that happened. The caller cannot tidy it
+    /// either: the journal was moved into the call.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_journalled_scan_refused_up_front_leaves_no_record() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::ip::set::IpSet;
+        use crate::model::target::TargetSet;
+
+        let root = journal_root("refused");
+        let addresses: IpSet = "192.0.2.1".parse().expect("an address");
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            addresses.clone(),
+            "22".parse().expect("ports"),
+        ));
+        let cfg = refused_up_front();
+
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+        let journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let refused = scan_with_journal(map, &cfg, Detections::embedded(), journal).await;
+        assert!(
+            matches!(refused, Err(ScanError::Evasion(_))),
+            "{:?}",
+            refused.err()
+        );
+        assert!(
+            !directory.exists(),
+            "a port scan that never ran left a record"
+        );
+
+        let plan = Plan::discovery(&addresses, &cfg.exclusions, false);
+        let journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let refused = discover_with_journal(addresses, &cfg, journal).await;
+        assert!(
+            matches!(refused, Err(ScanError::Evasion(_))),
+            "{:?}",
+            refused.err()
+        );
+        assert!(!directory.exists(), "a sweep that never ran left a record");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A sweep's journal handed to a port scan is refused as the other phase,
+    /// and so is withdrawn with the rest of the up-front refusals.
+    ///
+    /// Taken, the port scan would settle address-and-port positions against a
+    /// plan counted in addresses, and a resume would skip targets nothing
+    /// asked about. The exclusion check alone cannot see it: it rebuilds the
+    /// recorded plan in its own shape and finds it unchanged.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_sweeps_journal_is_refused_to_a_port_scan() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::ip::set::IpSet;
+        use crate::model::target::TargetSet;
+
+        let root = journal_root("other-phase");
+        let addresses: IpSet = "127.0.0.1".parse().expect("an address");
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            addresses.clone(),
+            "9".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig::default();
+
+        let plan = Plan::discovery(&addresses, &cfg.exclusions, false);
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        let refused = scan_with_journal(map, &cfg, Detections::embedded(), journal).await;
+        assert!(
+            matches!(refused, Err(ScanError::WrongPhase)),
+            "{:?}",
+            refused.err()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A resume refused the same way keeps the record: an earlier sitting ran
+    /// against it, and what that sitting settled is the job's.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_refused_resume_keeps_the_record_of_the_sitting_before_it() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::journal::settle::{Outcome, Settlements};
+        use crate::model::ip::set::IpSet;
+
+        let root = journal_root("refused-resume");
+        let addresses: IpSet = "192.0.2.1-192.0.2.4".parse().expect("addresses");
+        let cfg = refused_up_front();
+        let plan = Plan::discovery(&addresses, &cfg.exclusions, false);
+
+        let mut journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let settlements = Settlements::default();
+        settlements.record(Outcome::Answered { position: 0 });
+        journal.checkpoint(&settlements).expect("checkpoints");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let (journal, _) = Journal::resume(&directory, &plan, Privilege::Connect).expect("resumes");
+        let refused = discover_with_journal(addresses, &cfg, journal).await;
+        assert!(
+            matches!(refused, Err(ScanError::Evasion(_))),
+            "{:?}",
+            refused.err()
+        );
+        assert!(directory.join("manifest.json").exists(), "the record went");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// A listener's privilege says what its capture was told. Only a refusal
     /// for want of privilege records one missing: a link that would not take

@@ -127,6 +127,9 @@ pub struct Journal {
     resume_point: Checkpoint,
     restored: Vec<Host>,
     earlier: Vec<ScanPhase>,
+    /// Whether this handle made the journal, rather than reopening one. See
+    /// [`withdraw`](Journal::withdraw).
+    created: bool,
     /// How many host records have been appended since the file was last written
     /// whole. See [`should_compact`](Journal::should_compact).
     appended: usize,
@@ -178,6 +181,7 @@ impl Journal {
             resume_point: Checkpoint::default(),
             restored: Vec::new(),
             earlier: Vec::new(),
+            created: true,
             appended: 0,
         };
         journal.open_findings()?;
@@ -230,6 +234,7 @@ impl Journal {
                 resume_point: checkpoint.clone(),
                 restored: read_findings(directory)?,
                 earlier: read_phases(directory)?,
+                created: false,
                 appended: 0,
             },
             checkpoint,
@@ -443,6 +448,40 @@ impl Journal {
     /// Where it lives.
     pub fn directory(&self) -> &Path {
         &self.directory
+    }
+
+    /// Gives up a journal handed to a scan that refused before it started, and
+    /// removes it if no sitting ever ran against it.
+    ///
+    /// A scan that never started should leave no trace, which is the rule
+    /// [`create`](Self::create) keeps for a journal it could not finish
+    /// making, and a refusal is the same case arriving later. Kept, the record
+    /// lists as a job nobody ran, resumable with nothing done, and counts
+    /// against whatever limit a front end keeps on records. Its caller cannot
+    /// tidy it: the journal was handed over by value.
+    ///
+    /// Only a journal this handle made and no sitting has touched: no cursor
+    /// written, no phase and no finding recorded. One an earlier sitting ran
+    /// against holds that sitting's work. One reopened was kept by whoever
+    /// made it, even with nothing in it, and a caller reopens a job to run it
+    /// once a first attempt was refused. Either is released for the next
+    /// sitting.
+    ///
+    /// Removed while the lock is held, so nothing takes the journal up between
+    /// the decision and the removal. The lock file goes with the directory and
+    /// the drop that follows finds nothing to release, which it tolerates.
+    pub(crate) fn withdraw(self) {
+        let untouched = !self.directory.join(CURSOR).exists()
+            && self.earlier.is_empty()
+            && self.restored.is_empty();
+
+        if self.created && untouched {
+            // Best effort, as removing a half-made journal in `create` is: a
+            // directory that will not go is a record of nothing, which is the
+            // state this avoids rather than a reason to report the refusal
+            // any differently.
+            let _ = fs::remove_dir_all(&self.directory);
+        }
     }
 
     /// Releases the lock, reporting a failure the drop would swallow.
