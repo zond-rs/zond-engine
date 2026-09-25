@@ -1435,7 +1435,7 @@ pub struct ScanContext {
     /// policy is read, never written, by all of them.
     pub(crate) exclusions: Arc<Exclusions>,
     /// The machines `exclusions` names, by hardware address, and the other
-    /// addresses they have been heard at; see [`Exclusions::hardware_in`].
+    /// addresses they answer at; see [`Exclusions::hardware_in`].
     pub(crate) hardware: Arc<WithheldHardware>,
     /// Which hosts have findings a journal has not written down yet.
     ///
@@ -1572,11 +1572,12 @@ impl ScanContext {
     /// report clean and cannot keep the question off the wire.
     ///
     /// Asked by whoever turns a learned address into a probe, at the moment it
-    /// does. A target the caller named has already been withheld and need not
-    /// ask again.
+    /// does. A target the caller named has been withheld by address before
+    /// anything was opened, and is asked this only for the machine behind it,
+    /// by the walk that hands a port scan its targets.
     ///
-    /// An address a machine the policy names was heard answering at is held to
-    /// it as well, once it has been; see
+    /// An address a machine the policy names answers at is held to it as
+    /// well, from the moment the neighbour tables or a reply tie the two; see
     /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
     pub fn may_probe(&self, address: &IpAddr) -> bool {
         !self.exclusions.excludes(address) && !self.hardware.withholds(address)
@@ -1947,10 +1948,22 @@ impl ScanContext {
         self.unroutable.insert(address);
     }
 
+    /// Settles `address` as [`Withheld`](Outcome::Withheld), where this scan
+    /// is counted in addresses and its plan numbers it: a target the policy
+    /// forbids asking for the machine behind it, which a resume must not owe
+    /// a question. Nothing for a scan counted otherwise, whose walk settles
+    /// its own targets.
+    pub(crate) fn settle_withheld(&self, address: IpAddr) {
+        if let Some(position) = self.positions.find(address) {
+            self.record_outcome(Outcome::Withheld { position });
+        }
+    }
+
     /// Every address withheld so far for answering from the hardware of a
-    /// machine the exclusions name, ascending. Read rather than taken: the
-    /// policy holds for the whole scan, and every phase after the one that
-    /// heard an address lists it among its exclusions too.
+    /// machine the exclusions name, ascending: the ones the neighbour tables
+    /// tied to it when the scan started, and the ones heard since. Read rather
+    /// than taken: the policy holds for the whole scan, and every phase after
+    /// the one that heard an address lists it among its exclusions too.
     pub(crate) fn withheld_by_hardware(&self) -> Vec<IpAddr> {
         self.hardware.addresses()
     }
@@ -2432,13 +2445,15 @@ impl ScanContext {
 }
 
 /// The machines a scan's exclusions name, by hardware address, and every other
-/// address one of them has been heard answering at.
+/// address one of them answers at.
 ///
 /// Read once, when the scan starts, from the host's neighbour tables, and
 /// fixed from then on: the hardware is how the policy's reach is decided, and
 /// a scan that learned more of it partway through would hold its first and
-/// last findings to different policies. The addresses grow as the scan hears
-/// them. See [`Exclusions::hardware_in`].
+/// last findings to different policies. The addresses start as the ones the
+/// same tables tie to that hardware, which is what keeps a target named at
+/// one of them from being asked anything, and grow as the scan hears more.
+/// See [`Exclusions::hardware_in`] and [`Exclusions::tied_to`].
 #[derive(Debug, Default)]
 pub(crate) struct WithheldHardware {
     macs: BTreeSet<MacAddr>,
@@ -2446,8 +2461,12 @@ pub(crate) struct WithheldHardware {
 }
 
 impl WithheldHardware {
-    /// Withholds the machines at `macs`.
-    fn new(macs: BTreeSet<MacAddr>) -> Self {
+    /// Withholds the machines `exclusions` names in `table`, a neighbour
+    /// table's addresses and the hardware each resolved to, at every address
+    /// the table ties to them.
+    fn read(exclusions: &Exclusions, table: Vec<(IpAddr, Option<MacAddr>)>) -> Self {
+        let macs = exclusions.hardware_in(table.iter().copied());
+        let tied = exclusions.tied_to(&macs, table);
         if !macs.is_empty() {
             info!(
                 verbosity = 1,
@@ -2457,7 +2476,7 @@ impl WithheldHardware {
         }
         Self {
             macs,
-            addresses: Mutex::new(BTreeSet::new()),
+            addresses: Mutex::new(tied),
         }
     }
 
@@ -2469,7 +2488,8 @@ impl WithheldHardware {
                 .is_some_and(|hardware| hardware.macs().keys().any(|mac| self.macs.contains(mac)))
     }
 
-    /// Whether `address` was heard answering from such hardware.
+    /// Whether `address` answers from such hardware, as the neighbour tables
+    /// or a reply said.
     fn withholds(&self, address: &IpAddr) -> bool {
         !self.macs.is_empty()
             && self
@@ -2487,7 +2507,7 @@ impl WithheldHardware {
             .extend(addresses);
     }
 
-    /// Every address heard from such hardware so far, ascending.
+    /// Every address tied to such hardware so far, ascending.
     fn addresses(&self) -> Vec<IpAddr> {
         self.addresses
             .lock()
@@ -2531,9 +2551,9 @@ pub struct SessionBuilder {
     send_source: Vec<IpAddr>,
     /// `None` for the default, [`RAW_PRINT_PORTS`](crate::config::RAW_PRINT_PORTS).
     listen_only: Option<BTreeSet<u16>>,
-    /// The machines the exclusions name, by hardware address, where a caller
-    /// has already learned them; `None` to read the host's neighbour tables.
-    hardware: Option<BTreeSet<MacAddr>>,
+    /// The neighbour tables the exclusions are read against for the machines
+    /// they name, in place of the host's own; `None` to read the host's.
+    neighbours: Option<Vec<(IpAddr, Option<MacAddr>)>>,
 }
 
 impl SessionBuilder {
@@ -2554,11 +2574,12 @@ impl SessionBuilder {
         self
     }
 
-    /// The machines the exclusions name, by hardware address, in place of what
-    /// the host's neighbour tables say.
+    /// The neighbour tables the exclusions are read against, in place of the
+    /// host's own: each address listed and the hardware address it resolved
+    /// to.
     #[cfg(test)]
-    pub(crate) fn excluding_hardware(mut self, macs: BTreeSet<MacAddr>) -> Self {
-        self.hardware = Some(macs);
+    pub(crate) fn with_neighbours(mut self, table: Vec<(IpAddr, Option<MacAddr>)>) -> Self {
+        self.neighbours = Some(table);
         self
     }
 
@@ -2780,15 +2801,17 @@ impl SessionBuilder {
             zones: Arc::new(OnceLock::new()),
             swept_links: Arc::new(SweptLinks::default()),
             attachments: Arc::new(Attachments::default()),
-            hardware: Arc::new(WithheldHardware::new(self.hardware.unwrap_or_else(|| {
-                if self.exclusions.is_empty() {
-                    return BTreeSet::new();
-                }
-                let mut table = crate::system::neighbor_cache::ipv4_neighbors();
-                table.extend(crate::system::neighbor_cache::ipv6_neighbors());
-                self.exclusions
-                    .hardware_in(table.iter().map(|entry| (entry.ip, entry.mac)))
-            }))),
+            hardware: Arc::new(WithheldHardware::read(
+                &self.exclusions,
+                self.neighbours.unwrap_or_else(|| {
+                    if self.exclusions.is_empty() {
+                        return Vec::new();
+                    }
+                    let mut table = crate::system::neighbor_cache::ipv4_neighbors();
+                    table.extend(crate::system::neighbor_cache::ipv6_neighbors());
+                    table.iter().map(|entry| (entry.ip, entry.mac)).collect()
+                }),
+            )),
             exclusions: Arc::new(self.exclusions),
             changed: Arc::new(ChangedHosts::default()),
             stages,
@@ -3851,7 +3874,7 @@ mod tests {
         ips.insert(excluded);
         let (session, ctx) = ScanSession::builder()
             .excluding(Exclusions::new(ips))
-            .excluding_hardware(BTreeSet::from([machine]))
+            .with_neighbours(vec![(excluded, Some(machine))])
             .build();
         let mut scope_ips = IpSet::new();
         scope_ips.insert(neighbour);

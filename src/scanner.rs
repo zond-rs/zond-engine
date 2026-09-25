@@ -1018,7 +1018,7 @@ fn spawn_discovery(
     // Narrows `targets` as it records them, so nothing below can probe an
     // excluded address. Addresses a sweep finds for itself never pass through
     // here, and are gated on the context instead.
-    let scope = TargetScope::from_ip_set(&mut targets, &cfg.exclusions);
+    let scope = address_scope(&mut targets, &ctx);
     let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, cfg);
 
     let reach = if cfg.segment_sweep {
@@ -1049,6 +1049,32 @@ fn spawn_discovery(
         orchestrator::run_correlation(&ctx, cfg.service_detection);
         recorder.finish(&ctx)
     })
+}
+
+/// The exclusions `ctx` holds a phase's targets to: the addresses written,
+/// and every address a machine they name answers at, as far as the scan has
+/// learned it. See
+/// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
+fn machine_policy(ctx: &ScanContext) -> crate::model::exclusion::Exclusions {
+    ctx.exclusions.widened(ctx.withheld_by_hardware())
+}
+
+/// Narrows `targets`, the addresses a phase was handed, to what the
+/// exclusions let it ask, and records what that cost as the phase's scope.
+///
+/// Held to [`machine_policy`], so an address the neighbour tables tie to an
+/// excluded machine is sent nothing and listed among the excluded. One the
+/// plan numbers is settled as withheld where it stands: a sweep that dropped
+/// it unsettled would owe it to every later sitting, which would drop it
+/// again.
+fn address_scope(targets: &mut IpSet, ctx: &ScanContext) -> TargetScope {
+    let tied = ctx.withheld_by_hardware();
+    for address in &tied {
+        if targets.contains(address) {
+            ctx.settle_withheld(*address);
+        }
+    }
+    TargetScope::from_ip_set(targets, &ctx.exclusions.widened(tied))
 }
 
 /// Runs one discovery pass over `targets` to completion, against an existing
@@ -1630,7 +1656,7 @@ fn spawn_scan(
             // resumed one asks nothing of a host an earlier sitting finished,
             // and its phase describes what it covered rather than the plan.
             let mut ips = orchestrator::unsettled_ips(&target_map, &settled);
-            let scope = TargetScope::from_ip_set(&mut ips, &cfg.exclusions);
+            let scope = address_scope(&mut ips, &ctx);
             let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg);
 
             // Targeted, never a sweep: a port scan was asked about addresses,
@@ -1664,7 +1690,12 @@ fn spawn_scan(
             Some(live) => probed_subset(&target_map, &live.live),
             None => target_map.clone(),
         };
-        let scope = TargetScope::from_target_map(&mut covered, &cfg.exclusions);
+        // Held to the machines the policy names as well as to its addresses,
+        // so the scope does not count what the walk will not ask. The plan is
+        // subtracted by address alone, since it is numbered in what it keeps
+        // and which addresses a machine answers at can differ between
+        // sittings; the walk withholds the rest by position.
+        let scope = TargetScope::from_target_map(&mut covered, &machine_policy(&ctx));
         crate::model::exclusion::Exclusions::withhold_targets(&cfg.exclusions, &mut target_map);
         let mut recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privilege, scope, &cfg);
         if let Some(why) = skipped {
@@ -1735,6 +1766,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("a scratch root");
         root
+    }
+
+    /// **A named address the neighbour tables tie to an excluded machine is
+    /// withheld from a sweep's targets, counted and listed as the excluded
+    /// address is, and settled.** An exclusion means the machine answering at
+    /// the address written, and a target named at another of its addresses
+    /// otherwise reached the wire. Unsettled, it would be owed to every later
+    /// sitting, which would withhold it again.
+    #[test]
+    fn a_named_address_of_an_excluded_machine_leaves_the_sweeps_scope() {
+        use crate::journal::settle::Outcome;
+        use crate::model::exclusion::Exclusions;
+        use crate::model::ip::set::{IpSet, Positions};
+        use crate::model::mac::MacAddr;
+        use std::net::IpAddr;
+
+        let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
+        let excluded: IpAddr = "192.0.2.30".parse().expect("literal");
+        let other: IpAddr = "192.0.2.40".parse().expect("literal");
+        let mut policy = IpSet::new();
+        policy.insert(excluded);
+        let mut targets: IpSet = "192.0.2.39-192.0.2.41".parse().expect("a range");
+        let (_session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(policy))
+            .with_neighbours(vec![(excluded, Some(machine)), (other, Some(machine))])
+            .counting(Positions::of(&targets))
+            .build();
+
+        let scope = address_scope(&mut targets, &ctx);
+
+        assert!(!targets.contains(&other), "it is still a target");
+        assert_eq!(targets.len(), 2);
+        assert_eq!((scope.addresses(), scope.withheld()), (2, 1));
+        let excluded_starts: Vec<IpAddr> = scope
+            .excluded()
+            .iter()
+            .map(|range| range.start_addr())
+            .collect();
+        assert!(excluded_starts.contains(&other), "{excluded_starts:?}");
+        assert!(excluded_starts.contains(&excluded), "{excluded_starts:?}");
+        assert_eq!(
+            ctx.settlements().count(Outcome::Withheld { position: 0 }),
+            1
+        );
+        assert_eq!(ctx.settlements().checkpoint().settled_count(), 1);
     }
 
     /// A configuration every scan refuses before it sends anything.

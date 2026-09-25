@@ -510,14 +510,17 @@ impl TargetScope {
     }
 
     /// Records `addresses` among what this phase's policy excluded: the other
-    /// addresses of a machine it names, heard during the phase and withheld
-    /// for the hardware they answered from. See
+    /// addresses of a machine it names, which the neighbour tables tied to it
+    /// or which answered from its hardware during the phase. See
     /// [`Exclusions::hardware_in`](crate::model::exclusion::Exclusions::hardware_in).
     ///
     /// Called once a phase is over, for the reason
-    /// [`record_sweeps`](Self::record_sweeps) is. They are not counted in
+    /// [`record_sweeps`](Self::record_sweeps) is. Nothing is added to
     /// [`withheld`](Self::withheld), which measures the policy against the
-    /// targets the phase was handed, and none of these was one.
+    /// targets the phase was handed: a target the tables tied to such a
+    /// machine was counted there when the scope was taken, and one heard
+    /// during the phase was withheld from what it recorded, not from what it
+    /// was handed.
     pub(crate) fn record_withheld_machines(&mut self, addresses: Vec<IpAddr>) {
         if addresses.is_empty() {
             return;

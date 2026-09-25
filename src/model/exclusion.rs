@@ -45,10 +45,15 @@
 //! a scan reads the host's own neighbour tables when it starts, learns which
 //! hardware address answers for each excluded address there without sending
 //! it anything, and holds every address answering from that hardware to the
-//! policy as well. A finding from one is dropped at the third point above, the address is
-//! refused a probe at the second from then on, and the phase lists it among
-//! its [`excluded`](crate::report::TargetScope::excluded) ranges, so the
-//! report still accounts for everything it left out.
+//! policy as well. Every other address the tables list at that hardware is
+//! held to it from the start: a target named at one is withheld from the
+//! phase's targets beside the excluded address, or passed over unasked where
+//! a port scan's walk reaches it, since that walk is numbered in the plan
+//! subtracted by address. An address heard answering from the hardware later
+//! has its finding dropped at the third point above and is refused a probe at
+//! the second from then on. Either way the phase lists it among its
+//! [`excluded`](crate::report::TargetScope::excluded) ranges, so the report
+//! still accounts for everything it left out.
 //!
 //! The tables are the only source. A machine this host has not spoken to
 //! recently has no entry there, and nothing else ties its addresses together
@@ -248,6 +253,49 @@ impl Exclusions {
             .collect()
     }
 
+    /// The addresses `table` says answer from one of `machines` that this
+    /// policy does not name itself: the rest of each machine it excludes, as
+    /// far as the neighbour tables know it. `machines` is what
+    /// [`hardware_in`](Self::hardware_in) read off the same table.
+    ///
+    /// Known before a packet is sent, which is what lets a scan hold a target
+    /// it was handed at one of these to the policy before asking it anything,
+    /// rather than dropping what it answers afterwards.
+    pub(crate) fn tied_to(
+        &self,
+        machines: &BTreeSet<MacAddr>,
+        table: impl IntoIterator<Item = (IpAddr, Option<MacAddr>)>,
+    ) -> BTreeSet<IpAddr> {
+        if machines.is_empty() {
+            return BTreeSet::new();
+        }
+        table
+            .into_iter()
+            .filter(|(_, mac)| mac.is_some_and(|mac| machines.contains(&mac)))
+            .map(|(ip, _)| ip)
+            .filter(|ip| !self.excludes(ip))
+            .collect()
+    }
+
+    /// This policy and `addresses` beside it, as one policy.
+    ///
+    /// For holding a phase's targets to a machine the policy names at the
+    /// addresses it has been tied to as well as at the one written. What a
+    /// report quotes from the result is its [`ranges`](Self::ranges), which
+    /// then list those addresses among the excluded, so the report still
+    /// accounts for everything the scan left out.
+    pub(crate) fn widened(&self, addresses: impl IntoIterator<Item = IpAddr>) -> Self {
+        let mut addresses = addresses.into_iter().peekable();
+        if addresses.peek().is_none() {
+            return self.clone();
+        }
+        let mut set = self.set.clone();
+        for address in addresses {
+            set.insert(address);
+        }
+        Self::new(set)
+    }
+
     /// Removes every excluded address from `ips`, returning how many it lost.
     ///
     /// The planning-time half of the enforcement. Call it before the target set
@@ -374,6 +422,38 @@ mod tests {
             BTreeSet::from([machine])
         );
         assert!(Exclusions::none().hardware_in(table).is_empty());
+    }
+
+    /// **The table names the rest of the machine before anything is sent.**
+    /// Every address it lists at an excluded machine's hardware is tied to
+    /// the policy, whether or not anyone named it, and an address with other
+    /// hardware, or none resolved yet, is not. The excluded address itself is
+    /// already the policy's and is not repeated.
+    #[test]
+    fn the_table_ties_every_other_address_of_an_excluded_machine() {
+        let at = |ip: &str, mac: Option<MacAddr>| (ip.parse().expect("literal"), mac);
+        let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
+        let table = [
+            at("192.0.2.30", Some(machine)),
+            at("192.0.2.40", Some(machine)),
+            at("192.0.2.31", Some(MacAddr::new(0x02, 0, 0, 0, 0, 0x31))),
+            at("192.0.2.32", None),
+            at("2001:db8::30", Some(machine)),
+        ];
+        let policy = Exclusions::new(ips("192.0.2.30"));
+        let machines = policy.hardware_in(table);
+
+        let tied: Vec<IpAddr> = policy.tied_to(&machines, table).into_iter().collect();
+        assert_eq!(
+            tied,
+            [v4(192, 0, 2, 40), "2001:db8::30".parse().expect("literal")]
+        );
+        assert!(policy.tied_to(&BTreeSet::new(), table).is_empty());
+
+        let widened = policy.widened(tied);
+        assert!(widened.excludes(&v4(192, 0, 2, 40)));
+        assert!(widened.excludes(&v4(192, 0, 2, 30)));
+        assert!(!widened.excludes(&v4(192, 0, 2, 31)));
     }
     use crate::model::ip::range::Ipv6Range;
     use crate::model::port::PortSet;

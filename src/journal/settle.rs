@@ -27,6 +27,7 @@
 //! | [`Answered`](Outcome::Answered) | `ledger.resolve(..) -> Some` | yes |
 //! | [`Exhausted`](Outcome::Exhausted) | `Due::Exhausted` | yes |
 //! | [`Skipped`](Outcome::Skipped) | the liveness pass heard silence | yes |
+//! | [`Withheld`](Outcome::Withheld) | the exclusion policy names its machine | yes |
 //! | [`Interrupted`](Outcome::Interrupted) | `ledger.drain_unresolved()` | no |
 //! | [`Unasked`](Outcome::Unasked) | no probe was sent | no |
 //! | [`Undecided`](Outcome::Undecided) | the liveness pass reached no verdict | no |
@@ -116,6 +117,21 @@ pub enum Outcome {
         position: u64,
     },
 
+    /// Its address answers from the hardware of a machine the exclusion
+    /// policy names, so no probe was allowed.
+    ///
+    /// Settled, and like [`Skipped`](Outcome::Skipped) sent nothing. The
+    /// policy names an address and means the machine answering at it, and
+    /// this host's neighbour tables tied the target's address to that machine
+    /// before anything was sent; see
+    /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
+    /// A resume does not ask it either, whatever the tables say by then,
+    /// since the one direction an exclusion may err in is withholding more.
+    Withheld {
+        /// Its position in the plan.
+        position: u64,
+    },
+
     /// Outstanding mid-retry-schedule when the scan stopped. The schedule was
     /// cut off rather than spent.
     Interrupted,
@@ -148,7 +164,8 @@ impl Outcome {
         match self {
             Outcome::Answered { position }
             | Outcome::Exhausted { position }
-            | Outcome::Skipped { position } => Some(position),
+            | Outcome::Skipped { position }
+            | Outcome::Withheld { position } => Some(position),
             Outcome::Interrupted | Outcome::Unasked | Outcome::Unroutable | Outcome::Undecided => {
                 None
             }
@@ -166,6 +183,7 @@ impl Outcome {
             Outcome::Answered { .. } => "answered",
             Outcome::Exhausted { .. } => "exhausted",
             Outcome::Skipped { .. } => "skipped",
+            Outcome::Withheld { .. } => "withheld",
             Outcome::Interrupted => "interrupted",
             Outcome::Unasked => "unasked",
             Outcome::Unroutable => "unroutable",
@@ -186,6 +204,7 @@ pub struct Settlements {
     answered: AtomicU64,
     exhausted: AtomicU64,
     skipped: AtomicU64,
+    withheld: AtomicU64,
     interrupted: AtomicU64,
     unasked: AtomicU64,
     unroutable: AtomicU64,
@@ -261,6 +280,7 @@ impl Settlements {
             Outcome::Answered { .. } => &self.answered,
             Outcome::Exhausted { .. } => &self.exhausted,
             Outcome::Skipped { .. } => &self.skipped,
+            Outcome::Withheld { .. } => &self.withheld,
             Outcome::Interrupted => &self.interrupted,
             Outcome::Unasked => &self.unasked,
             Outcome::Unroutable => &self.unroutable,
@@ -300,6 +320,10 @@ mod tests {
         );
 
         assert_eq!(Outcome::Skipped { position: 7 }.settled_position(), Some(7));
+        assert_eq!(
+            Outcome::Withheld { position: 7 }.settled_position(),
+            Some(7)
+        );
 
         for assigned in [
             Outcome::Interrupted,

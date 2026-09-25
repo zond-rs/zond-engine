@@ -440,6 +440,20 @@ impl Dispatcher {
                     continue;
                 }
 
+                // The machine behind a named address, which the plan's
+                // subtraction by address cannot see: the neighbour tables, or
+                // a reply earlier in the scan, tied this one to a machine the
+                // exclusions name. Settled, since the policy is the job's and
+                // a resume is owed nothing here, and before the screen, which
+                // never heard it and would leave it for the next sitting.
+                if !ctx.may_probe(&planned.target.ip) {
+                    ctx.record_outcome(Outcome::Withheld {
+                        position: planned.position,
+                    });
+                    accounted += 1;
+                    continue;
+                }
+
                 // Settled where it stands rather than emitted: the position is
                 // known here and nowhere downstream, and a target dropped
                 // without one would stall the watermark on it for the rest of
@@ -709,6 +723,60 @@ mod tests {
 
         assert_eq!(one.len(), 1, "one host answered");
         assert_eq!(two.len(), 3);
+    }
+
+    /// **A named target the neighbour tables tie to an excluded machine is
+    /// never asked.** The plan subtracts excluded addresses, and an exclusion
+    /// means the machine answering at one, so a target named at another of
+    /// that machine's addresses reached the wire and only its answer was
+    /// dropped. It is settled rather than left, so a resume owes it nothing,
+    /// and before the screen, which never heard it.
+    #[tokio::test]
+    async fn a_target_at_another_address_of_an_excluded_machine_is_not_emitted() {
+        use crate::model::exclusion::Exclusions;
+        use crate::model::mac::MacAddr;
+
+        let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
+        let excluded: IpAddr = "192.0.2.30".parse().expect("literal");
+        let other: IpAddr = "192.0.2.40".parse().expect("literal");
+        let mut policy = IpSet::new();
+        policy.insert(excluded);
+        let (_session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(policy))
+            .with_neighbours(vec![(excluded, Some(machine)), (other, Some(machine))])
+            .build();
+
+        let plan = || {
+            let mut map = TargetMap::new();
+            map.add_unit(TargetSet::new(
+                "192.0.2.40-192.0.2.41".parse::<IpSet>().expect("a range"),
+                "80".parse::<PortSet>().expect("ports"),
+            ));
+            map
+        };
+        let asked = |dispatcher: Dispatcher| {
+            let mut rx = dispatcher.run(&ctx);
+            async move {
+                let mut emitted = Vec::new();
+                while let Some(planned) = rx.recv().await {
+                    emitted.push(planned.target.ip);
+                }
+                emitted
+            }
+        };
+        let permitted: IpAddr = "192.0.2.41".parse().expect("literal");
+
+        // Asked on trust, as a scan whose liveness pass did not run asks.
+        assert_eq!(asked(Dispatcher::new(plan())).await, [permitted]);
+        // And behind a liveness pass, which withheld it too and so never
+        // heard it.
+        let live: IpSet = "192.0.2.41".parse().expect("a range");
+        let screened = Dispatcher::new(plan()).screened(live, IpSet::new());
+        assert_eq!(asked(screened).await, [permitted]);
+
+        let settlements = ctx.settlements();
+        assert_eq!(settlements.count(Outcome::Withheld { position: 0 }), 2);
+        assert_eq!(settlements.count(Outcome::Undecided), 0);
     }
 
     /// A target whose host answered nothing is settled where it stands. Dropped

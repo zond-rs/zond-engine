@@ -7294,6 +7294,8 @@ pub zond_engine::journal::settle::Outcome::Skipped::position: u64
 pub zond_engine::journal::settle::Outcome::Unasked
 pub zond_engine::journal::settle::Outcome::Undecided
 pub zond_engine::journal::settle::Outcome::Unroutable
+pub zond_engine::journal::settle::Outcome::Withheld
+pub zond_engine::journal::settle::Outcome::Withheld::position: u64
 impl zond_engine::journal::settle::Outcome
 pub fn zond_engine::journal::settle::Outcome::is_settled(self) -> bool
 pub fn zond_engine::journal::settle::Outcome::name(self) -> &'static str
