@@ -22,6 +22,7 @@ use std::net::IpAddr;
 use crate::support::fake_lan::FakeLan;
 use crate::support::fake_net::{FakeNet, Layer4, Policy};
 use crate::support::*;
+use zond_engine::journal::settle::Outcome;
 use zond_engine::model::host::Host;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::{PortSet, PortState};
@@ -137,9 +138,9 @@ async fn every_port_is_asked_on_every_attempt_at_a_silent_address() {
     }
 }
 
-/// A segment sweep stopped with addresses it never asked names every one of
-/// them, so a port scan's liveness filter can tell an address nobody asked
-/// about from one that answered nothing.
+/// A segment sweep stopped with addresses it never asked counts them as never
+/// asked, rather than as asked and silent, so its phase can tell an address
+/// nobody asked about from one that answered nothing.
 ///
 /// Stopped by the caller, so the sweep files no failure of its own; the
 /// addresses are still without a verdict, and that is what is asserted.
@@ -169,16 +170,11 @@ async fn a_segment_sweep_stopped_early_names_the_addresses_it_never_asked() {
         .expect("the sweep winds down")
         .expect("the sweep runs");
 
-    let unswept = ctx.unswept();
+    let unasked = ctx.settlements().count(Outcome::Unasked);
     assert!(
-        unswept.len() > range.len() as usize / 2,
-        "{} of {} addresses named, where most were never asked",
-        unswept.len(),
+        u128::from(unasked) > range.len() / 2,
+        "{unasked} of {} addresses counted unasked, where most were never asked",
         range.len()
-    );
-    assert!(
-        unswept.iter().all(|address| range.contains(address)),
-        "only addresses the sweep was handed are named"
     );
     assert!(ctx.failures_snapshot().is_empty());
 }

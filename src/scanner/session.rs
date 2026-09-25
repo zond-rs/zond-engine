@@ -925,29 +925,6 @@ impl UnroutableLog {
     }
 }
 
-/// Addresses a discovery sweep was handed and reached no verdict on, gathered
-/// across a phase.
-///
-/// The same shape as [`UnroutableLog`], and it answers the question a liveness
-/// filter has to ask before it reads a missing host as a host that is not
-/// there: whether anything asked.
-#[derive(Debug, Default)]
-pub(crate) struct UnsweptLog {
-    entries: Mutex<std::collections::BTreeSet<IpAddr>>,
-}
-
-impl UnsweptLog {
-    fn insert(&self, address: IpAddr) {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.insert(address);
-    }
-
-    fn snapshot(&self) -> Vec<IpAddr> {
-        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.iter().copied().collect()
-    }
-}
-
 /// Addresses whose ICMP errors a phase found rate-limited, gathered across
 /// it.
 ///
@@ -1417,8 +1394,6 @@ pub struct ScanContext {
     pub(crate) timed_out: Arc<TimedOutLog>,
     /// Addresses whose ICMP errors the scan found rate-limited.
     pub(crate) icmp_rate_limited: Arc<RateLimitedLog>,
-    /// Addresses a discovery sweep stopped before it reached a verdict on.
-    pub(crate) unswept: Arc<UnsweptLog>,
     /// Addresses a raw phase reached by TCP connect instead.
     pub(crate) reached_by_connect: Arc<ConnectLog>,
     /// Addresses a discovery pass found silent, or that a port phase standing
@@ -1926,27 +1901,6 @@ impl ScanContext {
     /// caller to work out from a host count why one of their targets is missing.
     pub fn record_unroutable(&self, address: IpAddr) {
         self.unroutable.insert(address);
-    }
-
-    /// Records that a discovery sweep stopped before it reached a verdict on
-    /// `address`: it was never asked, or it was still owed attempts.
-    ///
-    /// Neither is evidence that nothing is there. A sweep reports the host it
-    /// found and says nothing about the one it did not, so without this an
-    /// address the sweep never reached and one that answered nothing it was
-    /// asked are the same absence, and a port scan's liveness filter would
-    /// skip both.
-    pub fn record_unswept(&self, address: IpAddr) {
-        self.unswept.insert(address);
-    }
-
-    /// Every address a discovery sweep has recorded with
-    /// [`record_unswept`](Self::record_unswept), in address order.
-    ///
-    /// Read rather than taken, since the phase that ran the sweep and the one
-    /// that filters on its result are different readers of it.
-    pub fn unswept(&self) -> Vec<IpAddr> {
-        self.unswept.snapshot()
     }
 
     /// The unroutable addresses filed so far, taken.
@@ -2633,7 +2587,6 @@ impl SessionBuilder {
             unroutable: Arc::new(UnroutableLog::default()),
             timed_out: Arc::new(TimedOutLog::default()),
             icmp_rate_limited: Arc::new(RateLimitedLog::default()),
-            unswept: Arc::new(UnsweptLog::default()),
             reached_by_connect: Arc::new(ConnectLog::default()),
             silent: Arc::new(SilenceLog::default()),
             undecided: Arc::new(SilenceLog::default()),

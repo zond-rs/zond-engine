@@ -802,12 +802,6 @@ impl LocalScanner {
             .record_address_outcomes(Outcome::Interrupted, interrupted.len() as u64);
         self.ctx
             .record_address_outcomes(Outcome::Unasked, unasked.len() as u64);
-        // And which addresses they were, since neither kind says anything is
-        // absent: a port scan's liveness filter reads this before it skips a
-        // host the sweep did not find.
-        for address in interrupted.iter().chain(unasked) {
-            self.ctx.record_unswept(*address);
-        }
 
         // Addresses never asked leave the result narrower than the caller asked
         // for, which is what a failure says, and the number is the part a

@@ -834,12 +834,6 @@ impl RoutedScanner {
             .record_address_outcomes(Outcome::Interrupted, interrupted.len() as u64);
         self.ctx
             .record_address_outcomes(Outcome::Unasked, unasked.len() as u64);
-        // And which addresses they were, since neither kind says anything is
-        // absent: a port scan's liveness filter reads this before it skips a host
-        // the sweep did not find.
-        for address in interrupted.iter().chain(&unasked) {
-            self.ctx.record_unswept(*address);
-        }
 
         // Addresses never asked leave the result narrower than the caller asked
         // for, which is what a failure says, and the number is the part a reader
@@ -1330,9 +1324,10 @@ mod tests {
     ];
 
     /// A sweep that stops itself with addresses still queued says how many it
-    /// never asked, where a caller reads whether a result is partial, and names
-    /// every address it reached no verdict on, so a liveness filter does not
-    /// read them as hosts that are not there.
+    /// never asked, where a caller reads whether a result is partial, and files
+    /// none of the addresses it reached no verdict on as silent, so its phase
+    /// names them undecided rather than reading them as hosts that are not
+    /// there.
     #[test]
     fn a_sweep_cut_short_reports_what_it_never_asked() {
         let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, 1);
@@ -1349,12 +1344,13 @@ mod tests {
             ["2 of 3 addresses were never asked: deadline expired with them still queued"],
             "the result is partial and says by how much"
         );
-        let unswept: Vec<IpAddr> = THREE.iter().map(|&address| address.into()).collect();
+        assert_eq!(ctx.settlements().count(Outcome::Unasked), 2);
         assert_eq!(
-            ctx.unswept(),
-            unswept,
+            ctx.settlements().count(Outcome::Interrupted),
+            1,
             "the one still mid-schedule has no verdict either"
         );
+        assert!(ctx.take_silent().is_empty(), "none of them was silent");
     }
 
     /// An unreachable address is recorded against the address, which a front
@@ -1397,7 +1393,11 @@ mod tests {
         scanner.finish(StopReason::Aborted);
 
         assert!(ctx.take_failures().is_empty());
-        assert_eq!(ctx.unswept().len(), THREE.len());
+        assert_eq!(
+            ctx.settlements().count(Outcome::Unasked),
+            THREE.len() as u64
+        );
+        assert!(ctx.take_silent().is_empty(), "none of them was silent");
     }
 
     /// A sweep that asked everything and heard nothing has nothing to report:
@@ -1411,7 +1411,8 @@ mod tests {
         scanner.finish(StopReason::AttemptsSpent);
 
         assert!(ctx.take_failures().is_empty());
-        assert!(ctx.unswept().is_empty());
+        assert_eq!(ctx.settlements().count(Outcome::Unasked), 0);
+        assert_eq!(ctx.settlements().count(Outcome::Interrupted), 0);
     }
 
     /// The address every probe leaves from.
