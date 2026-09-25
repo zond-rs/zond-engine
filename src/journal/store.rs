@@ -1146,6 +1146,13 @@ pub fn remove(directory: &Path) -> Result<(), OpenError> {
 /// Keyed on the primary alone it would come back as two hosts that were never
 /// two.
 ///
+/// An address is the one [`ScopedIp::scoped`] makes of it with the record's
+/// zone, so a link-local carries its interface and two machines answering to
+/// `fe80::1` on two links stay two hosts. That is the identity the report keys
+/// its hosts by and the one a diff pairs them by, so a job read back holds what
+/// its live report held. A record that names no zone joins only others that
+/// name none, as in pairing.
+///
 /// A missing file is no findings rather than a failure, since a journal can be
 /// read before its first host is written.
 fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
@@ -1167,16 +1174,14 @@ fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
     // until it arrived, and the one it merges into keeps its slot while the
     // other empties.
     let mut hosts: Vec<Option<Host>> = Vec::new();
-    let mut slot_of: std::collections::BTreeMap<std::net::IpAddr, usize> =
+    let mut slot_of: std::collections::BTreeMap<ScopedIp, usize> =
         std::collections::BTreeMap::new();
 
     while let Some(record) = reader.read::<HostRecord>()? {
         let host = Host::from(&record);
 
-        let mut matched: Vec<usize> = host
-            .ips()
-            .iter()
-            .filter_map(|ip| slot_of.get(ip).copied())
+        let mut matched: Vec<usize> = scoped_ips(&host)
+            .filter_map(|ip| slot_of.get(&ip).copied())
             .collect();
         matched.sort_unstable();
         matched.dedup();
@@ -1202,12 +1207,21 @@ fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
         let Some(settled) = hosts[slot].as_ref() else {
             continue;
         };
-        for ip in settled.ips() {
-            slot_of.insert(*ip, slot);
+        for ip in scoped_ips(settled) {
+            slot_of.insert(ip, slot);
         }
     }
 
     Ok(hosts.into_iter().flatten().collect())
+}
+
+/// Every address of `host`, each carrying the host's zone where the address
+/// needs one to name a machine.
+fn scoped_ips(host: &Host) -> impl Iterator<Item = ScopedIp> + '_ {
+    host.ips().iter().map(|ip| match host.zone() {
+        Some(zone) => ScopedIp::scoped(*ip, zone.clone()),
+        None => ScopedIp::unscoped(*ip),
+    })
 }
 
 /// Folds `host` into the one at `slot`, or puts it there if the slot is empty.
@@ -2562,6 +2576,51 @@ mod tests {
         assert_eq!(restored.len(), 1, "one address is one host");
         assert!(restored[0].is_alive(), "the first record's status survived");
         assert_eq!(restored[0].port_count(), 1, "the second record's port too");
+    }
+
+    /// `fe80::1` is a different machine on every link, so two gateways found
+    /// under that one number on two interfaces are two hosts. Folded by the
+    /// bare address, a resume would restore one of them and a report read back
+    /// from the journal would list fewer hosts than the scan found, where the
+    /// live report and a diff of it keep both.
+    #[test]
+    fn link_locals_on_two_interfaces_come_back_as_two_hosts() {
+        use crate::model::host::HostStatus;
+        use crate::model::ip::scoped::Zone;
+
+        let root = scratch("zones");
+        let map = plan("192.0.2.1", "80");
+        let ip: std::net::IpAddr = "fe80::1".parse().expect("an address");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            let hosts: Vec<Host> = [Zone::new(4, "en0"), Zone::new(9, "en7")]
+                .into_iter()
+                .map(|zone| {
+                    let mut host = Host::new(ip);
+                    host.set_status(HostStatus::Up);
+                    host.set_zone(zone);
+                    host
+                })
+                .collect();
+            journal.record_hosts(&hosts).expect("records both");
+
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        assert_eq!(report(&directory).expect("reads").host_count(), 2);
+
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
+        let mut zones: Vec<&str> = journal
+            .restored()
+            .iter()
+            .filter_map(|host| host.zone().map(Zone::name))
+            .collect();
+        zones.sort_unstable();
+        assert_eq!(zones, ["en0", "en7"], "each restored on its own link");
     }
 
     /// A journal that stopped before it found anything reads as no findings, not
