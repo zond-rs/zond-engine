@@ -39,8 +39,18 @@
 //! as an answer; see [`exhausted`] and [`patiently`].
 //!
 //! A limit that leaves nothing once the reserve is set aside is too small for
-//! a scan to keep both its connections and its journal, and a scan is refused
-//! under it before anything is sent; see [`too_few`].
+//! a scan to keep both its connections and its journal, and so is a table
+//! already too full, when the scan starts, to hold the reserve and a socket
+//! beside what is open: a scan is refused under either before anything is
+//! sent; see [`too_few`].
+//!
+//! What is open is counted for that refusal and not for the gate's size. The
+//! gate is sized once for the life of the process, and what is open at that
+//! moment is a snapshot of an application that goes on opening and closing its
+//! own files: sized from it, a gate would keep for good a shortfall that
+//! passed, or a room that did not last. The refusal is asked afresh by each
+//! scan, of the table as it stands then, which is the moment a scan either
+//! fits or does not.
 //!
 //! The limit is read and never raised. Raising it is a decision about the
 //! whole process, which a library does not own: the soft limit is inherited by
@@ -220,20 +230,55 @@ fn reserve_within(soft: usize) -> usize {
 /// first is below the second.
 ///
 /// A scan needs a socket for its connections beside the [`RESERVE`] the rest
-/// of the process keeps. Below that the budget would have to come out of the
-/// reserve, and the journal, the report, and the application around the scan
-/// would find their files refused somewhere in the middle of it, where the
-/// failure says nothing about why. Refused before anything is sent, the scan
-/// is not half run, and the reason names its remedy.
+/// of the process keeps, and beside whatever the process holds open when the
+/// scan starts: a table a parent filled before handing it over, or an
+/// application's own files. Below that the budget would have to come out of
+/// the reserve, and the journal, the report, and the application around the
+/// scan would find their files refused somewhere in the middle of it, where
+/// the failure says nothing about why; or the connections would find none
+/// free and wait out their [`PATIENCE`] to be filed unasked. Refused before
+/// anything is sent, the scan is not half run, and the reason names its
+/// remedy: a limit that holds what is open and the scan.
+///
+/// The reserve is counted beside what is open rather than overlapping it,
+/// though some of what it stands for may be open already, because it is also
+/// what the scan opens once it has begun: its captures, the resolver's
+/// sockets, a second socket a unit holds beside its first.
 pub(crate) fn too_few() -> Option<(usize, usize)> {
-    too_few_within(soft_limit())
+    let soft = soft_limit();
+    too_few_within(soft, soft.and_then(open_descriptors))
 }
 
-/// [`too_few`], for a process whose soft limit is `soft`.
-fn too_few_within(soft: Option<usize>) -> Option<(usize, usize)> {
-    let needed = RESERVE + 1;
+/// [`too_few`], for a process whose soft limit is `soft` and which holds
+/// `open` descriptors, where that could be counted.
+fn too_few_within(soft: Option<usize>, open: Option<usize>) -> Option<(usize, usize)> {
+    let needed = open.unwrap_or(0) + RESERVE + 1;
     soft.filter(|&soft| soft < needed)
         .map(|soft| (soft, needed))
+}
+
+/// How many descriptors this process holds open, where it can say: every one
+/// of `soft` when the table is too full to open the listing.
+///
+/// Read from the directory the system lists a process's open descriptors
+/// in, which Linux and macOS both keep at `/dev/fd`, less the one the listing
+/// itself holds while it is read. Elsewhere, and wherever the listing will
+/// not open for another reason, nothing is counted and the limit alone
+/// decides.
+fn open_descriptors(soft: usize) -> Option<usize> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        match std::fs::read_dir("/dev/fd") {
+            Ok(listing) => Some(listing.count().saturating_sub(1)),
+            Err(error) if exhausted(&error) => Some(soft),
+            Err(_) => None,
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = soft;
+        None
+    }
 }
 
 /// The number of descriptors this process may hold, where it has such a limit
@@ -414,11 +459,57 @@ mod tests {
     /// what to raise the limit to.
     #[test]
     fn a_limit_that_leaves_no_socket_beside_the_reserve_refuses_the_scan() {
-        assert_eq!(too_few_within(Some(16)), Some((16, RESERVE + 1)));
-        assert_eq!(too_few_within(Some(0)), Some((0, RESERVE + 1)));
-        assert_eq!(too_few_within(Some(RESERVE + 1)), None);
-        assert_eq!(too_few_within(Some(256)), None);
-        assert_eq!(too_few_within(None), None, "no limit to fall short of");
+        assert_eq!(too_few_within(Some(16), None), Some((16, RESERVE + 1)));
+        assert_eq!(too_few_within(Some(0), None), Some((0, RESERVE + 1)));
+        assert_eq!(too_few_within(Some(RESERVE + 1), None), None);
+        assert_eq!(too_few_within(Some(256), None), None);
+        assert_eq!(
+            too_few_within(None, None),
+            None,
+            "no limit to fall short of"
+        );
+    }
+
+    /// What is open when the scan starts is held beside the reserve and the
+    /// socket, and the limit named is one that would hold all three.
+    #[test]
+    fn what_is_open_already_is_needed_beside_the_reserve() {
+        assert_eq!(
+            too_few_within(Some(64), Some(57)),
+            Some((64, 57 + RESERVE + 1))
+        );
+        assert_eq!(too_few_within(Some(64), Some(10)), None);
+        assert_eq!(too_few_within(Some(256), Some(64)), None);
+        assert_eq!(too_few_within(None, Some(57)), None);
+    }
+
+    /// A process whose table is nearly full before the scan starts, held by
+    /// whatever started it, is refused the scan up front, and told what limit
+    /// would hold it. Let through because its limit alone is wide enough, the
+    /// scan's connections would wait out their patience for sockets nothing
+    /// frees and be filed unasked, every one of them.
+    #[cfg(unix)]
+    #[test]
+    fn a_table_already_nearly_full_refuses_the_scan_whatever_the_limit() {
+        if !testing::in_a_process_of_its_own(
+            module_path!(),
+            "a_table_already_nearly_full_refuses_the_scan_whatever_the_limit",
+        ) {
+            return;
+        }
+        let mut held = testing::exhaust(64);
+        // Seven free, as a parent that filled the table leaves them.
+        held.truncate(held.len() - 7);
+
+        let refused = too_few();
+        drop(held);
+
+        let (limit, needed) = refused.expect("a scan with seven descriptors free");
+        assert_eq!(limit, 64);
+        assert!(
+            needed > 64 + RESERVE - 7,
+            "{needed} names no limit that would hold what is open and the reserve"
+        );
     }
 
     /// A socket refused because the table is full is asked for again rather

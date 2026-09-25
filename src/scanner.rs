@@ -238,7 +238,9 @@ pub enum ScanError {
     Evasion(#[from] crate::evasion::EvasionError),
 
     /// The process may hold too few file descriptors for a scan to keep a
-    /// socket for its connections beside what the rest of the process needs.
+    /// socket for its connections beside what the rest of the process needs,
+    /// counting what it holds open when the scan starts where that can be
+    /// counted.
     ///
     /// Checked before anything is sent. Run anyway, the scan's connections
     /// and the process's other files, a journal among them, would take their
@@ -250,7 +252,7 @@ pub enum ScanError {
     TooFewDescriptors {
         /// The soft limit the process has.
         limit: usize,
-        /// The least a scan needs.
+        /// The least limit a scan needs, beside what the process holds open.
         needed: usize,
     },
 }
@@ -341,8 +343,9 @@ fn recording_options(
     journal
 }
 
-/// Refuses a scan in a process whose descriptor limit leaves its connections
-/// no socket; see [`ScanError::TooFewDescriptors`].
+/// Refuses a scan in a process whose descriptor limit, or whose table as it
+/// stands, leaves its connections no socket; see
+/// [`ScanError::TooFewDescriptors`].
 fn enough_descriptors() -> Result<(), ScanError> {
     match crate::system::descriptors::too_few() {
         Some((limit, needed)) => Err(ScanError::TooFewDescriptors { limit, needed }),
