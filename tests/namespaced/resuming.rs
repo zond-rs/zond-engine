@@ -139,7 +139,7 @@ async fn a_job_of_addresses_with_no_route_finishes_in_one_sitting() {
         zond_engine::scanner::discover_with_journal(addresses.clone(), &cfg, journal)
             .await
             .expect("the sweep starts");
-    task.join().await.expect("the sweep finishes");
+    let _report = task.join().await.expect("the sweep finishes");
     let (_journal, checkpoint) =
         Journal::resume(&directory, &recorded, Privilege::current()).expect("resumes");
     assert_eq!(
@@ -166,7 +166,7 @@ async fn a_job_of_addresses_with_no_route_finishes_in_one_sitting() {
         )
         .await
         .expect("the scan starts");
-        task.join().await.expect("the scan finishes");
+        let _report = task.join().await.expect("the scan finishes");
         let (_journal, checkpoint) =
             Journal::resume(&directory, &recorded, Privilege::current()).expect("resumes");
         let owed: Vec<_> = checkpoint.remaining(plan.iter()).collect();
