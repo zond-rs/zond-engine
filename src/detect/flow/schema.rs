@@ -119,6 +119,14 @@ pub struct Step {
     /// Written as one pattern, a list of patterns, or full rules.
     #[serde(default, deserialize_with = "one_or_many")]
     pub expect: Vec<MatchSpec>,
+    /// The pattern marking where this step's reply ends, for a service that
+    /// greets on connect and then pauses before answering a pipelined command.
+    /// Absent = the reply ends at a close or the port falling silent, which is
+    /// right for a service answering one command per connection. Set, the read
+    /// waits through the pause up to the flow's deadline for this line rather
+    /// than taking the pause for the end.
+    #[serde(default)]
+    pub until: Option<String>,
     /// var name → the rule whose capture supplies its value.
     #[serde(default)]
     pub bind: BTreeMap<String, MatchSpec>,

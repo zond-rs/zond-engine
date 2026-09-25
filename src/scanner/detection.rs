@@ -764,6 +764,10 @@ impl Probe for Pooled {
     fn plan(&mut self, exchanges: u32) {
         self.inner.plan(exchanges);
     }
+
+    fn reads_until(&mut self, pattern: Option<&str>) {
+        self.inner.reads_until(pattern);
+    }
 }
 
 /// The budget a flow's probe is held to, filled from what the detection declared

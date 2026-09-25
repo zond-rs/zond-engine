@@ -1410,6 +1410,7 @@ pub zond_engine::detect::flow::schema::Step::finding: alloc::vec::Vec<zond_engin
 pub zond_engine::detect::flow::schema::Step::for_each: core::option::Option<zond_engine::detect::flow::schema::ForEach>
 pub zond_engine::detect::flow::schema::Step::on_no_match: zond_engine::detect::flow::schema::OnNoMatch
 pub zond_engine::detect::flow::schema::Step::send: core::option::Option<alloc::string::String>
+pub zond_engine::detect::flow::schema::Step::until: core::option::Option<alloc::string::String>
 pub zond_engine::detect::flow::schema::Step::when: core::option::Option<alloc::string::String>
 impl core::clone::Clone for zond_engine::detect::flow::schema::Step
 pub fn zond_engine::detect::flow::schema::Step::clone(&self) -> zond_engine::detect::flow::schema::Step
@@ -1533,6 +1534,7 @@ pub fn zond_engine::detect::flow::SocketProbe::new(core::net::socket_addr::Socke
 impl zond_engine::detect::flow::Probe for zond_engine::detect::flow::SocketProbe
 pub fn zond_engine::detect::flow::SocketProbe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
 pub fn zond_engine::detect::flow::SocketProbe::plan(&mut self, u32)
+pub fn zond_engine::detect::flow::SocketProbe::reads_until(&mut self, core::option::Option<&str>)
 pub fn zond_engine::detect::flow::SocketProbe::reply_complete(&self) -> bool
 pub fn zond_engine::detect::flow::SocketProbe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 impl core::marker::Freeze for zond_engine::detect::flow::SocketProbe
@@ -1545,11 +1547,13 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::SocketP
 pub trait zond_engine::detect::flow::Probe: core::marker::Send
 pub fn zond_engine::detect::flow::Probe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
 pub fn zond_engine::detect::flow::Probe::plan(&mut self, u32)
+pub fn zond_engine::detect::flow::Probe::reads_until(&mut self, core::option::Option<&str>)
 pub fn zond_engine::detect::flow::Probe::reply_complete(&self) -> bool
 pub fn zond_engine::detect::flow::Probe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 impl zond_engine::detect::flow::Probe for zond_engine::detect::flow::SocketProbe
 pub fn zond_engine::detect::flow::SocketProbe::last_refusal(&self) -> core::option::Option<zond_engine::detect::flow::ProbeRefusal>
 pub fn zond_engine::detect::flow::SocketProbe::plan(&mut self, u32)
+pub fn zond_engine::detect::flow::SocketProbe::reads_until(&mut self, core::option::Option<&str>)
 pub fn zond_engine::detect::flow::SocketProbe::reply_complete(&self) -> bool
 pub fn zond_engine::detect::flow::SocketProbe::speak(&mut self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn zond_engine::detect::flow::check(&zond_engine::detect::flow::schema::FlowDetection) -> alloc::vec::Vec<zond_engine::detect::flow::ValidationError>

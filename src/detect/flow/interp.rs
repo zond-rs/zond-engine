@@ -99,6 +99,21 @@ pub trait Probe: Send {
         let _ = exchanges;
     }
 
+    /// The pattern marking where the next [`speak`](Self::speak)'s reply ends,
+    /// or [`None`] to let it end at a close or the port falling silent.
+    ///
+    /// For a probe reading a reply off a live socket. A service that greets on
+    /// connect and then pauses before answering a pipelined command, an FTP
+    /// server holding its reply for a failed-login delay among them, falls
+    /// silent with its answer still to come, and a reader taking that pause for
+    /// the end keeps only the greeting. A flow that knows the line its reply
+    /// closes with names it here, and the read waits through the pause for it.
+    /// Set before each `speak`; the default ignores it, as a canned probe whose
+    /// reply is whole in hand can.
+    fn reads_until(&mut self, pattern: Option<&str>) {
+        let _ = pattern;
+    }
+
     /// Why the most recent [`speak`](Self::speak) returned [`None`], if a budget
     /// refused the exchange rather than the port merely going silent. The default
     /// is [`None`]: a probe with no budget of its own never refuses, it only goes
@@ -260,7 +275,13 @@ fn run_step(
         Some(send) => match interpolate(send, env) {
             // Decoded byte-for-byte, so a binary pattern such as `\xa2` matches
             // the byte it names rather than a lossy replacement character.
-            Some(text) => probe.speak(&unescape(&text)).map(|reply| latin1(&reply)),
+            Some(text) => {
+                // Where this step's reply ends, so the probe waits through a
+                // pause the port takes before answering rather than taking it
+                // for the end. `None` for a step that named none.
+                probe.reads_until(step.until.as_deref());
+                probe.speak(&unescape(&text)).map(|reply| latin1(&reply))
+            }
             // A send whose template names an unbound variable cannot run.
             None => return on_no_match(step),
         },
@@ -328,6 +349,11 @@ pub(crate) fn check_patterns(flow: &FlowDetection) -> Result<(), String> {
         for spec in &step.expect {
             pattern::compile(spec.pattern(), MAX_COMPILED_REGEX_BYTES).map_err(|error| {
                 format!("step {index} `expect` has a pattern that will not compile: {error}")
+            })?;
+        }
+        if let Some(until) = &step.until {
+            pattern::compile(until, MAX_COMPILED_REGEX_BYTES).map_err(|error| {
+                format!("step {index} `until` has a pattern that will not compile: {error}")
             })?;
         }
         for (var, spec) in &step.bind {

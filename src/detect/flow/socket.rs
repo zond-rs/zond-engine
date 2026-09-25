@@ -74,6 +74,10 @@ pub struct SocketProbe {
     /// The exchanges the flow may still make, this probe's own included, once
     /// the flow has said how many it plans. See [`Probe::plan`].
     exchanges_left: Option<u32>,
+    /// Where the coming `speak`'s reply ends, its source kept beside the
+    /// compiled form so a `for_each` sending the same step does not recompile
+    /// it. See [`Probe::reads_until`].
+    reply_end: Option<(String, exchange::ReplyEnd)>,
 }
 
 /// The least a datagram is waited on for its reply, however many the flow
@@ -121,6 +125,7 @@ impl SocketProbe {
             last_refusal: None,
             last_complete: false,
             exchanges_left: None,
+            reply_end: None,
         }
     }
 
@@ -203,6 +208,7 @@ impl Probe for SocketProbe {
                 bytes,
                 self.deadline,
                 self.bytes_left,
+                self.reply_end.as_ref().map(|(_, end)| end),
             ),
             Protocol::Udp => exchange::udp(
                 self.addr,
@@ -253,6 +259,23 @@ impl Probe for SocketProbe {
 
     fn plan(&mut self, exchanges: u32) {
         self.exchanges_left = Some(exchanges);
+    }
+
+    fn reads_until(&mut self, pattern: Option<&str>) {
+        // Kept compiled across a `for_each` that sends the same step: recompile
+        // only when the pattern changes, and clear it when a step names none.
+        match pattern {
+            Some(source)
+                if self
+                    .reply_end
+                    .as_ref()
+                    .is_some_and(|(kept, _)| kept == source) => {}
+            Some(source) => {
+                self.reply_end = exchange::ReplyEnd::compile(source)
+                    .map(|compiled| (source.to_string(), compiled));
+            }
+            None => self.reply_end = None,
+        }
     }
 }
 
@@ -460,6 +483,54 @@ mod tests {
         assert!(
             !probe.reply_complete(),
             "a reply ended by the port going quiet was taken as whole"
+        );
+    }
+
+    /// A service that greets on connect and then pauses, longer than the idle
+    /// gap, before answering the pipelined command. Without a stated end the
+    /// read takes the pause for the end and keeps only the greeting; told where
+    /// the reply ends, it waits through the pause and reads the answer whole.
+    #[test]
+    fn a_reply_named_end_waits_through_a_pause_the_idle_gap_would_end_it_at() {
+        use std::io::{Read as _, Write as _};
+
+        // Two connections: one probe told where its reply ends, one not. Each
+        // gets a fresh listener slot so the pause is the port's, not a queue.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for sock in listener.incoming().take(2) {
+                let Ok(mut sock) = sock else { return };
+                std::thread::spawn(move || {
+                    // Greet at once, as an FTP server does.
+                    let _ = sock.write_all(b"220 service ready\r\n");
+                    let _ = sock.read(&mut [0u8; 512]);
+                    // Hold the verdict past the idle gap, as a failed login is
+                    // held, then answer and close.
+                    std::thread::sleep(Duration::from_millis(1_100));
+                    let _ = sock.write_all(b"230 logged in\r\n");
+                });
+            }
+        });
+
+        // Told where the reply ends: the read waits through the pause and the
+        // verdict line arrives.
+        let mut told = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 3_000, 1));
+        told.reads_until(Some("(?m)^230[ -]"));
+        let reply = told.speak(b"USER anonymous\r\n").unwrap_or_default();
+        assert!(
+            String::from_utf8_lossy(&reply).contains("230"),
+            "the named end did not wait through the pause: {:?}",
+            String::from_utf8_lossy(&reply)
+        );
+
+        // Not told: the idle gap ends the reply at the greeting, before the
+        // verdict, which is the shortfall the named end exists to close.
+        let mut untold = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 3_000, 1));
+        let greeting = untold.speak(b"USER anonymous\r\n").unwrap_or_default();
+        assert!(
+            !String::from_utf8_lossy(&greeting).contains("230"),
+            "the idle gap was expected to end the reply before the verdict"
         );
     }
 

@@ -45,9 +45,46 @@ use std::time::{Duration, Instant};
 
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::fingerprint::Tunnel;
+use crate::fingerprint::pattern::{self, CompiledPattern};
 use crate::protocols::http::message_end as http_message_end;
 use crate::system::descriptors;
 use crate::transport::dial::Egress;
+
+/// The pattern a step declares its reply ends at, compiled once.
+///
+/// Most of what the corpus speaks either says where it ends, as HTTP does, or
+/// answers one command per connection, so the port going quiet is the end. A
+/// service that greets on connect and then pauses before answering a pipelined
+/// command, an FTP server holding its reply for a failed-login delay among
+/// them, ends neither way: it has fallen quiet with its answer still to come.
+/// This is the flow's own statement of where such a reply ends, a line the
+/// answer closes with, so the read waits through the pause for it rather than
+/// taking the pause for the end.
+pub(crate) struct ReplyEnd(CompiledPattern);
+
+impl ReplyEnd {
+    /// Compiles `pattern`, or [`None`] where it will not compile. The corpus is
+    /// validated at build, so a shipped flow's pattern is sound here; a caller's
+    /// unsound one simply leaves the reply to end as it would with none set.
+    pub(crate) fn compile(pattern: &str) -> Option<Self> {
+        pattern::compile(pattern, crate::fingerprint::MAX_COMPILED_REGEX_BYTES)
+            .ok()
+            .map(Self)
+    }
+
+    /// Whether `reply` has reached the line the flow named as its end.
+    fn reached(&self, reply: &[u8]) -> bool {
+        self.0.identify(&latin1(reply), None).is_some()
+    }
+}
+
+/// Decodes bytes as Latin-1, each byte its own code point, so a byte-oriented
+/// end-of-reply pattern matches the bytes it names rather than a lossy
+/// conversion's replacements. The reading a flow's own matcher does; see
+/// [`super::flow`].
+fn latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|&byte| byte as char).collect()
+}
 
 /// The largest datagram a UDP reply is read into, the theoretical maximum
 /// payload of one.
@@ -129,6 +166,11 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
 /// waited out until the deadline, since a socket that comes free later still
 /// leaves the question time to be asked, and one that never does comes back
 /// [`ExchangeError::Starved`].
+/// A step's `until` marks where its reply ends: while it is set the read waits
+/// on the port up to the deadline rather than ending the reply at an idle gap,
+/// so a pause the port takes before answering a pipelined command does not read
+/// as the end. [`None`] leaves the reply to end at the idle gap, which is right
+/// for a service that answers one command per connection.
 pub(crate) fn tcp(
     addr: SocketAddr,
     egress: Egress,
@@ -136,6 +178,7 @@ pub(crate) fn tcp(
     bytes: &[u8],
     deadline: Instant,
     cap: u64,
+    until: Option<&ReplyEnd>,
 ) -> Result<Reply, ExchangeError> {
     let left = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
     let tcp = egress
@@ -163,22 +206,25 @@ pub(crate) fn tcp(
             Ok(read) => {
                 reply.extend_from_slice(&buffer[..read]);
                 // A message that has said where it ends and got there is over,
-                // whether or not the server lets the connection go.
-                if http_message_end(&reply).is_some() {
+                // whether or not the server lets the connection go. So is one
+                // that has reached the line its flow named as its end.
+                if http_message_end(&reply).is_some()
+                    || until.is_some_and(|end| end.reached(&reply))
+                {
                     whole = true;
                     break;
                 }
-                // Once the port has begun to answer, it has only as long as the
-                // idle gap to go on doing so, and never past the deadline.
                 let Some(left) = remaining(deadline) else {
                     break;
                 };
-                let gap = *gap.get_or_insert_with(|| idle_gap(sent.elapsed(), left));
-                if stream
-                    .socket()
-                    .set_read_timeout(Some(gap.min(left)))
-                    .is_err()
-                {
+                // A flow that named where its reply ends is waited on for it up
+                // to the deadline; otherwise the port has only the idle gap to
+                // go on answering once it has begun, and never past the deadline.
+                let wait = match until {
+                    Some(_) => left,
+                    None => (*gap.get_or_insert_with(|| idle_gap(sent.elapsed(), left))).min(left),
+                };
+                if stream.socket().set_read_timeout(Some(wait)).is_err() {
                     break;
                 }
             }
@@ -337,6 +383,7 @@ mod tests {
             b"GET / HTTP/1.1\r\n\r\n",
             Instant::now() + Duration::from_secs(5),
             4096,
+            None,
         )
         .map(|reply| reply.bytes);
         assert_eq!(

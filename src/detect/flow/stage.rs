@@ -605,6 +605,10 @@ impl Probe for CachingProbe<'_> {
     fn plan(&mut self, exchanges: u32) {
         self.inner.plan(exchanges);
     }
+
+    fn reads_until(&mut self, pattern: Option<&str>) {
+        self.inner.reads_until(pattern);
+    }
 }
 
 /// Whether any enabled flow in `corpus` gates onto a port with these facts, so a

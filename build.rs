@@ -591,6 +591,9 @@ fn validate_flow_patterns(flow: &schema::FlowDetection, path: &Path) {
                 format_args!("{file}: '{id}' step {index} expect"),
             );
         }
+        if let Some(until) = &step.until {
+            compile_flow_pattern(until, format_args!("{file}: '{id}' step {index} until"));
+        }
         for (var, spec) in &step.bind {
             let compiled = compile_flow_pattern(
                 spec.pattern(),

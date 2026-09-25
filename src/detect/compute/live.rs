@@ -32,7 +32,7 @@
 //! resolver is served, bounded the way `speak` is.
 
 use std::net::{IpAddr, SocketAddr};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::detect::exchange::{self, ExchangeError};
 use crate::fingerprint::Tunnel;
@@ -62,6 +62,17 @@ pub struct LiveCapabilities {
     /// The origin the injected clock counts from.
     clock: Instant,
 }
+
+/// The least a module's datagram is waited on for its reply, whatever share of
+/// the run's time an even split would give it.
+///
+/// Half a second holds an intercontinental round trip and an agent's work on
+/// the request. A share below it is no time for any reply to arrive, so a
+/// datagram given less is a guess silently not tried; the floor keeps the split
+/// from starving the datagrams of the time to be answered. The same figure the
+/// Tier-1 [socket probe](crate::detect::flow::SocketProbe) floors a flow's
+/// datagram wait at, and for the same reason.
+const DATAGRAM_WAIT_FLOOR: Duration = Duration::from_millis(500);
 
 impl LiveCapabilities {
     /// Capabilities bound to `addr`, held to `budget`. `tunnel` is the transport
@@ -96,6 +107,24 @@ impl LiveCapabilities {
         self.egress = egress;
         self
     }
+
+    /// When to stop waiting for the coming datagram's reply: an even share of
+    /// the time left among the datagrams the connection budget still permits,
+    /// never below [`DATAGRAM_WAIT_FLOOR`] or past the run's deadline.
+    ///
+    /// Silence is an ordinary answer over UDP, and a module guessing over it,
+    /// one datagram per guess, draws one from every wrong guess. Given the
+    /// whole of what is left, the first unanswered guess would spend it and the
+    /// rest would go unsent; an even share hears each out and leaves the last
+    /// its turn. A module's loop is its own, so how many datagrams follow is not
+    /// known ahead as a flow's are; the connection budget is the count instead,
+    /// the most datagrams the run may yet send, `connections` including the one
+    /// about to go. A module that sends one datagram, its budget one connection,
+    /// waits the whole of what is left, as it did.
+    fn datagram_deadline(&self, connections: u32, left: Duration) -> Instant {
+        let share = (left / connections.max(1)).max(DATAGRAM_WAIT_FLOOR);
+        (Instant::now() + share).min(self.deadline)
+    }
 }
 
 impl Capabilities for LiveCapabilities {
@@ -104,14 +133,17 @@ impl Capabilities for LiveCapabilities {
         if self.connections_left == 0 {
             return Err(CapError::ConnectionBudgetExhausted);
         }
-        if exchange::remaining(self.deadline).is_none() {
+        let Some(left) = exchange::remaining(self.deadline) else {
             return Err(CapError::TimedOut);
-        }
+        };
         let sent = bytes.len() as u64;
         if sent > self.bytes_left {
             return Err(CapError::ByteBudgetExhausted);
         }
         self.bytes_left -= sent;
+        // The datagram's wait is a share of the time left among the datagrams
+        // the budget still permits, this one counted in before it is spent.
+        let datagram_until = self.datagram_deadline(self.connections_left, left);
         self.connections_left -= 1;
 
         // The reply may consume at most what the byte budget has left.
@@ -123,13 +155,20 @@ impl Capabilities for LiveCapabilities {
                 bytes,
                 self.deadline,
                 self.bytes_left,
+                // A module reads its reply with its own logic and declares no
+                // end-of-reply line; its reply ends at the idle gap or a close.
+                None,
             )
             .map_err(CapError::from),
+            // A datagram unanswered is silence, the ordinary answer over UDP, so
+            // it waits only its share of the time rather than the run's whole
+            // budget: a module trying guess after guess hears each out and still
+            // reaches the last. See [`datagram_deadline`](Self::datagram_deadline).
             Protocol::Udp => exchange::udp(
                 self.addr,
                 self.egress,
                 bytes,
-                self.deadline,
+                datagram_until,
                 self.bytes_left,
             )
             .map_err(CapError::from),
@@ -296,6 +335,59 @@ mod tests {
             "the reply was not capped: {}",
             reply.len()
         );
+    }
+
+    /// A module's UDP guesses each wait only their share of the time left, so a
+    /// first guess that draws silence does not spend the whole budget and leave
+    /// the rest unsent. The share comes from the connection budget, the most
+    /// datagrams the run may yet send, because a module's loop count is its own
+    /// and not known ahead as a flow's is.
+    #[test]
+    fn an_unanswered_datagram_waits_its_share_and_not_the_whole_budget() {
+        // A responder that answers only the third guess, as an agent answers a
+        // request it accepts and ignores the ones it does not.
+        let agent = std::net::UdpSocket::bind("127.0.0.1:0").expect("a UDP socket");
+        agent
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("a read timeout");
+        let addr = agent.local_addr().expect("its address");
+        let answered = std::thread::spawn(move || {
+            let mut buffer = [0u8; 64];
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if let Ok((read, from)) = agent.recv_from(&mut buffer)
+                    && &buffer[..read] == b"third"
+                {
+                    let _ = agent.send_to(b"accepted", from);
+                    return;
+                }
+            }
+        });
+
+        // Three datagrams' worth of connection budget, and a whole-run deadline
+        // that a single unanswered datagram waiting it all out would exhaust
+        // before the third guess. The floor holds each guess's own wait well
+        // inside a loopback round trip.
+        let mut caps = LiveCapabilities::new(
+            addr,
+            Protocol::Udp,
+            None,
+            &Budget {
+                max_connections: 3,
+                deadline: Duration::from_millis(1_500),
+                ..budget()
+            },
+        );
+
+        assert_eq!(caps.speak(b"first").expect("silence is a reply"), b"");
+        assert_eq!(caps.speak(b"second").expect("silence is a reply"), b"");
+        assert_eq!(
+            caps.speak(b"third").expect("the accepted guess answers"),
+            b"accepted",
+            "the third guess was cut short: the first two spent the budget"
+        );
+
+        answered.join().expect("the responder finishes");
     }
 
     #[test]

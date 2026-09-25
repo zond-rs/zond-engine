@@ -6,6 +6,12 @@
 # close rather than hold the socket to the flow's deadline. A 230 on its own line
 # is "user logged in"; a server that refuses anonymous answers 530 and never
 # sends it.
+#
+# The reply is not done until the login verdict is in, and a server commonly
+# holds that verdict for a delay after a failed login, longer than the quiet an
+# ordinary reply's end is read from. So `until` names the verdict line, 230 or
+# 530, and the read waits through the delay for it rather than stopping at the
+# greeting and missing a 230 that was only slow to come.
 
 [detection]
 id      = "anonymous-ftp"
@@ -25,6 +31,7 @@ max_millis = 3000
 [[step]]
 send   = 'USER anonymous\r\nPASS zond@example.com\r\nQUIT\r\n'
 expect = '(?m)^230[ -]'        # 230: the login succeeded
+until  = '(?m)^(230|530)[ -]' # the login verdict, however long it was held
   [[step.finding]]
   when         = "matched"
   severity     = "medium"
