@@ -45,6 +45,9 @@ impl DnsConfig {
 pub(crate) struct Unicast {
     /// The client names are asked of, or why there is none.
     global: Result<TokioResolver, String>,
+    /// The global configuration's own domain and search list, folded, which
+    /// say what the global servers are expected to answer for.
+    searched: Vec<String>,
     /// Says once per pass that names needing DNS were not asked, rather than
     /// once per name.
     unconfigured: Once,
@@ -57,10 +60,38 @@ impl Unicast {
     /// the client is asked, so a client consulting it again could only ask
     /// upstream for the family the file did not list.
     pub(crate) fn from_config(config: DnsConfig) -> Self {
+        let (global, searched) = match config.global {
+            Ok((conf, opts)) => {
+                let searched = conf
+                    .domain()
+                    .into_iter()
+                    .chain(conf.search())
+                    .map(|name| fold(&name.to_ascii()))
+                    .collect();
+                (build(conf, opts), searched)
+            }
+            Err(e) => (Err(e), Vec::new()),
+        };
+
         Self {
-            global: config.global.and_then(|(conf, opts)| build(conf, opts)),
+            global,
+            searched,
             unconfigured: Once::new(),
         }
+    }
+
+    /// Whether a configured unicast server is expected to answer for `name`:
+    /// the global configuration's own domain or search list covers it.
+    ///
+    /// What decides whether a `.local` name is asked of unicast DNS at all. An
+    /// Active Directory domain named `corp.local` is served by its domain
+    /// controller, and a host joined to it carries the domain in its search
+    /// list; a `.local` name nothing configured claims is a multicast name,
+    /// and asking a unicast server about it only tells that server what is on
+    /// the link.
+    pub(crate) fn claims(&self, name: &str) -> bool {
+        let name = fold(name);
+        self.searched.iter().any(|domain| covers(domain, &name))
     }
 
     /// Asks the configured servers for the A and AAAA records of `name`.
@@ -100,4 +131,43 @@ fn build(conf: ResolverConfig, mut opts: ResolverOpts) -> Result<TokioResolver, 
         .with_options(opts)
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// Whether `domain` is `name` or one of its ancestors, label by label.
+fn covers(domain: &str, name: &str) -> bool {
+    !domain.is_empty()
+        && (name == domain
+            || name
+                .strip_suffix(domain)
+                .is_some_and(|host| host.ends_with('.')))
+}
+
+/// A name folded for comparison: lower case, no root dot.
+fn fold(name: &str) -> String {
+    name.trim_end_matches('.').to_ascii_lowercase()
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A domain covers itself and its descendants, whole labels only, so
+    /// `notcorp.example` is not asked of `corp.example`'s server.
+    #[test]
+    fn a_domain_covers_itself_and_the_names_under_it_and_nothing_else() {
+        assert!(covers("corp.example", "corp.example"));
+        assert!(covers("corp.example", "dc01.corp.example"));
+        assert!(!covers("corp.example", "notcorp.example"));
+        assert!(!covers("corp.example", "example"));
+        assert!(!covers("", "example"));
+    }
 }

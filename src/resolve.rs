@@ -27,7 +27,10 @@
 //! - A `.local` name is a multicast name (RFC 6762): it is resolved by asking
 //!   the link over multicast DNS. A unicast lookup of one fails everywhere the
 //!   host has no mDNS-aware resolver, which on Linux is the common case, so the
-//!   engine speaks mDNS itself rather than hoping the system does.
+//!   engine speaks mDNS itself rather than hoping the system does. The
+//!   exception is a `.local` domain a unicast server is configured to answer
+//!   for, as an Active Directory domain named `corp.local` is: that name is
+//!   asked of the server first, and of the link only if it has no answer.
 //! - Any other name goes to the system's unicast resolver, which applies the
 //!   host's own search domains and returns A and AAAA records alike.
 //! - A single-label name (`nas`) is tried unicast first, and if nothing answers
@@ -129,10 +132,10 @@ pub struct ResolveConfig {
     /// Whether `.local` names are resolved over multicast, and whether a
     /// single-label name falls back to one.
     ///
-    /// Off leaves a `.local` name to the hosts file, rather than sending it to
-    /// a unicast server that will answer NXDOMAIN for it. For an environment
-    /// where multicast is filtered or unwanted, or where the only names in
-    /// play are global.
+    /// Off leaves a `.local` name to the hosts file and to a unicast server
+    /// configured for its domain, rather than sending it to one that will
+    /// answer NXDOMAIN for it. For an environment where multicast is filtered
+    /// or unwanted, or where the only names in play are global.
     pub mdns: bool,
 
     /// How long to listen for mDNS replies before accepting that a `.local`
@@ -265,7 +268,7 @@ impl Resolver {
         }
 
         if is_multicast_local(name) {
-            return self.resolve_mdns(name).await;
+            return self.resolve_local(snapshot, name).await;
         }
 
         let unicast = snapshot.unicast.lookup(name).await;
@@ -280,7 +283,19 @@ impl Resolver {
         if let Some(listed) = from_hosts(snapshot, &local) {
             return listed;
         }
-        self.resolve_mdns(&local).await
+        self.resolve_local(snapshot, &local).await
+    }
+
+    /// A `.local` name the hosts file does not list: unicast first when a
+    /// configured server answers for its domain, then the link.
+    async fn resolve_local(&self, snapshot: &Snapshot, name: &str) -> Vec<IpAddr> {
+        if snapshot.unicast.claims(name) {
+            let unicast = snapshot.unicast.lookup(name).await;
+            if !unicast.is_empty() {
+                return unicast;
+            }
+        }
+        self.resolve_mdns(name).await
     }
 
     /// The multicast half, honouring the config's mDNS switch.
@@ -649,6 +664,35 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// A `.local` name under a domain the host's search list names is asked of
+    /// unicast DNS, and one under no configured domain is not.
+    ///
+    /// An Active Directory domain named `corp.local` is answered by its domain
+    /// controller, and a host joined to it searches that domain; a `.local`
+    /// name nothing configured claims is a name on the link, and a unicast
+    /// server asked about it only learns what the link holds.
+    #[tokio::test]
+    async fn a_local_name_under_a_searched_domain_is_asked_of_unicast_dns() {
+        let dns = FakeDns::start(&[("dc01.corp.local", Ipv4Addr::new(198, 51, 100, 10))]).await;
+        let resolver = resolver_over("", Ok(dns.as_global(&["corp.local"])));
+
+        assert_eq!(
+            resolver.resolve("dc01.corp.local").await,
+            vec![v4("198.51.100.10")]
+        );
+
+        let before = dns.asked().len();
+        assert_eq!(
+            resolver.resolve("printer.local").await,
+            Vec::<IpAddr>::new()
+        );
+        assert_eq!(
+            dns.asked().len(),
+            before,
+            "a link-only name reached unicast DNS"
+        );
     }
 
     /// With no DNS server configured, the hosts file still answers, and a name
