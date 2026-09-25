@@ -1508,33 +1508,48 @@ mod tests {
     /// strikes it.
     #[test]
     fn a_wait_behind_another_of_the_hosts_ports_is_crowded_not_a_strike() {
-        // A probe that holds every exchange past the dead-wait mark, after
-        // waiting on a gate so a test can make two overlap to the byte.
+        // A probe that answers once every exchange sharing its gate is in
+        // flight, so a test can make two overlap to the byte. A dead_after of
+        // zero makes every exchange count as having run past the dead-wait
+        // mark, so which of them strike turns on company alone and never on
+        // how long the machine took to run them.
         struct Held(std::sync::Arc<std::sync::Barrier>);
         impl Probe for Held {
             fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
                 self.0.wait();
-                std::thread::sleep(Duration::from_millis(120));
                 Some(b"ok".to_vec())
             }
         }
-        let dead_after = Duration::from_millis(50);
 
         // Two ports of one host, their exchanges made to overlap: the barrier
         // releases both only once both are in flight over the shared contention.
         let contention = HostContention::default();
         let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
         let (port_a, port_b) = (PortShare::new(&contention), PortShare::new(&contention));
-        std::thread::scope(|scope| {
-            for port in [&port_a, &port_b] {
-                let gate = std::sync::Arc::clone(&gate);
-                scope.spawn(move || {
-                    let mut probe = CachingProbe::new(Box::new(Held(gate)), port, dead_after, 4096);
-                    probe.speak(b"q");
-                    (probe.crowded, probe.struck)
-                });
-            }
+        let seen: Vec<(bool, bool, bool)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = [&port_a, &port_b]
+                .into_iter()
+                .map(|port| {
+                    let gate = std::sync::Arc::clone(&gate);
+                    scope.spawn(move || {
+                        let mut probe =
+                            CachingProbe::new(Box::new(Held(gate)), port, Duration::ZERO, 4096);
+                        probe.speak(b"q");
+                        (probe.stalled, probe.crowded, probe.struck)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
         });
+        assert_eq!(
+            seen,
+            vec![(true, true, false), (true, true, false)],
+            "two overlapping exchanges on one host's ports were not both \
+             stalled, crowded and unstruck (stalled, crowded, struck)"
+        );
         assert_eq!(
             (
                 port_a.strikes.load(Ordering::Relaxed),
@@ -1548,10 +1563,10 @@ mod tests {
         let solo = HostContention::default();
         let port = PortShare::new(&solo);
         let gate = std::sync::Arc::new(std::sync::Barrier::new(1));
-        let mut probe = CachingProbe::new(Box::new(Held(gate)), &port, dead_after, 4096);
+        let mut probe = CachingProbe::new(Box::new(Held(gate)), &port, Duration::ZERO, 4096);
         probe.speak(b"q");
         assert!(
-            probe.struck,
+            probe.struck && !probe.crowded,
             "a slow exchange alone on the host did not strike"
         );
         assert_eq!(port.strikes.load(Ordering::Relaxed), 1);
