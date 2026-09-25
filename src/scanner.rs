@@ -2213,7 +2213,8 @@ mod tests {
     ///
     /// Resuming a job that was already done would otherwise put every one of
     /// its identification questions to the network again, and a job resumed
-    /// part way would ask them again of every host it had finished with.
+    /// part way would ask them again of every host it had finished with, and
+    /// write each of those hosts down whole again for having been asked.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_resumed_job_asks_a_host_a_sitting_finished_nothing_it_already_asked() {
@@ -2265,6 +2266,10 @@ mod tests {
                 let directory = journal.directory().to_path_buf();
                 journal.close().expect("closes");
 
+                let written = |directory: &std::path::Path| {
+                    std::fs::metadata(directory.join("hosts.jsonl")).map_or(0, |file| file.len())
+                };
+                let before = written(&directory);
                 let (journal, _) =
                     Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
                 let (_session, task) =
@@ -2274,20 +2279,20 @@ mod tests {
                 let _report = task.join().await.expect("the sitting ends");
 
                 let runs = crate::journal::store::read_detections(&directory).expect("reads");
+                let rewritten = written(&directory) > before;
                 std::fs::remove_dir_all(&root).ok();
-                runs.len()
+                (runs.len(), rewritten)
             }
         };
 
+        let (runs, _) = resumed(false).await;
         assert!(
-            resumed(false).await > 0,
+            runs > 0,
             "a host no sitting finished is owed its detections"
         );
-        assert_eq!(
-            resumed(true).await,
-            0,
-            "a finished host was asked its detections again"
-        );
+        let (runs, rewritten) = resumed(true).await;
+        assert_eq!(runs, 0, "a finished host was asked its detections again");
+        assert!(!rewritten, "a finished host was written down again");
     }
 
     /// A port scan handed a journal counted over another plan, or under

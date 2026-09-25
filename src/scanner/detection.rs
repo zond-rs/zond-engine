@@ -611,6 +611,9 @@ fn detect_hosts(ctx: &ScanContext) {
     // borrowed while the findings are written back.
     let mut per_host: Vec<(ScopedIp, BTreeSet<u16>, Vec<String>)> = Vec::new();
     for host in ctx.store.iter() {
+        if !ctx.owes_passes(host.value()) {
+            continue;
+        }
         let mut open_ports = BTreeSet::new();
         let mut services = Vec::new();
         for port in host.value().ports() {

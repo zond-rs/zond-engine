@@ -2319,7 +2319,9 @@ impl ScanContext {
     /// Whether the passes that follow a scan's probes are owed `host` in this
     /// sitting: service identification, the detections, TLS enumeration, the
     /// active OS probes, the route trace and the rest that ask something of a
-    /// host the probes found.
+    /// host the probes found, and the ones that read what the scan holds and
+    /// write a conclusion back, since a host written to is one the journal
+    /// writes down whole again.
     ///
     /// Every host is, except one an earlier sitting of the job ran to its end
     /// with, which ran each of those passes over every host it held. That

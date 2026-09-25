@@ -991,7 +991,7 @@ pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsD
     }
 
     let mut named = 0usize;
-    for ip in ctx.host_addresses() {
+    for ip in ctx.hosts_owed_passes() {
         let mut identified = false;
         ctx.write_host(ip, |host| {
             identified = os::identify(host, []);
@@ -1542,7 +1542,7 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
         return;
     }
 
-    for key in ctx.host_addresses() {
+    for key in ctx.hosts_owed_passes() {
         ctx.update_host(key, crate::cve::correlate);
     }
 }
@@ -1557,7 +1557,7 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
 /// gathered no certificate has nothing here to find.
 pub(super) fn run_cert_posture(ctx: &ScanContext) {
     let now = std::time::SystemTime::now();
-    for key in ctx.host_addresses() {
+    for key in ctx.hosts_owed_passes() {
         ctx.update_host(key, |host| {
             // Collect first, mutate second: the read borrows the host's ports and
             // the write needs them mutably, so the two cannot overlap.

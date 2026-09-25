@@ -206,6 +206,16 @@ pub(super) fn attribute(ctx: &ScanContext) {
     // and holding an iterator across it deadlocks on whichever shard the
     // iterator is on.
     for ip in ctx.host_addresses() {
+        // A host an earlier sitting finished was attributed then, and is
+        // written again only where a path traced since names it a router.
+        let rereads = ctx
+            .read_host(&ip, |host| {
+                ctx.owes_passes(host) || host.ips().iter().any(|ip| forwarders.contains(ip))
+            })
+            .unwrap_or(false);
+        if !rereads {
+            continue;
+        }
         ctx.write_host(ip, |host| {
             let mut recorded = vantage.attribute(host);
 
