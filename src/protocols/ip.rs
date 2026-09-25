@@ -466,6 +466,23 @@ pub(crate) fn ipv6_carrying<'a>(
     (packet.get_next_header() == protocol).then_some(packet)
 }
 
+/// `packet`, a bare IPv6 packet, when it carries `protocol`.
+///
+/// [`ipv6_carrying`] for the form a link with no Ethernet header delivers, a
+/// tunnel's or a PPP link's. There is no ethertype to ask, so the version is
+/// checked instead: such a link carries both families and says which only
+/// there. The extension chain is not walked, for the reason given there.
+pub(crate) fn ipv6_carrying_in(
+    packet: &[u8],
+    protocol: IpNextHeaderProtocol,
+) -> Option<Ipv6Packet<'_>> {
+    if packet.first()? >> 4 != 6 {
+        return None;
+    }
+    let packet = Ipv6Packet::new(packet)?;
+    (packet.get_next_header() == protocol).then_some(packet)
+}
+
 /// The ICMPv6 message type an Ethernet-framed IPv6 packet carries, or `None` if
 /// the frame is not that or is too short to say.
 ///
@@ -487,8 +504,18 @@ pub fn icmpv6_type(frame: &Frame<'_>) -> Option<Icmpv6Type> {
 /// its own. Without them an echo reply proves only that its sender exists;
 /// with them it also says when the question was asked.
 pub fn icmpv6_echo_token(frame: &Frame<'_>) -> Option<(u16, u16)> {
-    let packet = ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)?;
+    echo_token(&ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)?)
+}
 
+/// The same, for `packet`, a bare IPv6 packet off a link with no Ethernet
+/// header.
+pub(crate) fn icmpv6_echo_token_in(packet: &[u8]) -> Option<(u16, u16)> {
+    echo_token(&ipv6_carrying_in(packet, IpNextHeaderProtocols::Icmpv6)?)
+}
+
+/// The identifier and sequence number `packet` carries back, where its ICMPv6
+/// message is an echo reply.
+fn echo_token(packet: &Ipv6Packet<'_>) -> Option<(u16, u16)> {
     let reply = EchoReplyPacket::new(packet.payload())?;
     if reply.get_icmpv6_type() != Icmpv6Types::EchoReply {
         return None;

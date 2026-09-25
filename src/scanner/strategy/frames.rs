@@ -438,7 +438,35 @@ impl DiscoveryProtocol for DhcpProtocol {
 /// checked here, because this trait sees bytes and not the scan that sent them.
 /// Deciding whether those values name one of *our* requests, and which, is the
 /// scanner's job for the same reason attribution always is.
+///
+/// Read alike off a link with no Ethernet header, a tunnel or a PPP link, where
+/// the reply is the same packet with nothing in front of it: one rule for both
+/// kinds of link, as the neighbour and router advertisements have. A sweep
+/// never runs there, but a listener does, and an echo reply to a link-local
+/// address proves its sender is on the link however the link delivers it.
 pub struct Icmpv6EchoProtocol;
+
+impl Icmpv6EchoProtocol {
+    /// What an IPv6 packet sent to `destination` answers, `token` being the
+    /// identifier and sequence it carries back where it is an echo reply.
+    fn read(destination: std::net::Ipv6Addr, token: Option<(u16, u16)>) -> Reading {
+        // The probe leaves from this host's link-local address, so an answer to
+        // it comes back to one. Not proof the packet is addressed to *us* -
+        // that needs an address this trait does not have - but it rules out the
+        // multicast and global traffic a promiscuous capture also sees.
+        if !destination.is_unicast_link_local() {
+            return Reading::unhandled();
+        }
+
+        match token {
+            Some((identifier, sequence)) => Reading::matched(ProtocolMatch::AllNodes {
+                identifier,
+                sequence,
+            }),
+            None => Reading::unhandled(),
+        }
+    }
+}
 
 impl DiscoveryProtocol for Icmpv6EchoProtocol {
     fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
@@ -446,21 +474,14 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
             return Ok(Reading::unhandled());
         }
 
-        // The probe leaves from this host's link-local address, so an answer to
-        // it comes back to one. Not proof the frame is addressed to *us* - that
-        // needs an address this trait does not have - but it rules
-        // out the multicast and global traffic a promiscuous capture also sees.
         let destination = ip::ipv6_destination(frame)?;
-        if !destination.is_unicast_link_local() {
-            return Ok(Reading::unhandled());
-        }
+        Ok(Self::read(destination, ip::icmpv6_echo_token(frame)))
+    }
 
-        match ip::icmpv6_echo_token(frame) {
-            Some((identifier, sequence)) => Ok(Reading::matched(ProtocolMatch::AllNodes {
-                identifier,
-                sequence,
-            })),
-            None => Ok(Reading::unhandled()),
+    fn interpret_packet(&self, packet: &[u8]) -> Reading {
+        match ip::ipv6_carrying_in(packet, pnet_packet::ip::IpNextHeaderProtocols::Icmpv6) {
+            Some(ipv6) => Self::read(ipv6.get_destination(), ip::icmpv6_echo_token_in(packet)),
+            None => Reading::unhandled(),
         }
     }
 
@@ -690,6 +711,37 @@ pub(crate) mod tests {
                 Icmpv6EchoProtocol.interpret(&frame).unwrap().matched,
                 ProtocolMatch::Unhandled
             ));
+        }
+    }
+
+    /// Off a link with no Ethernet header the echo reader applies the same
+    /// test as on one: an echo reply to a link-local address is claimed with
+    /// its token, and one to a multicast group, or anything that is not IPv6,
+    /// is left alone. The version nibble is all such a link says about the
+    /// family, so an IPv4 packet must not be read as an IPv6 header.
+    #[test]
+    fn icmpv6_protocol_reads_a_bare_packet_as_it_reads_a_frame() {
+        let answered = echo_reply_frame_with(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 7, 3);
+        assert!(matches!(
+            Icmpv6EchoProtocol.interpret_packet(&answered[14..]).matched,
+            ProtocolMatch::AllNodes {
+                identifier: 7,
+                sequence: 3
+            }
+        ));
+
+        let multicast = echo_reply_frame(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1));
+        let ipv4 = arp_reply_frame(Ipv4Addr::new(198, 51, 100, 2));
+        let mut ipv4_header = vec![0x45u8; 1];
+        ipv4_header.extend_from_slice(&ipv4[15..]);
+        for (what, packet) in [("multicast", &multicast[14..]), ("ipv4", &ipv4_header[..])] {
+            assert!(
+                matches!(
+                    Icmpv6EchoProtocol.interpret_packet(packet).matched,
+                    ProtocolMatch::Unhandled
+                ),
+                "{what}"
+            );
         }
     }
 

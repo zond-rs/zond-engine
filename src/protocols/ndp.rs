@@ -286,15 +286,8 @@ fn ipv6_payload<'a>(frame: &Frame<'a>) -> Option<&'a [u8]> {
 }
 
 /// `packet` read as IPv6, if it is IPv6 carrying ICMPv6.
-///
-/// The version is checked, since a link with no header in front of its
-/// packets carries both families and says which only there.
 fn icmpv6(packet: &[u8]) -> Option<pnet_packet::ipv6::Ipv6Packet<'_>> {
-    if packet.first()? >> 4 != 6 {
-        return None;
-    }
-    let packet = pnet_packet::ipv6::Ipv6Packet::new(packet)?;
-    (packet.get_next_header() == IpNextHeaderProtocols::Icmpv6).then_some(packet)
+    ip::ipv6_carrying_in(packet, IpNextHeaderProtocols::Icmpv6)
 }
 
 #[cfg(test)]

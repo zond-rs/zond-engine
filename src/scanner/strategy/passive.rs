@@ -1386,7 +1386,8 @@ mod tests {
     use super::*;
     use crate::scanner::session::ScanSession;
     use crate::scanner::strategy::frames::tests::{
-        PEER_MAC, advertisement_body, arp_reply_frame, dhcp_reply_frame, ndp_frame,
+        PEER_MAC, advertisement_body, arp_reply_frame, dhcp_reply_frame, echo_reply_frame,
+        ndp_frame,
     };
     use std::net::Ipv4Addr;
     use std::time::SystemTime;
@@ -1660,6 +1661,45 @@ mod tests {
                 hosts[0].network_roles().contains(&NetworkRole::Router),
                 role,
                 "{what}"
+            );
+        }
+    }
+
+    /// An ICMPv6 echo reply to a link-local address proves its sender is on
+    /// the link whether an Ethernet header carries it or a tunnel delivers it
+    /// bare, and the listener credits it the same way on both. One rule for
+    /// the two kinds of link: a reader that heard a PPP peer's advertisement
+    /// and ignored its echo reply would record the peer from one message and
+    /// not the other, for no reason about the peer.
+    #[test]
+    fn an_echo_reply_is_credited_alike_on_ethernet_and_on_a_tunnel() {
+        let sender = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2));
+        let framed = echo_reply_frame(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
+        let bare = framed[14..].to_vec();
+
+        for (what, link, bytes) in [
+            ("framed", LinkType::Ethernet, framed.clone()),
+            ("bare", LinkType::Raw, bare),
+        ] {
+            let (mut listener, ctx) = listening(Recording::Everything);
+            listener.read(&CapturedFrame {
+                zone: zone(),
+                link,
+                bytes,
+                observed_at: SystemTime::UNIX_EPOCH,
+                received_at: std::time::Instant::now(),
+            });
+
+            let hosts = ctx.hosts_snapshot();
+            assert_eq!(hosts.len(), 1, "{what}: one sender, one host");
+            assert_eq!(hosts[0].primary_ip(), sender, "{what}: its sender");
+            assert!(
+                hosts[0]
+                    .reasons()
+                    .iter()
+                    .any(|reason| reason.protocol == StatusProtocol::IcmpEcho),
+                "{what}: credited to the echo reply: {:?}",
+                hosts[0].reasons()
             );
         }
     }
