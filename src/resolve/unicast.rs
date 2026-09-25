@@ -29,10 +29,11 @@
 //!
 //! A domain stays claimed when none of its servers can be asked. A link-local
 //! server is reached through the interface written after it, `fe80::53%utun4`,
-//! and is asked through that interface; when the interface is gone, the
-//! domain's names fail to resolve, with a line saying why, rather than going
-//! to the global servers. A resolver the OS lists with no servers at all claims
-//! nothing: there is no server of the domain's own for a name to be kept for.
+//! and is asked through that interface; when the interface is gone, or a server
+//! or port is written in a form that cannot be read, the domain's names fail to
+//! resolve, with a line saying why, rather than going to the global servers. A
+//! resolver the OS lists with no servers at all claims nothing: there is no
+//! server of the domain's own for a name to be kept for.
 //!
 //! What is left out is what changes *where* the OS sends a query rather than
 //! *which* server it asks: per-interface resolvers (the "for scoped queries"
@@ -446,10 +447,11 @@ fn read_scoped() -> Vec<ScopedServers> {
 ///
 /// A link-local server is written with the interface it is reached through,
 /// `fe80::53%utun4`, which `index_of` turns into the scope id it is asked
-/// with. A server whose interface `index_of` does not know is not asked, and a
-/// resolver left with none to ask keeps its domain and carries why, so that its
-/// names fail rather than reach the global servers. A server that does not
-/// parse as an address is skipped.
+/// with. A resolver keeps its domain whatever its servers turn out to be: a
+/// server whose interface `index_of` does not know, a server or port in a form
+/// that does not read, or a link-local server with no interface is not asked,
+/// and a resolver left with none to ask carries why, so that its names fail
+/// rather than reach the global servers.
 #[cfg(any(target_vendor = "apple", test))]
 fn parse_scutil_dns(report: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec<ScopedServers> {
     /// The port DNS is asked on when a resolver names none.
@@ -461,7 +463,8 @@ fn parse_scutil_dns(report: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec
         /// Each listed server as an address and scope id, or why it cannot be
         /// asked.
         servers: Vec<Result<(IpAddr, u32), String>>,
-        port: Option<u16>,
+        /// The port a resolver names, or why the one it names does not read.
+        port: Option<Result<u16, String>>,
         mdns: bool,
     }
 
@@ -470,8 +473,7 @@ fn parse_scutil_dns(report: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec
         if entry.mdns || entry.servers.is_empty() {
             return;
         }
-        let port = entry.port.unwrap_or(DNS_PORT);
-        let servers = {
+        let servers = entry.port.unwrap_or(Ok(DNS_PORT)).and_then(|port| {
             let (usable, unusable): (Vec<_>, Vec<_>) =
                 entry.servers.into_iter().partition(Result::is_ok);
             let usable: Vec<SocketAddr> = usable
@@ -486,29 +488,30 @@ fn parse_scutil_dns(report: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec
                 Some(why) if usable.is_empty() => Err(why),
                 _ => Ok(usable),
             }
-        };
+        });
         into.push(ScopedServers { domain, servers });
     }
 
-    /// A `nameserver` value as an address and the scope id it is asked with,
-    /// if it parses as one.
+    /// A `nameserver` value as an address and the scope id it is asked with.
     fn server(
         value: &str,
         index_of: &impl Fn(&str) -> Option<u32>,
-    ) -> Option<Result<(IpAddr, u32), String>> {
+    ) -> Result<(IpAddr, u32), String> {
         let (address, zone) = match value.split_once('%') {
             Some((address, zone)) => (address, Some(zone)),
             None => (value, None),
         };
-        match (address.parse().ok()?, zone) {
-            (ip @ IpAddr::V6(_), Some(zone)) => Some(
-                index_of(zone)
-                    .filter(|&index| index != 0)
-                    .map(|index| (ip, index))
-                    .ok_or_else(|| format!("{zone} not found")),
-            ),
-            (IpAddr::V4(_), Some(_)) => None,
-            (ip, None) => Some(Ok((ip, 0))),
+        let unreadable = || format!("server {value} unreadable");
+        match (address.parse().map_err(|_| unreadable())?, zone) {
+            (ip @ IpAddr::V6(_), Some(zone)) => index_of(zone)
+                .filter(|&index| index != 0)
+                .map(|index| (ip, index))
+                .ok_or_else(|| format!("{zone} not found")),
+            (IpAddr::V4(_), Some(_)) => Err(unreadable()),
+            (IpAddr::V6(v6), None) if v6.is_unicast_link_local() => {
+                Err(format!("server {value} has no interface"))
+            }
+            (ip, None) => Ok((ip, 0)),
         }
     }
 
@@ -531,11 +534,17 @@ fn parse_scutil_dns(report: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec
         let (key, value) = (key.trim(), value.trim());
         match key {
             "domain" => current.domain = Some(fold(value)).filter(|d| !d.is_empty()),
-            "port" => current.port = value.parse().ok(),
-            "options" => current.mdns |= value.split_whitespace().any(|o| o == "mdns"),
-            _ if key.starts_with("nameserver[") => {
-                current.servers.extend(server(value, &index_of));
+            "port" => {
+                current.port = Some(
+                    value
+                        .parse()
+                        .ok()
+                        .filter(|&port| port != 0)
+                        .ok_or_else(|| format!("port {value} unreadable")),
+                );
             }
+            "options" => current.mdns |= value.split_whitespace().any(|o| o == "mdns"),
+            _ if key.starts_with("nameserver[") => current.servers.push(server(value, &index_of)),
             _ => {}
         }
     }
@@ -725,6 +734,59 @@ resolver #1
             .map(|l| l.message.as_str())
             .collect();
         assert_eq!(said, ["DNS for vpn.example not asked (utun4 not found)"]);
+    }
+
+    /// A resolver whose servers or port do not read keeps its domain, with
+    /// why none of its servers can be asked, and one with a server that reads
+    /// is asked through it alone.
+    ///
+    /// Each unreadable form dropping the resolver instead would hand its
+    /// domain to the global servers; asking an unreadable port's server on 53
+    /// instead would ask a port the host never named.
+    #[test]
+    fn a_resolver_whose_servers_do_not_read_keeps_its_domain() {
+        let report = "\
+DNS configuration
+
+resolver #1
+  domain   : port.example
+  nameserver[0] : 198.51.100.53
+  port     : domain
+
+resolver #2
+  domain   : garbled.example
+  nameserver[0] : 198.51.100.53:53
+
+resolver #3
+  domain   : zoneless.example
+  nameserver[0] : fe80::53
+
+resolver #4
+  domain   : zoned-v4.example
+  nameserver[0] : 198.51.100.53%utun4
+
+resolver #5
+  domain   : mixed.example
+  nameserver[0] : fe80::53%utun9
+  nameserver[1] : 2001:db8::53
+";
+        let unasked = |domain: &str, why: &str| ScopedServers {
+            domain: domain.into(),
+            servers: Err(why.into()),
+        };
+        assert_eq!(
+            parse_scutil_dns(report, utun4_is_9),
+            vec![
+                unasked("port.example", "port domain unreadable"),
+                unasked("garbled.example", "server 198.51.100.53:53 unreadable"),
+                unasked("zoneless.example", "server fe80::53 has no interface"),
+                unasked("zoned-v4.example", "server 198.51.100.53%utun4 unreadable"),
+                ScopedServers {
+                    domain: "mixed.example".into(),
+                    servers: Ok(vec!["[2001:db8::53]:53".parse().expect("an address")]),
+                },
+            ]
+        );
     }
 
     /// The runtime puts a server's scope id on an address that lost it, and
