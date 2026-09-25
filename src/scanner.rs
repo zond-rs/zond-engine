@@ -1616,7 +1616,7 @@ pub async fn scan_with_journal(
 /// `settled` is what an earlier sitting already covered, and is empty for a scan
 /// that is not continuing one.
 fn spawn_scan(
-    mut target_map: TargetMap,
+    target_map: TargetMap,
     cfg: &ZondConfig,
     ctx: ScanContext,
     settled: Checkpoint,
@@ -1630,6 +1630,15 @@ fn spawn_scan(
     let cfg = running_under(&requested);
 
     tokio::spawn(async move {
+        // The plan the port phase walks, numbered in what the exclusions
+        // leave of it, and known before either phase runs, so an address
+        // either one files as unreachable settles every target at it. The
+        // phases' scopes are taken over what was asked, so they can say what
+        // the policy withheld.
+        let mut numbered = target_map.clone();
+        cfg.exclusions.withhold_targets(&mut numbered);
+        ctx.number_targets(TargetIndex::of(&numbered));
+
         // Phase one: which of these addresses has anything at it.
         //
         // The answer narrows what is *probed*, never what is counted: the plan
@@ -1696,7 +1705,6 @@ fn spawn_scan(
         // and which addresses a machine answers at can differ between
         // sittings; the walk withholds the rest by position.
         let scope = TargetScope::from_target_map(&mut covered, &machine_policy(&ctx));
-        crate::model::exclusion::Exclusions::withhold_targets(&cfg.exclusions, &mut target_map);
         let mut recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privilege, scope, &cfg);
         if let Some(why) = skipped {
             recorder = recorder.skipping_liveness(why);
@@ -1708,7 +1716,7 @@ fn spawn_scan(
         // what the scan declined to send the target from this host.
         record_idle_refusals(&requested, &ctx);
         let stands_in = skipped == Some(LivenessSkip::PortsNoDearer);
-        run_port_phase(target_map, live, &ctx, caps, &cfg, settled, stands_in).await;
+        run_port_phase(numbered, live, &ctx, caps, &cfg, settled, stands_in).await;
 
         // Straight after the ports, because what it needs is the list of ports a
         // handshake completed against and the service pass is what produces it.

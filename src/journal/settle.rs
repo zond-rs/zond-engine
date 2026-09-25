@@ -28,10 +28,11 @@
 //! | [`Exhausted`](Outcome::Exhausted) | `Due::Exhausted` | yes |
 //! | [`Skipped`](Outcome::Skipped) | the liveness pass heard silence | yes |
 //! | [`Withheld`](Outcome::Withheld) | the exclusion policy names its machine | yes |
+//! | [`Unreachable`](Outcome::Unreachable) | its address was filed as one no route leads to | yes |
 //! | [`Interrupted`](Outcome::Interrupted) | `ledger.drain_unresolved()` | no |
 //! | [`Unasked`](Outcome::Unasked) | no probe was sent | no |
 //! | [`Undecided`](Outcome::Undecided) | the liveness pass reached no verdict | no |
-//! | [`Unroutable`](Outcome::Unroutable) | no scanner for the protocol, or no route | no |
+//! | [`Unroutable`](Outcome::Unroutable) | no scanner for the protocol, or a send refused | no |
 //!
 //! Unsettled outcomes are counted, not stored. Their total is worth reporting;
 //! which targets they were is not, since every one is re-probed anyway.
@@ -132,6 +133,28 @@ pub enum Outcome {
         position: u64,
     },
 
+    /// Its address was filed as one this machine cannot reach: no route or
+    /// source address led there, a route refused by its type, or the
+    /// neighbour never answered address resolution.
+    ///
+    /// Settled, though nothing was sent. The refusal is this machine's routing
+    /// answering for the address, and asking again within the job would draw
+    /// the same answer, as asking a silent host again would; left unsettled,
+    /// every target at such an address kept a finished job resumable and was
+    /// asked again by every sitting. A resume continues one job, so a route
+    /// that appears later is a reason for a new scan, as a host that comes up
+    /// is under [`Skipped`](Outcome::Skipped).
+    ///
+    /// Recorded when the address is filed, over every target the plan numbers
+    /// at it, which is why it is apart from [`Unroutable`](Outcome::Unroutable):
+    /// that is the one target a scanner could not send, counted as it happens.
+    /// See
+    /// [`ScanContext::record_unroutable`](crate::scanner::session::ScanContext::record_unroutable).
+    Unreachable {
+        /// Its position in the plan.
+        position: u64,
+    },
+
     /// Outstanding mid-retry-schedule when the scan stopped. The schedule was
     /// cut off rather than spent.
     Interrupted,
@@ -141,9 +164,11 @@ pub enum Outcome {
     /// the send.
     Unasked,
 
-    /// No scanner spoke its protocol, or the host had no route. Usually a missing
-    /// privilege rather than a fact about the target, and privileges can differ
-    /// between sittings.
+    /// No scanner spoke its protocol, or this machine refused to send the
+    /// probe. Usually a missing privilege or a local fault rather than a fact
+    /// about the target, and those can differ between sittings. A target whose
+    /// address the scan then files as one no route leads to is settled over
+    /// this, as [`Unreachable`](Outcome::Unreachable).
     Unroutable,
 
     /// The liveness pass reached no verdict on its host, so it was neither
@@ -165,7 +190,8 @@ impl Outcome {
             Outcome::Answered { position }
             | Outcome::Exhausted { position }
             | Outcome::Skipped { position }
-            | Outcome::Withheld { position } => Some(position),
+            | Outcome::Withheld { position }
+            | Outcome::Unreachable { position } => Some(position),
             Outcome::Interrupted | Outcome::Unasked | Outcome::Unroutable | Outcome::Undecided => {
                 None
             }
@@ -184,6 +210,7 @@ impl Outcome {
             Outcome::Exhausted { .. } => "exhausted",
             Outcome::Skipped { .. } => "skipped",
             Outcome::Withheld { .. } => "withheld",
+            Outcome::Unreachable { .. } => "unreachable",
             Outcome::Interrupted => "interrupted",
             Outcome::Unasked => "unasked",
             Outcome::Unroutable => "unroutable",
@@ -205,6 +232,7 @@ pub struct Settlements {
     exhausted: AtomicU64,
     skipped: AtomicU64,
     withheld: AtomicU64,
+    unreachable: AtomicU64,
     interrupted: AtomicU64,
     unasked: AtomicU64,
     unroutable: AtomicU64,
@@ -241,6 +269,26 @@ impl Settlements {
 
         if let Some(position) = outcome.settled_position() {
             self.with_cursor(|cursor| cursor.settle(position));
+        }
+    }
+
+    /// Records `outcome`, a settled one, unless its target is settled
+    /// already.
+    ///
+    /// For an account given after the fact over every target at an address,
+    /// some of which earned a verdict of their own first: those keep it, and
+    /// are not counted twice.
+    pub(crate) fn record_unsettled(&self, outcome: Outcome) {
+        let Some(position) = outcome.settled_position() else {
+            return;
+        };
+        let fresh = self.with_cursor(|cursor| {
+            let fresh = !cursor.is_settled(position);
+            cursor.settle(position);
+            fresh
+        });
+        if fresh {
+            self.counter(outcome).fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -281,6 +329,7 @@ impl Settlements {
             Outcome::Exhausted { .. } => &self.exhausted,
             Outcome::Skipped { .. } => &self.skipped,
             Outcome::Withheld { .. } => &self.withheld,
+            Outcome::Unreachable { .. } => &self.unreachable,
             Outcome::Interrupted => &self.interrupted,
             Outcome::Unasked => &self.unasked,
             Outcome::Unroutable => &self.unroutable,
@@ -322,6 +371,10 @@ mod tests {
         assert_eq!(Outcome::Skipped { position: 7 }.settled_position(), Some(7));
         assert_eq!(
             Outcome::Withheld { position: 7 }.settled_position(),
+            Some(7)
+        );
+        assert_eq!(
+            Outcome::Unreachable { position: 7 }.settled_position(),
             Some(7)
         );
 

@@ -100,3 +100,78 @@ async fn a_finished_raw_scan_resumes_without_sending() {
         std::fs::remove_dir_all(&root).ok();
     }
 }
+
+/// A journalled sweep or port scan of addresses this host has no route to
+/// finishes its job in one sitting, so a resume asks none of them again.
+///
+/// Each is filed as one the host cannot reach, which is its routing answering
+/// for it, and every target at it is settled there. Left unsettled, the job
+/// was listed as resumable however often it ran, and every sitting asked all
+/// of them again. A port scan settles them whichever phase files them: its
+/// port probes where one port costs no more than asking, and its liveness pass
+/// where twenty do.
+#[tokio::test]
+async fn a_job_of_addresses_with_no_route_finishes_in_one_sitting() {
+    use std::net::IpAddr;
+    use zond_engine::model::ip::set::IpSet;
+    use zond_engine::model::port::PortSet;
+    use zond_engine::model::target::{TargetMap, TargetSet};
+
+    if !available() {
+        return;
+    }
+
+    let segment = Segment::new();
+    let mut addresses = IpSet::new();
+    for address in segment.refused_routes() {
+        addresses.insert(IpAddr::V4(address));
+    }
+    let cfg = test_config();
+    let root = std::env::temp_dir().join(format!("zond-no-route-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+
+    let recorded = Plan::discovery(&addresses, &Exclusions::none(), false);
+    let journal =
+        Journal::create(&root, &recorded, Privilege::current(), "no route").expect("creates");
+    let directory = journal.directory().to_path_buf();
+    let (_session, task) =
+        zond_engine::scanner::discover_with_journal(addresses.clone(), &cfg, journal)
+            .await
+            .expect("the sweep starts");
+    task.join().await.expect("the sweep finishes");
+    let (_journal, checkpoint) =
+        Journal::resume(&directory, &recorded, Privilege::current()).expect("resumes");
+    assert_eq!(
+        checkpoint.settled_count(),
+        4,
+        "the sweep left addresses owed"
+    );
+
+    for ports in ["22", "1-20"] {
+        let mut plan = TargetMap::new();
+        plan.add_unit(TargetSet::new(
+            addresses.clone(),
+            PortSet::try_from(ports).expect("ports"),
+        ));
+        let recorded = Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn);
+        let journal =
+            Journal::create(&root, &recorded, Privilege::current(), "no route").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let (_session, task) = zond_engine::scanner::scan_with_journal(
+            plan.clone(),
+            &cfg,
+            Detections::embedded(),
+            journal,
+        )
+        .await
+        .expect("the scan starts");
+        task.join().await.expect("the scan finishes");
+        let (_journal, checkpoint) =
+            Journal::resume(&directory, &recorded, Privilege::current()).expect("resumes");
+        let owed: Vec<_> = checkpoint.remaining(plan.iter()).collect();
+        assert!(owed.is_empty(), "ports {ports}: still owed {owed:?}");
+    }
+
+    std::fs::remove_dir_all(&root).ok();
+}

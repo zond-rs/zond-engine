@@ -7293,6 +7293,8 @@ pub zond_engine::journal::settle::Outcome::Skipped
 pub zond_engine::journal::settle::Outcome::Skipped::position: u64
 pub zond_engine::journal::settle::Outcome::Unasked
 pub zond_engine::journal::settle::Outcome::Undecided
+pub zond_engine::journal::settle::Outcome::Unreachable
+pub zond_engine::journal::settle::Outcome::Unreachable::position: u64
 pub zond_engine::journal::settle::Outcome::Unroutable
 pub zond_engine::journal::settle::Outcome::Withheld
 pub zond_engine::journal::settle::Outcome::Withheld::position: u64

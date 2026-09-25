@@ -474,6 +474,19 @@ impl TargetIndex {
         found
     }
 
+    /// The positions of every target at `ip`, one run for each unit naming
+    /// it, and none where no unit numbers it.
+    ///
+    /// Contiguous for the reason [`host_run`](Self::host_run) gives: a unit
+    /// pairs an address with every port before moving to the next.
+    pub(crate) fn runs_at(&self, ip: IpAddr) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.units.iter().filter_map(move |unit| {
+            let ports = unit.ports.len() as u64;
+            let start = unit.start + unit.addresses.find(ip)? * ports;
+            Some(start..start + ports)
+        })
+    }
+
     /// How many hosts the numbering holds: an address of a unit and every port
     /// the unit pairs it with.
     ///

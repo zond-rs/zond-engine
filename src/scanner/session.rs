@@ -1426,6 +1426,15 @@ pub struct ScanContext {
     /// Learned once the port phase knows which targets it kept, and empty for
     /// every scan that named no zone.
     pub(crate) zones: Arc<OnceLock<ZoneMap>>,
+    /// How a port scan numbers its targets, for settling every target at an
+    /// address it files as unreachable; see
+    /// [`record_unroutable`](Self::record_unroutable).
+    ///
+    /// Learned once the scan knows which targets it kept, before its liveness
+    /// pass, since that pass files addresses too. Empty for a sweep, which
+    /// numbers addresses in [`positions`](Self::positions), and for a caller
+    /// orchestrating their own scan.
+    pub(crate) numbering: Arc<OnceLock<crate::model::target::TargetIndex>>,
     pub(crate) swept_links: Arc<SweptLinks>,
     /// Where this machine turned out to be plugged in, as the equipment said.
     pub(crate) attachments: Arc<Attachments>,
@@ -1944,8 +1953,30 @@ impl ScanContext {
     /// scan's standing changes. It is recorded because the address was asked
     /// about and not covered, and a report that omitted it would leave the
     /// caller to work out from a host count why one of their targets is missing.
+    ///
+    /// Every target the plan numbers at the address is settled here as
+    /// [`Unreachable`](Outcome::Unreachable), unless it earned a verdict of its
+    /// own first: the address in a sweep's numbering, and each of its ports in
+    /// a port scan's, whichever phase filed it. See
+    /// [`Outcome::Unreachable`] for why that is settled.
     pub fn record_unroutable(&self, address: IpAddr) {
         self.unroutable.insert(address);
+        if let Some(position) = self.positions.find(address) {
+            self.settlements
+                .record_unsettled(Outcome::Unreachable { position });
+        }
+        if let Some(index) = self.numbering.get() {
+            for position in index.runs_at(address).flatten() {
+                self.settlements
+                    .record_unsettled(Outcome::Unreachable { position });
+            }
+        }
+    }
+
+    /// Sets how this port scan numbers its targets; see
+    /// [`numbering`](Self::numbering). The first numbering set stands.
+    pub(crate) fn number_targets(&self, index: crate::model::target::TargetIndex) {
+        let _ = self.numbering.set(index);
     }
 
     /// Settles `address` as [`Withheld`](Outcome::Withheld), where this scan
@@ -2799,6 +2830,7 @@ impl SessionBuilder {
                 last_sent: DashMap::new(),
             }),
             zones: Arc::new(OnceLock::new()),
+            numbering: Arc::new(OnceLock::new()),
             swept_links: Arc::new(SweptLinks::default()),
             attachments: Arc::new(Attachments::default()),
             hardware: Arc::new(WithheldHardware::read(
@@ -3846,6 +3878,54 @@ mod tests {
             .expect("the permitted key is recorded");
         assert!(!ips.contains(&excluded), "{ips:?}");
         assert!(ips.contains(&key));
+    }
+
+    /// **An address filed as unreachable settles every target of the plan at
+    /// it.** No route leading there is this machine's routing answering for
+    /// the address, and a sweep that left it unsettled was listed as
+    /// resumable when it had finished, and asked it again every sitting. A
+    /// sweep settles the address; a port scan settles each of its ports, and
+    /// one that earned a verdict first keeps it and is not counted twice.
+    #[test]
+    fn an_address_filed_unreachable_settles_its_targets() {
+        use crate::model::ip::set::Positions;
+        use crate::model::target::{TargetIndex, TargetMap, TargetSet};
+
+        let unreachable: IpAddr = "192.0.2.2".parse().expect("literal");
+
+        let sweep: IpSet = "192.0.2.1-192.0.2.3".parse().expect("a range");
+        let (_session, ctx) = ScanSession::builder()
+            .counting(Positions::of(&sweep))
+            .build();
+        ctx.record_unroutable(unreachable);
+        ctx.record_unroutable(unreachable);
+        let settled = ctx.settlements();
+        assert!(
+            settled.checkpoint().is_settled(1),
+            "the address is still owed"
+        );
+        assert_eq!(settled.checkpoint().settled_count(), 1);
+        assert_eq!(settled.count(Outcome::Unreachable { position: 0 }), 1);
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(sweep, "1-3".parse().expect("ports")));
+        let (_session, ctx) = ScanSession::new();
+        ctx.number_targets(TargetIndex::of(&map));
+        ctx.record_outcome(Outcome::Exhausted { position: 4 });
+        ctx.record_unroutable(unreachable);
+        let checkpoint = ctx.settlements().checkpoint();
+        assert_eq!(
+            (0..9)
+                .filter(|position| checkpoint.is_settled(*position))
+                .collect::<Vec<_>>(),
+            [3, 4, 5],
+            "the three ports of the second address, and nothing else"
+        );
+        assert_eq!(
+            ctx.settlements()
+                .count(Outcome::Unreachable { position: 0 }),
+            2
+        );
     }
 
     /// **A machine an exclusion names is withheld at every address it answers
