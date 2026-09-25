@@ -193,20 +193,40 @@ impl TcpPortScanner {
         transport: ProbeTransport,
         target_count: usize,
     ) -> Self {
-        let tuning = ProbeTuning::default();
-        Self::build(
-            Self::core(
-                resolver,
-                ctx,
-                transport,
-                &tuning,
-                rand::random_range(50_000..u16::MAX),
-                target_count,
-            ),
+        Self::with_transport_tuned(
+            resolver,
+            ctx,
             technique,
-            None,
-            OsDetection::default(),
-            ServiceDetection::default(),
+            transport,
+            target_count,
+            ProbeTuning::default(),
+        )
+    }
+
+    /// [`with_transport`](Self::with_transport), paced and shaped by `tuning`
+    /// as [`new`](Self::new) would be: its retry schedule, its rate limits,
+    /// the evasion profile's source port and flags, and how far it identifies
+    /// what answers.
+    ///
+    /// Everything in `tuning` that decides how the transport is opened is the
+    /// caller's to have honoured already, since the transport arrives open.
+    pub fn with_transport_tuned(
+        resolver: SourceResolver,
+        ctx: ScanContext,
+        technique: TcpScanTechnique,
+        transport: ProbeTransport,
+        target_count: usize,
+        tuning: ProbeTuning,
+    ) -> Self {
+        let src_port = tuning
+            .evasion
+            .source_port_or(rand::random_range(50_000..u16::MAX));
+        Self::build(
+            Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
+            technique,
+            tuning.evasion.flags,
+            tuning.os_detection,
+            tuning.service_detection,
         )
     }
 
@@ -2385,6 +2405,30 @@ mod tests {
         );
         assert_eq!(scanner.core.window.in_flight(), 0, "a window slot leaked");
         assert_eq!(port_state(&session, 80), Some(PortState::Open));
+    }
+
+    /// A send carrying no plan position takes no slot in the window, whether
+    /// or not its probe is still on the ledger when it leaves.
+    ///
+    /// The position is what tells a retry from a first attempt, being the one
+    /// fact about a probe that nothing changes while a retry waits. The
+    /// ledger's state is not: a late answer can settle the probe meanwhile,
+    /// and a retry read against it as a first attempt takes a slot no answer
+    /// or timeout will ever give back. The send is driven directly because the
+    /// loop above it declines to send such a retry at all, which is the test
+    /// before this one; this one holds the send path to its own contract.
+    #[test]
+    fn a_send_without_a_plan_position_never_takes_a_window_slot() {
+        let (mut scanner, _session, sent) = scanner_with_mock();
+
+        scanner.send(TARGET, 80, None, Instant::now());
+
+        assert_eq!(sent.lock().unwrap().len(), 1, "test premise: it left");
+        assert_eq!(
+            scanner.core.window.in_flight(),
+            0,
+            "a retry took a window slot"
+        );
     }
 
     /// Each attempt carries its own nonce, so a reply to the first arriving

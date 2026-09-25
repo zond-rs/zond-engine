@@ -24,10 +24,12 @@
 //! Each scan here is deliberately wider than the window starts, so admission
 //! control is exercised rather than skipped.
 
+use std::num::{NonZeroU8, NonZeroU32};
 use std::time::{Duration, Instant};
 
 use crate::support::fake_net::{FakeNet, Layer4, Policy};
 use crate::support::*;
+use zond_engine::config::ProbeTuning;
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner::session::ScanSession;
@@ -445,4 +447,77 @@ async fn a_probe_awaiting_its_answer_when_the_scan_stops_reads_unasked() {
             "port {port} was cut off awaiting its answer, and nothing filters it"
         );
     }
+}
+
+/// A scan held to a rate ceiling asks every port it was given, however long
+/// the ceiling makes it, and takes at least the time the ceiling allows.
+///
+/// A rate is a limit the caller sets, and a slower scan is meant to take
+/// longer rather than ask less. A deadline sized as though the scan ran at its
+/// own pace stops it mid-plan, and the ports it never reached read as never
+/// asked, the open ones among them. The ceiling here is slow enough that
+/// putting every probe on the wire takes twice what a deadline sized for an
+/// unlimited scan of this size allows.
+///
+/// The timing assertion is a lower bound, as in the spaced scan above, and is
+/// what shows the ceiling was applied at all: a scan that ignored it would
+/// finish at once and ask every port too.
+#[tokio::test]
+async fn a_scan_held_to_a_rate_ceiling_asks_every_port_and_takes_the_time() {
+    const PORTS: u16 = 80;
+    const RATE: u32 = 20;
+    let ports: Vec<u16> = (FIRST..FIRST + PORTS).collect();
+
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for &port in &ports {
+        net = net.host(TARGET, port, Policy::open());
+    }
+
+    // One attempt, so the retry schedule adds nothing to the deadline and the
+    // rate is all that decides whether it is long enough.
+    let mut tuning = ProbeTuning::default();
+    tuning.max_probe_rate = NonZeroU32::new(RATE);
+    tuning.retry.max_attempts = NonZeroU8::new(1);
+
+    let (session, ctx) = ScanSession::new();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport_tuned(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        ports.len(),
+        tuning,
+    );
+
+    let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
+    let started = Instant::now();
+    run_port_scanner(&mut scanner, targets).await;
+    let elapsed = started.elapsed();
+
+    let host = session.hosts().get(TARGET).expect("the target answered");
+    let unsettled: Vec<(u16, PortState)> = ports
+        .iter()
+        .map(|&port| {
+            let state = host
+                .ports()
+                .find(|recorded| recorded.number() == port)
+                .map_or(PortState::Unasked, |recorded| recorded.state());
+            (port, state)
+        })
+        .filter(|(_, state)| *state != PortState::Open)
+        .collect();
+    assert!(
+        unsettled.is_empty(),
+        "{} of {PORTS} ports answered and read otherwise: {:?}",
+        unsettled.len(),
+        &unsettled[..unsettled.len().min(8)]
+    );
+
+    // The first probe leaves at once, so the run is bounded below by the
+    // intervals between the rest.
+    let least = Duration::from_secs(u64::from(PORTS - 1)) / RATE;
+    assert!(
+        elapsed >= least,
+        "{PORTS} probes at {RATE} a second cannot finish in {elapsed:?}"
+    );
 }
