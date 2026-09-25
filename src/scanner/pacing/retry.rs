@@ -368,6 +368,10 @@ impl RetryPolicy {
     }
 }
 
+/// The smallest headroom a measured timeout keeps over the smoothed round
+/// trip, as that round trip divided by this. See [`RttEstimator::timeout`].
+const MIN_HEADROOM_DIVISOR: u32 = 4;
+
 /// A smoothed round-trip estimate and its variability, as RFC 6298 computes
 /// them for TCP.
 ///
@@ -411,9 +415,25 @@ impl RttEstimator {
     /// reasoning carries over unchanged: it is wide enough that ordinary
     /// variance does not trip it, and narrow enough that a genuinely lost packet
     /// is noticed in the same order of magnitude as the round trip.
+    ///
+    /// The headroom is never less than a quarter of the smoothed round trip.
+    /// The variation measures how far samples stray, and on a path whose
+    /// replies mostly agree it decays towards nothing between the stragglers,
+    /// leaving a timeout that is the round trip itself, which every reply a
+    /// little slower than usual misses: with one reply in twenty ten percent
+    /// slow, a steady 100 ms path read a fifth to two fifths of those as
+    /// filtered on one attempt. TCP answers the same decay with a floor of one clock tick
+    /// (RFC 6298's G), which says nothing here, where the clock is finer than
+    /// any path; what a steady path does stray by is a share of its own round
+    /// trip, as queues along it fill and drain, so the floor is a share too. A
+    /// quarter clears the ten percent a straggler was measured at with room,
+    /// and costs a scan only on paths slow enough to lift the timeout above
+    /// the policy's floor: below about 20 ms that floor is larger still.
     pub fn timeout(&self) -> Option<Duration> {
-        self.smoothed
-            .map(|smoothed| smoothed.saturating_add(self.variation * 4))
+        self.smoothed.map(|smoothed| {
+            let headroom = (self.variation * 4).max(smoothed / MIN_HEADROOM_DIVISOR);
+            smoothed.saturating_add(headroom)
+        })
     }
 
     /// Whether nothing has been recorded yet, which is when
@@ -1926,6 +1946,32 @@ mod tests {
         // 100ms this scan started out assuming.
         assert_eq!(measured, Duration::from_millis(12));
         assert_eq!(ledger.host_rtt(&HOST), Some(Duration::from_millis(4)));
+    }
+
+    /// On a steady path the timeout keeps headroom over the round trip for
+    /// the reply that comes back a little slower than the rest.
+    ///
+    /// The variation term measures how far samples stray, and on a path whose
+    /// replies mostly agree it decays towards nothing between the stragglers,
+    /// leaving a timeout that is the smoothed round trip itself. Every
+    /// straggler then lands after it, and with one attempt that is an open
+    /// port read filtered. Here one reply in twenty is ten percent slow.
+    #[test]
+    fn a_steady_path_keeps_headroom_for_a_reply_a_little_slower_than_most() {
+        let usual = Duration::from_millis(100);
+        let slow = Duration::from_millis(110);
+        let mut estimator = RttEstimator::default();
+        for n in 0..400 {
+            let sample = if n % 20 == 19 { slow } else { usual };
+            if n >= 40 {
+                let timeout = estimator.timeout().expect("measured");
+                assert!(
+                    sample < timeout,
+                    "sample {n}: a {sample:?} reply against a {timeout:?} timeout"
+                );
+            }
+            estimator.record(sample);
+        }
     }
 
     /// One host's measurements must not decide another's timeout, which is the
