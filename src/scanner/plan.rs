@@ -268,6 +268,22 @@ impl RefusedStep {
         }
     }
 
+    /// A port target range with more addresses than a port scan can walk.
+    ///
+    /// Whatever the privilege: the multicast that sweeps a segment's `/64` in
+    /// one packet asks who is there, not what each of them serves, so the
+    /// remedy is the addresses a sweep found. `scanner` is the port strategy
+    /// the phase runs under.
+    pub(crate) fn port_range_not_enumerable(range: &Ipv6Range, scanner: ScannerKind) -> Self {
+        Self {
+            scanner,
+            reason: format!(
+                "{}: too large to walk (give addresses or a smaller prefix)",
+                describe(range)
+            ),
+        }
+    }
+
     /// The same range, refused by an unprivileged scan.
     ///
     /// Separate wording from [`routed_range_not_enumerable`](Self::routed_range_not_enumerable)

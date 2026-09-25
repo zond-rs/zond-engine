@@ -116,6 +116,53 @@ pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
     kept
 }
 
+/// Takes the IPv6 ranges out of `target_map` too large to walk, handing them
+/// back for the port phase to refuse.
+///
+/// The port phase's side of the rule [`walkable`] applies to a sweep, and to
+/// the same constant. A port scan walks its plan target by target whatever
+/// the privilege, since no strategy asks a range's ports in one packet, so a
+/// `/64` behind a port list is a walk that never ends: the liveness pass
+/// refuses the range and leaves every target of it undecided, and the walk
+/// then settles them one at a time for longer than the process lives. Taken
+/// out before the plan is numbered, so the numbering, the count a fraction is
+/// drawn against and the walk all describe one plan, and what the caller
+/// named still reads the same in every sitting.
+pub(super) fn withhold_unwalkable_targets(target_map: &mut TargetMap) -> Vec<Ipv6Range> {
+    let mut refused: Vec<Ipv6Range> = target_map
+        .units
+        .iter()
+        .flat_map(|unit| unit.ips().v6().iter().copied())
+        .filter(|range| !interface::is_enumerable(range))
+        .collect();
+    if refused.is_empty() {
+        return refused;
+    }
+    refused.sort_unstable_by_key(|range| range.start_addr());
+    refused.dedup();
+
+    let mut kept = Vec::with_capacity(target_map.units.len());
+    for unit in std::mem::take(&mut target_map.units) {
+        let (ips, ports) = unit.into_parts();
+        let mut walkable = IpSet::new();
+        for range in ips.v4() {
+            walkable.push_v4_range(*range);
+        }
+        for range in ips.v6() {
+            if interface::is_enumerable(range) {
+                walkable.push_v6_range(*range);
+            }
+        }
+        walkable.canonicalize();
+        if !walkable.is_empty() {
+            kept.push(TargetSet::new(walkable, ports));
+        }
+    }
+    target_map.units = kept;
+
+    refused
+}
+
 /// The environment-derived facts that steer how a scan runs.
 ///
 /// Both entry points face the same two questions: can the process open raw
@@ -2763,6 +2810,29 @@ mod tests {
             "the refusal quotes the size it is refusing: {}",
             refusals[0].reason()
         );
+    }
+
+    /// A port plan naming a range too wide to walk keeps everything else it
+    /// named and hands the range back to be refused, once however many units
+    /// name it. Left in, its targets are settled one at a time for longer than
+    /// the process lives.
+    #[test]
+    fn a_port_plan_gives_up_only_the_ranges_too_wide_to_walk() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            ip_set(&["2001:db8::/64", "192.0.2.0/30", "2001:db8:1::/126"]),
+            "80".parse().expect("ports"),
+        ));
+        map.add_unit(TargetSet::new(
+            ip_set(&["2001:db8::/64"]),
+            "443".parse().expect("ports"),
+        ));
+
+        let refused = withhold_unwalkable_targets(&mut map);
+
+        assert_eq!(refused.len(), 1, "one range, named twice: {refused:?}");
+        assert_eq!(map.units.len(), 1, "the unit left with nothing is gone");
+        assert_eq!(map.gross_targets().ok(), Some(8));
     }
 
     /// Refusing the whole set over one unwalkable range in it would discard

@@ -142,7 +142,11 @@ pub(crate) fn dispatch_addresses_of(
             (numbered, order)
         });
 
-        let addresses: Box<dyn Iterator<Item = IpAddr> + Send + '_> = match &numbered {
+        // `None` for an address the walk passes over, rather than a filter
+        // that passes over it unseen: a resumed sweep of a wide plan can pass
+        // over millions in a row, and the loop below is where they are
+        // counted towards a yield. See `Passing`.
+        let addresses: Box<dyn Iterator<Item = Option<IpAddr>> + Send + '_> = match &numbered {
             // What the numbering could not reach follows the numbered ones, as
             // it does in the set's own walk, so an address is emitted exactly
             // once either way. Numbering `ips` itself, that is its ranges too
@@ -152,20 +156,40 @@ pub(crate) fn dispatch_addresses_of(
             Some((numbered, order)) => {
                 let walked = order
                     .iter()
-                    .filter_map(|position| numbered.address_at(position))
-                    .filter(|ip| ips.contains(ip));
+                    .map(|position| numbered.address_at(position).filter(|ip| ips.contains(ip)));
                 if plan.is_some() {
-                    Box::new(walked.chain(ips.iter().filter(|ip| numbered.find(*ip).is_none())))
+                    Box::new(
+                        walked.chain(
+                            ips.iter()
+                                .map(|ip| numbered.find(ip).is_none().then_some(ip)),
+                        ),
+                    )
                 } else {
                     Box::new(
-                        walked.chain(numbered.unnumbered().iter().flat_map(|range| range.iter())),
+                        walked.chain(
+                            numbered
+                                .unnumbered()
+                                .iter()
+                                .flat_map(|range| range.iter())
+                                .map(Some),
+                        ),
                     )
                 }
             }
-            None => ips.iter(),
+            None => Box::new(ips.iter().map(Some)),
         };
 
+        let mut passing = Passing::default();
         for ip in addresses {
+            passing.passed().await;
+            let Some(ip) = ip else {
+                // Read on what the walk passes over as well as on a send, or a
+                // stopped resume walks the rest of the plan before noticing.
+                if scan_handle.should_stop() {
+                    return;
+                }
+                continue;
+            };
             batch.push(ip);
             if batch.len() < batch_size {
                 continue;
@@ -288,6 +312,45 @@ async fn drain<T>(
         }
     }
     true
+}
+
+/// How many targets a walk passes before it hands its worker back to the
+/// runtime.
+///
+/// A walk awaits only on a send, and most of what it passes it never sends:
+/// what an earlier sitting settled, what the exclusions withhold and what the
+/// liveness pass found nothing at. A sparse `/16` behind a thousand ports is
+/// sixty-five million targets of that, which would hold a worker for tens of
+/// seconds, and on a single-threaded runtime hold everything else too,
+/// including whatever would ask the scan to stop. Every this many it yields,
+/// which costs a wake-up per thousand targets and bounds how long anything
+/// else waits for its turn to a thousand steps of arithmetic.
+const PASSES_PER_YIELD: u32 = 1024;
+
+/// A walk's count of the targets it has passed since it last yielded.
+#[derive(Default)]
+struct Passing {
+    since: u32,
+}
+
+impl Passing {
+    /// Counts one target, yielding every [`PASSES_PER_YIELD`].
+    ///
+    /// The stop is not read here. A walk reads it on every target it passes
+    /// over, since an atomic is cheaper than the settlement a passed target is
+    /// recorded with, and a walk that noticed a stop a thousand targets late
+    /// would settle them after the caller asked it not to; and on a send,
+    /// after the target is handed over. A target the walk would emit is never
+    /// withheld for a stop: the consumer learns of the stop from the target it
+    /// takes after it, and a stream ended with nothing in it would read to the
+    /// consumer as a plan it asked in full.
+    async fn passed(&mut self) {
+        self.since += 1;
+        if self.since >= PASSES_PER_YIELD {
+            self.since = 0;
+            tokio::task::yield_now().await;
+        }
+    }
 }
 
 /// How many targets a [`Dispatcher`] holds in flight unless told otherwise.
@@ -474,7 +537,24 @@ impl Dispatcher {
                 ),
             };
 
+            let mut passing = Passing::default();
             for planned in stream {
+                passing.passed().await;
+                // Read on every target the walk passes over as well as on a
+                // send, because a scan whose liveness pass was stopped, or a
+                // resumed one, has few targets to emit and would otherwise
+                // walk the rest of the plan before noticing. What it leaves is
+                // unsettled, and is asked again.
+                let passes_over = self.settled.is_settled(planned.position)
+                    || !ctx.may_probe(&planned.target.ip)
+                    || self
+                        .screen
+                        .as_ref()
+                        .is_some_and(|screen| !screen.live.contains(&planned.target.ip));
+                if passes_over && scan_handle.should_stop() {
+                    return stopped_short(accounted);
+                }
+
                 // Skipped rather than emitted, and skipped in both orders: what
                 // an earlier sitting settled is a fact about the job, so it is
                 // filtered after the numbering and never before.
@@ -503,13 +583,6 @@ impl Dispatcher {
                 if let Some(screen) = &self.screen
                     && !screen.live.contains(&planned.target.ip)
                 {
-                    // Checked here as well as on a send, because a scan whose
-                    // liveness pass was stopped has few hosts to emit and would
-                    // otherwise walk the rest of the plan before noticing. What
-                    // it leaves is unsettled, and is asked again.
-                    if scan_handle.should_stop() {
-                        return stopped_short(accounted);
-                    }
                     accounted += 1;
                     // Settled already where the pass filed its address as one
                     // no route leads to, which settles every port of it.
@@ -989,6 +1062,53 @@ mod tests {
             ctx.settlements().count(Outcome::Skipped { position: 0 }),
             0,
             "a stopped scan walked on through targets nothing would probe"
+        );
+    }
+
+    /// **A walk passing over targets hands its worker back.** A walk that
+    /// sends nothing awaits nothing, and on a runtime of one thread, which is
+    /// what a test and many a caller runs, nothing else runs until it is done:
+    /// not the events, and not whatever would ask the scan to stop. So the
+    /// stop here comes from a task that can only run once the walk yields,
+    /// and a walk that never did settles the whole plan first.
+    #[tokio::test]
+    async fn a_walk_passing_over_targets_lets_a_stop_in() {
+        let (session, ctx) = context();
+        let handle = session.handle().clone();
+        let settled = ctx.clone();
+
+        // A million targets, every address of them found silent, so the walk
+        // settles each where it stands and sends none.
+        let silent: IpSet = "192.0.2.0/24".parse().expect("a prefix");
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            silent.clone(),
+            "1-4096".parse::<PortSet>().expect("ports"),
+        ));
+        let (rx, walk) = Dispatcher::new(map)
+            .screened(IpSet::new(), silent)
+            .spawn(&ctx);
+
+        // Asks for the stop once the walk has begun, whichever of the two the
+        // runtime happens to start first.
+        let stopper = tokio::spawn(async move {
+            while settled
+                .settlements()
+                .count(Outcome::Skipped { position: 0 })
+                == 0
+            {
+                tokio::task::yield_now().await;
+            }
+            handle.abort();
+        });
+
+        walk.await.expect("the walk ends");
+        stopper.await.expect("the stop was asked for");
+        drop(rx);
+        let skipped = ctx.settlements().count(Outcome::Skipped { position: 0 });
+        assert!(
+            skipped < 1 << 20,
+            "the walk settled all {skipped} targets before anything else could run"
         );
     }
 

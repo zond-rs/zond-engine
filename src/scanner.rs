@@ -1525,6 +1525,8 @@ pub async fn scan(
     cfg.evasion.validate()?;
     enough_descriptors()?;
 
+    let mut target_map = target_map;
+    let unwalkable = orchestrator::withhold_unwalkable_targets(&mut target_map);
     let planned = planned_targets(&target_map);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
 
@@ -1540,7 +1542,14 @@ pub async fn scan(
         .planning(Stage::Ports, planned)
         .staging(scan_stages(cfg, runs_liveness))
         .build();
-    let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default(), runs_liveness);
+    let handle = spawn_scan(
+        target_map,
+        unwalkable,
+        cfg,
+        ctx,
+        Checkpoint::default(),
+        runs_liveness,
+    );
     Ok((session, ScanTask::new(handle)))
 }
 
@@ -1596,6 +1605,10 @@ pub async fn scan_with_journal(
     })?;
     let cfg = &under_the_recorded_technique(&journal, cfg);
     let journal = recording_options(journal, cfg);
+    // After the plan is held to the journal's, which records it as the caller
+    // named it, and before anything numbers it.
+    let mut target_map = target_map;
+    let unwalkable = orchestrator::withhold_unwalkable_targets(&mut target_map);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
     let finished = journal.finished_hosts().unwrap_or_else(|e| {
         crate::warn!("passes rerun for every host ({e})");
@@ -1636,7 +1649,14 @@ pub async fn scan_with_journal(
     // ended, and a caller watching it to know when to stop would wait for a scan
     // that was already over. See `ScanContext::progress`.
     let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
-    let handle = spawn_scan(target_map, cfg, ctx, resume_point, runs_liveness);
+    let handle = spawn_scan(
+        target_map,
+        unwalkable,
+        cfg,
+        ctx,
+        resume_point,
+        runs_liveness,
+    );
 
     Ok((session, ScanTask::journalling(handle, ticker, earlier)))
 }
@@ -1647,9 +1667,12 @@ pub async fn scan_with_journal(
 /// caller journalling the scan can seed it from an earlier run and keep a handle
 /// on it. Nothing here knows what a journal is.
 /// `settled` is what an earlier sitting already covered, and is empty for a scan
-/// that is not continuing one.
+/// that is not continuing one. `unwalkable` is what
+/// [`orchestrator::withhold_unwalkable_targets`] took out of `target_map`,
+/// refused in the port phase's record.
 fn spawn_scan(
     target_map: TargetMap,
+    unwalkable: Vec<crate::model::ip::range::Ipv6Range>,
     cfg: &ZondConfig,
     ctx: ScanContext,
     settled: Checkpoint,
@@ -1757,6 +1780,15 @@ fn spawn_scan(
         // has: it runs no liveness pass, so this is where a reader looks for
         // what the scan declined to send the target from this host.
         record_idle_refusals(&requested, &ctx);
+        let port_scanner = match caps.privilege.is_raw() {
+            true => ScannerKind::SynPort,
+            false => ScannerKind::Connect,
+        };
+        for range in &unwalkable {
+            ctx.record_refusal(
+                plan::RefusedStep::port_range_not_enumerable(range, port_scanner).into(),
+            );
+        }
         let stands_in = skipped == Some(LivenessSkip::PortsNoDearer);
         run_port_phase(numbered, live, &ctx, caps, &cfg, settled, stands_in).await;
 
@@ -1921,6 +1953,45 @@ mod tests {
         assert!(!directory.exists(), "a sweep that never ran left a record");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A port scan of a range too wide to walk refuses it in its port phase
+    /// and ends. Left in the plan, the liveness pass refuses it and leaves its
+    /// targets undecided, and the walk then settles them one at a time for
+    /// longer than the process lives: the task never resolves and a stop
+    /// cannot end it promptly.
+    #[tokio::test]
+    async fn a_port_scan_of_a_range_too_wide_to_walk_refuses_it_and_ends() {
+        use crate::model::target::TargetSet;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "2001:db8::/64".parse().expect("a prefix"),
+            "80,443".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            ..ZondConfig::default()
+        };
+
+        let (_session, task) = scan(map, &cfg, Detections::embedded())
+            .await
+            .expect("the scan starts");
+        // Generous: the scan has nothing to send and ends at once, and the
+        // failure this guards against never ends at all.
+        let report = tokio::time::timeout(std::time::Duration::from_secs(120), task)
+            .await
+            .expect("the scan ended")
+            .expect("the scan ran");
+
+        let refused: Vec<_> = report
+            .phases()
+            .iter()
+            .filter(|phase| phase.kind() == ScanKind::PortScan)
+            .flat_map(|phase| phase.refusals().iter())
+            .filter(|refusal| refusal.reason().contains("too large to walk"))
+            .collect();
+        assert_eq!(refused.len(), 1, "{:?}", report.phases());
     }
 
     /// A resumed sitting that asks something its job did not is refused by the
