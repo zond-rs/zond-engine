@@ -446,9 +446,9 @@ impl ProbeAudit {
     /// - **Answers that needed a retry.** The host was willing; the first ask
     ///   did not survive. Silence from a firewall does not improve on the second
     ///   attempt.
-    /// - **Frames the kernel dropped.** Replies that arrived and were discarded
+    /// - **Frames the kernel dropped.** Frames that arrived and were discarded
     ///   before this process saw them, which is loss on *this* side and is
-    ///   nobody's firewall at all.
+    ///   nobody's firewall at all, though not every one of them was an answer.
     ///
     /// What the first one is *worth telling somebody* depends on whether the
     /// scan could do anything about it. A scan pacing itself by a congestion
@@ -507,13 +507,27 @@ impl ProbeAudit {
             }
         }
 
+        // Told as answers that may be missing, and only where one could be.
+        // The kernel counts what it dropped and not what it was, and a capture
+        // holds this scan's own probes seen leaving, this machine's reports of
+        // probes it could not deliver and other people's traffic in the same
+        // slots as answers. So the drop is known and a lost answer is not, and
+        // a drop could have cost a verdict only where a target went
+        // unanswered. Where every target answered, no verdict rests on a
+        // dropped frame, and the line is one of the decisions behind the
+        // result rather than a warning.
         if let Some(counts) = capture
             && counts.dropped > 0
         {
-            crate::warn!(
-                "{scanner}: capture dropped {} (replies lost)",
-                crate::logging::counted(counts.dropped.into(), "frame", "frames"),
-            );
+            let frames = crate::logging::counted(counts.dropped.into(), "frame", "frames");
+            if u128::from(self.hosts_found) < targets {
+                crate::warn!("{scanner}: capture dropped {frames} (answers may be lost)");
+            } else {
+                crate::info!(
+                    verbosity = 1,
+                    "{scanner}: capture dropped {frames} (every target answered)"
+                );
+            }
         }
     }
 
@@ -740,6 +754,55 @@ mod tests {
                 .map(|line| line.message.as_str())
                 .collect();
             assert_eq!(!lines.is_empty(), warned, "{silence:?}: {said:?}");
+        }
+    }
+
+    /// A capture's drops are told as lost answers only where an answer could
+    /// be missing, and never as replies known to be lost.
+    ///
+    /// The kernel counts what it dropped and not what it was: this scan's own
+    /// probes seen leaving, this machine's reports of probes it could not
+    /// deliver and other people's traffic take the same slots as answers do.
+    /// Told as lost replies, a scan of addresses nobody holds reports answers
+    /// from hosts that do not exist. Where every target answered, no verdict
+    /// can rest on a dropped frame, and a default console has nothing to act
+    /// on.
+    #[test]
+    fn capture_drops_are_told_as_possible_loss_only_where_a_target_went_unanswered() {
+        let dropped = CaptureCounts {
+            received: 605,
+            dropped: 184,
+            if_dropped: 0,
+            stopped_early: 0,
+        };
+        let mut every_one_answered = ProbeAudit::new();
+        for _ in 0..40 {
+            every_one_answered.record_host_found(Some(1));
+        }
+
+        for (audit, targets, told) in [
+            (&ProbeAudit::new(), 200, true),
+            (&every_one_answered, 40, false),
+        ] {
+            let said = crate::logging::logged(|| {
+                audit.report(
+                    "local",
+                    targets,
+                    StopReason::AttemptsSpent,
+                    Some(dropped),
+                    None,
+                );
+            });
+            let drops: Vec<_> = said
+                .iter()
+                .filter(|line| line.message.contains("capture dropped 184 frames"))
+                .collect();
+            assert_eq!(drops.len(), 1, "{targets} targets: {said:?}");
+            assert_eq!(drops[0].verbosity == 0, told, "{targets} targets: {said:?}");
+            assert!(
+                !drops[0].message.contains("replies lost"),
+                "a drop is claimed as lost replies: {said:?}"
+            );
         }
     }
 
