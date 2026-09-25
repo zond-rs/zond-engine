@@ -525,6 +525,18 @@ pub struct CapturedFrame {
 
     /// When the kernel timestamped the frame.
     pub observed_at: SystemTime,
+
+    /// When the capture thread took delivery of this frame, on the monotonic
+    /// clock a round trip is measured against.
+    ///
+    /// The frame-stream twin of [`CapturedSegment::received_at`], and there for
+    /// the same reason: a sweep reading replies as frames times each one from
+    /// here rather than from the moment it dequeued it, which would add the
+    /// queue's depth and the runtime's scheduling to every round trip it
+    /// reports. [`observed_at`](Self::observed_at) is the earlier stamp but
+    /// on a clock that can be stepped under a measurement, so it places a
+    /// frame on a timeline and this one times it.
+    pub received_at: Instant,
 }
 
 /// The whole-frame receive stream produced by [`frames`]: [`CapturedFrame`]s
@@ -976,6 +988,7 @@ pub fn frames(
                 link,
                 bytes: packet.data.to_vec(),
                 observed_at: timestamp_of(packet),
+                received_at: Instant::now(),
             };
 
             // Waits rather than drops; see this function's documentation for why

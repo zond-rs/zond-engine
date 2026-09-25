@@ -134,6 +134,9 @@ pub struct LanHost {
     /// How long before answering the all-nodes echo, when that differs from
     /// [`delay`](Self::delay). See [`echo_delay`](Self::echo_delay).
     echo_delay: Option<Duration>,
+    /// How long this host's ARP reply waits in the capture's queue after the
+    /// capture took it. See [`queued`](Self::queued).
+    queued: Duration,
     answers_from: Option<Ipv6Addr>,
 }
 
@@ -145,6 +148,7 @@ impl LanHost {
             loss: Loss::None,
             delay: Duration::ZERO,
             echo_delay: None,
+            queued: Duration::ZERO,
             answers_from: None,
         }
     }
@@ -200,6 +204,15 @@ impl LanHost {
     /// is the one the ranking in `HostTelemetry` exists for.
     pub fn echo_delay(mut self, delay: Duration) -> Self {
         self.echo_delay = Some(delay);
+        self
+    }
+
+    /// Has the capture take this host's ARP reply when it arrives and hand it
+    /// to the reader `queued` later, as a capture queue the reader has fallen
+    /// behind on does. The reply is on the wire on time; only its reading is
+    /// late.
+    pub fn queued(mut self, queued: Duration) -> Self {
+        self.queued = queued;
         self
     }
 
@@ -590,7 +603,7 @@ impl FakeSegment {
         let scanner_mac = request.get_sender_hw_addr();
         let scanner_ip = request.get_sender_proto_addr();
         if let Some(reply) = arp_reply(host.mac, target, scanner_mac, scanner_ip) {
-            self.deliver(reply, host.delay);
+            self.deliver_late(reply, host.delay, host.queued);
         }
     }
 
@@ -754,9 +767,15 @@ impl FakeSegment {
     /// synchronously from inside the scanner's own send loop and blocking here
     /// would stall the loop the delay is meant to race against.
     fn deliver(&self, frame: Vec<u8>, delay: Duration) {
+        self.deliver_late(frame, delay, Duration::ZERO);
+    }
+
+    /// [`deliver`](Self::deliver), with the frame reaching the reader `queued`
+    /// after the capture took it. See [`LanHost::queued`].
+    fn deliver_late(&self, frame: Vec<u8>, delay: Duration, queued: Duration) {
         let captured = self.capture(frame);
 
-        if delay.is_zero() {
+        if delay.is_zero() && queued.is_zero() {
             // `try_send` rather than a blocking or awaited send: this runs
             // synchronously inside the scanner's own send loop, on the runtime
             // thread, so waiting for room here would stall the very loop that
@@ -768,7 +787,18 @@ impl FakeSegment {
 
         let frames = self.frames.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
+            // Captured when it arrives, which is after the delay: a capture
+            // stamps what it lifts off the wire, not what a host meant to send.
+            let captured = if delay.is_zero() {
+                captured
+            } else {
+                tokio::time::sleep(delay).await;
+                CapturedFrame {
+                    received_at: std::time::Instant::now(),
+                    ..captured
+                }
+            };
+            tokio::time::sleep(queued).await;
             // The receiver is gone once the sweep ends, which is the normal way
             // a reply that arrived too late is discarded.
             let _ = frames.send(captured).await;
@@ -782,6 +812,7 @@ impl FakeSegment {
             link: LinkType::Ethernet,
             bytes,
             observed_at: SystemTime::now(),
+            received_at: std::time::Instant::now(),
         }
     }
 }

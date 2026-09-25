@@ -621,6 +621,33 @@ async fn a_slow_arp_reply_still_discovers_the_host() {
     assert!(session.hosts().contains(v4(10)));
 }
 
+/// A reply is timed from when the capture took it, not from when the sweep got
+/// round to reading it.
+///
+/// A sweep's reader falls behind its capture whenever the segment answers
+/// faster than the loop reads, and a round trip measured at the read carries
+/// that backlog: the host is recorded as slow, and every later pass times its
+/// probes to it from a path that was never that long.
+#[tokio::test]
+async fn a_reply_read_late_is_timed_from_its_capture() {
+    // Inside the first timeout, so the answer finds its probe out on one
+    // attempt and is timed at all.
+    let backlog = Duration::from_millis(100);
+    let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A).queued(backlog));
+    let session = sweep(&lan, &[v4(10)], Scope::Targeted).await;
+
+    let rtt = session
+        .hosts()
+        .get(v4(10))
+        .expect("the host answered")
+        .min_rtt()
+        .expect("and was timed");
+    assert!(
+        rtt < backlog / 2,
+        "an immediate answer read {backlog:?} late was timed at {rtt:?}"
+    );
+}
+
 /// One machine holding two addresses is one host, not two.
 ///
 /// This is what the MAC-to-IP map exists for, and getting it wrong inflates

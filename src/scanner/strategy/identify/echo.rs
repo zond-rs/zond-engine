@@ -608,7 +608,9 @@ impl OsEchoScanner {
                     match res {
                         Some(reply) => {
                             self.sweep.audit.record_segment();
-                            self.handle_reply(reply, Instant::now());
+                            // Timed from the capture, not from this read.
+                            let received_at = reply.received_at;
+                            self.handle_reply(reply, received_at);
                         }
                         None => break StopReason::StreamClosed,
                     }

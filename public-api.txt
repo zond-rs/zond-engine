@@ -17113,6 +17113,7 @@ pub struct zond_engine::transport::capture::CapturedFrame
 pub zond_engine::transport::capture::CapturedFrame::bytes: alloc::vec::Vec<u8>
 pub zond_engine::transport::capture::CapturedFrame::link: zond_engine::transport::frame::LinkType
 pub zond_engine::transport::capture::CapturedFrame::observed_at: std::time::SystemTime
+pub zond_engine::transport::capture::CapturedFrame::received_at: std::time::Instant
 pub zond_engine::transport::capture::CapturedFrame::zone: zond_engine::model::ip::scoped::Zone
 impl core::clone::Clone for zond_engine::transport::capture::CapturedFrame
 pub fn zond_engine::transport::capture::CapturedFrame::clone(&self) -> zond_engine::transport::capture::CapturedFrame

@@ -1401,6 +1401,7 @@ mod tests {
             link: LinkType::Ethernet,
             bytes,
             observed_at: SystemTime::UNIX_EPOCH,
+            received_at: std::time::Instant::now(),
         }
     }
 
@@ -1605,6 +1606,7 @@ mod tests {
             link: LinkType::Raw,
             bytes: datagram,
             observed_at: SystemTime::UNIX_EPOCH,
+            received_at: std::time::Instant::now(),
         });
 
         let host = ctx
@@ -1647,6 +1649,7 @@ mod tests {
                 link: LinkType::Raw,
                 bytes: packet,
                 observed_at: SystemTime::UNIX_EPOCH,
+                received_at: std::time::Instant::now(),
             });
 
             let hosts = ctx.hosts_snapshot();

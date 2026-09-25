@@ -529,7 +529,10 @@ impl HostScanner for RoutedScanner {
                     match res {
                         Some(reply) => {
                             self.sweep.audit.record_segment();
-                            self.handle_discovery_reply(&reply, Instant::now());
+                            // The moment the capture took the reply, not the
+                            // moment this loop reached it. See
+                            // `CapturedSegment::received_at`.
+                            self.handle_discovery_reply(&reply, reply.received_at);
                         }
                         None => break StopReason::StreamClosed,
                     }
@@ -1626,22 +1629,50 @@ mod tests {
             {
                 return Ok(());
             }
-            let probe = protocol::tcp::parse(segment).expect("a whole segment");
-            let mut reply = vec![0u8; 20];
-            let mut tcp = pnet_packet::tcp::MutableTcpPacket::new(&mut reply).expect("20 bytes");
-            tcp.set_source(probe.destination_port());
-            tcp.set_destination(probe.source_port());
-            tcp.set_data_offset(5);
-            tcp.set_flags(pnet_packet::tcp::TcpFlags::SYN | pnet_packet::tcp::TcpFlags::ACK);
-            tcp.set_acknowledgement(probe.sequence().wrapping_add(1));
             self.replies
-                .try_send(CapturedSegment::synthetic(
-                    dst,
-                    IpNextHeaderProtocols::Tcp,
-                    reply,
-                ))
+                .try_send(syn_ack(segment, dst))
                 .expect("room for the answer");
             std::thread::sleep(self.stall);
+            Ok(())
+        }
+    }
+
+    /// The SYN+ACK `dst` answers the SYN in `segment` with, captured now.
+    fn syn_ack(segment: &[u8], dst: IpAddr) -> CapturedSegment {
+        let probe = protocol::tcp::parse(segment).expect("a whole segment");
+        let mut reply = vec![0u8; 20];
+        let mut tcp = pnet_packet::tcp::MutableTcpPacket::new(&mut reply).expect("20 bytes");
+        tcp.set_source(probe.destination_port());
+        tcp.set_destination(probe.source_port());
+        tcp.set_data_offset(5);
+        tcp.set_flags(pnet_packet::tcp::TcpFlags::SYN | pnet_packet::tcp::TcpFlags::ACK);
+        tcp.set_acknowledgement(probe.sequence().wrapping_add(1));
+        CapturedSegment::synthetic(dst, IpNextHeaderProtocols::Tcp, reply)
+    }
+
+    /// A path that answers every SYN at once, captured the moment it is sent,
+    /// and hands the answer to the reader `backlog` later: a capture queue the
+    /// sweep has fallen behind on.
+    struct AnsweringThroughABacklog {
+        backlog: Duration,
+        replies: tokio::sync::mpsc::Sender<CapturedSegment>,
+    }
+
+    impl crate::transport::probe::ProbeSender for AnsweringThroughABacklog {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            dst: IpAddr,
+            _zone: Option<u32>,
+            _emission: Emission,
+        ) -> Result<(), crate::transport::probe::SendError> {
+            let answer = syn_ack(segment, dst);
+            let (backlog, replies) = (self.backlog, self.replies.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(backlog);
+                let _ = replies.blocking_send(answer);
+            });
             Ok(())
         }
     }
@@ -1695,6 +1726,56 @@ mod tests {
                 .get(IpAddr::from(TARGET))
                 .is_some_and(|host| host.status().is_up()),
             "the host answered and is not on record as up"
+        );
+    }
+
+    /// A reply is timed from when the capture took it, not from when the sweep
+    /// got round to reading it.
+    ///
+    /// A sweep reads its replies behind a queue, and a round trip measured at
+    /// the read carries the queue's depth and the runtime's scheduling. Under
+    /// load that is most of the figure: the host is recorded as far slower
+    /// than its path, and every later pass times its probes from that.
+    #[tokio::test]
+    async fn a_reply_read_late_is_timed_from_its_capture() {
+        let (session, ctx) = ScanSession::new();
+        let (replies, rx) = tokio::sync::mpsc::channel(16);
+        // Inside the first timeout, so the answer finds its probe out on one
+        // attempt and is timed at all.
+        let backlog = Duration::from_millis(100);
+        let retry = RETRY_POLICY.configured(RetryConfig {
+            max_attempts: std::num::NonZeroU8::new(1),
+            ..RetryConfig::default()
+        });
+        let transport =
+            ProbeTransport::from_parts(Box::new(AnsweringThroughABacklog { backlog, replies }), rx);
+        let mut scanner = RoutedScanner::build(
+            vec![RoutedTarget {
+                target: TARGET.into(),
+                source: LOCAL.into(),
+            }],
+            ctx,
+            None,
+            transport,
+            SweepProbe::syn(None),
+            Emission::routed(),
+            SegmentShaping::default(),
+            Vec::new(),
+            retry,
+            PROBE_RATE_PER_SEC,
+        );
+
+        scanner.discover_hosts().await.expect("the sweep runs");
+
+        let rtt = session
+            .hosts()
+            .get(IpAddr::from(TARGET))
+            .expect("the host answered")
+            .min_rtt()
+            .expect("and was timed");
+        assert!(
+            rtt < backlog / 2,
+            "an immediate answer read {backlog:?} late was timed at {rtt:?}"
         );
     }
 }

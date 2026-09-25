@@ -83,6 +83,7 @@ fn tcp_frame(mac: MacAddr, from: Ipv4Addr, sport: u16, dport: u16, flags: u8) ->
         ]
         .concat(),
         observed_at: SystemTime::UNIX_EPOCH,
+        received_at: std::time::Instant::now(),
     }
 }
 

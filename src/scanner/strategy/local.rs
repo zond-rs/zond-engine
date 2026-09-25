@@ -578,7 +578,10 @@ impl HostScanner for LocalScanner {
                     match pkt {
                         Some(frame) => {
                             self.sweep.audit.record_segment();
-                            _ = self.process_eth_packet(&frame, Instant::now());
+                            // The moment the capture took the frame, not the
+                            // moment this loop reached it. See
+                            // `CapturedFrame::received_at`.
+                            _ = self.process_eth_packet(&frame, frame.received_at);
                         }
                         None => break StopReason::StreamClosed,
                     }
