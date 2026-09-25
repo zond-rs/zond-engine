@@ -123,7 +123,7 @@ pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
             }
         };
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = writer.journal.record_phases(&phases);
+            let _ = writer.journal.end_sitting(&phases);
             writer.close(&ctx, &phases);
         })
         .await;
@@ -205,8 +205,10 @@ impl Writer {
         }
 
         // Tapes are additive: they settle nothing, so a failed write does not
-        // disturb the checkpoint and is not folded above.
+        // disturb the checkpoint and is not folded above. Nor does the
+        // sitting's standing record, which the next checkpoint rewrites whole.
         let _ = self.journal.record_detections(&ctx.take_tapes());
+        let _ = self.journal.record_standing(&ctx.standing_phases());
     }
 
     /// Writes the sitting's last checkpoint and closes the journal.
@@ -496,6 +498,89 @@ mod tests {
             late < RELEASED_AFTER / 2,
             "a timer across the checkpoint ran {late:?} late"
         );
+    }
+
+    /// A phase `ctx` has open, as a scan opens one.
+    fn open_a_port_phase(
+        ctx: &crate::scanner::session::ScanContext,
+    ) -> crate::scanner::recorder::PhaseRecorder {
+        use crate::report::{ScanKind, TargetScope};
+
+        let mut addresses: crate::model::ip::set::IpSet = "192.0.2.1".parse().expect("an address");
+        let scope = TargetScope::from_ip_set(&mut addresses, &Exclusions::none());
+        crate::scanner::recorder::PhaseRecorder::start(
+            ScanKind::PortScan,
+            Privilege::Raw,
+            scope,
+            &crate::config::ZondConfig::default(),
+        )
+        .opening_in(ctx)
+    }
+
+    /// A sitting killed outright leaves a record of its phase: what it was
+    /// asked to cover and under what, how long it ran, and what failed.
+    ///
+    /// A sitting's phases are written when it stops, and a killed one never
+    /// stops. Without this the job's report, read back or resumed, described
+    /// only the sittings that ended, and a failure that may be why the first
+    /// one was killed went with it.
+    #[test]
+    fn a_killed_sitting_leaves_a_record_of_its_phase() {
+        let root = scratch("killed-phase");
+        let plan = one_target();
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "test").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+
+        let _recorder = open_a_port_phase(&ctx);
+        ctx.record_failure(ScannerKind::SynPort, "the capture closed".to_string());
+        let mut writer = Writer::new(journal);
+        writer.checkpoint(&ctx.progress());
+        drop(writer);
+
+        let report = crate::journal::store::report(&directory).expect("reads");
+        assert_eq!(report.phases().len(), 1, "the killed sitting's phase");
+        assert_eq!(report.phases()[0].kind(), crate::report::ScanKind::PortScan);
+        assert_eq!(report.failures().count(), 1, "and what failed in it");
+
+        let (resumed, _) = Journal::resume(&directory, &plan, Privilege::Raw).expect("resumes");
+        assert_eq!(resumed.earlier_phases().len(), 1, "a resume carries it too");
+        drop(resumed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A sitting that ends has its phases recorded once, and nothing of them
+    /// left standing.
+    ///
+    /// Its standing record and its ending both describe the same phases, and
+    /// a report holding both would describe the sitting twice.
+    #[test]
+    fn a_sitting_that_ends_is_recorded_once() {
+        let root = scratch("ended-phase");
+        let plan = one_target();
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "test").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+
+        let recorder = open_a_port_phase(&ctx);
+        let mut writer = Writer::new(journal);
+        writer.checkpoint(&ctx.progress());
+        let report = recorder.finish(&ctx);
+        writer
+            .journal
+            .end_sitting(report.phases())
+            .expect("records");
+        writer.close(&ctx.progress(), report.phases());
+
+        let phases = crate::journal::store::report(&directory).expect("reads");
+        assert_eq!(phases.phases().len(), 1);
+        let standing = std::fs::read_dir(&directory)
+            .expect("lists")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("sitting-"))
+            .count();
+        assert_eq!(standing, 0, "the standing record outlived the sitting");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A journal that cannot be written is told once, in one short line, however

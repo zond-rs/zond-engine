@@ -1273,6 +1273,8 @@ pub struct ScanProgress {
     /// its verdicts, which only a journal's writer asks.
     #[cfg(feature = "journal-format")]
     verdicts_pending: Arc<AtomicBool>,
+    #[cfg(feature = "journal-format")]
+    sitting: Arc<Sitting>,
 }
 
 impl ScanProgress {
@@ -1331,6 +1333,13 @@ impl ScanProgress {
             self.changed.insert(host.scoped_ip());
         }
         findings
+    }
+
+    /// This sitting's phases as they stand: those closed, and the open one
+    /// so far. See [`Sitting`].
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn standing_phases(&self) -> Vec<crate::report::ScanPhase> {
+        self.sitting.standing(self.failures.snapshot())
     }
 
     /// Marks `hosts` changed again, for a journal whose write of them failed.
@@ -1437,6 +1446,49 @@ impl FailureLog {
     }
 }
 
+/// The phases a context has run this sitting, closed and open, for a journal
+/// to write down before the sitting ends.
+///
+/// A sitting's phases reach its journal whole when it stops cleanly. One
+/// killed outright never gets there, and this is what its journal can write
+/// down as it goes instead: what each closed phase turned out to be, and what
+/// the open one is so far.
+#[derive(Debug, Default)]
+pub(crate) struct Sitting {
+    phases: Mutex<SittingPhases>,
+}
+
+/// What [`Sitting`] holds behind its lock: the phases closed so far, and the
+/// one open now, if any.
+#[derive(Debug, Default)]
+struct SittingPhases {
+    closed: Vec<crate::report::ScanPhase>,
+    open: Option<crate::scanner::recorder::Opened>,
+}
+
+impl Sitting {
+    fn open(&self, opened: crate::scanner::recorder::Opened) {
+        let mut phases = self.phases.lock().unwrap_or_else(|e| e.into_inner());
+        phases.open = Some(opened);
+    }
+
+    fn close(&self, phase: &crate::report::ScanPhase) {
+        let mut phases = self.phases.lock().unwrap_or_else(|e| e.into_inner());
+        phases.open = None;
+        phases.closed.push(phase.clone());
+    }
+
+    /// The closed phases, and the open one as it stands with `failures` filed
+    /// against it.
+    #[cfg(feature = "journal-format")]
+    fn standing(&self, failures: Vec<ScannerFailure>) -> Vec<crate::report::ScanPhase> {
+        let phases = self.phases.lock().unwrap_or_else(|e| e.into_inner());
+        let mut standing = phases.closed.clone();
+        standing.extend(phases.open.as_ref().map(|open| open.standing(failures)));
+        standing
+    }
+}
+
 /// The shared, cloneable handles that every scanning strategy needs: somewhere to
 /// write discovered hosts, somewhere to announce updates, a way to check for abort,
 /// and somewhere to record its own failure.
@@ -1481,6 +1533,8 @@ pub struct ScanContext {
     /// which of its records are hosts. See
     /// [`await_verdicts`](Self::await_verdicts).
     pub(crate) verdicts_pending: Arc<AtomicBool>,
+    /// The phases this context has run this sitting. See [`Sitting`].
+    pub(crate) sitting: Arc<Sitting>,
     /// Which stage's unit the plan, and so the settlements, are counted in.
     pub(crate) plan_stage: Stage,
     /// When each host's budget started, for a scan that set one.
@@ -2340,6 +2394,17 @@ impl ScanContext {
         self.attachments.drain()
     }
 
+    /// Records that a phase has opened, for a journal to write down what it
+    /// is before it closes. See [`Sitting`].
+    pub(crate) fn open_phase(&self, opened: crate::scanner::recorder::Opened) {
+        self.sitting.open(opened);
+    }
+
+    /// Records that the open phase has closed as `phase`. See [`Sitting`].
+    pub(crate) fn close_phase(&self, phase: &crate::report::ScanPhase) {
+        self.sitting.close(phase);
+    }
+
     /// Records what became of one target, for a later resume.
     ///
     /// Not the same question as the verdict: a target reaches the store with a
@@ -2524,6 +2589,8 @@ impl ScanContext {
             tapes: Arc::clone(&self.tapes),
             #[cfg(feature = "journal-format")]
             verdicts_pending: Arc::clone(&self.verdicts_pending),
+            #[cfg(feature = "journal-format")]
+            sitting: Arc::clone(&self.sitting),
         }
     }
 
@@ -2963,6 +3030,7 @@ impl SessionBuilder {
             unreached: Arc::new(AtomicU64::new(0)),
             unheard_probes: Arc::new(AtomicU64::new(0)),
             verdicts_pending: Arc::new(AtomicBool::new(false)),
+            sitting: Arc::new(Sitting::default()),
             plan_stage: self.plan_stage,
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,

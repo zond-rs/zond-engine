@@ -82,6 +82,17 @@ use crate::system::privilege::Privilege;
 /// # }
 /// ```
 pub struct PhaseRecorder {
+    opened: Opened,
+}
+
+/// What a phase is from the moment it opens: what it was asked to cover, under
+/// what, with which sockets, and when it began.
+///
+/// Apart from [`PhaseRecorder`] so a journal can hold a copy while the phase
+/// runs. A sitting killed outright never closes its phase, and this is what
+/// its journal can still say of it; see [`Opened::standing`].
+#[derive(Debug, Clone)]
+pub(crate) struct Opened {
     kind: ScanKind,
     started_at: SystemTime,
     started: Instant,
@@ -89,6 +100,44 @@ pub struct PhaseRecorder {
     targets: TargetScope,
     settings: ScanSettings,
     liveness_skipped: Option<LivenessSkip>,
+}
+
+impl Opened {
+    /// The phase as it stands: what it opened with, how long it has run, and
+    /// `failures`, the failures filed since it opened.
+    ///
+    /// What only its close can establish is left empty: the addresses it
+    /// reached no verdict on, heard nothing from or left early, what it never
+    /// reached, and its strategies' statistics. A record of a phase that never
+    /// closed claims none of those rather than guessing at them, and none of
+    /// them settles anything a resume would skip. Nor does it say it was
+    /// stopped, since nothing stopped it that it could name.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn standing(&self, failures: Vec<crate::report::ScannerFailure>) -> ScanPhase {
+        ScanPhase::from_parts(PhaseParts {
+            kind: self.kind,
+            started_at: self.started_at,
+            elapsed: self.started.elapsed(),
+            privilege: Some(self.privilege),
+            targets: self.targets.clone(),
+            settings: self.settings.clone(),
+            failures,
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: self.liveness_skipped,
+            silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
+            unheard_probes: 0,
+            probes: Vec::new(),
+            origin: None,
+            attachments: Vec::new(),
+        })
+    }
 }
 
 impl PhaseRecorder {
@@ -109,14 +158,27 @@ impl PhaseRecorder {
         cfg: &ZondConfig,
     ) -> Self {
         Self {
-            kind,
-            started_at: SystemTime::now(),
-            started: Instant::now(),
-            privilege,
-            targets,
-            settings: ScanSettings::from(cfg),
-            liveness_skipped: None,
+            opened: Opened {
+                kind,
+                started_at: SystemTime::now(),
+                started: Instant::now(),
+                privilege,
+                targets,
+                settings: ScanSettings::from(cfg),
+                liveness_skipped: None,
+            },
         }
+    }
+
+    /// Tells `ctx` this phase is open, so a journal checkpointing the scan
+    /// can write down what the phase is before it closes. See
+    /// [`Opened::standing`].
+    ///
+    /// Called once the phase is fully described, after
+    /// [`skipping_liveness`](Self::skipping_liveness) where that applies.
+    pub(crate) fn opening_in(self, ctx: &ScanContext) -> Self {
+        ctx.open_phase(self.opened.clone());
+        self
     }
 
     /// Records that this port phase runs with no liveness pass in front of it,
@@ -127,7 +189,7 @@ impl PhaseRecorder {
     /// discovery phase. See [`ScanPhase::liveness_skipped`].
     #[must_use]
     pub fn skipping_liveness(mut self, why: LivenessSkip) -> Self {
-        self.liveness_skipped = Some(why);
+        self.opened.liveness_skipped = Some(why);
         self
     }
 
@@ -160,7 +222,7 @@ impl PhaseRecorder {
         // Which links the strategies reached is only knowable now: the scope was
         // fixed before the first probe went out, and a sweep of a segment covers
         // ground no target set named.
-        let mut targets = self.targets;
+        let mut targets = self.opened.targets;
         targets.record_sweeps(ctx.take_swept_links());
         targets.record_withheld_machines(ctx.withheld_by_hardware());
 
@@ -172,7 +234,7 @@ impl PhaseRecorder {
         // a liveness pass the engine dropped: there an address they drew
         // nothing from is what the pass would have found silent. See
         // `ScanPhase::silent`.
-        let silent = match (self.kind, self.liveness_skipped) {
+        let silent = match (self.opened.kind, self.opened.liveness_skipped) {
             (ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => ranges_of(&heard_nothing),
             _ => Vec::new(),
         };
@@ -185,22 +247,22 @@ impl PhaseRecorder {
         // two lists above are: the ports asked at the addresses they name.
         let unheard_probes = ctx.take_unheard_probes();
         let liveness =
-            (self.kind == ScanKind::Discovery).then(|| Liveness::found(ctx, heard_nothing));
-        let undecided = match (&liveness, self.kind, self.liveness_skipped) {
+            (self.opened.kind == ScanKind::Discovery).then(|| Liveness::found(ctx, heard_nothing));
+        let undecided = match (&liveness, self.opened.kind, self.opened.liveness_skipped) {
             (Some(liveness), _, _) => liveness.undecided(&targets, &unroutable),
             (None, ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => ranges_of(&unfinished),
             _ => Vec::new(),
         };
 
         let phase = ScanPhase::from_parts(PhaseParts {
-            kind: self.kind,
-            started_at: self.started_at,
+            kind: self.opened.kind,
+            started_at: self.opened.started_at,
             // Monotonic rather than the difference between two wall-clock
             // readings, which a clock correction mid-sweep would distort.
-            elapsed: self.started.elapsed(),
-            privilege: Some(self.privilege),
+            elapsed: self.opened.started.elapsed(),
+            privilege: Some(self.opened.privilege),
             targets,
-            settings: self.settings,
+            settings: self.opened.settings,
             failures: ctx.take_failures(),
             refusals: ctx.take_refusals(),
             unroutable,
@@ -209,7 +271,7 @@ impl PhaseRecorder {
             // Taken whatever the privilege, so a context reused for another
             // phase starts empty, and kept only for a raw phase: one at
             // `Connect` reached everything this way, and its privilege says so.
-            reached_by_connect: match self.privilege {
+            reached_by_connect: match self.opened.privilege {
                 Privilege::Raw => ctx.take_reached_by_connect(),
                 Privilege::Connect => {
                     let _ = ctx.take_reached_by_connect();
@@ -217,18 +279,18 @@ impl PhaseRecorder {
                 }
             },
             undecided,
-            liveness_skipped: self.liveness_skipped,
+            liveness_skipped: self.opened.liveness_skipped,
             silent,
             // A watch runs until it is stopped, so that is its end rather than
             // anything that cut it short.
-            stopped: match self.kind {
+            stopped: match self.opened.kind {
                 ScanKind::Listen => None,
                 _ => ctx.handle.stopped().map(StopReason::from),
             },
             // Taken whatever the kind, so a context reused for another phase
             // starts from nothing.
             unreached: u128::from(ctx.take_unreached()),
-            unheard_probes: match (self.kind, self.liveness_skipped) {
+            unheard_probes: match (self.opened.kind, self.opened.liveness_skipped) {
                 (ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => {
                     u128::from(unheard_probes)
                 }
@@ -238,6 +300,8 @@ impl PhaseRecorder {
             origin: None,
             attachments: ctx.take_attachments(),
         });
+
+        ctx.close_phase(&phase);
 
         // Copied rather than taken: the store is shared with the `ScanSession`
         // the caller kept, which goes on answering after this returns.

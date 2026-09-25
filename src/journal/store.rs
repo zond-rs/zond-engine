@@ -14,6 +14,7 @@
 //!     cursor.json     how far the scan got, rewritten on a timer
 //!     hosts.jsonl     what it found, appended as it finds it
 //!     phases.jsonl    what each sitting did, appended as each one ends
+//!     sitting-*.jsonl what a sitting has done so far, until it ends
 //!     LOCK            who is writing, if anyone
 //! ```
 //!
@@ -34,6 +35,19 @@
 //! file already says of it. What the file holds of each port is remembered as a
 //! digest of the record written, so telling what changed costs no copy of the
 //! host.
+//!
+//! ## A sitting is written down before it ends
+//!
+//! A sitting's phases are appended to `phases.jsonl` when it stops, and one
+//! killed outright never stops. So each sitting also keeps a file of its own,
+//! named for when it started, holding its phases as they stand: those that
+//! have closed, and the open one so far. It is rewritten whole at every
+//! checkpoint and removed once the phases are appended. One still there when
+//! the journal is read is a sitting that never ended, and its phases are read
+//! beside the rest. A phase that never closed says what it opened with, how
+//! long it ran and what failed in it, and claims nothing only its close could
+//! establish. A phase read from both, left by
+//! a sitting stopped between the append and the removal, is read once.
 //!
 //! [`Journal::create`] begins one, [`Journal::resume`] continues one, and
 //! [`list`] enumerates them for a caller offering a choice.
@@ -69,6 +83,9 @@ const HOSTS: &str = "hosts.jsonl";
 const PHASES: &str = "phases.jsonl";
 const DETECTIONS: &str = "detections.jsonl";
 const LOCK: &str = "LOCK";
+/// What a sitting's record of its phases as they stand is named after,
+/// before when it started.
+const SITTING: &str = "sitting-";
 /// What the job runs under, written once, when its first sitting starts. See
 /// [`Journal::options`].
 const OPTIONS: &str = "options.json";
@@ -157,6 +174,9 @@ pub struct Journal {
     /// How much has to be superseded before a compaction is tried again, once
     /// one has failed. See [`compact`](Journal::compact).
     compact_after: u64,
+    /// Where this sitting writes its phases as they stand. See the module
+    /// documentation.
+    sitting: PathBuf,
 }
 
 impl Journal {
@@ -197,6 +217,7 @@ impl Journal {
         write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
 
         let lock = Lock::acquire(&directory.join(LOCK))?;
+        let sitting = sitting_file(directory, &lock);
 
         let mut journal = Self {
             directory: directory.to_path_buf(),
@@ -210,6 +231,7 @@ impl Journal {
             written: Written::default(),
             length: 0,
             compact_after: 0,
+            sitting,
         };
         journal.open_findings()?;
         journal.length = fs::metadata(directory.join(HOSTS))
@@ -264,6 +286,7 @@ impl Journal {
         manifest.covers(plan, privilege)?;
 
         let lock = lock(&directory.join(LOCK))?;
+        let sitting = sitting_file(directory, &lock);
         let checkpoint = read_checkpoint(directory)?;
         let earlier = read_phases(directory)?;
         // Less the records the earlier sittings heard nothing from, which a
@@ -295,6 +318,7 @@ impl Journal {
                 written,
                 length,
                 compact_after: 0,
+                sitting,
             },
             checkpoint,
         ))
@@ -516,6 +540,45 @@ impl Journal {
             writer.write(&PhaseRecord::from(phase))?;
         }
         writer.flush()
+    }
+
+    /// Writes down this sitting's phases as they stand, over what it wrote
+    /// of them last. See the module documentation.
+    ///
+    /// Written to a sibling and renamed over, as the cursor is, so a sitting
+    /// killed part way through leaves the previous record whole.
+    pub(crate) fn record_standing(&mut self, phases: &[ScanPhase]) -> Result<(), JournalError> {
+        if phases.is_empty() {
+            return Ok(());
+        }
+        let temporary = self.sitting.with_extension("jsonl-tmp");
+        {
+            let file = create_staged(&temporary)?;
+            let mut writer = crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
+            for phase in phases {
+                writer.write(&PhaseRecord::from(phase))?;
+            }
+            writer.flush()?;
+        }
+        fs::rename(&temporary, &self.sitting)?;
+        Ok(())
+    }
+
+    /// Appends what one sitting did once it has finished doing it, and
+    /// removes what it wrote of its phases as they stood.
+    ///
+    /// The removal only once the append has landed: until then the standing
+    /// record is the only one there is.
+    pub(crate) fn end_sitting(&mut self, phases: &[ScanPhase]) -> Result<(), JournalError> {
+        if phases.is_empty() {
+            return Ok(());
+        }
+        self.record_phases(phases)?;
+        match fs::remove_file(&self.sitting) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Writes the appended files' headers, so each is self-describing before
@@ -1173,7 +1236,70 @@ fn read_phases(directory: &Path) -> Result<Vec<ScanPhase>, JournalError> {
     while let Some(record) = reader.read::<PhaseRecord>()? {
         phases.push(ScanPhase::from(&record));
     }
+
+    // Sittings that never ended. A phase already appended is one a sitting
+    // stopped between the append and the removal, and is read once.
+    for standing in standing_phases(directory) {
+        let recorded = phases.iter().any(|phase| {
+            phase.kind() == standing.kind() && phase.started_at() == standing.started_at()
+        });
+        if !recorded {
+            phases.push(standing);
+        }
+    }
+    // Oldest first, as the appended ones already are: a sitting that never
+    // ended ran before whatever was appended after it.
+    phases.sort_by_key(ScanPhase::started_at);
     Ok(phases)
+}
+
+/// Where the sitting holding `lock` writes its phases as they stand: a name
+/// ordered by when it started, so reading them in name order is reading them
+/// in the order they ran.
+fn sitting_file(directory: &Path, lock: &Lock) -> PathBuf {
+    let started = lock
+        .record()
+        .started_at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    directory.join(format!("{SITTING}{started:020}.jsonl"))
+}
+
+/// The phases of every sitting in `directory` that never ended, oldest first.
+///
+/// A standing record is written whole by rename, so one that cannot be read
+/// is not a torn write but something else at the name, and is passed over
+/// rather than failing a journal whose own files read.
+fn standing_phases(directory: &Path) -> Vec<ScanPhase> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(SITTING) && name.ends_with(".jsonl"))
+        })
+        .collect();
+    files.sort();
+
+    let mut phases = Vec::new();
+    for path in files {
+        let Ok(file) = fs::File::open(&path) else {
+            continue;
+        };
+        let Ok(mut reader) = crate::journal::format::Reader::open(std::io::BufReader::new(file))
+        else {
+            continue;
+        };
+        while let Ok(Some(record)) = reader.read::<PhaseRecord>() {
+            phases.push(ScanPhase::from(&record));
+        }
+    }
+    phases
 }
 
 /// Reads back the detection-run tapes a journal holds, for offline replay.

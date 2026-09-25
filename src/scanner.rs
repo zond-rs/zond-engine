@@ -1018,7 +1018,8 @@ fn spawn_discovery(
     // excluded address. Addresses a sweep finds for itself never pass through
     // here, and are gated on the context instead.
     let scope = address_scope(&mut targets, &ctx);
-    let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, cfg);
+    let recorder =
+        PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, cfg).opening_in(&ctx);
 
     let reach = if cfg.segment_sweep {
         Scope::Sweep
@@ -1404,7 +1405,8 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
             listening_privilege(opened.as_ref().err()),
             TargetScope::listening_on(scope.links.clone(), &cfg.exclusions),
             &cfg,
-        );
+        )
+        .opening_in(&ctx);
 
         match opened {
             Ok(listener) => {
@@ -1658,7 +1660,8 @@ fn spawn_scan(
             // and its phase describes what it covered rather than the plan.
             let mut ips = orchestrator::unsettled_ips(&target_map, &settled);
             let scope = address_scope(&mut ips, &ctx);
-            let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg);
+            let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg)
+                .opening_in(&ctx);
 
             // Targeted, never a sweep: a port scan was asked about addresses,
             // not about the network around them. It asks about some of the
@@ -1701,6 +1704,7 @@ fn spawn_scan(
         if let Some(why) = skipped {
             recorder = recorder.skipping_liveness(why);
         }
+        let recorder = recorder.opening_in(&ctx);
 
         ctx.enter_stage(Stage::Ports, None);
         // Filed against the port phase, since that is the phase an idle scan
