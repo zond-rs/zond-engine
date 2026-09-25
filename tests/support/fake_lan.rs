@@ -772,6 +772,11 @@ impl FakeSegment {
 
     /// [`deliver`](Self::deliver), with the frame reaching the reader `queued`
     /// after the capture took it. See [`LanHost::queued`].
+    ///
+    /// Stamped with the moment the host's delay says it arrives, the way a
+    /// capture stamps what it lifts off the wire. Not with the moment the
+    /// delivering task wakes, which on a loaded runtime comes late and would
+    /// add the runtime's lateness to every round trip.
     fn deliver_late(&self, frame: Vec<u8>, delay: Duration, queued: Duration) {
         let captured = self.capture(frame);
 
@@ -786,19 +791,13 @@ impl FakeSegment {
         }
 
         let frames = self.frames.clone();
+        let arrives = captured.received_at + delay;
+        let captured = CapturedFrame {
+            received_at: arrives,
+            ..captured
+        };
         tokio::spawn(async move {
-            // Captured when it arrives, which is after the delay: a capture
-            // stamps what it lifts off the wire, not what a host meant to send.
-            let captured = if delay.is_zero() {
-                captured
-            } else {
-                tokio::time::sleep(delay).await;
-                CapturedFrame {
-                    received_at: std::time::Instant::now(),
-                    ..captured
-                }
-            };
-            tokio::time::sleep(queued).await;
+            tokio::time::sleep_until((arrives + queued).into()).await;
             // The receiver is gone once the sweep ends, which is the normal way
             // a reply that arrived too late is discarded.
             let _ = frames.send(captured).await;

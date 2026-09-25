@@ -648,6 +648,44 @@ async fn a_reply_read_late_is_timed_from_its_capture() {
     );
 }
 
+/// A delayed reply is stamped at the moment the simulated segment says it
+/// arrived, however late the runtime gets round to delivering it.
+///
+/// A capture stamps a frame when it lifts it off the wire. Stamped when its
+/// delivery task ran instead, a reply on a loaded test runtime carries the
+/// runtime's lateness as round trip, and a scenario timed near a floor reads a
+/// segment slower than the one it set.
+#[tokio::test(flavor = "current_thread")]
+async fn a_delayed_reply_is_stamped_at_its_modelled_arrival() {
+    use std::time::Instant;
+    use zond_engine::protocols::arp;
+
+    let delay = Duration::from_millis(20);
+    let stall = Duration::from_millis(500);
+    let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A).delay(delay));
+    let mut handle = lan.handle();
+    let IpAddr::V4(target) = v4(10) else {
+        unreachable!("an IPv4 address")
+    };
+    let request = arp::build_request(SCANNER_MAC, SCANNER_V4, target);
+
+    let sent = Instant::now();
+    handle
+        .tx
+        .send_frame(&request)
+        .expect("the simulated segment takes it");
+    // The runtime's one thread, held well past the delay, as a starved
+    // runtime holds the task that delivers the reply.
+    std::thread::sleep(stall);
+    let reply = handle.rx.recv().await.expect("the reply");
+
+    let rtt = reply.received_at.saturating_duration_since(sent);
+    assert!(
+        rtt >= delay && rtt < stall / 2,
+        "a reply delayed {delay:?} was stamped {rtt:?} after its request"
+    );
+}
+
 /// One machine holding two addresses is one host, not two.
 ///
 /// This is what the MAC-to-IP map exists for, and getting it wrong inflates

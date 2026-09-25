@@ -1200,6 +1200,12 @@ impl FakeLink {
     /// A delayed reply is spawned rather than awaited: `send` is synchronous
     /// and is called from inside the scanner's own send loop, so blocking here
     /// would stall the very loop the delay is meant to race against.
+    ///
+    /// Stamped with the moment the policy says it arrives, the way a capture
+    /// stamps a frame when it lifts it off the wire, so the round trip a
+    /// scanner measures is the delay the policy set. Not with the moment the
+    /// delivering task wakes, which on a loaded runtime comes late and would
+    /// add the runtime's lateness to every round trip.
     fn deliver(&self, segment: CapturedSegment, policy: Policy) {
         let copies = if policy.duplicated { 2 } else { 1 };
 
@@ -1211,16 +1217,13 @@ impl FakeLink {
         }
 
         let replies = self.replies.clone();
-        let delay = policy.delay;
+        let arrives = Instant::now() + policy.delay;
+        let segment = CapturedSegment {
+            received_at: arrives,
+            ..segment
+        };
         tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            // Stamped as it arrives, the way a capture stamps a frame, so the
-            // round trip a scanner measures is the delay the policy set rather
-            // than the moment the reply was composed.
-            let segment = CapturedSegment {
-                received_at: Instant::now(),
-                ..segment
-            };
+            tokio::time::sleep_until(arrives.into()).await;
             for _ in 0..copies {
                 // The receiver is gone once the scan ends, which is the normal
                 // way a delayed reply that arrived too late is discarded.

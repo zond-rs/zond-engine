@@ -187,6 +187,45 @@ async fn a_slow_reply_is_still_matched_to_its_probe() {
     assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Open));
 }
 
+/// A delayed reply is stamped at the moment the simulated network says it
+/// arrived, however late the runtime gets round to delivering it.
+///
+/// A capture stamps a reply when it lifts it off the wire. Stamped when its
+/// delivery task ran instead, a reply on a loaded test runtime carries the
+/// runtime's lateness as round trip, and a scenario timed near a floor reads a
+/// path slower than the one it set.
+#[tokio::test(flavor = "current_thread")]
+async fn a_delayed_reply_is_stamped_at_its_modelled_arrival() {
+    use std::net::IpAddr;
+    use std::time::Instant;
+    use zond_engine::protocols::tcp;
+    use zond_engine::transport::probe::Emission;
+
+    let delay = Duration::from_millis(20);
+    let stall = Duration::from_millis(500);
+    let net = FakeNet::new(Layer4::Tcp).host(TARGET, 80, Policy::open().delay(delay));
+    let mut transport = net.transport();
+    let source = IpAddr::V4(SCANNER_V4);
+    let probe = tcp::build_probe(TcpScanTechnique::Syn, source, TARGET, 40_000, 80, 7)
+        .expect("a probe builds");
+
+    let sent = Instant::now();
+    transport
+        .tx
+        .send(&probe, source, TARGET, None, Emission::routed())
+        .expect("the simulated link takes it");
+    // The runtime's one thread, held well past the delay, as a starved
+    // runtime holds the task that delivers the reply.
+    std::thread::sleep(stall);
+    let reply = transport.rx.recv().await.expect("the reply");
+
+    let rtt = reply.received_at.saturating_duration_since(sent);
+    assert!(
+        rtt >= delay && rtt < stall / 2,
+        "a reply delayed {delay:?} was stamped {rtt:?} after its probe"
+    );
+}
+
 /// A duplicated SYN+ACK is normal on a real network, since the host retransmits
 /// when our RST never arrives. It must resolve the port once, not twice: a
 /// second resolution would feed a bogus round-trip sample into the deadline.
