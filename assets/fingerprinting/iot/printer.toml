@@ -3,10 +3,10 @@ name = "jetdirect"
 default_ports = [9100]
 description = "HP JetDirect / AppSocket"
 
-[[probe]]
-name = "null"
-payload = ''
-protocol = "tcp"
+# No probe of its own. A raw-print port prints whatever it is sent, and what
+# keeps a scan from sending it anything is the scan's listen-only list, not
+# this file. A port taken off that list is one the operator chose to probe, so
+# it is asked what any port nothing claims is asked.
 
 [[match]]
 name = "generic_printer"

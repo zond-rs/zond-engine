@@ -2139,6 +2139,65 @@ mod tests {
         );
     }
 
+    /// What the clear-text rung sends a silent port numbered `number`, read
+    /// off a loopback listener that records every byte and answers nothing.
+    /// The number decides what is asked, the socket who is asked, as in the
+    /// tests above.
+    async fn asked_in_the_clear(number: u16) -> Vec<u8> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let addr = listener.local_addr().expect("a local address");
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("one connection");
+            let mut received = Vec::new();
+            let _ = sock.read_to_end(&mut received).await;
+            received
+        });
+
+        let mut stream = TcpStream::connect(addr).await.expect("connects");
+        plaintext(&mut stream, number, Some(addr), Egress::KERNEL).await;
+        drop(stream);
+        server.await.expect("the listener finishes")
+    }
+
+    /// A raw-print port a scan was told to probe is asked what a port nothing
+    /// claims is asked.
+    ///
+    /// What spares a printer is the scan's listen-only list, which keeps these
+    /// ports from ever reaching a rung that sends. A port taken off that list
+    /// is one the operator chose to probe, and the corpus claiming it for a
+    /// probe that sends nothing would quietly undo that choice: the rung would
+    /// wait on a port that never greets and never put the question that names
+    /// what is there.
+    #[tokio::test]
+    async fn a_raw_print_port_probed_on_purpose_is_asked_what_an_unclaimed_port_is() {
+        let unclaimed = 51987;
+        assert!(
+            SignatureDb::global()
+                .tcp_probe_payloads(unclaimed)
+                .is_empty(),
+            "test assumes port {unclaimed} is unclaimed"
+        );
+        let expected: Vec<u8> = SignatureDb::global().generic_tcp_probe_payloads().concat();
+        assert!(
+            !expected.is_empty(),
+            "the corpus asks unclaimed ports nothing"
+        );
+
+        let (print, other) = tokio::join!(
+            asked_in_the_clear(crate::config::RAW_PRINT_PORTS[0]),
+            asked_in_the_clear(unclaimed)
+        );
+
+        assert_eq!(other, expected);
+        assert_eq!(
+            String::from_utf8_lossy(&print),
+            String::from_utf8_lossy(&expected),
+            "the raw-print port was asked something else"
+        );
+    }
+
     #[tokio::test]
     async fn analyze_returns_none_when_no_evidence() {
         // No banners and no TLS: both phases run, no analyzer produces evidence,

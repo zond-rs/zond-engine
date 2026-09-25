@@ -1076,6 +1076,17 @@ fn validate(def: &ServiceDefinition, path: &Path) {
         if probe.protocol == "udp" {
             validate_udp_payload(&unescape(&probe.payload), def, i, path);
         }
+        // A TCP probe that sends nothing asks nothing: every claimed port is
+        // listened to for a greeting before its probes go out, so all an empty
+        // one adds is a wait for a reply to no question. And it claims the
+        // port, which keeps the generic question from ever being put to it.
+        if probe.protocol == "tcp" && unescape(&probe.payload).is_empty() {
+            panic!(
+                "{file}: service '{service}' tcp probe #{i} decodes to zero bytes; a port \
+                 is listened to before it is probed, and an empty probe only keeps the \
+                 generic question from it"
+            );
+        }
         // Rarity is a 0..=9 intensity band (see `Probe::rarity`). A larger value
         // is almost certainly an authoring typo — it silently keeps the probe
         // from every port its service did not register, since no scan
