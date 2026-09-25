@@ -220,6 +220,24 @@ impl OsEchoScanner {
         let send_duration = SEND_TICK.saturating_mul(targets.len() as u32);
         let target_count = targets.len();
         let probe_lifetime = RETRY_POLICY.longest_spaced_probe_lifetime(ctx.host_probe_interval());
+
+        // Timed from what the phases before this one measured, since every
+        // target is a host the scan already found and most were timed finding
+        // it. From first principles, a host behind a path slower than the
+        // first timeout has every attempt given up on before it can answer.
+        // The median, for the reason the port scans' `seed_timing` gives.
+        let mut ledger = ProbeLedger::new(RETRY_POLICY, 256);
+        let wanted: std::collections::HashSet<IpAddr> = targets.iter().copied().collect();
+        for host in ctx.store.iter() {
+            let address = host.key().addr();
+            if !wanted.contains(&address) {
+                continue;
+            }
+            if let Some(rtt) = host.value().median_rtt() {
+                ledger.seed_host_rtt(address, rtt);
+            }
+        }
+
         Self {
             ctx,
             transport,
@@ -228,7 +246,7 @@ impl OsEchoScanner {
             identifier,
             next_sequence: 0,
             pending: targets.into(),
-            sweep: HostSweep::new(ProbeLedger::new(RETRY_POLICY, 256)),
+            sweep: HostSweep::new(ledger),
             by_sequence: HashMap::with_capacity(target_count),
             deadline: Instant::now() + probe_lifetime + send_duration + QUIET_FLOOR,
             faults: SendFaults::default(),
@@ -758,6 +776,34 @@ mod tests {
             given >= needed,
             "two attempts a {gap:?} gap apart take {needed:?} and the pass is \
              given {given:?}"
+        );
+    }
+
+    /// A host an earlier phase timed is asked on that timing, not on the
+    /// guess an unmeasured path starts from.
+    ///
+    /// This pass revisits hosts the scan has already found, and most of them
+    /// were timed finding them. Started from first principles instead, a host
+    /// behind a path slower than the first timeout has every attempt given up
+    /// on before its answer can arrive, and goes unidentified.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_host_already_timed_is_asked_on_its_own_timing() {
+        let path = Duration::from_millis(1_900);
+        let (_session, ctx) = ScanSession::new();
+        ctx.update_host(TARGET, |host| host.add_rtt(path));
+        let (mut scanner, _tx) = scanner(&ctx, 64);
+
+        let now = Instant::now();
+        scanner.send_one(now);
+        let timeout = scanner
+            .sweep
+            .ledger
+            .next_due()
+            .expect("the probe is armed")
+            .saturating_duration_since(now);
+        assert!(
+            timeout > path,
+            "a host timed at {path:?} is given {timeout:?} to answer"
         );
     }
 
