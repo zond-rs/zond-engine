@@ -38,9 +38,24 @@
 use std::time::{Duration, Instant};
 
 use crate::model::capture::CaptureCounts;
+use crate::model::port::PortState;
 use crate::report::ScannerKind;
 use crate::report::WindowSummary;
 use crate::report::{ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, StopReason};
+
+/// How a port scan paced itself, as its audit line reads it: the congestion
+/// window it asked through, and what it concludes of a port nothing answered.
+///
+/// Together because the window is only read against the silence. A window cut
+/// to its floor with most ports unanswered says loss where silence is a filter,
+/// and says nothing where silence is what an open port answers.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Pacing {
+    /// What the window did over the run.
+    pub(crate) window: WindowSummary,
+    /// The verdict this scan gives a port that stayed silent.
+    pub(crate) silence: PortState,
+}
 
 /// Per-run counters for one raw scanner.
 ///
@@ -364,15 +379,17 @@ impl ProbeAudit {
     /// `capture` is what the scanner's own transport reports, or `None` where
     /// there is no capture to ask - a scan driven by a synthetic receive stream
     /// has no kernel buffer, and the segment is omitted rather than rendered as
-    /// a clean one.
+    /// a clean one. `pacing` is a port scan's window and what its silence
+    /// means, and `None` for a scanner paced some other way.
     pub(crate) fn report(
         &self,
         scanner: &str,
         targets: u128,
         reason: StopReason,
         capture: Option<CaptureCounts>,
-        window: Option<WindowSummary>,
+        pacing: Option<Pacing>,
     ) {
+        let window = pacing.map(|pacing| pacing.window);
         crate::info!(
             verbosity = 3,
             "audit[{scanner}] {found}/{targets} hosts in {elapsed:.0?}, stopped: {reason:?} \
@@ -397,7 +414,7 @@ impl ProbeAudit {
             histogram = self.histogram(),
         );
 
-        self.warn_if_degraded(scanner, targets, capture, window);
+        self.warn_if_degraded(scanner, targets, capture, pacing);
     }
 
     /// The share of answers that only arrived because the probe was sent again.
@@ -446,8 +463,9 @@ impl ProbeAudit {
         scanner: &str,
         targets: u128,
         capture: Option<CaptureCounts>,
-        window: Option<WindowSummary>,
+        pacing: Option<Pacing>,
     ) {
+        let window = pacing.map(|pacing| pacing.window);
         let recovered = self.recovered_by_retry();
         if recovered >= RETRY_SHARE_SUGGESTING_LOSS && self.hosts_found >= MIN_ANSWERS_TO_JUDGE {
             // Short on purpose. The reasoning is above, where somebody changing
@@ -470,7 +488,13 @@ impl ProbeAudit {
         // this one says the scan slowed itself as far as it is allowed to and
         // was still not keeping up. Whatever it recorded as silence on this run
         // is not safe to read as a firewall.
-        if let Some(window) = window
+        //
+        // Only where silence is a firewall's verdict. An open port answers a
+        // FIN, a flagless segment or most datagrams with silence, so a scan
+        // asking those counts its open ports among the unanswered, and a share
+        // of them reported as possible loss is its findings reported as a fault.
+        if let Some(Pacing { window, silence }) = pacing
+            && silence == PortState::Filtered
             && window.at_floor
             && targets > 0
         {
@@ -676,6 +700,49 @@ mod tests {
             lossy.recovered_by_retry() >= RETRY_SHARE_SUGGESTING_LOSS,
             "most answers arriving only on the second ask is the first ask failing"
         );
+    }
+
+    /// A port scan paced to its floor with most of its ports unanswered is
+    /// told its silence may be loss where silence is a firewall's verdict, and
+    /// not where it is what an open port answers.
+    ///
+    /// A FIN scan's open ports never answer, so they are counted among the
+    /// unanswered: told half of them may be lost probes, its reader reads the
+    /// open ports it found as a fault in the scan.
+    #[test]
+    fn silence_at_the_windows_floor_is_called_loss_only_where_it_is_a_filter() {
+        let mut audit = ProbeAudit::new();
+        for _ in 0..20 {
+            audit.record_host_found(Some(1));
+        }
+        let window = WindowSummary {
+            capacity: 16,
+            peak: 256,
+            reductions: 5,
+            adaptive: true,
+            at_floor: true,
+        };
+
+        for (silence, warned) in [
+            (PortState::Filtered, true),
+            (PortState::OpenFiltered, false),
+        ] {
+            let said = crate::logging::logged(|| {
+                audit.report(
+                    "tcp-port",
+                    40,
+                    StopReason::AttemptsSpent,
+                    None,
+                    Some(Pacing { window, silence }),
+                );
+            });
+            let lines: Vec<&str> = said
+                .iter()
+                .filter(|line| line.message.contains("unanswered at"))
+                .map(|line| line.message.as_str())
+                .collect();
+            assert_eq!(!lines.is_empty(), warned, "{silence:?}: {said:?}");
+        }
     }
 
     /// One answer on its second attempt is a hundred percent and says nothing.

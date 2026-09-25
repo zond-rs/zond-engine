@@ -16038,7 +16038,7 @@ pub zond_engine::scanner::strategy::ports::RawProbeScan::unreachable: alloc::col
 pub zond_engine::scanner::strategy::ports::RawProbeScan::window: zond_engine::scanner::pacing::congestion::CongestionWindow
 impl<T: core::marker::Copy + core::cmp::PartialEq> zond_engine::scanner::strategy::ports::RawProbeScan<T>
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::admitting(&self, bool) -> bool
-pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::finish(&mut self, zond_engine::report::ScannerKind, &str, &str, u128, zond_engine::report::StopReason)
+pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::finish(&mut self, zond_engine::report::ScannerKind, &str, &str, zond_engine::model::port::PortState, u128, zond_engine::report::StopReason)
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::held_is_full(&self) -> bool
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::is_unreachable(&self, &core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::scanner::strategy::ports::RawProbeScan<T>::judge_timeout(&mut self, core::net::ip_addr::IpAddr)

@@ -90,7 +90,7 @@ use crate::model::port::{PortState, Protocol};
 use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
 use crate::report::StopReason;
-use crate::scanner::audit::ProbeAudit;
+use crate::scanner::audit::{Pacing, ProbeAudit};
 use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{
@@ -1229,7 +1229,9 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// as, named in the failure message so the two cases are distinguishable to
     /// whoever reads it. A scan that could not send is not a scan that found
     /// everything unanswered, and those are identical in every number a caller
-    /// otherwise sees.
+    /// otherwise sees. `silence` is the verdict itself, which decides whether
+    /// the audit may read the run's unanswered ports as possible loss: it may
+    /// where silence is a filter, and not where an open port answers with it.
     ///
     /// Capture counters are read here, while the transport is still alive: they
     /// live with the capture threads it keeps running.
@@ -1238,6 +1240,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         kind: ScannerKind,
         audit_tag: &str,
         silence_verdict: &str,
+        silence: PortState,
         probes: u128,
         reason: StopReason,
     ) {
@@ -1285,7 +1288,10 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             probes,
             reason,
             capture,
-            Some(self.window.summary()),
+            Some(Pacing {
+                window: self.window.summary(),
+                silence,
+            }),
         );
         self.ctx.record_probe_stats(self.audit.stats(
             kind,
@@ -2082,9 +2088,10 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
 
     let kind = scanner.kind();
     let labels = scanner.audit_labels();
+    let silence = scanner.silence_means();
     scanner
         .core_mut()
-        .finish(kind, labels.tag, labels.silence, probes, reason);
+        .finish(kind, labels.tag, labels.silence, silence, probes, reason);
 }
 
 // ╔════════════════════════════════════════════╗
@@ -2167,6 +2174,7 @@ mod tests {
             ScannerKind::SynPort,
             "syn-port",
             "filtered",
+            PortState::Filtered,
             2,
             StopReason::AllResponded,
         );
