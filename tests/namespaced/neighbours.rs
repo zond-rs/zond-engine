@@ -6,8 +6,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! On-link addresses nothing answers address resolution for, scanned beside a
-//! live host through the kernel's own resolution and through a frame sender's.
+//! On-link addresses nothing answers address resolution for, and hosts behind
+//! a gateway nothing answers it for, scanned beside a live host through the
+//! kernel's own resolution and through a frame sender's.
 //!
 //! Only a kernel shows this. Linux takes a raw socket's write to a neighbour it
 //! is still asking for, queues it against the socket's buffer, and says nothing
@@ -45,101 +46,23 @@ use zond_engine::transport::probe::SendMode;
 /// differ between identical addresses.
 #[tokio::test]
 async fn dead_neighbours_read_unreachable_and_leave_the_live_host_alone() {
-    scan_beside_dead_neighbours(None).await;
+    scan_beside_dead_neighbours(Dead::OnLink, None).await;
 }
 
-/// The same under a rate ceiling, where every probe the scan puts on the wire
-/// spends a share of a small budget.
+/// Hosts routed through a gateway nobody holds read as unreachable, every
+/// port unasked, and the live host scanned beside them reads exactly as it
+/// would alone.
 ///
-/// A probe the scan holds while the kernel resolves a dead neighbour is not
-/// on the wire, and must not spend that budget: held and re-checked for ten
-/// dead addresses of forty ports each, it would take every share there is,
-/// and the live host would reach the deadline with most of its ports never
-/// asked.
+/// A routed host has no neighbour entry of its own: the kernel queues its
+/// writes on the gateway's, charged to the socket, and throws them away when
+/// it gives the gateway up. Written freely, the probes read as sent and
+/// unanswered and fill the socket's buffer until its writes to every host
+/// are refused, which is what an on-link dead neighbour did before its entry
+/// was read. Read through the gateway's entry, they are held, and every host
+/// behind it is filed on the gateway's verdict.
 #[tokio::test]
-async fn dead_neighbours_spend_none_of_a_rate_ceiling_the_live_host_needs() {
-    for rate in [100, 300] {
-        scan_beside_dead_neighbours(NonZeroU32::new(rate)).await;
-    }
-}
-
-/// Scans a live host and ten on-link addresses nobody holds, ports 1 to 40
-/// and the live host's one open port, under `rate`, and checks everything
-/// the tests above promise.
-async fn scan_beside_dead_neighbours(rate: Option<NonZeroU32>) {
-    if !available() {
-        return;
-    }
-
-    let mut segment = Segment::new();
-    let live = segment.peer();
-    let IpAddr::V4(peer) = live else {
-        unreachable!("the segment is addressed in IPv4");
-    };
-    let open = segment.listen_tcp();
-    let dead: Vec<IpAddr> = (75..85)
-        .map(|offset| IpAddr::V4(Ipv4Addr::from(u32::from(peer) + offset)))
-        .collect();
-
-    let mut addresses = IpSet::new();
-    addresses.insert(live);
-    for address in &dead {
-        addresses.insert(*address);
-    }
-    let ports = PortSet::try_from(format!("1-40,{open}").as_str()).expect("a port list");
-    let mut map = TargetMap::new();
-    map.add_unit(TargetSet::new(addresses, ports));
-    let mut cfg = test_config();
-    cfg.assume_up = true;
-    cfg.max_probe_rate = rate;
-
-    let outcome = run_scan(map, &cfg).await;
-
-    let phase = outcome
-        .report
-        .phases()
-        .last()
-        .expect("the port scan recorded a phase");
-    assert!(
-        phase.failures().is_empty(),
-        "nothing on this host failed at {rate:?}: {:?}",
-        phase.failures()
-    );
-    for address in &dead {
-        assert!(
-            phase.unroutable().contains(address),
-            "{address} is reported unreached: {:?}",
-            phase.unroutable()
-        );
-        let host = outcome.host(*address).expect("a named address is recorded");
-        assert!(
-            host.ports().all(|port| port.state() == PortState::Unasked),
-            "no probe reached {address}, so none of its ports was asked"
-        );
-    }
-    let statuses: Vec<HostStatus> = dead
-        .iter()
-        .filter_map(|address| outcome.host(*address).map(|host| host.status()))
-        .collect();
-    assert!(
-        statuses
-            .iter()
-            .all(|status| *status == statuses[0] && *status != HostStatus::Down),
-        "ten identical dead addresses read alike, and not as down: {statuses:?}"
-    );
-    assert_eq!(
-        outcome.port_state(live, open),
-        Some(PortState::Open),
-        "the live host's open port was found at {rate:?}"
-    );
-    for port in 1..=40 {
-        assert_eq!(
-            outcome.port_state(live, port),
-            Some(PortState::Closed),
-            "the live host's port {port} was answered at {rate:?}"
-        );
-    }
-    assert!(!phase.unroutable().contains(&live));
+async fn hosts_behind_a_dead_gateway_read_unreachable_and_leave_the_live_host_alone() {
+    scan_beside_dead_neighbours(Dead::BehindGateway, None).await;
 }
 
 /// A scan that frames its own probes asks for every dead neighbour it meets at
@@ -225,3 +148,113 @@ fn a_framed_scan_asks_for_every_dead_neighbour_at_once() {
 /// How long a frame sender waits for one neighbour to answer before giving
 /// it up.
 const RESOLUTION: Duration = Duration::from_secs(3);
+
+/// Where the addresses nothing answers for sit.
+#[derive(Debug, Clone, Copy)]
+enum Dead {
+    /// On the segment itself.
+    OnLink,
+    /// Behind a gateway on the segment that nothing holds.
+    BehindGateway,
+}
+
+/// The same under a rate ceiling, where every probe the scan puts on the wire
+/// spends a share of a small budget.
+///
+/// A probe the scan holds while the kernel resolves a dead neighbour is not
+/// on the wire, and must not spend that budget: held and re-checked for ten
+/// dead addresses of forty ports each, it would take every share there is,
+/// and the live host would reach the deadline with most of its ports never
+/// asked.
+#[tokio::test]
+async fn dead_neighbours_spend_none_of_a_rate_ceiling_the_live_host_needs() {
+    for rate in [100, 300] {
+        scan_beside_dead_neighbours(Dead::OnLink, NonZeroU32::new(rate)).await;
+    }
+}
+
+/// Scans a live host and the addresses nobody answers for where `dead` puts
+/// them, ports 1 to 40 and the live host's one open port, under `rate`, and
+/// checks everything the tests above promise.
+async fn scan_beside_dead_neighbours(dead: Dead, rate: Option<NonZeroU32>) {
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let live = segment.peer();
+    let IpAddr::V4(peer) = live else {
+        unreachable!("the segment is addressed in IPv4");
+    };
+    let open = segment.listen_tcp();
+    let dead: Vec<IpAddr> = match dead {
+        Dead::OnLink => (75..85)
+            .map(|offset| IpAddr::V4(Ipv4Addr::from(u32::from(peer) + offset)))
+            .collect(),
+        Dead::BehindGateway => segment
+            .behind_dead_gateway()
+            .into_iter()
+            .map(IpAddr::V4)
+            .collect(),
+    };
+
+    let mut addresses = IpSet::new();
+    addresses.insert(live);
+    for address in &dead {
+        addresses.insert(*address);
+    }
+    let ports = PortSet::try_from(format!("1-40,{open}").as_str()).expect("a port list");
+    let mut map = TargetMap::new();
+    map.add_unit(TargetSet::new(addresses, ports));
+    let mut cfg = test_config();
+    cfg.assume_up = true;
+    cfg.max_probe_rate = rate;
+
+    let outcome = run_scan(map, &cfg).await;
+
+    let phase = outcome
+        .report
+        .phases()
+        .last()
+        .expect("the port scan recorded a phase");
+    assert!(
+        phase.failures().is_empty(),
+        "nothing on this host failed at {rate:?}: {:?}",
+        phase.failures()
+    );
+    for address in &dead {
+        assert!(
+            phase.unroutable().contains(address),
+            "{address} is reported unreached: {:?}",
+            phase.unroutable()
+        );
+        let host = outcome.host(*address).expect("a named address is recorded");
+        assert!(
+            host.ports().all(|port| port.state() == PortState::Unasked),
+            "no probe reached {address}, so none of its ports was asked"
+        );
+    }
+    let statuses: Vec<HostStatus> = dead
+        .iter()
+        .filter_map(|address| outcome.host(*address).map(|host| host.status()))
+        .collect();
+    assert!(
+        statuses
+            .iter()
+            .all(|status| *status == statuses[0] && *status != HostStatus::Down),
+        "identical dead addresses read alike, and not as down: {statuses:?}"
+    );
+    assert_eq!(
+        outcome.port_state(live, open),
+        Some(PortState::Open),
+        "the live host's open port was found at {rate:?}"
+    );
+    for port in 1..=40 {
+        assert_eq!(
+            outcome.port_state(live, port),
+            Some(PortState::Closed),
+            "the live host's port {port} was answered at {rate:?}"
+        );
+    }
+    assert!(!phase.unroutable().contains(&live));
+}

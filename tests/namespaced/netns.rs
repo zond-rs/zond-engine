@@ -357,6 +357,28 @@ impl Segment {
         address
     }
 
+    /// Routes a `/28` through an address on the segment that nothing holds,
+    /// and returns the `/28`'s addresses: hosts behind a gateway that never
+    /// answers address resolution.
+    ///
+    /// The kernel queues every write to them on the gateway's unresolved
+    /// entry, as it queues a write to a dead on-link address on that
+    /// address's own, and throws the queue away when it gives the gateway up.
+    pub fn behind_dead_gateway(&self) -> Vec<Ipv4Addr> {
+        let gateway = Ipv4Addr::new(10, 99, self.index as u8, 250);
+        let prefix = Ipv4Addr::new(10, 95, self.index as u8, 0);
+        ip(&[
+            "route",
+            "add",
+            &format!("{prefix}/28"),
+            "via",
+            &gateway.to_string(),
+        ]);
+        (1..15)
+            .map(|host| Ipv4Addr::new(10, 95, self.index as u8, host))
+            .collect()
+    }
+
     /// An address routed through the peer that the peer refuses by policy,
     /// and returns it: a host behind a firewall that rejects rather than drops.
     ///

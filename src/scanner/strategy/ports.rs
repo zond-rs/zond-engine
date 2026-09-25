@@ -387,6 +387,11 @@ pub struct RawProbeScan<T> {
     /// for a transport whose sends wait on one it can read. See
     /// [`admit`](Self::admit).
     pub(crate) neighbor_gates: std::collections::HashMap<IpAddr, NeighborGate>,
+    /// The neighbour each gated host's probes wait on, which keys its gate in
+    /// [`neighbor_gates`](Self::neighbor_gates): the host itself, or on the
+    /// kernel's path the gateway it is routed through. See
+    /// [`admit`](Self::admit).
+    pub(crate) gated: std::collections::HashMap<IpAddr, IpAddr>,
     /// Per-run counters, so a scan that classified fewer ports than it asked
     /// about can be attributed to loss, to its own deadline, or to correlation
     /// rather than guessed at. Reported once when the loop exits.
@@ -558,6 +563,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             unasked_unsent: 0,
             unreachable: std::collections::BTreeSet::new(),
             neighbor_gates: std::collections::HashMap::new(),
+            gated: std::collections::HashMap::new(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(window),
             send_tick,
@@ -816,7 +822,13 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
                 NeighborState::Failed => format!("no {resolution} reply"),
                 _ => format!("{resolution} pending"),
             };
-            info!(verbosity = 2, "{host} unreachable ({how})");
+            match self.gated.get(&host).filter(|neighbor| **neighbor != host) {
+                Some(gateway) => info!(
+                    verbosity = 2,
+                    "{host} unreachable ({how} from gateway {gateway})"
+                ),
+                None => info!(verbosity = 2, "{host} unreachable ({how})"),
+            }
         }
     }
 
@@ -846,10 +858,12 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// them left, and they would stay charged to the socket until the kernel
     /// gave up, so a few dead neighbours fill the send buffer and the kernel
     /// refuses the socket's writes to every host, the live ones too. Its
-    /// asking starts with a write, so an on-link host gets one probe, which
-    /// starts it, and every probe behind that one waits on the kernel's table.
-    /// A host reached through a gateway has no neighbour entry of its own and
-    /// is not read about at all.
+    /// asking starts with a write, so the first probe that needs a neighbour
+    /// goes, which starts it, and every probe behind that one waits on the
+    /// kernel's table. A host reached through a gateway waits on the
+    /// gateway's entry, the one its writes queue on: the first probe through
+    /// a gateway starts its resolution, and every host behind a gateway that
+    /// never answers is filed unreachable on the one verdict.
     ///
     /// A frame sender asks for a neighbour when it is asked where the
     /// resolution stands, and a send to a neighbour still being asked for
@@ -872,51 +886,72 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             return Admission::Send;
         }
         let kernel = matches!(watch, NeighborWatch::Kernel(_));
-        let asked = match self.neighbor_gates.get(&host) {
+        let Some(neighbor) = self.neighbor_of(host) else {
+            return Admission::Send;
+        };
+        let asked = match self.neighbor_gates.get(&neighbor) {
             Some(NeighborGate::Open) => return Admission::Send,
             Some(NeighborGate::Asked { at }) => *at,
             None if kernel => {
-                if !self.resolver.is_on_link(host) {
-                    return Admission::Send;
-                }
                 // Stamped here rather than from `now`, which the caller read
                 // before this batch of sends: the table has to be read after
                 // this probe's write to show the entry the write creates.
                 self.neighbor_gates
-                    .insert(host, NeighborGate::Asked { at: Instant::now() });
+                    .insert(neighbor, NeighborGate::Asked { at: Instant::now() });
+                self.gated.insert(host, neighbor);
                 return Admission::Send;
             }
             None => {
                 let at = Instant::now();
-                self.neighbor_gates.insert(host, NeighborGate::Asked { at });
+                self.neighbor_gates
+                    .insert(neighbor, NeighborGate::Asked { at });
                 at
             }
         };
-        match self.neighbor_state(host, asked) {
+        self.gated.insert(host, neighbor);
+        match self.neighbor_state(host, neighbor, asked) {
             Some(NeighborState::Resolving) => Admission::Hold(now + NEIGHBOR_RECHECK),
             Some(NeighborState::Failed) => {
                 self.record_unresolved(host, NeighborState::Failed);
                 Admission::Unreachable
             }
             Some(NeighborState::Resolved) | None => {
-                self.neighbor_gates.insert(host, NeighborGate::Open);
+                self.neighbor_gates.insert(neighbor, NeighborGate::Open);
                 Admission::Send
             }
         }
     }
 
+    /// The neighbour whose resolution `host`'s probes wait on, which keys its
+    /// gate: on the kernel's path the host itself where it is on a link of
+    /// this host's, and otherwise the gateway the routing table sends it
+    /// through; for a frame sender the host, whose next hop the sender finds
+    /// for itself. `None` where no neighbour stands in the way.
+    fn neighbor_of(&mut self, host: IpAddr) -> Option<IpAddr> {
+        match self.transport.neighbors()? {
+            NeighborWatch::Kernel(_) if self.resolver.is_on_link(host) => Some(host),
+            NeighborWatch::Kernel(table) => table.next_hop(host),
+            NeighborWatch::Frames(_) => Some(host),
+        }
+    }
+
     /// Where the resolution of `host`'s neighbour stands, asked as the
-    /// transport's [`NeighborWatch`] needs: the kernel's table from a reading
-    /// taken after `asked` and no older than [`NEIGHBOR_RECHECK`], or the
-    /// frame sender's resolution of the next hop a probe from this scan's
-    /// source to `host` is framed to.
-    fn neighbor_state(&mut self, host: IpAddr, asked: Instant) -> Option<NeighborState> {
+    /// transport's [`NeighborWatch`] needs: the kernel's entry for `neighbor`
+    /// from a reading taken after `asked` and no older than
+    /// [`NEIGHBOR_RECHECK`], or the frame sender's resolution of the next hop
+    /// a probe from this scan's source to `host` is framed to.
+    fn neighbor_state(
+        &mut self,
+        host: IpAddr,
+        neighbor: IpAddr,
+        asked: Instant,
+    ) -> Option<NeighborState> {
         match self.transport.neighbors()? {
             NeighborWatch::Kernel(table) => {
                 let recent = Instant::now()
                     .checked_sub(NEIGHBOR_RECHECK)
                     .map_or(asked, |recent| recent.max(asked));
-                table.state(host, recent)
+                table.state(neighbor, recent)
             }
             NeighborWatch::Frames(link) => {
                 let source = self.resolver.resolve(host)?;
@@ -938,13 +973,14 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// two it was; see [`service_retries`](RawPortScan::service_retries) and
     /// [`conclude_pending_neighbors`](Self::conclude_pending_neighbors).
     pub(crate) fn pending_neighbor(&mut self, host: IpAddr) -> Option<NeighborState> {
-        let Some(NeighborGate::Asked { at }) = self.neighbor_gates.get(&host).copied() else {
+        let neighbor = *self.gated.get(&host)?;
+        let Some(NeighborGate::Asked { at }) = self.neighbor_gates.get(&neighbor).copied() else {
             return None;
         };
         if self.is_unreachable(&host) || self.ledger.host_has_answered(&host) {
             return None;
         }
-        self.neighbor_state(host, at)
+        self.neighbor_state(host, neighbor, at)
     }
 
     /// Files every host whose neighbour the kernel was still resolving, or had
@@ -959,9 +995,14 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// host either way.
     pub(crate) fn conclude_pending_neighbors(&mut self) {
         let waiting: Vec<IpAddr> = self
-            .neighbor_gates
+            .gated
             .iter()
-            .filter(|(_, gate)| matches!(gate, NeighborGate::Asked { .. }))
+            .filter(|(_, neighbor)| {
+                matches!(
+                    self.neighbor_gates.get(neighbor),
+                    Some(NeighborGate::Asked { .. })
+                )
+            })
             .map(|(host, _)| *host)
             .collect();
         for host in waiting {
@@ -2107,6 +2148,7 @@ mod tests {
             unasked_unsent: 0,
             unreachable: std::collections::BTreeSet::new(),
             neighbor_gates: std::collections::HashMap::new(),
+            gated: std::collections::HashMap::new(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
             send_tick: Duration::from_millis(1),
@@ -2237,6 +2279,7 @@ mod tests {
             unasked_unsent: 0,
             unreachable: std::collections::BTreeSet::new(),
             neighbor_gates: std::collections::HashMap::new(),
+            gated: std::collections::HashMap::new(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
             send_tick: Duration::from_millis(1),
@@ -2620,10 +2663,10 @@ mod tests {
         assert!(core.is_unreachable(&TARGET));
     }
 
-    /// A host reached through a gateway has no neighbour entry of its own, so
-    /// the table is never read for it and its probes go as they always did.
+    /// A host the routing table names no neighbour for has nothing to wait on,
+    /// so the table is never read for it and its probes go as they always did.
     #[test]
-    fn a_host_behind_a_gateway_is_never_read_about() {
+    fn a_host_with_no_neighbour_in_the_way_is_never_read_about() {
         let state = std::sync::Arc::new(std::sync::Mutex::new(Some(NeighborState::Failed)));
         let (mut core, _session, reads) = core_reading(state);
         core.resolver = SourceResolver::from_links(&[]);
@@ -2632,6 +2675,70 @@ mod tests {
             assert_eq!(core.admit(TARGET, Instant::now()), Admission::Send);
         }
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// Hosts behind a gateway that never answers its address resolution send
+    /// one probe between them, and are filed unreachable on the gateway's
+    /// verdict, every one of them.
+    ///
+    /// A host behind a gateway has no neighbour entry of its own: its writes
+    /// queue on the gateway's. Written freely, every host's probes behind a
+    /// dead gateway are taken by the kernel, charged to the socket and thrown
+    /// away three seconds later, which read as silence and fill the send
+    /// buffer until the kernel refuses the socket's writes to every host.
+    #[test]
+    fn hosts_behind_a_gateway_that_never_answers_wait_on_it_and_are_unreached() {
+        const GATEWAY: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254));
+        const ROUTED: [IpAddr; 2] = [
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)),
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 8)),
+        ];
+        use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborTable};
+
+        let state = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let read = std::sync::Arc::clone(&state);
+        let table = KernelNeighbors::with_reader(Box::new(move || {
+            let state = *read.lock().expect("the test's state");
+            Ok(state
+                .map(|state| NeighborTable::from([(GATEWAY, state)]))
+                .unwrap_or_default())
+        }))
+        .routing(Box::new(|address| {
+            Ok(ROUTED.contains(&address).then_some(GATEWAY))
+        }));
+        let (mut core, _session) = core();
+        let (_tx, rx) = tokio::sync::mpsc::channel(1024);
+        core.transport =
+            ProbeTransport::from_parts(Box::new(NullSender), rx).with_kernel_neighbors(table);
+
+        assert_eq!(
+            core.admit(ROUTED[0], Instant::now()),
+            Admission::Send,
+            "the first probe through the gateway starts its resolution"
+        );
+        *state.lock().unwrap() = Some(NeighborState::Resolving);
+        let now = Instant::now();
+        assert_eq!(
+            core.admit(ROUTED[1], now),
+            Admission::Hold(now + NEIGHBOR_RECHECK),
+            "another host behind it waits rather than queueing behind it"
+        );
+
+        *state.lock().unwrap() = Some(NeighborState::Failed);
+        std::thread::sleep(NEIGHBOR_RECHECK);
+        assert_eq!(
+            core.admit(ROUTED[1], Instant::now()),
+            Admission::Unreachable
+        );
+        assert_eq!(
+            core.pending_neighbor(ROUTED[0]),
+            Some(NeighborState::Failed),
+            "the host whose probe started it is read through the gateway too"
+        );
+        core.conclude_pending_neighbors();
+        for host in ROUTED {
+            assert!(core.is_unreachable(&host), "{host} is unreached");
+        }
     }
 
     /// An address the sender says cannot be reached, and which has never
