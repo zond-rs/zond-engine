@@ -10,7 +10,8 @@
 //!
 //! The types a scan is described in: a [`Host`](host::Host), a
 //! [`Port`](port::Port), the addresses to visit ([`IpSet`](ip::set::IpSet) and
-//! [`TargetMap`](target::TargetMap)), and what the capture saw on the way
+//! [`TargetMap`](target::TargetMap)), the [order](order::Permutation) a plan
+//! is asked in, and what the capture saw on the way
 //! ([`CaptureCounts`](capture::CaptureCounts)).
 //!
 //! [`parse`] is the way in. It holds the grammars that turn written targets such
@@ -48,6 +49,7 @@ pub mod finding;
 pub mod host;
 pub mod ip;
 pub mod mac;
+pub mod order;
 pub mod parse;
 pub mod port;
 pub mod target;

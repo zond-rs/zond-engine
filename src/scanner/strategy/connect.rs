@@ -45,7 +45,7 @@ use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
-use crate::scanner::dispatcher::dispatch_addresses;
+use crate::scanner::dispatcher::dispatch_addresses_of;
 use crate::scanner::handle::ScanHandle;
 use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
@@ -1431,7 +1431,7 @@ pub async fn discover(
 /// address was finished with.
 ///
 /// Addresses are drawn from
-/// [`dispatch_addresses`] to
+/// [`dispatch_addresses`](crate::scanner::dispatcher::dispatch_addresses) to
 /// spread load across the network instead of hammering one subnet at a time, and
 /// each connect waits out the [`CONNECT_PROBE_TIMEOUT`] so that hosts on slow or
 /// distant links still register.
@@ -1456,7 +1456,13 @@ async fn sweep(
     let shaping = Shaping::from(evasion);
     let ports: Arc<[u16]> = ports.as_slice().into();
 
-    let mut rx = dispatch_addresses(ips, 1024, ctx.order_seed, &ctx.handle);
+    let mut rx = dispatch_addresses_of(
+        ips,
+        1024,
+        ctx.order_seed,
+        Some(Arc::clone(&ctx.positions)),
+        &ctx.handle,
+    );
     let folder = ctx.clone();
     let mut starved = 0u128;
     // No more probes than the process has sockets for: past the budget a

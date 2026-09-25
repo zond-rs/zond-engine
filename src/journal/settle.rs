@@ -39,6 +39,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::cursor::{Checkpoint, Cursor};
+use crate::model::order::Permutation;
 
 /// The two outcomes a probe earns, before the position is attached.
 ///
@@ -177,8 +178,8 @@ impl Outcome {
 /// counts of what did not.
 ///
 /// Memory follows how far out of order the scan settled, never how many targets
-/// it had: a handful of positions for a plan walked in order, and most of what
-/// has settled for a shuffled one. See [`cursor`](super::cursor).
+/// it had: a handful of positions for a plan settled in plan order or in the
+/// order it was walked. See [`cursor`](super::cursor).
 #[derive(Debug, Default)]
 pub struct Settlements {
     cursor: Mutex<Cursor>,
@@ -197,6 +198,20 @@ impl Settlements {
     pub fn resuming(checkpoint: &Checkpoint) -> Self {
         Self {
             cursor: Mutex::new(Cursor::from_checkpoint(checkpoint)),
+            ..Self::default()
+        }
+    }
+
+    /// Begins from a checkpoint, counting along `order` as well where the
+    /// scan asks its targets in one. See [`Cursor::walking`] for what that
+    /// saves.
+    pub(crate) fn walking(checkpoint: &Checkpoint, order: Option<Permutation>) -> Self {
+        let cursor = Cursor::from_checkpoint(checkpoint);
+        Self {
+            cursor: Mutex::new(match order {
+                Some(order) => cursor.along(order),
+                None => cursor,
+            }),
             ..Self::default()
         }
     }

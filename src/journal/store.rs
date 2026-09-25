@@ -505,26 +505,19 @@ impl Entry {
     /// How many targets are settled, or `None` where the cursor could not be
     /// read.
     ///
-    /// Counts only the positions above the watermark, which is the same filter
+    /// [`Checkpoint::settled_count`], which counts a position the list names
+    /// that a watermark has already passed once, by the watermark, as
     /// [`Cursor::from_checkpoint`](super::cursor::Cursor::from_checkpoint)
-    /// applies to the same list. `Checkpoint::read` deliberately does not drop
-    /// the entries below it, the read is shared, and the cursor is what
-    /// filters, so without the same filter here a list naming positions the
-    /// watermark has already passed would be counted twice here and nowhere
-    /// else. That inflates the total, and [`is_complete`](Self::is_complete) can
-    /// tip to `true` on the inflation, which is what a retention sweep deletes
-    /// on. Every writer this crate ships keeps the list clean, so reaching it
-    /// wants a damaged or hand-edited file; the count is a claim about the scan
-    /// either way, and two readers of one file should not disagree about it.
+    /// does. `Checkpoint::read` deliberately does not drop such entries, so
+    /// without that filter a damaged list would be counted twice here and
+    /// nowhere else. That inflates the total, and
+    /// [`is_complete`](Self::is_complete) can tip to `true` on the inflation,
+    /// which is what a retention sweep deletes on. Two readers of one file
+    /// should not disagree about the scan it describes.
     pub fn settled(&self) -> Option<u128> {
-        self.checkpoint.as_ref().map(|checkpoint| {
-            let above = checkpoint
-                .settled_above
-                .iter()
-                .filter(|position| **position >= checkpoint.watermark)
-                .count();
-            u128::from(checkpoint.watermark) + above as u128
-        })
+        self.checkpoint
+            .as_ref()
+            .map(|checkpoint| u128::from(checkpoint.settled_count()))
     }
 }
 
@@ -1944,6 +1937,7 @@ mod tests {
             checkpoint: Some(Checkpoint {
                 watermark: settled,
                 settled_above: Vec::new(),
+                walked: None,
             }),
             lock: LockState::Free,
         }
@@ -2260,6 +2254,7 @@ mod tests {
         let checkpoint = Checkpoint {
             watermark: 4,
             settled_above: vec![0, 1, 2, 6],
+            walked: None,
         };
         checkpoint
             .write_atomically(&directory.join(CURSOR))

@@ -53,9 +53,9 @@ use std::net::IpAddr;
 use crate::journal::cursor::Checkpoint;
 use crate::journal::settle::Outcome;
 use crate::model::ip::set::{IpSet, Positions};
+use crate::model::order::Permutation;
 use crate::model::target::{PlannedTarget, TargetIndex, TargetMap};
 use crate::scanner::handle::ScanHandle;
-use crate::scanner::order::Permutation;
 use crate::scanner::session::ScanContext;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
@@ -91,9 +91,32 @@ pub fn dispatch_addresses(
     seed: Option<u64>,
     scan_handle: &ScanHandle,
 ) -> mpsc::Receiver<IpAddr> {
+    dispatch_addresses_of(ips, batch_size, seed, None, scan_handle)
+}
+
+/// [`dispatch_addresses`], walking the order of the plan `plan` numbers rather
+/// than one of `ips` alone, for a sweep counted in addresses.
+///
+/// A resumed sweep is handed what it has left, and a permutation of that is a
+/// different order from the one the first sitting walked. The settlements count
+/// along the plan's walk, and answers arriving in some other order would wait in
+/// their set, which is the growth the walk exists to prevent; see
+/// [`cursor`](crate::journal::cursor). So the plan's walk is taken and what this
+/// sitting was not handed is stepped over.
+///
+/// An empty numbering is a sweep counted in something else, a port scan's
+/// liveness pass, and walks `ips` as [`dispatch_addresses`] does.
+pub(crate) fn dispatch_addresses_of(
+    ips: IpSet,
+    batch_size: usize,
+    seed: Option<u64>,
+    plan: Option<std::sync::Arc<Positions>>,
+    scan_handle: &ScanHandle,
+) -> mpsc::Receiver<IpAddr> {
     let batch_size = batch_size.max(1);
     let (tx, rx) = mpsc::channel(batch_size.saturating_mul(2));
     let scan_handle = scan_handle.clone();
+    let plan = plan.filter(|plan| plan.total() > 0);
 
     tokio::spawn(async move {
         let mut batch = Vec::with_capacity(batch_size);
@@ -103,21 +126,33 @@ pub fn dispatch_addresses(
         // work, and doing it per batch would do it again for every eight
         // thousand addresses.
         let numbered = seed.map(|seed| {
-            let numbered = Positions::of(&ips);
+            let numbered = plan
+                .clone()
+                .unwrap_or_else(|| std::sync::Arc::new(Positions::of(&ips)));
             let order = Permutation::new(seed, numbered.total());
             (numbered, order)
         });
 
         let addresses: Box<dyn Iterator<Item = IpAddr> + Send + '_> = match &numbered {
-            // The ranges no position could reach follow the numbered ones, as
-            // they do in the set's own walk, so an address is emitted exactly
-            // once either way.
-            Some((numbered, order)) => Box::new(
-                order
+            // What the numbering could not reach follows the numbered ones, as
+            // it does in the set's own walk, so an address is emitted exactly
+            // once either way. Numbering `ips` itself, that is its ranges too
+            // wide to number. Numbering the plan, it is every address this
+            // sitting was handed that no position names, those ranges among
+            // them.
+            Some((numbered, order)) => {
+                let walked = order
                     .iter()
                     .filter_map(|position| numbered.address_at(position))
-                    .chain(numbered.unnumbered().iter().flat_map(|range| range.iter())),
-            ),
+                    .filter(|ip| ips.contains(ip));
+                if plan.is_some() {
+                    Box::new(walked.chain(ips.iter().filter(|ip| numbered.find(*ip).is_none())))
+                } else {
+                    Box::new(
+                        walked.chain(numbered.unnumbered().iter().flat_map(|range| range.iter())),
+                    )
+                }
+            }
             None => ips.iter(),
         };
 
@@ -295,11 +330,19 @@ impl Dispatcher {
             // nothing downstream has to re-derive one and no sitting counts
             // differently from another.
             let stream: Box<dyn Iterator<Item = PlannedTarget> + Send> = match &order {
-                Some((index, order)) => Box::new(order.iter().filter_map(|position| {
-                    index
-                        .target_at(position)
-                        .map(|target| PlannedTarget::new(position, target))
-                })),
+                // From where an earlier sitting's walk got to, where it walked
+                // this same order: everything before that is settled, and
+                // stepping over it one position at a time is the one cost of a
+                // resume that grows with how far the first sitting got.
+                Some((index, order)) => Box::new(
+                    order
+                        .iter_from(self.walked_along(order))
+                        .filter_map(|position| {
+                            index
+                                .target_at(position)
+                                .map(|target| PlannedTarget::new(position, target))
+                        }),
+                ),
                 None => Box::new(
                     self.target_map
                         .iter()
@@ -351,6 +394,15 @@ impl Dispatcher {
         });
 
         (rx, walk)
+    }
+
+    /// How far an earlier sitting's walk along `order` got, or zero where it
+    /// walked another or none.
+    fn walked_along(&self, order: &Permutation) -> u64 {
+        self.settled
+            .walked
+            .filter(|walked| walked.order() == *order)
+            .map_or(0, |walked| walked.reached.min(order.len()))
     }
 
     /// The plan addressed by position, and the order to walk those positions in,
@@ -852,6 +904,78 @@ mod tests {
 
         let expected: Vec<u64> = (0..4_096).filter(|p| !settled.is_settled(*p)).collect();
         assert_eq!(positions, expected);
+    }
+
+    /// A sitting resumed from a checkpoint counted along its own walk picks
+    /// the walk up where the earlier one left it, and still asks exactly what
+    /// is left: nothing the walk passed, nothing the list names, everything
+    /// else.
+    #[tokio::test]
+    async fn a_resumed_walk_asks_exactly_what_the_earlier_one_left() {
+        use crate::journal::cursor::Cursor;
+
+        let order = Permutation::new(0x1234, 4_096);
+        let mut earlier = Cursor::walking(order);
+        for position in order.iter().take(2_500) {
+            earlier.settle(position);
+        }
+        for index in [2_600, 3_000, 4_095] {
+            earlier.settle(order.at(index).expect("inside the walk"));
+        }
+        let settled = earlier.checkpoint();
+        assert!(settled.walked.is_some_and(|walked| walked.reached == 2_500));
+
+        let (_session, ctx) = ordered(0x1234);
+        let mut rx = Dispatcher::new(wide(20))
+            .resuming(settled.clone())
+            .with_batch_size(64)
+            .run(&ctx);
+
+        let mut positions = Vec::new();
+        while let Some(planned) = rx.recv().await {
+            positions.push(planned.position);
+        }
+        positions.sort_unstable();
+
+        let expected: Vec<u64> = (0..4_096).filter(|p| !settled.is_settled(*p)).collect();
+        assert_eq!(expected.len(), 4_096 - 2_503);
+        assert_eq!(positions, expected);
+    }
+
+    /// A sweep counted in a plan's addresses walks the plan's order over
+    /// whatever part of it this sitting was handed, so a resumed sweep asks
+    /// its remainder in the order the first sitting was asking the whole.
+    ///
+    /// That is what lets its answers be counted along the walk: a permutation
+    /// of the remainder alone is another order, whose answers would wait in
+    /// the settlements' set rather than moving a watermark.
+    #[tokio::test]
+    async fn a_sweep_of_part_of_a_plan_walks_the_plans_order() {
+        let plan: IpSet = "192.0.2.0/24".parse().expect("a prefix");
+        let numbering = std::sync::Arc::new(plan.positions());
+        let handed: IpSet = "192.0.2.0/25,203.0.113.9".parse().expect("a set");
+
+        let handle = ScanHandle::new();
+        let mut rx = dispatch_addresses_of(
+            handed.clone(),
+            1,
+            Some(0x5EED),
+            Some(std::sync::Arc::clone(&numbering)),
+            &handle,
+        );
+        let mut swept = Vec::new();
+        while let Some(ip) = rx.recv().await {
+            swept.push(ip);
+        }
+
+        let mut expected: Vec<IpAddr> = Permutation::new(0x5EED, numbering.total())
+            .iter()
+            .filter_map(|position| numbering.address_at(position))
+            .filter(|ip| handed.contains(ip))
+            .collect();
+        // Handed but not in the plan: still asked, once, after the walk.
+        expected.push("203.0.113.9".parse().expect("an address"));
+        assert_eq!(swept, expected);
     }
 
     /// A plan whose addresses outrun the numbering cannot be addressed by

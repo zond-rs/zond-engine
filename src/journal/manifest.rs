@@ -537,7 +537,7 @@ pub struct JournalManifest {
     /// are, so a sitting resumed under a different one still covers the job. What it buys is that a resumed
     /// sitting does not have to. A scan that switched to a fresh order halfway
     /// through would emit a change of shape mid-run, which is a signature of its
-    /// own; see [`Permutation`](crate::scanner::order::Permutation).
+    /// own; see [`Permutation`](crate::model::order::Permutation).
     ///
     /// [`None`] in a journal written before the order was keyed, which is
     /// resumed the way it was started: in plan order, shuffled within a batch.

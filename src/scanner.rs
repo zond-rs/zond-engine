@@ -164,7 +164,10 @@ pub mod audit;
 pub mod checkpoint;
 pub mod detection;
 pub mod dispatcher;
-pub mod order;
+/// The order a plan's targets are asked in. It lives with the plan's numbering
+/// in [`model`](crate::model), where a journal counting along the same order
+/// can reach it, and is named here too, where the order is taken.
+pub use crate::model::order;
 pub mod payload;
 pub mod pool;
 pub mod rdns;

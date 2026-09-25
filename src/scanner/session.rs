@@ -2462,7 +2462,7 @@ impl SessionBuilder {
     /// Set it and the scan walks its plan in a rearrangement of the whole index
     /// space rather than in address order, which is what keeps a sweep of a
     /// range from being the one shape every correlating sensor is written
-    /// against. See [`Permutation`](crate::scanner::order::Permutation).
+    /// against. See [`Permutation`](crate::model::order::Permutation).
     ///
     /// Leave it alone and the targets come out in plan order, shuffled within a
     /// batch, which is what a scan whose plan cannot be addressed by position
@@ -2600,7 +2600,15 @@ impl SessionBuilder {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::bounded(self.scan_timeout);
         let (events_tx, rx) = broadcast::channel(ScanEvents::CAPACITY);
-        let settlements = Arc::new(Settlements::resuming(&self.settled));
+        // Counted along the walk the dispatcher takes, where it takes one: a
+        // seed and a plan it can number whole. The two have to agree, or the
+        // walk watermark follows an order nothing asks in and every answer
+        // waits in the set, which is the cost it exists to avoid.
+        let walk = self
+            .order_seed
+            .zip(self.planned)
+            .map(|(seed, total)| crate::model::order::Permutation::new(seed, total));
+        let settlements = Arc::new(Settlements::walking(&self.settled, walk));
         let stages = Arc::new(Stages::new(self.staging));
 
         let session = ScanSession {
@@ -3303,6 +3311,7 @@ mod tests {
         let settled = Checkpoint {
             watermark: 12,
             settled_above: vec![14],
+            walked: None,
         };
         let (_session, ctx) = ScanSession::builder()
             .excluding(Exclusions::none())
@@ -3315,6 +3324,49 @@ mod tests {
         // A fresh session has nothing inherited.
         let (_session, fresh) = ScanSession::new();
         assert_eq!(fresh.settlements().settled_count(), 0);
+    }
+
+    /// A scan walked in a seeded order keeps a checkpoint the size of what is
+    /// in flight, whatever the size of the plan.
+    ///
+    /// Every scan the engine starts is given a seed, and its answers arrive
+    /// scattered across the plan. Counted in plan order alone, the watermark
+    /// stays near zero and nearly everything settled waits above it: half of a
+    /// plan of any size at the halfway mark, copied under the settlements' lock
+    /// and written out on every checkpoint. Settled here in the walk's order,
+    /// each batch shuffled as the dispatcher shuffles it, what waits has to
+    /// stay under a batch's worth.
+    #[test]
+    fn a_walked_scan_checkpoints_what_is_in_flight_rather_than_what_it_settled() {
+        use crate::journal::settle::Outcome;
+        use crate::model::order::Permutation;
+        use rand::seq::SliceRandom;
+
+        const PLAN: u64 = 1 << 16;
+        const BATCH: usize = 256;
+        let (_session, ctx) = ScanSession::builder()
+            .planning(Stage::Ports, Some(PLAN))
+            .ordering(Some(0x5EED))
+            .build();
+
+        let walk: Vec<u64> = Permutation::new(0x5EED, PLAN).iter().collect();
+        let mut rng = rand::rng();
+        let mut most_waiting = 0;
+        for batch in walk[..walk.len() / 2].chunks(BATCH) {
+            let mut batch = batch.to_vec();
+            batch.shuffle(&mut rng);
+            for position in batch {
+                ctx.record_outcome(Outcome::Answered { position });
+            }
+            most_waiting = most_waiting.max(ctx.settlements().checkpoint().settled_above.len());
+        }
+
+        assert_eq!(ctx.settlements().settled_count(), PLAN / 2);
+        assert!(
+            most_waiting < BATCH,
+            "{most_waiting} settled positions waited in the checkpoint at once, \
+             where a batch is {BATCH}"
+        );
     }
 
     /// What a watcher is told and what a journal writes are two questions.

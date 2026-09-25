@@ -78,7 +78,7 @@ const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
 /// plan, never a sample of it.
 ///
 /// ```
-/// use zond_engine::scanner::order::Permutation;
+/// use zond_engine::model::order::Permutation;
 ///
 /// let order = Permutation::new(0x5EED, 1_000);
 ///
@@ -137,10 +137,41 @@ impl Permutation {
         (index < self.len).then(|| self.walk(index))
     }
 
+    /// The key this order is a function of.
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// When `position` is asked about: the index [`at`](Self::at) names it
+    /// at, or [`None`] for a position outside the range.
+    ///
+    /// The inverse of [`at`](Self::at), and as cheap. It is what lets a count
+    /// of how far a scan has got be kept in the order it asks in while its
+    /// answers arrive numbered by where the plan holds them.
+    ///
+    /// ```
+    /// use zond_engine::model::order::Permutation;
+    ///
+    /// let order = Permutation::new(0x5EED, 1_000);
+    /// let position = order.at(417).expect("inside the range");
+    ///
+    /// assert_eq!(order.index_of(position), Some(417));
+    /// assert_eq!(order.index_of(1_000), None);
+    /// ```
+    pub fn index_of(&self, position: u64) -> Option<u64> {
+        (position < self.len).then(|| self.unwalk(position))
+    }
+
     /// Every position, in the order the scan asks about them.
     pub fn iter(&self) -> impl Iterator<Item = u64> + Send + 'static {
+        self.iter_from(0)
+    }
+
+    /// The positions from the `start`th on, in the order the scan asks about
+    /// them: the rest of a walk an earlier sitting got `start` positions into.
+    pub(crate) fn iter_from(&self, start: u64) -> impl Iterator<Item = u64> + Send + 'static {
         let order = *self;
-        (0..order.len).map(move |index| order.walk(index))
+        (start.min(order.len)..order.len).map(move |index| order.walk(index))
     }
 
     /// [`at`](Self::at) without the bound, for an index already known to be
@@ -168,6 +199,43 @@ impl Permutation {
                 return position;
             }
         }
+    }
+
+    /// [`walk`](Self::walk) backwards: the index whose walk lands on
+    /// `position`, for a position already known to be inside the range.
+    ///
+    /// The same cycle traced the other way. The walk from an index passes
+    /// through values outside the range and stops at the first inside it, so
+    /// stepping back from that position through the values outside the range
+    /// arrives at the index, which is the first inside it going that way.
+    fn unwalk(&self, position: u64) -> u64 {
+        if self.half == 0 {
+            return position;
+        }
+
+        let mut index = position;
+        loop {
+            index = self.round_trip_back(index);
+            if index < self.len {
+                return index;
+            }
+        }
+    }
+
+    /// [`round_trip`](Self::round_trip) undone: the rounds in reverse, each
+    /// `(l, r) -> (r ^ f(l), l)`.
+    fn round_trip_back(&self, value: u64) -> u64 {
+        let mask = (1u64 << self.half) - 1;
+        let mut left = (value >> self.half) & mask;
+        let mut right = value & mask;
+
+        for round in (0..ROUNDS).rev() {
+            let earlier_right = left;
+            left = right ^ (mix(self.seed, round, earlier_right) & mask);
+            right = earlier_right;
+        }
+
+        (left << self.half) | right
     }
 
     /// One pass of the network: [`ROUNDS`] rounds of `(l, r) -> (r, l ^ f(r))`.
@@ -331,6 +399,48 @@ mod tests {
         assert!(order.at(9).is_some());
         assert_eq!(order.at(10), None);
         assert_eq!(order.at(u64::MAX), None);
+    }
+
+    /// Asking when a position comes up answers the index it came up at, for
+    /// every position, so a count kept in the order a scan asks in and one
+    /// kept in the plan's own order name the same targets.
+    #[test]
+    fn index_of_undoes_at_over_every_awkward_length() {
+        for len in [0u64, 1, 2, 3, 7, 8, 9, 255, 256, 257, 1_000, 4_097] {
+            for seed in [0, 0x5EED, u64::MAX] {
+                let order = Permutation::new(seed, len);
+                for index in 0..len {
+                    let position = order.at(index).expect("inside the range");
+                    assert_eq!(
+                        order.index_of(position),
+                        Some(index),
+                        "len {len}, seed {seed}, index {index}"
+                    );
+                }
+                assert_eq!(order.index_of(len), None, "len {len}: past the end");
+            }
+        }
+    }
+
+    /// And the inverse holds across the widest domain too.
+    #[test]
+    fn index_of_undoes_at_in_the_widest_range() {
+        let order = Permutation::new(0x5EED, u64::MAX);
+        for index in [0, 1, 2, u64::MAX / 2, u64::MAX - 1] {
+            let position = order.at(index).expect("inside the range");
+            assert_eq!(order.index_of(position), Some(index));
+        }
+    }
+
+    /// A walk resumed part way through asks what the whole walk had left, in
+    /// the same order.
+    #[test]
+    fn a_walk_resumed_part_way_asks_the_rest_in_the_same_order() {
+        let order = Permutation::new(0xC0FFEE, 1_000);
+        let whole: Vec<u64> = order.iter().collect();
+
+        assert_eq!(order.iter_from(417).collect::<Vec<_>>(), whole[417..]);
+        assert_eq!(order.iter_from(5_000).count(), 0);
     }
 
     /// The widest domain there is, where the halves are 32 bits each and the

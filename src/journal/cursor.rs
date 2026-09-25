@@ -30,7 +30,7 @@
 //! and this decides what was probed by it, so the two have to be one numbering.
 //! The order the targets are asked in is a different question and is nobody's
 //! business here: a scan given a seed walks a
-//! [`Permutation`](crate::scanner::order::Permutation) of the whole index space
+//! [`Permutation`] of the whole index space
 //! and numbers what comes out by where the plan holds it, which it reads through
 //! [`TargetIndex`]. That the index and this walk agree at every position is
 //! `model`'s own test, `a_position_names_the_target_the_plans_own_walk_numbers_it`,
@@ -51,16 +51,36 @@
 //! and the set grows to the pipeline depth, then collapses the moment that host
 //! settles.
 //!
-//! Walked in a seeded [`Permutation`](crate::scanner::order::Permutation), which
+//! Walked in a seeded [`Permutation`], which
 //! is how every scan the engine starts walks it, the positions settled so far
-//! are scattered across the whole plan, and the watermark stays near zero until
-//! nearly all of them are in. The set then holds close to everything settled:
-//! half the plan at the halfway mark and nearly all of it at the end, eight
-//! bytes and a tree node per position in memory, and a decimal integer per
-//! position in every checkpoint written from it. A shuffled `/24` on a thousand
-//! ports, a quarter of a million positions, costs a checkpoint of a megabyte or
-//! so; a shuffled `/8` sweep costs one of a hundred megabytes and more by its
-//! end, rewritten on every tick.
+//! are scattered across the whole plan, and a watermark counted in plan order
+//! stays near zero until nearly all of them are in. Held that way, the set would
+//! be half the plan at the halfway mark, in memory and in every checkpoint.
+//!
+//! ## So there are two watermarks
+//!
+//! One counted in plan order, and one counted in the order the scan asks in: a
+//! [`Walk`](Walked) says that every position the permutation names before a
+//! given index is settled. A position is settled if either watermark has passed
+//! it or it waits in the set, and the set holds only what neither has reached.
+//!
+//! Whichever order a phase actually settles in, one of the two follows it. A
+//! port scan's dispatcher walks the permutation, so the walk watermark chases
+//! its answers and the set stays the size of the pipeline, however large the
+//! plan. A link-layer sweep asks its segment in address order, so the plan
+//! watermark does. A phase mixing the two holds, beyond the pipeline, roughly
+//! the part of the plan the slower order has yet to reach.
+//!
+//! The walk is recorded beside the positions, seed and length, rather than
+//! looked up in the manifest, so a checkpoint says on its own which targets it
+//! accounts for. A position is still a position in the plan: the walk is only a
+//! compact way of naming a great many of them.
+//!
+//! A checkpoint written this way is read by an engine that predates the walk as
+//! one that settled only what the plan watermark and the set name. That engine
+//! asks again about what the walk had covered, which costs probes and skips
+//! nothing. So a newer file is safe in an older reader rather than readable by
+//! it, and no format version is spent on the difference.
 //!
 //! ## Only settled positions are recorded
 //!
@@ -75,26 +95,43 @@ use std::ops::Range;
 use serde::{Deserialize, Serialize};
 
 use crate::model::ip::set::{IpSet, Positions};
+use crate::model::order::Permutation;
 use crate::model::target::{PlannedTarget, Target, TargetIndex};
 
 /// How far a scan has got, maintained as it runs.
 ///
-/// Cheap to update. A snapshot costs what the set above the watermark holds,
-/// which the module documentation weighs for the orders a scan walks in.
+/// Cheap to update. A snapshot costs what neither watermark has reached, which
+/// the module documentation weighs for the orders a scan walks in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Cursor {
     watermark: u64,
     above: BTreeSet<u64>,
+    walk: Option<Walked>,
 }
 
 impl Cursor {
-    /// A cursor over a plan nothing has been settled in yet.
+    /// A cursor over a plan nothing has been settled in yet, counted in plan
+    /// order alone.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Resumes from a checkpoint.
+    /// A cursor over a plan nothing has been settled in yet, that also counts
+    /// along `order`, the order the scan asks its targets in.
+    ///
+    /// What that buys is the module documentation's subject: settled in the
+    /// order it is asked in, a plan of any size holds a pipeline's worth of
+    /// positions rather than most of what has settled.
+    pub fn walking(order: Permutation) -> Self {
+        Self::new().along(order)
+    }
+
+    /// Resumes from a checkpoint, along the walk it recorded if it recorded
+    /// one.
     pub fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
+        let walk = checkpoint
+            .walked
+            .map(|walked| walked.clamped(checkpoint.watermark));
         let mut cursor = Self {
             watermark: checkpoint.watermark,
             above: checkpoint
@@ -102,23 +139,40 @@ impl Cursor {
                 .iter()
                 .copied()
                 .filter(|position| *position >= checkpoint.watermark)
+                .filter(|position| !walk.is_some_and(|walk| walk.covers(*position)))
                 .collect(),
+            walk,
         };
         // A checkpoint written by a newer build, or edited by hand, may name
-        // positions that are already contiguous with the watermark. Normalising
+        // positions that are already contiguous with a watermark. Normalising
         // here means the invariant below holds however the values arrived.
         cursor.catch_up();
         cursor
     }
 
+    /// Counts along `order` as well, for a cursor that does not yet count
+    /// along any walk: one resumed from a checkpoint written before the scan
+    /// was walked, or by a sitting that was not.
+    ///
+    /// A cursor already counting along a walk keeps it. The walk it has is the
+    /// one its positions were recorded against, and a scan resumed under the
+    /// same manifest asks in that order anyway.
+    pub(crate) fn along(mut self, order: Permutation) -> Self {
+        if self.walk.is_none() {
+            self.walk = Some(Walked::start(order));
+            self.catch_up();
+        }
+        self
+    }
+
     /// Records that the target at `position` is settled.
     ///
-    /// Idempotent: settling a position already below the watermark, or already
-    /// recorded, changes nothing. A target can be reported twice, by a probe
-    /// retired on its retry budget and then again by a stop path that does not
-    /// know it already had a verdict.
+    /// Idempotent: settling a position either watermark has passed, or one
+    /// already recorded, changes nothing. A target can be reported twice, by a
+    /// probe retired on its retry budget and then again by a stop path that
+    /// does not know it already had a verdict.
     pub fn settle(&mut self, position: u64) {
-        if position < self.watermark {
+        if self.is_settled(position) {
             return;
         }
 
@@ -126,7 +180,12 @@ impl Cursor {
         self.catch_up();
     }
 
-    /// Advances the watermark over every consecutive settled position.
+    /// Advances both watermarks over every settled position they can reach.
+    ///
+    /// Each can let the other go further: a position the walk passed may be the
+    /// one the plan watermark was waiting on, and the other way about. So the
+    /// two take turns until the walk stops, which is when neither can move: the
+    /// plan's turn before it already saw everything the walk had reached.
     ///
     /// Saturating, because the positions come out of a cursor file this process
     /// may not have written. A planted `u64::MAX` reaches the increment, and an
@@ -135,12 +194,51 @@ impl Cursor {
     /// Saturating wedges the watermark at the ceiling instead, which is wrong
     /// in the safe direction: a resume re-probes rather than skips.
     fn catch_up(&mut self) {
-        while self.above.remove(&self.watermark) {
-            self.watermark = self.watermark.saturating_add(1);
+        let Self {
+            watermark,
+            above,
+            walk,
+        } = self;
+
+        loop {
+            loop {
+                if above.remove(watermark) {
+                    // Counted in the set until now, and by the watermark from
+                    // here on.
+                } else if let Some(walk) = walk.as_mut()
+                    && walk.covers(*watermark)
+                {
+                    // Counted as ahead of the watermark when the walk passed
+                    // it, and by the watermark from here on.
+                    walk.ahead = walk.ahead.saturating_sub(1);
+                } else {
+                    break;
+                }
+                *watermark = watermark.saturating_add(1);
+            }
+
+            let Some(walk) = walk.as_mut() else { return };
+            let mut walked = false;
+            while let Some(position) = walk.order().at(walk.reached) {
+                if position < *watermark {
+                    // Already counted, below the plan watermark.
+                } else if above.remove(&position) {
+                    walk.ahead = walk.ahead.saturating_add(1);
+                } else {
+                    break;
+                }
+                walk.reached += 1;
+                walked = true;
+            }
+
+            if !walked {
+                return;
+            }
         }
     }
 
-    /// The position below which every target is settled.
+    /// The position below which every target is settled, counted in plan
+    /// order.
     ///
     /// A resume starts here, and skips the positions above it that
     /// [`is_settled`](Self::is_settled) names.
@@ -148,14 +246,16 @@ impl Cursor {
         self.watermark
     }
 
-    /// The settled positions the watermark has not reached, ascending.
+    /// The settled positions neither watermark has reached, ascending.
     pub fn settled_above(&self) -> impl Iterator<Item = u64> + '_ {
         self.above.iter().copied()
     }
 
     /// Whether the target at `position` may be skipped.
     pub fn is_settled(&self, position: u64) -> bool {
-        position < self.watermark || self.above.contains(&position)
+        position < self.watermark
+            || self.above.contains(&position)
+            || self.walk.is_some_and(|walk| walk.covers(position))
     }
 
     /// How many targets are settled in total.
@@ -164,18 +264,18 @@ impl Cursor {
     /// watermark can come from a file this process did not write, and a count
     /// that wrapped would report a nearly-finished scan as barely started.
     pub fn settled_count(&self) -> u64 {
-        self.watermark.saturating_add(self.above.len() as u64)
+        self.watermark
+            .saturating_add(self.walk.map_or(0, |walk| walk.ahead))
+            .saturating_add(self.above.len() as u64)
     }
 
-    /// How many settled positions are waiting on a gap below them.
+    /// How many settled positions are waiting on a gap below them in both
+    /// orders.
     ///
     /// The size of the out-of-order window, and so the size of a checkpoint.
-    ///
-    /// For a plan walked in order, worth watching: a number that grows and does
-    /// not fall is a target that never settles, which is a tarpit or a defect
-    /// rather than a slow network. A shuffled walk grows it with every position
-    /// that settles until the last few gaps below close, so there it measures
-    /// progress rather than a stall.
+    /// Worth watching: settled in either order the scan counts in, a number
+    /// that grows and does not fall is a target that never settles, which is a
+    /// tarpit or a defect rather than a slow network.
     pub fn pending_count(&self) -> usize {
         self.above.len()
     }
@@ -185,28 +285,96 @@ impl Cursor {
         Checkpoint {
             watermark: self.watermark,
             settled_above: self.above.iter().copied().collect(),
+            walked: self.walk,
         }
+    }
+}
+
+/// How far along the order a scan asks in everything is settled.
+///
+/// Every position [`Permutation::new(seed, len)`](Permutation::new) names before
+/// index `reached` is settled. The walk is written down whole, rather than
+/// taken from the manifest's seed, so a checkpoint says on its own which
+/// positions it accounts for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Walked {
+    /// The key of the order walked.
+    pub seed: u64,
+    /// How many positions it rearranges, which is the plan's total.
+    pub len: u64,
+    /// How many of its positions, in the order it names them, are settled.
+    pub reached: u64,
+    /// How many of those are at or past the plan watermark.
+    ///
+    /// Counted so a total can be read without walking: the rest of what the
+    /// walk reached is below the watermark and already counted there. A count
+    /// and nothing more. What a resume skips is decided by `reached` and never
+    /// by this.
+    pub ahead: u64,
+}
+
+impl Walked {
+    /// The start of a walk along `order`: nothing reached.
+    fn start(order: Permutation) -> Self {
+        Self {
+            seed: order.seed(),
+            len: order.len(),
+            reached: 0,
+            ahead: 0,
+        }
+    }
+
+    /// The order walked.
+    pub fn order(&self) -> Permutation {
+        Permutation::new(self.seed, self.len)
+    }
+
+    /// Whether the walk has passed `position`.
+    pub fn covers(&self, position: u64) -> bool {
+        self.order()
+            .index_of(position)
+            .is_some_and(|index| index < self.reached)
+    }
+
+    /// Held to what the numbers can mean, for one read from a file: no more
+    /// reached than the walk holds, and no more ahead than was reached or than
+    /// the plan has past `watermark`.
+    fn clamped(mut self, watermark: u64) -> Self {
+        self.reached = self.reached.min(self.len);
+        self.ahead = self
+            .ahead
+            .min(self.reached)
+            .min(self.len.saturating_sub(watermark));
+        self
     }
 }
 
 /// A cursor as it is written down.
 ///
-/// Sparse: the settled positions above the watermark, each named. For a plan
-/// walked in order that is a handful of positions and far smaller than a bitmap
-/// over the window would be. For a shuffled walk it names most of what has
-/// settled, and a bitmap over the unsettled span would be the smaller form by
-/// a factor of thirty or more; see the module documentation.
+/// Two watermarks and the positions neither has reached, each named. Settled in
+/// either order the scan counts in, that is a handful of positions however
+/// large the plan; see the module documentation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// The position below which everything is settled.
     pub watermark: u64,
-    /// Settled positions at or above the watermark, ascending.
+    /// Settled positions at or above the watermark that the walk has not
+    /// reached, ascending.
     ///
     /// Ascending is an invariant, not a description: [`is_settled`](Self::is_settled)
     /// binary-searches it. [`new`](Self::new) establishes it, and [`read`](Self::read)
     /// re-establishes it on anything that arrived from a file.
     #[serde(default)]
     pub settled_above: Vec<u64>,
+    /// How far along the order the scan asks in everything is settled, for a
+    /// scan that counted along one.
+    ///
+    /// Absent from a checkpoint written by a scan that was not walked, or by an
+    /// engine that predates the walk. An engine that predates it reads a
+    /// checkpoint carrying one as having settled less than it did, which costs
+    /// probes and skips nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walked: Option<Walked>,
 }
 
 impl Checkpoint {
@@ -228,6 +396,7 @@ impl Checkpoint {
         Self {
             watermark,
             settled_above,
+            walked: None,
         }
     }
 
@@ -237,7 +406,29 @@ impl Checkpoint {
     /// ascending. Everything in this module that builds one keeps it that way,
     /// and [`new`](Self::new) is how a caller does.
     pub fn is_settled(&self, position: u64) -> bool {
-        position < self.watermark || self.settled_above.binary_search(&position).is_ok()
+        position < self.watermark
+            || self.settled_above.binary_search(&position).is_ok()
+            || self.walked.is_some_and(|walked| walked.covers(position))
+    }
+
+    /// How many targets are settled in total.
+    ///
+    /// Read without walking anything: the watermark, what the walk counted
+    /// past it, and the positions neither reached. A position the list names
+    /// that a watermark has passed is counted once, by the watermark, which is
+    /// the reading [`Cursor::from_checkpoint`] gives the same file.
+    pub fn settled_count(&self) -> u64 {
+        let walked = self.walked.map(|walked| walked.clamped(self.watermark));
+        let above = self
+            .settled_above
+            .iter()
+            .filter(|position| **position >= self.watermark)
+            .filter(|position| !walked.is_some_and(|walked| walked.covers(**position)))
+            .count();
+
+        self.watermark
+            .saturating_add(walked.map_or(0, |walked| walked.ahead))
+            .saturating_add(above as u64)
     }
 
     /// The addresses a resumed sweep still has to ask about.
@@ -321,6 +512,63 @@ impl Checkpoint {
     /// positions that settled out of order are, so the stretches are the gaps
     /// between those: one more span than there are such positions.
     fn unsettled_spans(&self, total: u64) -> Vec<Range<u64>> {
+        match self.walked {
+            Some(walked) => self.unwalked_spans(walked.clamped(self.watermark), total),
+            None => self.spans_between(total),
+        }
+    }
+
+    /// The unsettled stretches of a checkpoint counted along a walk.
+    ///
+    /// What the walk has not reached is scattered across the plan, so this
+    /// costs what is left rather than what the list holds, read whichever way
+    /// is shorter. Early in a scan that is the plan past the watermark, each
+    /// position asked whether the walk passed it. Late in one it is the walk's
+    /// own tail, which names exactly the positions it has yet to reach.
+    fn unwalked_spans(&self, walked: Walked, total: u64) -> Vec<Range<u64>> {
+        let past_watermark = total.saturating_sub(self.watermark);
+        let tail = walked.len - walked.reached;
+
+        let mut spans: Vec<Range<u64>> = Vec::new();
+        let mut extend = |position: u64| match spans.last_mut() {
+            Some(span) if span.end == position => span.end += 1,
+            _ => spans.push(position..position + 1),
+        };
+
+        if past_watermark <= tail {
+            for position in self.watermark..total {
+                if !self.is_settled(position) {
+                    extend(position);
+                }
+            }
+            return spans;
+        }
+
+        let mut left: Vec<u64> = walked
+            .order()
+            .iter_from(walked.reached)
+            .filter(|position| *position >= self.watermark && *position < total)
+            .filter(|position| self.settled_above.binary_search(position).is_err())
+            .collect();
+        left.sort_unstable();
+        for position in left {
+            extend(position);
+        }
+        // A plan longer than the walk, which only a damaged file describes:
+        // the walk names nothing past its end, so only the list can have
+        // settled any of it.
+        spans.extend(self.gaps_from(walked.len.max(self.watermark), total));
+        spans
+    }
+
+    /// The unsettled stretches of a checkpoint counted in plan order alone:
+    /// the gaps between the positions the list names.
+    fn spans_between(&self, total: u64) -> Vec<Range<u64>> {
+        self.gaps_from(self.watermark, total)
+    }
+
+    /// The gaps between the positions the list names, from `from` to `total`.
+    fn gaps_from(&self, from: u64, total: u64) -> Vec<Range<u64>> {
         // `settled_above` is written ascending, and a checkpoint from disk is
         // only as ordered as the file said. Sorting a copy is linear in an
         // already sorted list and makes the walk below right either way.
@@ -328,7 +576,7 @@ impl Checkpoint {
         above.sort_unstable();
 
         let mut spans = Vec::with_capacity(above.len() + 1);
-        let mut from = self.watermark;
+        let mut from = from;
         for settled in above {
             if settled < from {
                 continue;
@@ -462,6 +710,7 @@ mod tests {
         let checkpoint = Checkpoint {
             watermark: 3,
             settled_above: vec![5, 8],
+            walked: None,
         };
 
         let remaining = checkpoint.remaining_addresses(&positions);
@@ -502,6 +751,7 @@ mod tests {
         let checkpoint = Checkpoint {
             watermark: 4,
             settled_above: Vec::new(),
+            walked: None,
         };
         let remaining = checkpoint.remaining_addresses(&positions);
 
@@ -520,6 +770,7 @@ mod tests {
         let checkpoint = Checkpoint {
             watermark: 4,
             settled_above: Vec::new(),
+            walked: None,
         };
 
         assert!(checkpoint.remaining_addresses(&plan.positions()).is_empty());
@@ -535,6 +786,7 @@ mod tests {
         let checkpoint = Checkpoint {
             watermark: 4,
             settled_above: Vec::new(),
+            walked: None,
         };
 
         let remaining = checkpoint.remaining_addresses(&positions);
@@ -556,10 +808,12 @@ mod tests {
         let sorted = Checkpoint {
             watermark: 2,
             settled_above: vec![4, 6, 9],
+            walked: None,
         };
         let shuffled = Checkpoint {
             watermark: 2,
             settled_above: vec![9, 4, 6],
+            walked: None,
         };
 
         assert_eq!(
@@ -728,35 +982,158 @@ mod tests {
         assert_eq!(cursor.pending_count(), 0);
     }
 
-    /// **A shuffled walk holds what has settled until the gaps below close.**
-    /// The module documentation prices a checkpoint by this: under the order
-    /// every scan the engine starts walks in, the set above the watermark is
-    /// most of what has settled rather than a pipeline's depth, and it empties
-    /// only once the walk is done.
+    /// **Counted along the walk, a shuffled scan holds what is in flight.**
+    /// Counted in plan order alone, the same answers wait above a watermark
+    /// that barely moves, and the set is most of what has settled. Both halves
+    /// are asserted, since the second is the cost the walk exists to remove and
+    /// the first is what says the order is the reason.
     #[test]
-    fn a_shuffled_walk_holds_what_has_settled_until_the_gaps_below_close() {
+    fn a_shuffled_walk_holds_only_what_is_in_flight_when_counted_along_it() {
         const PLAN: u64 = 4_096;
-        let order: Vec<u64> = crate::scanner::order::Permutation::new(7, PLAN)
-            .iter()
-            .collect();
+        let order = Permutation::new(7, PLAN);
+        let asked: Vec<u64> = order.iter().collect();
 
-        let mut cursor = Cursor::new();
-        for position in &order[..order.len() / 2] {
-            cursor.settle(*position);
+        let mut in_plan_order = Cursor::new();
+        let mut along = Cursor::walking(order);
+        for window in asked.chunks(16) {
+            // Answers come back out of order within what is in flight.
+            for position in window.iter().rev() {
+                in_plan_order.settle(*position);
+                along.settle(*position);
+            }
+            assert!(along.pending_count() < 16, "{}", along.pending_count());
+            if along.settled_count() == PLAN / 2 {
+                assert!(
+                    in_plan_order.pending_count() as u64 > PLAN * 2 / 5,
+                    "halfway, {} settled positions wait above a watermark of {}",
+                    in_plan_order.pending_count(),
+                    in_plan_order.watermark()
+                );
+            }
         }
-        assert!(
-            cursor.pending_count() as u64 > PLAN * 2 / 5,
-            "halfway, {} of {} settled positions wait above a watermark of {}",
-            cursor.pending_count(),
-            PLAN / 2,
-            cursor.watermark()
-        );
 
-        for position in &order[order.len() / 2..] {
-            cursor.settle(*position);
+        for cursor in [&in_plan_order, &along] {
+            assert_eq!(cursor.settled_count(), PLAN);
+            assert_eq!(cursor.pending_count(), 0);
+            assert!((0..PLAN).all(|position| cursor.is_settled(position)));
         }
-        assert_eq!(cursor.watermark(), PLAN);
-        assert_eq!(cursor.pending_count(), 0);
+    }
+
+    /// A cursor counting along a walk still follows a phase that settles in
+    /// plan order, since the plan watermark is still there to chase it.
+    #[test]
+    fn a_walked_cursor_settled_in_plan_order_holds_nothing_either() {
+        let mut cursor = Cursor::walking(Permutation::new(7, 1_000));
+        for position in 0..1_000 {
+            cursor.settle(position);
+            assert_eq!(cursor.pending_count(), 0, "at {position}");
+        }
+        assert_eq!(cursor.settled_count(), 1_000);
+        assert_eq!(cursor.watermark(), 1_000);
+    }
+
+    proptest::proptest! {
+        /// Whatever order positions settle in, the two watermarks and the set
+        /// between them name exactly what settled, count it once, and say the
+        /// same after a round trip through a checkpoint.
+        ///
+        /// A position named that did not settle is a target a resume skips
+        /// without asking, and one settled that is not named is asked twice.
+        /// The first is the failure the whole module exists to prevent.
+        #[test]
+        fn two_watermarks_name_exactly_what_settled(
+            seed in proptest::prelude::any::<u64>(),
+            len in 1u64..300,
+            settled in proptest::collection::vec(0u64..320, 0..400),
+            walked_first in 0usize..300,
+        ) {
+            let order = Permutation::new(seed, len);
+            let mut cursor = Cursor::walking(order);
+            // Some of the walk in its own order, then the rest in any order,
+            // as a phase mixing a dispatcher and a sweep would.
+            let mut expected = BTreeSet::new();
+            for position in order.iter().take(walked_first) {
+                cursor.settle(position);
+                expected.insert(position);
+            }
+            for position in settled {
+                cursor.settle(position);
+                expected.insert(position);
+            }
+
+            let checkpoint = cursor.checkpoint();
+            let restored = Cursor::from_checkpoint(&checkpoint);
+            for position in 0..330 {
+                let want = expected.contains(&position);
+                proptest::prop_assert_eq!(cursor.is_settled(position), want, "cursor, {}", position);
+                proptest::prop_assert_eq!(checkpoint.is_settled(position), want, "checkpoint, {}", position);
+                proptest::prop_assert_eq!(restored.is_settled(position), want, "restored, {}", position);
+            }
+            proptest::prop_assert_eq!(cursor.settled_count(), expected.len() as u64);
+            proptest::prop_assert_eq!(checkpoint.settled_count(), expected.len() as u64);
+            proptest::prop_assert_eq!(restored.settled_count(), expected.len() as u64);
+
+            // And a resume asks about exactly the rest.
+            let total = len + 10;
+            let spans: Vec<u64> = checkpoint
+                .unsettled_spans(total)
+                .into_iter()
+                .flatten()
+                .collect();
+            let rest: Vec<u64> = (0..total).filter(|p| !expected.contains(p)).collect();
+            proptest::prop_assert_eq!(spans, rest);
+        }
+    }
+
+    /// A walk attached to a cursor resumed from a checkpoint that had none
+    /// takes in what that checkpoint already settled, and loses none of it.
+    #[test]
+    fn a_walk_joins_a_cursor_resumed_without_one() {
+        let order = Permutation::new(11, 64);
+        let earlier: Vec<u64> = order.iter().take(40).collect();
+        let checkpoint = Checkpoint::new(0, earlier.iter().copied());
+
+        let cursor = Cursor::from_checkpoint(&checkpoint).along(order);
+
+        assert_eq!(cursor.pending_count(), 0, "the walk reached all of it");
+        assert_eq!(cursor.settled_count(), 40);
+        assert!(earlier.iter().all(|position| cursor.is_settled(*position)));
+    }
+
+    /// An engine that predates the walk reads a checkpoint carrying one as
+    /// having settled less than it did, never more.
+    ///
+    /// Reading more would have it skip targets nobody asked about. Reading less
+    /// costs it probes, which is why a newer checkpoint needs no new format
+    /// version to be safe in an older reader.
+    #[cfg(feature = "journal-format")]
+    #[test]
+    fn an_older_reader_takes_a_walked_checkpoint_for_less_than_it_settled() {
+        #[derive(Deserialize)]
+        struct Older {
+            watermark: u64,
+            #[serde(default)]
+            settled_above: Vec<u64>,
+        }
+
+        let order = Permutation::new(3, 500);
+        let mut cursor = Cursor::walking(order);
+        for position in order.iter().take(300) {
+            cursor.settle(position);
+        }
+        cursor.settle(order.at(310).expect("inside the walk"));
+
+        let written = serde_json::to_string(&cursor.checkpoint()).expect("serializes");
+        let older: Older = serde_json::from_str(&written).expect("an older reader reads it");
+        let older = Checkpoint::new(older.watermark, older.settled_above);
+
+        assert!(older.settled_count() < cursor.settled_count());
+        for position in 0..500 {
+            assert!(
+                !older.is_settled(position) || cursor.is_settled(position),
+                "position {position} read as settled when it was not"
+            );
+        }
     }
 
     /// Out-of-order settling is the normal case, since a seeded scan walks a
@@ -978,6 +1355,7 @@ mod tests {
         let checkpoint = Checkpoint {
             watermark: 5,
             settled_above: vec![1, 2, 5, 6],
+            walked: None,
         };
 
         let cursor = Cursor::from_checkpoint(&checkpoint);

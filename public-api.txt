@@ -6779,12 +6779,14 @@ pub mod zond_engine::journal
 pub mod zond_engine::journal::cursor
 pub struct zond_engine::journal::cursor::Checkpoint
 pub zond_engine::journal::cursor::Checkpoint::settled_above: alloc::vec::Vec<u64>
+pub zond_engine::journal::cursor::Checkpoint::walked: core::option::Option<zond_engine::journal::cursor::Walked>
 pub zond_engine::journal::cursor::Checkpoint::watermark: u64
 impl zond_engine::journal::cursor::Checkpoint
 pub fn zond_engine::journal::cursor::Checkpoint::is_settled(&self, u64) -> bool
 pub fn zond_engine::journal::cursor::Checkpoint::new(u64, impl core::iter::traits::collect::IntoIterator<Item = u64>) -> Self
 pub fn zond_engine::journal::cursor::Checkpoint::remaining<'a, I>(&'a self, I) -> impl core::iter::traits::iterator::Iterator<Item = zond_engine::model::target::PlannedTarget> + 'a where I: core::iter::traits::collect::IntoIterator<Item = zond_engine::model::target::Target> + 'a
 pub fn zond_engine::journal::cursor::Checkpoint::remaining_addresses(&self, &zond_engine::model::ip::set::Positions) -> zond_engine::model::ip::set::IpSet
+pub fn zond_engine::journal::cursor::Checkpoint::settled_count(&self) -> u64
 impl zond_engine::journal::cursor::Checkpoint
 pub fn zond_engine::journal::cursor::Checkpoint::read(&std::path::Path) -> core::result::Result<Self, zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::cursor::Checkpoint::write_atomically(&self, &std::path::Path) -> core::result::Result<(), zond_engine::journal::format::JournalError>
@@ -6819,6 +6821,7 @@ pub fn zond_engine::journal::cursor::Cursor::pending_count(&self) -> usize
 pub fn zond_engine::journal::cursor::Cursor::settle(&mut self, u64)
 pub fn zond_engine::journal::cursor::Cursor::settled_above(&self) -> impl core::iter::traits::iterator::Iterator<Item = u64> + '_
 pub fn zond_engine::journal::cursor::Cursor::settled_count(&self) -> u64
+pub fn zond_engine::journal::cursor::Cursor::walking(zond_engine::model::order::Permutation) -> Self
 pub fn zond_engine::journal::cursor::Cursor::watermark(&self) -> u64
 impl core::clone::Clone for zond_engine::journal::cursor::Cursor
 pub fn zond_engine::journal::cursor::Cursor::clone(&self) -> zond_engine::journal::cursor::Cursor
@@ -6837,6 +6840,36 @@ impl core::marker::Unpin for zond_engine::journal::cursor::Cursor
 impl core::marker::UnsafeUnpin for zond_engine::journal::cursor::Cursor
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::cursor::Cursor
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::cursor::Cursor
+pub struct zond_engine::journal::cursor::Walked
+pub zond_engine::journal::cursor::Walked::ahead: u64
+pub zond_engine::journal::cursor::Walked::len: u64
+pub zond_engine::journal::cursor::Walked::reached: u64
+pub zond_engine::journal::cursor::Walked::seed: u64
+impl zond_engine::journal::cursor::Walked
+pub fn zond_engine::journal::cursor::Walked::covers(&self, u64) -> bool
+pub fn zond_engine::journal::cursor::Walked::order(&self) -> zond_engine::model::order::Permutation
+impl core::clone::Clone for zond_engine::journal::cursor::Walked
+pub fn zond_engine::journal::cursor::Walked::clone(&self) -> zond_engine::journal::cursor::Walked
+impl core::cmp::Eq for zond_engine::journal::cursor::Walked
+impl core::cmp::PartialEq for zond_engine::journal::cursor::Walked
+pub fn zond_engine::journal::cursor::Walked::eq(&self, &zond_engine::journal::cursor::Walked) -> bool
+impl core::fmt::Debug for zond_engine::journal::cursor::Walked
+pub fn zond_engine::journal::cursor::Walked::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::journal::cursor::Walked
+pub fn zond_engine::journal::cursor::Walked::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::journal::cursor::Walked
+impl core::marker::StructuralPartialEq for zond_engine::journal::cursor::Walked
+impl serde_core::ser::Serialize for zond_engine::journal::cursor::Walked
+pub fn zond_engine::journal::cursor::Walked::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::journal::cursor::Walked
+pub fn zond_engine::journal::cursor::Walked::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::journal::cursor::Walked
+impl core::marker::Send for zond_engine::journal::cursor::Walked
+impl core::marker::Sync for zond_engine::journal::cursor::Walked
+impl core::marker::Unpin for zond_engine::journal::cursor::Walked
+impl core::marker::UnsafeUnpin for zond_engine::journal::cursor::Walked
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::cursor::Walked
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::cursor::Walked
 pub mod zond_engine::journal::format
 #[non_exhaustive] pub enum zond_engine::journal::format::JournalError
 pub zond_engine::journal::format::JournalError::Io(core::io::error::Error)
@@ -9732,6 +9765,32 @@ impl core::marker::UnsafeUnpin for zond_engine::model::mac::MacAddrParseError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::mac::MacAddrParseError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::mac::MacAddrParseError
 pub fn zond_engine::model::mac::vendor(&zond_engine::model::mac::MacAddr) -> core::option::Option<alloc::string::String>
+pub mod zond_engine::model::order
+pub struct zond_engine::model::order::Permutation
+impl zond_engine::model::order::Permutation
+pub fn zond_engine::model::order::Permutation::at(&self, u64) -> core::option::Option<u64>
+pub fn zond_engine::model::order::Permutation::index_of(&self, u64) -> core::option::Option<u64>
+pub fn zond_engine::model::order::Permutation::is_empty(&self) -> bool
+pub fn zond_engine::model::order::Permutation::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = u64> + core::marker::Send + 'static
+pub fn zond_engine::model::order::Permutation::len(&self) -> u64
+pub fn zond_engine::model::order::Permutation::new(u64, u64) -> Self
+pub fn zond_engine::model::order::Permutation::seed(&self) -> u64
+impl core::clone::Clone for zond_engine::model::order::Permutation
+pub fn zond_engine::model::order::Permutation::clone(&self) -> zond_engine::model::order::Permutation
+impl core::cmp::Eq for zond_engine::model::order::Permutation
+impl core::cmp::PartialEq for zond_engine::model::order::Permutation
+pub fn zond_engine::model::order::Permutation::eq(&self, &zond_engine::model::order::Permutation) -> bool
+impl core::fmt::Debug for zond_engine::model::order::Permutation
+pub fn zond_engine::model::order::Permutation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::model::order::Permutation
+impl core::marker::StructuralPartialEq for zond_engine::model::order::Permutation
+impl core::marker::Freeze for zond_engine::model::order::Permutation
+impl core::marker::Send for zond_engine::model::order::Permutation
+impl core::marker::Sync for zond_engine::model::order::Permutation
+impl core::marker::Unpin for zond_engine::model::order::Permutation
+impl core::marker::UnsafeUnpin for zond_engine::model::order::Permutation
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::order::Permutation
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::order::Permutation
 pub mod zond_engine::model::parse
 pub mod zond_engine::model::parse::ip
 #[non_exhaustive] pub enum zond_engine::model::parse::ip::IpParseError
@@ -14556,28 +14615,30 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::handle::S
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::handle::ScanHandle
 pub mod zond_engine::scanner::order
 pub struct zond_engine::scanner::order::Permutation
-impl zond_engine::scanner::order::Permutation
-pub fn zond_engine::scanner::order::Permutation::at(&self, u64) -> core::option::Option<u64>
-pub fn zond_engine::scanner::order::Permutation::is_empty(&self) -> bool
-pub fn zond_engine::scanner::order::Permutation::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = u64> + core::marker::Send + 'static
-pub fn zond_engine::scanner::order::Permutation::len(&self) -> u64
-pub fn zond_engine::scanner::order::Permutation::new(u64, u64) -> Self
-impl core::clone::Clone for zond_engine::scanner::order::Permutation
-pub fn zond_engine::scanner::order::Permutation::clone(&self) -> zond_engine::scanner::order::Permutation
-impl core::cmp::Eq for zond_engine::scanner::order::Permutation
-impl core::cmp::PartialEq for zond_engine::scanner::order::Permutation
-pub fn zond_engine::scanner::order::Permutation::eq(&self, &zond_engine::scanner::order::Permutation) -> bool
-impl core::fmt::Debug for zond_engine::scanner::order::Permutation
-pub fn zond_engine::scanner::order::Permutation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for zond_engine::scanner::order::Permutation
-impl core::marker::StructuralPartialEq for zond_engine::scanner::order::Permutation
-impl core::marker::Freeze for zond_engine::scanner::order::Permutation
-impl core::marker::Send for zond_engine::scanner::order::Permutation
-impl core::marker::Sync for zond_engine::scanner::order::Permutation
-impl core::marker::Unpin for zond_engine::scanner::order::Permutation
-impl core::marker::UnsafeUnpin for zond_engine::scanner::order::Permutation
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::order::Permutation
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::order::Permutation
+impl zond_engine::model::order::Permutation
+pub fn zond_engine::model::order::Permutation::at(&self, u64) -> core::option::Option<u64>
+pub fn zond_engine::model::order::Permutation::index_of(&self, u64) -> core::option::Option<u64>
+pub fn zond_engine::model::order::Permutation::is_empty(&self) -> bool
+pub fn zond_engine::model::order::Permutation::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = u64> + core::marker::Send + 'static
+pub fn zond_engine::model::order::Permutation::len(&self) -> u64
+pub fn zond_engine::model::order::Permutation::new(u64, u64) -> Self
+pub fn zond_engine::model::order::Permutation::seed(&self) -> u64
+impl core::clone::Clone for zond_engine::model::order::Permutation
+pub fn zond_engine::model::order::Permutation::clone(&self) -> zond_engine::model::order::Permutation
+impl core::cmp::Eq for zond_engine::model::order::Permutation
+impl core::cmp::PartialEq for zond_engine::model::order::Permutation
+pub fn zond_engine::model::order::Permutation::eq(&self, &zond_engine::model::order::Permutation) -> bool
+impl core::fmt::Debug for zond_engine::model::order::Permutation
+pub fn zond_engine::model::order::Permutation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::model::order::Permutation
+impl core::marker::StructuralPartialEq for zond_engine::model::order::Permutation
+impl core::marker::Freeze for zond_engine::model::order::Permutation
+impl core::marker::Send for zond_engine::model::order::Permutation
+impl core::marker::Sync for zond_engine::model::order::Permutation
+impl core::marker::Unpin for zond_engine::model::order::Permutation
+impl core::marker::UnsafeUnpin for zond_engine::model::order::Permutation
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::order::Permutation
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::order::Permutation
 pub mod zond_engine::scanner::pacing
 pub mod zond_engine::scanner::pacing::congestion
 pub struct zond_engine::scanner::pacing::congestion::CongestionWindow
