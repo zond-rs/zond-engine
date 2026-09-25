@@ -81,6 +81,15 @@ pub struct HostSweep<T> {
     /// address is only work it intends to do. Draining these first is also what
     /// keeps the schedule honest: a retry queued behind thousands of first
     /// attempts would leave long after the moment it was scheduled for.
+    ///
+    /// Every address here has its probe's clock stopped on the ledger that
+    /// scheduled it (see `ProbeLedger::defer`), so a retry held behind the
+    /// send ticker or a host's probe gap is neither overtaken by the attempt
+    /// after it nor retired unsent. Whoever takes one therefore owes that
+    /// ledger one of two calls: [`rearm`](ProbeLedger::rearm) once it has
+    /// left, or `resume` when it did not. An address
+    /// whose probe is no longer on its ledger was answered while it waited,
+    /// and is dropped unsent.
     pub retries: VecDeque<IpAddr>,
     /// The targets *this sweep* has heard from.
     ///
@@ -150,6 +159,7 @@ impl<T: Copy + PartialEq> HostSweep<T> {
         // reused, so this costs no allocation.
         let mut due = std::mem::take(&mut self.due);
         self.ledger.drain_due(now, &mut due);
+        defer_retries(&mut self.ledger, &due);
         self.absorb_due(ctx, &mut due, settles);
         self.due = due;
     }
@@ -170,6 +180,7 @@ impl<T: Copy + PartialEq> HostSweep<T> {
         let settles = true;
         let mut due = std::mem::take(&mut self.due);
         other.drain_due(now, &mut due);
+        defer_retries(other, &due);
         self.absorb_due(ctx, &mut due, settles);
         self.due = due;
     }
@@ -237,6 +248,17 @@ impl<T: Copy + PartialEq> HostSweep<T> {
     ) {
         self.audit.report(label, targets, reason, capture, None);
         ctx.record_probe_stats(self.audit.stats(kind, targets, reason, capture, None));
+    }
+}
+
+/// Stops the clock of every probe `due` schedules a retry for, on the ledger
+/// that scheduled it, until the retry is sent or given up on. See
+/// [`HostSweep::retries`].
+fn defer_retries<U: Copy + PartialEq>(ledger: &mut ProbeLedger<IpAddr, U>, due: &[Due<IpAddr>]) {
+    for event in due {
+        if let Due::Retry { key, .. } = event {
+            ledger.defer(key);
+        }
     }
 }
 
@@ -321,6 +343,63 @@ mod tests {
             "nothing was earned, so nothing is skipped on a resume"
         );
         assert_eq!(ctx.settlements().settled_count(), 0);
+    }
+
+    /// A queued retry stops its probe's clock, on whichever ledger scheduled
+    /// it, until it is sent or given up on.
+    ///
+    /// A retry waits in the queue behind the send ticker and a host's probe
+    /// gap. With the clock left running, a wait longer than the timeout
+    /// charges the next attempt behind it and the one after retires the probe
+    /// with the retries never sent: an address settled silent having been
+    /// asked once.
+    #[test]
+    fn a_queued_retry_holds_its_probe_until_it_is_sent() {
+        let (ctx, host) = counting("127.0.0.1");
+        let policy = RetryPolicy::new(
+            3,
+            Duration::from_millis(10),
+            Duration::from_millis(1),
+            Duration::from_millis(20),
+            1.0,
+            0.0,
+            None,
+        );
+        let mut sweep: HostSweep<()> = HostSweep::new(ProbeLedger::new(policy, 4));
+        let mut second: ProbeLedger<IpAddr, ()> = ProbeLedger::new(policy, 4);
+        let other: IpAddr = "127.0.0.2".parse().expect("an address");
+        let now = Instant::now();
+        sweep.ledger.arm(host, host, (), (), now);
+        second.arm(other, other, (), (), now);
+
+        // Due, and then left queued far longer than the whole schedule.
+        for later in [Duration::from_millis(50), Duration::from_secs(3600)] {
+            sweep.service_retries(&ctx, now + later);
+            sweep.service_second_ledger(&ctx, &mut second, now + later);
+        }
+
+        assert_eq!(
+            sweep.retries,
+            [host, other],
+            "each probe queued once, and neither charged again while it waited"
+        );
+        assert!(sweep.ledger.contains(&host) && second.contains(&other));
+        assert_eq!(
+            ctx.settlements().settled_count(),
+            0,
+            "an address whose retry never left has earned no verdict"
+        );
+
+        // Sent, the clock restarts from the send.
+        let sent = now + Duration::from_secs(3601);
+        sweep.ledger.rearm(host, host, (), sent);
+        sweep.retries.pop_front();
+        sweep.service_retries(&ctx, sent + Duration::from_millis(50));
+        assert_eq!(
+            sweep.retries,
+            [other, host],
+            "and the next attempt comes due"
+        );
     }
 
     /// A probe with budget left goes back on the queue instead, and settles

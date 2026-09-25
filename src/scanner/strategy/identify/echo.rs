@@ -169,7 +169,8 @@ pub struct OsEchoScanner {
     by_sequence: HashMap<u16, IpAddr>,
     /// The hard ceiling on this run, derived from the longest a probe's
     /// schedule can take: every attempt at the retry ceiling, which is where
-    /// hosts that answered slowly time the rest.
+    /// hosts that answered slowly time the rest, or at the gap the scan keeps
+    /// between two probes at one host where that is longer.
     deadline: Instant,
     /// Why requests did not leave, split by whose fact it was: this host's
     /// send path, or an address nothing reaches from here.
@@ -218,6 +219,7 @@ impl OsEchoScanner {
     ) -> Self {
         let send_duration = SEND_TICK.saturating_mul(targets.len() as u32);
         let target_count = targets.len();
+        let probe_lifetime = RETRY_POLICY.longest_spaced_probe_lifetime(ctx.host_probe_interval());
         Self {
             ctx,
             transport,
@@ -228,10 +230,7 @@ impl OsEchoScanner {
             pending: targets.into(),
             sweep: HostSweep::new(ProbeLedger::new(RETRY_POLICY, 256)),
             by_sequence: HashMap::with_capacity(target_count),
-            deadline: Instant::now()
-                + RETRY_POLICY.longest_probe_lifetime()
-                + send_duration
-                + QUIET_FLOOR,
+            deadline: Instant::now() + probe_lifetime + send_duration + QUIET_FLOOR,
             faults: SendFaults::default(),
         }
     }
@@ -254,17 +253,37 @@ impl OsEchoScanner {
         // together, and `ZondConfig::host_probe_interval` for the two-packet
         // consequence, which is written down there rather than left to be
         // measured.
-        let target = match take_ready(&mut self.sweep.retries, &self.ctx, now)
-            .or_else(|| take_ready(&mut self.pending, &self.ctx, now))
-        {
-            Some(target) => target,
-            None => return,
+        //
+        // A retry's probe has its clock stopped while it is queued (see
+        // `HostSweep::retries`), and one whose probe was answered meanwhile is
+        // dropped unsent.
+        self.sweep
+            .retries
+            .retain(|target| self.sweep.ledger.contains(target));
+        let (target, retry) = match take_ready(&mut self.sweep.retries, &self.ctx, now) {
+            Some(target) => (target, true),
+            None => match take_ready(&mut self.pending, &self.ctx, now) {
+                Some(target) => (target, false),
+                None => return,
+            },
         };
-        // The ledger has charged any retry that reached here, so an unroutable
-        // target exhausts on schedule rather than waiting outstanding forever.
-        let Some(source) = self.resolver.resolve(target) else {
-            return;
-        };
+        let sent = self.send_pair(target, now);
+        // A retry restarts its probe's clock whatever became of it: from the
+        // send, which re-arms it, or from now for one that did not leave, whose
+        // attempt stays charged so an unroutable target exhausts on schedule
+        // rather than waiting outstanding forever.
+        match sent {
+            Some(sequence) if retry => self.sweep.ledger.rearm(target, target, sequence, now),
+            Some(sequence) => self.sweep.ledger.arm(target, target, sequence, (), now),
+            None if retry => self.sweep.ledger.resume(&target, now),
+            None => {}
+        }
+    }
+
+    /// Sends the echo, and for an IPv4 target the timestamp, that make up one
+    /// attempt at `target`, returning the echo's sequence if it left.
+    fn send_pair(&mut self, target: IpAddr, now: Instant) -> Option<u16> {
+        let source = self.resolver.resolve(target)?;
 
         let sequence = self.next_sequence;
         let message = match icmp::build_echo_request_message(
@@ -279,7 +298,7 @@ impl OsEchoScanner {
             Err(e) => {
                 error!(verbosity = 2, "cannot build an echo for {target}: {e}");
                 self.sweep.audit.record_send(false);
-                return;
+                return None;
             }
         };
 
@@ -314,7 +333,6 @@ impl OsEchoScanner {
         if sent {
             self.next_sequence = self.next_sequence.wrapping_add(1);
             self.by_sequence.insert(sequence, target);
-            self.sweep.ledger.arm(target, target, sequence, (), now);
         }
 
         self.send_timestamp(source, target);
@@ -329,6 +347,7 @@ impl OsEchoScanner {
         if sent {
             self.ctx.host_probed(target, now);
         }
+        sent.then_some(sequence)
     }
 
     /// Asks the same target what time it thinks it is, where the family has a
@@ -718,6 +737,27 @@ mod tests {
             given >= needed,
             "one host's schedule at the ceiling takes {needed:?} and the pass \
              is given {given:?}"
+        );
+    }
+
+    /// A pass keeping a gap between two probes at one host outlasts the
+    /// schedule of the last host it asks with every attempt waiting out that
+    /// gap, since a retry held for the gap waits with its clock stopped.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_spaced_pass_outlasts_every_attempt_waiting_out_the_gap() {
+        let gap = Duration::from_secs(60);
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .build();
+        let built = Instant::now();
+        let (scanner, _tx) = scanner(&ctx, 64);
+
+        let needed = gap * u32::from(RETRY_POLICY.max_attempts);
+        let given = scanner.deadline.saturating_duration_since(built);
+        assert!(
+            given >= needed,
+            "two attempts a {gap:?} gap apart take {needed:?} and the pass is \
+             given {given:?}"
         );
     }
 

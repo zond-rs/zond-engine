@@ -570,6 +570,7 @@ fn schedule(
     probe: SweepProbe,
     retry: &RetryPolicy,
     rate_per_sec: NonZeroU32,
+    host_gap: Option<Duration>,
 ) -> (Duration, usize, AdaptiveDeadlineConfig) {
     // The rate is in packets, because a policer counts packets, and an
     // attempt at one address is as many packets as the probe asks ports.
@@ -588,7 +589,9 @@ fn schedule(
     // The schedule is taken at its longest, every attempt at the ceiling,
     // rather than as an unmeasured path would run it. A sweep that has heard
     // slow hosts times the rest from what it heard, at up to the ceiling on
-    // every attempt, the first included.
+    // every attempt, the first included. And every attempt at the gap the
+    // scan keeps between two probes at one host, where that is longer, since
+    // a retry waits it out with its probe's clock stopped.
     //
     // The send rate is the one that grows with the range, and it is counted
     // in every attempt rather than the first: a retry leaves through the same
@@ -603,7 +606,7 @@ fn schedule(
         SEND_SLACK * f64::from(retry.max_attempts) / f64::from(addresses_per_sec.get()),
     );
     let deadline_config = DEADLINE_CONFIG
-        .allowing_for(retry.longest_probe_lifetime())
+        .allowing_for(retry.longest_spaced_probe_lifetime(host_gap))
         .allowing_pace_of(per_address, target_count);
 
     (send_tick, batch, deadline_config)
@@ -791,8 +794,13 @@ impl RoutedScanner {
 
         let target_count = sources.len();
 
-        let (send_tick, batch, deadline_config) =
-            schedule(target_count, probe, &retry, rate_per_sec);
+        let (send_tick, batch, deadline_config) = schedule(
+            target_count,
+            probe,
+            &retry,
+            rate_per_sec,
+            ctx.host_probe_interval(),
+        );
 
         Self {
             ctx,
@@ -1042,41 +1050,73 @@ impl RoutedScanner {
     fn send_allowance(&mut self, now: Instant) {
         for _ in 0..self.batch {
             // A queued retry first, unless its host was asked too recently for
-            // the gap the scan keeps. A retry turned away goes to the back of
-            // the queue rather than out of it, and the allowance moves on to a
-            // fresh target instead of spending the slot waiting.
+            // the gap the scan keeps. A retry turned away stays queued with its
+            // clock stopped, and the allowance moves on to one that is ready,
+            // or to a fresh target, instead of spending the slot waiting.
             //
             // Only a retry can be turned away. The gap is measured from a
             // previous probe and a sweep sends one per host per attempt, so a
             // first attempt reaches an address this sweep has never asked
             // about and there is no earlier probe for it to be too close to.
-            let queued = match self.sweep.retries.pop_front() {
-                Some(target) if self.ctx.host_ready_at(target, now).is_none() => Some(target),
-                Some(target) => {
-                    self.sweep.retries.push_back(target);
-                    None
-                }
-                None => None,
-            };
-
-            let Some(target) = queued.or_else(|| self.pending.next()) else {
+            if let Some(target) = self.next_ready_retry(now) {
+                self.reprobe(target, now);
+            } else if let Some(target) = self.pending.next() {
+                self.probe(target, now);
+            } else {
                 return;
-            };
-            self.probe(target, now);
+            }
         }
     }
 
-    /// Puts one attempt at `target` on the wire and records it.
+    /// The first queued retry whose host may be asked now, taken off the
+    /// queue, or `None` where none is ready.
     ///
-    /// Used for the first attempt and every retry alike. An attempt none of
-    /// whose packets could be sent is not armed; the ledger has already charged
-    /// the attempt by the time a retry reaches here, so an unroutable target
-    /// still runs out of attempts on schedule. One that reached the wire on any
-    /// port is armed, since any of them can draw the answer.
+    /// A retry whose probe has left the ledger was answered while it waited
+    /// and is dropped: sending it asks a question nothing is waiting on, and
+    /// arming it would start its address a fresh schedule after its verdict.
+    /// One turned away for the gap goes to the back. The walk is bounded by
+    /// the queue's length on entry.
+    fn next_ready_retry(&mut self, now: Instant) -> Option<IpAddr> {
+        for _ in 0..self.sweep.retries.len() {
+            let target = self.sweep.retries.pop_front()?;
+            if !self.sweep.ledger.contains(&target) {
+                continue;
+            }
+            if self.ctx.host_ready_at(target, now).is_some() {
+                self.sweep.retries.push_back(target);
+                continue;
+            }
+            return Some(target);
+        }
+        None
+    }
+
+    /// Puts the first attempt at `target` on the wire and arms its probe.
+    ///
+    /// An attempt none of whose packets could be sent is not armed, so an
+    /// address nobody asked never earns a verdict. One that reached the wire
+    /// on any port is armed, since any of them can draw the answer.
     fn probe(&mut self, target: IpAddr, now: Instant) {
-        let Some(&source) = self.sources.get(&target) else {
-            return;
-        };
+        if let Some(token) = self.send_attempt(target, now) {
+            self.sweep.ledger.arm(target, target, token, (), now);
+        }
+    }
+
+    /// Puts a queued retry at `target` on the wire, and restarts its probe's
+    /// clock: from the send, or from now for a retry none of whose packets
+    /// left, whose attempt stays charged so an unroutable target still runs
+    /// out of attempts on schedule. See [`HostSweep::retries`].
+    fn reprobe(&mut self, target: IpAddr, now: Instant) {
+        match self.send_attempt(target, now) {
+            Some(token) => self.sweep.ledger.rearm(target, target, token, now),
+            None => self.sweep.ledger.resume(&target, now),
+        }
+    }
+
+    /// Sends one attempt at `target`, returning the token it carried if any
+    /// of its packets left.
+    fn send_attempt(&mut self, target: IpAddr, now: Instant) -> Option<SweepToken> {
+        let &source = self.sources.get(&target)?;
 
         let token = match self.probe {
             SweepProbe::Syn {
@@ -1122,14 +1162,14 @@ impl RoutedScanner {
             }
         };
 
-        if let Some(token) = token {
+        if token.is_some() {
             // Only for a probe that reached the wire, on the same reasoning
             // `record_send` gives for keeping a refused one out of the
             // congestion window: a packet the kernel would not take occupied
             // nothing at the target and must not spend its slot.
             self.ctx.host_probed(target, now);
-            self.sweep.ledger.arm(target, target, token, (), now);
         }
+        token
     }
 }
 
@@ -1222,6 +1262,7 @@ mod tests {
             SweepProbe::syn(None),
             &RETRY_POLICY.configured(retry),
             rate,
+            None,
         );
         deadline.max_budget.for_target_count(targets)
     }
@@ -1310,6 +1351,32 @@ mod tests {
                  and the sweep is given {given:?}"
             );
         }
+    }
+
+    /// A sweep keeping a gap between two probes at one host outlasts the
+    /// schedule of the last address it asks with every attempt waiting out
+    /// that gap.
+    ///
+    /// A retry held for the gap waits with its probe's clock stopped, so a gap
+    /// longer than the timeout is what spaces the attempts, and a deadline
+    /// sized from the timeouts alone stops the sweep with retries still owed.
+    #[test]
+    fn a_spaced_sweep_outlasts_every_attempt_waiting_out_the_gap() {
+        let gap = Duration::from_secs(60);
+        let (_, _, deadline) = schedule(
+            1,
+            SweepProbe::syn(None),
+            &RETRY_POLICY,
+            PROBE_RATE_PER_SEC,
+            Some(gap),
+        );
+        let needed = gap * u32::from(RETRY_POLICY.max_attempts);
+        let given = deadline.max_budget.for_target_count(1);
+        assert!(
+            given >= needed,
+            "three attempts a {gap:?} gap apart take {needed:?} and the sweep \
+             is given {given:?}"
+        );
     }
 
     /// A SYN sweep of `targets` over a sender that takes everything, with

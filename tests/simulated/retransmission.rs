@@ -339,6 +339,52 @@ async fn a_silent_address_is_probed_a_bounded_number_of_times() {
     );
 }
 
+/// A sweep keeping a gap between two probes at one host longer than its
+/// retry timeout still asks every silent address its whole budget, and no
+/// more.
+///
+/// A retry held for the gap is an attempt already charged, and its probe's
+/// clock has to wait with it. Left running, the schedule charges the next
+/// attempt and then retires the probe while the retries sit unsent, and the
+/// address is settled silent having been asked once: past a gap longer than
+/// the whole schedule, no retry ever leaves.
+#[tokio::test]
+async fn a_spaced_sweep_asks_a_silent_address_its_whole_budget() {
+    // Longer than any timeout the sweep's unmeasured schedule draws.
+    const GAP: Duration = Duration::from_millis(1_000);
+    let targets = [TARGET, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201))];
+    let net = FakeNet::new(Layer4::Tcp);
+
+    let (session, ctx) = ScanSession::builder()
+        .host_probe_interval(Some(GAP))
+        .build();
+    let mut scanner = RoutedScanner::with_transport(
+        targets
+            .iter()
+            .map(|&target| RoutedTarget {
+                target,
+                source: SCANNER_V4.into(),
+            })
+            .collect(),
+        ctx,
+        None,
+        net.transport(),
+    );
+    scanner
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    assert!(!session.hosts().contains(TARGET), "nothing answered");
+    for target in targets {
+        assert_eq!(
+            net.probe_count(target, 443),
+            ATTEMPTS,
+            "{target} was asked a number of times other than its budget"
+        );
+    }
+}
+
 /// A host that answers the first probe is not asked again. On a sweep of a
 /// live range this is the difference between one packet per host and three.
 #[tokio::test]

@@ -339,6 +339,19 @@ impl RetryPolicy {
             .saturating_mul(u32::from(self.max_attempts.max(1)))
     }
 
+    /// [`longest_probe_lifetime`](Self::longest_probe_lifetime) for a scan
+    /// keeping `gap` between two probes at one host: every attempt waits the
+    /// longer of its timeout and the gap before the next can leave.
+    ///
+    /// For a caller whose retries are held for the gap with their clocks
+    /// stopped (see [`ProbeLedger::defer`]), which is what makes the gap part
+    /// of a probe's schedule rather than a cut in it.
+    pub(crate) fn longest_spaced_probe_lifetime(&self, gap: Option<Duration>) -> Duration {
+        self.longest_timeout()
+            .max(gap.unwrap_or_default())
+            .saturating_mul(u32::from(self.max_attempts.max(1)))
+    }
+
     /// The budget for a probe to `host`, after any silent-host reduction.
     fn budget_for(&self, host: Option<&HostState>) -> u8 {
         let Some(rule) = self.silent_host else {

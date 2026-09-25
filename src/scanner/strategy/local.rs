@@ -759,7 +759,7 @@ impl LocalScanner {
         sending_finished: bool,
         now: Instant,
     ) -> Dispatched {
-        if let Some(target) = self.sweep.retries.pop_front() {
+        if let Some(target) = self.next_live_retry() {
             self.send_probe(target, now);
             Dispatched::Sent
         } else if let Some(target) = self.ipv6.next_confirmation() {
@@ -1061,34 +1061,61 @@ impl LocalScanner {
         self.ipv6.record_solicitation_sent(now);
     }
 
-    /// Rebuilds and sends the probe for `target`, whichever kind its address
-    /// calls for: an ARP request over IPv4, a neighbor solicitation over IPv6.
+    /// The first queued retry whose probe is still outstanding, taken off the
+    /// queue.
+    ///
+    /// One whose probe has left its ledger was answered while it waited, and
+    /// is dropped: sending it asks a question nothing is waiting on, and
+    /// arming it would start its address a fresh schedule after its verdict.
+    fn next_live_retry(&mut self) -> Option<IpAddr> {
+        while let Some(target) = self.sweep.retries.pop_front() {
+            let outstanding = if target.is_ipv6() {
+                self.ipv6.ledger_mut().contains(&target)
+            } else {
+                self.sweep.ledger.contains(&target)
+            };
+            if outstanding {
+                return Some(target);
+            }
+        }
+        None
+    }
+
+    /// Rebuilds and sends a queued retry for `target`, whichever kind its
+    /// address calls for: an ARP request over IPv4, a neighbor solicitation
+    /// over IPv6.
     ///
     /// Nothing about either is kept between attempts, because nothing needs to
     /// be: the frame is a function of this scanner's identity and the address
     /// being asked about, and rebuilding it is cheaper than holding a copy per
     /// outstanding probe.
+    ///
+    /// The probe's clock stopped while the retry was queued and restarts here
+    /// on the ledger that scheduled it: from the send, or from now for a frame
+    /// that did not leave, whose attempt stays charged so the address still
+    /// runs out of attempts on schedule. See
+    /// [`HostSweep::retries`](crate::scanner::strategy::sweep::HostSweep::retries).
     fn send_probe(&mut self, target: IpAddr, now: Instant) {
         let packet = match target {
-            IpAddr::V4(target_v4) => {
-                let Some(source_v4) = self.identity.ipv4 else {
-                    return;
-                };
-                protocol::arp::build_request(self.identity.mac, source_v4, target_v4)
-            }
-            IpAddr::V6(target_v6) => {
-                let Some(source_v6) = self.identity.link_local_ipv6 else {
-                    return;
-                };
-                protocol::ndp::build_neighbor_solicitation(self.identity.mac, source_v6, target_v6)
-            }
+            IpAddr::V4(target_v4) => self
+                .identity
+                .ipv4
+                .map(|source| protocol::arp::build_request(self.identity.mac, source, target_v4)),
+            IpAddr::V6(target_v6) => self.identity.link_local_ipv6.map(|source| {
+                protocol::ndp::build_neighbor_solicitation(self.identity.mac, source, target_v6)
+            }),
         };
 
-        self.emit(&packet, "probe");
-        if target.is_ipv6() {
-            self.ipv6.record_asked(target, now);
+        let left = packet.is_some_and(|packet| self.emit(&packet, "probe"));
+        let ledger = if target.is_ipv6() {
+            self.ipv6.ledger_mut()
         } else {
-            self.sweep.ledger.arm(target, target, (), (), now);
+            &mut self.sweep.ledger
+        };
+        if left {
+            ledger.rearm(target, target, (), now);
+        } else {
+            ledger.resume(&target, now);
         }
     }
 
