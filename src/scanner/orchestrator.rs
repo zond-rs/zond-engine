@@ -1049,7 +1049,7 @@ pub(super) async fn run_active_os_series(
     let thorough = matches!(os_detection, OsDetection::Aggressive);
 
     let targets: Vec<strategy::identify::series::SeriesTarget> = ctx
-        .host_addresses()
+        .hosts_owed_passes()
         .into_iter()
         // Read before the store is, so no host guard is held across the clock.
         .filter(|key| !ctx.host_expired(key.addr()))
@@ -1176,7 +1176,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
     ctx.enter_stage(Stage::Os, None);
 
     let targets: Vec<crate::model::ip::scoped::ScopedIp> = ctx
-        .host_addresses()
+        .hosts_owed_passes()
         .into_iter()
         .filter(|ip| !ctx.host_expired(ip.addr()))
         .filter_map(|ip| {
@@ -1347,7 +1347,7 @@ fn hardware_targets(
     ctx: &ScanContext,
     names: bool,
 ) -> Vec<(crate::model::ip::scoped::ScopedIp, Option<String>)> {
-    ctx.host_addresses()
+    ctx.hosts_owed_passes()
         .into_iter()
         .filter(|ip| !ctx.host_expired(ip.addr()))
         .filter_map(|ip| {
@@ -1485,7 +1485,7 @@ pub(super) async fn run_traceroute(
     ctx.enter_stage(Stage::Traceroute, None);
 
     let mut alive: Vec<IpAddr> = ctx
-        .host_addresses()
+        .hosts_owed_passes()
         .into_iter()
         .filter(|key| {
             ctx.read_host(key, |host| host.status().is_up())
@@ -1602,7 +1602,7 @@ pub(super) async fn run_characterise(
     }
 
     let mut subjects: Vec<strategy::topology::characterise::Subject> = Vec::new();
-    for key in ctx.host_addresses() {
+    for key in ctx.hosts_owed_passes() {
         if ctx.host_expired(key.addr()) {
             continue;
         }
@@ -1666,7 +1666,7 @@ pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::Zon
     }
 
     let mut targets = Vec::new();
-    for key in ctx.host_addresses() {
+    for key in ctx.hosts_owed_passes() {
         if ctx.host_expired(key.addr()) {
             continue;
         }
@@ -1771,6 +1771,9 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
 fn tls_ports(ctx: &ScanContext) -> Vec<(crate::model::ip::scoped::ScopedIp, u16)> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
+        if !ctx.owes_passes(host.value()) {
+            continue;
+        }
         let address = host.value().scoped_ip();
         for port in host.value().ports() {
             // TCP only: a `security` record is written by a completed TLS
@@ -1883,7 +1886,7 @@ pub(super) async fn run_active_os_probe(
     // scan never recorded were never asked about, and pinging addresses nobody
     // named is a discovery sweep rather than identification.
     let mut unnamed: Vec<IpAddr> = ctx
-        .host_addresses()
+        .hosts_owed_passes()
         .into_iter()
         .filter(|key| !ctx.host_expired(key.addr()))
         .filter(|key| {

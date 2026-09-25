@@ -56,6 +56,7 @@
 //! `0600` under a `0700` directory, and a scan that runs elevated leaves it owned
 //! by the user who invoked it rather than by root. See [`paths`](super::paths).
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -82,6 +83,9 @@ const CURSOR: &str = "cursor.json";
 const HOSTS: &str = "hosts.jsonl";
 const PHASES: &str = "phases.jsonl";
 const DETECTIONS: &str = "detections.jsonl";
+/// The hosts each sitting that ran to its end had run every pass over. See
+/// [`Journal::record_finished`].
+const FINISHED: &str = "finished.jsonl";
 const LOCK: &str = "LOCK";
 /// What a sitting's record of its phases as they stand is named after,
 /// before when it started.
@@ -445,6 +449,72 @@ impl Journal {
         }
         writer.flush()?;
         Ok(())
+    }
+
+    /// Appends that a sitting ran every pass that follows its probes over
+    /// `hosts`, each named as its address and link are written.
+    ///
+    /// For a sitting that ran to its end, whose passes each finished over
+    /// every host it held. A later sitting reads these back through
+    /// [`finished_hosts`](Self::finished_hosts) and runs those passes again
+    /// only over what it asks something new of. Without the record, every
+    /// sitting would identify each port's service, run each detection, walk
+    /// each TLS port and trace each route again for every host an earlier one
+    /// had finished with, which on a job resumed after it was done is the whole
+    /// of what the resume does.
+    ///
+    /// Its own file, created on the first record and appended after, so a
+    /// journal an older engine wrote reads as one no sitting finished, and a
+    /// newer one read by an older engine is merely not consulted.
+    pub(crate) fn record_finished(
+        &mut self,
+        hosts: impl IntoIterator<Item = String>,
+    ) -> Result<(), JournalError> {
+        let record = FinishedRecord {
+            hosts: hosts.into_iter().collect(),
+        };
+        if record.hosts.is_empty() {
+            return Ok(());
+        }
+
+        // Created where there is none, as the tapes' file is; see
+        // `record_detections` for why appending is tried first.
+        let path = self.directory.join(FINISHED);
+        let mut writer = match open_for_append(&path) {
+            Ok(file) => crate::journal::format::Writer::append(std::io::BufWriter::new(file)),
+            Err(JournalError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                let file = create_private_file(&path)?;
+                crate::journal::format::Writer::create(std::io::BufWriter::new(file))?
+            }
+            Err(error) => return Err(error),
+        };
+        writer.write(&record)?;
+        writer.flush()
+    }
+
+    /// Every host an earlier sitting that ran to its end had finished every
+    /// pass over, named as [`record_finished`](Self::record_finished) wrote
+    /// it.
+    ///
+    /// Empty for a journal no sitting finished, and for one written before the
+    /// record was kept, which a resume reads as owing every pass to every host.
+    pub(crate) fn finished_hosts(&self) -> Result<HashSet<String>, JournalError> {
+        let file = match fs::File::open(self.directory.join(FINISHED)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut reader = match crate::journal::format::Reader::open(std::io::BufReader::new(file)) {
+            Ok(reader) => reader,
+            Err(JournalError::NotAJournal) => return Ok(HashSet::new()),
+            Err(e) => return Err(e),
+        };
+
+        let mut hosts = HashSet::new();
+        while let Some(record) = reader.read::<FinishedRecord>()? {
+            hosts.extend(record.hosts);
+        }
+        Ok(hosts)
     }
 
     /// Whether the findings file holds enough superseded records to be worth
@@ -1136,6 +1206,13 @@ pub fn remove(directory: &Path) -> Result<(), OpenError> {
 
     fs::remove_dir_all(directory).map_err(JournalError::from)?;
     Ok(())
+}
+
+/// One line of the record [`Journal::record_finished`] keeps: the hosts one
+/// sitting finished every pass over.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct FinishedRecord {
+    hosts: Vec<String>,
 }
 
 /// Reads back what a journal's earlier sittings found.

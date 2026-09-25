@@ -71,7 +71,7 @@
 //! empty" and "the raw scanner never started" would be the same answer.
 
 use dashmap::DashMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -826,6 +826,16 @@ impl Responses {
     }
 }
 
+/// The hosts an earlier sitting finished every pass over, and what this one
+/// still asks. See [`ScanContext::owes_passes`].
+#[derive(Debug, Default)]
+struct Finished {
+    /// Each host as [`ScopedIp`]'s text names it, address and link.
+    hosts: HashSet<String>,
+    /// The addresses this sitting has a target at.
+    asked: IpSet,
+}
+
 /// The tapes of detection runs, captured as the detection phase produces them and
 /// drained into the journal by the checkpoint task. A plain queue: unlike the
 /// responses, a tape is never looked up by port, only appended once and taken in a
@@ -1326,6 +1336,11 @@ impl ScanProgress {
         self.store.len()
     }
 
+    /// The key of every host found so far.
+    pub(crate) fn host_keys(&self) -> Vec<ScopedIp> {
+        self.store.iter().map(|entry| entry.key().clone()).collect()
+    }
+
     /// Takes the hosts whose findings have changed since this was last called
     /// and that are findings to write down, leaving the rest marked changed.
     ///
@@ -1633,6 +1648,9 @@ pub struct ScanContext {
     /// The tapes of detection runs, captured for the journal to write down so a
     /// recorded scan can be replayed offline.
     pub(crate) tapes: Arc<Tapes>,
+    /// The hosts an earlier sitting finished every pass over, for a sitting
+    /// continuing a job. See [`owes_passes`](Self::owes_passes).
+    finished: Arc<Finished>,
     /// The corpus the detection phase runs, the shipped one unless a caller set
     /// their own on the config. Cheap to clone: the compiled tiers sit behind
     /// `Arc`s.
@@ -2298,6 +2316,43 @@ impl ScanContext {
         true
     }
 
+    /// Whether the passes that follow a scan's probes are owed `host` in this
+    /// sitting: service identification, the detections, TLS enumeration, the
+    /// active OS probes, the route trace and the rest that ask something of a
+    /// host the probes found.
+    ///
+    /// Every host is, except one an earlier sitting of the job ran to its end
+    /// with, which ran each of those passes over every host it held. That
+    /// host's answers are in its record, and asking again would put the job's
+    /// questions to the network a second time: on a resume of a finished job,
+    /// every one of them. It is owed them again where this sitting still has
+    /// a target at one of its addresses, since what that target answers may be
+    /// a port or a service the passes have not seen.
+    ///
+    /// A sitting killed or stopped before its end records nothing, so a host
+    /// it found, or one whose passes it did not reach, is owed them by the
+    /// next. That is the safe direction: a pass asked twice costs probes,
+    /// where one never asked leaves a host's record short with nothing to say
+    /// so.
+    pub(crate) fn owes_passes(&self, host: &Host) -> bool {
+        let finished = &self.finished;
+        !finished.hosts.contains(&host.scoped_ip().to_string())
+            || host.ips().iter().any(|ip| finished.asked.contains(ip))
+    }
+
+    /// The hosts owed the passes that follow the probes, keyed as
+    /// [`host_addresses`](Self::host_addresses) keys them; see
+    /// [`owes_passes`](Self::owes_passes).
+    pub(crate) fn hosts_owed_passes(&self) -> Vec<ScopedIp> {
+        self.host_addresses()
+            .into_iter()
+            .filter(|key| {
+                self.read_host(key, |host| self.owes_passes(host))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
     /// When `address` may next be probed, or `None` if it may be probed now.
     ///
     /// The question every send site asks beside
@@ -2800,6 +2855,7 @@ pub struct SessionBuilder {
     /// The neighbour tables the exclusions are read against for the machines
     /// they name, in place of the host's own; `None` to read the host's.
     neighbours: Option<Vec<(IpAddr, Option<MacAddr>)>>,
+    finished: Finished,
 }
 
 impl SessionBuilder {
@@ -2836,6 +2892,14 @@ impl SessionBuilder {
     /// and the journal forgets everything the first one settled.
     pub fn resuming(mut self, settled: &crate::journal::cursor::Checkpoint) -> Self {
         self.settled = settled.clone();
+        self
+    }
+
+    /// The hosts an earlier sitting of this job finished every pass over,
+    /// named as the journal writes them, and the addresses this sitting still
+    /// has something to ask; see [`ScanContext::owes_passes`].
+    pub(crate) fn finished(mut self, hosts: HashSet<String>, asked: IpSet) -> Self {
+        self.finished = Finished { hosts, asked };
         self
     }
 
@@ -3085,6 +3149,7 @@ impl SessionBuilder {
             order_seed,
             responses: Arc::new(Responses::default()),
             tapes: Arc::new(Tapes::default()),
+            finished: Arc::new(self.finished),
             detections: self.detections,
             forced: Arc::new(crate::transport::dial::ForcedSources::new(
                 &self.send_source,

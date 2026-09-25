@@ -975,7 +975,7 @@ pub(crate) enum Unheard {
 /// for most hosts and not for one whose leading address changed after it was
 /// first credited.
 fn to_resolve(ctx: &ScanContext, unheard: Unheard) -> Vec<crate::model::ip::scoped::ScopedIp> {
-    ctx.host_addresses()
+    ctx.hosts_owed_passes()
         .into_iter()
         .filter(|key| {
             ctx.read_host(key, |host| {

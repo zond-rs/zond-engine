@@ -651,6 +651,10 @@ pub async fn discover_with_journal(
     };
 
     let planned = planned_addresses(&positions);
+    let finished = journal.finished_hosts().unwrap_or_else(|e| {
+        crate::warn!("passes rerun for every host ({e})");
+        Default::default()
+    });
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
@@ -660,6 +664,7 @@ pub async fn discover_with_journal(
         .send_source(cfg.send_source.clone())
         .listening_only_to(cfg.listen_only_ports.clone())
         .resuming(&resume_point)
+        .finished(finished, sweep.clone())
         .counting(positions)
         .planning(Stage::Discovery, planned)
         .staging(discovery_stages(cfg))
@@ -1582,6 +1587,14 @@ pub async fn scan_with_journal(
     let cfg = &under_the_recorded_technique(&journal, cfg);
     let journal = recording_options(journal, cfg);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
+    let finished = journal.finished_hosts().unwrap_or_else(|e| {
+        crate::warn!("passes rerun for every host ({e})");
+        Default::default()
+    });
+    // Numbered as the port phase numbers it, in what the exclusions leave.
+    let mut numbered = target_map.clone();
+    cfg.exclusions.withhold_targets(&mut numbered);
+    let asked = orchestrator::unsettled_ips(&numbered, journal.resume_point());
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
@@ -1591,6 +1604,7 @@ pub async fn scan_with_journal(
         .send_source(cfg.send_source.clone())
         .listening_only_to(cfg.listen_only_ports.clone())
         .resuming(journal.resume_point())
+        .finished(finished, asked)
         .detections(detections)
         .planning(Stage::Ports, planned_targets(&target_map))
         .staging(scan_stages(cfg, runs_liveness))
@@ -2068,6 +2082,139 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A sitting that ran to its end writes down every host it held as
+    /// finished, and one that was stopped writes down none, since its passes
+    /// may not have reached them.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn only_a_sitting_that_ran_to_its_end_records_its_hosts_finished() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::target::TargetSet;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1".parse().expect("an address"),
+            "9".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            assume_up: true,
+            ..ZondConfig::default()
+        };
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+
+        for stopped in [false, true] {
+            let root = journal_root(&format!("records-finished-{stopped}"));
+            let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+            let directory = journal.directory().to_path_buf();
+            let (session, task) =
+                scan_with_journal(map.clone(), &cfg, Detections::embedded(), journal)
+                    .await
+                    .expect("the sitting starts");
+            if stopped {
+                session.handle().abort();
+            }
+            let report = task.join().await.expect("the sitting ends");
+            assert!(report.host_count() > 0 || stopped, "the host was not found");
+
+            let (journal, _) =
+                Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+            let finished = journal.finished_hosts().expect("reads");
+            assert_eq!(
+                finished.contains("127.0.0.1"),
+                !stopped,
+                "stopped: {stopped}, finished: {finished:?}"
+            );
+            drop(journal);
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    /// A resumed sitting runs the passes that follow the probes, here the
+    /// detections, over a host an earlier sitting ran to its end with only
+    /// where it has something left to ask there, and over a host no sitting
+    /// finished whatever it has left.
+    ///
+    /// Resuming a job that was already done would otherwise put every one of
+    /// its identification questions to the network again, and a job resumed
+    /// part way would ask them again of every host it had finished with.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_resumed_job_asks_a_host_a_sitting_finished_nothing_it_already_asked() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::journal::settle::{Outcome, Settlements};
+        use crate::model::host::{Host, HostStatus};
+        use crate::model::port::{Port, PortState, Protocol, Service};
+        use crate::model::target::TargetSet;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1".parse().expect("an address"),
+            "80".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            ..ZondConfig::default()
+        };
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+
+        // A job whose one target an earlier sitting settled, finding a web
+        // server; `finished` says whether that sitting ran to its end.
+        let resumed = |finished: bool| {
+            let (root, map, cfg, plan) = (
+                journal_root(&format!("finished-{finished}")),
+                map.clone(),
+                cfg.clone(),
+                plan.clone(),
+            );
+            async move {
+                let mut journal =
+                    Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+                let mut host = Host::new("127.0.0.1".parse().expect("an address"));
+                host.set_status(HostStatus::Up);
+                host.add_port(
+                    Port::new(80, Protocol::Tcp, PortState::Open)
+                        .with_service(Service::new("http", 100)),
+                );
+                journal.record_hosts(&[host]).expect("records the host");
+                let settlements = Settlements::default();
+                settlements.record(Outcome::Answered { position: 0 });
+                journal.checkpoint(&settlements).expect("checkpoints");
+                if finished {
+                    journal
+                        .record_finished(["127.0.0.1".to_string()])
+                        .expect("records the sitting's end");
+                }
+                let directory = journal.directory().to_path_buf();
+                journal.close().expect("closes");
+
+                let (journal, _) =
+                    Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+                let (_session, task) =
+                    scan_with_journal(map, &cfg, Detections::embedded(), journal)
+                        .await
+                        .expect("the sitting starts");
+                let _report = task.join().await.expect("the sitting ends");
+
+                let runs = crate::journal::store::read_detections(&directory).expect("reads");
+                std::fs::remove_dir_all(&root).ok();
+                runs.len()
+            }
+        };
+
+        assert!(
+            resumed(false).await > 0,
+            "a host no sitting finished is owed its detections"
+        );
+        assert_eq!(
+            resumed(true).await,
+            0,
+            "a finished host was asked its detections again"
+        );
     }
 
     /// A port scan handed a journal counted over another plan, or under

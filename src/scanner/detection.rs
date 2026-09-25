@@ -302,6 +302,9 @@ fn detection_reach(state: PortState, protocol: Protocol) -> Option<bool> {
 fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortTarget> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
+        if !ctx.owes_passes(host.value()) {
+            continue;
+        }
         let address = host.value().scoped_ip();
         for port in host.value().ports() {
             let protocol = port.protocol();

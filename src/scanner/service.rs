@@ -292,6 +292,9 @@ impl QuietPorts {
 fn fingerprintable_ports(ctx: &ScanContext, over: Protocol) -> Vec<Target> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
+        if !ctx.owes_passes(host.value()) {
+            continue;
+        }
         let address = host.value().scoped_ip();
         let path = PathAllowance::of_median(host.value().median_rtt());
         for port in host.value().ports() {

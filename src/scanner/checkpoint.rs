@@ -46,7 +46,7 @@ use crate::journal::Journal;
 use crate::journal::cursor::Checkpoint;
 use crate::journal::format::JournalError;
 use crate::model::host::Host;
-use crate::report::{ScanPhase, ScannerKind, Unheard};
+use crate::report::{ScanKind, ScanPhase, ScannerKind, Unheard};
 use crate::scanner::session::ScanProgress;
 
 /// How often a running scan writes down how far it got.
@@ -231,6 +231,7 @@ impl Writer {
         }
         .and_then(|()| journal.write_cursor(&cut.cursor));
         let _ = journal.record_detections(&ctx.take_tapes());
+        let _ = journal.record_finished(finished_hosts(ctx, phases));
         let _ = self.journal.close();
     }
 }
@@ -260,6 +261,30 @@ impl Cut {
         let changed = ctx.take_changed_findings();
         Self { cursor, changed }
     }
+}
+
+/// The hosts a sitting that ran as `phases` did finished every pass over, as
+/// [`Journal::record_finished`] names them: none for one that was stopped,
+/// which may not have reached its passes, and otherwise every host it held but
+/// those a host's own budget ran out on, which a pass passed over.
+fn finished_hosts(ctx: &ScanProgress, phases: &[ScanPhase]) -> Vec<String> {
+    let ran_to_its_end = !phases.is_empty()
+        && phases
+            .iter()
+            .all(|phase| phase.kind() != ScanKind::Listen && phase.stopped().is_none());
+    if !ran_to_its_end {
+        return Vec::new();
+    }
+
+    let timed_out: std::collections::HashSet<std::net::IpAddr> = phases
+        .iter()
+        .flat_map(|phase| phase.timed_out().iter().copied())
+        .collect();
+    ctx.host_keys()
+        .into_iter()
+        .filter(|key| !timed_out.contains(&key.addr()))
+        .map(|key| key.to_string())
+        .collect()
 }
 
 /// Why a journal could not be written, in the words a console line ends on.
