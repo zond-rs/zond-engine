@@ -797,9 +797,10 @@ fn push_unique(servers: &mut Vec<SocketAddr>, server: SocketAddr) {
 ///
 /// Without raw sockets there is nothing to sniff, so this issues a reverse
 /// lookup through the system resolver for every host that answered and still
-/// lacks a hostname. The lookups run concurrently, and each answer is written
-/// back through [`ScanContext::write_host`] so it announces itself like any
-/// other finding. Any failure to build the resolver leaves the store untouched,
+/// lacks a hostname. The lookups run concurrently, at most thirty-two at a
+/// time so a wide range floods neither the resolver nor the descriptor table,
+/// and each answer is written back through [`ScanContext::write_host`] so it
+/// announces itself like any other finding. Any failure to build the resolver leaves the store untouched,
 /// since a scan without hostnames is still a useful scan.
 ///
 /// A host nothing was heard from, one still
@@ -845,10 +846,28 @@ fn to_resolve(ctx: &ScanContext, unheard: Unheard) -> Vec<crate::model::ip::scop
         .collect()
 }
 
+/// How many reverse lookups through the system resolver are in flight at once.
+///
+/// One lookup per host that answered, or per address under a scan that lists
+/// every address as a host, so a wide range asks tens of thousands, and all of
+/// them at once would flood the one resolver the whole network shares and fill
+/// this process's descriptor table. Each lookup holds a UDP socket for every
+/// name server it asks in parallel, two by the resolver library's default, so
+/// thirty-two hold sixty-four descriptors: inside the half of even a 256-file
+/// limit the process keeps for itself, beside connections that may still be
+/// open. The resolver on a home router forwards at most 150 queries at once
+/// for everyone behind it by default, and this leaves it most of that. A
+/// resolver answers a PTR in milliseconds, from its leases or its cache, so
+/// thirty-two in flight still name thousands of hosts a second; only a
+/// resolver that answers nothing, each lookup waiting out its ten seconds of
+/// retries, makes the bound what a scan waits on.
+const REVERSE_LOOKUPS_IN_FLIGHT: usize = 32;
+
 /// [`resolve_hosts_async`], naming the hosts nothing was heard from where
 /// `unheard` says to.
 pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
     use hickory_resolver::TokioResolver;
+    use hickory_resolver::proto::rr::RData;
 
     let Ok(builder) = TokioResolver::builder_tokio() else {
         return;
@@ -857,29 +876,48 @@ pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
         return;
     };
 
+    resolve_with(ctx, unheard, REVERSE_LOOKUPS_IN_FLIGHT, move |ip| {
+        let resolver = resolver.clone();
+        async move {
+            let lookup = resolver.reverse_lookup(ip).await.ok()?;
+            lookup.answers().iter().find_map(|r| match &r.data {
+                RData::PTR(ptr) => Some(ptr.to_string()),
+                _ => None,
+            })
+        }
+    })
+    .await;
+}
+
+/// [`resolve`], asking `lookup` for each address's name, at most `in_flight`
+/// at a time.
+///
+/// Every lookup's answer is read, whatever order they finish in and whichever
+/// of them found nothing: an address with no name says nothing about the next.
+async fn resolve_with<F, Fut>(ctx: &ScanContext, unheard: Unheard, in_flight: usize, lookup: F)
+where
+    F: Fn(IpAddr) -> Fut,
+    Fut: Future<Output = Option<String>> + Send + 'static,
+{
+    let mut pending = to_resolve(ctx, unheard).into_iter();
     let mut set = tokio::task::JoinSet::new();
 
-    for key in to_resolve(ctx, unheard) {
-        let resolver = resolver.clone();
-
-        set.spawn(async move {
-            use hickory_resolver::proto::rr::RData;
-
+    loop {
+        while set.len() < in_flight.max(1)
+            && let Some(key) = pending.next()
+        {
             // The query takes the address; the key comes back with the answer,
             // so the write below lands on the entry that was read.
-            if let Ok(lookup) = resolver.reverse_lookup(key.addr()).await
-                && let Some(name) = lookup.answers().iter().find_map(|r| match &r.data {
-                    RData::PTR(ptr) => Some(ptr.to_string()),
-                    _ => None,
-                })
-            {
-                return (key, Some(name));
-            }
-            (key, None)
-        });
-    }
+            let asked = lookup(key.addr());
+            set.spawn(async move { (key, asked.await) });
+        }
+        let Some(joined) = set.join_next().await else {
+            break;
+        };
+        let Ok((key, Some(name))) = joined else {
+            continue;
+        };
 
-    while let Some(Ok((key, Some(name)))) = set.join_next().await {
         let name = name.trim_end_matches('.').to_string();
         if restates(&name, key.addr()) {
             info!(
@@ -1009,6 +1047,57 @@ mod tests {
         };
         assert_eq!(asked(Unheard::Skipped), [at(1)]);
         assert_eq!(asked(Unheard::Named), [at(1), at(2)]);
+    }
+
+    /// **Reverse lookups are bounded in flight, and every answer is read.**
+    /// A scan listing every address as a host asks one lookup per address, and
+    /// all at once they flood the network's one resolver and fill the
+    /// process's descriptor table. And a lookup that found no name is one
+    /// address without one, never the end of the answers: the ones still
+    /// coming name hosts of their own.
+    #[tokio::test]
+    async fn reverse_lookups_are_bounded_in_flight_and_every_answer_is_read() {
+        use std::sync::atomic::AtomicUsize;
+
+        const BOUND: usize = 4;
+        let (session, ctx) = ScanSession::new();
+        let at = |last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last));
+        for last in 1..=40 {
+            ctx.update_host(at(last), |host| host.set_status(HostStatus::Up));
+        }
+
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+        resolve_with(&ctx, Unheard::Skipped, BOUND, |ip| {
+            let (in_flight, most) = (Arc::clone(&in_flight), Arc::clone(&most));
+            async move {
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                let IpAddr::V4(v4) = ip else { return None };
+                let last = v4.octets()[3];
+                // The unnamed answer first, so an early one ends nothing.
+                let wait = if last % 2 == 0 { 1 } else { 5 };
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                (last % 2 == 1).then(|| format!("host{last}.example."))
+            }
+        })
+        .await;
+
+        assert!(
+            most.load(Ordering::SeqCst) <= BOUND,
+            "{} lookups in flight at once",
+            most.load(Ordering::SeqCst)
+        );
+        let named = (1..=40)
+            .filter(|last| {
+                session
+                    .hosts()
+                    .read(at(*last), |host| host.hostname().is_some())
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(named, 20, "every host with a name was named");
     }
 
     // -----------------------------------------------------------------------
