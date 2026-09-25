@@ -62,6 +62,12 @@ pub const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs
 /// The journal is owned by that task rather than shared with the scan: a
 /// checkpoint is the only thing that writes it, so there is nothing to
 /// synchronise and no lock for a scan to hold while it does I/O.
+///
+/// The task only keeps time. Each write is handed to the runtime's blocking
+/// pool, since a checkpoint is file I/O and the serialising of every host that
+/// changed, which for a host scanned on every port is tens of thousands of
+/// records: run on a worker, it held that worker for the length of the write,
+/// and the reply handling queued behind it stalled with every checkpoint.
 #[derive(Debug)]
 pub struct Checkpointing {
     done: tokio::sync::oneshot::Sender<Vec<ScanPhase>>,
@@ -98,17 +104,29 @@ pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
         let mut writer = Writer::new(journal);
         let phases = loop {
             tokio::select! {
-                _ = tokio::time::sleep(CHECKPOINT_EVERY) => writer.checkpoint(&ctx),
+                _ = tokio::time::sleep(CHECKPOINT_EVERY) => {
+                    let ctx = ctx.clone();
+                    let written = tokio::task::spawn_blocking(move || {
+                        writer.checkpoint(&ctx);
+                        writer
+                    });
+                    // A checkpoint that panicked took the journal down with it,
+                    // releasing its lock, and there is nothing left to write.
+                    let Ok(returned) = written.await else {
+                        return;
+                    };
+                    writer = returned;
+                }
                 // A dropped signal is a task nobody joined: there are no phases
                 // to record, and what has been settled so far still is.
-                finished = &mut stop => {
-                    let phases = finished.unwrap_or_default();
-                    let _ = writer.journal.record_phases(&phases);
-                    break phases;
-                }
+                finished = &mut stop => break finished.unwrap_or_default(),
             }
         };
-        writer.close(&ctx, &phases);
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = writer.journal.record_phases(&phases);
+            writer.close(&ctx, &phases);
+        })
+        .await;
     });
 
     Checkpointing { done, task }
@@ -402,6 +420,82 @@ mod tests {
         );
         drop(resumed);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A checkpoint whose write blocks holds none of the runtime's workers
+    /// while it waits.
+    ///
+    /// A checkpoint is file I/O and the serialising of every host that changed,
+    /// and a host scanned on every port is tens of thousands of records. Run
+    /// on a worker, it held that worker for as long as the write took, and
+    /// on a runtime with one worker nothing else ran: replies queued unread
+    /// and timers fired late with every checkpoint. The findings file is a
+    /// named pipe here, whose opening for writing blocks until something reads
+    /// it, which makes the write take as long as the test decides. The runtime
+    /// is the one worker `tokio::test` gives, so a timer running across the
+    /// checkpoint is late by as long as the write if the write holds it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_checkpoint_that_blocks_does_not_hold_the_runtime() {
+        use std::io::Read;
+        use std::os::unix::ffi::OsStrExt;
+        use std::time::{Duration, Instant};
+
+        /// How long a stuck writer is left before the pipe is read anyway, so
+        /// a regression fails the assertion below rather than hanging.
+        const RELEASED_AFTER: Duration = Duration::from_secs(20);
+
+        let root = scratch("blocking");
+        let plan = one_target();
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "test").expect("creates");
+        let findings = journal.directory().join("hosts.jsonl");
+        std::fs::remove_file(&findings).expect("removes the findings file");
+        let name = std::ffi::CString::new(findings.as_os_str().as_bytes()).expect("a path");
+        // SAFETY: `name` is a live, NUL-terminated path, which is all `mkfifo`
+        // reads.
+        assert_eq!(
+            unsafe { libc::mkfifo(name.as_ptr(), 0o600) },
+            0,
+            "makes a pipe"
+        );
+
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+        ctx.update_host(ip, |host| {
+            host.set_status(crate::model::host::HostStatus::Up);
+        });
+
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let reader = std::thread::spawn(move || {
+            let _ = released.recv_timeout(RELEASED_AFTER);
+            let mut read = Vec::new();
+            std::fs::File::open(&findings)
+                .and_then(|mut pipe| pipe.read_to_end(&mut read))
+                .expect("reads the pipe");
+            read
+        });
+
+        let ticker = spawn_checkpoints(journal, ctx.progress());
+        let started = Instant::now();
+        let across = CHECKPOINT_EVERY + Duration::from_millis(500);
+        tokio::time::sleep(across).await;
+        let late = started.elapsed() - across;
+
+        let _ = release.send(());
+        let read = tokio::task::spawn_blocking(move || reader.join().expect("the reader"))
+            .await
+            .expect("joins");
+        ticker.kill().await;
+        std::fs::remove_dir_all(&root).ok();
+
+        assert!(
+            String::from_utf8_lossy(&read).contains("192.0.2.1"),
+            "the checkpoint never reached the pipe, so it proves nothing"
+        );
+        assert!(
+            late < RELEASED_AFTER / 2,
+            "a timer across the checkpoint ran {late:?} late"
+        );
     }
 
     /// A journal that cannot be written is told once, in one short line, however
