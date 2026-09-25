@@ -70,6 +70,7 @@ pub use live::LiveCapabilities;
 pub use record::{
     CapErrorRecord, CapTapeRecord, DetectionRunRecord, ResolveExchangeRecord, SpeakExchangeRecord,
 };
+pub(crate) use record::{DetectionLine, PortRunsRecord};
 pub use replay::{
     CapTape, RecordedCapabilities, RecordingCapabilities, ResolveExchange, SpeakExchange,
 };

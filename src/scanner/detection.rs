@@ -464,7 +464,7 @@ async fn detect_one(
                 }) as Box<dyn Capabilities>)
             },
             |grant, tape| {
-                tapes.record(DetectionRunRecord {
+                tapes.record(|| DetectionRunRecord {
                     host: addr.ip().to_string(),
                     port: number,
                     protocol: wire::protocol_name(protocol).to_string(),
@@ -897,6 +897,8 @@ mod tests {
             vec!["HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\n\r\n".to_string()],
         );
 
+        // Taken before the phase runs, as a journalled scan takes it.
+        let progress = ctx.progress();
         detect(
             &ctx,
             ServiceDetection::default(),
@@ -904,7 +906,7 @@ mod tests {
         )
         .await;
 
-        let tapes = ctx.progress().take_tapes();
+        let tapes = progress.take_tapes();
         let run = tapes
             .iter()
             .find(|run| run.detection.id == "http-missing-security-headers")
@@ -915,6 +917,40 @@ mod tests {
             !run.responses.is_empty(),
             "the run did not keep the responses it read"
         );
+    }
+
+    /// A tape is kept for a journal to write down, and a scan with no
+    /// journal has nothing that would take one. Kept anyway, every run would
+    /// hold a copy of its port's responses until the scan ended, a dozen for
+    /// any HTTP port.
+    #[tokio::test]
+    async fn a_scan_nobody_journals_keeps_no_tapes() {
+        let (session, ctx) = ScanSession::new();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        let mut host = Host::new(ip);
+        host.add_port(
+            Port::new(80, Protocol::Tcp, PortState::Open).with_service(Service::new("http", 100)),
+        );
+        session.hosts().insert(ip, host);
+        ctx.record_responses(
+            ScopedIp::from(ip),
+            80,
+            Protocol::Tcp,
+            vec!["HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\n\r\n".to_string()],
+        );
+
+        detect(
+            &ctx,
+            ServiceDetection::default(),
+            DetectionEnvelope::default(),
+        )
+        .await;
+
+        let host = session.hosts().get(ip).unwrap();
+        let port = host.ports().find(|port| port.number() == 80).unwrap();
+        assert!(port.findings().next().is_some(), "the detections ran");
+        assert!(ctx.progress().take_tapes().is_empty(), "a tape was kept");
     }
 
     #[tokio::test]

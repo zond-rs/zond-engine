@@ -60,6 +60,100 @@ pub struct DetectionRunRecord {
     pub tape: CapTapeRecord,
 }
 
+/// The runs over one port that read the same responses, as one line of a
+/// journal: the port and its responses once, then each run's detection and
+/// tape.
+///
+/// Every passive detection that matches a port's service reads everything the
+/// scan gathered there, a dozen of them for any HTTP port, and a response runs
+/// to kilobytes. Written with each run, a port's responses would fill the file
+/// once per detection that read them. [`DetectionRunRecord`] stays the shape a
+/// run is read back in; this is only how the file holds a batch of them.
+///
+/// An engine that writes a run to a line reads this as a line it cannot parse,
+/// and refuses the file rather than replaying a passive run on no input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PortRunsRecord {
+    host: String,
+    port: u16,
+    protocol: String,
+    responses: Vec<String>,
+    runs: Vec<PortRunRecord>,
+}
+
+/// One run of a [`PortRunsRecord`]: what ran, and what it read from its
+/// capabilities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PortRunRecord {
+    detection: DetectionIdRecord,
+    tape: CapTapeRecord,
+}
+
+impl PortRunsRecord {
+    /// `runs` as the lines a journal writes them in: one for each port and
+    /// set of responses, in the order each first appears, holding its runs in
+    /// the order given.
+    pub(crate) fn grouping(runs: &[DetectionRunRecord]) -> Vec<Self> {
+        let mut lines: Vec<Self> = Vec::new();
+        for run in runs {
+            let line = lines.iter_mut().find(|line| {
+                (line.port, &line.host, &line.protocol, &line.responses)
+                    == (run.port, &run.host, &run.protocol, &run.responses)
+            });
+            let run_record = PortRunRecord {
+                detection: run.detection.clone(),
+                tape: run.tape.clone(),
+            };
+            match line {
+                Some(line) => line.runs.push(run_record),
+                None => lines.push(Self {
+                    host: run.host.clone(),
+                    port: run.port,
+                    protocol: run.protocol.clone(),
+                    responses: run.responses.clone(),
+                    runs: vec![run_record],
+                }),
+            }
+        }
+        lines
+    }
+}
+
+/// A line of a journal's detection runs, in either shape it has been written
+/// in.
+///
+/// Untagged: a port's line is told apart by its runs, and a line naming a
+/// single run is read as one.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum DetectionLine {
+    /// A port's runs, sharing its responses.
+    Port(PortRunsRecord),
+    /// One run, carrying its own copy of what it read.
+    Run(DetectionRunRecord),
+}
+
+impl DetectionLine {
+    /// The runs this line holds, each with the responses it read.
+    pub(crate) fn into_runs(self) -> Vec<DetectionRunRecord> {
+        match self {
+            Self::Run(run) => vec![run],
+            Self::Port(line) => line
+                .runs
+                .into_iter()
+                .map(|run| DetectionRunRecord {
+                    host: line.host.clone(),
+                    port: line.port,
+                    protocol: line.protocol.clone(),
+                    detection: run.detection,
+                    responses: line.responses.clone(),
+                    tape: run.tape,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// A capability tape, as a file holds it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -69,7 +69,7 @@ use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
 use super::manifest::{JobOptions, JournalManifest, Plan, PlanChanged};
 use super::settle::Settlements;
-use crate::detect::compute::DetectionRunRecord;
+use crate::detect::compute::{DetectionLine, DetectionRunRecord, PortRunsRecord};
 use crate::model::host::Host;
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::Protocol;
@@ -415,6 +415,10 @@ impl Journal {
     /// Appends the tapes of detection runs, each recording what one detection read
     /// from its capabilities so the run can be replayed offline later.
     ///
+    /// Written a port to a line, the responses the port's runs read held once
+    /// for all of them; see `PortRunsRecord`. [`read_detections`] hands each
+    /// run back whole.
+    ///
     /// Its own file, created on the first run and appended after. The resume path
     /// never reads it: a tape is evidence for later analysis, not a settled
     /// verdict, so it does not advance a cursor or change what a resume skips.
@@ -436,8 +440,8 @@ impl Journal {
             }
             Err(error) => return Err(error),
         };
-        for run in runs {
-            writer.write(run)?;
+        for line in PortRunsRecord::grouping(runs) {
+            writer.write(&line)?;
         }
         writer.flush()?;
         Ok(())
@@ -1334,8 +1338,8 @@ pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, Jour
     };
 
     let mut runs = Vec::new();
-    while let Some(run) = reader.read::<DetectionRunRecord>()? {
-        runs.push(run);
+    while let Some(line) = reader.read::<DetectionLine>()? {
+        runs.extend(line.into_runs());
     }
     Ok(runs)
 }
@@ -2536,6 +2540,94 @@ mod tests {
             read[0].tape.rebuild(),
             tape,
             "the tape did not rebuild to what was recorded"
+        );
+    }
+
+    /// A run over `port` of 192.0.2.1 by the passive detection `id`, which
+    /// read `responses` and spoke to nothing.
+    fn passive_run(
+        id: &str,
+        port: u16,
+        responses: &[&str],
+    ) -> crate::detect::compute::DetectionRunRecord {
+        use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord};
+        use crate::model::finding::{DetectionId, Version};
+        use crate::record::DetectionIdRecord;
+
+        let detection = DetectionId::new(id, Version::new(1, 0, 0), "abc").expect("an id");
+        DetectionRunRecord {
+            host: "192.0.2.1".to_string(),
+            port,
+            protocol: "tcp".to_string(),
+            detection: DetectionIdRecord::from(&detection),
+            responses: responses
+                .iter()
+                .map(|response| response.to_string())
+                .collect(),
+            tape: CapTapeRecord::from(&CapTape::default()),
+        }
+    }
+
+    /// Every passive detection that matches a service reads the same
+    /// responses the scan gathered at its port, a dozen of them for any HTTP
+    /// port. Written with each run, those responses, up to kilobytes apiece,
+    /// would fill the file a dozen times over, so a port's are written once
+    /// and every run over it reads them back.
+    #[test]
+    fn a_ports_responses_are_written_once_however_many_runs_read_them() {
+        let root = scratch("tapes-once");
+        let map = plan("192.0.2.1", "80");
+        let page = "HTTP/1.1 200 OK\r\nServer: a-distinctive-server\r\n\r\n";
+
+        let runs: Vec<_> = (0..13)
+            .map(|n| passive_run(&format!("http-{n}"), 80, &[page]))
+            .chain([passive_run("ssh-banner", 22, &["SSH-2.0-x\r\n"])])
+            .collect();
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            journal.record_detections(&runs).expect("records the runs");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let written = fs::read_to_string(directory.join(DETECTIONS)).expect("reads the file");
+        assert_eq!(written.matches("a-distinctive-server").count(), 1);
+        assert_eq!(read_detections(&directory).expect("reads back"), runs);
+    }
+
+    /// A journal written one run to a line, each with its own copy of what it
+    /// read, is still replayed: its runs come back beside those written a port
+    /// to a line.
+    #[test]
+    fn tapes_written_one_run_to_a_line_still_read_back() {
+        use std::io::Write;
+
+        let root = scratch("tapes-legacy");
+        let map = plan("192.0.2.1", "80");
+        let grouped = passive_run("http-title", 80, &["HTTP/1.1 200 OK\r\n\r\n"]);
+        let alone = passive_run("ssh-banner", 22, &["SSH-2.0-x\r\n"]);
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            journal
+                .record_detections(std::slice::from_ref(&grouped))
+                .expect("records the run");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(directory.join(DETECTIONS))
+            .expect("opens the file");
+        let line = serde_json::to_string(&alone).expect("serialises");
+        writeln!(file, "{line}").expect("appends a run on its own");
+
+        assert_eq!(
+            read_detections(&directory).expect("reads back"),
+            [grouped, alone]
         );
     }
 

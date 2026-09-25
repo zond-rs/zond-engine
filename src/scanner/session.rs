@@ -830,18 +830,35 @@ impl Responses {
 /// drained into the journal by the checkpoint task. A plain queue: unlike the
 /// responses, a tape is never looked up by port, only appended once and taken in a
 /// batch.
+///
+/// Kept only once something will take them, which is whatever holds the scan's
+/// [`ScanProgress`]. A scan nobody journals has no reader for a tape, and one
+/// kept anyway would hold a copy of every port's responses for each detection
+/// that read them until the scan ended.
 #[derive(Debug, Default)]
 pub(crate) struct Tapes {
     inner: Mutex<Vec<DetectionRunRecord>>,
+    kept: AtomicBool,
 }
 
 impl Tapes {
-    /// Records one detection run's tape.
-    pub(crate) fn record(&self, run: DetectionRunRecord) {
+    /// Records the tape `run` builds, where tapes are kept, and builds
+    /// nothing where they are not.
+    pub(crate) fn record(&self, run: impl FnOnce() -> DetectionRunRecord) {
+        if !self.kept.load(Ordering::Acquire) {
+            return;
+        }
+        let run = run();
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(run);
+    }
+
+    /// Keeps every tape recorded from here on, for a reader that will take
+    /// them.
+    fn keep(&self) {
+        self.kept.store(true, Ordering::Release);
     }
 
     /// Takes every tape captured since the last call, freeing them as the journal
@@ -2580,7 +2597,12 @@ impl ScanContext {
     /// A failure recorded through this reaches the report but not the stream,
     /// which is right: a checkpoint that could not be written is a fact about
     /// the journal, not about a scanning strategy.
+    ///
+    /// The detection phase keeps its runs' tapes from the first call on, for
+    /// [`ScanProgress::take_tapes`] to hand over. Before it, and in a scan that
+    /// never makes one, a tape has no reader and is not kept.
     pub fn progress(&self) -> ScanProgress {
+        self.tapes.keep();
         ScanProgress {
             store: Arc::clone(&self.store),
             changed: Arc::clone(&self.changed),
