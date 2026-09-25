@@ -74,7 +74,10 @@
 //! So a host's status is compared and the probe that established it is not. A
 //! port's state is compared and the packet that settled it is not. A service's
 //! identity is compared and the confidence behind it is not. An operating system
-//! is compared by what it names, not by how sure the fingerprinter was.
+//! is compared by what it names, not by how sure the fingerprinter was, and only
+//! where the current scan named one: a scan that identified no system, or saw no
+//! hardware address, found nothing out about either, so their absence from its
+//! record is not a change.
 //!
 //! Left out entirely: round-trip times, hop counters, measured routes, capture
 //! counters, per-scanner probe statistics, first- and last-seen timestamps, and

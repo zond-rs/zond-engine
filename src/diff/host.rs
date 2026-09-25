@@ -24,7 +24,11 @@
 //! Operating-system identification follows the rule one step further. Two
 //! fingerprints are the same finding when they name the same system, whatever
 //! confidence each was recorded at, so a second scan that grew more certain of
-//! the same answer reports nothing.
+//! the same answer reports nothing. A current scan that identified no system at
+//! all reports nothing either: it was run without the probes, or answered too
+//! thinly to match, and says nothing about what runs there now. The hardware
+//! addresses and the vendor read off them follow the same rule, since a scan
+//! that did not reach the host's segment sees neither.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
@@ -143,7 +147,9 @@ pub enum HostChange {
     /// it was not.
     ///
     /// Only the identification moved. A fingerprint recorded at a different
-    /// confidence for the same system is not a change and is not reported.
+    /// confidence for the same system is not a change and is not reported, and
+    /// neither is a current scan that identified nothing: it did not say what
+    /// runs there now, so `after` is never `None`.
     ///
     /// Boxed because a pair of fingerprints is several times the size of any
     /// other variant and a change list is mostly the other variants. Unboxed,
@@ -160,7 +166,9 @@ pub enum HostChange {
         /// Addresses the baseline saw and the current scan does not.
         lost: Vec<MacAddr>,
     },
-    /// The hardware vendor the address resolves to changed.
+    /// The hardware vendor the address resolves to changed, or was named where
+    /// it was not. A current scan that named none established nothing about
+    /// it, so `after` is never `None`.
     Vendor(Change<Option<String>>),
     /// The roles inferred for the host changed, each list ascending.
     Roles {
@@ -338,32 +346,53 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         changes.push(HostChange::Addresses { gained, lost });
     }
 
-    if !same_system(before.os(), after.os()) {
+    // Only a current scan that identified the system can say it changed. One
+    // that identified nothing, run without the probes or answered too thinly to
+    // match, said nothing about what runs there now, and reporting the system
+    // gone on its word would have a quick scan compared against a thorough one
+    // announce every machine's operating system lost. The baseline's
+    // identification stays readable on the delta's baseline record.
+    if let Some(now) = after.os()
+        && !same_system(before.os(), Some(now))
+    {
         changes.push(HostChange::Os(Box::new(Change::new(
             before.os().cloned(),
-            after.os().cloned(),
+            Some(now.clone()),
         ))));
     }
 
-    let (gained, lost) = difference(
-        before
-            .hardware()
-            .into_iter()
-            .flat_map(|hardware| hardware.macs().keys().copied()),
-        after
-            .hardware()
-            .into_iter()
-            .flat_map(|hardware| hardware.macs().keys().copied()),
-    );
-    if !gained.is_empty() || !lost.is_empty() {
-        changes.push(HostChange::Macs { gained, lost });
+    // Hardware addresses are seen at the link layer or not at all, so a record
+    // holding none is a scan that did not reach the host's segment, and its
+    // silence is not the host losing them.
+    let seen_on_link = |host: &Host| {
+        host.hardware()
+            .is_some_and(|hardware| !hardware.macs().is_empty())
+    };
+    if seen_on_link(before) && seen_on_link(after) {
+        let (gained, lost) = difference(
+            before
+                .hardware()
+                .into_iter()
+                .flat_map(|hardware| hardware.macs().keys().copied()),
+            after
+                .hardware()
+                .into_iter()
+                .flat_map(|hardware| hardware.macs().keys().copied()),
+        );
+        if !gained.is_empty() || !lost.is_empty() {
+            changes.push(HostChange::Macs { gained, lost });
+        }
     }
 
-    if let Some(vendor) = Change::between(
-        before.vendor().map(str::to_owned),
-        after.vendor().map(str::to_owned),
-    ) {
-        changes.push(HostChange::Vendor(vendor));
+    // The vendor is read off the hardware, and held to the rule the operating
+    // system is: a current scan that named none established nothing about it.
+    if let Some(now) = after.vendor()
+        && before.vendor() != Some(now)
+    {
+        changes.push(HostChange::Vendor(Change::new(
+            before.vendor().map(str::to_owned),
+            Some(now.to_owned()),
+        )));
     }
 
     let (gained, lost) = difference(
@@ -583,6 +612,82 @@ mod tests {
             changes_between(&host(1), &host(1))
                 .iter()
                 .all(|change| !matches!(change, HostChange::Filtering { .. }))
+        );
+    }
+
+    /// **A system the current scan did not identify is not a change.** A scan
+    /// run without operating-system probes, or one whose probes were answered
+    /// too thinly to match, records no fingerprint, and reported as a change a
+    /// quick scan compared against a thorough one would say every machine on
+    /// the network stopped running what it ran. A different system named is
+    /// still the change it is.
+    #[test]
+    fn a_system_the_current_scan_did_not_identify_is_not_a_change() {
+        let mut before = host(1);
+        before.set_os(OsFingerprint::new("Linux", 90).with_family("Linux"));
+
+        let unidentified = host(1);
+        assert!(
+            changes_between(&before, &unidentified)
+                .iter()
+                .all(|change| !matches!(change, HostChange::Os(_))),
+            "{:?}",
+            changes_between(&before, &unidentified)
+        );
+
+        let mut other = host(1);
+        other.set_os(OsFingerprint::new("Windows", 90).with_family("Windows"));
+        assert!(
+            changes_between(&before, &other)
+                .iter()
+                .any(|change| matches!(change, HostChange::Os(_)))
+        );
+        assert!(
+            changes_between(&unidentified, &before)
+                .iter()
+                .any(|change| matches!(change, HostChange::Os(_))),
+            "a system identified where none was is still reported"
+        );
+    }
+
+    /// **A current scan that did not reach the host's segment loses none of
+    /// its hardware.** Hardware addresses are seen at the link layer or not at
+    /// all, so a scan from beyond a router records none, and reading that as
+    /// the host losing them, and its vendor with them, would report every
+    /// machine on a LAN changed when the same LAN is scanned from elsewhere.
+    #[test]
+    fn a_scan_that_did_not_reach_the_segment_loses_no_hardware() {
+        let mac = MacAddr::new(0x02, 0, 0, 0, 0, 1);
+        use crate::model::host::hardware::{HardwareDescription, HardwareInfo};
+
+        let mut hardware = HardwareInfo::new(mac);
+        hardware.merge(
+            HardwareInfo::described(HardwareDescription {
+                vendor: Some("Example Devices"),
+                ..HardwareDescription::default()
+            })
+            .expect("a vendor is a description"),
+        );
+        let mut before = host(1);
+        before.set_hardware(hardware);
+        assert_eq!(before.vendor(), Some("Example Devices"), "the fixture");
+
+        let changes = changes_between(&before, &host(1));
+        assert!(
+            changes
+                .iter()
+                .all(|change| !matches!(change, HostChange::Macs { .. } | HostChange::Vendor(_))),
+            "{changes:?}"
+        );
+
+        let mut replaced = host(1);
+        replaced.record_mac(MacAddr::new(0x02, 0, 0, 0, 0, 2));
+        let changes = changes_between(&before, &replaced);
+        assert!(
+            changes
+                .iter()
+                .any(|change| matches!(change, HostChange::Macs { .. })),
+            "another address seen on the segment is still a change: {changes:?}"
         );
     }
 
