@@ -62,6 +62,21 @@ pub(crate) const NEIGHBOR_RECHECK: Duration = Duration::from_millis(50);
 /// left with no time to be answered in.
 pub(crate) const RESOLUTION_BUDGET: Duration = ARP_TIMEOUT.saturating_add(NEIGHBOR_RECHECK);
 
+/// The longest a neighbour may be read as still being asked for before it is
+/// given up on and the host behind it filed unreached: twice
+/// [`RESOLUTION_BUDGET`].
+///
+/// Both resolutions conclude on their own within their budget, the kernel's
+/// after its third request and the frame path's after its own, so a wait past
+/// it is no longer a neighbour being asked for. It is a resolution that will
+/// not conclude: a driver wedged in a read that never returns keeps its
+/// resolutions pending for as long as anything reads them. Without a bound of
+/// its own, a pass waiting on one would wait until the scan stopped, and a
+/// port scan would hold the host's probes until its deadline. Twice the budget
+/// leaves a resolution concluding late on a loaded machine read as what it
+/// concluded, and still bounds the wait by seconds.
+pub(crate) const RESOLUTION_WAIT_LIMIT: Duration = RESOLUTION_BUDGET.saturating_mul(2);
+
 /// How far a pass has read the resolution of one neighbour. See
 /// [`NeighborGates::admit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +127,10 @@ impl NeighborGates {
     /// - **still resolving**, and the probe is held for [`NEIGHBOR_RECHECK`]
     ///   and asks again;
     /// - **failed**, and the address is unreachable: the neighbour was asked
-    ///   three times across three seconds and said nothing.
+    ///   three times across three seconds and said nothing. So is one still
+    ///   read as resolving [`RESOLUTION_WAIT_LIMIT`] after it was asked for,
+    ///   whose resolution is not going to conclude, so no caller waits on a
+    ///   neighbour for longer than that whatever the resolution does.
     ///
     /// The kernel's asking starts with a write, so the first probe that needs
     /// a neighbour goes, which starts it, and every probe behind that one
@@ -161,6 +179,11 @@ impl NeighborGates {
         };
         self.gated.insert(host, neighbor);
         match state(watch, resolver, host, neighbor, asked) {
+            Some(NeighborState::Resolving)
+                if now.saturating_duration_since(asked) >= RESOLUTION_WAIT_LIMIT =>
+            {
+                Admission::Unreachable
+            }
             Some(NeighborState::Resolving) => Admission::Hold(now + NEIGHBOR_RECHECK),
             Some(NeighborState::Failed) => Admission::Unreachable,
             Some(NeighborState::Resolved) | None => {
@@ -221,8 +244,10 @@ impl NeighborGates {
 /// For a pass that cannot hold a probe once it has begun; see the module
 /// documentation. Through the kernel it waits for nothing, since the kernel
 /// asks only once a probe is written and the write waits in the kernel's
-/// queue rather than in the send. Ends early, with the rest unresolved, when
-/// the scan is stopped.
+/// queue rather than in the send. Waits no longer than
+/// [`RESOLUTION_WAIT_LIMIT`], past which [`NeighborGates::admit`] gives a
+/// neighbour up, and ends early, with the rest unresolved, when the scan is
+/// stopped.
 pub(crate) async fn resolve_ahead(
     ctx: &ScanContext,
     watch: Option<&NeighborWatch>,
@@ -284,5 +309,80 @@ fn state(
             let source = resolver.resolve(host)?;
             link.state(source, host)
         }
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system::interface::{Link, LinkAddress};
+    use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborTable};
+    use std::net::Ipv4Addr;
+
+    const HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+
+    /// A kernel watch whose table shows [`HOST`]'s neighbour at `state` on
+    /// every read, and a resolver that puts [`HOST`] on a link of this host's.
+    fn kernel_showing(state: NeighborState) -> (NeighborWatch, SourceResolver) {
+        let table = KernelNeighbors::with_reader(Box::new(move || {
+            Ok(NeighborTable::from([(HOST, state)]))
+        }));
+        let resolver = SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+        ])]);
+        (NeighborWatch::Kernel(table), resolver)
+    }
+
+    /// A resolution that never concludes, a driver wedged in a read or a table
+    /// that never moves, is given up on once it has run twice as long as any
+    /// resolution takes, rather than holding the host's probes until the scan
+    /// itself stops.
+    #[test]
+    fn a_neighbour_that_never_concludes_is_given_up_on_at_the_limit() {
+        let (watch, mut resolver) = kernel_showing(NeighborState::Resolving);
+        let mut gates = NeighborGates::default();
+        let start = Instant::now();
+
+        assert_eq!(
+            gates.admit(Some(&watch), &mut resolver, HOST, start),
+            Admission::Send,
+            "the first write is what starts the kernel's asking"
+        );
+        // Read after that first admission, which stamped when the neighbour
+        // was asked for.
+        let asked = Instant::now();
+        assert!(
+            matches!(
+                gates.admit(Some(&watch), &mut resolver, HOST, start),
+                Admission::Hold(_)
+            ),
+            "and the probes behind it wait while it runs"
+        );
+        assert!(
+            matches!(
+                gates.admit(Some(&watch), &mut resolver, HOST, asked + RESOLUTION_BUDGET),
+                Admission::Hold(_)
+            ),
+            "a resolution's own budget is not yet cause to give up"
+        );
+        assert_eq!(
+            gates.admit(
+                Some(&watch),
+                &mut resolver,
+                HOST,
+                asked + RESOLUTION_WAIT_LIMIT
+            ),
+            Admission::Unreachable,
+            "a wait past any resolution's is an address nothing reaches"
+        );
     }
 }
