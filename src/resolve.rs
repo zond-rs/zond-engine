@@ -722,7 +722,7 @@ mod tests {
             Ok(global.as_global(&[])),
             vec![ScopedServers {
                 domain: "corp.example".into(),
-                servers: vec![scoped.at],
+                servers: Ok(vec![scoped.at]),
             }],
         );
 

@@ -27,6 +27,13 @@
 //! that can answer, and any other would learn a name inside a private network
 //! for nothing.
 //!
+//! A domain stays claimed when none of its servers can be asked. A link-local
+//! server is reached through the interface written after it, `fe80::53%utun4`,
+//! and is asked through that interface; when the interface is gone, the
+//! domain's names fail to resolve, with a line saying why, rather than going
+//! to the global servers. A resolver the OS lists with no servers at all claims
+//! nothing: there is no server of the domain's own for a name to be kept for.
+//!
 //! What is left out is what changes *where* the OS sends a query rather than
 //! *which* server it asks: per-interface resolvers (the "for scoped queries"
 //! half, which serves only a process that pinned itself to an interface),
@@ -52,12 +59,17 @@
 //! a name that did not resolve is asked again next time, rather than answered
 //! from a cache of failures while the box it names comes up.
 
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Once;
+use std::future::Future;
+use std::io;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
+use std::sync::{Arc, Once};
+use std::task::{Context, Poll};
+use std::time::Duration;
 
-use hickory_resolver::TokioResolver;
 use hickory_resolver::config::{NameServerConfig, ResolveHosts, ResolverConfig, ResolverOpts};
-use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::net::runtime::{DnsUdpSocket, RuntimeProvider, TokioRuntimeProvider};
+use hickory_resolver::{ConnectionProvider, Resolver, TokioResolver};
 
 use crate::{info, warn};
 
@@ -75,7 +87,11 @@ pub(crate) struct DnsConfig {
 pub(crate) struct ScopedServers {
     /// Folded to lower case, without a root dot.
     pub(crate) domain: String,
-    pub(crate) servers: Vec<SocketAddr>,
+    /// The servers to ask, never empty, a link-local one carrying the scope id
+    /// of the interface it is reached through; or why none of those the
+    /// resolver lists can be asked, in which case the domain's names are asked
+    /// of nobody.
+    pub(crate) servers: Result<Vec<SocketAddr>, String>,
 }
 
 impl DnsConfig {
@@ -94,9 +110,9 @@ pub(crate) struct Unicast {
     /// The client for names no scoped resolver answers for, or why there is
     /// none.
     global: Result<TokioResolver, String>,
-    /// A client per scoped domain, longest domain first, so the first that
-    /// covers a name is the one the OS would ask.
-    scoped: Vec<(String, TokioResolver)>,
+    /// The scoped domains, longest first, so the first that covers a name is
+    /// the one the OS would ask.
+    scoped: Vec<Scope>,
     /// The global configuration's own domain and search list, folded, which
     /// say what the global servers are expected to answer for.
     searched: Vec<String>,
@@ -125,35 +141,37 @@ impl Unicast {
                     .chain(conf.search())
                     .map(|name| fold(&name.to_ascii()))
                     .collect();
-                (build(conf, opts), searched)
+                (build(conf, opts, TokioRuntimeProvider::default()), searched)
             }
             Err(e) => (Err(e), Vec::new()),
         };
 
-        let mut scoped: Vec<(String, TokioResolver)> = config
+        let mut scoped: Vec<Scope> = config
             .scoped
             .into_iter()
-            .filter_map(|scope| {
-                let servers = scope.servers.iter().map(|at| {
-                    let mut server = NameServerConfig::udp_and_tcp(at.ip());
-                    for connection in &mut server.connections {
-                        connection.port = at.port();
-                    }
-                    server
+            .map(|scope| {
+                let client = scope.servers.and_then(|servers| {
+                    let runtime = ZonedRuntime::for_servers(&servers);
+                    let servers = servers.iter().map(|at| {
+                        let mut server = NameServerConfig::udp_and_tcp(at.ip());
+                        for connection in &mut server.connections {
+                            connection.port = at.port();
+                        }
+                        server
+                    });
+                    let conf = ResolverConfig::from_parts(None, Vec::new(), servers.collect());
+                    build(conf, base_opts.clone(), runtime)
                 });
-                let conf = ResolverConfig::from_parts(None, Vec::new(), servers.collect());
-                match build(conf, base_opts.clone()) {
-                    Ok(client) => Some((scope.domain, client)),
-                    Err(e) => {
-                        warn!("DNS for {} not asked ({e})", scope.domain);
-                        None
-                    }
+                Scope {
+                    domain: scope.domain,
+                    client,
+                    unasked: Once::new(),
                 }
             })
             .collect();
         // Stable, so of two resolvers for one domain the one listed first,
         // which the OS orders first, is the one asked.
-        scoped.sort_by_key(|(domain, _)| std::cmp::Reverse(domain.len()));
+        scoped.sort_by_key(|scope| std::cmp::Reverse(scope.domain.len()));
 
         Self {
             global,
@@ -175,55 +193,195 @@ impl Unicast {
     /// the link.
     pub(crate) fn claims(&self, name: &str) -> bool {
         let name = fold(name);
-        self.scoped.iter().any(|(domain, _)| covers(domain, &name))
+        self.scoped.iter().any(|scope| covers(&scope.domain, &name))
             || self.searched.iter().any(|domain| covers(domain, &name))
     }
 
     /// Asks the server that answers for `name` for its A and AAAA records.
     ///
     /// Empty when the name has no records, when nothing answered, or when the
-    /// host has no server to ask; the last is said once per pass, because it
-    /// is the one a user can act on.
+    /// host has no server to ask; the last is said once per pass and domain,
+    /// because it is the one a user can act on.
     pub(crate) async fn lookup(&self, name: &str) -> Vec<IpAddr> {
         let folded = fold(name);
-        let client = match self
+        if let Some(scope) = self
             .scoped
             .iter()
-            .find(|(domain, _)| covers(domain, &folded))
+            .find(|scope| covers(&scope.domain, &folded))
         {
-            Some((_, client)) => client,
-            None => match &self.global {
-                Ok(client) => client,
+            return match &scope.client {
+                Ok(client) => ask(client, name).await,
                 Err(why) => {
-                    self.unconfigured.call_once(|| {
-                        warn!("DNS lookups skipped (no DNS server configured)");
-                        info!(
-                            verbosity = 1,
-                            "system resolver configuration unusable: {why}"
-                        );
-                    });
-                    return Vec::new();
+                    scope
+                        .unasked
+                        .call_once(|| warn!("DNS for {} not asked ({why})", scope.domain));
+                    Vec::new()
                 }
-            },
-        };
-
-        match client.lookup_ip(name).await {
-            Ok(lookup) => lookup.iter().collect(),
-            // A name with no records is an ordinary answer, not a failure worth
-            // surfacing: it resolves to nothing, which is what an empty vector
-            // says.
-            Err(_) => Vec::new(),
+            };
         }
+        let client = match &self.global {
+            Ok(client) => client,
+            Err(why) => {
+                self.unconfigured.call_once(|| {
+                    warn!("DNS lookups skipped (no DNS server configured)");
+                    info!(
+                        verbosity = 1,
+                        "system resolver configuration unusable: {why}"
+                    );
+                });
+                return Vec::new();
+            }
+        };
+        ask(client, name).await
+    }
+}
+
+/// A scoped domain and the client that answers for it.
+struct Scope {
+    /// Folded, as [`covers`] compares it.
+    domain: String,
+    /// The client for the domain's servers, or why none of them can be asked.
+    client: Result<Resolver<ZonedRuntime>, String>,
+    /// Says once per pass that the domain's names went unasked.
+    unasked: Once,
+}
+
+/// Asks `client` for `name`'s A and AAAA records.
+async fn ask<P: ConnectionProvider>(client: &Resolver<P>, name: &str) -> Vec<IpAddr> {
+    match client.lookup_ip(name).await {
+        Ok(lookup) => lookup.iter().collect(),
+        // A name with no records is an ordinary answer, not a failure worth
+        // surfacing: it resolves to nothing, which is what an empty vector
+        // says.
+        Err(_) => Vec::new(),
     }
 }
 
 /// Builds one client, with the hosts file left to the caller.
-fn build(conf: ResolverConfig, mut opts: ResolverOpts) -> Result<TokioResolver, String> {
+fn build<P: ConnectionProvider>(
+    conf: ResolverConfig,
+    mut opts: ResolverOpts,
+    runtime: P,
+) -> Result<Resolver<P>, String> {
     opts.use_hosts_file = ResolveHosts::Never;
-    TokioResolver::builder_with_config(conf, TokioRuntimeProvider::default())
+    Resolver::builder_with_config(conf, runtime)
         .with_options(opts)
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// The Tokio runtime, sending to each IPv6 server through the interface its
+/// scope id names.
+///
+/// The resolver's server configuration holds a bare address and pairs it with
+/// a port into a socket address whose scope id is zero, which the kernel
+/// refuses to send a link-local address to. This puts the scope back on the
+/// way out, for UDP and TCP alike. A reply is matched to its server by address
+/// and port, so a reply arriving with its scope set still matches.
+///
+/// Keyed by address: of two servers at one link-local address on different
+/// interfaces, the first listed is the one reached.
+#[derive(Clone)]
+struct ZonedRuntime {
+    tokio: TokioRuntimeProvider,
+    /// The scope id each IPv6 server is reached through.
+    zones: Arc<[(Ipv6Addr, u32)]>,
+}
+
+impl ZonedRuntime {
+    /// A runtime reaching `servers` through the interfaces their scope ids
+    /// name.
+    fn for_servers(servers: &[SocketAddr]) -> Self {
+        let zones = servers
+            .iter()
+            .filter_map(|at| match at {
+                SocketAddr::V6(v6) if v6.scope_id() != 0 => Some((*v6.ip(), v6.scope_id())),
+                _ => None,
+            })
+            .collect();
+        Self {
+            tokio: TokioRuntimeProvider::default(),
+            zones,
+        }
+    }
+
+    /// `to`, with the scope id of the server at its address when it has none.
+    fn zoned(zones: &[(Ipv6Addr, u32)], to: SocketAddr) -> SocketAddr {
+        match to {
+            SocketAddr::V6(mut v6) if v6.scope_id() == 0 => {
+                if let Some((_, scope)) = zones.iter().find(|(ip, _)| ip == v6.ip()) {
+                    v6.set_scope_id(*scope);
+                }
+                SocketAddr::V6(v6)
+            }
+            other => other,
+        }
+    }
+}
+
+impl RuntimeProvider for ZonedRuntime {
+    type Handle = <TokioRuntimeProvider as RuntimeProvider>::Handle;
+    type Timer = <TokioRuntimeProvider as RuntimeProvider>::Timer;
+    type Udp = ZonedUdp;
+    type Tcp = <TokioRuntimeProvider as RuntimeProvider>::Tcp;
+
+    fn create_handle(&self) -> Self::Handle {
+        self.tokio.create_handle()
+    }
+
+    fn connect_tcp(
+        &self,
+        server_addr: SocketAddr,
+        bind_addr: Option<SocketAddr>,
+        timeout: Option<Duration>,
+    ) -> Pin<Box<dyn Send + Future<Output = Result<Self::Tcp, io::Error>>>> {
+        let server_addr = Self::zoned(&self.zones, server_addr);
+        self.tokio.connect_tcp(server_addr, bind_addr, timeout)
+    }
+
+    fn bind_udp(
+        &self,
+        local_addr: SocketAddr,
+        server_addr: SocketAddr,
+    ) -> Pin<Box<dyn Send + Future<Output = Result<Self::Udp, io::Error>>>> {
+        let zones = Arc::clone(&self.zones);
+        let bound = self.tokio.bind_udp(local_addr, server_addr);
+        Box::pin(async move {
+            Ok(ZonedUdp {
+                socket: bound.await?,
+                zones,
+            })
+        })
+    }
+}
+
+/// A UDP socket that sends through the interface a server's scope id names;
+/// see [`ZonedRuntime`].
+struct ZonedUdp {
+    socket: <TokioRuntimeProvider as RuntimeProvider>::Udp,
+    zones: Arc<[(Ipv6Addr, u32)]>,
+}
+
+impl DnsUdpSocket for ZonedUdp {
+    type Time = <<TokioRuntimeProvider as RuntimeProvider>::Udp as DnsUdpSocket>::Time;
+
+    fn poll_recv_from(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<(usize, SocketAddr)>> {
+        DnsUdpSocket::poll_recv_from(&self.socket, cx, buf)
+    }
+
+    fn poll_send_to(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        target: SocketAddr,
+    ) -> Poll<io::Result<usize>> {
+        let target = ZonedRuntime::zoned(&self.zones, target);
+        DnsUdpSocket::poll_send_to(&self.socket, cx, buf, target)
+    }
 }
 
 /// Whether `domain` is `name` or one of its ancestors, label by label.
@@ -247,7 +405,9 @@ fn read_scoped() -> Vec<ScopedServers> {
         .arg("--dns")
         .output()
     {
-        Ok(out) if out.status.success() => parse_scutil_dns(&String::from_utf8_lossy(&out.stdout)),
+        Ok(out) if out.status.success() => {
+            parse_scutil_dns(&String::from_utf8_lossy(&out.stdout), interface_index)
+        }
         Ok(out) => {
             info!(
                 verbosity = 1,
@@ -262,6 +422,16 @@ fn read_scoped() -> Vec<ScopedServers> {
     }
 }
 
+/// The index of the interface named `name`, if the host has one.
+#[cfg(target_vendor = "apple")]
+fn interface_index(name: &str) -> Option<u32> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: `name` is a valid NUL-terminated string for the length of the
+    // call.
+    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+    (index != 0).then_some(index)
+}
+
 /// No platform but macOS has scoped resolvers to read.
 #[cfg(not(target_vendor = "apple"))]
 fn read_scoped() -> Vec<ScopedServers> {
@@ -273,17 +443,24 @@ fn read_scoped() -> Vec<ScopedServers> {
 ///
 /// The first section is the configuration every process resolves with; the
 /// second, "for scoped queries", serves only a process bound to one interface.
-/// A server that does not parse as an address, such as a link-local one with
-/// its zone written after it, is skipped, and a resolver left with none is too.
+///
+/// A link-local server is written with the interface it is reached through,
+/// `fe80::53%utun4`, which `index_of` turns into the scope id it is asked
+/// with. A server whose interface `index_of` does not know is not asked, and a
+/// resolver left with none to ask keeps its domain and carries why, so that its
+/// names fail rather than reach the global servers. A server that does not
+/// parse as an address is skipped.
 #[cfg(any(target_vendor = "apple", test))]
-fn parse_scutil_dns(report: &str) -> Vec<ScopedServers> {
+fn parse_scutil_dns(report: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec<ScopedServers> {
     /// The port DNS is asked on when a resolver names none.
     const DNS_PORT: u16 = 53;
 
     #[derive(Default)]
     struct Entry {
         domain: Option<String>,
-        servers: Vec<IpAddr>,
+        /// Each listed server as an address and scope id, or why it cannot be
+        /// asked.
+        servers: Vec<Result<(IpAddr, u32), String>>,
         port: Option<u16>,
         mdns: bool,
     }
@@ -294,12 +471,45 @@ fn parse_scutil_dns(report: &str) -> Vec<ScopedServers> {
             return;
         }
         let port = entry.port.unwrap_or(DNS_PORT);
-        let servers = entry
-            .servers
-            .into_iter()
-            .map(|ip| SocketAddr::new(ip, port))
-            .collect();
+        let servers = {
+            let (usable, unusable): (Vec<_>, Vec<_>) =
+                entry.servers.into_iter().partition(Result::is_ok);
+            let usable: Vec<SocketAddr> = usable
+                .into_iter()
+                .flatten()
+                .map(|(ip, scope)| match ip {
+                    IpAddr::V4(v4) => SocketAddr::new(v4.into(), port),
+                    IpAddr::V6(v6) => std::net::SocketAddrV6::new(v6, port, 0, scope).into(),
+                })
+                .collect();
+            match unusable.into_iter().find_map(Result::err) {
+                Some(why) if usable.is_empty() => Err(why),
+                _ => Ok(usable),
+            }
+        };
         into.push(ScopedServers { domain, servers });
+    }
+
+    /// A `nameserver` value as an address and the scope id it is asked with,
+    /// if it parses as one.
+    fn server(
+        value: &str,
+        index_of: &impl Fn(&str) -> Option<u32>,
+    ) -> Option<Result<(IpAddr, u32), String>> {
+        let (address, zone) = match value.split_once('%') {
+            Some((address, zone)) => (address, Some(zone)),
+            None => (value, None),
+        };
+        match (address.parse().ok()?, zone) {
+            (ip @ IpAddr::V6(_), Some(zone)) => Some(
+                index_of(zone)
+                    .filter(|&index| index != 0)
+                    .map(|index| (ip, index))
+                    .ok_or_else(|| format!("{zone} not found")),
+            ),
+            (IpAddr::V4(_), Some(_)) => None,
+            (ip, None) => Some(Ok((ip, 0))),
+        }
     }
 
     let mut found = Vec::new();
@@ -324,9 +534,7 @@ fn parse_scutil_dns(report: &str) -> Vec<ScopedServers> {
             "port" => current.port = value.parse().ok(),
             "options" => current.mdns |= value.split_whitespace().any(|o| o == "mdns"),
             _ if key.starts_with("nameserver[") => {
-                if let Ok(ip) = value.parse() {
-                    current.servers.push(ip);
-                }
+                current.servers.extend(server(value, &index_of));
             }
             _ => {}
         }
@@ -349,6 +557,7 @@ fn parse_scutil_dns(report: &str) -> Vec<ScopedServers> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logging::logged;
 
     /// A `scutil --dns` report as a Mac with a VPN and a resolver file prints
     /// it, reduced to what the parser reads.
@@ -392,26 +601,153 @@ resolver #1
   if_index : 15 (en1)
 ";
 
-    /// The report yields the domain-bound servers the OS asks, and nothing
-    /// that is multicast, serverless, the default resolver, or bound to one
-    /// interface. A resolver taken from the wrong half, or an mDNS entry taken
-    /// as unicast, would send names to a server the OS never asks about them.
+    /// The interface index a test host gives `utun4`, and no other name.
+    fn utun4_is_9(name: &str) -> Option<u32> {
+        (name == "utun4").then_some(9)
+    }
+
+    /// The report yields the domain-bound servers the OS asks, a link-local
+    /// one with the scope id of its interface, and nothing that is multicast,
+    /// serverless, the default resolver, or bound to one interface. A resolver
+    /// taken from the wrong half, or an mDNS entry taken as unicast, would send
+    /// names to a server the OS never asks about them.
     #[test]
     fn a_scutil_report_yields_the_domains_with_servers_of_their_own() {
-        let v4 = |s: &str, port| SocketAddr::new(s.parse().expect("an address"), port);
+        let at = |s: &str| s.parse::<SocketAddr>().expect("a socket address");
         assert_eq!(
-            parse_scutil_dns(REPORT),
+            parse_scutil_dns(REPORT, utun4_is_9),
             vec![
                 ScopedServers {
                     domain: "corp.example".into(),
-                    servers: vec![v4("198.51.100.53", 53), v4("2001:db8::53", 53)],
+                    servers: Ok(vec![
+                        at("198.51.100.53:53"),
+                        at("[fe80::53%9]:53"),
+                        at("[2001:db8::53]:53"),
+                    ]),
                 },
                 ScopedServers {
                     domain: "lab.example".into(),
-                    servers: vec![v4("203.0.113.53", 5353)],
+                    servers: Ok(vec![at("203.0.113.53:5353")]),
                 },
             ]
         );
+    }
+
+    /// A VPN's match domain whose one server is link-local, written with the
+    /// interface it is reached through.
+    const ZONED_REPORT: &str = "\
+DNS configuration
+
+resolver #1
+  domain   : vpn.example
+  nameserver[0] : fe80::53%utun4
+";
+
+    /// A global configuration naming `at`, giving up on a silent server fast.
+    fn global_at(at: SocketAddr) -> (ResolverConfig, ResolverOpts) {
+        let mut server = NameServerConfig::udp(at.ip());
+        for connection in &mut server.connections {
+            connection.port = at.port();
+        }
+        let mut opts = ResolverOpts::default();
+        opts.attempts = 1;
+        opts.timeout = std::time::Duration::from_millis(200);
+        (
+            ResolverConfig::from_parts(None, Vec::new(), vec![server]),
+            opts,
+        )
+    }
+
+    /// A domain whose only server is link-local keeps that server, with the
+    /// scope id of the interface it is reached through, and claims its names.
+    ///
+    /// VPNs and Tailscale hand out DNS servers on their own interfaces; losing
+    /// the resolver because its server carries a zone would send every name
+    /// inside the private network to the resolver outside it.
+    #[test]
+    fn a_domain_whose_only_server_is_link_local_keeps_it_with_its_scope() {
+        let scoped = parse_scutil_dns(ZONED_REPORT, utun4_is_9);
+        assert_eq!(
+            scoped,
+            vec![ScopedServers {
+                domain: "vpn.example".into(),
+                servers: Ok(vec!["[fe80::53%9]:53".parse().expect("an address")]),
+            }]
+        );
+
+        let unicast = Unicast::from_config(DnsConfig {
+            global: Err("none configured".into()),
+            scoped,
+        });
+        assert!(unicast.claims("intranet.vpn.example"));
+    }
+
+    /// A name under a domain whose link-local server's interface is gone is
+    /// asked of nobody, and the global server never hears it; the user is told
+    /// once per pass which domain went unasked and why.
+    ///
+    /// A VPN that dropped its tunnel leaves its resolver behind for a moment;
+    /// sending its names to the global server then would leak exactly what the
+    /// scoped resolver keeps inside the private network.
+    #[test]
+    fn a_domain_whose_server_interface_is_gone_is_never_asked_of_the_global_server() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime builds");
+        let global = runtime
+            .block_on(tokio::net::UdpSocket::bind("127.0.0.1:0"))
+            .expect("a loopback socket binds");
+        let unicast = Unicast::from_config(DnsConfig {
+            global: Ok(global_at(global.local_addr().expect("an address"))),
+            scoped: parse_scutil_dns(ZONED_REPORT, |_| None),
+        });
+
+        assert!(unicast.claims("intranet.vpn.example"));
+        let mut resolved = Vec::new();
+        let lines = logged(|| {
+            runtime.block_on(async {
+                for name in ["intranet.vpn.example", "wiki.vpn.example"] {
+                    resolved.extend(unicast.lookup(name).await);
+                }
+            });
+        });
+
+        assert_eq!(resolved, Vec::<IpAddr>::new());
+        let mut buf = [0u8; 512];
+        assert!(
+            global.try_recv_from(&mut buf).is_err(),
+            "the VPN name reached the global server"
+        );
+        let said: Vec<_> = lines
+            .iter()
+            .filter(|l| l.verbosity == 0 && l.message.contains("vpn.example"))
+            .map(|l| l.message.as_str())
+            .collect();
+        assert_eq!(said, ["DNS for vpn.example not asked (utun4 not found)"]);
+    }
+
+    /// The runtime puts a server's scope id on an address that lost it, and
+    /// leaves every other address as it was.
+    ///
+    /// The resolver hands the runtime a link-local server with a scope id of
+    /// zero, which the kernel will not send to; an address that kept one, or
+    /// belongs to no listed server, is not the runtime's to change.
+    #[test]
+    fn the_runtime_sends_to_a_link_local_server_through_its_interface() {
+        let at = |s: &str| s.parse::<SocketAddr>().expect("a socket address");
+        let runtime = ZonedRuntime::for_servers(&[at("[fe80::53%9]:53"), at("192.0.2.53:53")]);
+
+        assert_eq!(
+            ZonedRuntime::zoned(&runtime.zones, at("[fe80::53]:53")),
+            at("[fe80::53%9]:53")
+        );
+        for untouched in ["[fe80::53%4]:53", "[fe80::54]:53", "192.0.2.53:53"] {
+            assert_eq!(
+                ZonedRuntime::zoned(&runtime.zones, at(untouched)),
+                at(untouched)
+            );
+        }
     }
 
     /// A domain covers itself and its descendants, whole labels only, so
