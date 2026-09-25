@@ -104,16 +104,54 @@ enum Unfinished {
     CutShort { id: String, why: String },
     /// The detection broke, or the runtime refused it something it asked for.
     Failed { id: String, why: String },
+    /// The port stopped answering and was given up on before the detection
+    /// had its answer. Carries the detection's id and how far it got, as a
+    /// phrase.
+    ///
+    /// Apart from [`CutShort`](Self::CutShort) because it is the port's doing
+    /// rather than the detection's, and so says the same thing about every
+    /// detection gated onto the port: a web port given up on leaves dozens.
+    PortGivenUp { id: String, why: String },
 }
 
 impl Unfinished {
+    /// Files one port's unfinished detections against it.
+    ///
+    /// Each is its own report entry, since a report read for coverage counts
+    /// the questions left open. The console hears a port given up on once,
+    /// however many detections it left: what a reader acts on is the port,
+    /// and a line per detection buries the rest of the run under dozens
+    /// saying the same thing. Each detection's own line is kept for the
+    /// verbosity that shows a line per exchange.
+    fn file_all(unfinished: &[Unfinished], ctx: &ScanContext, endpoint: &str) {
+        let mut given_up: u128 = 0;
+        for detection in unfinished {
+            match detection {
+                Unfinished::PortGivenUp { id, why } => {
+                    given_up += 1;
+                    let reason = format!("{id} on {endpoint} cut short: {why}");
+                    crate::warn!(verbosity = 2, "{reason}");
+                    ctx.file_cut_short(ScannerKind::Detection, reason);
+                }
+                other => other.record(ctx, endpoint),
+            }
+        }
+        if given_up > 0 {
+            crate::warn!(
+                "{endpoint} unresponsive, {} cut short",
+                crate::logging::counted(given_up, "detection", "detections")
+            );
+        }
+    }
+
     /// Files this against the port it happened on.
     fn record(&self, ctx: &ScanContext, endpoint: &str) {
         match self {
-            Unfinished::CutShort { id, why } => ctx.record_cut_short(
-                ScannerKind::Detection,
-                format!("{id} on {endpoint} cut short: {why}"),
-            ),
+            Unfinished::CutShort { id, why } | Unfinished::PortGivenUp { id, why } => ctx
+                .record_cut_short(
+                    ScannerKind::Detection,
+                    format!("{id} on {endpoint} cut short: {why}"),
+                ),
             Unfinished::Failed { id, why } => {
                 ctx.record_failure(ScannerKind::Detection, format!("{id} on {endpoint}: {why}"))
             }
@@ -169,9 +207,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
                 // port; record that it did not finish so the report tells it
                 // apart from one that found nothing.
                 let endpoint = key.endpoint(number).to_string();
-                for detection in &unfinished {
-                    detection.record(ctx, &endpoint);
-                }
+                Unfinished::file_all(&unfinished, ctx, &endpoint);
                 record(ctx, key, number, protocol, findings);
             }
         },
@@ -447,6 +483,7 @@ fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
 /// the port or the detection held, the process ran out of descriptors, and
 /// the report names the limit and its remedy.
 fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
+    let answered = format!("({}/{} answered)", shortfall.answered, shortfall.requests);
     let stopped = match shortfall.stopped {
         Stopped::Starved => return starved(shortfall),
         Stopped::Budget { refusal, limit } => match refusal {
@@ -455,14 +492,16 @@ fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
             ProbeRefusal::Connections => format!("{limit}-connection budget"),
             ProbeRefusal::Descriptors => return starved(shortfall),
         },
-        Stopped::PortUnresponsive => "port unresponsive".to_string(),
+        Stopped::PortUnresponsive => {
+            return Unfinished::PortGivenUp {
+                id: shortfall.detection.clone(),
+                why: format!("port unresponsive {answered}"),
+            };
+        }
     };
     Unfinished::CutShort {
         id: shortfall.detection.clone(),
-        why: format!(
-            "{stopped} ({}/{} answered)",
-            shortfall.answered, shortfall.requests
-        ),
+        why: format!("{stopped} {answered}"),
     }
 }
 
@@ -1024,6 +1063,70 @@ mod tests {
         drop(session);
     }
 
+    /// A port given up on is one line on the console however many detections
+    /// it left unfinished, while the report keeps an entry for each.
+    ///
+    /// A web port attracts dozens of detections, and a line apiece buried the
+    /// rest of the run under dozens saying one thing, which the reader acts on
+    /// once: the port stopped answering. The report is read for coverage, and
+    /// there each question left open still counts. A detection its own budget
+    /// stopped is not the port's doing and keeps its own line.
+    #[test]
+    fn a_port_given_up_on_is_one_console_line_and_an_entry_per_detection() {
+        let (session, ctx) = ScanSession::new();
+        let shortfall = |detection: &str, stopped| Shortfall {
+            detection: detection.to_string(),
+            stopped,
+            answered: 0,
+            requests: 4,
+        };
+        let budget = Stopped::Budget {
+            refusal: ProbeRefusal::Deadline,
+            limit: 3_000,
+        };
+        let unfinished: Vec<Unfinished> = [
+            shortfall("admin-panels", Stopped::PortUnresponsive),
+            shortfall("backup-files", budget),
+            shortfall("git-exposed", Stopped::PortUnresponsive),
+            shortfall("env-file", Stopped::PortUnresponsive),
+        ]
+        .iter()
+        .map(describe_shortfall)
+        .collect();
+
+        let lines = crate::logging::logged(|| {
+            Unfinished::file_all(&unfinished, &ctx, "192.0.2.1:80");
+        });
+
+        let console: Vec<&str> = lines
+            .iter()
+            .filter(|line| line.verbosity == 0)
+            .map(|line| line.message.as_str())
+            .collect();
+        assert_eq!(
+            console,
+            vec![
+                "backup-files on 192.0.2.1:80 cut short: 3000 ms budget (0/4 answered)",
+                "192.0.2.1:80 unresponsive, 3 detections cut short",
+            ]
+        );
+        let filed: Vec<String> = ctx
+            .failures_snapshot()
+            .iter()
+            .map(|failure| failure.reason().to_string())
+            .collect();
+        assert_eq!(
+            filed,
+            vec![
+                "admin-panels on 192.0.2.1:80 cut short: port unresponsive (0/4 answered)",
+                "backup-files on 192.0.2.1:80 cut short: 3000 ms budget (0/4 answered)",
+                "git-exposed on 192.0.2.1:80 cut short: port unresponsive (0/4 answered)",
+                "env-file on 192.0.2.1:80 cut short: port unresponsive (0/4 answered)",
+            ]
+        );
+        drop(session);
+    }
+
     /// A detection that broke is a failure, and the console says so as one.
     #[test]
     fn a_detection_that_broke_is_still_reported_as_a_failure() {
@@ -1068,7 +1171,7 @@ mod tests {
         };
         let why = |unfinished: Unfinished| match unfinished {
             Unfinished::CutShort { why, .. } => why,
-            Unfinished::Failed { why, .. } => panic!("a spent budget read as a fault: {why}"),
+            other => panic!("a spent budget read as something else: {other:?}"),
         };
 
         assert_eq!(why(cut(BudgetTrap::Deadline)), "2000 ms budget");

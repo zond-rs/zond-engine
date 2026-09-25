@@ -1822,6 +1822,14 @@ impl ScanContext {
     /// budget allowed.
     pub(crate) fn record_cut_short(&self, scanner: ScannerKind, reason: String) {
         crate::warn!("{reason}");
+        self.file_cut_short(scanner, reason);
+    }
+
+    /// [`record_cut_short`](Self::record_cut_short) without the console line,
+    /// for a caller that announces many of these in one: a port given up on
+    /// leaves every detection gated onto it unfinished, a report entry each,
+    /// and the reader at the console acts on the port rather than on the count.
+    pub(crate) fn file_cut_short(&self, scanner: ScannerKind, reason: String) {
         self.failures
             .push(ScannerFailure::new(scanner, reason.clone()));
         let _ = self
