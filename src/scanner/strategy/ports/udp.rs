@@ -204,13 +204,18 @@ pub struct UdpPortScanner {
 /// next allowance falls to, while a port a filter drops is silent to every
 /// attempt and a closed port on a clean link answers the first. So a host is
 /// read as rationing when a port of its answered closed only once asked
-/// again, and more of its ports stayed silent than answered. One late answer
-/// is often all a ration leaves: a Linux peer asked forty closed ports at once
-/// answered six at once and one retry, the next allowance, before the scan
-/// ended. A lossy link answers late too, but leaves few of a host's ports
-/// silent; what the reading can mistake is a filter dropping most ports on a
-/// lossy link in front of a few closed ones, one of which lost its first
-/// answer.
+/// again, after others answered at once, and more of its ports stayed silent
+/// than answered. One late answer is often all a ration leaves: a Linux peer
+/// asked forty closed ports at once answered six at once and one retry, the
+/// next allowance, before the scan ended.
+///
+/// The answers at once are the burst every ration spends before it starts
+/// turning questions away, and they are what keeps a lossy link from reading
+/// as one. A lossy link answers late too, but leaves few of a host's ports
+/// silent, and a filter dropping most ports in front of a single closed one
+/// whose first answer was lost answers late and nothing at once. What the
+/// reading can still mistake is that filter in front of several closed ports,
+/// some answered at once and one of them lost.
 #[derive(Debug, Default, Clone, Copy)]
 struct IcmpTally {
     /// Ports the host itself answered with a port unreachable.
@@ -224,7 +229,7 @@ struct IcmpTally {
 impl IcmpTally {
     /// Whether this host's answers show its ICMP errors rationed.
     fn rate_limited(self) -> bool {
-        self.late > 0 && self.silent > self.closed
+        self.late > 0 && self.late < self.closed && self.silent > self.closed
     }
 }
 
@@ -1598,6 +1603,29 @@ mod tests {
 
         scanner.report_rationed();
         assert_eq!(scanner.core.ctx.take_icmp_rate_limited(), vec![TARGET]);
+    }
+
+    /// **A closed port whose only answer came late, behind a filter dropping
+    /// the rest, is not a ration.** A ration answers its burst at once before
+    /// it answers anything late, and a lossy link in front of a filter can
+    /// lose the first answer of the one closed port there is, leaving a late
+    /// answer and a page of silence that read as a ration. Named rationing,
+    /// the host's filtered ports would be read as closed ones.
+    #[test]
+    fn a_single_closed_port_answered_late_behind_a_filter_is_not_a_ration() {
+        let lossy_filter = IcmpTally {
+            closed: 1,
+            late: 1,
+            silent: 19,
+        };
+        assert!(!lossy_filter.rate_limited(), "{lossy_filter:?}");
+
+        let ration = IcmpTally {
+            closed: 7,
+            late: 1,
+            silent: 33,
+        };
+        assert!(ration.rate_limited(), "{ration:?}");
     }
 
     /// A probe that has spent its budget is written off while the scan is still

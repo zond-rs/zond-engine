@@ -29,6 +29,18 @@
 //! (see `dial`), and a probe the process has no socket for waits for one.
 //! A shell's file limit therefore slows a scan and never narrows it: a socket
 //! the process could not open is a question nobody asked, not an answer.
+//!
+//! ## What a socket cannot see
+//!
+//! The kernel hands back an outcome and never the packet behind it, so two
+//! readings the raw path makes are out of reach here. A refused connect is a
+//! reset or an ICMP port unreachable, reported alike, and the second is what a
+//! firewall rejecting on a host's behalf sends by default: such a filter in
+//! front of an address with nothing behind it reads here as a host up with a
+//! closed port. And a UDP port is asked once, so a host rationing its ICMP
+//! errors, which leaves most of its closed ports reading open|filtered on
+//! either path, is never named as rationing here: only a retry answered late
+//! shows the ration, and this path makes none.
 
 use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
@@ -770,11 +782,41 @@ fn absorb_probe(
 /// left, is this host giving up, and crediting the target with a silence it was
 /// never asked for would be evidence of the wrong thing.
 fn settled(number: u16, state: PortState, reason: Option<ScanResponse>) -> Port {
-    let port = crate::fingerprint::baseline_port(number, Protocol::Tcp, state);
+    settled_over(Protocol::Tcp, number, state, reason)
+}
+
+/// [`settled`], for a port of `protocol`.
+fn settled_over(
+    protocol: Protocol,
+    number: u16,
+    state: PortState,
+    reason: Option<ScanResponse>,
+) -> Port {
+    let port = crate::fingerprint::baseline_port(number, protocol, state);
 
     match reason {
         Some(reason) => port.with_discovery(Discovery::new(reason)),
         None => port,
+    }
+}
+
+/// Which packet settled a UDP port the connected socket reported on, in the
+/// vocabulary the raw scanner records the same verdicts in.
+///
+/// A reply read off the socket is the port's own answer. A refusal is an ICMP
+/// port unreachable, since nothing else refuses a datagram, and any other error
+/// the kernel matched to the socket is an ICMP error too. Its sender is not
+/// surfaced here, so where the raw scanner names a prohibition from the host
+/// itself apart from one from the path, this names both as unreachable.
+///
+/// `None` for `OpenFiltered`, silence being the protocol's ordinary outcome
+/// rather than a packet, as the raw scanner records it, and for a port no
+/// datagram was sent to.
+fn udp_evidence(state: PortState) -> Option<ScanResponse> {
+    match state {
+        PortState::Open => Some(ScanResponse::UdpResponse),
+        PortState::Closed | PortState::Filtered => Some(ScanResponse::IcmpUnreachable),
+        _ => None,
     }
 }
 
@@ -1162,10 +1204,11 @@ async fn udp_port_prober(
     let record = |state, answered, outcome, attempt| {
         Some(Probed {
             ip: target.ip,
-            port: Some(crate::fingerprint::baseline_port(
-                target.port,
+            port: Some(settled_over(
                 Protocol::Udp,
+                target.port,
                 state,
+                udp_evidence(state),
             )),
             // Nothing on this path turns a datagram into the text a detection
             // reads: the reply is read for the role it declares and no more.
@@ -1902,6 +1945,46 @@ mod tests {
                 .state(),
             PortState::Closed
         );
+    }
+
+    /// **A UDP port the connect path settles says what settled it, as the raw
+    /// path's does.** A reply is the port's own answer and a refusal an ICMP
+    /// port unreachable. Without the reason an unprivileged report's closed
+    /// and open UDP ports rest on nothing a reader can see, and two scans of
+    /// one network compare as different by privilege alone.
+    #[tokio::test]
+    async fn a_udp_port_the_connect_path_settles_records_what_settled_it() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let service = UdpSocket::bind((ip, 0)).await.expect("bind service");
+        let open = service.local_addr().expect("bound").port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 64];
+            if let Ok((_, from)) = service.recv_from(&mut buf).await {
+                let _ = service.send_to(b"pong", from).await;
+            }
+        });
+        let closed = closed_loopback_udp_port(ip).await;
+
+        for (port, reason) in [
+            (open, ScanResponse::UdpResponse),
+            (closed, ScanResponse::IcmpUnreachable),
+        ] {
+            let probed = udp_port_prober(
+                udp_target(ip, port),
+                Shaping::default(),
+                Egress::KERNEL,
+                SocketAddr::new(ip, port),
+                ScanHandle::new(),
+            )
+            .await
+            .and_then(|probed| probed.port)
+            .expect("a verdict");
+            assert_eq!(
+                probed.discovery().map(|found| found.reason().clone()),
+                Some(reason),
+                "{port}: {probed:?}"
+            );
+        }
     }
 
     /// A TCP port that refuses a connect is a SYN out and a RST back, one round

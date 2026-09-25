@@ -1896,8 +1896,14 @@ impl ScanPhase {
     /// a second.
     ///
     /// Read from the host's own answers: a port answered closed only when
-    /// asked again while more of its ports stayed silent than answered, which
-    /// a filter dropping ports does not produce.
+    /// asked again, after others answered at once, while more of its ports
+    /// stayed silent than answered, which a filter dropping ports does not
+    /// produce.
+    ///
+    /// Only a phase that asks a port more than once can see it, which is a
+    /// scan with raw sockets. A scan without them asks each UDP port once,
+    /// over a connected socket that meets the same ration, and has no retry
+    /// for a late answer to arrive at, so it names no host here.
     pub fn icmp_rate_limited(&self) -> &[IpAddr] {
         &self.icmp_rate_limited
     }
