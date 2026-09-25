@@ -106,8 +106,9 @@ const CHANNEL_READ_TIMEOUT: Duration = Duration::from_millis(50);
 /// The longest [`Resolutions::resolve`] waits for a resolution to conclude.
 ///
 /// A guard, not a budget: the thread driving the link concludes every
-/// resolution within [`ARP_TIMEOUT`] of its first request, plus one read.
-/// This bounds the wait only if that thread is lost, so that a send cannot
+/// resolution within [`ARP_TIMEOUT`] of its first request, plus one read, and
+/// refuses them if it panics. This bounds the wait only if that thread stops
+/// without ending, as a read that never returns would, so that a send cannot
 /// hang on a resolution nothing is driving any more.
 const WAIT_GUARD: Duration = Duration::from_secs(10);
 
@@ -214,7 +215,8 @@ struct LinkResolutions {
     /// Every resolution still waiting for its reply, by the neighbour asked.
     pending: HashMap<Ipv4Addr, Pending>,
     /// Whether a thread is driving this link's resolutions. At most one is,
-    /// and it runs while anything is pending.
+    /// and it runs while anything is pending; one that panics clears this as
+    /// it unwinds (see [`UndrivenOnUnwind`]).
     driven: bool,
     /// Resolutions the link could not carry, and why: the link would not
     /// open, or would not take a request. Not a fact about the neighbour, so
@@ -383,6 +385,10 @@ impl Resolutions {
 
     /// Opens `interface` and drives its resolutions until none is left.
     fn drive_link(&self, interface: &str) {
+        let _released = UndrivenOnUnwind {
+            resolutions: self,
+            interface,
+        };
         match (self.open)(interface) {
             Ok(mut link) => self.drive(interface, link.as_mut()),
             Err(reason) => {
@@ -462,6 +468,40 @@ impl Resolutions {
         // the state whole between statements, so a poisoned lock's contents
         // are as good as any.
         self.state.lock().unwrap_or_else(|held| held.into_inner())
+    }
+}
+
+/// Releases a link whose driving thread unwinds: every resolution it was
+/// running is refused, and the link is marked undriven.
+///
+/// Without it a panic anywhere in the thread, in the link's opener or in a
+/// capture binding's read or write, would leave the link marked driven with
+/// nothing driving it, and no resolution on it would start again for the
+/// sender's life: each send waiting on one would sit out [`WAIT_GUARD`] and be
+/// refused.
+///
+/// Refused rather than handed to a fresh thread, so that a fault that meets
+/// every driver cannot become a loop of threads panicking with nobody asking
+/// for anything. A refusal says nothing about the neighbours, so none is
+/// remembered as unanswered, and the next ask on the link starts a driver of
+/// its own: the link stays usable, and each fault costs the resolutions
+/// running when it struck.
+struct UndrivenOnUnwind<'a> {
+    resolutions: &'a Resolutions,
+    interface: &'a str,
+}
+
+impl Drop for UndrivenOnUnwind<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let mut state = self.resolutions.lock();
+        let link = state.links.entry(self.interface.to_owned()).or_default();
+        refuse_all(link, "the thread resolving on the link panicked");
+        link.driven = false;
+        drop(state);
+        self.resolutions.concluded.notify_all();
     }
 }
 
@@ -1027,6 +1067,70 @@ pub(crate) mod tests {
         // Resolutions that refuse any resolution they are asked to run.
         let second = undriven();
         assert_eq!(second.resolve(&ask(interface, ip)).ok(), Some(mac));
+    }
+
+    /// A link whose driver panics at its first request, as a capture binding
+    /// that met something it could not handle would.
+    struct Panicking;
+
+    impl FrameSink for Panicking {
+        fn send_frame(&mut self, _frame: &[u8]) -> Result<(), String> {
+            panic!("the link's driver panics, as the test asks");
+        }
+    }
+
+    impl ResolutionLink for Panicking {
+        fn next_frame(&mut self) -> Option<&[u8]> {
+            None
+        }
+    }
+
+    /// A driver that panics refuses what it was running, at once, and the link
+    /// resolves again on the next ask.
+    ///
+    /// Left marked driven, the link would start no resolution for the rest of
+    /// the sender's life: every send to a neighbour on it would wait out the
+    /// guard and be refused, for a fault in one thread that has since ended.
+    #[test]
+    fn a_driver_that_panics_releases_its_link() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let interface = "test-panic0";
+        let ip = Ipv4Addr::new(192, 0, 2, 60);
+        let mac = MacAddr::new(0x02, 0, 0, 0, 0, 0x60);
+        let opened = Arc::new(AtomicUsize::new(0));
+        let opens = Arc::clone(&opened);
+        let resolutions = Arc::new(Resolutions::over(Box::new(move |_| {
+            let link: Box<dyn ResolutionLink> = if opens.fetch_add(1, Ordering::SeqCst) == 0 {
+                Box::new(Panicking)
+            } else {
+                Box::new(
+                    Segment::new()
+                        .in_real_time()
+                        .with(ip, mac, Answers::Request(1)),
+                )
+            };
+            Ok(link)
+        })));
+
+        let first = resolutions.resolve(&ask(interface, ip));
+        assert!(
+            matches!(&first, Err(SendError::Refused(reason)) if reason.contains("panicked")),
+            "the resolution the driver was running is refused for the panic: {first:?}"
+        );
+        assert!(
+            !resolutions
+                .lock()
+                .unanswered
+                .is_fresh(interface, IpAddr::V4(ip), Instant::now()),
+            "and not held against the neighbour"
+        );
+        assert_eq!(
+            resolutions.resolve(&ask(interface, ip)).ok(),
+            Some(mac),
+            "the next ask drives the link again"
+        );
+        assert_eq!(opened.load(Ordering::SeqCst), 2);
     }
 
     /// The record is a next hop's, on its own interface, and ages out.
