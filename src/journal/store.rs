@@ -154,6 +154,9 @@ pub struct Journal {
     written: Written,
     /// How long the findings file is.
     length: u64,
+    /// How much has to be superseded before a compaction is tried again, once
+    /// one has failed. See [`compact`](Journal::compact).
+    compact_after: u64,
 }
 
 impl Journal {
@@ -206,6 +209,7 @@ impl Journal {
             options: None,
             written: Written::default(),
             length: 0,
+            compact_after: 0,
         };
         journal.open_findings()?;
         journal.length = fs::metadata(directory.join(HOSTS))
@@ -280,6 +284,7 @@ impl Journal {
                 options: read_options(directory)?,
                 written,
                 length,
+                compact_after: 0,
             },
             checkpoint,
         ))
@@ -406,22 +411,41 @@ impl Journal {
     /// is not worth rewriting whatever it holds.
     pub fn should_compact(&self) -> bool {
         outgrown(self.length, self.written.superseded)
+            && self.written.superseded >= self.compact_after
     }
 
     /// Writes the findings file whole, replacing everything superseded.
     ///
     /// `all` has to be every host the scan has found rather than the recent ones,
     /// since this replaces the file rather than adding to it. Written to a sibling
-    /// and
-    /// renamed over, so a compaction interrupted part way leaves the previous
+    /// and renamed over, so a compaction interrupted part way leaves the previous
     /// file untouched.
+    ///
+    /// A compaction that fails removes its sibling, and
+    /// [`should_compact`](Self::should_compact) does not ask for another until
+    /// as much again has been superseded. What stops one, most often a disk
+    /// with no room for a second copy of the findings, stops the next, and one
+    /// is due every checkpoint once the file has outgrown itself: retried each
+    /// time, a scan would write the live findings again every few seconds and
+    /// leave a partial copy holding whatever room the disk had left.
     pub fn compact(&mut self, all: &[Host]) -> Result<(), JournalError> {
-        let destination = self.directory.join(HOSTS);
-        let temporary = destination.with_extension("jsonl-tmp");
+        let temporary = self.directory.join(HOSTS).with_extension("jsonl-tmp");
+        let compacted = self.write_whole(all, &temporary);
+        if compacted.is_err() {
+            let _ = fs::remove_file(&temporary);
+            let superseded = self.written.superseded;
+            let live = self.length.saturating_sub(superseded);
+            self.compact_after = superseded.saturating_add(COMPACT_FLOOR.max(live));
+        }
+        compacted
+    }
 
+    /// [`compact`](Self::compact)'s writing, through `temporary`.
+    fn write_whole(&mut self, all: &[Host], temporary: &Path) -> Result<(), JournalError> {
+        let destination = self.directory.join(HOSTS);
         let mut written = Written::default();
         {
-            let file = create_staged(&temporary)?;
+            let file = create_staged(temporary)?;
             let mut writer = crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
             for host in all {
                 // Measured against nothing written, so the record is the whole
@@ -434,9 +458,10 @@ impl Journal {
         }
 
         // The destination becomes the temporary's inode, ownership and all.
-        fs::rename(&temporary, &destination)?;
+        fs::rename(temporary, &destination)?;
         self.written = written;
         self.length = fs::metadata(&destination)?.len();
+        self.compact_after = 0;
         Ok(())
     }
 
@@ -614,11 +639,11 @@ impl Journal {
 /// something later superseded, is due to be written whole again. See
 /// [`Journal::should_compact`].
 fn outgrown(length: u64, superseded: u64) -> bool {
-    /// The size below which a findings file is not worth rewriting.
-    const FLOOR: u64 = 4 * 1024 * 1024;
-
-    superseded > FLOOR.max(length.saturating_sub(superseded))
+    superseded > COMPACT_FLOOR.max(length.saturating_sub(superseded))
 }
+
+/// The size below which a findings file is not worth rewriting.
+const COMPACT_FLOOR: u64 = 4 * 1024 * 1024;
 
 /// What a journal's findings file holds of each host, and how many of its
 /// bytes later records superseded.
@@ -3205,6 +3230,53 @@ mod tests {
             rest + rest_again + port,
             "and port 22's closed record under its open one"
         );
+    }
+
+    /// A compaction that fails leaves no partial copy behind and is not tried
+    /// again at the next checkpoint.
+    ///
+    /// What stops one, usually a disk with no room for a second copy of the
+    /// findings, stops the next, and one is due every checkpoint once the file
+    /// has outgrown itself. Left behind, the partial copy held whatever room
+    /// the disk had; retried, it was written again every few seconds. The
+    /// rename is refused here by a directory standing where the findings file
+    /// goes, which fails the compaction at its last step.
+    #[test]
+    fn a_failed_compaction_leaves_nothing_behind_and_waits_before_trying_again() {
+        let root = scratch("failed-compaction");
+        let map = plan("192.0.2.1", "80");
+        let mut journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+        let host = Host::new("192.0.2.1".parse().expect("an address"));
+        journal
+            .record_hosts(std::slice::from_ref(&host))
+            .expect("records");
+
+        // As if the file had grown mostly superseded.
+        journal.written.superseded = 3 * COMPACT_FLOOR;
+        journal.length = 4 * COMPACT_FLOOR;
+        assert!(journal.should_compact());
+
+        fs::remove_file(directory.join(HOSTS)).expect("removes the findings");
+        fs::create_dir_all(directory.join(HOSTS).join("occupied")).expect("blocks the name");
+        assert!(journal.compact(std::slice::from_ref(&host)).is_err());
+
+        assert!(
+            !directory.join(HOSTS).with_extension("jsonl-tmp").exists(),
+            "the partial copy is left holding the disk's room"
+        );
+        assert!(
+            !journal.should_compact(),
+            "a compaction that just failed is due again at once"
+        );
+        journal.written.superseded += 2 * COMPACT_FLOOR;
+        assert!(
+            journal.should_compact(),
+            "and again once as much is superseded"
+        );
+
+        drop(journal);
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A findings file is rewritten once what later records superseded in it

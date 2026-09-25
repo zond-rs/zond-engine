@@ -154,8 +154,11 @@ impl Writer {
         let outcome = if journal.should_compact() {
             // Taken after the cursor was read, as `cut.changed` was, so it
             // covers everything that cursor settled and nothing is lost by not
-            // appending `cut.changed`.
-            journal.compact(&ctx.findings_snapshot())
+            // appending `cut.changed`. A compaction that fails leaves the file
+            // as it was, which appending to still brings up to date.
+            journal
+                .compact(&ctx.findings_snapshot())
+                .or_else(|_| journal.record_hosts(&cut.changed))
         } else {
             journal.record_hosts(&cut.changed)
         }

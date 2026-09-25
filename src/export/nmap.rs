@@ -87,7 +87,7 @@ use crate::model::finding::Finding;
 use crate::model::host::{Host, HostStatus, IpProtocolState};
 use crate::model::port::{Port, PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
-use crate::report::{ScanPhase, ScanReport};
+use crate::report::{ScanPhase, ScanReport, ScannerFailure};
 use crate::system::privilege::Privilege;
 
 /// The nmap XML output version this document is written to.
@@ -182,8 +182,10 @@ impl Exporter for NmapXmlExporter {
             // A strategy that failed is the one shortfall nmap's own runs
             // call an error. A host its budget left early and a port left
             // unasked are, in nmap's output, part of a run that succeeded,
-            // and a consumer of this format reads the attribute that way.
-            if report.failures().next().is_some() {
+            // and a consumer of this format reads the attribute that way. A
+            // journal that could not be written is no strategy and cost the
+            // run nothing it covered; see `ScannerFailure::narrows_coverage`.
+            if report.failures().any(ScannerFailure::narrows_coverage) {
                 "error"
             } else {
                 "success"
@@ -891,6 +893,62 @@ mod tests {
             .export(&report, &mut out)
             .expect("the report exports");
         String::from_utf8(out).expect("the document is UTF-8")
+    }
+
+    /// A run whose journal fell behind finished as a run that succeeded, and
+    /// one whose strategy failed as one that did not.
+    ///
+    /// nmap calls a run an error when its scanning failed. A journal that
+    /// could not be written probed nothing and dropped no answer, so a
+    /// consumer reading the attribute would be told the scan went wrong when
+    /// the disk did.
+    #[test]
+    fn a_journal_that_fell_behind_is_not_a_run_that_failed() {
+        use crate::report::{PhaseParts, ScanKind, ScanSettings, ScannerKind, TargetScope};
+
+        let exit = |failed: ScannerKind| {
+            let phase = ScanPhase::from_parts(PhaseParts {
+                kind: ScanKind::PortScan,
+                started_at: std::time::SystemTime::UNIX_EPOCH,
+                elapsed: std::time::Duration::from_secs(1),
+                privilege: None,
+                targets: TargetScope::from_ip_set(
+                    &mut crate::model::ip::set::IpSet::new(),
+                    &crate::model::exclusion::Exclusions::none(),
+                ),
+                settings: ScanSettings::from(&crate::config::ZondConfig::default()),
+                failures: vec![ScannerFailure::new(failed, "it could not")],
+                refusals: Vec::new(),
+                unroutable: Vec::new(),
+                timed_out: Vec::new(),
+                icmp_rate_limited: Vec::new(),
+                reached_by_connect: Vec::new(),
+                undecided: Vec::new(),
+                liveness_skipped: None,
+                silent: Vec::new(),
+                stopped: None,
+                unreached: 0,
+                unheard_probes: 0,
+                probes: Vec::new(),
+                origin: None,
+                attachments: Vec::new(),
+            });
+            let report = ScanReport::recorded("zond", vec![phase], Vec::new());
+            let mut out = Vec::new();
+            NmapXmlExporter::new(ExportOptions::new())
+                .export(&report, &mut out)
+                .expect("the report exports");
+            let document = String::from_utf8(out).expect("the document is UTF-8");
+            let at = document.find(r#" exit=""#).expect("a finished element") + 7;
+            document[at..]
+                .split('"')
+                .next()
+                .expect("a value")
+                .to_owned()
+        };
+
+        assert_eq!(exit(ScannerKind::Journal), "success");
+        assert_eq!(exit(ScannerKind::Routed), "error");
     }
 
     /// The point of the whole format. A consumer keys on the root element and

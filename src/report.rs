@@ -1350,6 +1350,17 @@ impl ScannerFailure {
     pub fn at(&self) -> SystemTime {
         self.at
     }
+
+    /// Whether the failure cost the scan ground it set out to cover.
+    ///
+    /// Every strategy's does. A [`Journal`](ScannerKind::Journal) that could
+    /// not be written does not: it probed nothing and dropped no answer, and
+    /// what it costs is how much a resume of the scan would ask again. So it
+    /// is kept in the report, to say the journal fell behind, and does not
+    /// make a scan that covered everything read as one that did not.
+    pub(crate) fn narrows_coverage(&self) -> bool {
+        self.scanner != ScannerKind::Journal
+    }
 }
 
 impl fmt::Display for ScannerFailure {
@@ -2544,11 +2555,16 @@ impl ScanReport {
     /// left unasked on one is the same fact; an address an exclusion policy
     /// withheld was never asked for. Counting either would leave a sweep of a
     /// range with a gap in it, or under any policy at all, never complete.
+    ///
+    /// Nor is a journal that could not be written, which narrows nothing: it
+    /// is filed as a failure so the report says so, and costs only what a
+    /// resume would ask again. Counted, a full disk under a long scan would
+    /// report every host it covered as a scan that fell short.
     pub fn is_partial(&self) -> bool {
-        self.phases
-            .iter()
-            .any(|phase| !phase.failures.is_empty() || !phase.refusals.is_empty())
-            || !self.timed_out().is_empty()
+        self.phases.iter().any(|phase| {
+            phase.failures.iter().any(ScannerFailure::narrows_coverage)
+                || !phase.refusals.is_empty()
+        }) || !self.timed_out().is_empty()
             || !self.undecided().is_empty()
             || self.left_ports_unasked()
             || self.unreached() > 0
@@ -3629,6 +3645,25 @@ mod tests {
 
         assert!(report.is_partial());
         assert_eq!(report.failures().count(), 1);
+    }
+
+    /// A journal that could not be written is kept in the report and does not
+    /// make a scan that covered everything read as partial.
+    ///
+    /// A journal failure probed nothing and dropped no answer. Counted as a
+    /// shortfall, a scan that filled its disk six hours in reported every host
+    /// it covered as a run that fell short, and exited as one.
+    #[test]
+    fn a_journal_that_could_not_be_written_does_not_make_a_scan_partial() {
+        let mut phase = phase(ScanKind::PortScan);
+        phase.failures.push(ScannerFailure::new(
+            ScannerKind::Journal,
+            "checkpoint failed: no space left on device",
+        ));
+        let report = ScanReport::new(phase, []);
+
+        assert_eq!(report.failures().count(), 1, "the failure is kept");
+        assert!(!report.is_partial());
     }
 
     /// A phase whose scanners carry no instrumentation reports no counters,
