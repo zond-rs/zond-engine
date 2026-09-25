@@ -96,8 +96,9 @@ pub(crate) use warn_macro as warn;
 /// function serve a target count, a dropped-frame counter and a slice length
 /// without any of them being narrowed on the way in.
 ///
-/// The alternative this replaced was `host(s)`, which is the scanner declining
-/// to answer a question it already knows the answer to.
+/// Never `host(s)`: the count is in hand wherever a message is written, and a
+/// hedged plural is the scanner declining to answer a question it already
+/// knows the answer to.
 pub(crate) fn counted(count: u128, one: &str, many: &str) -> String {
     match count {
         1 => format!("1 {one}"),
@@ -194,13 +195,11 @@ mod tests {
     ///
     /// Nor does a message hedge a plural as `host(s)`. The count is in hand at
     /// the point the message is written, so the noun takes the form that count
-    /// gives it; [`counted`] is what writes both. Ten of them had accumulated
-    /// before anybody looked at these either.
+    /// gives it; [`counted`] is what writes both.
     ///
     /// This reads the source because there is nowhere else to read it: the
     /// messages are string literals scattered across the crate, and a convention
-    /// nothing checks is a convention that drifts. Twenty of thirty-one had
-    /// drifted by the time anybody looked.
+    /// nothing checks is a convention that drifts.
     #[test]
     fn every_diagnostic_is_written_in_one_voice() {
         const MACROS: [&str; 4] = ["info!", "success!", "warn!", "error!"];
