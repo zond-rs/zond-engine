@@ -83,7 +83,7 @@ use crate::model::port::{PortState, Protocol};
 use crate::protocols::{icmp, tcp};
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::raw::neighbors::resolve_ahead;
+use crate::scanner::strategy::raw::neighbors::{NeighborGates, admit_waiting, resolve_ahead};
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::frame::IpSegment;
@@ -240,6 +240,10 @@ struct Tracer {
     /// than consulted through the caller, because resolving is a cached lookup
     /// that mutates and every strategy here keeps its own.
     resolver: SourceResolver,
+    /// How far this run has read the resolution of each target's neighbour,
+    /// which every probe is admitted through. See
+    /// [`admitted`](Self::admitted).
+    neighbors: NeighborGates,
     /// When each outstanding probe left, so a reply can be timed against it.
     in_flight: HashMap<Sent, Instant>,
     sent: u64,
@@ -266,10 +270,43 @@ impl Tracer {
             cache,
             marker,
             resolver: SourceResolver::from_system(),
+            neighbors: NeighborGates::default(),
             in_flight: HashMap::new(),
             sent: 0,
             failed: 0,
             answered: 0,
+        }
+    }
+
+    /// Waits until a probe to `target` may be handed to the transport, and
+    /// says whether one may be at all.
+    ///
+    /// Every probe is admitted, as every pass's are (see
+    /// [`NeighborGates::admit`]): the first to a neighbour the kernel does not
+    /// hold is the write that asks for it, and the ones behind it wait on the
+    /// verdict rather than queue behind it. Waiting costs a trace nothing it
+    /// measures, since a round trip is timed from the probe's own send. A
+    /// target whose neighbour is given up on is not traced: every round of
+    /// its walk would be written into a queue the kernel throws away, and
+    /// read as a distance where nothing answered.
+    async fn admitted(&mut self, target: IpAddr) -> bool {
+        let watch = self.transport.neighbors();
+        match admit_waiting(
+            &mut self.neighbors,
+            &self.ctx,
+            watch,
+            &mut self.resolver,
+            target,
+        )
+        .await
+        {
+            Ok(()) => true,
+            Err(why) => {
+                if let Some(why) = why {
+                    info!(verbosity = 2, "{target} not traced: unreachable ({why})");
+                }
+                false
+            }
         }
     }
 
@@ -659,13 +696,14 @@ impl Tracer {
     /// resolution per host in turn. A host whose neighbour never answered is
     /// not traced.
     async fn run(&mut self, group: Vec<IpAddr>) {
-        let unreached = resolve_ahead(
+        let (gates, unreached) = resolve_ahead(
             &self.ctx,
             self.transport.neighbors(),
             &mut self.resolver,
             group.iter().copied(),
         )
         .await;
+        self.neighbors = gates;
         for (target, why) in &unreached {
             info!(verbosity = 2, "{target} not traced: unreachable ({why})");
         }
@@ -788,6 +826,7 @@ impl Tracer {
             if self.ctx.handle.should_stop() {
                 break;
             }
+            let mut asked: Vec<(IpAddr, IpAddr)> = Vec::new();
             for target in window {
                 let Some(source) = self.resolver.resolve(*target) else {
                     warn!(
@@ -796,9 +835,22 @@ impl Tracer {
                     );
                     continue;
                 };
-                for _ in 0..ATTEMPTS {
-                    self.send(*target, MAX_HOPS, source);
+                asked.push((*target, source));
+            }
+            // A round of attempts across the window at a time, rather than every
+            // attempt to one host before the next: the first round's writes
+            // start the resolution of every new neighbour in the window
+            // together, so the probes held behind them wait out one
+            // resolution between them rather than one per host in turn.
+            for _ in 0..ATTEMPTS {
+                let mut admitted = Vec::with_capacity(asked.len());
+                for (target, source) in asked {
+                    if self.admitted(target).await {
+                        self.send(target, MAX_HOPS, source);
+                        admitted.push((target, source));
+                    }
                 }
+                asked = admitted;
             }
 
             let deadline = Instant::now() + ROUND_TIMEOUT;
@@ -829,12 +881,18 @@ impl Tracer {
     /// The unit the walk is built from: [`walk`](Self::walk) chooses which
     /// distances to ask about and this asks about one of them. Three outcomes
     /// come back rather than two, because a distance nothing answered and one
-    /// the target answered are different facts. See [`Landing`].
-    async fn probe_distance(&mut self, target: IpAddr, at: u8, source: IpAddr) -> Landing {
+    /// the target answered are different facts. See [`Landing`]. `None` where
+    /// nothing could be asked, the target's neighbour given up on or the scan
+    /// stopped, which is no fact about the distance at all.
+    async fn probe_distance(&mut self, target: IpAddr, at: u8, source: IpAddr) -> Option<Landing> {
         // A burst rather than one probe waited out three times: the answers are
         // independent, so sending them together costs one round trip instead of
         // three and the first to arrive settles the distance.
         for _ in 0..ATTEMPTS {
+            if !self.admitted(target).await {
+                self.in_flight.clear();
+                return None;
+            }
             self.send(target, at, source);
         }
         let deadline = Instant::now() + ROUND_TIMEOUT;
@@ -880,7 +938,7 @@ impl Tracer {
             counted((self.sent - attempted) as u128, "probe", "probes")
         );
 
-        landing
+        Some(landing)
     }
 
     /// Measures the path to `target`, starting from `estimate` and correcting it.
@@ -912,7 +970,10 @@ impl Tracer {
             if self.ctx.handle.should_stop() {
                 return;
             }
-            match self.probe_distance(target, reached, source).await {
+            let Some(landing) = self.probe_distance(target, reached, source).await else {
+                return;
+            };
+            match landing {
                 Landing::Target => break,
                 // A router still stands here, so the target is further out. The
                 // router is a genuine hop and is kept: walking outward is
@@ -945,7 +1006,10 @@ impl Tracer {
                 continue;
             }
 
-            match self.probe_distance(target, at, source).await {
+            let Some(landing) = self.probe_distance(target, at, source).await else {
+                return;
+            };
+            match landing {
                 // The target answers nearer than the outward walk settled on,
                 // so the outward walk overshot: the far end moves in, and this
                 // distance holds the target rather than a router.
@@ -1749,6 +1813,88 @@ mod tests {
         assert!(
             sent.iter().all(|(_, _, dst)| *dst == IpAddr::V4(LIVE)),
             "a probe was handed to the sender for a neighbour nobody had resolved"
+        );
+    }
+
+    /// Through the kernel, which asks for a neighbour only once a probe is
+    /// written to it, the first probe to a host whose neighbour it does not
+    /// hold is the one write that asks, and the attempts behind it wait on the
+    /// verdict: a neighbour that never answers is sent nothing more and not
+    /// traced, while a live one, and one the kernel already held, is sent
+    /// every attempt.
+    ///
+    /// Written freely, every attempt to a dead neighbour queues in the kernel
+    /// and is thrown away, and the target reads as one whose path stayed
+    /// silent rather than one nothing reached. Waited on host by host, a wave
+    /// of dead neighbours costs a resolution's wait each.
+    #[tokio::test]
+    async fn attempts_behind_the_kernel_asking_for_a_neighbour_wait_on_its_verdict() {
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::kernel_neighbors::KernelNeighbors;
+
+        let held = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 65));
+        let live = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 66));
+        let dead: Vec<IpAddr> = (221..=224)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let table = KernelNeighbors::asking_on_write(sent.clone(), &[held], &[live]);
+        let transport =
+            ProbeTransport::from_parts(Box::new(sender), rx).with_kernel_neighbors(table);
+        let mut tracer = Tracer::new(
+            ctx.clone(),
+            transport,
+            TraceProbe::Echo,
+            41_235,
+            PathCache::new(),
+        );
+        tracer.resolver =
+            SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![
+                LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+            ])]);
+
+        tracer
+            .run(
+                [held, live]
+                    .into_iter()
+                    .chain(dead.iter().copied())
+                    .collect(),
+            )
+            .await;
+
+        let sent = sent.lock().unwrap();
+        let to = |address: IpAddr| sent.iter().filter(|(_, _, dst)| *dst == address).count();
+        for &address in &dead {
+            assert_eq!(
+                to(address),
+                1,
+                "{address} was sent past the write that asked"
+            );
+        }
+        assert_eq!(
+            to(held),
+            usize::from(ATTEMPTS),
+            "a neighbour the kernel held"
+        );
+        assert_eq!(to(live), usize::from(ATTEMPTS), "a neighbour that answered");
+        let first_retry = sent
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, dst))| *dst == held)
+            .nth(1)
+            .map(|(at, _)| at)
+            .expect("a second attempt to the held neighbour");
+        assert!(
+            sent[..first_retry]
+                .iter()
+                .filter(|(_, _, dst)| dead.contains(dst))
+                .count()
+                == dead.len(),
+            "every new neighbour is asked for before any host's second attempt, \
+             so their resolutions run together rather than one after another"
         );
     }
 }

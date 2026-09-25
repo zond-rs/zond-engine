@@ -117,6 +117,43 @@ impl KernelNeighbors {
         }
     }
 
+    /// A table standing in for a kernel that asks for a neighbour only once a
+    /// probe is written to it, reading `sent` for the writes: an address in
+    /// `held` is resolved from the start, one in `live` is resolved once
+    /// written to, and any other is still being asked for once written to,
+    /// the kernel's `INCOMPLETE` for a neighbour that does not answer. Before
+    /// its first write an address outside `held` has no entry.
+    #[cfg(test)]
+    pub(crate) fn asking_on_write(
+        sent: std::sync::Arc<Mutex<Vec<crate::transport::probe::SentProbe>>>,
+        held: &[IpAddr],
+        live: &[IpAddr],
+    ) -> Self {
+        let held = held.to_vec();
+        let live = live.to_vec();
+        Self::with_reader(Box::new(move || {
+            let written: Vec<IpAddr> = sent
+                .lock()
+                .expect("the sender's record")
+                .iter()
+                .map(|(_, _, destination)| *destination)
+                .collect();
+            let mut table: NeighborTable = held
+                .iter()
+                .map(|address| (*address, NeighborState::Resolved))
+                .collect();
+            for address in written {
+                let state = if live.contains(&address) {
+                    NeighborState::Resolved
+                } else {
+                    NeighborState::Resolving
+                };
+                table.entry(address).or_insert(state);
+            }
+            Ok(table)
+        }))
+    }
+
     /// This table, finding each address's next hop with `route`.
     #[cfg(any(target_os = "linux", test))]
     pub(crate) fn routing(mut self, route: Router) -> Self {

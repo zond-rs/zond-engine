@@ -45,7 +45,7 @@ use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::raw::neighbors::resolve_ahead;
+use crate::scanner::strategy::raw::neighbors::{resolve_ahead, send_when_admitted};
 use crate::system::interface::SourceResolver;
 use crate::transport::link::EthernetSender;
 use crate::transport::probe::{Emission, NeighborWatch, ProbeKind, ProbeSender, ProbeTransport};
@@ -148,6 +148,11 @@ struct Fragmenting<'a> {
 /// runs its own: probes sent host by host through a sender that met each new
 /// neighbour inside the send would wait out a resolution per host in turn. A
 /// host whose neighbour never answered is sent nothing on that sender.
+///
+/// The transport's probes are then admitted one by one, as every pass's are,
+/// since through the kernel nothing is asked before a probe is written: the
+/// first to a neighbour the kernel does not hold is the write that asks, and
+/// the ones behind it wait on the verdict. See [`send_when_admitted`].
 async fn run(
     ctx: &ScanContext,
     transport: &mut ProbeTransport,
@@ -156,14 +161,8 @@ async fn run(
     subjects: Vec<Subject>,
 ) {
     let hosts = subjects.iter().map(|subject| subject.host);
-    let unreached = resolve_ahead(ctx, transport.neighbors(), resolver, hosts).await;
-    for (host, why) in &unreached {
-        info!(
-            verbosity = 2,
-            "{host} not characterised: unreachable ({why})"
-        );
-    }
-    let subjects: Vec<Subject> = subjects
+    let (mut gates, unreached) = resolve_ahead(ctx, transport.neighbors(), resolver, hosts).await;
+    let mut subjects: Vec<Subject> = subjects
         .into_iter()
         .filter(|subject| !unreached.contains_key(&subject.host))
         .collect();
@@ -174,60 +173,136 @@ async fn run(
                 .iter()
                 .filter(|subject| subject.filtered_port.is_some())
                 .map(|subject| subject.host);
-            resolve_ahead(ctx, Some(&fragmenting.neighbors), resolver, filtered).await
+            resolve_ahead(ctx, Some(&fragmenting.neighbors), resolver, filtered)
+                .await
+                .1
         }
         None => BTreeMap::new(),
     };
 
-    let awaiting = send_diagnostics(
-        &subjects,
-        transport.tx.as_ref(),
-        fragmenting.map(|fragmenting| fragmenting.sender),
-        &unframed,
+    let mut awaiting = Awaiting::new();
+    let planned = plan_diagnostics(&subjects, resolver);
+    let sender = transport.tx.as_ref();
+    let unadmitted = send_when_admitted(
+        &mut gates,
+        ctx,
+        transport.neighbors(),
         resolver,
-    );
+        planned,
+        |host, diagnostic| diagnostic.send(sender, &mut awaiting, host),
+    )
+    .await;
+    subjects.retain(|subject| !unadmitted.contains_key(&subject.host));
+    for (host, why) in unreached.iter().chain(&unadmitted) {
+        info!(
+            verbosity = 2,
+            "{host} not characterised: unreachable ({why})"
+        );
+    }
+
+    if let Some(fragmenting) = fragmenting {
+        send_fragmented(
+            &subjects,
+            fragmenting.sender,
+            &unframed,
+            resolver,
+            &mut awaiting,
+        );
+    }
     collect_replies(ctx, transport, &awaiting).await;
 }
 
-/// Sends every subject the probes its ports allow, and returns what a reply to
-/// each would prove.
+/// One diagnostic probe the transport sends, from the source it leaves by.
+#[derive(Debug, Clone, Copy)]
+struct Diagnostic {
+    source: IpAddr,
+    port: u16,
+    conclusion: Filtering,
+}
+
+impl Diagnostic {
+    /// Sends this probe to `host` and files what a reply to it would prove.
+    fn send(self, sender: &dyn ProbeSender, awaiting: &mut Awaiting, host: IpAddr) {
+        let Self {
+            source,
+            port,
+            conclusion,
+        } = self;
+        match conclusion {
+            Filtering::InlineMiddlebox => {
+                probe_inline_middlebox(sender, awaiting, source, host, port);
+            }
+            Filtering::StatefulFilter => {
+                probe_stateful_filter(sender, awaiting, source, host, port);
+            }
+            Filtering::PortTrustingAcl => {
+                probe_port_trusting_acl(sender, awaiting, source, host, port);
+            }
+            // Sent on the fragmenting sender instead; see `send_fragmented`.
+            _ => {}
+        }
+    }
+}
+
+/// The probes every subject's ports allow on the transport, in the order they
+/// are sent: the middlebox probe to an open port, and the two comparative
+/// probes to a filtered one.
 ///
 /// A host with no source address to send from is passed over: a probe that
-/// never left proves nothing about the filter in front of it. So is the
-/// fragmented probe to a host in `unframed`, whose neighbour did not answer
-/// the fragmenting sender.
-fn send_diagnostics(
+/// never left proves nothing about the filter in front of it.
+fn plan_diagnostics(
     subjects: &[Subject],
-    sender: &dyn ProbeSender,
-    fragmenting: Option<&dyn ProbeSender>,
-    unframed: &BTreeMap<IpAddr, String>,
     resolver: &mut SourceResolver,
-) -> Awaiting {
-    let mut awaiting = Awaiting::new();
-
+) -> Vec<(IpAddr, Diagnostic)> {
+    let mut planned = Vec::new();
     for subject in subjects {
         let Some(source) = resolver.resolve(subject.host) else {
             continue;
         };
-
+        let diagnostic = |port, conclusion| {
+            (
+                subject.host,
+                Diagnostic {
+                    source,
+                    port,
+                    conclusion,
+                },
+            )
+        };
         if let Some(port) = subject.open_port {
-            probe_inline_middlebox(sender, &mut awaiting, source, subject.host, port);
+            planned.push(diagnostic(port, Filtering::InlineMiddlebox));
         }
+        if let Some(port) = subject.filtered_port {
+            planned.push(diagnostic(port, Filtering::StatefulFilter));
+            planned.push(diagnostic(port, Filtering::PortTrustingAcl));
+        }
+    }
+    planned
+}
 
+/// Sends the fragmented stateless-filter probe to every subject with a
+/// filtered port, on the frame sender that can place it, except where that
+/// sender's neighbour did not answer, `unframed`, whose hosts go without this
+/// one conclusion.
+fn send_fragmented(
+    subjects: &[Subject],
+    sender: &dyn ProbeSender,
+    unframed: &BTreeMap<IpAddr, String>,
+    resolver: &mut SourceResolver,
+    awaiting: &mut Awaiting,
+) {
+    for subject in subjects {
         let Some(port) = subject.filtered_port else {
             continue;
         };
-
-        probe_stateful_filter(sender, &mut awaiting, source, subject.host, port);
-        probe_port_trusting_acl(sender, &mut awaiting, source, subject.host, port);
-        if let Some(fragmenting) = fragmenting
-            && !unframed.contains_key(&subject.host)
-        {
-            probe_stateless_filter(fragmenting, &mut awaiting, source, subject.host, port);
+        if unframed.contains_key(&subject.host) {
+            continue;
         }
+        let Some(source) = resolver.resolve(subject.host) else {
+            continue;
+        };
+        probe_stateless_filter(sender, awaiting, source, subject.host, port);
     }
-
-    awaiting
 }
 
 /// Sends a SYN with a deliberately bad checksum to an open port. A conformant
@@ -565,5 +640,63 @@ mod tests {
             (dead.len() + 1) * 3,
             "the raw probes, through a transport with nothing to read, go to every host"
         );
+    }
+
+    /// Through the kernel, which asks for a neighbour only once a probe is
+    /// written to it, the first filter probe to a host whose neighbour it does
+    /// not hold is the one write that asks, and the probes behind it wait on
+    /// the verdict: a neighbour that never answers is sent nothing more, while
+    /// a live one, and one the kernel already held, is sent every probe.
+    ///
+    /// Written freely, every probe to a dead neighbour queues in the kernel
+    /// and is thrown away, where each was meant to prove something about the
+    /// filter in front of a host nothing reached.
+    #[tokio::test]
+    async fn probes_behind_the_kernel_asking_for_a_neighbour_wait_on_its_verdict() {
+        use crate::scanner::session::ScanSession;
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::kernel_neighbors::KernelNeighbors;
+        use crate::transport::probe::MockSender;
+
+        let held = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 67));
+        let live = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 68));
+        let dead: Vec<IpAddr> = (225..=228)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = tokio::sync::mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let table = KernelNeighbors::asking_on_write(sent.clone(), &[held], &[live]);
+        let mut transport =
+            ProbeTransport::from_parts(Box::new(sender), rx).with_kernel_neighbors(table);
+        let subjects = dead
+            .iter()
+            .copied()
+            .chain([held, live])
+            .map(|host| Subject {
+                host,
+                open_port: Some(80),
+                filtered_port: Some(81),
+            })
+            .collect();
+        let mut resolver =
+            SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![
+                LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+            ])]);
+
+        run(&ctx, &mut transport, None, &mut resolver, subjects).await;
+
+        let sent = sent.lock().unwrap();
+        let to = |address: IpAddr| sent.iter().filter(|(_, _, dst)| *dst == address).count();
+        for &address in &dead {
+            assert_eq!(
+                to(address),
+                1,
+                "{address} was sent past the write that asked"
+            );
+        }
+        assert_eq!(to(held), 3, "a neighbour the kernel held");
+        assert_eq!(to(live), 3, "a neighbour that answered");
     }
 }

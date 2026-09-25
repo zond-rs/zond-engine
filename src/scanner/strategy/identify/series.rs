@@ -128,9 +128,10 @@ use crate::scanner::audit::ProbeAudit;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::raw::SendFaults;
-use crate::scanner::strategy::raw::neighbors::resolve_ahead;
+use crate::scanner::strategy::raw::neighbors::{Admission, NeighborGates, resolve_ahead};
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
+use crate::transport::kernel_neighbors::NeighborState;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{counted, info, success};
 
@@ -329,6 +330,12 @@ pub struct OsSeriesScanner {
     /// Why probes did not leave, split by whose fact it was: this host's send
     /// path, or an address nothing reaches from here.
     faults: SendFaults,
+    /// How far the current batch has read the resolution of each host's
+    /// neighbour, which every sample is admitted through. See
+    /// [`sweep`](Self::sweep).
+    neighbors: NeighborGates,
+    /// The hosts of the current batch found unreachable, sent nothing more.
+    unreached: HashSet<IpAddr>,
     /// How many hosts this run managed to name, for the closing line.
     named: usize,
 }
@@ -387,12 +394,22 @@ impl OsSeriesScanner {
             collected: HashMap::new(),
             audit: ProbeAudit::new(),
             faults: SendFaults::default(),
+            neighbors: NeighborGates::default(),
+            unreached: HashSet::new(),
             named: 0,
         }
     }
 
     /// Sends one probe per port of every host in `batch`, from a source port of
     /// this sweep's own.
+    ///
+    /// Each sample is admitted through the batch's neighbour gates, as every
+    /// pass's probes are (see [`NeighborGates::admit`]), and one held while a
+    /// host's neighbour is asked for is dropped rather than sent late: the
+    /// spacing is the measurement, a sample at an unplanned moment costs the
+    /// reading, and a sample missing costs one sample, as a lost one does. Its
+    /// tick passes all the same, so every other host keeps its place in the
+    /// sweep. A host whose neighbour is given up on is sent nothing more.
     ///
     /// Returns once the last probe is away. Replies are filed *while* it sends
     /// rather than afterwards, which keeps the capture's queue drained. A
@@ -408,16 +425,62 @@ impl OsSeriesScanner {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
 
         for target in batch {
-            let Some(source) = self.resolver.resolve(target.address.addr()) else {
+            let address = target.address.addr();
+            let Some(source) = self.resolver.resolve(address) else {
                 continue;
             };
             for port in target.ports() {
                 tick.tick().await;
-                self.send_one(source, target.address.addr(), source_port, port);
+                if self.unreached.contains(&address) {
+                    continue;
+                }
+                let watch = self.transport.neighbors();
+                match self
+                    .neighbors
+                    .admit(watch, &mut self.resolver, address, Instant::now())
+                {
+                    Admission::Send => self.send_one(source, address, source_port, port),
+                    Admission::Hold(_) => {}
+                    Admission::Unreachable => {
+                        let why = self.neighbors.unreached(address, NeighborState::Failed);
+                        self.record_unreached(address, why);
+                    }
+                }
                 self.file_queued();
             }
         }
         self.file_queued();
+    }
+
+    /// Files every host of the batch whose neighbour was still unresolved when
+    /// its sampling ended: the kernel still asking, or given up.
+    ///
+    /// The one write that started the asking is all that host was sent, and it
+    /// never left while the kernel asked, so the address is one nothing
+    /// reached rather than a host that stayed silent.
+    fn conclude_pending_neighbors(&mut self) {
+        for host in self.neighbors.waiting() {
+            if self.unreached.contains(&host) {
+                continue;
+            }
+            let watch = self.transport.neighbors();
+            if let Some(state) = self.neighbors.pending(watch, &mut self.resolver, host)
+                && state.is_unresolved()
+            {
+                let why = self.neighbors.unreached(host, state);
+                self.record_unreached(host, why);
+            }
+        }
+    }
+
+    /// Files `address` as one nothing reaches from here, said once for the
+    /// run, and sends it nothing more this batch.
+    fn record_unreached(&mut self, address: IpAddr, why: String) {
+        if self.faults.unroutable.is_none() {
+            info!(verbosity = 2, "{address} unreachable ({why})");
+        }
+        self.faults.record_unreached(address, why);
+        self.unreached.insert(address);
     }
 
     /// `batch`, less the hosts nothing reaches, once the neighbour of every
@@ -427,25 +490,26 @@ impl OsSeriesScanner {
     /// than met one at a time by the sends: a sweep that waited inside a send
     /// for a neighbour to answer would overrun the spacing the samples are
     /// read across, for every host in the batch. A host whose neighbour never
-    /// answered is filed unreached and sent nothing. See
+    /// answered is filed unreached and sent nothing. Through the kernel, which
+    /// asks only once a probe is written, a host whose neighbour it does not
+    /// already hold is left to the sweeps' admission instead. See
     /// [`resolve_ahead`].
     async fn resolve_neighbors(&mut self, batch: Vec<SeriesTarget>) -> Vec<SeriesTarget> {
-        let unreached = resolve_ahead(
+        let (gates, unreached) = resolve_ahead(
             &self.ctx,
             self.transport.neighbors(),
             &mut self.resolver,
             batch.iter().map(|target| target.address.addr()),
         )
         .await;
-        for (address, why) in &unreached {
-            if self.faults.unroutable.is_none() {
-                info!(verbosity = 2, "{address} unreachable ({why})");
-            }
-            self.faults.record_unreached(*address, why.clone());
+        self.neighbors = gates;
+        self.unreached.clear();
+        for (address, why) in unreached {
+            self.record_unreached(address, why);
         }
         batch
             .into_iter()
-            .filter(|target| !unreached.contains_key(&target.address.addr()))
+            .filter(|target| !self.unreached.contains(&target.address.addr()))
             .collect()
     }
 
@@ -704,6 +768,7 @@ impl OsSeriesScanner {
 
             self.drain_until(Instant::now() + LISTEN_AFTER_LAST, true)
                 .await;
+            self.conclude_pending_neighbors();
             self.conclude(&batch);
 
             if matches!(reason, StopReason::Aborted | StopReason::TimedOut) {
@@ -1332,6 +1397,77 @@ mod tests {
         assert!(
             ctx.failures_snapshot().is_empty(),
             "and nothing failed here"
+        );
+    }
+    /// Through the kernel, which asks for a neighbour only once a probe is
+    /// written to it, the first sample to a host whose neighbour it does not
+    /// hold is the one write that asks, and every sample behind it waits on
+    /// the verdict: a neighbour that never answers is sent nothing more and
+    /// reported unreached, while a live one, and one the kernel already held,
+    /// has every sample leave.
+    ///
+    /// Written freely, every sample to a dead neighbour queues in the kernel,
+    /// charged to the socket, and is thrown away, and the host reads as one
+    /// that stayed silent rather than one nothing reached.
+    #[tokio::test]
+    async fn samples_behind_the_kernel_asking_for_a_neighbour_wait_on_its_verdict() {
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::kernel_neighbors::KernelNeighbors;
+        use crate::transport::probe::MockSender;
+
+        const SAMPLES: usize = 3;
+        let held = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 61));
+        let live = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 62));
+        let dead: Vec<IpAddr> = (191..=194)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let table = KernelNeighbors::asking_on_write(sent.clone(), &[held], &[live]);
+        let transport = ProbeTransport::from_parts(Box::new(sender), rx as CaptureStream)
+            .with_kernel_neighbors(table);
+        let targets = dead
+            .iter()
+            .copied()
+            .chain([held, live])
+            .map(|address| SeriesTarget {
+                address: ScopedIp::unscoped(address),
+                open: Some(OPEN),
+                closed: Some(CLOSED),
+            })
+            .collect();
+        let mut scanner = OsSeriesScanner::with_transport(
+            ctx.clone(),
+            targets,
+            SAMPLES,
+            transport,
+            Emission::routed(),
+        );
+        scanner.resolver =
+            SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![
+                LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+            ])]);
+
+        scanner.probe().await.expect("the phase runs");
+
+        let sent = sent.lock().unwrap();
+        let to = |address: IpAddr| sent.iter().filter(|(_, _, dst)| *dst == address).count();
+        for &address in &dead {
+            assert_eq!(
+                to(address),
+                1,
+                "{address} was sent past the write that asked"
+            );
+        }
+        assert_eq!(to(held), SAMPLES * 2, "a neighbour the kernel held");
+        assert_eq!(to(live), SAMPLES * 2, "a neighbour that answered");
+        let mut unreached = ctx.take_unroutable();
+        unreached.sort();
+        assert_eq!(
+            unreached, dead,
+            "every dead neighbour is reported unreached"
         );
     }
 }

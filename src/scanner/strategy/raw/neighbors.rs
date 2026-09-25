@@ -23,15 +23,26 @@
 //!   for ahead, holding the pass with it, so every new neighbour a pass meets
 //!   costs the resolution's budget in turn, and a dead one the whole of it.
 //!
-//! Two ways a pass keeps its probes out of both. One that can hold a probe and
-//! send it later asks per probe, with [`NeighborGates::admit`]: the port scans
-//! and the echo probe. One whose probes are a measurement or a walk, which a
-//! probe held mid-way would bend, asks for every host it is about to probe at
-//! once, with [`resolve_ahead`], and waits for them together before its first
-//! probe: the series probe per batch, the trace and the filter probes per run.
-//! Either way a wave of new neighbours costs one resolution's wait rather than
-//! one each, and a neighbour that never answers is an address nothing reaches,
-//! with nothing sent to it.
+//! Every pass asks per probe, with [`NeighborGates::admit`], so one rule holds
+//! a probe whichever path it leaves by: the first write to a neighbour the
+//! kernel does not hold goes, since the write is what starts the kernel's
+//! asking, and every probe behind it waits on the verdict. What a pass does
+//! with a probe held is its own. The port scans and the echo probe send it
+//! later. The trace and the filter probes wait for it, with [`admit_waiting`]
+//! and [`send_when_admitted`], since neither reads the moment a probe left.
+//! The series probe drops it: the spacing of its samples is the measurement,
+//! and a sample sent late costs the reading where a sample missing costs one
+//! sample.
+//!
+//! Those three also ask for every host they are about to probe at once, with
+//! [`resolve_ahead`], before their first probe: the series probe per batch,
+//! the trace and the filter probes per run. A frame sender runs every
+//! resolution asked of it together, so the pass waits once for all of them.
+//! The kernel asks only once a probe is written, so its table is read once
+//! instead, and the hosts whose neighbour it already holds are asked freely
+//! from then on. Either way a wave of new neighbours costs one resolution's
+//! wait rather than one each, and a neighbour that never answers is an address
+//! nothing reaches, with nothing sent to it past the write that asked.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -39,7 +50,7 @@ use std::time::{Duration, Instant};
 
 use crate::scanner::session::ScanContext;
 use crate::system::interface::SourceResolver;
-use crate::transport::kernel_neighbors::NeighborState;
+use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborState};
 use crate::transport::link::ARP_TIMEOUT;
 use crate::transport::probe::NeighborWatch;
 
@@ -193,6 +204,30 @@ impl NeighborGates {
         }
     }
 
+    /// Opens the gate of every host in `hosts` whose neighbour the kernel's
+    /// table, read once, already holds a hardware address for, so a write to
+    /// it leaves and its host is asked freely.
+    ///
+    /// The rest are left as nothing is known of them: the first probe to each
+    /// starts the kernel's asking, and those behind it wait on the verdict.
+    fn open_held(
+        &mut self,
+        watch: &NeighborWatch,
+        table: &KernelNeighbors,
+        resolver: &SourceResolver,
+        hosts: &[IpAddr],
+    ) {
+        let read = Instant::now();
+        for host in hosts {
+            let Some(neighbor) = neighbor_of(watch, resolver, *host) else {
+                continue;
+            };
+            if table.state(neighbor, read) == Some(NeighborState::Resolved) {
+                self.gates.insert(neighbor, NeighborGate::Open);
+            }
+        }
+    }
+
     /// Where the resolution of `host`'s neighbour stands, for a host whose
     /// probes have been waiting on it, and `None` for any other host.
     pub(crate) fn pending(
@@ -238,25 +273,31 @@ impl NeighborGates {
 
 /// Asks for the neighbour of every host in `hosts` at once, and waits until
 /// each has answered or been given up, which is one resolution's wait for all
-/// of them. Returns the hosts whose neighbour was given up, which nothing
-/// reaches from here, each with why.
+/// of them. Returns the gates the pass admits its probes through from then on,
+/// and the hosts whose neighbour was given up, which nothing reaches from
+/// here, each with why.
 ///
-/// For a pass that cannot hold a probe once it has begun; see the module
+/// For a pass that cannot hold a probe as the port scans do; see the module
 /// documentation. Through the kernel it waits for nothing, since the kernel
-/// asks only once a probe is written and the write waits in the kernel's
-/// queue rather than in the send. Waits no longer than
-/// [`RESOLUTION_WAIT_LIMIT`], past which [`NeighborGates::admit`] gives a
-/// neighbour up, and ends early, with the rest unresolved, when the scan is
-/// stopped.
+/// asks only once a probe is written: it reads the kernel's table once, and
+/// opens the gate of every host whose neighbour is held there, so those are
+/// asked freely and only the rest wait on the resolution their first probe
+/// starts. Waits no longer than [`RESOLUTION_WAIT_LIMIT`], past which
+/// [`NeighborGates::admit`] gives a neighbour up, and ends early, with the
+/// rest unresolved, when the scan is stopped.
 pub(crate) async fn resolve_ahead(
     ctx: &ScanContext,
     watch: Option<&NeighborWatch>,
     resolver: &mut SourceResolver,
     hosts: impl IntoIterator<Item = IpAddr>,
-) -> BTreeMap<IpAddr, String> {
+) -> (NeighborGates, BTreeMap<IpAddr, String>) {
     let mut gates = NeighborGates::default();
     let mut unanswered = BTreeMap::new();
     let mut waiting: Vec<IpAddr> = hosts.into_iter().collect();
+    if let Some(watch @ NeighborWatch::Kernel(table)) = watch {
+        gates.open_held(watch, table, resolver, &waiting);
+        return (gates, unanswered);
+    }
     while !waiting.is_empty() && !ctx.handle.should_stop() {
         let now = Instant::now();
         waiting.retain(|host| match gates.admit(watch, resolver, *host, now) {
@@ -271,7 +312,80 @@ pub(crate) async fn resolve_ahead(
             tokio::time::sleep(NEIGHBOR_RECHECK).await;
         }
     }
-    unanswered
+    (gates, unanswered)
+}
+
+/// Waits until a probe to `host` may be handed over, and returns why not
+/// where it may not be at all: its neighbour was given up on, or the scan was
+/// stopped while it waited.
+///
+/// For a pass that sends its probes to one host at a time and reads nothing
+/// from when a probe left, the trace. Bounded by [`RESOLUTION_WAIT_LIMIT`],
+/// past which [`NeighborGates::admit`] gives the neighbour up.
+pub(crate) async fn admit_waiting(
+    gates: &mut NeighborGates,
+    ctx: &ScanContext,
+    watch: Option<&NeighborWatch>,
+    resolver: &mut SourceResolver,
+    host: IpAddr,
+) -> Result<(), Option<String>> {
+    loop {
+        match gates.admit(watch, resolver, host, Instant::now()) {
+            Admission::Send => return Ok(()),
+            Admission::Unreachable => {
+                return Err(Some(gates.unreached(host, NeighborState::Failed)));
+            }
+            Admission::Hold(ready) => {
+                if ctx.handle.should_stop() {
+                    return Err(None);
+                }
+                tokio::time::sleep_until(ready.into()).await;
+            }
+        }
+    }
+}
+
+/// Hands each of `probes` to `send` as its host's neighbour allows, in order
+/// for each host, and returns the hosts whose neighbour was given up on, each
+/// with why, which are sent nothing more.
+///
+/// The probes held go together: each pass over them sends every one whose
+/// neighbour has answered and waits one [`NEIGHBOR_RECHECK`] for the rest, so
+/// the first probes of every new neighbour start their resolutions together
+/// and a wave of them costs one resolution's wait. For a pass that sends each
+/// probe once and reads nothing from when it left, the filter probes. Held
+/// probes still waiting when the scan is stopped are dropped.
+pub(crate) async fn send_when_admitted<P>(
+    gates: &mut NeighborGates,
+    ctx: &ScanContext,
+    watch: Option<&NeighborWatch>,
+    resolver: &mut SourceResolver,
+    probes: Vec<(IpAddr, P)>,
+    mut send: impl FnMut(IpAddr, P),
+) -> BTreeMap<IpAddr, String> {
+    let mut unreached = BTreeMap::new();
+    let mut held = probes;
+    loop {
+        let now = Instant::now();
+        let mut still = Vec::new();
+        for (host, probe) in held {
+            if unreached.contains_key(&host) {
+                continue;
+            }
+            match gates.admit(watch, resolver, host, now) {
+                Admission::Send => send(host, probe),
+                Admission::Hold(_) => still.push((host, probe)),
+                Admission::Unreachable => {
+                    unreached.insert(host, gates.unreached(host, NeighborState::Failed));
+                }
+            }
+        }
+        held = still;
+        if held.is_empty() || ctx.handle.should_stop() {
+            return unreached;
+        }
+        tokio::time::sleep(NEIGHBOR_RECHECK).await;
+    }
 }
 
 /// The neighbour whose resolution `host`'s probes wait on, which keys its
