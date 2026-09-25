@@ -1045,7 +1045,7 @@ pub(super) async fn run_active_os_series(
         &tuning.send_source,
         ctx,
         ScannerKind::OsSeries,
-        "the OS series probe",
+        "OS series probe",
     );
 
     if targets.is_empty() {
@@ -1469,7 +1469,7 @@ pub(super) async fn run_traceroute(
         &cfg.send_source,
         ctx,
         ScannerKind::Routed,
-        "the route trace",
+        "route trace",
     );
 
     if alive.is_empty() {
@@ -1608,7 +1608,7 @@ pub(super) async fn run_characterise(
         &cfg.send_source,
         ctx,
         ScannerKind::Routed,
-        "the filter characterisation",
+        "filter characterisation",
     );
 
     if subjects.is_empty() {
@@ -1870,7 +1870,7 @@ pub(super) async fn run_active_os_probe(
         &tuning.send_source,
         ctx,
         ScannerKind::OsEcho,
-        "the OS echo probe",
+        "OS echo probe",
     );
 
     if unnamed.is_empty() {

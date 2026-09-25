@@ -214,12 +214,16 @@ impl RefusedStep {
     /// avoid. So a pass the caller asked for that would do it is refused rather
     /// than run in the open, on the same reasoning
     /// [`idle_needs_privilege`](Self::idle_needs_privilege) refuses the scan
-    /// itself. `pass` names it the way a reader would, and `scanner` is the
-    /// strategy the report files the refusal under.
+    /// itself. `pass` names it the way a reader would, in as few words as name
+    /// it, and `scanner` is the strategy the report files the refusal under.
+    ///
+    /// The words say what was not run and under what, as
+    /// [`udp_not_in_an_idle_scan`](Self::udp_not_in_an_idle_scan)'s do, and
+    /// not why: every pass declined here is declined for the one reason above.
     pub(crate) fn pass_not_in_an_idle_scan(scanner: ScannerKind, pass: &str) -> Self {
         Self {
             scanner,
-            reason: format!("{pass}: not run in an idle scan (contacts the target)"),
+            reason: format!("{pass}: not run in an idle scan"),
         }
     }
 

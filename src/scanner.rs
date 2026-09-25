@@ -939,31 +939,23 @@ fn record_idle_refusals(cfg: &ZondConfig, ctx: &ScanContext) {
     }
     if cfg.os_detection.is_active() {
         ctx.record_refusal(
-            RefusedStep::pass_not_in_an_idle_scan(
-                ScannerKind::OsSeries,
-                "active operating-system probing",
-            )
-            .into(),
+            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::OsSeries, "OS probing").into(),
         );
     }
     if cfg.traceroute {
         ctx.record_refusal(
-            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Routed, "the route trace").into(),
+            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Routed, "route trace").into(),
         );
     }
     if cfg.characterise {
         ctx.record_refusal(
-            RefusedStep::pass_not_in_an_idle_scan(
-                ScannerKind::Routed,
-                "the filter characterisation",
-            )
-            .into(),
+            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Routed, "filter characterisation")
+                .into(),
         );
     }
     if !cfg.ip_protocols.is_empty() {
         ctx.record_refusal(
-            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Routed, "the IP-protocol probe")
-                .into(),
+            RefusedStep::pass_not_in_an_idle_scan(ScannerKind::Routed, "IP-protocol probe").into(),
         );
     }
     if cfg.tls_enumeration {
@@ -1946,5 +1938,47 @@ mod tests {
             unreachable!("a cancellation is a TaskFailed")
         };
         assert!(!panicked);
+    }
+
+    /// Each pass an idle scan declines is said once, in a line that fits.
+    ///
+    /// A refusal reaches the report, and a front end prints the report's
+    /// refusals beside its count at every verbosity. Logged as well when it is
+    /// filed, each one read twice at `-v`, in two glyphs and two places. And
+    /// each is one line on a console: `not covered: ` and the reason come to
+    /// about sixty characters, where a pass named `active operating-system
+    /// probing` and a clause on why it contacts the target came to ninety.
+    #[test]
+    fn an_idle_scans_declined_passes_are_filed_once_each_in_a_short_line() {
+        use crate::config::{DetectionEnvelope, OsDetection};
+        use crate::model::finding::DetectionClass;
+
+        let cfg = ZondConfig {
+            idle_scan: Some(crate::config::IdleScan::new(
+                "192.0.2.9".parse().expect("an address"),
+            )),
+            os_detection: OsDetection::Active,
+            traceroute: true,
+            characterise: true,
+            tls_enumeration: true,
+            ip_protocols: [47].into_iter().collect(),
+            detection: DetectionEnvelope::up_to(DetectionClass::ActiveBenign),
+            ..ZondConfig::default()
+        };
+        let (_session, ctx) = ScanSession::new();
+
+        let said = crate::logging::logged(|| record_idle_refusals(&cfg, &ctx));
+
+        let refusals = ctx.take_refusals();
+        assert_eq!(refusals.len(), 6, "{refusals:?}");
+        for refusal in &refusals {
+            let line = format!("not covered: {}", refusal.reason());
+            assert!(line.len() <= 64, "{} characters: {line}", line.len());
+        }
+        assert!(
+            said.iter()
+                .all(|line| !line.message.contains("not covered")),
+            "a refusal was said on filing as well as in the report: {said:?}"
+        );
     }
 }

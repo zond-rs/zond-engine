@@ -267,10 +267,10 @@ async fn an_idle_scan_declines_every_pass_that_would_contact_the_target() {
 
     let reasons: Vec<&str> = report.refusals().map(|refusal| refusal.reason()).collect();
     for pass in [
-        "active operating-system probing",
-        "the route trace",
-        "the filter characterisation",
-        "the IP-protocol probe",
+        "OS probing",
+        "route trace",
+        "filter characterisation",
+        "IP-protocol probe",
         "TLS enumeration",
         "active detection",
     ] {

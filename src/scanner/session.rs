@@ -1852,12 +1852,16 @@ impl ScanContext {
     /// two links says it once, because a reader acts on the reason rather than
     /// on the count.
     ///
+    /// Not logged. The report is where a refusal is read, and a front end that
+    /// prints the report's refusals beside its result, as it must at every
+    /// verbosity since they are what explain a short count, would otherwise
+    /// show each twice to a reader asking for detail.
+    ///
     /// Public for the reason [`record_failure`](Self::record_failure) is: a
     /// caller assembling their own scan decides their own coverage, and one who
     /// could not say what they declined would produce a report claiming to have
     /// covered ground nobody looked at.
     pub fn record_refusal(&self, refusal: Refusal) {
-        info!(verbosity = 1, "not covered: {}", refusal.reason());
         self.refusals.push(refusal);
     }
 
