@@ -267,6 +267,11 @@ impl Cut {
 /// [`Journal::record_finished`] names them: none for one that was stopped,
 /// which may not have reached its passes, and otherwise every host it held but
 /// those a host's own budget ran out on, which a pass passed over.
+///
+/// `phases` are this sitting's own, as it closes, and never what the journal
+/// holds of it: a checkpoint writes the phase still open as one nothing has
+/// stopped, so a killed sitting read back from disk looks like one that ran to
+/// its end. Only a sitting that reaches its close can say it did.
 fn finished_hosts(ctx: &ScanProgress, phases: &[ScanPhase]) -> Vec<String> {
     let ran_to_its_end = !phases.is_empty()
         && phases

@@ -2157,6 +2157,78 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// A sitting killed after a checkpoint leaves its hosts owed every pass.
+    ///
+    /// Its checkpoints write down its phases as they stand, and a phase still
+    /// open reads as one nothing stopped, so a resume sees the killed sitting
+    /// beside the finished ones. Only a sitting's own close, which a killed one
+    /// never reaches, says it ran to its end; read off what stands on disk,
+    /// its hosts would be taken for finished and never identified.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_sitting_killed_after_a_checkpoint_leaves_its_hosts_owed() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::exclusion::Exclusions;
+        use crate::model::host::HostStatus;
+        use crate::model::ip::set::IpSet;
+        use crate::model::target::TargetSet;
+        use crate::scanner::checkpoint::{CHECKPOINT_EVERY, spawn_checkpoints};
+
+        let address: std::net::IpAddr = "127.0.0.1".parse().expect("an address");
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            IpSet::from(address),
+            "80".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig::default();
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+        let root = journal_root("killed-owed");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        let directory = journal.directory().to_path_buf();
+
+        // A sitting with its port phase open and a host found, killed once one
+        // checkpoint has landed.
+        let (_session, ctx) = ScanSession::new();
+        let mut scope = IpSet::from(address);
+        let _open = PhaseRecorder::start(
+            ScanKind::PortScan,
+            Privilege::current(),
+            TargetScope::from_ip_set(&mut scope, &Exclusions::none()),
+            &cfg,
+        )
+        .opening_in(&ctx);
+        ctx.update_host(address, |host| host.set_status(HostStatus::Up));
+        let ticker = spawn_checkpoints(journal, ctx.progress());
+        tokio::time::sleep(CHECKPOINT_EVERY + std::time::Duration::from_millis(200)).await;
+        ticker.kill().await;
+
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+        assert!(
+            journal
+                .earlier_phases()
+                .iter()
+                .any(|phase| phase.stopped().is_none()),
+            "the killed sitting's standing phase is read back"
+        );
+        let finished = journal.finished_hosts().expect("reads");
+        let (_resumed, resumed) = ScanSession::builder()
+            .finished(finished.clone(), IpSet::new())
+            .build();
+        resumed.restore_hosts(journal.restored());
+        let owed = resumed
+            .read_host(address, |host| resumed.owes_passes(host))
+            .expect("the host came back");
+        assert!(
+            owed,
+            "a killed sitting's host was taken as finished: {finished:?}"
+        );
+
+        journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// A sitting that ran to its end writes down every host it held as
     /// finished, and one that was stopped writes down none, since its passes
     /// may not have reached them.
