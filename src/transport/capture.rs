@@ -747,7 +747,8 @@ pub enum CaptureError {
     /// because they need not agree and the reason is what there is to act on.
     /// Where every one was [`Denied`](Self::Denied) the message says so in one
     /// sentence, which is the ordinary case of a process without the privilege
-    /// to capture; otherwise it names each link and what refused it.
+    /// to capture; otherwise it gives each reason once, naming the link where
+    /// one link gave it and counting them where several did.
     #[error(
         "no link could be captured on, so nothing could be heard: {}",
         refusals_reason(refused)
@@ -880,10 +881,12 @@ impl CaptureError {
 /// Why no link could be captured on, from each link's refusal.
 ///
 /// One sentence where every link was denied, which is what an unprivileged
-/// process meets on every link it tries and where a list of them all would say
-/// the same thing once per interface. Otherwise each link by name with its own
-/// reason, because then they can differ, and the one that matters may be any of
-/// them.
+/// process meets on every link it tries. Otherwise each reason once, in the
+/// order the links were tried: a reason one link gave by that link's name, and
+/// one several gave with how many, because they can differ and the one that
+/// matters may be any of them, but a reason repeated per link is one fact told
+/// once per interface. A process out of descriptors meets the same refusal on
+/// every link, and a machine can have dozens.
 fn refusals_reason(refused: &[(String, CaptureError)]) -> String {
     if refused.is_empty() {
         return "there was no link to capture on".to_owned();
@@ -892,9 +895,20 @@ fn refusals_reason(refused: &[(String, CaptureError)]) -> String {
         return "this process may not capture (opening a capture needs root)".to_owned();
     }
 
-    refused
+    let mut reasons: Vec<(String, &str, usize)> = Vec::new();
+    for (link, error) in refused {
+        let reason = error.reason();
+        match reasons.iter_mut().find(|(told, _, _)| *told == reason) {
+            Some((_, _, links)) => *links += 1,
+            None => reasons.push((reason, link, 1)),
+        }
+    }
+    reasons
         .iter()
-        .map(|(link, error)| format!("{link}: {}", error.reason()))
+        .map(|(reason, link, links)| match links {
+            1 => format!("{link}: {reason}"),
+            many => format!("{reason} ({many} links)"),
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -2118,6 +2132,52 @@ mod tests {
         assert!(
             said.contains("gre1: it carries data-link type 778"),
             "{said}"
+        );
+    }
+
+    /// Links refused for one reason are told it once, with how many there
+    /// were, and a link refused for its own reason keeps its name.
+    ///
+    /// A process out of descriptors is refused on every link it tries, in the
+    /// same words each time; told per link, one fact runs to a line of two
+    /// thousand characters on a machine with a few dozen interfaces.
+    #[test]
+    fn links_refused_for_one_reason_are_told_it_once() {
+        let exhausted = |link: &str| {
+            (
+                link.to_owned(),
+                CaptureError::Open {
+                    interface: link.to_owned(),
+                    source: pcap::Error::PcapError("/dev/bpf: Too many open files".into()),
+                },
+            )
+        };
+        let links = ["en0", "en1", "utun0", "bridge0"];
+
+        let alike = CaptureError::NoInterface {
+            refused: links.iter().map(|link| exhausted(link)).collect(),
+        };
+        assert_eq!(
+            alike.to_string(),
+            "no link could be captured on, so nothing could be heard: \
+             /dev/bpf: Too many open files (4 links)"
+        );
+
+        let mut refused: Vec<_> = links.iter().map(|link| exhausted(link)).collect();
+        refused.insert(
+            1,
+            (
+                "gre1".into(),
+                CaptureError::UnsupportedLinkType {
+                    interface: "gre1".into(),
+                    dlt: 778,
+                },
+            ),
+        );
+        assert_eq!(
+            CaptureError::NoInterface { refused }.reason(),
+            "/dev/bpf: Too many open files (4 links); \
+             gre1: it carries data-link type 778, which nothing here parses"
         );
     }
 

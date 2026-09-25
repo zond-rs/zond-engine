@@ -26,6 +26,7 @@
 //! is when.
 
 use crate::journal::Journal;
+use crate::journal::format::JournalError;
 use crate::report::{ScanPhase, ScannerKind, Unheard};
 use crate::scanner::session::ScanProgress;
 
@@ -71,57 +72,101 @@ impl Checkpointing {
 }
 
 /// Starts checkpointing `journal` from `ctx`'s progress until told to stop.
-pub fn spawn_checkpoints(mut journal: Journal, ctx: ScanProgress) -> Checkpointing {
+pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
     let (done, mut stop) = tokio::sync::oneshot::channel::<Vec<ScanPhase>>();
 
     let task = tokio::spawn(async move {
+        let mut writer = Writer::new(journal);
         let phases = loop {
             tokio::select! {
-                _ = tokio::time::sleep(CHECKPOINT_EVERY) => {
-                    // A checkpoint that cannot be written is not worth ending a
-                    // scan over: the previous one still stands, and the scan is
-                    // still producing results. Reported through the same channel
-                    // every other narrowing uses.
-                    // Findings only: a record a port phase may yet forget as
-                    // heard nothing from waits for its verdict. See
-                    // `ScanContext::await_verdicts`.
-                    let changed = ctx.take_changed_findings();
-                    let outcome = if journal.should_compact(ctx.host_count()) {
-                        // The snapshot covers `changed` as well, so nothing is
-                        // lost by not appending them.
-                        journal.compact(&ctx.findings_snapshot())
-                    } else {
-                        journal.record_hosts(&changed)
-                    }
-                    .and_then(|()| journal.checkpoint(ctx.settlements()));
-
-                    if let Err(e) = outcome {
-                        ctx.record_failure(
-                            ScannerKind::Journal,
-                            format!("journal checkpoint failed, so a resume would replay further back than it should: {e}"),
-                        );
-                    }
-
-                    // Tapes are additive: they settle nothing, so a failed write
-                    // does not disturb the checkpoint and is not folded above.
-                    let _ = journal.record_detections(&ctx.take_tapes());
-                }
+                _ = tokio::time::sleep(CHECKPOINT_EVERY) => writer.checkpoint(&ctx),
                 // A dropped signal is a task nobody joined: there are no phases
                 // to record, and what has been settled so far still is.
                 finished = &mut stop => {
                     let phases = finished.unwrap_or_default();
-                    let _ = journal.record_phases(&phases);
+                    let _ = writer.journal.record_phases(&phases);
                     break phases;
                 }
             }
         };
+        writer.close(&ctx, &phases);
+    });
 
-        // A job whose phases heard nothing from an address has its findings
-        // written whole, less every record at one. A checkpoint wrote the
-        // scanners' records of such an address down before the phase decided
-        // it was silent, and the phase forgot them only in memory; appended
-        // to, the file would keep what the job's report drops. See `Unheard`.
-        let unheard = Unheard::of(journal.earlier_phases().iter().chain(&phases));
+    Checkpointing { done, task }
+}
+
+/// The journal a checkpoint task writes, and whether its last checkpoint
+/// failed.
+struct Writer {
+    journal: Journal,
+    /// Whether the last checkpoint failed, so a failure is told when
+    /// checkpointing stops working rather than at every checkpoint after.
+    ///
+    /// Whatever stops one checkpoint, a full disk or a descriptor table with
+    /// no room, stops the next one too, and one is due every few seconds: told
+    /// each time, a scan's console fills with one fact. Cleared by a
+    /// checkpoint that is written, so a failure that returns after that is
+    /// told again, being news again.
+    failing: bool,
+}
+
+impl Writer {
+    fn new(journal: Journal) -> Self {
+        Self {
+            journal,
+            failing: false,
+        }
+    }
+
+    /// Writes down what has changed and how far the scan got.
+    ///
+    /// A checkpoint that cannot be written is not worth ending a scan over:
+    /// the previous one still stands, and the scan is still producing results.
+    /// Reported through the same channel every other narrowing uses.
+    fn checkpoint(&mut self, ctx: &ScanProgress) {
+        let journal = &mut self.journal;
+        // Findings only: a record a port phase may yet forget as heard nothing
+        // from waits for its verdict. See `ScanContext::await_verdicts`.
+        let changed = ctx.take_changed_findings();
+        let outcome = if journal.should_compact(ctx.host_count()) {
+            // The snapshot covers `changed` as well, so nothing is lost by not
+            // appending them.
+            journal.compact(&ctx.findings_snapshot())
+        } else {
+            journal.record_hosts(&changed)
+        }
+        .and_then(|()| journal.checkpoint(ctx.settlements()));
+
+        match outcome {
+            Err(error) if !self.failing => {
+                self.failing = true;
+                ctx.record_failure(
+                    ScannerKind::Journal,
+                    format!(
+                        "checkpoint failed: {} (resume replays more)",
+                        reason(&error)
+                    ),
+                );
+            }
+            Err(_) => {}
+            Ok(()) => self.failing = false,
+        }
+
+        // Tapes are additive: they settle nothing, so a failed write does not
+        // disturb the checkpoint and is not folded above.
+        let _ = self.journal.record_detections(&ctx.take_tapes());
+    }
+
+    /// Writes the sitting's last checkpoint and closes the journal.
+    ///
+    /// A job whose phases heard nothing from an address has its findings
+    /// written whole, less every record at one. A checkpoint wrote the
+    /// scanners' records of such an address down before the phase decided it
+    /// was silent, and the phase forgot them only in memory; appended to, the
+    /// file would keep what the job's report drops. See `Unheard`.
+    fn close(mut self, ctx: &ScanProgress, phases: &[ScanPhase]) {
+        let journal = &mut self.journal;
+        let unheard = Unheard::of(journal.earlier_phases().iter().chain(phases));
         let _ = if unheard.is_empty() {
             journal.record_hosts(&ctx.take_changed_findings())
         } else {
@@ -131,8 +176,92 @@ pub fn spawn_checkpoints(mut journal: Journal, ctx: ScanProgress) -> Checkpointi
         }
         .and_then(|()| journal.checkpoint(ctx.settlements()));
         let _ = journal.record_detections(&ctx.take_tapes());
-        let _ = journal.close();
-    });
+        let _ = self.journal.close();
+    }
+}
 
-    Checkpointing { done, task }
+/// Why a journal could not be written, in the words a console line ends on.
+///
+/// An operating system's refusal is told as the refusal alone, in lower case
+/// and without its error number: the line already says it is the journal's, so
+/// the journal error's own prefix and the number add length and nothing to act
+/// on.
+fn reason(error: &JournalError) -> String {
+    let JournalError::Io(io) = error else {
+        return error.to_string();
+    };
+    let said = io.to_string();
+    let words = match io.raw_os_error() {
+        Some(code) => said
+            .strip_suffix(&format!(" (os error {code})"))
+            .unwrap_or(&said),
+        None => &said,
+    };
+    let mut letters = words.chars();
+    letters.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(letters).collect()
+    })
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::manifest::Plan;
+    use crate::model::exclusion::Exclusions;
+    use crate::model::target::{TargetMap, TargetSet};
+    use crate::model::technique::TcpScanTechnique;
+    use crate::system::privilege::Privilege;
+
+    /// A journal that cannot be written is told once, in one short line, however
+    /// many checkpoints fail after it.
+    ///
+    /// A checkpoint is due every few seconds, and what stops one, a full disk
+    /// or a descriptor table with no room, stops the next one too. Told every
+    /// time, a scan's console fills with the same failure, and a long line
+    /// repeated is the one a reader stops reading.
+    #[test]
+    fn a_journal_that_cannot_be_written_is_told_once_and_short() {
+        let root = std::env::temp_dir().join(format!("zond-checkpoint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch root");
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1-192.0.2.4".parse().expect("a range"),
+            "80".parse().expect("ports"),
+        ));
+        let plan = Plan::port_scan(&map, &Exclusions::none(), TcpScanTechnique::Syn);
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "test").expect("creates");
+        // Every checkpoint after this has nowhere to go.
+        std::fs::remove_dir_all(journal.directory()).expect("removes");
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+
+        let mut writer = Writer::new(journal);
+        for _ in 0..3 {
+            writer.checkpoint(&ctx.progress());
+        }
+
+        let told: Vec<_> = ctx
+            .failures_snapshot()
+            .into_iter()
+            .filter(|failure| failure.scanner() == ScannerKind::Journal)
+            .map(|failure| failure.reason().to_owned())
+            .collect();
+        assert_eq!(told.len(), 1, "{told:#?}");
+        assert!(
+            told[0].len() <= 80,
+            "{:?} is {} long",
+            told[0],
+            told[0].len()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
