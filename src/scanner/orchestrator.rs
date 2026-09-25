@@ -175,6 +175,11 @@ impl ScanCapabilities {
     /// `raw_sockets` is which of the two routes to raw probing carried it,
     /// because on macOS the link layer alone is what an unprivileged run gets,
     /// and a reader who expected to need sudo should see why they did not.
+    ///
+    /// Without raw sockets the line carries what root would add, in brackets,
+    /// and is the only place a run says so: a front end reading the report
+    /// afterwards has the privilege level, and a second line at the end of a
+    /// run repeating this one is the same fact twice.
     fn announce(self, probing: Probing, raw_sockets: bool) {
         if self.privilege.is_raw() {
             let route = if raw_sockets {
@@ -182,14 +187,22 @@ impl ScanCapabilities {
             } else {
                 "link-layer frames"
             };
-            success!("probing with {} ({route})", probing.raw_probes());
+            match probing.zombie {
+                Some(zombie) => success!("probing through zombie {zombie} ({route})"),
+                None => success!("probing with {} ({route})", probing.raw_probes()),
+            }
+        } else if probing.zombie.is_some() {
+            // Nothing: an idle scan without raw sockets is refused whole, and
+            // the refusal says why. A line naming a connect fallback would claim
+            // the one thing the scan exists not to do.
         } else if probing.udp {
             // The UDP ports go to ordinary sockets, which need no privilege, so
-            // a line saying TCP connect alone would be one saying less than the
-            // run does.
-            warn!("no raw sockets: probing with TCP connect and plain UDP datagrams");
+            // a line naming TCP alone would say less than the run does.
+            warn!("no raw sockets: TCP by connect, plain UDP (sudo for SYN)");
+        } else if probing.ports {
+            warn!("no raw sockets: probing by TCP connect (sudo for SYN)");
         } else {
-            warn!("no raw sockets: probing with TCP connect only");
+            warn!("no raw sockets: probing by TCP connect (sudo for ARP)");
         }
     }
 
@@ -217,6 +230,12 @@ impl ScanCapabilities {
 /// choices decide.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Probing {
+    /// Whether the run probes ports at all, rather than sweeping for hosts:
+    /// what root adds to a sweep is ARP, and to a port scan a SYN.
+    ports: bool,
+    /// The zombie an idle scan probes through, which replaces every technique
+    /// below: its probes are forged from that host and read through it.
+    zombie: Option<IpAddr>,
     /// The technique its TCP ports are probed with, where it names one.
     tcp: Option<TcpScanTechnique>,
     /// Whether it names a UDP port.
@@ -232,9 +251,19 @@ impl Probing {
     }
 
     /// A port scan's: the protocols `map` names a port on, each with the
-    /// technique `cfg` probes it with.
+    /// technique `cfg` probes it with, or the zombie of an idle scan, which
+    /// sends none of them.
     pub(super) fn ports(cfg: &ZondConfig, map: &TargetMap) -> Self {
+        if let Some(idle) = &cfg.idle_scan {
+            return Self {
+                ports: true,
+                zombie: Some(idle.zombie),
+                ..Self::default()
+            };
+        }
         Self {
+            ports: true,
+            zombie: None,
             tcp: map.names(Protocol::Tcp).then_some(cfg.tcp_technique),
             udp: map.names(Protocol::Udp),
             sctp: map.names(Protocol::Sctp).then_some(cfg.sctp_technique),
@@ -3032,34 +3061,90 @@ mod tests {
     }
 
     /// The one line a run without raw sockets opens with says what it probes
-    /// with, and a scan naming UDP ports probes them with plain datagrams, so
-    /// "TCP connect only" is a line saying less than happened.
+    /// with and what would change that, once. A scan naming UDP ports probes
+    /// them with plain datagrams, so "TCP connect" alone would say less than
+    /// happened, and what root buys differs between a sweep and a port scan.
     #[test]
-    fn an_unprivileged_run_says_it_probes_udp_when_it_does() {
+    fn an_unprivileged_run_says_how_it_probes_and_what_root_would_add() {
         let unprivileged = ScanCapabilities {
             privilege: Privilege::Connect,
             frames_only: false,
             dns: false,
         };
+        let map = |ports: &str| {
+            let mut map = TargetMap::new();
+            map.add_unit(crate::model::target::TargetSet::new(
+                "192.0.2.1".parse().expect("an address"),
+                ports.parse().expect("a specification"),
+            ));
+            map
+        };
+        let cfg = ZondConfig::default();
 
-        for (udp, expected) in [
+        for (probing, expected) in [
             (
-                true,
-                "no raw sockets: probing with TCP connect and plain UDP datagrams",
+                Probing::sweep(),
+                "no raw sockets: probing by TCP connect (sudo for ARP)",
             ),
-            (false, "no raw sockets: probing with TCP connect only"),
+            (
+                Probing::ports(&cfg, &map("22")),
+                "no raw sockets: probing by TCP connect (sudo for SYN)",
+            ),
+            (
+                Probing::ports(&cfg, &map("22, u:53")),
+                "no raw sockets: TCP by connect, plain UDP (sudo for SYN)",
+            ),
         ] {
-            let probing = Probing {
-                udp,
-                ..Probing::sweep()
-            };
             let heard = Heard::default();
             tracing::subscriber::with_default(heard.clone(), || {
                 unprivileged.announce(probing, false);
             });
 
             let said = heard.0.lock().expect("an unpoisoned log").clone();
-            assert_eq!(said, [expected], "probing udp: {udp}");
+            assert_eq!(said, [expected], "{probing:?}");
+        }
+    }
+
+    /// An idle scan's opening line names the zombie it probes through, not the
+    /// TCP technique, which it never sends, nor the connect fallback, which it
+    /// refuses. Told a scan probes by SYN or by connect, a reader who chose an
+    /// idle scan so the target would never hear from this host reads that it
+    /// did.
+    #[test]
+    fn an_idle_scan_announces_its_zombie_and_no_technique() {
+        let zombie: IpAddr = "192.0.2.9".parse().expect("an address");
+        let cfg = ZondConfig {
+            tcp_technique: TcpScanTechnique::Fin,
+            idle_scan: Some(crate::config::IdleScan::new(zombie)),
+            ..ZondConfig::default()
+        };
+        let mut map = TargetMap::new();
+        map.add_unit(crate::model::target::TargetSet::new(
+            "192.0.2.1".parse().expect("an address"),
+            "22, u:53".parse().expect("a specification"),
+        ));
+        let probing = Probing::ports(&cfg, &map);
+
+        for (privilege, expected) in [
+            (
+                Privilege::Raw,
+                vec!["probing through zombie 192.0.2.9 (link-layer frames)"],
+            ),
+            // Refused, and the refusal says why; nothing is probed to announce.
+            (Privilege::Connect, vec![]),
+        ] {
+            let caps = ScanCapabilities {
+                privilege,
+                frames_only: false,
+                dns: false,
+            };
+            let heard = Heard::default();
+            tracing::subscriber::with_default(heard.clone(), || {
+                caps.announce(probing, false);
+            });
+
+            let said = heard.0.lock().expect("an unpoisoned log").clone();
+            assert_eq!(said, expected, "{privilege:?}");
         }
     }
 
