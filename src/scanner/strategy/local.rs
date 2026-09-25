@@ -1992,11 +1992,14 @@ mod tests {
     async fn an_answer_waiting_when_its_probe_runs_out_still_times_the_host() {
         use crate::system::interface::LinkAddress;
 
-        // Asked in address order, so the answer is the first one's and the
-        // stall comes on asking the second.
+        // Asked in address order, which a session told to walk no seed
+        // keeps, so the answer is the first one's and the stall comes on
+        // asking the second.
         let target = Ipv4Addr::new(192, 0, 2, 10);
         let silent = Ipv4Addr::new(192, 0, 2, 11);
-        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        let (session, ctx) = crate::scanner::session::ScanSession::builder()
+            .ordering(None)
+            .build();
         let retry = RETRY_POLICY.configured(RetryConfig {
             max_attempts: std::num::NonZeroU8::new(1),
             ..RetryConfig::default()
