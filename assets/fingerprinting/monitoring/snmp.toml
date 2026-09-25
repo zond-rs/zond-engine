@@ -10,9 +10,12 @@ description = "Simple Network Management Protocol"
 # them (see `build.rs`), because that failure is indistinguishable on the wire
 # from a filtered port.
 #
-# An agent configured with a different community still answers - with an error
-# PDU - so guessing `public` costs nothing for a port scan: the reply is the
-# result.
+# An agent that accepts `public` answers with the description; one configured
+# with a different community commonly stays silent, and only some return an
+# error PDU. So the reply names the box when it comes, but its absence is no
+# proof the port is dead: an agent guarding its community is why a scan leaves
+# 161 open|filtered, and the community-guessing detection asks each default in
+# its own datagram from there.
 #
 # Two questions in one datagram, which costs no extra packet: the description
 # and the vendor's own identifier for the box.

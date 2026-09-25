@@ -239,7 +239,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
     pool.drain().await;
 }
 
-/// One open port a detection would run over, lifted out of the store so the
+/// One port a detection would run over, lifted out of the store so the
 /// exchanges that follow do not hold its lock. It carries the responses the service
 /// phase gathered for a passive module to read.
 struct PortTarget {
@@ -251,9 +251,34 @@ struct PortTarget {
     /// Whether the scan only listens on this port, so that no detection that
     /// speaks may run over it; see [`ScanContext::listens_only`].
     listen_only: bool,
+    /// Whether only a detection whose own first exchange is a probe may run
+    /// here, because the port's state was never confirmed open; see
+    /// [`interested_ports`].
+    speak_only: bool,
 }
 
-/// Every open port some detection would run over, snapshotted so the store is not
+/// Whether a port in this state carries a detection, and if so whether only a
+/// speaking one may run against it.
+///
+/// A port confirmed open runs every detection gated onto it, passive readings
+/// of the gathered responses included. A UDP port left open|filtered runs only
+/// a detection that speaks: over UDP that state is the ordinary lot of a
+/// service answering nothing but the request it recognises, so a detection
+/// whose own first datagram is that request establishes what is there where the
+/// service probe drew silence, while one that reads what the scan gathered has
+/// nothing to read, a UDP port reaching the service pass only once open. Any
+/// other state, and an open|filtered TCP port, carries no detection: a TCP port
+/// that only might be open is settled by the connection a detection would make
+/// rather than run against speculatively.
+fn detection_reach(state: PortState, protocol: Protocol) -> Option<bool> {
+    match (state, protocol) {
+        (PortState::Open, _) => Some(false),
+        (PortState::OpenFiltered, Protocol::Udp) => Some(true),
+        _ => None,
+    }
+}
+
+/// Every port some detection would run over, snapshotted so the store is not
 /// borrowed across the exchanges that follow.
 ///
 /// Pre-filtered by each tier's `interested` so a port no detection gates onto
@@ -265,18 +290,18 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
     for host in ctx.store.iter() {
         let address = host.value().scoped_ip();
         for port in host.value().ports() {
-            if port.state() != PortState::Open {
-                continue;
-            }
+            let protocol = port.protocol();
             // No detection runs against an SCTP port. The scan holds no client
             // stack to speak over one, so an active detection is refused at the
             // seam, and an SCTP scan gathers no responses a passive one could read.
             // Skipping it here spares a blocking task both seams would only refuse.
-            if port.protocol() == Protocol::Sctp {
+            if protocol == Protocol::Sctp {
                 continue;
             }
+            let Some(speak_only) = detection_reach(port.state(), protocol) else {
+                continue;
+            };
             let number = port.number();
-            let protocol = port.protocol();
             let service = port.service().map(|service| service.name().to_string());
             let wanted = stage::interested(
                 ctx.detections.flows(),
@@ -284,12 +309,14 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
                 service.as_deref(),
                 number,
                 protocol,
+                speak_only,
             ) || compute_stage::interested(
                 ctx.detections.modules().detections(),
                 &envelope,
                 service.as_deref(),
                 number,
                 protocol,
+                speak_only,
             );
             if wanted {
                 let responses = ctx.take_responses(&address, number, protocol);
@@ -300,6 +327,7 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
                     service,
                     responses,
                     listen_only: ctx.listens_only(number, protocol),
+                    speak_only,
                 });
             }
         }
@@ -326,6 +354,7 @@ async fn detect_one(
         service,
         responses,
         listen_only,
+        speak_only,
     } = target;
     let addr = address.to_socket_addr(number)?;
     // The port's service label is the only record that it answered inside a
@@ -352,6 +381,13 @@ async fn detect_one(
                 // the scan only listens on is sent nothing. Declined before a
                 // socket is opened, so the flow simply does not apply here.
                 if listen_only && caps.speak.is_some() {
+                    return None;
+                }
+                // A port whose state was never confirmed open runs only a
+                // detection whose own first exchange is its probe; a flow that
+                // does not speak reads nothing the scan gathered there. See
+                // `interested_ports`.
+                if speak_only && caps.speak.is_none() {
                     return None;
                 }
                 // The permit first: building the probe starts the flow's clock,
@@ -392,6 +428,13 @@ async fn detect_one(
                 // reads the responses the scan already drew, which is safe
                 // anywhere.
                 if listen_only && grant.speak {
+                    return None;
+                }
+                // And the converse on a port never confirmed open: only a
+                // module whose own first exchange is its probe runs there, a
+                // passive one having no gathered response to read. See
+                // `interested_ports`.
+                if speak_only && !grant.speak {
                     return None;
                 }
                 // Acquire the permit before building `LiveCapabilities`, which
@@ -929,6 +972,95 @@ mod tests {
         assert_eq!(findings[0].detection().id(), "redis-unauth-access");
         // Its provenance is the flow's real content hash.
         assert_eq!(findings[0].detection().content_hash().len(), 64);
+    }
+
+    /// A UDP detection whose own first datagram is its probe runs against a
+    /// port left open|filtered, the state a UDP service that answers only the
+    /// request it knows is left in by a scan whose generic probe it ignored.
+    ///
+    /// The finding it draws is one nothing else could: the port never reached
+    /// the service pass, which takes only confirmed-open ports, so a detection
+    /// reading gathered responses has none, and the establishing question is
+    /// the detection's own. Skipping every port not confirmed open left this
+    /// detection unrun on exactly the ports it exists for.
+    #[tokio::test]
+    async fn a_speaking_udp_detection_runs_on_an_open_filtered_port() {
+        // A responder that answers only its own probe word, as an agent answers
+        // a request it accepts and ignores one it does not: silence to the
+        // scan's generic probe is what left the port open|filtered.
+        let agent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = agent.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buffer = [0u8; 64];
+            while let Ok((read, from)) = agent.recv_from(&mut buffer).await {
+                if &buffer[..read] == b"WHORU" {
+                    let _ = agent.send_to(b"i-am-here", from).await;
+                }
+            }
+        });
+
+        let flow = format!(
+            r#"
+            [detection]
+            id      = "udp-speak-first"
+            version = "1.0.0"
+            title   = "A UDP detection whose probe is the question"
+            [detection.when]
+            protocol = "udp"
+            port     = {}
+            [detection.capabilities]
+            class      = "active-benign"
+            speak      = "target"
+            max_millis = 1500
+            [[step]]
+            send   = "WHORU"
+            expect = "i-am-here"
+              [[step.finding]]
+              when     = "matched"
+              severity = "high"
+              summary  = "the agent answered the probe"
+            "#,
+            addr.port()
+        );
+        let detections = crate::detect::Detections::builder()
+            .without_embedded()
+            .flow(&flow, &"a".repeat(64))
+            .expect("a valid flow")
+            .build();
+
+        let (session, ctx) = ScanSession::builder().detections(detections).build();
+        let ip = addr.ip();
+        let mut host = Host::new(ip);
+        // Open|filtered, not Open: the UDP port scan heard nothing back, which
+        // over UDP settles neither open nor filtered.
+        host.add_port(Port::new(
+            addr.port(),
+            Protocol::Udp,
+            PortState::OpenFiltered,
+        ));
+        session.hosts().insert(ip, host);
+
+        detect(
+            &ctx,
+            ServiceDetection::default(),
+            DetectionEnvelope::up_to(crate::model::finding::DetectionClass::ActiveBenign),
+        )
+        .await;
+
+        let host = session.hosts().get(ip).unwrap();
+        let port = host
+            .ports()
+            .find(|port| port.number() == addr.port())
+            .unwrap();
+        let ids: Vec<&str> = port
+            .findings()
+            .map(|finding| finding.detection().id())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["udp-speak-first"],
+            "the speaking detection did not run on the open|filtered port"
+        );
     }
 
     #[tokio::test]

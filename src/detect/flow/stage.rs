@@ -609,16 +609,23 @@ impl Probe for CachingProbe<'_> {
 
 /// Whether any enabled flow in `corpus` gates onto a port with these facts, so a
 /// caller can skip opening a socket to a port no flow would probe.
+///
+/// `require_speak` narrows the answer to flows whose own first exchange is a
+/// probe, for a port whose state a flow that only reads cannot be run against;
+/// see [`interested_ports`](crate::scanner::detection). A flow always sends, so
+/// this excludes only the rare one that declares no `speak`.
 pub(crate) fn interested(
     corpus: &FlowDb,
     envelope: &DetectionEnvelope,
     service: Option<&str>,
     number: u16,
     protocol: Protocol,
+    require_speak: bool,
 ) -> bool {
     corpus.flows().any(|flow| {
         let manifest = &flow.flow().detection;
         enabled(manifest.capabilities.class, envelope)
+            && (!require_speak || manifest.capabilities.speak.is_some())
             && manifest.when.applies(service, number, protocol)
     })
 }

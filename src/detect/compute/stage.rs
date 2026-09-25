@@ -234,10 +234,12 @@ pub(crate) fn interested<M>(
     service: Option<&str>,
     number: u16,
     protocol: Protocol,
+    require_speak: bool,
 ) -> bool {
     detections.iter().any(|detection| {
         Grant::from_manifest(&detection.manifest, &detection.content_hash).is_some_and(|grant| {
             envelope.permits(grant.class)
+                && (!require_speak || grant.speak)
                 && detection.manifest.when.applies(service, number, protocol)
         })
     })
