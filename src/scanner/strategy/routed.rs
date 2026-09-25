@@ -39,6 +39,7 @@ use crate::model::port::set::COMMON_DISCOVERY_PORTS;
 use crate::model::port::{PortSet, Protocol, TCP_BY_PREVALENCE};
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols as protocol;
+use crate::scanner::dispatcher::WalkOrder;
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{ProbeLedger, Resolution, RetryPolicy};
 use crate::scanner::session::ScanContext;
@@ -794,6 +795,12 @@ impl RoutedScanner {
             }
         }
         ips.canonicalize();
+        // In the walk the scan's seed names rather than the order the plan
+        // lists them, which is address order: a sweep across a range in address
+        // order is what a correlating sensor keys on.
+        if let Some(walk) = WalkOrder::of(&ips, &ctx) {
+            walk.arrange(&mut order);
+        }
 
         let target_count = sources.len();
 
@@ -1399,6 +1406,57 @@ mod tests {
             scanner.probe(next, Instant::now());
         }
         (scanner, ctx)
+    }
+
+    /// A seeded sweep asks its addresses in the order the scan's seed names,
+    /// the order a dispatched sweep streams the same plan in, rather than
+    /// walking the range.
+    ///
+    /// A sweep across an address range in address order is the most
+    /// recognisable thing a scanner puts on the wire, and the one a
+    /// correlating sensor keys on.
+    #[tokio::test]
+    async fn a_seeded_sweep_asks_in_the_order_the_seed_names() {
+        use crate::model::ip::set::Positions;
+
+        const SEED: u64 = 0x5EED;
+        let targets: IpSet = "198.51.100.0/26".parse().expect("a prefix");
+        let (_session, ctx) = ScanSession::builder()
+            .ordering(Some(SEED))
+            .counting(Positions::of(&targets))
+            .build();
+        let mut walk = crate::scanner::dispatcher::dispatch_addresses_of(
+            targets.clone(),
+            1,
+            Some(SEED),
+            Some(std::sync::Arc::clone(&ctx.positions)),
+            &ctx.handle,
+        );
+        let mut expected = Vec::new();
+        while let Some(ip) = walk.recv().await {
+            expected.push(ip);
+        }
+        assert_ne!(
+            expected,
+            targets.iter().collect::<Vec<_>>(),
+            "the walk the seed names is not the range"
+        );
+
+        let (_replies, rx) = tokio::sync::mpsc::channel(8);
+        let scanner = RoutedScanner::with_transport(
+            targets
+                .iter()
+                .map(|target| RoutedTarget {
+                    target,
+                    source: LOCAL.into(),
+                })
+                .collect(),
+            ctx,
+            None,
+            ProbeTransport::from_parts(Box::new(MockSender::default()), rx),
+        );
+
+        assert_eq!(scanner.pending.collect::<Vec<_>>(), expected);
     }
 
     const THREE: [Ipv4Addr; 3] = [

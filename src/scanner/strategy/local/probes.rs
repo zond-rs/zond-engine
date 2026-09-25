@@ -23,6 +23,11 @@
 //! it is not a fact about ARP or about neighbor discovery. It is a measurement
 //! about a contended link, and the packets are only what the measurement is
 //! made of.
+//!
+//! Within each family the addresses leave in the walk a seeded scan names,
+//! the order every other phase of the scan asks in, rather than in address
+//! order, which is the signature a correlating sensor keys on. See
+//! [`WalkOrder`].
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -31,6 +36,7 @@ use pnet_base::MacAddr;
 use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::protocols::{arp, ndp};
+use crate::scanner::dispatcher::WalkOrder;
 
 /// One built frame, ready for the link layer.
 type Bytes = Vec<u8>;
@@ -39,7 +45,8 @@ type Bytes = Vec<u8>;
 /// with the address it asks about.
 pub(super) type PacketIter = Box<dyn Iterator<Item = (Bytes, IpAddr)> + Send>;
 
-/// Every first-attempt probe a sweep owes, in the order they should leave.
+/// Every first-attempt probe a sweep owes, in the order they should leave:
+/// each family in the order `walk` names, or in the set's own without one.
 ///
 /// The two families are **interleaved rather than concatenated**, and that is
 /// the whole point of the shape. Chained, all 254 ARP requests go out first and
@@ -63,10 +70,11 @@ pub fn eth_packet_iter(
     src_v4: &Option<Ipv4Addr>,
     link_local: &Option<Ipv6Addr>,
     ip_set: &IpSet,
+    walk: Option<&WalkOrder>,
 ) -> PacketIter {
     let arp_iter = src_v4
         .as_ref()
-        .map(|v4| build_arp_iter(local_mac, v4, ip_set))
+        .map(|v4| build_arp_iter(local_mac, v4, ip_set, walk))
         .into_iter()
         .flatten();
 
@@ -77,7 +85,7 @@ pub fn eth_packet_iter(
     // possible at all.
     let ndp_iter = link_local
         .as_ref()
-        .map(|v6| build_ndp_iter(local_mac, v6, ip_set))
+        .map(|v6| build_ndp_iter(local_mac, v6, ip_set, walk))
         .into_iter()
         .flatten();
 
@@ -148,46 +156,74 @@ impl Iterator for Interleave {
 /// scan path. That happens in two places, because a range reaches this function
 /// by two routes: `map_ips_to_interfaces` refuses an off-link one, and
 /// `DiscoveryPlan::build` withholds an on-link one.
-fn build_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> PacketIter {
+fn build_ndp_iter(
+    local_mac: &MacAddr,
+    src_addr: &Ipv6Addr,
+    ip_set: &IpSet,
+    walk: Option<&WalkOrder>,
+) -> PacketIter {
     let local_mac = *local_mac;
     let src_addr = *src_addr;
     let ranges: Vec<Ipv6Range> = ip_set.v6().to_vec();
 
-    let iter = ranges
-        .into_iter()
-        .flat_map(|range| {
-            let start: u128 = range.start_addr().into();
-            let end: u128 = range.end_addr().into();
-            (start..=end).map(Ipv6Addr::from)
-        })
-        .map(move |target| {
-            let packet = ndp::build_neighbor_solicitation(local_mac, src_addr, target);
-            (packet, IpAddr::V6(target))
-        });
+    let targets = ranges.into_iter().flat_map(|range| {
+        let start: u128 = range.start_addr().into();
+        let end: u128 = range.end_addr().into();
+        (start..=end).map(Ipv6Addr::from)
+    });
+    let iter = in_order(targets, walk).map(move |target| {
+        let packet = ndp::build_neighbor_solicitation(local_mac, src_addr, target);
+        (packet, IpAddr::V6(target))
+    });
 
     Box::new(iter)
 }
 
 /// One ARP request per IPv4 address in `ip_set`.
-pub fn build_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) -> PacketIter {
+pub fn build_arp_iter(
+    local_mac: &MacAddr,
+    src_ip: &Ipv4Addr,
+    ip_set: &IpSet,
+    walk: Option<&WalkOrder>,
+) -> PacketIter {
     let local_mac = *local_mac;
     let src_ip = *src_ip;
 
     let ranges: Vec<Ipv4Range> = ip_set.v4().to_vec();
 
-    let iter = ranges
-        .into_iter()
-        .flat_map(|range| {
-            let start: u32 = range.start_addr().into();
-            let end: u32 = range.end_addr().into();
-            (start..=end).map(Ipv4Addr::from)
-        })
-        .map(move |dst_addr| {
-            let packet = arp::build_request(local_mac, src_ip, dst_addr);
-            (packet, IpAddr::V4(dst_addr))
-        });
+    let targets = ranges.into_iter().flat_map(|range| {
+        let start: u32 = range.start_addr().into();
+        let end: u32 = range.end_addr().into();
+        (start..=end).map(Ipv4Addr::from)
+    });
+    let iter = in_order(targets, walk).map(move |dst_addr| {
+        let packet = arp::build_request(local_mac, src_ip, dst_addr);
+        (packet, IpAddr::V4(dst_addr))
+    });
 
     Box::new(iter)
+}
+
+/// `targets`, in the order `walk` names, or as they come without one.
+///
+/// Arranged as a list, so a seeded sweep holds an entry per address it owes a
+/// first attempt, as its ledger does for each one it has asked; unseeded, the
+/// ranges are expanded as they are drawn.
+fn in_order<A>(
+    targets: impl Iterator<Item = A> + Send + 'static,
+    walk: Option<&WalkOrder>,
+) -> Box<dyn Iterator<Item = A> + Send>
+where
+    A: Copy + Into<IpAddr> + Send + 'static,
+{
+    match walk {
+        Some(walk) => {
+            let mut targets: Vec<A> = targets.collect();
+            walk.arrange(&mut targets);
+            Box::new(targets.into_iter())
+        }
+        None => Box::new(targets),
+    }
 }
 
 // ╔════════════════════════════════════════════╗

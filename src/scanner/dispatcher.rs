@@ -31,6 +31,11 @@
 //! channel is sized against, and a rearranged stream is filled and drained
 //! through the same buffer.
 //!
+//! The sweeps that hold their targets themselves rather than draw them off a
+//! stream, the ARP and neighbour sweep of a segment and the SYN sweep through a
+//! gateway, arrange them in the same walk with `WalkOrder`, so a seed names
+//! one order for a scan whichever phase is on the wire.
+//!
 //! ## The numbering is not the order
 //!
 //! Targets are numbered by their position in [`TargetMap::iter`] whichever way
@@ -170,6 +175,47 @@ pub(crate) fn dispatch_addresses_of(
     });
 
     rx
+}
+
+/// Where a seeded scan's walk reaches each address of a set, for a sweep that
+/// holds its first attempts itself rather than drawing them off
+/// [`dispatch_addresses_of`]: the addresses arranged by it leave in the order
+/// that stream gives them.
+///
+/// Read off each address rather than found by walking, so arranging a sweep
+/// costs its own size whatever the plan's: an address's position in the plan
+/// the context numbers, and that position's place in the seed's permutation of
+/// the plan. A context numbering nothing, a sweep counted in something else,
+/// has the set itself numbered, as the stream does.
+pub(crate) struct WalkOrder {
+    numbered: std::sync::Arc<Positions>,
+    order: Permutation,
+}
+
+impl WalkOrder {
+    /// The walk `ctx`'s seed names over `ips`, or `None` for a scan given no
+    /// seed, which asks in the order its targets come.
+    pub(crate) fn of(ips: &IpSet, ctx: &ScanContext) -> Option<Self> {
+        let seed = ctx.order_seed?;
+        let numbered = if ctx.positions.total() > 0 {
+            std::sync::Arc::clone(&ctx.positions)
+        } else {
+            std::sync::Arc::new(Positions::of(ips))
+        };
+        let order = Permutation::new(seed, numbered.total());
+        Some(Self { numbered, order })
+    }
+
+    /// Puts `addresses` in the order of this walk. An address no position
+    /// names follows the rest, in the order it came, as it does on the stream.
+    pub(crate) fn arrange<A: Copy + Into<IpAddr>>(&self, addresses: &mut [A]) {
+        addresses.sort_by_cached_key(|address| {
+            self.numbered
+                .find((*address).into())
+                .and_then(|position| self.order.index_of(position))
+                .unwrap_or(u64::MAX)
+        });
+    }
 }
 
 /// Shuffles `batch` and sends it, reporting whether the receiver is still there

@@ -48,6 +48,7 @@ use crate::model::ip::set::IpSet;
 use crate::protocols::{self as protocol, ethernet};
 use crate::report::ScannerKind;
 use crate::report::{Attachment, AttachmentSource, StopReason};
+use crate::scanner::dispatcher::WalkOrder;
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::pacing::timer::ScanBudget;
@@ -513,6 +514,7 @@ impl HostScanner for LocalScanner {
             &self.identity.ipv4,
             &self.identity.link_local_ipv6,
             &self.ip_set,
+            WalkOrder::of(&self.ip_set, &self.ctx).as_ref(),
         );
 
         // The first all-nodes echo is owed immediately, so it goes out at the
@@ -2034,6 +2036,81 @@ mod tests {
             host.min_rtt().is_some(),
             "the answer was read after its probe was written off"
         );
+    }
+
+    /// A segment that answers nothing and notes the address every ARP request
+    /// it is sent asks about, in the order they leave.
+    struct Asked(std::sync::Arc<std::sync::Mutex<Vec<IpAddr>>>);
+
+    impl crate::transport::capture::FrameSink for Asked {
+        fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+            let asked = ethernet::parse(frame)
+                .ok()
+                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp)
+                .and_then(|frame| pnet_packet::arp::ArpPacket::owned(frame.payload().to_vec()))
+                .map(|request| request.get_target_proto_addr());
+            if let Some(target) = asked {
+                self.0.lock().expect("the log").push(IpAddr::V4(target));
+            }
+            Ok(())
+        }
+    }
+
+    /// A seeded sweep asks the segment in the order the scan's seed names, the
+    /// order a dispatched sweep streams the same plan in, rather than walking
+    /// the range.
+    ///
+    /// A sweep across an address range in address order is the most
+    /// recognisable thing a scanner puts on the wire, and the one a
+    /// correlating sensor keys on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_seeded_sweep_asks_in_the_order_the_seed_names() {
+        use crate::model::ip::set::Positions;
+        use crate::system::interface::LinkAddress;
+
+        const SEED: u64 = 0x5EED;
+        let targets: IpSet = "192.0.2.64/27".parse().expect("a prefix");
+        let (_session, ctx) = crate::scanner::session::ScanSession::builder()
+            .ordering(Some(SEED))
+            .counting(Positions::of(&targets))
+            .build();
+        let mut walk = crate::scanner::dispatcher::dispatch_addresses_of(
+            targets.clone(),
+            1,
+            Some(SEED),
+            Some(std::sync::Arc::clone(&ctx.positions)),
+            &ctx.handle,
+        );
+        let mut expected = Vec::new();
+        while let Some(ip) = walk.recv().await {
+            expected.push(ip);
+        }
+        assert_ne!(
+            expected,
+            targets.iter().collect::<Vec<_>>(),
+            "the walk the seed names is not the range"
+        );
+
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (_frames, rx) = tokio::sync::mpsc::channel(16);
+        let handle = EthernetHandle::from_parts(Box::new(Asked(std::sync::Arc::clone(&asked))), rx);
+        let link = Link::new("sim0", 7)
+            .with_mac(LOCAL_MAC.into_core())
+            .with_addresses(vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                24,
+            )]);
+        let retry = RETRY_POLICY.configured(RetryConfig {
+            max_attempts: std::num::NonZeroU8::new(1),
+            ..RetryConfig::default()
+        });
+        let mut scanner =
+            LocalScanner::build(link, targets, ctx, None, Scope::Targeted, handle, retry)
+                .expect("a scanner over the simulated segment");
+
+        scanner.discover_hosts().await.expect("the sweep runs");
+
+        assert_eq!(*asked.lock().expect("the log"), expected);
     }
 
     /// The sweep's capture narrows in the kernel, so a frame the filter does not
