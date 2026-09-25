@@ -266,7 +266,7 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     let journal = Journal::create(
         &root,
         &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
-        Privilege::Connect,
+        Privilege::current(),
         "loopback",
     )
     .expect("creates");
@@ -298,7 +298,7 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     let (journal, checkpoint) = Journal::resume(
         &directory,
         &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
-        Privilege::Connect,
+        Privilege::current(),
     )
     .expect("resumes");
 
@@ -419,7 +419,7 @@ async fn a_journalled_scan_lets_a_watcher_finish() {
     let journal = Journal::create(
         &root,
         &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
-        Privilege::Connect,
+        Privilege::current(),
         "loopback",
     )
     .expect("creates");
@@ -575,7 +575,7 @@ async fn a_host_the_liveness_pass_never_asked_about_is_asked_on_the_resume() {
     cut_short.scan_timeout = Some(std::time::Duration::from_nanos(1));
 
     let journal =
-        Journal::create(&root, &recorded, Privilege::Connect, "loopback").expect("creates");
+        Journal::create(&root, &recorded, Privilege::current(), "loopback").expect("creates");
     let directory = journal.directory().to_path_buf();
     let (_session, task) = zond_engine::scanner::scan_with_journal(
         plan.clone(),
@@ -600,7 +600,7 @@ async fn a_host_the_liveness_pass_never_asked_about_is_asked_on_the_resume() {
 
     // Second sitting, with the time to finish.
     let (journal, _checkpoint) =
-        Journal::resume(&directory, &recorded, Privilege::Connect).expect("resumes");
+        Journal::resume(&directory, &recorded, Privilege::current()).expect("resumes");
     let (_session, task) = zond_engine::scanner::scan_with_journal(
         plan.clone(),
         &test_config(),
@@ -679,7 +679,8 @@ async fn a_host_the_liveness_pass_heard_nothing_from_is_settled_as_down() {
     // pass, that settles a silent host.
     let plan = closed_ports_at(silent, 10).await;
     let recorded = Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn);
-    let journal = Journal::create(&root, &recorded, Privilege::Connect, "silent").expect("creates");
+    let journal =
+        Journal::create(&root, &recorded, Privilege::current(), "silent").expect("creates");
     let (_session, task) = zond_engine::scanner::scan_with_journal(
         plan,
         &test_config(),
@@ -900,7 +901,7 @@ async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
     let journal = Journal::create(
         &root,
         &Plan::discovery(&plan, &Exclusions::none(), false),
-        Privilege::Connect,
+        Privilege::current(),
         "192.0.2.1 and 7 more",
     )
     .expect("creates");
@@ -913,7 +914,7 @@ async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
     withheld.insert_range("192.0.2.1-192.0.2.4".parse().expect("a range"));
     narrowed.exclusions = Exclusions::new(withheld);
 
-    let (journal, _, _) = Journal::reopen(&directory, Privilege::Connect).expect("reopens");
+    let (journal, _, _) = Journal::reopen(&directory, Privilege::current()).expect("reopens");
     let refused = zond_engine::discover_with_journal(plan.clone(), &narrowed, journal)
         .await
         .err()
@@ -926,7 +927,7 @@ async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
 
     // And the policy the record was written under is accepted, so the refusal
     // above is about the change rather than about there being a policy at all.
-    let (journal, _, _) = Journal::reopen(&directory, Privilege::Connect).expect("reopens");
+    let (journal, _, _) = Journal::reopen(&directory, Privilege::current()).expect("reopens");
     zond_engine::discover_with_journal(plan, &ZondConfig::default(), journal)
         .await
         .expect("the recorded policy still describes the recorded plan");

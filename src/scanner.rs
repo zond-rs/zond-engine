@@ -353,46 +353,34 @@ fn enough_descriptors() -> Result<(), ScanError> {
     }
 }
 
-/// Refuses a scan whose exclusion policy is not the one its journal was counted
-/// under.
+/// Refuses a sitting that would not count its targets as its journal did.
 ///
-/// The policy decides the enumeration: withhold the first half of a range and
-/// every position after it names a different target. A journal's plan already
-/// has the policy applied, so applying this run's policy to it and finding it
-/// unchanged is the whole test: one that withholds nothing further leaves the
-/// same plan, and so the same fingerprint.
+/// `this_run` is the plan this sitting numbers: what it was handed, less what
+/// its exclusion policy withholds. A position is an index into that
+/// enumeration, so a plan other than the recorded one reads every settled
+/// position as a different target and skips ground nothing asked about. The
+/// caller's plan is what is tested rather than the journal's, since the
+/// journal's is the one thing that cannot disagree with itself. A caller
+/// continuing from the recorded plan passes that, and the test is then of the
+/// policy alone: one that withholds nothing further leaves the same plan, and
+/// so the same fingerprint.
 ///
-/// A policy that withholds *less* passes, and is meant to: the recorded plan is
-/// what is being continued, and widening the scope is a new scan rather than a
-/// continuation of this one.
+/// A policy that withholds *less* than the first sitting's passes when applied
+/// to the recorded plan, and is meant to: that plan is what is being
+/// continued, and widening the scope is a new scan rather than a continuation
+/// of this one.
 ///
-/// Privilege and technique come from the manifest rather than from this run, so
-/// what is being tested here is the policy alone.
-/// [`Journal::resume`](crate::journal::Journal::resume) has already refused a
-/// mismatch in either of those.
+/// The privilege is what this process can send rather than what the journal
+/// was opened with, because it decides which question the probes answer; see
+/// [`PlanFingerprint::of`](crate::journal::manifest::PlanFingerprint::of). A
+/// journal opened or resumed claiming another would file this sitting's
+/// answers as the other kind.
 #[cfg(feature = "journal-format")]
-fn under_the_recorded_policy(
+fn counted_as_recorded(
     journal: &crate::journal::Journal,
-    cfg: &ZondConfig,
+    this_run: &crate::journal::manifest::Plan,
 ) -> Result<(), ScanError> {
-    use crate::journal::manifest::Plan;
-
-    let manifest = journal.manifest();
-    let recorded = manifest.recorded();
-
-    let this_run = if let Some(addresses) = recorded.addresses() {
-        Plan::discovery(addresses, &cfg.exclusions, recorded.sweeps_the_segment())
-    } else if let Some(targets) = recorded.targets() {
-        Plan::port_scan(
-            targets,
-            &cfg.exclusions,
-            recorded.technique().unwrap_or_default(),
-        )
-    } else {
-        return Ok(());
-    };
-
-    manifest.covers(&this_run, manifest.privilege)?;
+    journal.manifest().covers(this_run, Privilege::current())?;
     Ok(())
 }
 
@@ -620,7 +608,23 @@ pub async fn discover_with_journal(
         if journal.manifest().kind() != ScanKind::Discovery {
             return Err(ScanError::WrongPhase);
         }
-        under_the_recorded_policy(journal, cfg)?;
+        let recorded = journal.manifest().recorded();
+        let Some(addresses) = recorded.addresses() else {
+            return Err(ScanError::WrongPhase);
+        };
+        // What this sitting sweeps: the caller's set for a first sitting, and
+        // what the recorded plan leaves for a later one.
+        let swept = if *journal.resume_point() == Checkpoint::default() {
+            &targets
+        } else {
+            addresses
+        };
+        let this_run = crate::journal::manifest::Plan::discovery(
+            swept,
+            &cfg.exclusions,
+            recorded.sweeps_the_segment(),
+        );
+        counted_as_recorded(journal, &this_run)?;
         under_the_recorded_options(journal, cfg)
     })?;
     let journal = recording_options(journal, cfg);
@@ -1538,6 +1542,13 @@ pub async fn scan(
 /// emitting only what is left; renumbering the remainder would leave the two
 /// runs counting different things.
 ///
+/// So `target_map`, less what `cfg`'s exclusions withhold, has to be the plan
+/// the journal was counted in, and this process has to hold the privilege it
+/// was counted under. A scan handed anything else is refused as
+/// [`ScanError::PlanChanged`] before it sends anything. The recorded plan,
+/// [`JournalManifest::recorded`](crate::journal::manifest::JournalManifest::recorded),
+/// always is.
+///
 /// Progress is checkpointed on a timer, and once more when the returned
 /// [`ScanTask`] is joined, which is also when the journal's lock is released.
 /// [`Checkpoint::write_atomically`](crate::journal::cursor::Checkpoint::write_atomically)
@@ -1562,7 +1573,10 @@ pub async fn scan_with_journal(
         if journal.manifest().kind() != ScanKind::PortScan {
             return Err(ScanError::WrongPhase);
         }
-        under_the_recorded_policy(journal, cfg)?;
+        let technique = journal.manifest().technique();
+        let this_run =
+            crate::journal::manifest::Plan::port_scan(&target_map, &cfg.exclusions, technique);
+        counted_as_recorded(journal, &this_run)?;
         under_the_recorded_options(journal, cfg)
     })?;
     let cfg = &under_the_recorded_technique(&journal, cfg);
@@ -1850,7 +1864,7 @@ mod tests {
         let cfg = refused_up_front();
 
         let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
-        let journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
         let directory = journal.directory().to_path_buf();
         let refused = scan_with_journal(map, &cfg, Detections::embedded(), journal).await;
         assert!(
@@ -1864,7 +1878,7 @@ mod tests {
         );
 
         let plan = Plan::discovery(&addresses, &cfg.exclusions, false);
-        let journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
         let directory = journal.directory().to_path_buf();
         let refused = discover_with_journal(addresses, &cfg, journal).await;
         assert!(
@@ -1896,7 +1910,7 @@ mod tests {
         };
         let plan = Plan::discovery(&addresses, &first.exclusions, false);
 
-        let mut journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let mut journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
         journal
             .record_options(JobOptions::of(&first))
             .expect("records");
@@ -1906,7 +1920,8 @@ mod tests {
         let directory = journal.directory().to_path_buf();
         journal.close().expect("closes");
 
-        let (journal, _) = Journal::resume(&directory, &plan, Privilege::Connect).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
         let refused = discover_with_journal(addresses, &ZondConfig::default(), journal).await;
         assert!(
             matches!(
@@ -1954,10 +1969,11 @@ mod tests {
         assert_ne!(cfg.tcp_technique, TcpScanTechnique::Ack, "test premise");
 
         let plan = Plan::port_scan(&map, &cfg.exclusions, TcpScanTechnique::Ack);
-        let journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
         let directory = journal.directory().to_path_buf();
         journal.close().expect("closes");
-        let (journal, _) = Journal::resume(&directory, &plan, Privilege::Connect).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
         assert!(journal.options().is_none(), "test premise: no options");
 
         let (_session, task) = scan_with_journal(map, &cfg, Detections::embedded(), journal)
@@ -1992,7 +2008,7 @@ mod tests {
         let scope =
             || ListenScope::on(links.clone()).for_at_most(std::time::Duration::from_millis(1));
 
-        let journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
         let directory = journal.directory().to_path_buf();
         let (_session, task) = listen_with_journal(scope(), &ZondConfig::default(), journal)
             .await
@@ -2003,7 +2019,8 @@ mod tests {
             "a watch recorded options"
         );
 
-        let (journal, _) = Journal::resume(&directory, &plan, Privilege::Connect).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
         let other = ZondConfig {
             traceroute: true,
             tcp_technique: crate::model::technique::TcpScanTechnique::Fin,
@@ -2053,6 +2070,56 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// A port scan handed a journal counted over another plan, or under
+    /// another privilege than this process sends with, is refused before it
+    /// sends anything.
+    ///
+    /// A position is an index into the plan the journal was counted in. Taken
+    /// over another plan, every position an earlier sitting settled would name
+    /// a different target here, and the scan would skip ground nothing asked
+    /// about and report it covered. Taken under another privilege, it would
+    /// file one kind of answer as the other.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_port_scan_handed_a_journal_of_another_plan_is_refused() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::target::TargetSet;
+
+        let root = journal_root("other-plan");
+        let map = |ports: &str| {
+            let mut map = TargetMap::new();
+            map.add_unit(TargetSet::new(
+                "127.0.0.1".parse().expect("an address"),
+                ports.parse().expect("ports"),
+            ));
+            map
+        };
+        let cfg = ZondConfig::default();
+        let recorded = Plan::port_scan(&map("1-100"), &cfg.exclusions, cfg.tcp_technique);
+
+        let journal = Journal::create(&root, &recorded, Privilege::current(), "").expect("creates");
+        let refused = scan_with_journal(map("1000-1100"), &cfg, Detections::embedded(), journal)
+            .await
+            .err();
+        assert!(
+            matches!(refused, Some(ScanError::PlanChanged(_))),
+            "{refused:?}"
+        );
+
+        let other = Privilege::from_raw(!Privilege::current().is_raw());
+        let journal = Journal::create(&root, &recorded, other, "").expect("creates");
+        let refused = scan_with_journal(map("1-100"), &cfg, Detections::embedded(), journal)
+            .await
+            .err();
+        assert!(
+            matches!(refused, Some(ScanError::PlanChanged(_))),
+            "{refused:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// A resume refused the same way keeps the record: an earlier sitting ran
     /// against it, and what that sitting settled is the job's.
     #[cfg(feature = "journal-format")]
@@ -2068,14 +2135,15 @@ mod tests {
         let cfg = refused_up_front();
         let plan = Plan::discovery(&addresses, &cfg.exclusions, false);
 
-        let mut journal = Journal::create(&root, &plan, Privilege::Connect, "").expect("creates");
+        let mut journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
         let settlements = Settlements::default();
         settlements.record(Outcome::Answered { position: 0 });
         journal.checkpoint(&settlements).expect("checkpoints");
         let directory = journal.directory().to_path_buf();
         journal.close().expect("closes");
 
-        let (journal, _) = Journal::resume(&directory, &plan, Privilege::Connect).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
         let refused = discover_with_journal(addresses, &cfg, journal).await;
         assert!(
             matches!(refused, Err(ScanError::Evasion(_))),
