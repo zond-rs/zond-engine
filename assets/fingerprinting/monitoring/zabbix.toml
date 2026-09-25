@@ -7,10 +7,17 @@ description = "Zabbix Agent/Server"
 # `ZBXD`, a flags byte (0x01, the protocol itself), the length of what follows
 # as eight little-endian bytes (10), and the item key. Framed rather than a
 # bare key, because the frame is the protocol's own form of a request.
+#
+# Put to strangers too, since an agent answers nothing but this frame and
+# closes on an HTTP request, so on a port its number does not name no other
+# question reaches it. Rare rather than common on that scale: the agent is
+# widely deployed but seldom moved off its own port, so a silent port is asked
+# this only at the level that asks everything.
 [[probe]]
 name = "agent_ping"
 payload = 'ZBXD\x01\x0a\x00\x00\x00\x00\x00\x00\x00agent.ping'
 protocol = "tcp"
+rarity = 5
 
 # The agent answers in the same frame, whatever the key: `1` for a ping, and
 # `ZBX_NOTSUPPORTED` for a key it does not know. The header is what names the

@@ -201,8 +201,9 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// A backstop rather than a working budget. Every stage below already has its
 /// own bound, and the longest honest walk down the ladder in [`gather`] runs a
 /// failed handshake, a failed legacy handshake, a silent port in the clear and
-/// then the last-resort probes, which comes to eighteen and a half seconds.
-/// This sits above that, so it never fires on a port behaving normally;
+/// then the last-resort probes, which at the thorough level comes to twenty-six
+/// seconds, three and a half more for each probe authored for strangers. This
+/// sits above that, so it never fires on a port behaving normally;
 /// `the_collection_budget_covers_every_path_through_gather` is what holds the
 /// two together.
 ///
@@ -210,7 +211,7 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// property. `read_bytes` grew a bound it did not have; the next stage to be
 /// added will be bounded by whoever writes it, and this is what makes the total
 /// somebody's responsibility rather than an emergent number.
-const COLLECTION_BUDGET: Duration = Duration::from_secs(25);
+const COLLECTION_BUDGET: Duration = Duration::from_secs(30);
 
 /// Whether a reply from this port over this protocol is one the engine can read.
 ///
@@ -2553,6 +2554,69 @@ mod tests {
         assert!(
             !first_open,
             "the redirect was followed while the connection that drew it was held"
+        );
+    }
+
+    /// A Zabbix agent moved off its registered port is put its framed question
+    /// at the thorough level, and only there.
+    ///
+    /// An agent answers nothing but a request in the protocol's own frame and
+    /// closes on anything else, an HTTP request included, so on a port its
+    /// number does not name only the questions other services registered can
+    /// reach it. Those go to a stranger by the rarity authored on each: the
+    /// thorough level is the one that promises them all, and the default level
+    /// asks only what a silent port most often turns out to be.
+    #[tokio::test]
+    async fn a_zabbix_agent_on_a_port_of_its_own_is_named_at_the_thorough_level_alone() {
+        let moved = 18801;
+        assert!(
+            SignatureDb::global().tcp_probe_payloads(moved).is_empty(),
+            "test assumes port {moved} is unclaimed"
+        );
+
+        let mut named = Vec::new();
+        for level in [ServiceDetection::Thorough, ServiceDetection::Probe] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("binds loopback");
+            let addr = listener.local_addr().expect("a local address");
+            let framed = Arc::new(AtomicBool::new(false));
+            let heard = Arc::clone(&framed);
+            let agent = tokio::spawn(async move {
+                while let Ok((mut sock, _)) = listener.accept().await {
+                    let mut buffer = [0u8; 1024];
+                    let read = sock.read(&mut buffer).await.unwrap_or(0);
+                    if buffer[..read].starts_with(b"ZBXD\x01") {
+                        heard.store(true, Ordering::SeqCst);
+                        // `1` for the ping, behind the header, the protocol
+                        // flag and an eight-byte little-endian length.
+                        let _ = sock.write_all(b"ZBXD\x01\x01\0\0\0\0\0\0\0\x31").await;
+                    }
+                }
+            });
+
+            let stream = TcpStream::connect(addr).await.expect("connects");
+            let port = baseline_port(moved, Protocol::Tcp, PortState::Open);
+            let found = fingerprint_tcp_detailed(stream, port, level).await;
+            agent.abort();
+            named.push((
+                found
+                    .port
+                    .service()
+                    .map(|service| service.name().to_owned()),
+                framed.load(Ordering::SeqCst),
+            ));
+        }
+
+        assert_eq!(
+            named[0],
+            (Some("zabbix".to_owned()), true),
+            "a thorough identification did not name the agent (service, asked)"
+        );
+        assert_eq!(
+            named[1],
+            (None, false),
+            "the default level put a rare question to a stranger (service, asked)"
         );
     }
 

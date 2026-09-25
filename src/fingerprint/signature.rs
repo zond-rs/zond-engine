@@ -280,10 +280,12 @@ pub struct Probe {
     /// corpus is unauthored and so zero: rarity is a claim that a question is
     /// worth putting to a stranger, and the claim is made per probe, by hand.
     ///
-    /// What earns a 1 is a service that will not identify itself any other way,
-    /// because it waits to be spoken to and answers an HTTP request with
-    /// silence or a closed socket. Redis, PostgreSQL and memcached are the
-    /// three authored so far.
+    /// What earns a rarity at all is a service that will not identify itself
+    /// any other way, because it waits to be spoken to and answers an HTTP
+    /// request with silence or a closed socket. What earns a 1 is also being
+    /// what such a port most often turns out to be: Redis, PostgreSQL and
+    /// memcached. A Zabbix agent is as silent to a stranger but seldom moved
+    /// off its own port, and is authored at 5.
     #[serde(default)]
     pub rarity: u8,
 
