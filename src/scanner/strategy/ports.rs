@@ -638,8 +638,15 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// [`held_is_full`](Self::held_is_full), which bounds the *stream* and
     /// deliberately not this.
     pub fn admitting(&self, sending_finished: bool) -> bool {
-        let anything_to_send = !sending_finished || !self.held.is_empty();
-        anything_to_send && self.window.has_room() && self.ledger.len() < self.max_unresolved
+        self.questions_left(sending_finished)
+            && self.window.has_room()
+            && self.ledger.len() < self.max_unresolved
+    }
+
+    /// Whether any question is still to be admitted: a target still to come
+    /// off the stream, or a first attempt held for its host.
+    fn questions_left(&self, sending_finished: bool) -> bool {
+        !sending_finished || !self.held.is_empty()
     }
 
     /// Whether the queue of held probes is full.
@@ -899,18 +906,26 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     }
 
     /// Reads one probe's first timeout: frees the window slot it was holding,
-    /// and decides what the silence meant.
+    /// and decides what the silence meant, given `silence`, the verdict this
+    /// scan's technique reads it as.
     ///
-    /// The whole of the decision is whether `host` has ever answered anything.
-    /// See [`service_retries`](RawPortScan::service_retries) for the argument
-    /// and [`congestion`](crate::scanner::pacing::congestion) for what it cost
-    /// to get wrong.
-    pub fn judge_timeout(&mut self, host: IpAddr) {
+    /// Silence from a host that has never answered anything says nothing about
+    /// capacity. From a host that is answering, it is a dropped probe where
+    /// every port would have answered, the technique's silence meaning a
+    /// filter; and where it means anything else, an open port is silent by
+    /// design and the one timeout cannot say which it was, so the window reads
+    /// how much of it there is instead. See
+    /// [`service_retries`](RawPortScan::service_retries) for the argument and
+    /// [`congestion`](crate::scanner::pacing::congestion) for what each half
+    /// cost to get wrong.
+    pub fn judge_timeout(&mut self, host: IpAddr, silence: PortState) {
         self.window.release();
-        if self.ledger.host_has_answered(&host) {
+        if !self.ledger.host_has_answered(&host) {
+            self.window.record_progress();
+        } else if silence == PortState::Filtered {
             self.window.record_congestion();
         } else {
-            self.window.record_progress();
+            self.window.record_ambiguous_silence();
         }
     }
 
@@ -940,7 +955,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             // keeping up.
             (1, _) => {
                 self.window.release();
-                self.window.record_progress();
+                self.window.record_answer();
             }
             // Answered only because it was asked again: the target was willing
             // all along and the first ask did not survive. The slot went back at
@@ -1473,13 +1488,15 @@ pub trait RawPortScan: PortScanner {
     /// whichever event carries that timeout, the retry that follows it or the
     /// exhaustion that follows it when the budget was one attempt.
     ///
-    /// Which of the two signals it carries depends on the host and not on the
-    /// probe. A host that has never answered anything is behind a firewall or is
-    /// not there, and its silence says nothing about capacity; a host that is
-    /// answering most of what it is asked and dropping the rest is being outrun,
-    /// and that is the only warning a scan gets before it starts reporting a
-    /// firewall that is not there. See
-    /// [`congestion`](crate::scanner::pacing::congestion).
+    /// Which signal it carries depends on the host and on what this scan's
+    /// silence means, and not on the probe. A host that has never answered
+    /// anything is behind a firewall or is not there, and its silence says
+    /// nothing about capacity; a host that is answering most of what it is
+    /// asked and dropping the rest is being outrun, and that is the only
+    /// warning a scan gets before it starts reporting a firewall that is not
+    /// there. Where an open port is silent by design, one timeout from an
+    /// answering host is either, and only the share of them tells loss from a
+    /// host's open ports. See [`congestion`](crate::scanner::pacing::congestion).
     fn service_retries(&mut self, now: Instant) {
         let core = self.core_mut();
         core.ledger.drain_due(now, &mut core.due);
@@ -1495,7 +1512,7 @@ pub trait RawPortScan: PortScanner {
                     attempt,
                 } => {
                     if attempt == 2 {
-                        self.core_mut().judge_timeout(ip);
+                        self.core_mut().judge_timeout(ip, silence);
                     }
                     // A retry is a probe at a host like any other, and waits
                     // for the send ticker and the host's next slot like one.
@@ -1517,7 +1534,7 @@ pub trait RawPortScan: PortScanner {
                     witnessed,
                 } => {
                     if attempts == 1 {
-                        self.core_mut().judge_timeout(ip);
+                        self.core_mut().judge_timeout(ip, silence);
                     }
                     // A probe whose neighbour the kernel is still asking for
                     // never left, so none of its attempts was spent: it goes
@@ -1792,6 +1809,12 @@ pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<
         // instants to agree with each other.
         let now = Instant::now();
         read_waiting_replies(scanner);
+        // Before the timeouts are read, so none of those left in flight after
+        // the last question went out is judged as a share of what the target
+        // is doing. See `CongestionWindow::stop_admitting`.
+        if !scanner.core().questions_left(sending_finished) {
+            scanner.core_mut().window.stop_admitting();
+        }
         scanner.service_retries(now);
 
         if let Some(reason) = scanner.core().stop_reason(sending_finished) {
@@ -2623,7 +2646,7 @@ mod tests {
         core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
 
         core.window.record_send();
-        core.judge_timeout(TARGET);
+        core.judge_timeout(TARGET, PortState::Filtered);
 
         assert!(
             core.window.capacity() >= 64,
@@ -2651,7 +2674,7 @@ mod tests {
         core.ledger.resolve(&(TARGET, 22), None, now);
 
         core.window.record_send();
-        core.judge_timeout(TARGET);
+        core.judge_timeout(TARGET, PortState::Filtered);
 
         assert!(
             core.window.capacity() < 64,

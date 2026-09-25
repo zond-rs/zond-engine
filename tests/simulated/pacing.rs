@@ -32,6 +32,7 @@ use crate::support::*;
 use zond_engine::config::ProbeTuning;
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
+use zond_engine::report::WindowSummary;
 use zond_engine::scanner::session::ScanSession;
 
 /// More targets than the window is allowed to *grow* to, let alone start at, so
@@ -193,6 +194,116 @@ async fn a_host_that_refuses_everything_is_answering_and_not_losing() {
 
     assert_eq!(states.len(), WIDE as usize);
     assert!(states.iter().all(|&state| state == PortState::Closed));
+}
+
+// ---------------------------------------------------------------------------
+// A scan whose silence is a verdict
+// ---------------------------------------------------------------------------
+
+/// Runs a FIN scan of [`WIDE`] consecutive ports, the port at each index
+/// answering under `policy(index)`, and returns what the scan concluded about
+/// each and what its window did.
+///
+/// FIN because it is the plainest of the techniques whose silence is a
+/// verdict: a conformant stack resets a FIN to a closed port and ignores one
+/// to an open port, so an open port is silent on every attempt by design.
+async fn wide_fin_scan(policy: impl Fn(usize) -> Policy) -> (Vec<PortState>, WindowSummary) {
+    let ports: Vec<u16> = (FIRST..FIRST + WIDE).collect();
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for (index, &port) in ports.iter().enumerate() {
+        net = net.host(TARGET, port, policy(index));
+    }
+
+    let (session, ctx) = ScanSession::new();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx.clone(),
+        TcpScanTechnique::Fin,
+        net.transport(),
+        ports.len(),
+    );
+    let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
+    run_port_scanner(&mut scanner, targets).await;
+
+    let host = session.hosts().get(TARGET).expect("the host answered");
+    let states = ports
+        .iter()
+        .map(|&port| {
+            host.ports()
+                .find(|recorded| recorded.number() == port)
+                .unwrap_or_else(|| panic!("port {port} was given to the scan and has no verdict"))
+                .state()
+        })
+        .collect();
+    let window = ctx
+        .probe_stats_snapshot()
+        .iter()
+        .find_map(|stats| stats.window())
+        .expect("a raw port scan files what its window did");
+    (states, window)
+}
+
+/// An open port's silence is the finding a FIN scan exists to make, and it
+/// must not be read as the target failing to keep up.
+///
+/// Every open port on a host with closed ones is a timeout from a host that is
+/// answering, the very shape a SYN scan reads as loss. Read that way here, the
+/// scan cuts its window once per open port it finds and spends the rest of the
+/// run at its floor, slowed by its own results against a host that dropped
+/// nothing.
+#[tokio::test]
+async fn open_ports_in_a_scan_whose_silence_is_a_verdict_do_not_narrow_the_window() {
+    let (states, window) = wide_fin_scan(|index| {
+        if index % 40 == 0 {
+            Policy::open()
+        } else {
+            Policy::closed()
+        }
+    })
+    .await;
+
+    let open = states
+        .iter()
+        .filter(|&&state| state == PortState::OpenFiltered)
+        .count();
+    assert_eq!(
+        open,
+        (WIDE as usize).div_ceil(40),
+        "every open port ignored the FIN"
+    );
+    assert_eq!(
+        window.reductions, 0,
+        "one port in forty silent is a host with services, not a host losing \
+         probes: {window:?}"
+    );
+    assert!(!window.at_floor, "{window:?}");
+}
+
+/// The other half: silence at a share no set of open ports plausibly accounts
+/// for is the target being outrun, and it still narrows the window when no
+/// retry is ever answered to prove it.
+///
+/// A quarter of the probes lost with their retries is the shape measured
+/// against a Raspberry Pi, where a controller that waited for a retry to be
+/// answered never cut once. In a FIN scan those ports come back
+/// open-or-filtered, which the technique cannot help; the window being cut is
+/// what makes a rerun at the narrower pace come back different.
+#[tokio::test]
+async fn silence_past_any_plausible_share_of_open_ports_still_narrows_the_window() {
+    let (_, window) = wide_fin_scan(|index| {
+        if index % 4 == 0 {
+            Policy::silent()
+        } else {
+            Policy::closed()
+        }
+    })
+    .await;
+
+    assert!(
+        window.reductions > 0,
+        "a host answering three probes in four and dropping the fourth, retries \
+         and all, is being outrun: {window:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

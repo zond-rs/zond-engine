@@ -95,6 +95,28 @@
 //! the target has recovered is a signal that goes quiet exactly when the target
 //! is worst off.
 //!
+//! ## When silence is itself the answer
+//!
+//! The rule above assumes a live stack answers every probe, so that silence
+//! from a host that talks is a probe it dropped. That holds for a SYN, which
+//! every port answers one way or the other, and not for a FIN, a NULL, an
+//! Xmas or a Maimon probe, or a COOKIE-ECHO: an open port is required to
+//! ignore those, so every open port on a host with closed ones is a timeout
+//! from a host that is answering, on every attempt. Read as loss, a scan of
+//! such a host cuts once per open port it finds and spends the run at its
+//! floor, slowed by its own findings against a host that dropped nothing.
+//!
+//! Waiting for a retry to be answered instead is the rule the section above
+//! measured failing, and it would fail the same way here: a closed port whose
+//! every attempt fell inside one congested moment comes back as silent as an
+//! open one. So one silence is not read either way, and what separates the
+//! two is how much of it there is. An open port is the exception on a host, a
+//! few in a hundred of the ports asked at most, while loss that retries could
+//! not be counted on to recover was measured at a quarter. A scan whose
+//! silence is a verdict therefore cuts when silence makes up more than one in
+//! eight of the recent first outcomes from hosts that are answering. A lone open port moves nothing; a host being outrun still
+//! narrows the window, answered retries or not.
+//!
 //! ## What occupies the window
 //!
 //! A probe holds a slot **from its first send until its first outcome**, and its
@@ -167,6 +189,16 @@
 //! no evidence is not a conservative controller, it is a random one.
 
 use crate::report::WindowSummary;
+
+/// The share of recent first outcomes from answering hosts that may be silence
+/// before a scan whose silence is a verdict reads it as loss.
+///
+/// One in eight. It sits at half the quarter measured lost against a Raspberry
+/// Pi, and above what open ports make on the hosts a scan meets: a
+/// service-dense server has a few dozen open among a thousand ports asked. A
+/// host with more than one port in eight open among those asked is paced as a
+/// host losing probes, which costs the scan time and never a verdict.
+const SILENCE_SHARE_OF_LOSS: f64 = 1.0 / 8.0;
 
 /// The bounds a [`CongestionWindow`] moves within, and where it starts.
 ///
@@ -270,6 +302,14 @@ pub struct CongestionWindow {
     epoch: u32,
     peak: usize,
     reductions: u32,
+    /// How much of the recent run of first outcomes from answering hosts was
+    /// silence that may be a verdict, averaged over about a window's worth of
+    /// them. What [`record_ambiguous_silence`](Self::record_ambiguous_silence)
+    /// compares against [`SILENCE_SHARE_OF_LOSS`].
+    silence_share: f64,
+    /// Whether the scan has admitted its last question. See
+    /// [`stop_admitting`](Self::stop_admitting).
+    admission_over: bool,
 }
 
 impl CongestionWindow {
@@ -302,6 +342,8 @@ impl CongestionWindow {
             epoch: 0,
             peak: window as usize,
             reductions: 0,
+            silence_share: 0.0,
+            admission_over: false,
         }
     }
 
@@ -358,6 +400,63 @@ impl CongestionWindow {
         self.in_flight = self.in_flight.saturating_sub(1);
     }
 
+    /// Records a question answered on its first ask: the target is keeping up.
+    ///
+    /// Grows the window, and counts as a first outcome that was not silence
+    /// toward the share
+    /// [`record_ambiguous_silence`](Self::record_ambiguous_silence) reads.
+    pub(crate) fn record_answer(&mut self) {
+        self.observe_first_outcome(false);
+        self.record_progress();
+    }
+
+    /// Records silence from a host that is answering, in a scan where silence
+    /// is also what an open port gives: an open port found, or a probe lost,
+    /// and nothing about this one outcome says which.
+    ///
+    /// Neither grows the window nor cuts it on its own. It cuts once silence
+    /// makes up more than [`SILENCE_SHARE_OF_LOSS`] of the recent first
+    /// outcomes from answering hosts, which a host's open ports do not reach
+    /// and a host being outrun does. See the module documentation.
+    ///
+    /// Read only while the scan still has questions to admit; see
+    /// [`stop_admitting`](Self::stop_admitting).
+    pub(crate) fn record_ambiguous_silence(&mut self) {
+        if !self.admission_over && self.observe_first_outcome(true) > SILENCE_SHARE_OF_LOSS {
+            self.record_congestion();
+        }
+    }
+
+    /// Records that the scan has admitted its last question, so the window
+    /// paces nothing from here and the share of silence is no longer read.
+    ///
+    /// The outcomes still owed then are whatever was left in flight, and
+    /// silence is over-represented there by construction: an answered question
+    /// gives its slot back after a round trip and a silent one after its whole
+    /// budget, so a window at work holds mostly silent questions however few
+    /// of the questions asked were silent. While questions keep being
+    /// admitted, answers and silences leave in the proportion they were asked
+    /// in; once admission ends, the silences left in the window arrive
+    /// together with no answers between them, and read as a share they would
+    /// cut a window that paces nothing, on a host that dropped nothing, and
+    /// could leave it reported at its floor.
+    pub(crate) fn stop_admitting(&mut self) {
+        self.admission_over = true;
+    }
+
+    /// Folds one first outcome from an answering host into the recent share of
+    /// silence, and returns the share.
+    ///
+    /// A moving average over about a window's worth of outcomes, so the share
+    /// is of what the target is doing at the pace it is being asked at now,
+    /// and a run of clean answers early in a long scan cannot hide loss that
+    /// starts late in it.
+    fn observe_first_outcome(&mut self, silent: bool) -> f64 {
+        let sample = if silent { 1.0 } else { 0.0 };
+        self.silence_share += (sample - self.silence_share) / self.window.max(1.0);
+        self.silence_share
+    }
+
     /// Records an outcome that carried no sign of the target failing to keep up:
     /// answered on the first ask, or silence from a host that answers nothing
     /// anyway.
@@ -383,7 +482,9 @@ impl CongestionWindow {
     /// only after being asked again.
     ///
     /// Halves the window, then refuses to halve again until that many probes
-    /// have been released.
+    /// have been released. The share of silence starts over with it: the
+    /// silence that earned one cut is not evidence for the next, which has to
+    /// be earned at the pace the cut set.
     pub fn record_congestion(&mut self) {
         if !self.limits.adaptive() || self.since_reduction < self.epoch {
             return;
@@ -394,6 +495,7 @@ impl CongestionWindow {
         self.epoch = self.capacity() as u32;
         self.since_reduction = 0;
         self.reductions = self.reductions.saturating_add(1);
+        self.silence_share = 0.0;
     }
 
     /// Releases every slot still held, for a scan that is stopping before its
@@ -645,6 +747,61 @@ mod tests {
         assert_eq!(window.capacity(), 64);
         assert_eq!(window.summary().reductions, 0);
         assert!(!window.summary().adaptive);
+    }
+
+    /// A silence that may be an open port neither opens the window nor closes
+    /// it while it is the exception among a host's answers: a scan whose silence
+    /// is a verdict meets one on every host with services.
+    #[test]
+    fn an_occasional_ambiguous_silence_among_answers_moves_nothing() {
+        let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
+
+        for outcome in 0..(64 * 20) {
+            if outcome % 20 == 0 {
+                window.record_ambiguous_silence();
+            } else {
+                window.record_answer();
+            }
+        }
+
+        assert_eq!(window.summary().reductions, 0, "one in twenty is not loss");
+    }
+
+    /// The same silence at a share past [`SILENCE_SHARE_OF_LOSS`] is loss, and
+    /// it cuts although no retry was ever answered to prove it.
+    #[test]
+    fn ambiguous_silence_at_a_share_of_loss_cuts_the_window() {
+        let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
+
+        for outcome in 0..64 {
+            if outcome % 4 == 0 {
+                window.record_ambiguous_silence();
+            } else {
+                window.record_answer();
+            }
+        }
+
+        assert!(window.summary().reductions > 0, "one in four is loss");
+        assert!(window.capacity() < 64);
+    }
+
+    /// Once the last question is admitted, what is left in flight is mostly
+    /// silence however little of what was asked was silent, since a silent
+    /// question holds its slot for a whole budget. Those arrive in a run with
+    /// no answers between them, and must not read as a share of loss.
+    #[test]
+    fn silence_left_in_flight_after_the_last_admission_is_not_read_as_a_share() {
+        let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
+        for _ in 0..(64 * 4) {
+            window.record_answer();
+        }
+
+        window.stop_admitting();
+        for _ in 0..64 {
+            window.record_ambiguous_silence();
+        }
+
+        assert_eq!(window.summary().reductions, 0);
     }
 
     /// After a cut, the window has to be able to climb back: a target that was
