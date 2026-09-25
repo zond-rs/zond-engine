@@ -888,23 +888,15 @@ impl RoutedScanner {
         // make every scan of a dual-stack name on an IPv4-only network report
         // itself as partial, which is the surest way to teach a reader to
         // ignore the warning that matters. It is recorded against the address
-        // instead, just below.
-        if let Some(reason) = &self.faults.broken {
-            let broken = self.sweep.audit.sends_failed - self.faults.unroutable_count;
-            self.ctx.record_failure(
-                kind,
-                format!(
-                    "{broken} of {} probes could not be sent: {reason}",
-                    self.sweep.audit.sends_attempted,
-                ),
-            );
-        }
-
-        // Against the address, where a report counts what it did not cover and
-        // a front end says so beside its result.
-        for address in &self.faults.addresses {
-            self.ctx.record_unroutable(*address);
-        }
+        // instead, where a report counts what it did not cover and a front end
+        // says so beside its result. The filing every raw pass shares does both.
+        self.faults.file(
+            &self.ctx,
+            kind,
+            "probes",
+            self.sweep.audit.sends_attempted,
+            self.sweep.audit.sends_failed,
+        );
 
         // Which address it was, at the level that says what went uncovered and
         // why: the default console already has the count from the report, and
@@ -1474,6 +1466,38 @@ mod tests {
             "a default console already has the count: {said:?}"
         );
         assert_eq!(ctx.take_unroutable().len(), 2, "both are recorded");
+    }
+
+    /// A send path that refused probes is one failure naming how many of the
+    /// sweep's sends it refused, the unroutable ones apart, and an address with
+    /// no route is filed against the address rather than as a failure. The
+    /// same filing every raw pass makes, so the report reads a broken send
+    /// path the same way whichever pass met it.
+    #[test]
+    fn a_refused_send_is_one_failure_and_an_unroutable_address_is_filed_against_itself() {
+        let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, THREE.len());
+        let [first, ..] = THREE;
+        let attempted = scanner.sweep.audit.sends_attempted;
+        scanner.sweep.audit.sends_failed = 3;
+        scanner.faults.broken = Some("refused for the test".to_owned());
+        scanner.faults.unroutable = Some((first.into(), "no route to host".to_owned()));
+        scanner.faults.unroutable_count = 1;
+        scanner.faults.addresses = [first.into()].into();
+
+        scanner.finish(StopReason::AttemptsSpent);
+
+        let failures: Vec<String> = ctx
+            .take_failures()
+            .iter()
+            .map(|failure| failure.reason().to_owned())
+            .collect();
+        assert_eq!(
+            failures,
+            [format!(
+                "2 of {attempted} probes could not be sent: refused for the test"
+            )]
+        );
+        assert_eq!(ctx.take_unroutable(), [IpAddr::from(first)]);
     }
 
     /// A caller who stopped the scan knows why it ended, so the sweep files no
