@@ -171,7 +171,12 @@ fn build_ndp_iter(
         let end: u128 = range.end_addr().into();
         (start..=end).map(Ipv6Addr::from)
     });
-    let iter = in_order(targets, walk).map(move |target| {
+    let held = ip_set.clone();
+    let owed = move |address| match address {
+        IpAddr::V6(v6) if held.contains(&address) => Some(v6),
+        _ => None,
+    };
+    let iter = in_order(targets, ip_set.v6_len(), walk, owed).map(move |target| {
         let packet = ndp::build_neighbor_solicitation(local_mac, src_addr, target);
         (packet, IpAddr::V6(target))
     });
@@ -196,7 +201,12 @@ pub fn build_arp_iter(
         let end: u32 = range.end_addr().into();
         (start..=end).map(Ipv4Addr::from)
     });
-    let iter = in_order(targets, walk).map(move |dst_addr| {
+    let held = ip_set.clone();
+    let owed = move |address| match address {
+        IpAddr::V4(v4) if held.contains(&address) => Some(v4),
+        _ => None,
+    };
+    let iter = in_order(targets, ip_set.v4_len(), walk, owed).map(move |dst_addr| {
         let packet = arp::build_request(local_mac, src_ip, dst_addr);
         (packet, IpAddr::V4(dst_addr))
     });
@@ -204,19 +214,31 @@ pub fn build_arp_iter(
     Box::new(iter)
 }
 
-/// `targets`, in the order `walk` names, or as they come without one.
+/// `targets`, `count` of them, in the order `walk` names, or as they come
+/// without one.
 ///
-/// Arranged as a list, so a seeded sweep holds an entry per address it owes a
-/// first attempt, as its ledger does for each one it has asked; unseeded, the
-/// ranges are expanded as they are drawn.
+/// A sweep that holds a large enough share of the walk is drawn along it (see
+/// [`WalkOrder::draws`]): the walk's addresses in turn, each kept where `owed`
+/// names it one of `targets`, and then those of `targets` the walk does not
+/// number, as they come, as the stream leaves them last. Neither half holds
+/// more than one address at a time. A sparser sweep is collected and sorted,
+/// at an entry per address it owes a first attempt, as its ledger holds one
+/// for each it has asked. Unseeded, the ranges are expanded as they are drawn.
 fn in_order<A>(
     targets: impl Iterator<Item = A> + Send + 'static,
+    count: u128,
     walk: Option<&WalkOrder>,
+    owed: impl Fn(IpAddr) -> Option<A> + Send + 'static,
 ) -> Box<dyn Iterator<Item = A> + Send>
 where
     A: Copy + Into<IpAddr> + Send + 'static,
 {
     match walk {
+        Some(walk) if walk.draws(count) => {
+            let numbered = walk.clone();
+            let unnumbered = targets.filter(move |target| !numbered.numbers((*target).into()));
+            Box::new(walk.addresses().filter_map(owed).chain(unnumbered))
+        }
         Some(walk) => {
             let mut targets: Vec<A> = targets.collect();
             walk.arrange(&mut targets);
@@ -314,5 +336,81 @@ mod tests {
             positions.last().expect("a last solicitation") > &(out.len() - 20),
             "the stream should reach the end of the sweep, not finish early"
         );
+    }
+
+    /// A seeded sweep's addresses, `ips`, in the walk of a scan whose plan is
+    /// `plan`, and how many of them were drawn from their source to give the
+    /// first.
+    fn walked(plan: &str, ips: &str) -> (Vec<Ipv4Addr>, Vec<Ipv4Addr>, usize) {
+        use crate::model::ip::set::Positions;
+        use crate::scanner::session::ScanSession;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let plan: IpSet = plan.parse().expect("a plan");
+        let ips: IpSet = ips.parse().expect("a sweep");
+        let (_session, ctx) = ScanSession::builder()
+            .ordering(Some(0x5EED))
+            .counting(Positions::of(&plan))
+            .build();
+        let walk = WalkOrder::of(&ips, &ctx).expect("a seeded scan walks");
+        let expand = |ips: &IpSet| {
+            let ranges: Vec<Ipv4Range> = ips.v4().to_vec();
+            ranges.into_iter().flat_map(|range| {
+                (u32::from(range.start_addr())..=u32::from(range.end_addr())).map(Ipv4Addr::from)
+            })
+        };
+
+        let mut sorted: Vec<Ipv4Addr> = expand(&ips).collect();
+        walk.arrange(&mut sorted);
+
+        let drawn = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&drawn);
+        let source = expand(&ips).inspect(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let held = ips.clone();
+        let owed = move |address| match address {
+            IpAddr::V4(v4) if held.contains(&address) => Some(v4),
+            _ => None,
+        };
+        let mut order = in_order(source, ips.v4_len(), Some(&walk), owed);
+        let first = order.next().expect("a first probe");
+        let before_first = drawn.load(Ordering::SeqCst);
+
+        (
+            sorted,
+            std::iter::once(first).chain(order).collect(),
+            before_first,
+        )
+    }
+
+    /// A seeded sweep leaves in the walk its scan names, which is the order
+    /// the checkpoint counts along, and the addresses the walk does not
+    /// number follow the rest as they come, whether the sweep is drawn along
+    /// the walk or collected and sorted.
+    #[test]
+    fn a_seeded_sweep_leaves_in_the_walk_however_it_is_arranged() {
+        // Dense enough to be drawn: the sweep holds most of the plan, beside
+        // an address the plan does not number.
+        let (sorted, drawn, _) = walked("192.0.2.0/24", "192.0.2.0-192.0.2.200, 198.51.100.7");
+        assert_eq!(drawn, sorted);
+        assert_eq!(drawn.last(), Some(&Ipv4Addr::new(198, 51, 100, 7)));
+
+        // Sparse enough to be collected: a few addresses of a wide plan.
+        let (sorted, collected, _) = walked("10.0.0.0/16", "10.0.0.1-10.0.0.9");
+        assert_eq!(collected, sorted);
+    }
+
+    /// A sweep holding most of its walk sends its first probe without first
+    /// expanding every address it owes. Collected and sorted, a seeded sweep
+    /// of an on-link `/8` holds sixteen million entries and their keys, a third
+    /// of a gigabyte, and sorts them all before anything leaves.
+    #[test]
+    fn a_dense_seeded_sweep_draws_its_first_probe_without_expanding_the_rest() {
+        let (_, order, before_first) = walked("10.0.0.0/16", "10.0.0.0/16");
+
+        assert_eq!(order.len(), 1 << 16, "every address, once");
+        assert_eq!(before_first, 0, "addresses expanded before the first left");
     }
 }

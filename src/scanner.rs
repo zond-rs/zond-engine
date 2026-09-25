@@ -565,10 +565,6 @@ pub async fn discover(
         .listening_only_to(cfg.listen_only_ports.clone())
         .planning(Stage::Discovery, planned)
         .staging(discovery_stages(cfg))
-        // Drawn here and kept nowhere, since nothing is recording this sweep.
-        // A caller who wants the order back is journalling, and that is what
-        // writes the seed down.
-        .ordering(Some(rand::random()))
         .build();
     let handle = spawn_discovery(targets, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
@@ -1522,9 +1518,6 @@ pub async fn scan(
         .detections(detections)
         .planning(Stage::Ports, planned)
         .staging(scan_stages(cfg, runs_liveness))
-        // See `discover`: drawn here and kept nowhere, because nothing is
-        // recording this scan.
-        .ordering(Some(rand::random()))
         .build();
     let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default(), runs_liveness);
     Ok((session, ScanTask::new(handle)))

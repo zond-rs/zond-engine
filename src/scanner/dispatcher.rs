@@ -187,10 +187,24 @@ pub(crate) fn dispatch_addresses_of(
 /// the context numbers, and that position's place in the seed's permutation of
 /// the plan. A context numbering nothing, a sweep counted in something else,
 /// has the set itself numbered, as the stream does.
+#[derive(Clone)]
 pub(crate) struct WalkOrder {
     numbered: std::sync::Arc<Positions>,
     order: Permutation,
 }
+
+/// How many of the walk's positions a sweep may be drawn along per address it
+/// owes, before it is cheaper to collect its addresses and sort them.
+///
+/// Drawn along the walk, a sweep holds nothing but its place in it, where
+/// collected it holds an entry and a sort key per address: twenty bytes each,
+/// a third of a gigabyte for an on-link `/8`, and sorted before the first
+/// probe leaves. The walk passes over the positions the sweep does not hold,
+/// so drawing costs a lookup per position the plan holds for every one the
+/// sweep does; sixteen keeps that a handful of lookups per probe. A sweep
+/// sparser than that is a small part of a larger plan, and collecting it costs
+/// its own size rather than the plan's.
+const DRAWN_DENSITY: u128 = 16;
 
 impl WalkOrder {
     /// The walk `ctx`'s seed names over `ips`, or `None` for a scan given no
@@ -204,6 +218,26 @@ impl WalkOrder {
         };
         let order = Permutation::new(seed, numbered.total());
         Some(Self { numbered, order })
+    }
+
+    /// Whether a sweep owing `count` addresses is drawn along this walk rather
+    /// than collected and sorted; see [`DRAWN_DENSITY`].
+    pub(crate) fn draws(&self, count: u128) -> bool {
+        count.saturating_mul(DRAWN_DENSITY) >= u128::from(self.numbered.total())
+    }
+
+    /// Every address the walk numbers, in its order, drawn one at a time.
+    pub(crate) fn addresses(&self) -> impl Iterator<Item = IpAddr> + Send + 'static {
+        let numbered = std::sync::Arc::clone(&self.numbered);
+        self.order
+            .iter()
+            .filter_map(move |position| numbered.address_at(position))
+    }
+
+    /// Whether the walk numbers `address`, and so gives it a place in
+    /// [`addresses`](Self::addresses).
+    pub(crate) fn numbers(&self, address: IpAddr) -> bool {
+        self.numbered.find(address).is_some()
     }
 
     /// Puts `addresses` in the order of this walk. An address no position
@@ -597,7 +631,7 @@ mod tests {
         let port_set: PortSet = "80,443,8080,8443".parse().unwrap();
         target_map.units.push(TargetSet::new(ip_set, port_set));
 
-        let (_session, ctx) = context();
+        let (_session, ctx) = ScanSession::builder().ordering(None).build();
         let dispatcher = Dispatcher::new(target_map).with_batch_size(100);
         let mut rx = dispatcher.run(&ctx);
 

@@ -1530,9 +1530,11 @@ pub struct ScanContext {
     pub(crate) positions: Arc<Positions>,
     /// The key the order this scan asks its targets in is a function of.
     ///
-    /// [`None`] for a scan that walks its plan in order. Read by the dispatcher
-    /// and by nothing else, since it decides what to ask next rather than
-    /// anything about what an answer means.
+    /// [`None`] for a scan that walks its plan in order, which is one whose
+    /// caller asked for that; see [`SessionBuilder::ordering`]. Read by what
+    /// decides what to ask next, the dispatcher and the sweeps that hold their
+    /// own first attempts, and by nothing else, since it says nothing about
+    /// what an answer means.
     pub(crate) order_seed: Option<u64>,
     /// Each open port's gathered responses, kept from the service phase for the
     /// detection phase to hand a passive detection.
@@ -2628,6 +2630,18 @@ impl WithheldHardware {
     }
 }
 
+/// The order a session's scan asks its targets in, as its caller left it.
+#[derive(Debug, Default, Clone, Copy)]
+enum Order {
+    /// Nothing said: a seed is drawn when the session is built.
+    #[default]
+    Drawn,
+    /// The walk this seed names.
+    Seeded(u64),
+    /// Plan order, shuffled within a batch.
+    Planned,
+}
+
 /// Builds a [`ScanSession`] and the [`ScanContext`] the strategies behind it
 /// write into.
 ///
@@ -2657,7 +2671,7 @@ pub struct SessionBuilder {
     host_timeout: Option<Duration>,
     scan_timeout: Option<Duration>,
     host_probe_interval: Option<Duration>,
-    order_seed: Option<u64>,
+    order: Order,
     send_source: Vec<IpAddr>,
     /// `None` for the default, [`RAW_PRINT_PORTS`](crate::config::RAW_PRINT_PORTS).
     listen_only: Option<BTreeSet<u16>>,
@@ -2725,15 +2739,27 @@ impl SessionBuilder {
     /// range from being the one shape every correlating sensor is written
     /// against. See [`Permutation`](crate::model::order::Permutation).
     ///
-    /// Leave it alone and the targets come out in plan order, shuffled within a
-    /// batch, which is what a scan whose plan cannot be addressed by position
-    /// falls back to anyway.
+    /// Leave it alone and the session draws a seed of its own when it is
+    /// built, so every scan walks one order whoever orchestrates it: the
+    /// dispatcher's streams and the sweeps that hold their own first attempts
+    /// alike. Unseeded, the first come out in plan order shuffled within a
+    /// batch and the second in address order, which is two orders in one scan
+    /// and the second the very signature a seed exists not to give.
+    ///
+    /// Pass [`None`] for plan order, shuffled within a batch, which is what a
+    /// scan whose plan cannot be addressed by position falls back to anyway. A
+    /// sitting continuing a journal that recorded no seed has to: its
+    /// checkpoint counts along the plan, and a walk it never took would leave
+    /// every answer waiting above the watermark.
     ///
     /// A caller journalling their scan should pass what the journal recorded, so
     /// a resumed sitting continues in the order the first one was going to use.
     /// [`scan_with_journal`](crate::scanner::scan_with_journal) does.
     pub fn ordering(mut self, seed: Option<u64>) -> Self {
-        self.order_seed = seed;
+        self.order = match seed {
+            Some(seed) => Order::Seeded(seed),
+            None => Order::Planned,
+        };
         self
     }
 
@@ -2865,8 +2891,12 @@ impl SessionBuilder {
         // seed and a plan it can number whole. The two have to agree, or the
         // walk watermark follows an order nothing asks in and every answer
         // waits in the set, which is the cost it exists to avoid.
-        let walk = self
-            .order_seed
+        let order_seed = match self.order {
+            Order::Drawn => Some(rand::random()),
+            Order::Seeded(seed) => Some(seed),
+            Order::Planned => None,
+        };
+        let walk = order_seed
             .zip(self.planned)
             .map(|(seed, total)| crate::model::order::Permutation::new(seed, total));
         let settlements = Arc::new(Settlements::walking(&self.settled, walk));
@@ -2929,7 +2959,7 @@ impl SessionBuilder {
             stages,
             settlements,
             positions: Arc::new(self.positions),
-            order_seed: self.order_seed,
+            order_seed,
             responses: Arc::new(Responses::default()),
             tapes: Arc::new(Tapes::default()),
             detections: self.detections,
@@ -2948,7 +2978,8 @@ impl SessionBuilder {
 
 impl ScanSession {
     /// A session and the context the strategies behind it write into, with
-    /// nothing excluded, nothing resumed and no address numbering.
+    /// nothing excluded, nothing resumed, no address numbering, and a walk
+    /// order of its own; see [`SessionBuilder::ordering`].
     ///
     /// A caller wrapping the engine normally receives the session already built,
     /// from [`discover`](crate::scanner::discover) or
@@ -3613,6 +3644,24 @@ mod tests {
         // A fresh session has nothing inherited.
         let (_session, fresh) = ScanSession::new();
         assert_eq!(fresh.settlements().settled_count(), 0);
+    }
+
+    /// A session whose caller said nothing of order walks a seed of its own,
+    /// so a caller orchestrating their own scan gets the one order every phase
+    /// asks in rather than address order from its sweeps and a batch shuffle
+    /// from its dispatcher. Told there is no seed, which a sitting continuing
+    /// a journal that recorded none has to be, it walks the plan.
+    #[test]
+    fn a_session_left_to_itself_draws_a_seed_and_one_told_otherwise_does_not() {
+        let (_session, left) = ScanSession::new();
+        let (_session, other) = ScanSession::builder().build();
+        let (_session, told) = ScanSession::builder().ordering(None).build();
+        let (_session, given) = ScanSession::builder().ordering(Some(0x5EED)).build();
+
+        assert!(left.order_seed.is_some(), "no seed drawn");
+        assert_ne!(left.order_seed, other.order_seed, "two sessions, one order");
+        assert_eq!(told.order_seed, None);
+        assert_eq!(given.order_seed, Some(0x5EED));
     }
 
     /// A scan walked in a seeded order keeps a checkpoint the size of what is
