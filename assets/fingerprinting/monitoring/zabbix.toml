@@ -3,12 +3,24 @@ name = "zabbix"
 default_ports = [10050, 10051]
 description = "Zabbix Agent/Server"
 
+# A passive check, framed the way the Zabbix protocol frames every message:
+# `ZBXD`, a flags byte (0x01, the protocol itself), the length of what follows
+# as eight little-endian bytes (10), and the item key. Framed rather than a
+# bare key, because the frame is the protocol's own form of a request.
 [[probe]]
 name = "agent_ping"
-payload = 'agent.ping'
+payload = 'ZBXD\x01\x0a\x00\x00\x00\x00\x00\x00\x00agent.ping'
 protocol = "tcp"
 
+# The agent answers in the same frame, whatever the key: `1` for a ping, and
+# `ZBX_NOTSUPPORTED` for a key it does not know. The header is what names the
+# protocol, so it is what the rule reads. The `1` alone is not: the rule is
+# consulted across the whole corpus for a port nothing else named, and every
+# text that begins with a digit, a session cookie or an SNMP object identifier,
+# would read as an agent. The flags byte always carries 0x01, with 0x02 for a
+# compressed body and 0x04 for a large packet beside it.
 [[match]]
-name = "zabbix_pong"
-pattern = '^1'
+name = "zabbix_frame"
+pattern = '^ZBXD[\x01\x03\x05\x07]'
 product = "zabbix"
+example = "ZBXD\u0001\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u00001"

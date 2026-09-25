@@ -445,3 +445,67 @@ fn banner_matched_in_a_tunnel_is_labelled_with_scheme() {
     assert_eq!(verdict.tunnel, Some(Tunnel::Tls));
     assert_eq!(verdict.to_service().unwrap().name(), "ssl/ssh"); // label composes both
 }
+
+/// What the banner analyzer names `banner` on `port`, as the service and
+/// product of its resolved verdict.
+fn named(port: u16, protocol: crate::model::port::Protocol, banner: &str) -> ServiceVerdict {
+    let responses = ResponseSet::from_banners(vec![banner.to_string()]);
+    let evidence = BannerRegexAnalyzer.analyze(
+        &PortContext {
+            port,
+            protocol,
+            addr: None,
+            tunnel: None,
+            speaks_http: false,
+            detection: crate::config::ServiceDetection::default(),
+        },
+        &responses,
+        &Collected::default(),
+    );
+    ServiceVerdict::resolve(evidence)
+}
+
+/// A Zabbix agent is named by the header its protocol frames every reply
+/// in, and not by the digit an `agent.ping` answer carries.
+///
+/// A rule anchored on that digit alone is consulted across the whole corpus
+/// for any port its own did not name, and reads every text that begins with
+/// a `1` as an agent: a session cookie, a page titled with a count, the
+/// object identifier every SNMP agent answers with. Each of those put a
+/// monitoring agent's name on a web server or a printer.
+#[test]
+fn only_a_framed_zabbix_reply_is_named_zabbix() {
+    use crate::model::port::Protocol::{Tcp, Udp};
+
+    let not_zabbix = [
+        (
+            8080,
+            Tcp,
+            "HTTP/1.1 200 OK\r\nServer: farm\r\nSet-Cookie: 1f3a9c=0; Path=/\r\n\
+             Content-Type: text/html\r\n\r\n<title>1 new message</title>",
+        ),
+        (51987, Tcp, "1\r\n"),
+        (161, Udp, "1.3.6.1.4.1.11.2.3.9.1"),
+    ];
+    for (port, protocol, banner) in not_zabbix {
+        // Every witness rather than the winner: a reading that loses the
+        // ranking on one port is still a reading, and it wins on the next
+        // port that has nothing better to say.
+        let verdict = named(port, protocol, banner);
+        assert!(
+            verdict
+                .evidence
+                .iter()
+                .all(|evidence| evidence.service.as_deref() != Some("zabbix")),
+            "{banner:?} on {port} was read as zabbix: {verdict:?}"
+        );
+    }
+
+    // `agent.ping` answered: the header, the protocol flag, an eight-byte
+    // little-endian length of one, and the `1` itself.
+    let pong = "ZBXD\u{1}\u{1}\0\0\0\0\0\0\0\u{31}";
+    for port in [10050, 51987] {
+        let verdict = named(port, Tcp, pong);
+        assert_eq!(verdict.service.as_deref(), Some("zabbix"), "on {port}");
+    }
+}
