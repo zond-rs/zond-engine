@@ -62,6 +62,10 @@ pub(crate) fn run_flows(
     probe_for: impl Fn(&Port) -> Option<Box<dyn Probe>> + Sync,
 ) {
     let host_addr = host.scoped_ip().addr().to_string();
+    // One contention for the whole host: its ports' exchanges join it, so a
+    // wait behind another of its ports is seen for what it is. See
+    // [`HostContention`].
+    let contention = HostContention::default();
     // Collect first, mutate second: reading the ports borrows the host, and
     // recording a finding needs them back mutably, so the two cannot overlap.
     let mut hits: Vec<(u16, Protocol, Finding)> = Vec::new();
@@ -81,6 +85,7 @@ pub(crate) fn run_flows(
             service,
             number,
             protocol,
+            &contention,
             |_caps| probe_for(port),
         );
         for finding in produced {
@@ -105,6 +110,7 @@ pub(crate) fn run_flows(
 /// it, in corpus order like the findings. A flow the port was given up on before
 /// it could ask is among them: a question left unasked is reported, never
 /// dropped.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn detect_port(
     corpus: &FlowDb,
     envelope: &DetectionEnvelope,
@@ -112,6 +118,7 @@ pub(crate) fn detect_port(
     service: Option<&str>,
     number: u16,
     protocol: Protocol,
+    contention: &HostContention,
     probe_for: impl Fn(&CapabilitySpec) -> Option<Box<dyn Probe>> + Sync,
 ) -> (Vec<Finding>, Vec<Shortfall>) {
     // Which flows this port answers to, settled before any of them runs. The pass
@@ -133,9 +140,9 @@ pub(crate) fn detect_port(
     // and number are the port's, not any flow's, so a `{host}`/`{port}` template
     // resolves to the endpoint under probe whichever detection names it.
     let seed = FlowSeed::new(host, number);
-    // What the port's flows share: its replies, and how it has behaved under
-    // them. See [`PortShare`].
-    let port = PortShare::default();
+    // What the port's flows share: its replies and strikes, over the host
+    // contention its exchanges join. See [`PortShare`] and [`HostContention`].
+    let port = PortShare::new(contention);
 
     let run_one = |index: usize| -> Option<Run> {
         let flow = applicable[index];
@@ -381,22 +388,54 @@ fn requests(flow: &FlowDetection) -> u32 {
     super::interp::exchanges(flow)
 }
 
-/// What the flows run against one port share: the replies it has given, and
-/// how it has behaved under them.
+/// Contention is a fact about the host, not the port: one process may serve
+/// several of a host's ports from a single worker, and an exchange to one waits
+/// behind the exchanges to the others in that worker's queue. So the count of
+/// exchanges in flight, and of exchanges begun, is kept for the host and shared
+/// across the [`PortShare`]s of its ports, and an exchange is "alone" only when
+/// no exchange to any of the host's ports overlapped it.
+///
+/// What this decides is whether a slow exchange is written off as the port's
+/// silence or read as a queue the scan itself built. A port answering one
+/// request at a time is alive, and a wait behind another of the host's ports is
+/// the scan's doing, not the port's: counted against the host here, it narrows
+/// the port rather than striking it, so a single-worker host's ports are asked
+/// in turn instead of one of them written off for the others' traffic.
 #[derive(Default)]
-struct PortShare {
+pub(crate) struct HostContention {
+    /// Exchanges to any of the host's ports right now.
+    in_flight: AtomicU32,
+    /// Exchanges to any of the host's ports ever begun, so one that ends can
+    /// tell whether another began and finished while it waited.
+    begun: AtomicU64,
+}
+
+/// What the flows run against one port share: the replies it has given, and
+/// the strikes it has drawn, over the host contention its exchanges join.
+struct PortShare<'h> {
     /// Replies read to a clean end, by the request that drew them. See
     /// [`CachingProbe`].
     cache: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
-    /// Exchanges that held the port to themselves and still ran past the
+    /// Exchanges that held the whole host to themselves and still ran past the
     /// dead-wait mark, so the flows that follow can stop paying for them. See
-    /// [`DEAD_PORT_STRIKES`].
+    /// [`DEAD_PORT_STRIKES`]. Kept per port, since a dead port is written off
+    /// while its live neighbours are not.
     strikes: AtomicU32,
-    /// Exchanges on the socket right now, from any of the port's flows.
-    in_flight: AtomicU32,
-    /// Exchanges ever begun on the socket, so one that ends can tell whether
-    /// another began and finished while it waited.
-    begun: AtomicU64,
+    /// The host's exchanges in flight and begun, shared with its other ports,
+    /// so a wait behind one of them is seen for what it is. See
+    /// [`HostContention`].
+    contention: &'h HostContention,
+}
+
+impl<'h> PortShare<'h> {
+    /// A port's share over the host contention its exchanges join.
+    fn new(contention: &'h HostContention) -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
+            strikes: AtomicU32::new(0),
+            contention,
+        }
+    }
 }
 
 /// A [`Probe`] that shares one port's replies across the flows run against it.
@@ -438,7 +477,7 @@ struct PortShare {
 /// refusal its stalled wait would otherwise read as.
 struct CachingProbe<'a> {
     inner: Box<dyn Probe>,
-    port: &'a PortShare,
+    port: &'a PortShare<'a>,
     /// How long a fresh exchange may run before it counts as a dead wait, three
     /// quarters of the flow's time budget. A real reply lands well inside this; a
     /// port that holds the socket to its read timeout does not.
@@ -476,7 +515,12 @@ struct CachingProbe<'a> {
 impl<'a> CachingProbe<'a> {
     /// A flow's view of the port: its own probe, what the port's flows share,
     /// and the two figures from its budget this wrapper reads.
-    fn new(inner: Box<dyn Probe>, port: &'a PortShare, dead_after: Duration, budget: u64) -> Self {
+    fn new(
+        inner: Box<dyn Probe>,
+        port: &'a PortShare<'a>,
+        dead_after: Duration,
+        budget: u64,
+    ) -> Self {
         Self {
             inner,
             port,
@@ -563,13 +607,20 @@ impl Probe for CachingProbe<'_> {
 
         // Alone means no exchange was in flight when this one began and none
         // began before it ended: the whole wait was the port's.
-        let company = self.port.in_flight.fetch_add(1, Ordering::SeqCst);
-        let ticket = self.port.begun.fetch_add(1, Ordering::SeqCst);
+        let company = self
+            .port
+            .contention
+            .in_flight
+            .fetch_add(1, Ordering::SeqCst);
+        let ticket = self.port.contention.begun.fetch_add(1, Ordering::SeqCst);
         let started = Instant::now();
         let reply = self.inner.speak(bytes);
         let elapsed = started.elapsed();
-        let alone = company == 0 && self.port.begun.load(Ordering::SeqCst) == ticket + 1;
-        self.port.in_flight.fetch_sub(1, Ordering::SeqCst);
+        let alone = company == 0 && self.port.contention.begun.load(Ordering::SeqCst) == ticket + 1;
+        self.port
+            .contention
+            .in_flight
+            .fetch_sub(1, Ordering::SeqCst);
 
         self.crowded |= !alone;
         if elapsed >= self.dead_after {
@@ -808,6 +859,7 @@ mod tests {
             Some("redis"),
             6379,
             Protocol::Tcp,
+            &HostContention::default(),
             |_caps| Some(Box::new(Refusing)),
         );
 
@@ -849,7 +901,8 @@ mod tests {
                 }
             }
         }
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
         let limits = Limits {
             millis: 1_000,
             bytes: 1_000,
@@ -924,6 +977,7 @@ mod tests {
             Some("redis"),
             6379,
             Protocol::Tcp,
+            &HostContention::default(),
             |_caps| {
                 Some(Box::new(RefusesFirst {
                     calls: 0,
@@ -971,6 +1025,7 @@ mod tests {
             Some("http"),
             80,
             Protocol::Tcp,
+            &HostContention::default(),
             |_caps| Some(Box::new(Planned(std::sync::Arc::clone(&told))) as Box<dyn Probe>),
         );
 
@@ -1009,7 +1064,8 @@ mod tests {
     #[test]
     fn a_complete_reply_is_served_from_the_cache_to_a_later_flow() {
         let request = b"GET / HTTP/1.1\r\nHost: h\r\n\r\n";
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
 
         let (first, first_calls) = counting(b"the page", true);
         let (second, second_calls) = counting(b"never read", true);
@@ -1039,7 +1095,8 @@ mod tests {
     /// says so, even when its own last trip to the socket was cut short.
     #[test]
     fn a_reply_served_from_the_cache_is_reported_whole_after_a_truncated_fetch() {
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
         let (whole, _) = counting(b"the page", true);
         let mut first = CachingProbe::new(whole, &port, Duration::from_millis(1500), 4096);
         first.speak(b"GET / HTTP/1.1\r\n\r\n");
@@ -1069,7 +1126,8 @@ mod tests {
                 None
             }
         }
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
         let mut probe =
             CachingProbe::new(Box::new(Silent), &port, Duration::from_millis(1500), 4096);
         assert!(probe.speak(b"GET / HTTP/1.1\r\n\r\n").is_none());
@@ -1078,7 +1136,8 @@ mod tests {
 
     #[test]
     fn a_different_request_is_fetched_rather_than_served() {
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
         let (first, _) = counting(b"root", true);
         let (second, second_calls) = counting(b"login", true);
         let mut a = CachingProbe::new(first, &port, Duration::from_millis(1500), 4096);
@@ -1098,7 +1157,8 @@ mod tests {
     #[test]
     fn a_reply_larger_than_a_flow_budget_is_not_shared() {
         let request = b"GET / HTTP/1.1\r\n\r\n";
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
 
         // The first flow reads a large page under a large budget and caches it.
         let (first, _) = counting(&[b'x'; 100], true);
@@ -1126,7 +1186,8 @@ mod tests {
     #[test]
     fn an_incomplete_reply_is_never_cached() {
         let request = b"GET / HTTP/1.1\r\n\r\n";
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
 
         let (first, _) = counting(b"cut short", false);
         let mut a = CachingProbe::new(first, &port, Duration::from_millis(1500), 4096);
@@ -1198,6 +1259,7 @@ mod tests {
                 Some("redis"),
                 6379,
                 Protocol::Tcp,
+                &HostContention::default(),
                 |_caps| {
                     let nth = answered.fetch_add(1, Ordering::Relaxed);
                     std::thread::sleep(Duration::from_micros((nth * 37) % 900));
@@ -1285,6 +1347,7 @@ mod tests {
             Some("redis"),
             6379,
             Protocol::Tcp,
+            &HostContention::default(),
             move |_caps| Some(Box::new(Stalling(std::sync::Arc::clone(&counted))) as Box<dyn Probe>),
         );
 
@@ -1405,6 +1468,7 @@ mod tests {
             Some("http"),
             80,
             Protocol::Tcp,
+            &HostContention::default(),
             |caps| {
                 let millis = caps.max_millis.map_or(DEFAULT_MAX_MILLIS, u64::from);
                 Some(Box::new(Queued {
@@ -1431,6 +1495,68 @@ mod tests {
         );
     }
 
+    /// A slow exchange on one of a host's ports that overlapped an exchange on
+    /// another of them is crowded, not a strike against its port.
+    ///
+    /// Contention is the host's: one process serving several ports answers each
+    /// only after everything queued ahead across all of them, so an exchange to
+    /// one waits behind the exchanges to the others. Held past the dead-wait
+    /// mark, that wait is the scan's own queue and not the port's silence, and
+    /// striking the port for it would write off a live service. Two ports whose
+    /// exchanges overlap over one [`HostContention`] each see the other's, so
+    /// neither is struck; the same wait alone on the host is the port's own and
+    /// strikes it.
+    #[test]
+    fn a_wait_behind_another_of_the_hosts_ports_is_crowded_not_a_strike() {
+        // A probe that holds every exchange past the dead-wait mark, after
+        // waiting on a gate so a test can make two overlap to the byte.
+        struct Held(std::sync::Arc<std::sync::Barrier>);
+        impl Probe for Held {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                self.0.wait();
+                std::thread::sleep(Duration::from_millis(120));
+                Some(b"ok".to_vec())
+            }
+        }
+        let dead_after = Duration::from_millis(50);
+
+        // Two ports of one host, their exchanges made to overlap: the barrier
+        // releases both only once both are in flight over the shared contention.
+        let contention = HostContention::default();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (port_a, port_b) = (PortShare::new(&contention), PortShare::new(&contention));
+        std::thread::scope(|scope| {
+            for port in [&port_a, &port_b] {
+                let gate = std::sync::Arc::clone(&gate);
+                scope.spawn(move || {
+                    let mut probe = CachingProbe::new(Box::new(Held(gate)), port, dead_after, 4096);
+                    probe.speak(b"q");
+                    (probe.crowded, probe.struck)
+                });
+            }
+        });
+        assert_eq!(
+            (
+                port_a.strikes.load(Ordering::Relaxed),
+                port_b.strikes.load(Ordering::Relaxed)
+            ),
+            (0, 0),
+            "a wait behind another of the host's ports struck the port"
+        );
+
+        // The same wait, alone on the host, is the port's own and strikes it.
+        let solo = HostContention::default();
+        let port = PortShare::new(&solo);
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(1));
+        let mut probe = CachingProbe::new(Box::new(Held(gate)), &port, dead_after, 4096);
+        probe.speak(b"q");
+        assert!(
+            probe.struck,
+            "a slow exchange alone on the host did not strike"
+        );
+        assert_eq!(port.strikes.load(Ordering::Relaxed), 1);
+    }
+
     #[test]
     fn a_port_that_never_answers_stops_being_probed() {
         struct Silent(std::sync::Arc<AtomicU32>);
@@ -1441,7 +1567,8 @@ mod tests {
             }
         }
 
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
         let calls = std::sync::Arc::new(AtomicU32::new(0));
 
         // Each flow over the port gets its own probe but shares the strike count,
@@ -1486,7 +1613,8 @@ mod tests {
 
         // A fast refusal with no dead wait is the flow outrunning its own budget on
         // a port still answering.
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
         let mut live = CachingProbe::new(Box::new(Refuser), &port, Duration::from_secs(3600), 4096);
         live.speak(b"GET /a HTTP/1.1\r\n\r\n");
         assert!(!live.stalled);
@@ -1501,7 +1629,8 @@ mod tests {
         // The same refusal after a dead wait alone on the port is the port's
         // doing. A dead_after of zero makes the exchange count as having run the
         // clock out.
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
         let mut dead = CachingProbe::new(Box::new(Refuser), &port, Duration::ZERO, 4096);
         dead.speak(b"GET /b HTTP/1.1\r\n\r\n");
         assert!(dead.stalled);
@@ -1537,7 +1666,8 @@ mod tests {
             }
         }
 
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let crowded: Vec<bool> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..2)
@@ -1598,6 +1728,7 @@ mod tests {
             Some("http"),
             80,
             Protocol::Tcp,
+            &HostContention::default(),
             |_caps| Some(Box::new(Silent) as Box<dyn Probe>),
         );
 
@@ -1615,7 +1746,8 @@ mod tests {
 
     #[test]
     fn a_port_that_answers_but_runs_out_the_clock_stops_being_probed() {
-        let port = PortShare::default();
+        let contention = HostContention::default();
+        let port = PortShare::new(&contention);
 
         // A dead_after of zero makes every exchange count as having run the clock
         // out, standing in for a port that dribbles a reply back only as its read
