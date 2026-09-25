@@ -90,7 +90,7 @@ use crate::model::ip::range::IpRange;
 use crate::model::ip::scoped::{ScopedIp, Zone, ZoneMap};
 use crate::model::ip::set::{IpSet, Positions};
 use crate::model::mac::MacAddr;
-use crate::model::port::Protocol;
+use crate::model::port::{PortState, Protocol};
 use crate::report::ScannerKind;
 use crate::report::{Attachment, AttachmentSource, ProbeStats, Refusal, ScannerFailure};
 use crate::scanner::handle::ScanHandle;
@@ -1405,6 +1405,9 @@ pub struct ScanContext {
     pub(crate) undecided: Arc<SilenceLog>,
     /// How many of the plan's targets a port phase's walk stopped short of.
     pub(crate) unreached: Arc<AtomicU64>,
+    /// How many targets a port phase asked at the addresses whose records it
+    /// forgot as heard nothing from.
+    pub(crate) unheard_probes: Arc<AtomicU64>,
     /// Which stage's unit the plan, and so the settlements, are counted in.
     pub(crate) plan_stage: Stage,
     /// When each host's budget started, for a scan that set one.
@@ -1977,12 +1980,15 @@ impl ScanContext {
     /// is what the phase's
     /// [`silent`](crate::report::ScanPhase::silent) list is read from.
     ///
-    /// A record a journal already wrote down stays on disk; the report drops
-    /// it on read-back by the same list.
+    /// A record a journal already wrote down is left out when the sitting's
+    /// findings are written whole at its end, and dropped on read-back by the
+    /// same list; see [`Unheard`](crate::report::Unheard). The ports it was
+    /// asked are counted before it goes; see
+    /// [`ScanPhase::unheard_probes`](crate::report::ScanPhase::unheard_probes).
     pub(crate) fn forget_silent(&self, keys: Vec<ScopedIp>) {
         for key in keys {
             self.silent.insert(key.addr());
-            self.store.remove(&key);
+            self.forget_unheard(&key);
         }
     }
 
@@ -1996,11 +2002,24 @@ impl ScanContext {
     /// pass would have made none, and they are named where that pass names
     /// what it could not decide, the phase's
     /// [`undecided`](crate::report::ScanPhase::undecided) list. Their ports
-    /// stay unsettled, so a resume asks them again.
+    /// stay unsettled, so a resume asks them again, and the ones already asked
+    /// are counted before the record goes, as a silent address's are.
     pub(crate) fn forget_undecided(&self, keys: Vec<ScopedIp>) {
         for key in keys {
             self.undecided.insert(key.addr());
-            self.store.remove(&key);
+            self.forget_unheard(&key);
+        }
+    }
+
+    /// Drops the record at `key`, counting the ports it had been asked.
+    fn forget_unheard(&self, key: &ScopedIp) {
+        if let Some((_, host)) = self.store.remove(key) {
+            let asked = host
+                .ports()
+                .filter(|port| port.state() != PortState::Unasked)
+                .count();
+            self.unheard_probes
+                .fetch_add(asked as u64, Ordering::Relaxed);
         }
     }
 
@@ -2025,6 +2044,14 @@ impl ScanContext {
     /// The count [`record_unreached`](Self::record_unreached) filed, taken.
     pub(crate) fn take_unreached(&self) -> u64 {
         self.unreached.swap(0, Ordering::Relaxed)
+    }
+
+    /// How many targets the records [`forget_silent`](Self::forget_silent)
+    /// and [`forget_undecided`](Self::forget_undecided) dropped had been
+    /// asked, taken. See
+    /// [`ScanPhase::unheard_probes`](crate::report::ScanPhase::unheard_probes).
+    pub(crate) fn take_unheard_probes(&self) -> u64 {
+        self.unheard_probes.swap(0, Ordering::Relaxed)
     }
 
     /// Whether `address` has spent the per-host budget this scan was given,
@@ -2731,6 +2758,7 @@ impl SessionBuilder {
             silent: Arc::new(SilenceLog::default()),
             undecided: Arc::new(SilenceLog::default()),
             unreached: Arc::new(AtomicU64::new(0)),
+            unheard_probes: Arc::new(AtomicU64::new(0)),
             plan_stage: self.plan_stage,
             clocks: Arc::new(HostClocks {
                 budget: self.host_timeout,

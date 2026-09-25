@@ -558,6 +558,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // A phase that reached a verdict on every address it was asked about
         // leaves this out, which is every finished sweep and every port scan.
         ("phase", "undecided"),
+        // A phase that did not stand in for a liveness pass leaves this out,
+        // and so does one that heard something from every address it asked.
+        ("phase", "unheard_probes"),
         // A phase whose walk ran to its end leaves this out, and so does every
         // phase that is not a port scan.
         ("phase", "unreached"),

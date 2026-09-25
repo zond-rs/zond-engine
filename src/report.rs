@@ -1749,6 +1749,9 @@ pub struct PhaseParts {
     /// How many of a port phase's targets its walk never reached. See
     /// [`ScanPhase::unreached`].
     pub unreached: u128,
+    /// How many of a port phase's targets it asked at the addresses it lists
+    /// no host at. See [`ScanPhase::unheard_probes`].
+    pub unheard_probes: u128,
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
@@ -1783,6 +1786,7 @@ impl ScanPhase {
             silent: parts.silent,
             stopped: parts.stopped,
             unreached: parts.unreached,
+            unheard_probes: parts.unheard_probes,
             probes: parts.probes,
             origin: parts.origin,
             attachments: parts.attachments,
@@ -1863,6 +1867,9 @@ pub struct ScanPhase {
     /// Targets of the plan the walk never reached. See
     /// [`unreached`](Self::unreached).
     unreached: u128,
+    /// Targets asked at addresses the phase lists no host at. See
+    /// [`unheard_probes`](Self::unheard_probes).
+    unheard_probes: u128,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<PhaseOrigin>,
@@ -2102,6 +2109,30 @@ impl ScanPhase {
     /// what a report holding several sittings has left.
     pub fn unreached(&self) -> u128 {
         self.unreached
+    }
+
+    /// How many of this port phase's targets it asked at the addresses it
+    /// lists no host at: every port of the ones it names
+    /// [`silent`](Self::silent), and the ports it reached of the ones it names
+    /// [`undecided`](Self::undecided).
+    ///
+    /// Those addresses' records are dropped, so the ports they were asked are
+    /// on no host, and a count of the ports a scan probed read off its hosts
+    /// comes up short by exactly this. It cannot be read off the scope
+    /// instead: a phase given differing ports for different addresses records
+    /// their union, which says nothing of what any one address was asked, and
+    /// an undecided address was asked only part of its ports. So the phase
+    /// counts them as it drops them.
+    ///
+    /// Each sitting of a resumed job counts its own. A target asked and
+    /// answered by silence is settled and never asked again, so the counts of
+    /// several sittings add up rather than overlap. Zero for every phase that
+    /// did not stand in for a liveness pass, and in a record written before
+    /// the count was kept, where a reader that needs the number can derive it
+    /// from the silent addresses only if the phase walked one port set for
+    /// every address.
+    pub fn unheard_probes(&self) -> u128 {
+        self.unheard_probes
     }
 
     /// The strategies in this phase that could not do their job.
@@ -2798,35 +2829,63 @@ impl ScanReport {
     /// hosts down as they change, so a record of an address later found silent
     /// can already be on disk, and a resumed job restores it beside the later
     /// sittings' phases. Read against every phase the report holds, the answer
-    /// is the same however the report came together.
-    ///
-    /// Only a host still [`Unknown`](HostStatus::Unknown): one that answered in
-    /// any phase, or in any document merged in, carries that evidence and is a
-    /// host whatever another phase heard.
+    /// is the same however the report came together. See [`Unheard`].
     fn forget_the_silent(&mut self) {
-        let mut silent = IpSet::new();
-        for phase in &self.phases {
+        let unheard = Unheard::of(&self.phases);
+        if unheard.is_empty() {
+            return;
+        }
+        self.hosts.retain(|_, host| !unheard.drops(host));
+    }
+}
+
+/// The addresses a set of phases heard nothing from and lists no host at: what
+/// a port phase standing in for a liveness pass named
+/// [`silent`](ScanPhase::silent), and what it named
+/// [`undecided`](ScanPhase::undecided).
+///
+/// One reading for every place a record of such an address is dropped: a
+/// report as it is assembled, a journal as it restores an earlier sitting's
+/// findings, and a journal's findings file as a sitting ends. A journal writes
+/// hosts down as they change, before the phase has decided which it heard
+/// nothing from, so each of those meets records the others would drop, and
+/// they agree because they read this.
+///
+/// What a port phase standing in for a liveness pass left undecided is no host
+/// either, for the reason `ScanPhase::undecided` gives. A discovery phase's
+/// undecided addresses are left alone: nothing of its own is listed there.
+pub(crate) struct Unheard(IpSet);
+
+impl Unheard {
+    /// The addresses `phases` heard nothing from.
+    pub(crate) fn of<'a>(phases: impl IntoIterator<Item = &'a ScanPhase>) -> Self {
+        let mut unheard = IpSet::new();
+        for phase in phases {
             for range in &phase.silent {
-                silent.insert_range(*range);
+                unheard.insert_range(*range);
             }
-            // What a port phase standing in for a liveness pass left
-            // undecided is no host either, for the reason
-            // `ScanPhase::undecided` gives. A discovery phase's undecided
-            // addresses are left alone: nothing of its own is listed there.
             if phase.kind == ScanKind::PortScan {
                 for range in &phase.undecided {
-                    silent.insert_range(*range);
+                    unheard.insert_range(*range);
                 }
             }
         }
-        if silent.is_empty() {
-            return;
-        }
-        silent.canonicalize();
+        unheard.canonicalize();
+        Self(unheard)
+    }
 
-        self.hosts.retain(|_, host| {
-            host.status() != HostStatus::Unknown || !host.ips().iter().any(|ip| silent.contains(ip))
-        });
+    /// Whether no phase heard nothing from anything, so nothing is dropped.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether `host` is a record to drop: one still
+    /// [`Unknown`](HostStatus::Unknown) at an address heard nothing from.
+    ///
+    /// One that answered in any phase, or in any document merged in, carries
+    /// that evidence and is a host whatever another phase heard.
+    pub(crate) fn drops(&self, host: &Host) -> bool {
+        host.status() == HostStatus::Unknown && host.ips().iter().any(|ip| self.0.contains(ip))
     }
 }
 
@@ -3205,6 +3264,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         }

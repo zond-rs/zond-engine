@@ -26,7 +26,7 @@
 //! is when.
 
 use crate::journal::Journal;
-use crate::report::{ScanPhase, ScannerKind};
+use crate::report::{ScanPhase, ScannerKind, Unheard};
 use crate::scanner::session::ScanProgress;
 
 /// How often a running scan writes down how far it got.
@@ -67,7 +67,7 @@ pub fn spawn_checkpoints(mut journal: Journal, ctx: ScanProgress) -> Checkpointi
     let (done, mut stop) = tokio::sync::oneshot::channel::<Vec<ScanPhase>>();
 
     let task = tokio::spawn(async move {
-        loop {
+        let phases = loop {
             tokio::select! {
                 _ = tokio::time::sleep(CHECKPOINT_EVERY) => {
                     // A checkpoint that cannot be written is not worth ending a
@@ -98,13 +98,27 @@ pub fn spawn_checkpoints(mut journal: Journal, ctx: ScanProgress) -> Checkpointi
                 // A dropped signal is a task nobody joined: there are no phases
                 // to record, and what has been settled so far still is.
                 finished = &mut stop => {
-                    let _ = journal.record_phases(&finished.unwrap_or_default());
-                    break;
+                    let phases = finished.unwrap_or_default();
+                    let _ = journal.record_phases(&phases);
+                    break phases;
                 }
             }
-        }
+        };
 
-        let _ = journal.record(&ctx.take_changed_hosts(), ctx.settlements());
+        // A job whose phases heard nothing from an address has its findings
+        // written whole, less every record at one. A checkpoint wrote the
+        // scanners' records of such an address down before the phase decided
+        // it was silent, and the phase forgot them only in memory; appended
+        // to, the file would keep what the job's report drops. See `Unheard`.
+        let unheard = Unheard::of(journal.earlier_phases().iter().chain(&phases));
+        let _ = if unheard.is_empty() {
+            journal.record_hosts(&ctx.take_changed_hosts())
+        } else {
+            let mut kept = ctx.hosts_snapshot();
+            kept.retain(|host| !unheard.drops(host));
+            journal.compact(&kept)
+        }
+        .and_then(|()| journal.checkpoint(ctx.settlements()));
         let _ = journal.record_detections(&ctx.take_tapes());
         let _ = journal.close();
     });

@@ -181,6 +181,9 @@ impl PhaseRecorder {
         // finish asking is what the pass leaves undecided; see
         // `ScanContext::forget_undecided`.
         let unfinished = ctx.take_undecided();
+        // Taken whatever the kind, for the same reason, and kept where the
+        // two lists above are: the ports asked at the addresses they name.
+        let unheard_probes = ctx.take_unheard_probes();
         let liveness =
             (self.kind == ScanKind::Discovery).then(|| Liveness::found(ctx, heard_nothing));
         let undecided = match (&liveness, self.kind, self.liveness_skipped) {
@@ -225,6 +228,12 @@ impl PhaseRecorder {
             // Taken whatever the kind, so a context reused for another phase
             // starts from nothing.
             unreached: u128::from(ctx.take_unreached()),
+            unheard_probes: match (self.kind, self.liveness_skipped) {
+                (ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => {
+                    u128::from(unheard_probes)
+                }
+                _ => 0,
+            },
             probes: ctx.take_probe_stats(),
             origin: None,
             attachments: ctx.take_attachments(),
@@ -605,6 +614,61 @@ mod tests {
         let next = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
             .skipping_liveness(LivenessSkip::PortsNoDearer);
         assert!(next.finish(&ctx).phases()[0].undecided().is_empty());
+    }
+
+    /// **A port phase standing in for a liveness pass counts the ports it
+    /// asked at the addresses it lists no host at.** Their records are
+    /// dropped, so those ports are on no host, and a phase given differing
+    /// ports for different addresses cannot say from its scope what any one
+    /// of them was asked: without the count, a scan's tally of what it probed
+    /// comes up short by every probe it spent on silence. Every port of a
+    /// silent address counts, and only the ports reached of an undecided one.
+    #[test]
+    fn a_port_phase_standing_in_for_liveness_counts_what_it_asked_where_it_heard_nothing() {
+        use crate::model::ip::scoped::ScopedIp;
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .skipping_liveness(LivenessSkip::PortsNoDearer);
+        let file = |ctx: &ScanContext, at: u8, ports: &[(u16, PortState)]| {
+            ctx.update_host(ip(at), |host| {
+                for &(port, state) in ports {
+                    host.add_port(Port::new(port, Protocol::Tcp, state));
+                }
+            });
+        };
+        ctx.update_host(ip(1), |host| host.set_status(HostStatus::Up));
+        file(
+            &ctx,
+            2,
+            &[
+                (22, PortState::Filtered),
+                (80, PortState::Filtered),
+                (443, PortState::Filtered),
+            ],
+        );
+        file(
+            &ctx,
+            3,
+            &[(22, PortState::Filtered), (80, PortState::Unasked)],
+        );
+        ctx.forget_silent(vec![ScopedIp::from(ip(2))]);
+        ctx.forget_undecided(vec![ScopedIp::from(ip(3))]);
+
+        assert_eq!(recorder.finish(&ctx).phases()[0].unheard_probes(), 4);
+
+        let (_session, ctx) = ScanSession::new();
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .skipping_liveness(LivenessSkip::AssumeUp);
+        file(&ctx, 2, &[(22, PortState::Filtered)]);
+        ctx.forget_silent(vec![ScopedIp::from(ip(2))]);
+        assert_eq!(
+            recorder.finish(&ctx).phases()[0].unheard_probes(),
+            0,
+            "a phase that stood in for nothing names no silence to count"
+        );
     }
 
     /// Silence is a discovery phase's evidence and nobody else's. A port phase

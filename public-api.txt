@@ -3588,6 +3588,7 @@ pub zond_engine::export::schema::PhaseDto::stopped: core::option::Option<&'stati
 pub zond_engine::export::schema::PhaseDto::targets: zond_engine::export::schema::ScopeDto
 pub zond_engine::export::schema::PhaseDto::timed_out: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::export::schema::PhaseDto::undecided: alloc::vec::Vec<zond_engine::export::schema::RangeDto>
+pub zond_engine::export::schema::PhaseDto::unheard_probes: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::PhaseDto::unreached: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::PhaseDto::unroutable: alloc::vec::Vec<alloc::string::String>
 impl<'a> zond_engine::export::schema::PhaseDto<'a>
@@ -13290,6 +13291,7 @@ pub zond_engine::record::PhaseRecord::stopped: core::option::Option<alloc::strin
 pub zond_engine::record::PhaseRecord::targets: zond_engine::record::ScopeRecord
 pub zond_engine::record::PhaseRecord::timed_out: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::record::PhaseRecord::undecided: alloc::vec::Vec<zond_engine::record::RangeRecord>
+pub zond_engine::record::PhaseRecord::unheard_probes: u128
 pub zond_engine::record::PhaseRecord::unreached: u128
 pub zond_engine::record::PhaseRecord::unroutable: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 impl core::clone::Clone for zond_engine::record::PhaseRecord
@@ -14127,6 +14129,7 @@ pub zond_engine::report::PhaseParts::stopped: core::option::Option<zond_engine::
 pub zond_engine::report::PhaseParts::targets: zond_engine::report::TargetScope
 pub zond_engine::report::PhaseParts::timed_out: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::report::PhaseParts::undecided: alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
+pub zond_engine::report::PhaseParts::unheard_probes: u128
 pub zond_engine::report::PhaseParts::unreached: u128
 pub zond_engine::report::PhaseParts::unroutable: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 impl core::clone::Clone for zond_engine::report::PhaseParts
@@ -14262,6 +14265,7 @@ pub fn zond_engine::report::ScanPhase::stopped(&self) -> core::option::Option<zo
 pub fn zond_engine::report::ScanPhase::targets(&self) -> &zond_engine::report::TargetScope
 pub fn zond_engine::report::ScanPhase::timed_out(&self) -> &[core::net::ip_addr::IpAddr]
 pub fn zond_engine::report::ScanPhase::undecided(&self) -> &[zond_engine::model::ip::range::IpRange]
+pub fn zond_engine::report::ScanPhase::unheard_probes(&self) -> u128
 pub fn zond_engine::report::ScanPhase::unreached(&self) -> u128
 pub fn zond_engine::report::ScanPhase::unroutable(&self) -> &[core::net::ip_addr::IpAddr]
 impl zond_engine::report::ScanPhase

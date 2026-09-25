@@ -45,7 +45,7 @@ use super::settle::Settlements;
 use crate::detect::compute::DetectionRunRecord;
 use crate::model::host::Host;
 use crate::record::{HostRecord, PhaseRecord};
-use crate::report::{ScanKind, ScanPhase, ScanReport};
+use crate::report::{ScanKind, ScanPhase, ScanReport, Unheard};
 use crate::system::privilege::Privilege;
 
 const MANIFEST: &str = "manifest.json";
@@ -230,6 +230,12 @@ impl Journal {
 
         let lock = Lock::acquire(&directory.join(LOCK))?;
         let checkpoint = read_checkpoint(directory)?;
+        let earlier = read_phases(directory)?;
+        // Less the records the earlier sittings heard nothing from, which a
+        // report of the job drops by the same reading; see `Unheard`.
+        let unheard = Unheard::of(&earlier);
+        let mut restored = read_findings(directory)?;
+        restored.retain(|host| !unheard.drops(host));
 
         Ok((
             Self {
@@ -237,8 +243,8 @@ impl Journal {
                 manifest,
                 lock,
                 resume_point: checkpoint.clone(),
-                restored: read_findings(directory)?,
-                earlier: read_phases(directory)?,
+                restored,
+                earlier,
                 created: false,
                 options: read_options(directory)?,
                 appended: 0,
@@ -273,6 +279,9 @@ impl Journal {
     /// Empty for a journal just created. A scan seeds its store with these, so
     /// the report it produces describes the whole job rather than the last
     /// sitting of it.
+    ///
+    /// A record of an address an earlier sitting went on to hear nothing from
+    /// is left out, as the job's report leaves it out.
     pub fn restored(&self) -> &[Host] {
         &self.restored
     }
@@ -1413,6 +1422,133 @@ mod tests {
 
     fn begin(root: &Path, map: &TargetMap) -> Journal {
         Journal::create(root, &ports(map), Privilege::Raw, "test").expect("creates")
+    }
+
+    /// A port phase that stood in for a liveness pass, naming `silent` the
+    /// addresses it asked on every port and heard nothing from.
+    fn standing_in(silent: &str) -> ScanPhase {
+        use crate::config::ZondConfig;
+        use crate::model::ip::range::IpRange;
+        use crate::report::{LivenessSkip, PhaseParts, ScanSettings, TargetScope};
+
+        let silent: IpSet = silent.parse().expect("a range");
+        ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::PortScan,
+            started_at: SystemTime::UNIX_EPOCH,
+            elapsed: Duration::from_secs(1),
+            privilege: Some(Privilege::Raw),
+            targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: Some(LivenessSkip::PortsNoDearer),
+            silent: silent.v4().iter().copied().map(IpRange::V4).collect(),
+            stopped: None,
+            unreached: 0,
+            unheard_probes: 0,
+            probes: Vec::new(),
+            origin: None,
+        })
+    }
+
+    /// A record a port scanner files at an address before anything is heard
+    /// from it, as a checkpoint writes it down mid-sitting.
+    fn unheard(address: &str) -> Host {
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let mut host = Host::new(address.parse().expect("an address"));
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Filtered));
+        host
+    }
+
+    /// A host that answered.
+    fn heard(address: &str) -> Host {
+        let mut host = Host::new(address.parse().expect("an address"));
+        host.set_status(crate::model::host::HostStatus::Up);
+        host
+    }
+
+    /// **A record an earlier sitting heard nothing from is not restored.** The
+    /// findings file can hold one, written before the phase decided the
+    /// address was silent, and a report drops it by that phase. Restored, it
+    /// would stand in the resumed sitting's live hosts as one the report does
+    /// not list, and be written back out with them.
+    #[test]
+    fn a_record_an_earlier_sitting_heard_nothing_from_is_not_restored() {
+        let root = scratch("unheard-restore");
+        let map = plan("192.0.2.1-192.0.2.8", "80");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            journal
+                .record_hosts(&[heard("192.0.2.1"), unheard("192.0.2.5")])
+                .expect("records");
+            journal
+                .record_phases(&[standing_in("192.0.2.5")])
+                .expect("records");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
+        let restored: Vec<_> = journal.restored().iter().map(Host::primary_ip).collect();
+
+        assert_eq!(
+            restored,
+            ["192.0.2.1".parse::<std::net::IpAddr>().expect("an address")]
+        );
+        journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **A sitting that heard nothing from an address leaves no record of it on
+    /// disk.** A checkpoint writes a scanner's record of the address down
+    /// before the phase has decided it is silent, and the phase forgets it
+    /// only in memory; the findings file is the job's record, and a dead
+    /// record there is one every reader has to know to drop.
+    #[tokio::test]
+    async fn a_sitting_that_heard_nothing_from_an_address_leaves_no_record_of_it() {
+        let root = scratch("unheard-close");
+        let map = plan("192.0.2.1-192.0.2.8", "80");
+        let mut journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        // Written down mid-sitting, and forgotten by the phase since: the live
+        // store holds only the host that answered.
+        journal
+            .record_hosts(&[heard("192.0.2.1"), unheard("192.0.2.5")])
+            .expect("records");
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        ctx.restore_hosts(&[heard("192.0.2.1")]);
+
+        spawn_checkpoints(journal, ctx.progress())
+            .finish(&[standing_in("192.0.2.5")])
+            .await;
+
+        let file = fs::read_to_string(directory.join(HOSTS)).expect("reads");
+        assert!(
+            !file.contains("192.0.2.5"),
+            "a record of the silent address is still on disk:\n{file}"
+        );
+        let kept: Vec<_> = read_findings(&directory)
+            .expect("reads")
+            .iter()
+            .map(Host::primary_ip)
+            .collect();
+        assert_eq!(
+            kept,
+            ["192.0.2.1".parse::<std::net::IpAddr>().expect("an address")]
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The whole cycle: begin a scan, settle part of it, come back and continue

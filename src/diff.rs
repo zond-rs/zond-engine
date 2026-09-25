@@ -673,6 +673,7 @@ mod tests {
                 .collect(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -715,6 +716,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -762,6 +764,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -806,6 +809,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });

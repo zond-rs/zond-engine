@@ -604,6 +604,7 @@ struct PhaseDto {
     silent: Vec<RangeDto>,
     stopped: Option<String>,
     unreached: Option<String>,
+    unheard_probes: Option<String>,
     origin: Option<PhaseOriginDto>,
 }
 
@@ -680,6 +681,12 @@ impl PhaseDto {
             stopped: self.stopped,
             unreached: self
                 .unreached
+                .as_deref()
+                .map(count)
+                .transpose()?
+                .unwrap_or(0),
+            unheard_probes: self
+                .unheard_probes
                 .as_deref()
                 .map(count)
                 .transpose()?
@@ -2280,6 +2287,11 @@ mod tests {
                 "the targets a stop left unreached are on no host, only here"
             );
             assert_eq!(
+                after.unheard_probes(),
+                before.unheard_probes(),
+                "the ports asked where nothing answered are on no host, only here"
+            );
+            assert_eq!(
                 after.silent(),
                 before.silent(),
                 "an address asked and silent is accounted for, not lost"
@@ -2309,8 +2321,9 @@ mod tests {
     }
 
     /// A port phase that stood in for a dropped liveness pass keeps, through a
-    /// written document and back, both why it ran alone and the addresses it
-    /// found silent, and the document holds no host at one of those.
+    /// written document and back, why it ran alone, the addresses it found
+    /// silent and what it asked them, and the document holds no host at one
+    /// of those.
     #[test]
     fn a_silent_address_survives_a_round_trip_and_stays_no_host() {
         use crate::model::ip::range::{IpRange, Ipv4Range};
@@ -2343,6 +2356,7 @@ mod tests {
             silent: vec![IpRange::V4(Ipv4Range::new(at(5), at(6)).expect("a range"))],
             stopped: None,
             unreached: 0,
+            unheard_probes: 2,
             probes: Vec::new(),
             origin: None,
         });
@@ -2356,6 +2370,7 @@ mod tests {
         let phase = &restored.phases()[0];
         assert_eq!(phase.silent(), original.phases()[0].silent());
         assert_eq!(phase.liveness_skipped(), Some(LivenessSkip::PortsNoDearer));
+        assert_eq!(phase.unheard_probes(), 2, "what the silent were asked");
         assert_eq!(restored.hosts().count(), 1, "only the host that answered");
     }
 

@@ -267,6 +267,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -299,6 +300,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         })
@@ -332,6 +334,7 @@ mod tests {
             silent: silent.v4().iter().copied().map(IpRange::V4).collect(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });

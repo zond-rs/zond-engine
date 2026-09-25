@@ -1422,6 +1422,14 @@ pub struct PhaseRecord {
     /// the targets are on no host.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unreached: u128,
+    /// How many of a port sitting's targets it asked at the addresses it lists
+    /// no host at.
+    ///
+    /// Skipped when zero, and defaulted on the way in. Read back, it is the
+    /// one place those probes are counted, since the addresses' records were
+    /// dropped.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unheard_probes: u128,
     /// What each strategy recorded about its own run.
     #[serde(default)]
     pub probe_stats: Vec<ProbeStatsRecord>,
@@ -1578,6 +1586,7 @@ impl From<&ScanPhase> for PhaseRecord {
                 .stopped()
                 .map(|reason| wire::stop_reason_name(reason).to_owned()),
             unreached: phase.unreached(),
+            unheard_probes: phase.unheard_probes(),
             probe_stats: phase
                 .probe_stats()
                 .iter()
@@ -1638,6 +1647,7 @@ impl From<&PhaseRecord> for ScanPhase {
                 .collect(),
             stopped: record.stopped.as_deref().and_then(wire::stop_reason),
             unreached: record.unreached,
+            unheard_probes: record.unheard_probes,
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(PhaseOrigin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),

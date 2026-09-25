@@ -802,6 +802,7 @@ fn phase() -> ScanPhase {
         silent: Vec::new(),
         stopped: None,
         unreached: 0,
+        unheard_probes: 0,
     })
 }
 

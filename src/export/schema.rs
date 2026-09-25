@@ -636,6 +636,17 @@ pub struct PhaseDto<'a> {
     /// here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unreached: Option<String>,
+    /// How many of this port phase's targets it asked at the addresses it
+    /// lists no host at, as a decimal string: every port of the ones in
+    /// `silent`, and the ports it reached of the ones in `undecided`.
+    ///
+    /// Left out when none were, which is every phase that did not stand in
+    /// for a liveness pass. Those addresses' records are dropped, so the ports
+    /// they were asked are on no host, and a count of what a scan probed read
+    /// off its hosts comes up short by this; the scope cannot supply it where
+    /// the phase gave different addresses different ports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unheard_probes: Option<String>,
     /// What each instrumented scanner observed about its own run. Empty where
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
@@ -740,6 +751,8 @@ impl<'a> PhaseDto<'a> {
             silent: phase.silent().iter().map(RangeDto::new).collect(),
             stopped: phase.stopped().map(stop_reason_name),
             unreached: (phase.unreached() > 0).then(|| phase.unreached().to_string()),
+            unheard_probes: (phase.unheard_probes() > 0)
+                .then(|| phase.unheard_probes().to_string()),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
             origin: phase.origin().map(|origin| PhaseOriginDto {
                 label: origin.label(),
