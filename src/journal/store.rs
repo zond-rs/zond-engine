@@ -65,7 +65,8 @@ use std::time::{Duration, SystemTime};
 use super::cursor::Checkpoint;
 use super::file::{
     append_existing, claim_directory_for_invoking_user, create_private as create_private_file,
-    create_private_directory, create_staged, open_existing, open_to_read,
+    create_private_directory, open_existing, open_to_read, remove as remove_file, remove_directory,
+    replace,
 };
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
@@ -202,7 +203,7 @@ impl Journal {
         match Self::furnish(&directory, manifest) {
             Ok(journal) => Ok(journal),
             Err(error) => {
-                let _ = fs::remove_dir_all(&directory);
+                let _ = remove_directory(&directory);
                 Err(error)
             }
         }
@@ -406,8 +407,9 @@ impl Journal {
             return Ok(());
         }
 
-        let path = self.directory.join(HOSTS);
-        let file = open_for_append(&path)?;
+        let file = open_for_append(&self.directory.join(HOSTS))?;
+        // Measured on the handle, as a compaction measures what it wrote.
+        let measured = file.try_clone()?;
 
         let mut deltas = Vec::with_capacity(records.len());
         let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
@@ -421,7 +423,7 @@ impl Journal {
         for delta in deltas {
             self.written.update(delta);
         }
-        self.length = fs::metadata(&path)?.len();
+        self.length = measured.metadata()?.len();
         Ok(())
     }
 
@@ -588,10 +590,8 @@ impl Journal {
     /// time, a scan would write the live findings again every few seconds and
     /// leave a partial copy holding whatever room the disk had left.
     pub fn compact(&mut self, all: &[Host]) -> Result<(), JournalError> {
-        let temporary = self.directory.join(HOSTS).with_extension("jsonl-tmp");
-        let compacted = self.write_whole(all, &temporary);
+        let compacted = self.write_whole(all);
         if compacted.is_err() {
-            let _ = fs::remove_file(&temporary);
             let superseded = self.written.superseded;
             let live = self.length.saturating_sub(superseded);
             self.compact_after = superseded.saturating_add(COMPACT_FLOOR.max(live));
@@ -599,28 +599,36 @@ impl Journal {
         compacted
     }
 
-    /// [`compact`](Self::compact)'s writing, through `temporary`.
-    fn write_whole(&mut self, all: &[Host], temporary: &Path) -> Result<(), JournalError> {
+    /// [`compact`](Self::compact)'s writing, through a staged sibling that a
+    /// failure removes.
+    fn write_whole(&mut self, all: &[Host]) -> Result<(), JournalError> {
         let destination = self.directory.join(HOSTS);
-        let mut written = Written::default();
-        {
-            let file = create_staged(temporary)?;
-            let mut writer = crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
-            for host in all {
-                // Measured against nothing written, so the record is the whole
-                // host and what it remembers is all of it.
-                if let Some((record, delta)) = Written::default().delta(host)? {
-                    writer.write(&record)?;
-                    written.update(delta);
+        let (written, length) = replace(
+            &destination,
+            &destination.with_extension("jsonl-tmp"),
+            |file| {
+                // Measured on the handle, so the length is the file's that was
+                // written rather than whatever the name holds by the time it is
+                // asked.
+                let measured = file.try_clone()?;
+                let mut written = Written::default();
+                let mut writer =
+                    crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
+                for host in all {
+                    // Measured against nothing written, so the record is the
+                    // whole host and what it remembers is all of it.
+                    if let Some((record, delta)) = Written::default().delta(host)? {
+                        writer.write(&record)?;
+                        written.update(delta);
+                    }
                 }
-            }
-            writer.flush()?;
-        }
-
-        // The destination becomes the temporary's inode, ownership and all.
-        fs::rename(temporary, &destination)?;
+                writer.flush()?;
+                drop(writer);
+                Ok::<_, JournalError>((written, measured.metadata()?.len()))
+            },
+        )?;
         self.written = written;
-        self.length = fs::metadata(&destination)?.len();
+        self.length = length;
         self.compact_after = 0;
         Ok(())
     }
@@ -658,17 +666,18 @@ impl Journal {
         if phases.is_empty() {
             return Ok(());
         }
-        let temporary = self.sitting.with_extension("jsonl-tmp");
-        {
-            let file = create_staged(&temporary)?;
-            let mut writer = crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
-            for phase in phases {
-                writer.write(&PhaseRecord::from(phase))?;
-            }
-            writer.flush()?;
-        }
-        fs::rename(&temporary, &self.sitting)?;
-        Ok(())
+        replace(
+            &self.sitting,
+            &self.sitting.with_extension("jsonl-tmp"),
+            |file| {
+                let mut writer =
+                    crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
+                for phase in phases {
+                    writer.write(&PhaseRecord::from(phase))?;
+                }
+                writer.flush()
+            },
+        )
     }
 
     /// Appends what one sitting did once it has finished doing it, and
@@ -681,7 +690,7 @@ impl Journal {
             return Ok(());
         }
         self.record_phases(phases)?;
-        match fs::remove_file(&self.sitting) {
+        match remove_file(&self.sitting) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
@@ -824,7 +833,7 @@ impl Journal {
             // directory that will not go is a record of nothing, which is the
             // state this avoids rather than a reason to report the refusal
             // any differently.
-            let _ = fs::remove_dir_all(&self.directory);
+            let _ = remove_directory(&self.directory);
         }
     }
 
@@ -1297,7 +1306,7 @@ fn phase_name(kind: ScanKind) -> &'static str {
 /// its journal deleted under it: it runs on with open descriptors, appending to
 /// unlinked inodes, and nothing it writes lands anywhere. Reading [`Entry::lock`]
 /// first, as above, is the same check raced one step earlier rather than a way
-/// out of it. The window is one `rename` against one `remove_dir_all` and both
+/// out of it. The window is one lock taken against one directory removal and both
 /// parties are the same user's own processes, so this is documented rather than
 /// closed. Closing it wants the lock held across the removal, which is a protocol
 /// change belonging to `lock` rather than here.
@@ -1307,7 +1316,7 @@ pub fn remove(directory: &Path) -> Result<(), OpenError> {
         return Err(OpenError::Locked(LockRefused::Held(state)));
     }
 
-    fs::remove_dir_all(directory).map_err(JournalError::from)?;
+    remove_directory(directory).map_err(JournalError::from)?;
     Ok(())
 }
 
@@ -1814,19 +1823,9 @@ pub(super) fn read_bounded(path: &Path, what: &str) -> Result<String, JournalErr
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
     use std::io::Write;
 
-    let temporary = path.with_extension("tmp");
-
-    // Scoped so the handle is closed before the rename, for the reason
-    // `write_atomically` gives: renaming over a file still held open is a hazard
-    // on platforms this may yet reach.
-    {
-        let mut file = create_staged(&temporary)?;
-        file.write_all(bytes)?;
-    }
-
-    // The destination becomes the temporary's inode, which already carries the
-    // mode and the ownership `create_staged` gave it.
-    fs::rename(&temporary, path)?;
+    replace(path, &path.with_extension("tmp"), |mut file| {
+        file.write_all(bytes)
+    })?;
     Ok(())
 }
 

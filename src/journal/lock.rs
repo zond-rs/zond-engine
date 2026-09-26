@@ -393,7 +393,7 @@ mod persistence {
     use std::time::SystemTime;
 
     use super::{HEARTBEAT_STALE_AFTER, LockRecord, LockState, boot_identity, classify};
-    use crate::journal::file::{create_staged, open_or_create_private, open_to_read};
+    use crate::journal::file::{link_new, open_or_create_private, open_to_read, remove, replace};
     use crate::journal::format::JournalError;
 
     /// Reads a lock file and says what it means.
@@ -530,7 +530,7 @@ mod persistence {
                     return Err(LockRefused::Held(state));
                 }
 
-                match fs::remove_file(path) {
+                match remove(path) {
                     Ok(()) => {}
                     // Removed between the two inspections; the create below
                     // decides either way.
@@ -574,7 +574,7 @@ mod persistence {
         /// Releases the lock, reporting a failure the `Drop` path would swallow.
         pub fn release(mut self) -> Result<(), JournalError> {
             self.released = true;
-            fs::remove_file(&self.path)?;
+            remove(&self.path)?;
             Ok(())
         }
 
@@ -600,9 +600,8 @@ mod persistence {
         /// The staged name carries a counter as well as the pid, because a pid
         /// is only unique between processes and this is a library. With the pid
         /// alone, two threads of one caller taking the same journal would share
-        /// the staged name, and
-        /// [`create_staged`] removes a name
-        /// it finds occupied: one thread would delete the file the other was
+        /// the staged name, and [`link_new`] removes a staged name it finds
+        /// occupied: one thread would delete the file the other was
         /// about to link, which fails the link with `NotFound` and is read here
         /// as an error rather than a lost race, or link an empty file into place,
         /// which [`inspect`] reads as `Free` and a third thread then breaks. Both
@@ -615,21 +614,11 @@ mod persistence {
                 STAGING.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
 
-            {
-                // Staged, not created: the name carries this process's id, and a
-                // pid is reused, so a run that died between the create and the
-                // hard link can have left one of these behind under the same name.
-                let mut file = create_staged(&staged)?;
-                file.write_all(
-                    serde_json::to_string(record)
-                        .map_err(std::io::Error::other)?
-                        .as_bytes(),
-                )?;
-            }
-
-            let linked = fs::hard_link(&staged, path);
-            let _ = fs::remove_file(&staged);
-            linked
+            let text = serde_json::to_string(record).map_err(std::io::Error::other)?;
+            // Staged, not created: the name carries this process's id, and a
+            // pid is reused, so a run that died between the create and the hard
+            // link can have left one of these behind under the same name.
+            link_new(path, &staged, |mut file| file.write_all(text.as_bytes()))
         }
 
         /// Replaces the lock file in place, for the holder moving its own
@@ -640,23 +629,14 @@ mod persistence {
         /// operation two processes cannot both win; this is the holder rewriting
         /// a file it already owns, where there is nothing to decide.
         fn write(path: &Path, record: &LockRecord) -> std::io::Result<()> {
-            let temporary = path.with_extension("lock-tmp");
-            {
-                // Private from creation, as `create_exclusively` makes the
-                // original: a heartbeat replaces the file, and a replacement
-                // that widened its mode would undo that. Staged rather than
-                // created, because a heartbeat interrupted between the write and
-                // the rename leaves this name occupied.
-                let mut file = create_staged(&temporary)?;
-                file.write_all(
-                    serde_json::to_string(record)
-                        .map_err(std::io::Error::other)?
-                        .as_bytes(),
-                )?;
-            }
-            // The lock becomes the temporary's inode, ownership and all.
-            fs::rename(&temporary, path)?;
-            Ok(())
+            let text = serde_json::to_string(record).map_err(std::io::Error::other)?;
+            // Private from creation, as `create_exclusively` makes the
+            // original: a heartbeat replaces the file, and a replacement that
+            // widened its mode would undo that. The lock becomes the staged
+            // file's inode, ownership and all.
+            replace(path, &path.with_extension("lock-tmp"), |mut file| {
+                file.write_all(text.as_bytes())
+            })
         }
     }
 
@@ -719,7 +699,7 @@ mod persistence {
             // `Crashed` to the next reader, which is resumable, so this line
             // failing costs a note in the output rather than a journal nobody
             // can open.
-            let _ = fs::remove_file(&self.path);
+            let _ = remove(&self.path);
         }
     }
 

@@ -38,8 +38,7 @@
 //! Taking a lock is the one file this does not open. It has to appear at its name
 //! already holding its record, or a racer reads a lock mid-creation and finds it
 //! empty. See `lock::Lock::create_exclusively`, which stages the content through
-//! [`create_private`](crate::journal::file::create_private) here and links it
-//! into place.
+//! [`link_new`](crate::journal::file::link_new) here and links it into place.
 //!
 //! Directories are opened the same way for the same reason.
 //!
@@ -57,10 +56,19 @@
 //! created relative to a directory reached from that user's home without
 //! following a link out of it; see
 //! [`ownership::Place`](crate::journal::ownership::Place) for why, and for why a link
-//! that stays inside the home still works.
+//! that stays inside the home still works. What renames, links or removes a
+//! name that is already there is reached the same way, since a lookup by path
+//! between staging a file and renaming it is one more lookup a link above it
+//! could redirect: [`replace`](crate::journal::file::replace),
+//! [`link_new`](crate::journal::file::link_new),
+//! [`remove`](crate::journal::file::remove) and
+//! [`remove_directory`](crate::journal::file::remove_directory) are how a
+//! journal changes a name, and nothing in it does so by path.
 
 use std::fs;
 use std::path::Path;
+
+use super::ownership::Place;
 
 /// Creates a file in a journal: private, the invoking user's, and new.
 ///
@@ -76,11 +84,16 @@ use std::path::Path;
 /// closed. `create_new` closes it: a name that already exists is refused rather
 /// than emptied.
 ///
-/// The two callers that stage through a temporary want a name that may be left
-/// over from an interrupted run; they use [`create_staged`], which is this with
-/// one deliberate retry.
+/// The files a journal writes whole, through a staged sibling, want a name
+/// that may be left over from an interrupted run; [`replace`] and
+/// [`link_new`] stage them, which is this with one deliberate retry.
 pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
-    let file = open(path, Access::CreateNew)?;
+    create_in(&Place::of(path)?, path)
+}
+
+/// [`create_private`] at a name already reached; `path` is what it is called.
+fn create_in(place: &Place, path: &Path) -> std::io::Result<fs::File> {
+    let file = open_in(place, path, Access::CreateNew)?;
     claim(&file, path);
     Ok(file)
 }
@@ -88,26 +101,111 @@ pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
 /// Creates a staging file, discarding one an interrupted run left behind.
 ///
 /// [`create_private`] refuses a name that exists, which is right for the files
-/// a journal creates once and wrong for the two it re-creates every time it
-/// writes atomically: `cursor.json.tmp` on every checkpoint, `hosts.jsonl-tmp`
-/// on every compaction. Both are renamed away on success, so a leftover means a
-/// previous run died between the create and the rename, and refusing forever
-/// after that would wedge the journal, trading the defect `create_new` closes
-/// for a failure of its own.
+/// a journal creates once and wrong for those it re-creates every time it
+/// writes whole: `cursor.json.tmp` on every checkpoint, `hosts.jsonl-tmp` on
+/// every compaction. Each is renamed away on success and removed on failure,
+/// so a leftover means a previous run died between the create and the rename,
+/// and refusing forever after that would wedge the journal, trading the defect
+/// `create_new` closes for a failure of its own.
 ///
-/// The removal is safe in the way truncation is not. `remove_file` unlinks
-/// the name, so a symlink planted there loses the link rather than the target,
-/// and the retry is still `create_new` under `O_NOFOLLOW`: if something wins the
-/// race and plants a file between the two calls, this fails rather than opening
+/// The removal is safe in the way truncation is not. It unlinks the name, so
+/// a symlink planted there loses the link rather than the target, and the
+/// retry is still `create_new` under `O_NOFOLLOW`: if something wins the race
+/// and plants a file between the two calls, this fails rather than opening
 /// it. A refused checkpoint is a cost; a truncated stranger is a defect.
-pub(super) fn create_staged(path: &Path) -> std::io::Result<fs::File> {
-    match create_private(path) {
+fn stage(place: &Place, path: &Path) -> std::io::Result<fs::File> {
+    match create_in(place, path) {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            remove(path)?;
-            create_private(path)
+            place.remove()?;
+            create_in(place, path)
         }
         other => other,
     }
+}
+
+/// Writes a journal file whole: `write` fills a file staged at `staged`, which
+/// is then renamed over `destination`, so the name holds all of what was there
+/// or all of what was written and never part of either.
+///
+/// `staged` lies beside `destination`, in the same directory, and both are
+/// reached through one walk; see [`Place::beside`]. The staged file is closed
+/// before the rename, since `write` takes it, because renaming over a file
+/// still held open is a hazard on platforms this may yet reach. The
+/// destination becomes the staged file's inode, which already carries the
+/// mode and the ownership [`create_private`] gives.
+///
+/// A write or a rename that fails removes what it staged, so a failure leaves
+/// nothing behind beside the destination for the next attempt to discard.
+pub(super) fn replace<T, E: From<std::io::Error>>(
+    destination: &Path,
+    staged: &Path,
+    write: impl FnOnce(fs::File) -> Result<T, E>,
+) -> Result<T, E> {
+    replace_at(&Place::of(destination)?, destination, staged, write)
+}
+
+/// [`replace`] at a destination already reached.
+fn replace_at<T, E: From<std::io::Error>>(
+    target: &Place,
+    destination: &Path,
+    staged: &Path,
+    write: impl FnOnce(fs::File) -> Result<T, E>,
+) -> Result<T, E> {
+    let staging = target.beside(sibling(destination, staged)?)?;
+    let file = stage(&staging, staged)?;
+    let replaced = write(file).and_then(|written| {
+        staging.rename_over(target)?;
+        Ok(written)
+    });
+    if replaced.is_err() {
+        let _ = staging.remove();
+    }
+    replaced
+}
+
+/// Puts a file at `destination` holding what `write` wrote, refusing a name
+/// that exists there.
+///
+/// For a file that must appear at its name already whole, where creating it
+/// and then writing it would let a reader find it empty: the lock. Staged at
+/// `staged` as [`replace`] stages, and then linked into place, since a link
+/// refuses a name that exists, the same exclusion `create_new` gives, over a
+/// file that already has its contents. The staged name is removed either way.
+pub(super) fn link_new(
+    destination: &Path,
+    staged: &Path,
+    write: impl FnOnce(fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    link_new_at(&Place::of(destination)?, destination, staged, write)
+}
+
+/// [`link_new`] at a destination already reached.
+fn link_new_at(
+    target: &Place,
+    destination: &Path,
+    staged: &Path,
+    write: impl FnOnce(fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let staging = target.beside(sibling(destination, staged)?)?;
+    let file = stage(&staging, staged)?;
+    let linked = write(file).and_then(|()| staging.link_as(target));
+    let _ = staging.remove();
+    linked
+}
+
+/// `staged`'s name, where it lies beside `destination`.
+fn sibling<'a>(destination: &Path, staged: &'a Path) -> std::io::Result<&'a std::ffi::OsStr> {
+    debug_assert_eq!(
+        destination.parent(),
+        staged.parent(),
+        "a file is staged beside its destination"
+    );
+    staged.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} names no file", staged.display()),
+        )
+    })
 }
 
 /// Opens an existing journal file to add to it, keeping what is already there.
@@ -136,7 +234,7 @@ pub(super) fn open_existing(path: &Path) -> std::io::Result<fs::File> {
 
 /// Opens a journal's rendezvous file, creating it if it is not there yet.
 ///
-/// The one shape neither [`create_private`] nor [`create_staged`] fits: a file
+/// The one shape neither [`create_private`] nor [`replace`] fits: a file
 /// every racer must be able to *open*, where creating it is incidental and
 /// winning the create decides nothing. `journal::lock`'s `break` file is the
 /// only one: the lock taken on it lives on the open file, so what matters is
@@ -149,6 +247,24 @@ pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
     let file = open(path, Access::CreateOrOpen)?;
     claim(&file, path);
     Ok(file)
+}
+
+/// Removes a journal file's name: a link at it rather than what the link
+/// points to, and relative to the directory holding it, reached as every
+/// opener here reaches a name.
+pub(super) fn remove(path: &Path) -> std::io::Result<()> {
+    Place::of(path)?.remove()
+}
+
+/// Removes a journal's directory and everything in it, each name looked up
+/// relative to the directory holding it; see [`Place::remove_tree`].
+///
+/// A journal is removed by whoever may prune it, which under `sudo` is root
+/// in a directory the invoking user arranges. By path, a link placed above
+/// the journal between the decision and the removal would have root remove
+/// whatever stands under the journal's name wherever the link leads.
+pub(super) fn remove_directory(path: &Path) -> std::io::Result<()> {
+    Place::of(path)?.remove_tree()
 }
 
 /// Creates one scan's directory, private from the moment it exists.
@@ -165,7 +281,7 @@ pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
 /// collides a retry rather than two scans sharing one journal.
 #[cfg(unix)]
 pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
-    super::ownership::Place::of(path)?.create_directory(0o700)
+    Place::of(path)?.create_directory(0o700)
 }
 
 /// The platforms with no mode to set at creation, where the directory is created
@@ -207,13 +323,18 @@ enum Access {
 }
 
 /// Opens a journal file private, refusing a link at its name, and reached the
-/// way [`Place`](super::ownership::Place) reaches it.
+/// way [`Place`] reaches it.
+fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
+    open_in(&Place::of(path)?, path, how)
+}
+
+/// [`open`] at a name already reached; `path` is what it is called.
 ///
 /// A link refused at the name is said to be one: the system's own word for it
 /// is a loop of links, which names no link the reader placed and sends them
 /// looking for a cycle there is none of.
 #[cfg(unix)]
-fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
+fn open_in(place: &Place, path: &Path, how: Access) -> std::io::Result<fs::File> {
     let flags = match how {
         Access::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
         Access::CreateOrOpen => libc::O_RDWR | libc::O_CREAT,
@@ -221,29 +342,27 @@ fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
         Access::ReadWrite => libc::O_RDWR,
         Access::Read => libc::O_RDONLY,
     };
-    super::ownership::Place::of(path)?
-        .open(flags, 0o600)
-        .map_err(|error| {
-            // Asked of the name without following it, to tell a link at it from
-            // a loop further up, which fails the same way.
-            let linked = error.raw_os_error() == Some(libc::ELOOP)
-                && fs::symlink_metadata(path).is_ok_and(|held| held.file_type().is_symlink());
-            if linked {
-                std::io::Error::other(format!(
-                    "{} is a link, not a journal file (not followed)",
-                    path.display()
-                ))
-            } else {
-                error
-            }
-        })
+    place.open(flags, 0o600).map_err(|error| {
+        // Asked of the name without following it, to tell a link at it from
+        // a loop further up, which fails the same way.
+        let linked = error.raw_os_error() == Some(libc::ELOOP)
+            && fs::symlink_metadata(path).is_ok_and(|held| held.file_type().is_symlink());
+        if linked {
+            std::io::Error::other(format!(
+                "{} is a link, not a journal file (not followed)",
+                path.display()
+            ))
+        } else {
+            error
+        }
+    })
 }
 
 /// The platforms with no mode to set at open. Nothing is promised about who else
 /// can read a journal there, which is one of the reasons the crate does not claim
 /// to support them.
 #[cfg(not(unix))]
-fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
+fn open_in(place: &Place, _path: &Path, how: Access) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     match how {
         Access::CreateNew => options.write(true).create_new(true),
@@ -252,19 +371,7 @@ fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
         Access::ReadWrite => options.read(true).write(true),
         Access::Read => options.read(true),
     };
-    options.open(path)
-}
-
-/// Removes a journal file's name, reached as [`open`] reaches it.
-#[cfg(unix)]
-fn remove(path: &Path) -> std::io::Result<()> {
-    super::ownership::Place::of(path)?.remove()
-}
-
-/// [`remove`] where there is no walk to take.
-#[cfg(not(unix))]
-fn remove(path: &Path) -> std::io::Result<()> {
-    fs::remove_file(path)
+    options.open(place.path())
 }
 
 /// Gives a directory a journal created under `sudo` to the user who invoked
@@ -377,6 +484,88 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// Under `sudo` a file written whole is staged and then renamed or linked
+    /// into place in the one directory the walk from the invoking user's home
+    /// reached. Every name above it is that user's to rearrange meanwhile, and
+    /// a rename, link or removal looked up by path after the staging follows
+    /// a link placed in between to wherever it leads, having root rename,
+    /// link or remove there whatever stands under a journal's fixed names.
+    #[test]
+    fn a_staged_file_is_put_in_place_where_it_was_staged_whatever_moves_above_it() {
+        use crate::journal::paths::InvokingUser;
+
+        let dir = scratch("walked");
+        let home = dir.join("home");
+        let elsewhere = dir.join("elsewhere");
+        fs::create_dir_all(home.join("state/journal")).expect("a journal");
+        fs::create_dir_all(elsewhere.join("journal")).expect("a directory outside");
+        for name in ["cursor.tmp", "LOCK.lock-1"] {
+            fs::write(elsewhere.join("journal").join(name), b"bait").expect("writes");
+        }
+        // SAFETY: neither call has any precondition.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let user = InvokingUser::new(uid, gid, home.clone());
+
+        // Leads `state` out of the home, the journal kept aside, and back.
+        let redirect = || -> std::io::Result<()> {
+            fs::rename(home.join("state"), home.join("kept"))?;
+            std::os::unix::fs::symlink(&elsewhere, home.join("state"))
+        };
+        let restore = || {
+            fs::remove_file(home.join("state")).expect("removes the link");
+            fs::rename(home.join("kept"), home.join("state")).expect("restores");
+        };
+
+        let cursor = home.join("state/journal/cursor.json");
+        let target = Place::of_as(Some(&user), &cursor).expect("reached");
+        replace_at(
+            &target,
+            &cursor,
+            &cursor.with_extension("tmp"),
+            |mut file| {
+                file.write_all(b"the journal's")?;
+                redirect()
+            },
+        )
+        .expect("replaces");
+        restore();
+        assert_eq!(fs::read(&cursor).expect("reads"), b"the journal's");
+
+        let lock = home.join("state/journal/LOCK");
+        let target = Place::of_as(Some(&user), &lock).expect("reached");
+        link_new_at(
+            &target,
+            &lock,
+            &lock.with_extension("lock-1"),
+            |mut file| {
+                file.write_all(b"held")?;
+                redirect()
+            },
+        )
+        .expect("links");
+        restore();
+        assert_eq!(fs::read(&lock).expect("reads"), b"held");
+
+        let outside: Vec<_> = fs::read_dir(elsewhere.join("journal"))
+            .expect("lists")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(
+            outside.len(),
+            2,
+            "renamed or linked out of the home: {outside:?}"
+        );
+        for name in ["cursor.tmp", "LOCK.lock-1"] {
+            assert_eq!(
+                fs::read(elsewhere.join("journal").join(name)).expect("reads"),
+                b"bait",
+                "{name} was changed out of the home"
+            );
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
     /// And the staging names, which a crashed run does leave behind, are the
     /// one place that refusal has to lift, or a journal wedges for good.
     #[test]
@@ -385,12 +574,14 @@ mod tests {
         let temporary = dir.join("cursor.json.tmp");
         fs::write(&temporary, b"a checkpoint that never got renamed").expect("writes");
 
-        create_staged(&temporary)
-            .expect("a leftover staging file is discarded")
-            .write_all(b"the next one")
-            .expect("writes");
+        let destination = dir.join("cursor.json");
+        replace(&destination, &temporary, |mut file| {
+            file.write_all(b"the next one")
+        })
+        .expect("a leftover staging file is discarded");
 
-        assert_eq!(fs::read(&temporary).expect("reads"), b"the next one");
+        assert_eq!(fs::read(&destination).expect("reads"), b"the next one");
+        assert!(!temporary.exists(), "the staged name was renamed away");
 
         // And it is still a link that cannot be followed: the removal unlinks the
         // name, and the create behind it is the same refusing one.
@@ -399,7 +590,10 @@ mod tests {
         let linked = dir.join("hosts.jsonl-tmp");
         std::os::unix::fs::symlink(&elsewhere, &linked).expect("links");
 
-        create_staged(&linked).expect("the link is unlinked and a real file created");
+        replace(&dir.join("hosts.jsonl"), &linked, |mut file| {
+            file.write_all(b"compacted")
+        })
+        .expect("the link is unlinked and a real file created");
         assert_eq!(
             fs::read(&elsewhere).expect("reads"),
             b"not the journal's to touch",

@@ -33,9 +33,10 @@
 //! them a settings directory beside it.
 //!
 //! The same boundary decides how names inside the home are reached. Under
-//! `sudo` everything created there is created relative to a directory walked
-//! to from the home without following a link out of it, so a link the user
-//! placed cannot lead root to create somewhere only root could; see [`Place`].
+//! `sudo` everything created, read, renamed, linked or removed there is
+//! reached relative to a directory walked to from the home without following
+//! a link out of it, so a link the user placed cannot lead root to act
+//! somewhere only root could; see [`Place`].
 //!
 //! ## Repairing what an elevated run left to root
 //!
@@ -177,8 +178,9 @@ fn create_missing_in_home(
     Ok(created)
 }
 
-/// A name to create or open for writing, reached so that an elevated run
-/// cannot be led out of the invoking user's home by a link on the way.
+/// A name to create, open, rename, link or remove, reached so that an
+/// elevated run cannot be led out of the invoking user's home by a link on
+/// the way.
 ///
 /// `O_NOFOLLOW` guards the last name only. A root process creating
 /// `~/.local/state/zond/<id>/manifest.json` by path follows every link above
@@ -203,9 +205,14 @@ fn create_missing_in_home(
 /// an unprivileged run following its own user's links goes nowhere that user
 /// could not go already.
 ///
-/// Renames, and the removal of a whole journal, still go by path. Through a
-/// redirected directory they can reach only names already there, and it is
-/// this that keeps an elevated run from having made any outside the home.
+/// What changes a name that already exists is reached the same way: a rename
+/// or a hard link between two names in one directory goes through the one
+/// descriptor [`beside`](Place::beside) shares, and a removal, of a file or of
+/// a whole journal, is made relative to the directory holding the name. By
+/// path, each would be one more lookup through every name above it, and
+/// `~/.local/state` made a link between a file's staging and its rename would
+/// have root rename, link or remove there whatever stands under the fixed
+/// names a journal uses.
 #[cfg(unix)]
 pub(crate) struct Place {
     /// The directory `name` is looked up in, or `None` for the working
@@ -223,7 +230,7 @@ impl Place {
 
     /// [`Place::of`] on behalf of `user`, so a test can take an elevated run's
     /// route without being one.
-    fn of_as(user: Option<&InvokingUser>, path: &Path) -> io::Result<Self> {
+    pub(crate) fn of_as(user: Option<&InvokingUser>, path: &Path) -> io::Result<Self> {
         if let Some(user) = user.filter(|user| inside_home(user, path)) {
             let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
                 return Err(outside());
@@ -248,30 +255,126 @@ impl Place {
         }
     }
 
+    /// The name `sibling` in the directory this name was reached in, looked
+    /// up through the same descriptor rather than by a walk of its own.
+    ///
+    /// For a file staged beside another and then renamed or linked over it:
+    /// the two are names in one directory whatever is rearranged above it
+    /// between the staging and the rename.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn beside(&self, sibling: &std::ffi::OsStr) -> io::Result<Self> {
+        match &self.directory {
+            Some(directory) => Ok(Self {
+                directory: Some(directory.try_clone()?),
+                name: c_name(sibling)?,
+            }),
+            None => {
+                use std::os::unix::ffi::OsStrExt;
+                let path = Path::new(std::ffi::OsStr::from_bytes(self.name.as_bytes()));
+                Ok(Self {
+                    directory: None,
+                    name: c_name(path.with_file_name(sibling).as_os_str())?,
+                })
+            }
+        }
+    }
+
     /// Creates a directory at the name, with `mode`.
     #[cfg(feature = "journal-format")]
     pub(crate) fn create_directory(&self, mode: libc::mode_t) -> io::Result<()> {
         // SAFETY: the descriptor is open for the call, or the working
         // directory's marker, and `name` is a NUL-terminated string that
         // outlives it.
-        let made = unsafe { libc::mkdirat(self.descriptor(), self.name.as_ptr(), mode) };
-        if made == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+        done(unsafe { libc::mkdirat(self.descriptor(), self.name.as_ptr(), mode) })
     }
 
     /// Removes the name, a link at it rather than what the link points to.
     #[cfg(feature = "journal-format")]
     pub(crate) fn remove(&self) -> io::Result<()> {
         // SAFETY: as in `create_directory`.
-        let removed = unsafe { libc::unlinkat(self.descriptor(), self.name.as_ptr(), 0) };
-        if removed == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
+        done(unsafe { libc::unlinkat(self.descriptor(), self.name.as_ptr(), 0) })
+    }
+
+    /// Renames the name over `destination`, replacing what stands there.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn rename_over(&self, destination: &Self) -> io::Result<()> {
+        // SAFETY: both descriptors are open for the call, or the working
+        // directory's marker, and both names NUL-terminated strings that
+        // outlive it.
+        done(unsafe {
+            libc::renameat(
+                self.descriptor(),
+                self.name.as_ptr(),
+                destination.descriptor(),
+                destination.name.as_ptr(),
+            )
+        })
+    }
+
+    /// Links what stands at the name at `destination` as well, refusing a
+    /// name that exists there.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn link_as(&self, destination: &Self) -> io::Result<()> {
+        // SAFETY: as in `rename_over`. No flag: a link standing at the name
+        // is not followed to what it points to.
+        done(unsafe {
+            libc::linkat(
+                self.descriptor(),
+                self.name.as_ptr(),
+                destination.descriptor(),
+                destination.name.as_ptr(),
+                0,
+            )
+        })
+    }
+
+    /// Removes the directory at the name and everything in it, as
+    /// `remove_dir_all` does, with every name inside it looked up relative to
+    /// the directory holding it.
+    ///
+    /// A link, at the name or met inside, is removed as a link. A name
+    /// something else changes meanwhile fails the removal rather than leading
+    /// it anywhere: what was a file and is now a directory is refused by the
+    /// unlink, and what was a directory and is now a link by the open that
+    /// refuses one. An entry another process removed first is not a failure.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn remove_tree(&self) -> io::Result<()> {
+        if !self.is_directory()? {
+            return self.remove();
         }
+        let directory = self.open(libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+        for name in entries(&directory)? {
+            let entry = Self {
+                directory: Some(directory.try_clone()?),
+                name,
+            };
+            match entry.remove_tree() {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+        // SAFETY: as in `create_directory`.
+        done(unsafe { libc::unlinkat(self.descriptor(), self.name.as_ptr(), libc::AT_REMOVEDIR) })
+    }
+
+    /// Whether the name is a directory, asked of the name itself rather than
+    /// of what a link at it points to.
+    #[cfg(feature = "journal-format")]
+    fn is_directory(&self) -> io::Result<bool> {
+        let mut held = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: as in `create_directory`, and `held` is written whole by a
+        // call that succeeds.
+        done(unsafe {
+            libc::fstatat(
+                self.descriptor(),
+                self.name.as_ptr(),
+                held.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        })?;
+        // SAFETY: the call succeeded, so the structure is initialised.
+        let held = unsafe { held.assume_init() };
+        Ok(held.st_mode & libc::S_IFMT == libc::S_IFDIR)
     }
 
     /// The directory to look the name up in, as the C calls take it.
@@ -280,6 +383,55 @@ impl Place {
         self.directory
             .as_ref()
             .map_or(libc::AT_FDCWD, |directory| directory.as_raw_fd())
+    }
+}
+
+/// A name inside a journal where there is no `sudo`: the path itself, which
+/// is all a run on nobody else's behalf is ever led by.
+#[cfg(all(not(unix), feature = "journal-format"))]
+pub(crate) struct Place {
+    path: PathBuf,
+}
+
+#[cfg(all(not(unix), feature = "journal-format"))]
+impl Place {
+    /// Where `path` is.
+    pub(crate) fn of(path: &Path) -> io::Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The path, for the opener that takes one.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The name `sibling` beside this one.
+    pub(crate) fn beside(&self, sibling: &std::ffi::OsStr) -> io::Result<Self> {
+        Ok(Self {
+            path: self.path.with_file_name(sibling),
+        })
+    }
+
+    /// Removes the name.
+    pub(crate) fn remove(&self) -> io::Result<()> {
+        fs::remove_file(&self.path)
+    }
+
+    /// Renames the name over `destination`.
+    pub(crate) fn rename_over(&self, destination: &Self) -> io::Result<()> {
+        fs::rename(&self.path, &destination.path)
+    }
+
+    /// Links what stands at the name at `destination` as well.
+    pub(crate) fn link_as(&self, destination: &Self) -> io::Result<()> {
+        fs::hard_link(&self.path, &destination.path)
+    }
+
+    /// Removes the directory at the name and everything in it.
+    pub(crate) fn remove_tree(&self) -> io::Result<()> {
+        fs::remove_dir_all(&self.path)
     }
 }
 
@@ -444,6 +596,57 @@ fn outside() -> io::Error {
 fn c_name(name: &std::ffi::OsStr) -> io::Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
     std::ffi::CString::new(name.as_bytes()).map_err(io::Error::other)
+}
+
+/// A C call's `0` or `-1` as a result.
+#[cfg(all(unix, feature = "journal-format"))]
+fn done(returned: libc::c_int) -> io::Result<()> {
+    if returned == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// The names in `directory`, less `.` and `..`.
+///
+/// A read that fails part way ends the list early rather than failing it:
+/// the one caller removes each name and then the directory, and a name left
+/// unlisted fails that last removal as a directory that is not empty.
+#[cfg(all(unix, feature = "journal-format"))]
+fn entries(directory: &fs::File) -> io::Result<Vec<std::ffi::CString>> {
+    use std::os::unix::io::IntoRawFd;
+
+    // A duplicate, since the stream takes the descriptor it is handed and
+    // closes it with itself.
+    let descriptor = directory.try_clone()?.into_raw_fd();
+    // SAFETY: `descriptor` is open and owned by nothing else.
+    let stream = unsafe { libc::fdopendir(descriptor) };
+    if stream.is_null() {
+        let error = io::Error::last_os_error();
+        // SAFETY: the stream was not made, so the descriptor is still this
+        // function's to close.
+        unsafe { libc::close(descriptor) };
+        return Err(error);
+    }
+
+    let mut names = Vec::new();
+    loop {
+        // SAFETY: `stream` is open until the `closedir` below.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: a non-null entry holds a NUL-terminated name, valid until
+        // the next call on the stream, and it is copied before that.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if !matches!(name.to_bytes(), b"." | b"..") {
+            names.push(name.to_owned());
+        }
+    }
+    // SAFETY: `stream` is open, and closing it closes `descriptor` with it.
+    unsafe { libc::closedir(stream) };
+    Ok(names)
 }
 
 /// Opens `name` relative to `directory`, never following a link at it.
@@ -692,6 +895,61 @@ mod tests {
             .map(|entry| entry.expect("an entry").file_name())
             .collect();
         assert_eq!(behind, ["journal"], "something appeared behind the link");
+
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// Removing a journal under `sudo` removes the directory the walk reached
+    /// and what is in it, and nothing a link leads to: not what a link inside
+    /// it points to, and not what stands under the journal's name wherever a
+    /// link placed above it after the walk leads. By path, the removal would
+    /// have root empty whatever directory the invoking user pointed it at.
+    #[cfg(all(unix, feature = "journal-format"))]
+    #[test]
+    fn removing_a_journal_removes_only_what_the_walk_reached() {
+        let scratch = scratch("removes");
+        let home = scratch.join("home");
+        let elsewhere = scratch.join("elsewhere");
+        let journal = home.join("state/01ID");
+        fs::create_dir_all(journal.join("inner")).expect("a journal");
+        fs::write(journal.join("manifest.json"), b"{}").expect("writes");
+        fs::write(journal.join("inner/stray"), b"").expect("writes");
+        fs::create_dir_all(elsewhere.join("01ID")).expect("a directory outside");
+        fs::write(elsewhere.join("01ID/precious"), b"kept").expect("writes");
+        std::os::unix::fs::symlink(elsewhere.join("01ID"), journal.join("linked"))
+            .expect("links out from inside");
+        let user = InvokingUser {
+            uid: 1000,
+            gid: 1000,
+            home: home.clone(),
+        };
+
+        let place = Place::of_as(Some(&user), &journal).expect("reached");
+        fs::rename(home.join("state"), home.join("kept")).expect("moves aside");
+        std::os::unix::fs::symlink(&elsewhere, home.join("state")).expect("links out above");
+        place.remove_tree().expect("removes");
+
+        assert!(
+            !home.join("kept/01ID").exists(),
+            "the journal the walk reached is still there"
+        );
+        assert_eq!(
+            fs::read(elsewhere.join("01ID/precious")).expect("still there"),
+            b"kept"
+        );
+
+        // A link standing at the name is removed as a link.
+        fs::remove_file(home.join("state")).expect("removes the link");
+        fs::create_dir(home.join("state")).expect("a directory");
+        std::os::unix::fs::symlink(elsewhere.join("01ID"), &journal).expect("links");
+        Place::of_as(None, &journal)
+            .and_then(|place| place.remove_tree())
+            .expect("removes the link");
+        assert!(
+            fs::symlink_metadata(&journal).is_err(),
+            "the link is still there"
+        );
+        assert!(elsewhere.join("01ID/precious").is_file());
 
         let _ = fs::remove_dir_all(&scratch);
     }

@@ -798,12 +798,11 @@ fn extend(spans: &mut Vec<Range<u64>>, run: Range<u64>) {
 
 #[cfg(feature = "journal-format")]
 mod persistence {
-    use std::fs;
     use std::io::Write;
     use std::path::Path;
 
     use super::Checkpoint;
-    use crate::journal::file::create_staged;
+    use crate::journal::file::replace;
     use crate::journal::format::JournalError;
 
     impl Checkpoint {
@@ -822,22 +821,10 @@ mod persistence {
         /// changes by rename, so a reader sees the whole of one checkpoint or the
         /// whole of the one before it.
         pub fn write_atomically(&self, path: &Path) -> Result<(), JournalError> {
-            let temporary = path.with_extension("tmp");
-
-            // Scoped so the handle is closed before the rename. Renaming over a
-            // file still held open is a hazard on platforms this may yet reach.
-            {
-                let mut file = create_staged(&temporary)?;
-                file.write_all(
-                    serde_json::to_string(self)
-                        .map_err(JournalError::json)?
-                        .as_bytes(),
-                )?;
-            }
-
-            // The destination becomes the temporary's inode, which already
-            // carries the mode and the ownership `create_staged` gave it.
-            fs::rename(&temporary, path)?;
+            let text = serde_json::to_string(self).map_err(JournalError::json)?;
+            replace(path, &path.with_extension("tmp"), |mut file| {
+                file.write_all(text.as_bytes())
+            })?;
             Ok(())
         }
 
