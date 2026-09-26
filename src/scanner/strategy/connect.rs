@@ -736,25 +736,27 @@ pub async fn scan(
     Ok(())
 }
 
-/// How long a connect to a host whose typical round trip is `path` waits for
-/// its answer, or to one nothing has measured where `path` is `None`.
+/// How long a connect across `path` waits for its answer, or to a host
+/// nothing has measured where `path` allows nothing.
 ///
 /// [`CONNECT_PROBE_TIMEOUT`] where that covers the path, which is every path
-/// whose round trip is under a sixth of a second, so an ordinary scan waits
-/// what it always waits. On a longer one the wait is set as that timeout is:
+/// whose round trip is under a sixth of a second measured once, or two fifths
+/// measured steadily, so an ordinary scan waits what it always waits. On a longer one the wait is set as that timeout is:
 /// the host stack's SYN retransmission and then its answer across the path,
-/// with the headroom a first measurement earns (see [`PathAllowance`]). A
-/// wait sized for a path that costs nothing gives up on every answer that
-/// crosses a slow one, and an open port reads filtered.
-fn connect_patience(path: Option<Duration>) -> Duration {
-    PathAllowance::of_median(path)
-        .over(HOST_SYN_RETRANSMIT)
-        .max(CONNECT_PROBE_TIMEOUT)
+/// with the headroom the host's measured round trips earn (see
+/// [`PathAllowance`]). A wait sized for a path that costs nothing gives up on
+/// every answer that crosses a slow one, and an open port reads filtered.
+fn connect_patience(path: PathAllowance) -> Duration {
+    path.over(HOST_SYN_RETRANSMIT).max(CONNECT_PROBE_TIMEOUT)
 }
 
-/// The typical round trip the scan has measured to `ip`, if it has one.
-fn measured_path(ctx: &ScanContext, ip: IpAddr) -> Option<Duration> {
-    ctx.read_host(ip, Host::median_rtt).flatten()
+/// What the path to `ip` adds to every wait on it, as the scan has measured
+/// it so far, or nothing where it has measured nothing.
+fn measured_path(ctx: &ScanContext, ip: IpAddr) -> PathAllowance {
+    ctx.read_host(ip, |host| {
+        PathAllowance::of_round_trips(host.telemetry().round_trips())
+    })
+    .unwrap_or(PathAllowance::NONE)
 }
 
 /// What a connect port scan asks each port with, so a second asking asks it
@@ -792,6 +794,11 @@ impl Asking<'_> {
             Some(false) => ServiceDetection::Off,
             _ => identify,
         };
+        // What the scan has measured of the path so far, which the port's
+        // own handshake adds to before its identification is timed from it.
+        let measured = ctx
+            .read_host(target.ip(), |host| host.telemetry().round_trips())
+            .unwrap_or_default();
         port_prober(
             target,
             identify,
@@ -799,6 +806,7 @@ impl Asking<'_> {
             egress,
             endpoint,
             patience,
+            measured,
             ctx.handle.clone(),
             crowd,
         )
@@ -893,7 +901,7 @@ impl SlowPaths {
 
         let mut finders = std::collections::HashSet::new();
         for (ip, ports) in &owed {
-            if !open(ip) || measured_path(ctx, *ip).is_some() {
+            if !open(ip) || measured_path(ctx, *ip) != PathAllowance::NONE {
                 continue;
             }
             let Some(likeliest) = ports.iter().min_by_key(|silence| {
@@ -913,10 +921,11 @@ impl SlowPaths {
 
         let mut asked = finders.len() as u128;
         for (ip, ports) in &owed {
-            let Some(path) = measured_path(ctx, *ip).filter(|_| open(ip)) else {
+            let path = measured_path(ctx, *ip);
+            if path == PathAllowance::NONE || !open(ip) {
                 continue;
-            };
-            let patience = connect_patience(Some(path));
+            }
+            let patience = connect_patience(path);
             for silence in ports {
                 if silence.waited < patience && !finders.contains(&silence.target) {
                     asked += 1;
@@ -1110,8 +1119,9 @@ fn udp_evidence(state: PortState) -> Option<ScanResponse> {
 ///
 /// The handshake is given `patience` to be answered, which the scan sizes
 /// from the path to the host; see [`connect_patience`]. An open port is
-/// identified in its host's `crowd`, every wait on it allowing for the round
-/// trip its own handshake took.
+/// identified in its host's `crowd`, every wait on it allowing for the path
+/// as `measured`, the round trips the scan took to the host before, and the
+/// one its own handshake took show it; see [`PathAllowance::of_round_trips`].
 #[allow(clippy::too_many_arguments)]
 async fn port_prober(
     planned: PlannedTarget,
@@ -1120,6 +1130,7 @@ async fn port_prober(
     egress: Egress,
     socket_addr: SocketAddr,
     patience: Duration,
+    measured: Vec<Duration>,
     handle: ScanHandle,
     crowd: std::sync::Arc<crate::scanner::service::Crowd>,
 ) -> ProbedPort {
@@ -1208,8 +1219,9 @@ async fn port_prober(
                 // passive detection needs, and what the same bytes said about
                 // the machine. The descriptor is held until it is done.
                 // The handshake is a round trip over the very path the
-                // conversation that follows takes, measured a moment ago.
-                let path = PathAllowance::of_round_trip(rtt);
+                // conversation that follows takes, measured a moment ago,
+                // and the latest of those the scan has taken.
+                let path = PathAllowance::of_round_trips(measured.into_iter().chain([rtt]));
                 // Raced against the stop, because the identification is the
                 // one wait here no loop reads it between: on a port that
                 // accepts and says nothing it runs the better part of half a
@@ -2221,17 +2233,22 @@ mod tests {
     /// is what keeps an open port two seconds away from reading filtered.
     #[test]
     fn a_connect_waits_as_ever_on_an_ordinary_path_and_longer_on_a_slow_one() {
-        assert_eq!(connect_patience(None), CONNECT_PROBE_TIMEOUT);
+        assert_eq!(connect_patience(PathAllowance::NONE), CONNECT_PROBE_TIMEOUT);
         assert_eq!(
-            connect_patience(Some(Duration::from_millis(40))),
+            connect_patience(PathAllowance::of_round_trip(Duration::from_millis(40))),
             CONNECT_PROBE_TIMEOUT
         );
         let slow = Duration::from_millis(1_900);
-        assert!(
-            connect_patience(Some(slow)) > HOST_SYN_RETRANSMIT + slow,
-            "a connect across {slow:?} waits {:?}",
-            connect_patience(Some(slow))
-        );
+        for path in [
+            PathAllowance::of_round_trip(slow),
+            PathAllowance::of_round_trips([slow; 10]),
+        ] {
+            assert!(
+                connect_patience(path) > HOST_SYN_RETRANSMIT + slow,
+                "a connect across {path:?} waits {:?}",
+                connect_patience(path)
+            );
+        }
     }
 
     fn udp_target(ip: IpAddr, port: u16) -> PlannedTarget {
@@ -2368,6 +2385,7 @@ mod tests {
             Egress::KERNEL,
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
+            Vec::new(),
             ScanHandle::new(),
             Default::default(),
         )
@@ -2411,6 +2429,7 @@ mod tests {
             Egress::KERNEL,
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
+            Vec::new(),
             ScanHandle::new(),
             Default::default(),
         )
@@ -2526,6 +2545,7 @@ mod tests {
                 Egress::KERNEL,
                 SocketAddr::new(ip, port),
                 CONNECT_PROBE_TIMEOUT,
+                Vec::new(),
                 ScanHandle::new(),
                 Default::default(),
             )
@@ -2604,6 +2624,7 @@ mod tests {
             Egress::KERNEL,
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
+            Vec::new(),
             handle,
             Default::default(),
         )
@@ -2699,6 +2720,7 @@ mod tests {
                 Egress::KERNEL,
                 SocketAddr::new(ip, port),
                 patience,
+                Vec::new(),
                 handle,
                 Default::default(),
             ),

@@ -378,7 +378,7 @@ fn fingerprintable_ports(
             continue;
         }
         let address = host.value().scoped_ip();
-        let path = PathAllowance::of_median(host.value().median_rtt());
+        let path = PathAllowance::of_round_trips(host.value().telemetry().round_trips());
         for port in host.value().ports() {
             if port.protocol() == over
                 && port.state() == PortState::Open
@@ -1737,6 +1737,38 @@ mod tests {
                  likeliest were asked what they run"
             )
         );
+        drop(session);
+    }
+
+    /// **A port on a slow path that has answered steadily is identified with
+    /// waits a little longer than the path, not three times it.**
+    ///
+    /// Every wait of an identification allows for the path, and a port that
+    /// says nothing is waited on several times in a row: allowing three round
+    /// trips each, as one sample earns, a silent port two seconds away cost
+    /// the better part of a minute on a path the port scan had measured to
+    /// the millisecond.
+    #[test]
+    fn a_steady_slow_path_is_allowed_for_as_its_round_trips_show() {
+        let (session, ctx) = ScanSession::new();
+        let host: IpAddr = "192.0.2.1".parse().expect("a documentation address");
+        let path = Duration::from_millis(1_900);
+        ctx.update_host(host, |record| {
+            for _ in 0..10 {
+                record.add_rtt(path);
+            }
+            record.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        });
+
+        let targets = fingerprintable_ports(
+            &ctx,
+            Protocol::Tcp,
+            ServiceDetection::Probe,
+            &Tarpits::default(),
+        );
+        let allowed = targets[0].path.over(Duration::ZERO);
+        assert!(allowed > path, "the path itself: {allowed:?}");
+        assert!(allowed < path * 2, "one sample's three: {allowed:?}");
         drop(session);
     }
 

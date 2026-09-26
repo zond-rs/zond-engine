@@ -1344,20 +1344,31 @@ mod tests {
     }
 
     /// A conversation with a service on a measured path allows for the path
-    /// exactly what a probe to a host seeded with the same round trip is
-    /// given, so the passes that talk to a service wait on a slow path as the
-    /// port scans that found it did.
+    /// exactly what a probe to a host whose replies came back after the same
+    /// round trips is given, one of them or many, steady or wandering, so the
+    /// passes that talk to a service wait on a slow path as the port scans
+    /// that found it did. A steady path narrows both alike, and a wandering
+    /// one keeps both wide.
     #[test]
-    fn a_conversation_allows_for_a_path_what_a_seeded_probe_is_given() {
-        for millis in [1, 5, 140, 1_900] {
-            let round_trip = Duration::from_millis(millis);
+    fn a_conversation_allows_for_a_path_what_a_probe_after_the_same_replies_is_given() {
+        use crate::transport::dial::PathAllowance;
+
+        let steady = [1_900; 10];
+        let wandering = [900, 2_900, 1_000, 2_800, 1_100, 2_700];
+        let slowing = [5, 7, 40, 140, 600, 1_900];
+        let mut runs: Vec<Vec<u64>> = [1, 5, 140, 1_900].map(|millis| vec![millis]).into();
+        runs.extend([steady.to_vec(), wandering.to_vec(), slowing.to_vec()]);
+        for run in runs {
+            let round_trips: Vec<Duration> =
+                run.iter().copied().map(Duration::from_millis).collect();
             let mut estimate = RttEstimator::default();
-            estimate.record(round_trip);
-            let allowance = crate::transport::dial::PathAllowance::of_round_trip(round_trip);
+            for round_trip in &round_trips {
+                estimate.record(*round_trip);
+            }
             assert_eq!(
-                allowance.over(Duration::ZERO),
-                estimate.timeout().expect("one sample"),
-                "at {round_trip:?}"
+                PathAllowance::of_round_trips(round_trips).over(Duration::ZERO),
+                estimate.timeout().expect("a sample"),
+                "after {run:?} ms"
             );
         }
     }

@@ -513,10 +513,13 @@ pub struct Fingerprinted {
     /// one whose answer was still queued behind another's when the clock ran
     /// out. A port that closed on every question waited for nothing.
     pub(crate) ran_out_waiting: bool,
-    /// Whether a reply came only after more than half the wait it was given.
+    /// Whether a reply came only after more than half the wait it was given,
+    /// counting the service's time and not the path's.
     ///
     /// A service answering that late fits one answer in a wait and not two,
     /// so a question queued behind one of its answers is not answered in time.
+    /// The path's round trip is the same for every answer and delays a
+    /// queued one no further, so it is no part of the lateness.
     pub(crate) answered_late: bool,
     /// How long the waits that ran out were given, together.
     ///
@@ -1834,7 +1837,8 @@ struct Tally {
     /// A wait for the port to say something ran its clock out with nothing
     /// heard.
     ran_out_waiting: AtomicBool,
-    /// A reply came only after more than half the wait it was given.
+    /// A reply came only after more than half the wait it was given, net of
+    /// the path; see [`Fingerprinted::answered_late`].
     answered_late: AtomicBool,
     /// How long the waits that ran out were given, together.
     waited_in_vain: std::sync::Mutex<Duration>,
@@ -1872,6 +1876,16 @@ fn on_path(wait: Duration) -> Duration {
     DIALLING
         .try_with(|dialling| dialling.path.over(wait))
         .unwrap_or(wait)
+}
+
+/// How much of `elapsed`, the time a reply from the port being identified
+/// took, was the service's rather than the path's; see
+/// [`PathAllowance::service_time`]. All of it outside an identification's
+/// scope.
+fn service_time(elapsed: Duration) -> Duration {
+    DIALLING
+        .try_with(|dialling| dialling.path.service_time(elapsed))
+        .unwrap_or(elapsed)
 }
 
 /// [`on_path`] for a budget spanning `waits` waits on the port one after
@@ -2164,6 +2178,10 @@ async fn read_bytes<S>(stream: &mut S, wait: Duration, grace: Duration) -> Optio
 where
     S: AsyncRead + Unpin,
 {
+    // Late is judged against the service's own wait, net of the path: a
+    // reply across a slow path takes its round trip whatever the service
+    // does, and only the rest says whether a second answer would have fit.
+    let late = wait / 2;
     let wait = on_path(wait);
     let asked = tokio::time::Instant::now();
     let mut collected: Vec<u8> = Vec::new();
@@ -2177,7 +2195,7 @@ where
         let first = collected.is_empty();
         match timeout(budget, stream.read(&mut buffer)).await {
             Ok(Ok(n)) if n > 0 => {
-                if first && asked.elapsed() > wait / 2 {
+                if first && service_time(asked.elapsed()) > late {
                     tell(|tally| tally.answered_late.store(true, Ordering::Relaxed));
                 }
                 let room = MAX_RESPONSE_BYTES - collected.len();
@@ -3215,7 +3233,7 @@ mod tests {
         let first = TcpStream::connect(addr).await.expect("connects");
         let dialling = Dialling {
             egress: Egress::KERNEL,
-            path: PathAllowance::of_median(round_trip),
+            path: PathAllowance::of_round_trips(round_trip),
             tally: Arc::new(Tally::default()),
         };
         let peer = Authority::new(addr);

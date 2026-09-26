@@ -215,6 +215,18 @@ impl HostTelemetry {
             .map(|sample| sample.rtt)
     }
 
+    /// The round trips a wait on the path to this host is sized from, oldest
+    /// first: the direct samples, or where there are none the one figure the
+    /// segment-wide ones support; see [`tightest_bound`](Self::tightest_bound).
+    /// Empty until something has answered.
+    pub(crate) fn round_trips(&self) -> Vec<Duration> {
+        if self.has_direct() {
+            self.direct().collect()
+        } else {
+            self.tightest_bound().into_iter().collect()
+        }
+    }
+
     /// The one figure a host with nothing but segment-wide samples is described
     /// by: the smallest of them.
     ///
