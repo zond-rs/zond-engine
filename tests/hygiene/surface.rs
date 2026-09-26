@@ -117,6 +117,41 @@ fn no_public_constant_carries_its_length_in_its_type_unless_it_says_why() {
     assert!(!is_array("&'static [u16]") && !is_array("&'static [[u8; 2]]"));
 }
 
+/// A public field's path and type, for a line that declares one.
+fn field(line: &str) -> Option<(&str, &str)> {
+    line.strip_prefix("pub ")
+        .filter(|rest| rest.starts_with("zond_engine::"))?
+        .split_once(": ")
+}
+
+/// A list a caller hands the crate can grow as a constant's can, so a public
+/// field holding one is a `Vec` rather than an array. The arrays left are
+/// bytes, a header field whose width the protocol fixes, which is a length
+/// that is the definition of the thing rather than a count of it.
+#[test]
+fn no_public_field_carries_a_list_s_length_in_its_type() {
+    let listing = listing();
+    let counted: Vec<&str> = listing
+        .lines()
+        .filter_map(field)
+        .filter(|(_, kind)| is_array(kind) && !kind.trim_start_matches('&').starts_with("[u8; "))
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        counted.is_empty(),
+        "public fields whose length is part of their type: {counted:#?}\n\n\
+         Make each a Vec, fitted to the crate's own length where it is read."
+    );
+
+    assert!(
+        listing
+            .lines()
+            .filter_map(field)
+            .any(|(path, kind)| path.ends_with("::Icmpv4::rest_of_header") && is_array(kind)),
+        "the listing still spells a public field the way this check reads it"
+    );
+}
+
 /// The modules a strategy is built from, which the crate keeps to itself.
 ///
 /// Each holds state whose shape is still moving: the retry ledger, the adaptive

@@ -2349,17 +2349,9 @@ impl From<&ProbeStats> for ProbeStatsRecord {
 
 impl From<&ProbeStatsRecord> for ProbeStats {
     fn from(record: &ProbeStatsRecord) -> Self {
-        /// Copies as much of `from` as `into` has room for. A file written by a
-        /// build that counted more attempts is read for the attempts this one
-        /// counts, rather than refused.
-        fn fill<const N: usize>(from: &[u64]) -> [u64; N] {
-            let mut into = [0u64; N];
-            for (slot, value) in into.iter_mut().zip(from) {
-                *slot = *value;
-            }
-            into
-        }
-
+        // A file written by a build that counted more attempts is read for
+        // the attempts this one counts, rather than refused: `from_parts`
+        // fits each distribution to this build.
         ProbeStats::from_parts(ProbeStatsParts {
             scanner: wire::scanner_kind(&record.scanner).unwrap_or(ScannerKind::Composite),
             targets: record.targets,
@@ -2376,11 +2368,11 @@ impl From<&ProbeStatsRecord> for ProbeStats {
             segments_off_target: record.segments_off_target,
             replies_without_rtt: record.replies_without_rtt,
             hosts_found: record.hosts_found,
-            answered_on: fill(&record.answered_on),
+            answered_on: record.answered_on.clone(),
             answered_unattributed: record.answered_unattributed,
             first_reply: record.first_reply,
             last_reply: record.last_reply,
-            found_at: fill(&record.found_at),
+            found_at: record.found_at.clone(),
             capture: record.capture.as_ref().map(CaptureCounts::from),
         })
     }

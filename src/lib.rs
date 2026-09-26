@@ -268,9 +268,10 @@
 //!   a slice: an array's length is part of its type, and would make the next
 //!   variant a break after all.
 //! - **Lists can grow.** Every other public constant that lists something,
-//!   ports, protocols, bounds or characters, is a slice for the same reason.
-//!   The arrays left are values whose length is their definition, such as the
-//!   byte-order mark.
+//!   ports, protocols, bounds or characters, is a slice for the same reason,
+//!   and a public field that holds one is a `Vec`. The arrays left are values
+//!   whose length is their definition, such as the byte-order mark or a
+//!   header field the protocol fixes the width of.
 //! - **Other crates' types stay out.** A public signature names this crate's
 //!   types, the standard library's, and two dependencies it cannot usefully
 //!   hide: `tokio`, whose runtime every scan runs on, and `serde`, whose

@@ -1552,6 +1552,12 @@ impl TargetScope {
 }
 
 /// Everything a [`ProbeStats`] holds, for rebuilding one that was recorded.
+///
+/// The two distributions are lists rather than arrays, because their lengths
+/// are [`ATTEMPTS_COUNTED`] and one more than [`BUCKET_BOUNDS_MS`], and either
+/// may grow: as an array a caller naming every field would break on the day
+/// one did. [`ProbeStats::from_parts`] reads each for the slots this build
+/// counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeStatsParts {
     /// Which strategy this describes.
@@ -1579,8 +1585,9 @@ pub struct ProbeStatsParts {
     pub replies_without_rtt: u64,
     /// How many hosts it found.
     pub hosts_found: u64,
-    /// How many answers arrived on each attempt, one slot per counted attempt.
-    pub answered_on: [u64; ATTEMPTS_COUNTED],
+    /// How many answers arrived on each attempt, one slot per counted attempt,
+    /// as [`ProbeStats::answered_on`] gives them.
+    pub answered_on: Vec<u64>,
     /// How many answers named no attempt.
     pub answered_unattributed: u64,
     /// When the first reply arrived, from the start of the run.
@@ -1588,14 +1595,23 @@ pub struct ProbeStatsParts {
     /// When the last one did.
     pub last_reply: Option<Duration>,
     /// How many hosts were found in each time bucket, one slot per bound plus
-    /// the tail.
-    pub found_at: [u64; BUCKET_BOUNDS_MS.len() + 1],
+    /// the tail, as [`ProbeStats::found_at`] gives them.
+    pub found_at: Vec<u64>,
     /// What the capture reported about its own losses.
     pub capture: Option<CaptureCounts>,
 }
 
 impl ProbeStats {
     /// Rebuilds probe statistics from what was recorded of them.
+    ///
+    /// Each distribution is read for the slots this build counts: a slot past
+    /// them is dropped, and one short of them reads as nothing counted there.
+    /// A record written by a build that counted more attempts, or bucketed by
+    /// more bounds, is read for what this one understands rather than
+    /// refused, since the rest of the report it sits in is worth reading
+    /// whatever its histograms say, and a rebuild that could fail would have
+    /// every caller handle a failure for a detail. A caller building these by
+    /// hand sizes them from the two constants.
     pub fn from_parts(parts: ProbeStatsParts) -> Self {
         Self {
             scanner: parts.scanner,
@@ -1610,14 +1626,24 @@ impl ProbeStats {
             segments_off_target: parts.segments_off_target,
             replies_without_rtt: parts.replies_without_rtt,
             hosts_found: parts.hosts_found,
-            answered_on: parts.answered_on,
+            answered_on: fitted(&parts.answered_on),
             answered_unattributed: parts.answered_unattributed,
             first_reply: parts.first_reply,
             last_reply: parts.last_reply,
-            found_at: parts.found_at,
+            found_at: fitted(&parts.found_at),
             capture: parts.capture,
         }
     }
+}
+
+/// As much of `from` as `N` slots hold, the rest zero. See
+/// [`ProbeStats::from_parts`].
+fn fitted<const N: usize>(from: &[u64]) -> [u64; N] {
+    let mut into = [0u64; N];
+    for (slot, value) in into.iter_mut().zip(from) {
+        *slot = *value;
+    }
+    into
 }
 
 // --------------------------------------------------------------------------
@@ -4092,6 +4118,54 @@ mod tests {
 
         assert_eq!(report.failures().count(), 1, "the failure is kept");
         assert!(!report.is_partial());
+    }
+
+    /// **A rebuild reads each distribution for the slots this build counts.**
+    /// A list from a build that counted one more attempt, or bucketed by one
+    /// more bound, loses the slot this one has no place for, and a shorter
+    /// list reads as nothing counted in the slots it lacks, so neither a
+    /// longer nor a shorter record is refused or read out of place.
+    #[test]
+    fn a_rebuild_fits_each_distribution_to_the_slots_this_build_counts() {
+        let parts = |answered_on: Vec<u64>, found_at: Vec<u64>| ProbeStatsParts {
+            scanner: ScannerKind::Composite,
+            targets: 1,
+            stop_reason: StopReason::AllResponded,
+            elapsed: Duration::from_secs(1),
+            sends_attempted: 0,
+            sends_failed: 0,
+            sends_witnessed: 0,
+            segments_seen: 0,
+            window: None,
+            segments_off_target: 0,
+            replies_without_rtt: 0,
+            hosts_found: 0,
+            answered_on,
+            answered_unattributed: 0,
+            first_reply: None,
+            last_reply: None,
+            found_at,
+            capture: None,
+        };
+
+        let longer = ProbeStats::from_parts(parts(
+            (1..=ATTEMPTS_COUNTED as u64 + 1).collect(),
+            (1..=BUCKET_BOUNDS_MS.len() as u64 + 2).collect(),
+        ));
+        assert_eq!(
+            longer.answered_on(),
+            (1..=ATTEMPTS_COUNTED as u64).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            longer.found_at(),
+            (1..=BUCKET_BOUNDS_MS.len() as u64 + 1).collect::<Vec<_>>()
+        );
+
+        let shorter = ProbeStats::from_parts(parts(vec![7], vec![3, 4]));
+        assert_eq!(shorter.answered_on().len(), ATTEMPTS_COUNTED);
+        assert_eq!(shorter.answered_on()[..2], [7, 0]);
+        assert_eq!(shorter.found_at().len(), BUCKET_BOUNDS_MS.len() + 1);
+        assert_eq!(shorter.found_at()[..3], [3, 4, 0]);
     }
 
     /// A phase whose scanners carry no instrumentation reports no counters,

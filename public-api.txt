@@ -14713,12 +14713,12 @@ impl core::marker::UnsafeUnpin for zond_engine::report::ProbeStats
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::ProbeStats
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::ProbeStats
 pub struct zond_engine::report::ProbeStatsParts
-pub zond_engine::report::ProbeStatsParts::answered_on: [u64; 6]
+pub zond_engine::report::ProbeStatsParts::answered_on: alloc::vec::Vec<u64>
 pub zond_engine::report::ProbeStatsParts::answered_unattributed: u64
 pub zond_engine::report::ProbeStatsParts::capture: core::option::Option<zond_engine::model::capture::CaptureCounts>
 pub zond_engine::report::ProbeStatsParts::elapsed: core::time::Duration
 pub zond_engine::report::ProbeStatsParts::first_reply: core::option::Option<core::time::Duration>
-pub zond_engine::report::ProbeStatsParts::found_at: [u64; 10]
+pub zond_engine::report::ProbeStatsParts::found_at: alloc::vec::Vec<u64>
 pub zond_engine::report::ProbeStatsParts::hosts_found: u64
 pub zond_engine::report::ProbeStatsParts::last_reply: core::option::Option<core::time::Duration>
 pub zond_engine::report::ProbeStatsParts::replies_without_rtt: u64
