@@ -611,6 +611,67 @@ mod tests {
         assert_eq!(complete_messages(&smb2_session()), 2);
     }
 
+    /// The shipped signing detection, run against a server that answers its
+    /// negotiate with `reply`. Hands back what it sent and whether it found
+    /// signing not required.
+    fn signing_detection(reply: Vec<u8>) -> (Vec<u8>, bool) {
+        use crate::detect::flow::{FlowSeed, Probe, run};
+
+        struct Answering {
+            reply: Vec<u8>,
+            sent: Vec<u8>,
+        }
+        impl Probe for Answering {
+            fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+                self.sent.extend_from_slice(bytes);
+                Some(self.reply.clone())
+            }
+        }
+
+        let flow = crate::detect::flow::db::shipped_flow("smb-signing-not-required");
+        let mut probe = Answering {
+            reply,
+            sent: Vec::new(),
+        };
+        let findings = run(&flow, "", &FlowSeed::new("192.0.2.45", 445), &mut probe);
+        (probe.sent, !findings.is_empty())
+    }
+
+    /// The detection that reports signing not required asks the question this
+    /// analyzer asks, byte for byte, so the two cannot give different accounts
+    /// of one server. Offering 3.1.1 without the preauthentication context is
+    /// a request MS-SMB2 has a server refuse, and one that honours it anyway
+    /// can pick a different dialect under a different security mode.
+    #[test]
+    fn the_signing_detection_negotiates_as_this_analyzer_does() {
+        let (sent, _) = signing_detection(Vec::new());
+        assert_eq!(sent, framed_message(&smb2_negotiate()));
+    }
+
+    /// Only a successful negotiate answer is read for the signing bit. The
+    /// error a server sends a request it refuses has a zero where a negotiate
+    /// answer keeps its security mode, and reading it as one reports a server
+    /// that insists on signing as one that does not.
+    #[test]
+    fn the_signing_detection_reads_only_a_negotiate_that_succeeded() {
+        const SIGNING_ENABLED: u16 = 0x0001;
+        const SIGNING_REQUIRED: u16 = 0x0002;
+        const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
+
+        let (_, found) = signing_detection(negotiate_response(SIGNING_ENABLED, 0x0311));
+        assert!(found, "signing enabled and not required");
+        let (_, found) = signing_detection(negotiate_response(
+            SIGNING_ENABLED | SIGNING_REQUIRED,
+            0x0311,
+        ));
+        assert!(!found, "signing required");
+
+        // The SMB2 ERROR response: structure size 9, no error contexts.
+        let refused = smb2_response(0, STATUS_INVALID_PARAMETER, &[9, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let (_, found) = signing_detection(refused);
+        assert!(!found, "a refused negotiate read as signing not required");
+    }
+
     /// A loopback SMB server: answers the corpus probe in the protocol given,
     /// and each of the analyzer's own connections with `follow_up`.
     async fn smb_server(rung: Vec<u8>, follow_up: Vec<u8>) -> std::net::SocketAddr {
