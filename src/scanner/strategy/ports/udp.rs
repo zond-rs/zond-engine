@@ -536,13 +536,15 @@ impl RawPortScan for UdpPortScanner {
     /// Classifies one captured reply and, if it answers an outstanding probe,
     /// resolves that probe.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
-        // What the reply proves about the *host*, a separate claim from the
-        // port verdict and filed after it; see below.
+        // What the reply proves about the *host*, and the names it gives for
+        // it: separate claims from the port verdict, filed after it; see below.
         let mut declared = None;
+        let mut names = Vec::new();
         let classified = match IpNextHeaderProtocol(reply.protocol) {
             IpNextHeaderProtocols::Udp => {
                 answering_probe(&reply.bytes, self.core.src_port).map(|(port, datagram)| {
                     declared = payload::declared_role(port, datagram);
+                    names = payload::declared_names(port, datagram);
                     ((reply.source, port), Verdict::Port(PortState::Open))
                 })
             }
@@ -568,17 +570,20 @@ impl RawPortScan for UdpPortScanner {
                 // Only for a reply from a port this scan asked. The capture
                 // hands over whatever reaches the scan's source port, which on
                 // a busy machine includes other programs' conversations, and a
-                // role read from a stray would write a host record for an
-                // address the scan never asked about. A reply that resolved
-                // nothing can still be a duplicate, or an answer to a probe
-                // already written off, and says what the first would have: a
-                // name server answering twice is still a name server. Those
-                // are the ones whose port is already on the host.
-                if let Some(role) = declared
-                    && (resolved || self.asked(target))
-                {
+                // role or a name read from a stray would write a host record
+                // for an address the scan never asked about. A reply that
+                // resolved nothing can still be a duplicate, or an answer to a
+                // probe already written off, and says what the first would
+                // have: a name server answering twice is still a name server.
+                // Those are the ones whose port is already on the host.
+                if (declared.is_some() || !names.is_empty()) && (resolved || self.asked(target)) {
                     self.core.ctx.update_host(target.0, |host| {
-                        host.add_network_role(role);
+                        if let Some(role) = declared {
+                            host.add_network_role(role);
+                        }
+                        for name in names {
+                            host.record_name(name);
+                        }
                     });
                 }
             }
@@ -1155,6 +1160,41 @@ mod tests {
         assert!(
             host.network_roles().contains(&NetworkRole::DnsServer),
             "a duplicate answer from a host that was asked still names it"
+        );
+    }
+
+    /// A name table names the machine and the workgroup it joined, read from
+    /// the reply the port verdict came from, and recorded on the host that
+    /// was asked, as the connect path records them.
+    #[test]
+    fn a_name_table_names_the_machine_and_its_workgroup() {
+        use crate::model::host::{NameKind, NameSource};
+        use crate::protocols::netbios::tests::response;
+
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 137);
+        let table = response(&[("FILESERVER", 0x00, false), ("EXAMPLEGRP", 0x00, true)]);
+        scanner.handle_reply(&udp_reply_saying(137, SCAN_SRC_PORT, table), Instant::now());
+
+        let host = session.hosts().get(TARGET).expect("the host answered");
+        let names: Vec<_> = host
+            .names()
+            .map(|name| (name.kind(), name.source(), name.name().to_owned()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (
+                    NameKind::NetbiosHost,
+                    NameSource::Netbios,
+                    "FILESERVER".to_owned()
+                ),
+                (
+                    NameKind::NetbiosDomain,
+                    NameSource::Netbios,
+                    "EXAMPLEGRP".to_owned()
+                ),
+            ]
         );
     }
 

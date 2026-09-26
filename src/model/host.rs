@@ -460,8 +460,9 @@ const MAX_OS_EVIDENCE: usize = 8;
 /// The most names one host will have recorded against it.
 ///
 /// A host states at most five names over NTLM, three over LDAP, a realm over
-/// Kerberos and a domain over SMB1, and states them the same way on every port
-/// and every sitting, so an honest one never comes near this. What reaches it is a peer inventing a new name for each
+/// Kerberos, a domain over SMB1 and two in its NetBIOS name table, and states
+/// them the same way on every port and every sitting, so an honest one never
+/// comes near this. What reaches it is a peer inventing a new name for each
 /// connection, which would otherwise grow the record with every service asked
 /// and every scan folded in. Past it, what arrives is turned away and what is
 /// held stays: the first names a host gave are as much its claim as any later

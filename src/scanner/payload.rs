@@ -56,7 +56,7 @@
 //! scan concludes the same roles whichever transport it had available.
 
 use crate::fingerprint::SignatureDb;
-use crate::model::host::NetworkRole;
+use crate::model::host::{HostName, NameKind, NameSource, NetworkRole};
 use crate::protocols::{dns, netbios};
 
 /// Where a name server answers. The rest of the vocabulary a role is read from
@@ -109,6 +109,36 @@ pub fn declared_role(port: u16, reply: &[u8]) -> Option<NetworkRole> {
             .is_some_and(|table| table.domain_controller())
             .then_some(NetworkRole::DomainController),
         _ => None,
+    }
+}
+
+/// The names a reply to the probe for `port` gives for the host, where its
+/// protocol states any.
+///
+/// The counterpart to [`declared_role`], read from the same reply by the same
+/// scanners, so a scan records the same names whichever transport it had
+/// available. A name table is the one reply that states any: the name the
+/// machine registered for its workstation service, and the domain or
+/// workgroup it joined. See [`netbios::NameTable::workstation`] for why the
+/// group bit tells the two apart.
+///
+/// Returned rather than folded into the port's text because they are the
+/// host's names, which a report masks where it is asked to, and the port's
+/// text is not masked anywhere.
+pub(crate) fn declared_names(port: u16, reply: &[u8]) -> Vec<HostName> {
+    match port {
+        NETBIOS_NS => netbios::node_status(reply)
+            .map(|table| {
+                [
+                    (NameKind::NetbiosHost, table.workstation()),
+                    (NameKind::NetbiosDomain, table.domain()),
+                ]
+                .into_iter()
+                .filter_map(|(kind, name)| HostName::new(kind, NameSource::Netbios, name?))
+                .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
@@ -246,6 +276,45 @@ mod tests {
 
         assert_eq!(declared_role(NETBIOS_NS, b"not netbios at all"), None);
         assert_eq!(declared_role(NETBIOS_NS, &[]), None);
+    }
+
+    /// A name table names the machine by its workstation name and the
+    /// workgroup by the group registered under the same suffix; the server
+    /// service's copy of the machine's name, and a group under another
+    /// suffix, name nothing more. Anything but a name table names nothing.
+    #[test]
+    fn a_name_table_names_the_machine_and_the_workgroup_it_joined() {
+        use crate::protocols::netbios::tests::response;
+
+        let table = response(&[
+            ("FILESERVER", 0x00, false),
+            ("FILESERVER", 0x20, false),
+            ("EXAMPLEGRP", 0x00, true),
+            ("EXAMPLEGRP", 0x1E, true),
+        ]);
+        let names: Vec<_> = declared_names(NETBIOS_NS, &table)
+            .into_iter()
+            .map(|name| (name.kind(), name.source(), name.name().to_owned()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (
+                    NameKind::NetbiosHost,
+                    NameSource::Netbios,
+                    "FILESERVER".to_owned()
+                ),
+                (
+                    NameKind::NetbiosDomain,
+                    NameSource::Netbios,
+                    "EXAMPLEGRP".to_owned()
+                ),
+            ]
+        );
+
+        assert!(declared_names(NETBIOS_NS, for_port(NETBIOS_NS)).is_empty());
+        assert!(declared_names(NETBIOS_NS, b"not netbios at all").is_empty());
+        assert!(declared_names(53, &table).is_empty(), "keyed on the port");
     }
 
     /// NTP registers two probes, and which is first matters.

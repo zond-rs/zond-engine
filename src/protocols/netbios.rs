@@ -22,8 +22,12 @@
 //! service registered it, and a flags word whose top bit says whether the name is
 //! a group rather than one machine's own. The names themselves are site-specific,
 //! a machine and a workgroup somebody chose, so there is nothing here for a
-//! signature to match, which is why this produces no corpus text. The suffixes
-//! are not site-specific at all, and they are what
+//! signature to match, which is why this produces no corpus text. The
+//! machine's own name and its workgroup's are recorded on the host instead,
+//! where a report masks them, as names from
+//! [`NameSource::Netbios`](crate::model::host::NameSource::Netbios).
+//!
+//! The suffixes are not site-specific at all, and they are what
 //! [`NameTable::domain_controller`] reads.
 //!
 //! ## Which suffix means a domain controller
@@ -194,13 +198,13 @@ pub fn node_status(datagram: &[u8]) -> Option<NameTable> {
 // ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Builds a node-status response carrying `entries`, in the layout a
     /// responder writes: header, the question's name echoed back, the fixed
     /// record fields, then the table and the statistics block.
-    fn response(entries: &[(&str, u8, bool)]) -> Vec<u8> {
+    pub(crate) fn response(entries: &[(&str, u8, bool)]) -> Vec<u8> {
         let mut out = vec![0x80, 0xf0]; // transaction ID
         out.extend_from_slice(&0x8400u16.to_be_bytes()); // response, authoritative
         out.extend_from_slice(&0u16.to_be_bytes()); // QDCOUNT

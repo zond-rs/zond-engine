@@ -1604,7 +1604,8 @@ async fn udp_port_prober(
                 udp_evidence(state),
             )),
             // Nothing on this path turns a datagram into the text a detection
-            // reads: the reply is read for the role it declares and no more.
+            // reads: the reply is read for the role and the names it declares
+            // and no more.
             responses: Vec::new(),
             about_the_host: crate::fingerprint::AboutTheHost::default(),
             identified_in_part: false,
@@ -1700,6 +1701,10 @@ async fn udp_port_prober(
         )
         .map(|probed| Probed {
             role: payload::declared_role(target.port, &buf[..read]),
+            about_the_host: crate::fingerprint::AboutTheHost {
+                names: payload::declared_names(target.port, &buf[..read]),
+                ..Default::default()
+            },
             ..probed
         }),
         // An ICMP Port Unreachable, surfaced against the connected peer.
@@ -2480,6 +2485,65 @@ mod tests {
                 "{port}: {probed:?}"
             );
         }
+    }
+
+    /// **What a NetBIOS name table calls the machine reaches the host on the
+    /// connect path, masked where a report masks.** The raw path reads the
+    /// same reply for the same names, so a scan without a raw socket records
+    /// what one with it would.
+    ///
+    /// The responder answers on loopback at a port of its own, and the probe
+    /// is addressed there while the target names 137, which is what decides
+    /// how its reply is read.
+    #[tokio::test]
+    async fn a_name_table_names_the_machine_on_the_connect_path() {
+        use crate::export::schema::HostDto;
+        use crate::export::{ExportOptions, Redaction};
+        use crate::model::host::Host;
+        use crate::protocols::netbios::tests::response;
+
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let service = UdpSocket::bind((ip, 0)).await.expect("bind service");
+        let at = service.local_addr().expect("bound");
+        tokio::spawn(async move {
+            let mut buf = [0u8; 64];
+            if let Ok((_, from)) = service.recv_from(&mut buf).await {
+                let table = response(&[
+                    ("FILESERVER", 0x00, false),
+                    ("FILESERVER", 0x20, false),
+                    ("EXAMPLEGRP", 0x00, true),
+                ]);
+                let _ = service.send_to(&table, from).await;
+            }
+        });
+
+        let probed = udp_port_prober(
+            udp_target(ip, 137),
+            Shaping::default(),
+            Egress::KERNEL,
+            at,
+            ScanHandle::new(),
+        )
+        .await
+        .expect("a verdict");
+
+        let mut host = Host::new(ip);
+        probed.about_the_host.apply(&mut host);
+        let render = |options: ExportOptions| {
+            serde_json::to_value(HostDto::new(&host, &options)).expect("a host renders")
+        };
+        assert_eq!(
+            render(ExportOptions::new())["names"],
+            serde_json::json!([
+                {"source": "netbios", "kind": "netbios_host", "name": "FILESERVER"},
+                {"source": "netbios", "kind": "netbios_domain", "name": "EXAMPLEGRP"},
+            ])
+        );
+        let masked = render(ExportOptions::new().with_redaction(Redaction::Standard)).to_string();
+        assert!(
+            !masked.contains("FILESERVER") && !masked.contains("EXAMPLEGRP"),
+            "a name survived redaction: {masked}"
+        );
     }
 
     /// A TCP port that refuses a connect is a SYN out and a RST back, one round

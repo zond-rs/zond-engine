@@ -145,11 +145,22 @@ pub enum NameSource {
     /// belongs to. Asked of a server that speaks SMB1, and of one whose SMB2
     /// answer named no Windows build.
     Smb,
+    /// The name table a NetBIOS node-status response lists (RFC 1002
+    /// §4.2.18), which a Windows or Samba host sends to anyone asking on UDP
+    /// 137: the machine's own name, registered for the workstation service,
+    /// and the domain or workgroup it joined, registered as a group.
+    Netbios,
 }
 
 impl NameSource {
     /// Every source this build knows, in declaration order.
-    pub const ALL: &'static [Self] = &[Self::Ntlm, Self::Ldap, Self::Kerberos, Self::Smb];
+    pub const ALL: &'static [Self] = &[
+        Self::Ntlm,
+        Self::Ldap,
+        Self::Kerberos,
+        Self::Smb,
+        Self::Netbios,
+    ];
 
     /// How a source is written for a person to read.
     ///
@@ -162,6 +173,7 @@ impl NameSource {
             Self::Ldap => "LDAP",
             Self::Kerberos => "Kerberos",
             Self::Smb => "SMB",
+            Self::Netbios => "NetBIOS",
         }
     }
 }
