@@ -254,9 +254,10 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
 /// straight to the matcher, so this is empty for nearly all of them and the
 /// [`reply_text`] beside it does the work.
 ///
-/// It exists for the ones that do not. An RPC reply over TCP hides the record
-/// a datagram would carry behind marks of its own, and an RTSP response is
-/// declined by the HTTP reader, so each wants reading as what it is.
+/// It exists for the ones that do not. An RPC, Kerberos or DNS reply over TCP
+/// hides the message a datagram would carry behind framing of its own, a TDS
+/// pre-login states its version in binary, and an RTSP response is declined
+/// by the HTTP reader, so each wants reading as what it is.
 ///
 /// Offered *beside* the whole reply rather than instead of it, so nothing that
 /// already matched stops matching.
@@ -270,6 +271,27 @@ pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
             .and_then(|record| super::framed::rpc_program_dump(&record))
             .into_iter()
             .collect(),
+        // The mismatch a datagram would carry, behind the same marks.
+        2049 => super::framed::rpc_record(bytes)
+            .and_then(|record| super::framed::rpc_version_range(&record))
+            .into_iter()
+            .collect(),
+        // The KRB-ERROR a datagram would carry, behind the four-byte length
+        // RFC 4120 §7.2.2 puts in front of a message over TCP.
+        88 => bytes
+            .get(4..)
+            .and_then(super::framed::kerberos_error)
+            .into_iter()
+            .collect(),
+        // The answer a datagram would carry, behind the two-byte length RFC
+        // 1035 §4.2.2 puts in front of a message over TCP.
+        53 => bytes
+            .get(2..)
+            .and_then(crate::protocols::dns::first_text_answer)
+            .into_iter()
+            .collect(),
+        // What the server says its build is, before any login.
+        1433 => super::framed::tds_version(bytes).into_iter().collect(),
         _ => Vec::new(),
     }
 }

@@ -134,7 +134,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "dns.versionbind",
         reach: Reach::Produced,
-        note: "the TXT answer the `version.bind` probe draws, decoded by `dns::first_text_answer` through `extract::from_datagram`",
+        note: "the TXT answer the `version.bind` probe draws, decoded by `dns::first_text_answer` through `extract::from_datagram`, and through `extract::from_stream` from TCP behind its two-byte length",
     },
     Context {
         name: "favicon.md5",
@@ -189,7 +189,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "krb.error",
         reach: Reach::Produced,
-        note: "the error code, realm and text of a `KRB-ERROR`, read by `framed::kerberos_error`. The realm appears only where it differs from the one the probe invented, since a KDC repeats what it was asked about",
+        note: "the error code, realm and text of a `KRB-ERROR`, read by `framed::kerberos_error`. The realm appears only where it differs from the one the probe invented, since a KDC repeats what it was asked about. Read from TCP as well, behind the four-byte length, by `extract::from_stream`",
     },
     Context {
         name: "l2tp.sccrp",
@@ -264,7 +264,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "rpc.versions",
         reach: Reach::Produced,
-        note: "the version range an RPC server states in a PROG_MISMATCH, read by `framed::rpc_version_range`. The probe calls a version nothing implements so that the mismatch is the answer",
+        note: "the version range an RPC server states in a PROG_MISMATCH, read by `framed::rpc_version_range`. The probe calls a version nothing implements so that the mismatch is the answer. Read from TCP as well, once `framed::rpc_record` has taken the record marks out",
     },
     Context {
         name: "rtsp_header.server",
@@ -325,6 +325,11 @@ pub const CONTEXTS: &[Context] = &[
         name: "stun.software",
         reach: Reach::Produced,
         note: "the `SOFTWARE` attribute of a STUN binding response, read by `framed::stun_binding`, or `stun` where the server sends none",
+    },
+    Context {
+        name: "tds.prelogin_version",
+        reach: Reach::Produced,
+        note: "the version a SQL Server states in its pre-login response, rendered `Microsoft SQL Server 15.0.2000` by `framed::tds_version`",
     },
     Context {
         name: "tls.jarm",

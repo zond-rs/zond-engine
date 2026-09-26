@@ -13,3 +13,78 @@ protocol = "tcp"
 name = "mssql_prelogin_response"
 pattern = '^[\x04\x12][\x01\x00]'
 product = "mssql"
+
+# ── The version the pre-login answer states ──────────────────────────────────
+#
+# The server's pre-login response carries a VERSION option, the product's own
+# major, minor and build (MS-TDS, PRELOGIN), rendered by `framed::tds_version`
+# as `Microsoft SQL Server 15.0.2000`. The major version is the release.
+
+[[match]]
+name = "mssql_2012"
+pattern = '^Microsoft SQL Server (11\.\d+\.\d+)$'
+version_group = 1
+vendor = "Microsoft"
+product = "SQL Server"
+context = "tds.prelogin_version"
+example = "Microsoft SQL Server 11.0.2011"
+metadata = { "service.extrainfo" = "SQL Server 2012" }
+
+[[match]]
+name = "mssql_2014"
+pattern = '^Microsoft SQL Server (12\.\d+\.\d+)$'
+version_group = 1
+vendor = "Microsoft"
+product = "SQL Server"
+context = "tds.prelogin_version"
+example = "Microsoft SQL Server 12.0.2012"
+metadata = { "service.extrainfo" = "SQL Server 2014" }
+
+[[match]]
+name = "mssql_2016"
+pattern = '^Microsoft SQL Server (13\.\d+\.\d+)$'
+version_group = 1
+vendor = "Microsoft"
+product = "SQL Server"
+context = "tds.prelogin_version"
+example = "Microsoft SQL Server 13.0.2013"
+metadata = { "service.extrainfo" = "SQL Server 2016" }
+
+[[match]]
+name = "mssql_2017"
+pattern = '^Microsoft SQL Server (14\.\d+\.\d+)$'
+version_group = 1
+vendor = "Microsoft"
+product = "SQL Server"
+context = "tds.prelogin_version"
+example = "Microsoft SQL Server 14.0.2014"
+metadata = { "service.extrainfo" = "SQL Server 2017" }
+
+[[match]]
+name = "mssql_2019"
+pattern = '^Microsoft SQL Server (15\.\d+\.\d+)$'
+version_group = 1
+vendor = "Microsoft"
+product = "SQL Server"
+context = "tds.prelogin_version"
+example = "Microsoft SQL Server 15.0.2015"
+metadata = { "service.extrainfo" = "SQL Server 2019" }
+
+[[match]]
+name = "mssql_2022"
+pattern = '^Microsoft SQL Server (16\.\d+\.\d+)$'
+version_group = 1
+vendor = "Microsoft"
+product = "SQL Server"
+context = "tds.prelogin_version"
+example = "Microsoft SQL Server 16.0.2016"
+metadata = { "service.extrainfo" = "SQL Server 2022" }
+
+[[match]]
+name = "mssql_version"
+pattern = '^Microsoft SQL Server (\d+\.\d+\.\d+)$'
+version_group = 1
+vendor = "Microsoft"
+product = "SQL Server"
+context = "tds.prelogin_version"
+example = "Microsoft SQL Server 17.0.1000"

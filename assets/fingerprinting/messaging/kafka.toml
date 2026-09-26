@@ -3,12 +3,24 @@ name = "kafka"
 default_ports = [9092, 9093]
 description = "Apache Kafka"
 
+# An ApiVersions request, version 0, which every broker since 0.10 answers
+# before anything is authenticated.
+#
+#   00 00 00 12        the request's size, 18 bytes
+#   00 12 00 00        API key 18, ApiVersions, version 0
+#   00 00 00 03        correlation id 3
+#   00 08 "zond-cli"   client id
 [[probe]]
 name = "api_versions"
-payload = '\x00\x00\x00\x15\x00\x12\x00\x00\x00\x00\x00\x00\x00\x03\x00\x0a\x7a\x6f\x6e\x64\x2d\x63\x6c\x69'
+payload = '\x00\x00\x00\x12\x00\x12\x00\x00\x00\x00\x00\x03\x00\x08zond-cli'
 protocol = "tcp"
 
 [[match]]
 name = "kafka_response"
-pattern = '^\x00\x00'
+# The response's size, the correlation id the request carried, and an error
+# code: none, or 35 for a version the broker does not support. Two zero bytes
+# alone are how every length-prefixed protocol begins, and this rule is
+# matched on every port nothing else names.
+pattern = '(?s)^\x00\x00..\x00\x00\x00\x03\x00[\x00\x23]'
 product = "kafka"
+example = "\u0000\u0000\u0000\u0006\u0000\u0000\u0000\u0003\u0000\u0000"

@@ -384,6 +384,51 @@ pub(super) fn rpc_record(stream: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// The version a SQL Server states in answer to a pre-login, as
+/// `Microsoft SQL Server 15.0.2000`.
+///
+/// A pre-login response (MS-TDS, PRELOGIN) is a TDS packet of type 4 holding
+/// a table of options, each a token, an offset and a length, ended by 0xFF.
+/// The VERSION option, token 0, is six bytes: the major and minor version, the
+/// build as a big-endian word, and a sub-build. The server states it before
+/// anything is authenticated or encrypted.
+///
+/// [`None`] for a reply that is not a pre-login response or carries no
+/// version.
+#[must_use]
+pub(super) fn tds_version(stream: &[u8]) -> Option<String> {
+    const TABULAR_RESULT: u8 = 0x04;
+    const HEADER_BYTES: usize = 8;
+    const VERSION: u8 = 0x00;
+    const TERMINATOR: u8 = 0xFF;
+
+    if *stream.first()? != TABULAR_RESULT {
+        return None;
+    }
+    let length = u16::from_be_bytes([*stream.get(2)?, *stream.get(3)?]) as usize;
+    let data = stream.get(HEADER_BYTES..length)?;
+
+    let mut at = 0;
+    loop {
+        let token = *data.get(at)?;
+        if token == TERMINATOR {
+            return None;
+        }
+        let option = data.get(at + 1..at + 5)?;
+        let offset = u16::from_be_bytes([option[0], option[1]]) as usize;
+        let size = u16::from_be_bytes([option[2], option[3]]) as usize;
+        if token == VERSION && size >= 6 {
+            let version = data.get(offset..offset + 6)?;
+            let build = u16::from_be_bytes([version[2], version[3]]);
+            return Some(format!(
+                "Microsoft SQL Server {}.{}.{build}",
+                version[0], version[1]
+            ));
+        }
+        at += 5;
+    }
+}
+
 /// The body of an RPC reply that was accepted and succeeded.
 fn accepted_rpc_reply(datagram: &[u8]) -> Option<&[u8]> {
     match rpc_reply_status(datagram)? {
@@ -1413,6 +1458,25 @@ mod tests {
         out.extend_from_slice(&accept_status.to_be_bytes());
         out.extend_from_slice(body);
         out
+    }
+
+    /// A pre-login answer names the build, and one cut short anywhere, or
+    /// whose version option points past its end, names nothing rather than
+    /// reading out of bounds.
+    #[test]
+    fn a_prelogin_answer_names_its_build_and_a_short_one_nothing() {
+        let answer: &[u8] = b"\x04\x01\x00\x1a\x00\x00\x01\x00\
+            \x00\x00\x0b\x00\x06\x01\x00\x11\x00\x01\xff\x10\x00\x10\x7a\x00\x00\x02";
+        assert_eq!(
+            tds_version(answer).as_deref(),
+            Some("Microsoft SQL Server 16.0.4218")
+        );
+        for end in 0..answer.len() {
+            assert!(tds_version(&answer[..end]).is_none(), "cut at {end}");
+        }
+        let mut pointing_past = answer.to_vec();
+        pointing_past[10] = 0x40;
+        assert!(tds_version(&pointing_past).is_none());
     }
 
     /// Over TCP the same reply arrives behind record marks, here split in two

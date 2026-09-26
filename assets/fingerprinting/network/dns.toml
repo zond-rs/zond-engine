@@ -46,7 +46,7 @@ name = "dns_tcp_match"
 # A DNS response carries back the question it was asked, verbatim and uncompressed.
 # Our probe asks for `version.bind`, so a real nameserver's reply contains those
 # length-prefixed labels — bytes a MySQL/MariaDB handshake or a Postgres error packet
-# never carry, and all under 0x80 so `from_utf8_lossy` leaves them intact. The old
+# never carry, and all under 0x80 so reading the reply as text leaves them intact. The old
 # `^..[\x01\x00]` matched any reply whose third byte was 0x00, which both of those are
 # (a 3-byte MySQL length has a 0x00 high byte), and 3306 came back labelled dns.
 #

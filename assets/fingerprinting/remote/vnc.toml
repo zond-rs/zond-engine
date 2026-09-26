@@ -4,9 +4,33 @@ name = "vnc"
 default_ports = [5900, 5901, 5902, 5903, 5800, 5801]
 description = "Virtual Network Computing / RFB Protocol"
 
-# VNC servers send a version banner immediately.
+# VNC servers send a version banner immediately: `RFB 003.008` and a newline,
+# the protocol version the server speaks (RFC 6143 §7.1.1). It is the
+# protocol's version and not the server's, so it is reported as such rather
+# than as a product version.
+#
+# It names no product, so a rule below that reads a version it knows outranks
+# it rather than tying with it.
 [[match]]
 name = "vnc_banner"
 pattern = '^RFB (\d{3})\.(\d{3})\n'
-version_group = 1
+example = "RFB 004.001\n"
+metadata = { "service.extrainfo" = "RFB {capture:1}.{capture:2}" }
+
+# The three versions RFC 6143 defines, written as it writes them.
+[[match]]
+name = "vnc_rfb_3"
+pattern = '^RFB 003\.00(3|7|8)\n'
 product = "vnc"
+example = "RFB 003.008\n"
+metadata = { "service.extrainfo" = "protocol 3.{capture:1}" }
+
+# macOS Screen Sharing announces a version of its own, 3.889, and speaks
+# Apple's authentication behind it.
+[[match]]
+name = "vnc_apple_screen_sharing"
+pattern = '^RFB 003\.889\n'
+vendor = "Apple"
+product = "Screen Sharing"
+example = "RFB 003.889\n"
+metadata = { "service.extrainfo" = "protocol 3.889", "os.vendor" = "Apple", "os.family" = "macOS" }

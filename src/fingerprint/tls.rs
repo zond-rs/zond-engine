@@ -71,6 +71,7 @@ const IMPLICIT_TLS_PORTS: &[u16] = &[
     993,  // imaps
     995,  // pop3s
     2376, // docker over tls
+    3269, // ldaps, the Active Directory global catalog
     5061, // sip-tls
     5671, // amqps
     5986, // winrm https

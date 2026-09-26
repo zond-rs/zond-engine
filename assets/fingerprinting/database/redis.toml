@@ -20,3 +20,20 @@ version_group = 1
 product = "redis"
 metadata = { "service.cpe23" = "cpe:/a:redis:redis:{service.version}" }
 
+# A server with a password set refuses INFO until a client authenticates, and
+# the refusal is Redis's own wording.
+[[match]]
+name = "redis_auth_required"
+pattern = '^-NOAUTH Authentication required'
+product = "redis"
+example = "-NOAUTH Authentication required.\r\n"
+metadata = { "service.extrainfo" = "authentication required" }
+
+# One with no password and no bind address refuses every client that is not on
+# loopback, and says why at length.
+[[match]]
+name = "redis_protected_mode"
+pattern = '^-DENIED Redis is running in protected mode'
+product = "redis"
+example = "-DENIED Redis is running in protected mode because protected mode is enabled and no password is set for the default user.\r\n"
+metadata = { "service.extrainfo" = "protected mode" }

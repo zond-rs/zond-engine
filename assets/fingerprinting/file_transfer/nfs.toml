@@ -22,7 +22,24 @@ name = "nfs_version_probe"
 payload = 'zone\x00\x00\x00\x00\x00\x00\x00\x02\x00\x01\x86\xa3\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
 protocol = "udp"
 
+# The same call over TCP, behind the record mark RFC 5531 §11 puts in front of
+# it: last fragment, forty bytes. NFSv4 is TCP only, and a v4-only server
+# answers nothing on UDP at all.
+[[probe]]
+name = "nfs_version_probe_tcp"
+payload = '\x80\x00\x00\x28zone\x00\x00\x00\x00\x00\x00\x00\x02\x00\x01\x86\xa3\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+protocol = "tcp"
+
 # ── What the mismatch says ───────────────────────────────────────────────────
+
+[[match]]
+name = "nfs_tcp_reply"
+# The reply over TCP whole: a record mark for a last fragment, then the
+# transaction id the call carried and message type 1, a reply. Two or three
+# characters for the three length bytes, for the reason `rpcbind.toml` gives.
+pattern = '(?s)^\x80.{2,3}zone\x00\x00\x00\x01'
+product = "NFS"
+example = "\u0080\u0000\u0000\u0020zone\u0000\u0000\u0000\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0002\u0000\u0000\u0000\u0003\u0000\u0000\u0000\u0004"
 
 [[match]]
 name = "nfs_supported_versions"

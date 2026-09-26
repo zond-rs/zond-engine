@@ -870,3 +870,175 @@ fn a_functional_level_names_the_release_only_as_far_as_it_goes() {
         );
     }
 }
+
+/// What the transport hands the matcher for `bytes` read from `port`: the
+/// fields a structured reply yields, then the reply whole, as the banner
+/// collection does.
+fn read_as_the_transport(port: u16, bytes: &[u8]) -> ServiceVerdict {
+    let mut banners = super::extract::from_stream(port, bytes);
+    banners.push(super::extract::reply_text(bytes));
+    let evidence = BannerRegexAnalyzer.analyze(
+        &PortContext::new(port, crate::model::port::Protocol::Tcp),
+        &ResponseSet::from_banners(banners),
+        &Collected::default(),
+    );
+    ServiceVerdict::resolve(evidence)
+}
+
+/// The services a domain, a file server or a database host answers on every
+/// day are named past a label, over TCP, from what each says before any
+/// login.
+///
+/// Each reply is built from its protocol's specification: a password-protected
+/// Redis refusing INFO, a VNC server's greeting, a SQL Server pre-login answer,
+/// and a KDC, an NFS server and a nameserver each answering over TCP the
+/// question the corpus had asked them only over UDP.
+#[test]
+fn everyday_services_are_named_over_tcp_from_what_they_say_first() {
+    struct Case {
+        port: u16,
+        reply: Vec<u8>,
+        service: &'static str,
+        product: Option<&'static str>,
+        version: Option<&'static str>,
+        extrainfo: Option<&'static str>,
+    }
+
+    // A KRB-ERROR, error 6, behind its four-byte length.
+    let krb_error = {
+        let fields = [0xA6, 0x03, 0x02, 0x01, 6];
+        let mut sequence = vec![0x30, fields.len() as u8];
+        sequence.extend_from_slice(&fields);
+        let mut error = vec![0x7E, sequence.len() as u8];
+        error.extend_from_slice(&sequence);
+        let mut framed = (error.len() as u32).to_be_bytes().to_vec();
+        framed.extend_from_slice(&error);
+        framed
+    };
+    // A PROG_MISMATCH for versions 3 to 4, behind a last-fragment record mark.
+    let nfs_mismatch = {
+        let mut reply = b"zone".to_vec();
+        for word in [1u32, 0, 0, 0, 2, 3, 4] {
+            reply.extend_from_slice(&word.to_be_bytes());
+        }
+        let mut framed = (0x8000_0000 | reply.len() as u32).to_be_bytes().to_vec();
+        framed.extend_from_slice(&reply);
+        framed
+    };
+    // A version.bind answer from BIND, behind its two-byte length.
+    let bind_version = {
+        let mut message = b"\x00\x00\x84\x00\x00\x01\x00\x01\x00\x00\x00\x00".to_vec();
+        message.extend_from_slice(b"\x07version\x04bind\x00\x00\x10\x00\x03");
+        let text = b"9.18.28-0ubuntu0.22.04.1-Ubuntu";
+        message.extend_from_slice(b"\xc0\x0c\x00\x10\x00\x03\x00\x00\x00\x00");
+        message.extend_from_slice(&((text.len() + 1) as u16).to_be_bytes());
+        message.push(text.len() as u8);
+        message.extend_from_slice(text);
+        let mut framed = (message.len() as u16).to_be_bytes().to_vec();
+        framed.extend_from_slice(&message);
+        framed
+    };
+    // A pre-login response: VERSION 15.0.2000, then ENCRYPTION, then the end.
+    let prelogin = b"\x04\x01\x00\x1a\x00\x00\x01\x00\
+        \x00\x00\x0b\x00\x06\x01\x00\x11\x00\x01\xff\x0f\x00\x07\xd0\x00\x00\x02"
+        .to_vec();
+
+    let cases = [
+        Case {
+            port: 6379,
+            reply: b"-NOAUTH Authentication required.\r\n".to_vec(),
+            service: "redis",
+            product: None,
+            version: None,
+            extrainfo: Some("authentication required"),
+        },
+        Case {
+            port: 5900,
+            reply: b"RFB 003.008\n".to_vec(),
+            service: "vnc",
+            product: None,
+            version: None,
+            extrainfo: Some("protocol 3.8"),
+        },
+        Case {
+            port: 1433,
+            reply: prelogin,
+            service: "mssql",
+            product: Some("SQL Server"),
+            version: Some("15.0.2000"),
+            extrainfo: Some("SQL Server 2019"),
+        },
+        Case {
+            port: 88,
+            reply: krb_error,
+            service: "kerberos",
+            product: None,
+            version: None,
+            extrainfo: None,
+        },
+        Case {
+            port: 2049,
+            reply: nfs_mismatch,
+            service: "nfs",
+            product: Some("NFS"),
+            version: Some("4"),
+            extrainfo: Some("versions 3 to 4"),
+        },
+        Case {
+            port: 53,
+            reply: bind_version,
+            service: "dns",
+            product: Some("BIND"),
+            version: Some("9.18.28"),
+            extrainfo: None,
+        },
+    ];
+
+    for case in cases {
+        let verdict = read_as_the_transport(case.port, &case.reply);
+        assert_eq!(
+            verdict.service.as_deref(),
+            Some(case.service),
+            "on {}",
+            case.port
+        );
+        assert_eq!(verdict.product.as_deref(), case.product, "on {}", case.port);
+        assert_eq!(verdict.version.as_deref(), case.version, "on {}", case.port);
+        assert_eq!(
+            verdict.extrainfo.as_deref(),
+            case.extrainfo,
+            "on {}",
+            case.port
+        );
+    }
+}
+
+/// A Kafka broker is named by its answer to the ApiVersions request, and a
+/// reply that merely opens on two zero bytes is not taken for one.
+///
+/// Every protocol that frames its messages with a four-byte length opens that
+/// way, and the rule is consulted on every port nothing else names. What only
+/// a broker answering this engine's request sends is the correlation id the
+/// request carried, and an error code behind it.
+#[test]
+fn only_a_reply_to_the_api_versions_request_is_named_kafka() {
+    use crate::model::port::Protocol::Tcp;
+
+    let broker = super::extract::reply_text(b"\x00\x00\x00\x06\x00\x00\x00\x03\x00\x00");
+    assert_eq!(named(9092, Tcp, &broker).service.as_deref(), Some("kafka"));
+
+    let others: &[&[u8]] = &[
+        b"\x00\x00\x00\x0b\x7e\x09\x30\x07\xa6\x03\x02\x01\x06",
+        b"\x00\x00\x01\x00 some other framed protocol",
+    ];
+    for reply in others {
+        let verdict = named(51987, Tcp, &super::extract::reply_text(reply));
+        assert!(
+            verdict
+                .evidence
+                .iter()
+                .all(|evidence| evidence.service.as_deref() != Some("kafka")),
+            "{reply:02x?} was read as kafka: {verdict:?}"
+        );
+    }
+}
