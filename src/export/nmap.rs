@@ -77,6 +77,7 @@
 //! which reorder the text around them and would let a hostname make a report
 //! display one thing and mean another.
 
+use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -408,22 +409,7 @@ fn write_host(
 
     write_ip_protocols(out, host)?;
 
-    // A port nobody asked about is left out rather than written down. Nmap's
-    // `<ports>` is the record of what was probed, and its vocabulary has no word
-    // for a port no probe was sent to, so filing one under any of the six states
-    // it does have would put a verdict this scan never reached into a file
-    // another tool parses. See `PortState::Unasked`.
-    let mut probed = host
-        .ports()
-        .filter(|port| port_state(port.state()).is_some());
-    if let Some(first) = probed.next() {
-        writeln!(out, "<ports>")?;
-        write_port(out, first)?;
-        for port in probed {
-            write_port(out, port)?;
-        }
-        writeln!(out, "</ports>")?;
-    }
+    write_ports(out, host)?;
 
     if let Some(os) = host.os() {
         writeln!(out, "<os>")?;
@@ -467,6 +453,148 @@ fn write_host(
 
     writeln!(out, "</host>")?;
     Ok(())
+}
+
+/// Writes the host's `<ports>`: the ports worth reading one by one, and a
+/// summary of the rest.
+///
+/// A port nobody asked about is left out rather than written down. Nmap's
+/// `<ports>` is the record of what was probed, and its vocabulary has no word
+/// for a port no probe was sent to, so filing one under any of the six states it
+/// does have would put a verdict this scan never reached into a file another
+/// tool parses. See `PortState::Unasked`.
+///
+/// Of the rest, a state held by more than [`LISTED_PER_STATE`] ports is written
+/// as nmap writes it, one `<extraports>` giving the state and its count, with an
+/// `<extrareasons>` per reason and transport naming every port in it. That is
+/// the shape the tools reading this format expect, and what they do with a
+/// listed port is why it matters: an exploit search looks up every listed
+/// port's service name, an importer files every listed port as a service on
+/// the host, and a stylesheet renders a row for each. A full-range scan of one
+/// host listed whole is 65,535 of each, nearly all of them the port-number
+/// label of a closed port, and ten megabytes of document for what nmap says in
+/// one line. The ports are still named, so a reader that wants every verdict,
+/// this engine's own among them, has it.
+///
+/// `open` is never summarised, for the reason nmap never summarises it: an
+/// open port is the finding. Nor is a port whose record holds more than a
+/// state and the packet behind it, an identified service or a finding, since
+/// the summary has nowhere to put either and would lose it.
+fn write_ports(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
+    let probed: Vec<&Port> = host
+        .ports()
+        .filter(|port| port_state(port.state()).is_some())
+        .collect();
+    if probed.is_empty() {
+        return Ok(());
+    }
+
+    // The summarisable ports of each state, then kept only for the states
+    // with more of them than are listed.
+    let mut summarised: BTreeMap<PortState, Vec<&Port>> = BTreeMap::new();
+    for port in probed.iter().copied().filter(|port| is_summarisable(port)) {
+        summarised.entry(port.state()).or_default().push(port);
+    }
+    summarised.retain(|_, ports| ports.len() > LISTED_PER_STATE);
+
+    writeln!(out, "<ports>")?;
+    for (state, ports) in &summarised {
+        write_extra_ports(out, *state, ports)?;
+    }
+    for port in probed {
+        let listed = !is_summarisable(port) || !summarised.contains_key(&port.state());
+        if listed {
+            write_port(out, port)?;
+        }
+    }
+    writeln!(out, "</ports>")?;
+    Ok(())
+}
+
+/// How many ports of one state are listed one by one before the state is
+/// summarised instead.
+///
+/// Nmap's own threshold at its default verbosity, so a document from this
+/// engine lists what an nmap run over the same network would list.
+const LISTED_PER_STATE: usize = 25;
+
+/// Whether a port says nothing a summary cannot: it is not open, and its record
+/// holds its state, the packet behind it and at most a port-number label.
+///
+/// The label is what nmap drops for a summarised port too; it is a lookup
+/// rather than a finding, and on a closed port it is what an exploit search
+/// mistakes for a service.
+fn is_summarisable(port: &Port) -> bool {
+    port.state() != PortState::Open
+        && port.service().is_none_or(|service| service.is_inferred())
+        && port.security().is_none()
+        && port.findings().next().is_none()
+}
+
+/// Writes one `<extraports>`: a state, how many ports are in it, and which,
+/// grouped by the reason each was decided on and its transport.
+fn write_extra_ports(
+    out: &mut dyn Write,
+    state: PortState,
+    ports: &[&Port],
+) -> Result<(), ExportError> {
+    let Some(name) = port_state(state) else {
+        return Ok(());
+    };
+
+    let mut reasons: BTreeMap<(&str, Protocol), Vec<u16>> = BTreeMap::new();
+    for port in ports {
+        if let Some(reason) = port_reason(port) {
+            reasons
+                .entry((reason, port.protocol()))
+                .or_default()
+                .push(port.number());
+        }
+    }
+
+    writeln!(
+        out,
+        r#"<extraports state="{name}" count="{}">"#,
+        ports.len()
+    )?;
+    for ((reason, protocol), mut numbers) in reasons {
+        numbers.sort_unstable();
+        writeln!(
+            out,
+            r#"<extrareasons reason="{}" count="{}" proto="{}" ports="{}"/>"#,
+            Attr(reason),
+            numbers.len(),
+            transport(protocol),
+            port_list(&numbers),
+        )?;
+    }
+    writeln!(out, "</extraports>")?;
+    Ok(())
+}
+
+/// Ascending port numbers as nmap lists them: runs as `first-last`, the rest
+/// alone, comma-separated.
+fn port_list(numbers: &[u16]) -> String {
+    let mut list = String::new();
+    let mut index = 0;
+    while index < numbers.len() {
+        let first = numbers[index];
+        let mut last = first;
+        while index + 1 < numbers.len() && numbers[index + 1] == last.wrapping_add(1) {
+            index += 1;
+            last = numbers[index];
+        }
+        if !list.is_empty() {
+            list.push(',');
+        }
+        if first == last {
+            let _ = write!(list, "{first}");
+        } else {
+            let _ = write!(list, "{first}-{last}");
+        }
+        index += 1;
+    }
+    list
 }
 
 /// Writes the `<trace>` element, when a path was measured.
@@ -1378,6 +1506,108 @@ mod tests {
             .filter_map(Port::service_name)
             .collect();
         assert_eq!(names, ["ssl/http", "ssl"]);
+    }
+
+    /// A full range of closed and silent ports is summarised as nmap
+    /// summarises one, and every port in the summary reads back as it went out.
+    ///
+    /// Each listed port is a service row to an importer and a lookup to an
+    /// exploit search, so a full-range scan listed whole put 65,535 of both
+    /// into every tool that read it, nearly all the port-number label of a
+    /// closed port. What stays listed is what a summary would lose: the open
+    /// port, and a closed one somebody identified a service on.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn the_dominant_closed_and_silent_states_are_summarised_and_read_back_whole() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use crate::model::port::Service;
+        use crate::model::port::discovery::Discovery;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)));
+        host.set_status(HostStatus::Up);
+        for number in 1..=100 {
+            let port = match number {
+                22 => Port::new(22, Protocol::Tcp, PortState::Open)
+                    .with_service(Service::new("ssh", 100)),
+                // Closed, but somebody identified what answered, which the
+                // summary has nowhere to put.
+                80 => Port::new(80, Protocol::Tcp, PortState::Closed)
+                    .with_service(Service::new("http", 90)),
+                number => Port::new(number, Protocol::Tcp, PortState::Closed)
+                    .with_discovery(Discovery::new(ScanResponse::TcpRst))
+                    .with_service(Service::new("registered", 0)),
+            };
+            host.add_port(port);
+        }
+        for number in 1000..1040 {
+            host.add_port(Port::new(number, Protocol::Udp, PortState::OpenFiltered));
+        }
+        // Too few to summarise, as nmap would list them.
+        for number in 5000..5003 {
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::Filtered));
+        }
+        let before: Vec<(u16, Protocol, PortState)> = host
+            .ports()
+            .map(|port| (port.number(), port.protocol(), port.state()))
+            .collect();
+
+        let document = export(&[host]);
+
+        assert_eq!(
+            document.matches("<port ").count(),
+            5,
+            "only the open port, the identified closed one and the three \
+             filtered ones are listed: {document}"
+        );
+        assert!(
+            document.contains(
+                r#"<extraports state="closed" count="98">
+<extrareasons reason="reset" count="98" proto="tcp" ports="1-21,23-79,81-100"/>
+</extraports>"#
+            ),
+            "{document}"
+        );
+        assert!(
+            document.contains(
+                r#"<extrareasons reason="no-response" count="40" proto="udp" ports="1000-1039"/>"#
+            ),
+            "{document}"
+        );
+        assert!(
+            !document.contains("registered"),
+            "a summarised port's port-number label was written: {document}"
+        );
+        // Nmap's DTD puts every summary before the first listed port.
+        assert!(document.rfind("</extraports>") < document.find("<port "));
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(document.into_bytes()))
+            .expect("this crate's own document reads back");
+        let host = restored.hosts().next().expect("the host survived");
+        let after: Vec<(u16, Protocol, PortState)> = host
+            .ports()
+            .map(|port| (port.number(), port.protocol(), port.state()))
+            .collect();
+        assert_eq!(
+            after, before,
+            "a port changed on the way through the summary"
+        );
+
+        let reset = host
+            .ports()
+            .find(|port| port.number() == 1)
+            .and_then(|port| port.discovery().map(|discovery| discovery.reason().clone()));
+        assert_eq!(reset, Some(ScanResponse::TcpRst));
+    }
+
+    /// Runs of port numbers are written as nmap writes them.
+    #[test]
+    fn a_port_list_is_written_in_runs() {
+        assert_eq!(port_list(&[]), "");
+        assert_eq!(port_list(&[7]), "7");
+        assert_eq!(port_list(&[1, 2, 3, 5, 7, 8, 65535]), "1-3,5,7-8,65535");
     }
 
     /// A run whose journal fell behind finished as a run that succeeded, and

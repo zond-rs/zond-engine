@@ -152,6 +152,7 @@ const KEPT: &[&[u8]] = &[
     b"numservices",
     b"services",
     b"ports",
+    b"proto",
     b"scanner",
 ];
 
