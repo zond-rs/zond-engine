@@ -3108,6 +3108,62 @@ mod tests {
         );
     }
 
+    /// A resumed sweep with nothing left to ask runs none of the passes that
+    /// follow it over a host a sitting that ran to its end finished with.
+    ///
+    /// The sweep sends nothing, having nothing left, but its route trace, its
+    /// operating-system and filter probes and the passes that write a
+    /// conclusion back take the hosts the store holds, and a resume restores
+    /// every host the job found: without the finished record each of them is
+    /// traced and probed again, and written down whole again for it.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_resumed_sweep_with_nothing_left_passes_nothing_over_what_it_finished() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::ip::set::IpSet;
+
+        let addresses: IpSet = "127.0.0.1".parse().expect("an address");
+        let cfg = ZondConfig {
+            no_dns: true,
+            traceroute: true,
+            ..ZondConfig::default()
+        };
+        let plan = Plan::discovery(&addresses, &cfg.exclusions, false);
+        let root = journal_root("finished-sweep");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let (_session, task) = discover_with_journal(addresses.clone(), &cfg, journal)
+            .await
+            .expect("the sitting starts");
+        let first = task.join().await.expect("the sitting ends");
+        assert!(first.host_count() > 0, "loopback was not found");
+
+        let written =
+            || std::fs::metadata(directory.join("hosts.jsonl")).map_or(0, |file| file.len());
+        let before = written();
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+        let (_session, task) = discover_with_journal(addresses, &cfg, journal)
+            .await
+            .expect("the sitting starts");
+        let resumed = task.join().await.expect("the sitting ends");
+        let after = written();
+        std::fs::remove_dir_all(&root).ok();
+
+        // Where this process may not trace, a sitting that owed the pass a
+        // host files the refusal; one that may, traces it.
+        let traced = resumed
+            .phases()
+            .last()
+            .expect("the sitting's phase")
+            .refusals()
+            .iter()
+            .any(|refusal| refusal.reason().contains("route trace"));
+        assert!(!traced, "the finished host was owed its route trace");
+        assert_eq!(after, before, "the finished host was written down again");
+    }
+
     /// A port scan handed a journal counted over another plan, or under
     /// another privilege than this process sends with, is refused before it
     /// sends anything.
