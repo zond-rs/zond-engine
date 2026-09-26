@@ -1644,7 +1644,7 @@ pub async fn scan(
 
     let mut target_map = target_map;
     target_map.withhold_ports(&cfg.excluded_ports);
-    let unwalkable = orchestrator::withhold_unwalkable_targets(&mut target_map);
+    let withheld = orchestrator::withhold_unprobeable_targets(&mut target_map);
     let planned = planned_targets(&target_map);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
 
@@ -1662,7 +1662,7 @@ pub async fn scan(
         .build();
     let handle = spawn_scan(
         target_map,
-        unwalkable,
+        withheld,
         cfg,
         ctx,
         Checkpoint::default(),
@@ -1729,7 +1729,7 @@ pub async fn scan_with_journal(
     // the job's by its options, so every sitting numbers what is left alike.
     let mut target_map = target_map;
     target_map.withhold_ports(&cfg.excluded_ports);
-    let unwalkable = orchestrator::withhold_unwalkable_targets(&mut target_map);
+    let withheld = orchestrator::withhold_unprobeable_targets(&mut target_map);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
     let finished = journal.finished_hosts().unwrap_or_else(|e| {
         crate::warn!("passes rerun for every host ({e})");
@@ -1770,14 +1770,7 @@ pub async fn scan_with_journal(
     // ended, and a caller watching it to know when to stop would wait for a scan
     // that was already over. See `ScanContext::progress`.
     let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
-    let handle = spawn_scan(
-        target_map,
-        unwalkable,
-        cfg,
-        ctx,
-        resume_point,
-        runs_liveness,
-    );
+    let handle = spawn_scan(target_map, withheld, cfg, ctx, resume_point, runs_liveness);
 
     let stop = session.handle().clone();
     Ok((
@@ -1810,12 +1803,12 @@ fn sitting_probes(
 /// caller journalling the scan can seed it from an earlier run and keep a handle
 /// on it. Nothing here knows what a journal is.
 /// `settled` is what an earlier sitting already covered, and is empty for a scan
-/// that is not continuing one. `unwalkable` is what
-/// [`orchestrator::withhold_unwalkable_targets`] took out of `target_map`,
+/// that is not continuing one. `withheld` is what
+/// [`orchestrator::withhold_unprobeable_targets`] took out of `target_map`,
 /// refused in the port phase's record.
 fn spawn_scan(
     target_map: TargetMap,
-    unwalkable: Vec<crate::model::ip::range::Ipv6Range>,
+    withheld: orchestrator::Withheld,
     cfg: &ZondConfig,
     ctx: ScanContext,
     settled: Checkpoint,
@@ -1932,13 +1925,19 @@ fn spawn_scan(
             true => ScannerKind::SynPort,
             false => ScannerKind::Connect,
         };
-        for range in &unwalkable {
-            ctx.record_refusal(
-                plan::RefusedStep::port_range_not_enumerable(range, port_scanner).into(),
-            );
-        }
+        withheld.refuse(&ctx, port_scanner);
         let stands_in = skipped == Some(LivenessSkip::PortsNoDearer);
-        run_port_phase(numbered, live, &ctx, caps, &cfg, settled, stands_in).await;
+        run_port_phase(
+            numbered,
+            withheld.zones(),
+            live,
+            &ctx,
+            caps,
+            &cfg,
+            settled,
+            stands_in,
+        )
+        .await;
 
         // Straight after the ports, because what it needs is the list of ports a
         // handshake completed against and the service pass is what produces it.
@@ -2165,6 +2164,80 @@ mod tests {
             .filter(|refusal| refusal.reason().contains("too large to walk"))
             .collect();
         assert_eq!(refused.len(), 1, "{:?}", report.phases());
+    }
+
+    /// **A job naming a link-local target with no interface ahead of others
+    /// numbers its plan once, and a finished sitting leaves nothing owed.**
+    ///
+    /// The target is refused rather than probed, and taken out of the plan the
+    /// positions count. Numbered with it and walked without it, every target
+    /// after it has two positions: the walk settles one, the job owes the
+    /// other, and a resume walks a plan the first sitting never finished.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_withheld_link_local_target_leaves_one_numbering_across_sittings() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::ip::set::IpSet;
+        use crate::model::target::TargetSet;
+        use crate::testing::loopback::SilentPort;
+
+        let peer = SilentPort::open();
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "fe80::1-fe80::2".parse::<IpSet>().expect("addresses"),
+            "80".parse().expect("ports"),
+        ));
+        map.add_unit(TargetSet::new(
+            IpSet::from(peer.addr().ip()),
+            peer.addr().port().to_string().parse().expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            assume_up: true,
+            service_detection: crate::config::ServiceDetection::Off,
+            ..ZondConfig::default()
+        };
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+        let root = journal_root("withheld-link-local");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        let directory = journal.directory().to_path_buf();
+
+        let (session, task) = scan_with_journal(map.clone(), &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the first sitting starts");
+        let report = task.join().await.expect("it finishes");
+        assert!(
+            report
+                .phases()
+                .iter()
+                .flat_map(|phase| phase.refusals())
+                .any(|refusal| refusal.reason().contains("%en0")),
+            "the unscoped targets are refused: {:?}",
+            report.phases()
+        );
+        let progress = session.progress();
+        assert_eq!(progress.planned(), Some(1), "the plan walked is one target");
+        assert_eq!(
+            progress.remaining(),
+            Some(0),
+            "and a finished sitting owes none"
+        );
+
+        let (journal, settled) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+        assert_eq!(settled.settled_count(), 1, "the job recorded it settled");
+        let (session, task) = scan_with_journal(map, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the second sitting starts");
+        let _report = task.join().await.expect("it finishes");
+        assert_eq!(
+            session.progress().remaining(),
+            Some(0),
+            "a resume walks the plan the first sitting numbered"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A sweep counts what it settles, so its progress reads its work. Left

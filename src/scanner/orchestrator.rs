@@ -2138,8 +2138,77 @@ pub(super) async fn spawn_resolver(
     })
 }
 
+/// The targets a port scan's plan loses before it is numbered, and the zones
+/// the link-local ones it keeps were named on.
+///
+/// Taken out together and ahead of the numbering, by
+/// [`withhold_unprobeable_targets`], so the numbering, the count a fraction is
+/// drawn against and the walk all describe one plan: a target numbered and then
+/// withheld leaves every target after it with two positions, the one the walk
+/// settles and the one the job goes on owing. What is taken out depends on the
+/// targets alone, so every sitting of a job withholds the same ones and numbers
+/// what is left alike. The refusals wait for the port phase, whose record is
+/// where a reader looks for what the ports did not cover.
+pub(super) struct Withheld {
+    /// Ranges too large to walk; see [`withhold_unwalkable_targets`].
+    unwalkable: Vec<Ipv6Range>,
+    /// Link-local ranges that name no interface.
+    unscoped: Vec<Ipv6Range>,
+    /// Link-local ranges naming an address another range names on another
+    /// interface.
+    contested: Vec<Ipv6Range>,
+    /// The interface each kept link-local range was named on.
+    zones: ZoneMap,
+}
+
+impl Withheld {
+    /// Files a refusal for each range withheld, against `port_scanner` where
+    /// the refusal is the port strategy's to make.
+    pub(super) fn refuse(&self, ctx: &ScanContext, port_scanner: ScannerKind) {
+        for range in &self.unscoped {
+            ctx.record_refusal(
+                plan::RefusedStep::link_local_port_target_needs_an_interface(range).into(),
+            );
+        }
+        for range in &self.contested {
+            ctx.record_refusal(
+                plan::RefusedStep::link_local_port_target_names_two_segments(range).into(),
+            );
+        }
+        for range in &self.unwalkable {
+            ctx.record_refusal(
+                plan::RefusedStep::port_range_not_enumerable(range, port_scanner).into(),
+            );
+        }
+    }
+
+    /// The interface each kept link-local target was named on, for the phases
+    /// that open a socket or a raw send.
+    pub(super) fn zones(&self) -> &ZoneMap {
+        &self.zones
+    }
+}
+
+/// Takes out of `target_map` every target its port phase cannot probe, before
+/// anything numbers it; see [`Withheld`].
+///
+/// The link-local question comes first: an unscoped `fe80::/64` is both too
+/// wide to walk and on no segment, and the refusal that names the interface to
+/// write is the one the caller can act on.
+pub(super) fn withhold_unprobeable_targets(target_map: &mut TargetMap) -> Withheld {
+    let (zones, unscoped, contested) = withhold_ambiguous_targets(target_map);
+    let unwalkable = withhold_unwalkable_targets(target_map);
+    Withheld {
+        unwalkable,
+        unscoped,
+        contested,
+        zones,
+    }
+}
+
 /// Takes the link-local targets that name no interface out of `target_map`,
-/// refusing each, and hands back the zones the rest were named on.
+/// handing back the zones the rest were named on, then the ranges taken out:
+/// those that name no interface, and those that name one address on two.
 ///
 /// A port scan reaches its targets over the routing table, which cannot carry a
 /// link-local address without an interface, and every interface holds an
@@ -2163,7 +2232,9 @@ pub(super) async fn spawn_resolver(
 /// report: `resolve_unasked` only accounts for what is still queued, and one
 /// already taken off the stream is simply gone. A refusal says what was not
 /// covered and why, which is what the caller can act on.
-fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) -> ZoneMap {
+fn withhold_ambiguous_targets(
+    target_map: &mut TargetMap,
+) -> (ZoneMap, Vec<Ipv6Range>, Vec<Ipv6Range>) {
     let mut refused: Vec<Ipv6Range> = Vec::new();
     let mut contested: Vec<Ipv6Range> = Vec::new();
     let mut zones = ZoneMap::new();
@@ -2218,18 +2289,8 @@ fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) -> 
 
     refused.sort_unstable_by_key(|range| range.start_addr());
     refused.dedup();
-    for range in refused {
-        ctx.record_refusal(
-            plan::RefusedStep::link_local_port_target_needs_an_interface(&range).into(),
-        );
-    }
-    for range in contested {
-        ctx.record_refusal(
-            plan::RefusedStep::link_local_port_target_names_two_segments(&range).into(),
-        );
-    }
 
-    zones
+    (zones, refused, contested)
 }
 
 /// Probes `target_map`'s ports, and nothing else of its hosts.
@@ -2244,8 +2305,14 @@ fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) -> 
 /// There the addresses they heard nothing from are filed silent and their
 /// records forgotten, as the pass would have left them; see
 /// [`forget_the_silent`].
+///
+/// `target_map` has had what its port phase cannot probe taken out before it
+/// was numbered, and `zones` is the interface each link-local target it kept
+/// was named on; see [`withhold_unprobeable_targets`].
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_port_phase(
-    mut target_map: TargetMap,
+    target_map: TargetMap,
+    zones: &ZoneMap,
     liveness: Option<Liveness>,
     ctx: &ScanContext,
     caps: ScanCapabilities,
@@ -2257,12 +2324,6 @@ pub(super) async fn run_port_phase(
         return;
     }
 
-    // Before the plan is built, so the counts a phase records describe what it
-    // was actually going to probe.
-    let zones = withhold_ambiguous_targets(&mut target_map, ctx);
-    if target_map.is_empty() {
-        return;
-    }
     // Before any verdict is recorded: a finding written under a bare `fe80::…`
     // has to reach the host the sweep already found on that interface.
     ctx.learn_zones(zones.clone());
@@ -2316,7 +2377,7 @@ pub(super) async fn run_port_phase(
         ctx,
         target_count,
         cfg.probe_tuning(),
-        &zones,
+        zones,
         &raw,
     );
     // After the build rather than before, since only the build knows whether
@@ -2770,7 +2831,7 @@ mod tests {
             "80".parse().expect("a port set"),
         ));
 
-        withhold_ambiguous_targets(&mut map, &ctx);
+        withhold_unprobeable_targets(&mut map).refuse(&ctx, ScannerKind::SynPort);
 
         assert!(map.is_empty(), "nothing is left for a scanner to probe");
         let refusals = ctx.refusals_snapshot();
@@ -2801,7 +2862,9 @@ mod tests {
             "80".parse().expect("a port set"),
         ));
 
-        let zones = withhold_ambiguous_targets(&mut map, &ctx);
+        let withheld = withhold_unprobeable_targets(&mut map);
+        withheld.refuse(&ctx, ScannerKind::SynPort);
+        let zones = withheld.zones();
 
         assert_eq!(map.units.len(), 1, "the target is still there to probe");
         assert_eq!(
@@ -2831,7 +2894,9 @@ mod tests {
             "80".parse().expect("a port set"),
         ));
 
-        let zones = withhold_ambiguous_targets(&mut map, &ctx);
+        let withheld = withhold_unprobeable_targets(&mut map);
+        withheld.refuse(&ctx, ScannerKind::SynPort);
+        let zones = withheld.zones();
 
         assert_eq!(map.units.len(), 1, "the first one named is still probed");
         assert_eq!(
@@ -2862,7 +2927,7 @@ mod tests {
             "80".parse().expect("a port set"),
         ));
 
-        withhold_ambiguous_targets(&mut map, &ctx);
+        withhold_unprobeable_targets(&mut map).refuse(&ctx, ScannerKind::SynPort);
 
         assert_eq!(map.units.len(), 1);
         assert_eq!(map.units[0].ips().len(), 2, "the two addressable ones");
@@ -2882,7 +2947,7 @@ mod tests {
             "80".parse().expect("a port set"),
         ));
 
-        withhold_ambiguous_targets(&mut map, &ctx);
+        withhold_unprobeable_targets(&mut map).refuse(&ctx, ScannerKind::SynPort);
 
         assert_eq!(map.units[0].ips().len(), 4);
         assert!(ctx.refusals_snapshot().is_empty());
@@ -3188,7 +3253,17 @@ mod tests {
             dns: false,
         };
 
-        run_port_phase(map, None, &ctx, caps, &cfg, Checkpoint::default(), false).await;
+        run_port_phase(
+            map,
+            &ZoneMap::new(),
+            None,
+            &ctx,
+            caps,
+            &cfg,
+            Checkpoint::default(),
+            false,
+        )
+        .await;
 
         let failures = ctx.take_failures();
         assert!(
