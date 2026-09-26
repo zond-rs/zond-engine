@@ -68,7 +68,7 @@
 //! [`Hop::inferred`], so a reader can tell a measurement from an inheritance
 //! without knowing this module exists.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -83,10 +83,13 @@ use crate::model::port::{PortState, Protocol};
 use crate::protocols::{icmp, tcp};
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::raw::neighbors::{NeighborGates, admit_waiting, resolve_ahead};
+use crate::scanner::strategy::raw::neighbors::{
+    Admission, NEIGHBOR_RECHECK, NeighborGates, admit_waiting, resolve_ahead,
+};
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::frame::IpSegment;
+use crate::transport::kernel_neighbors::NeighborState;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{info, warn};
 
@@ -694,7 +697,9 @@ impl Tracer {
     /// for before the first probe: a trace is a walk, a round per distance,
     /// and one that met each new neighbour inside a send would wait out a
     /// resolution per host in turn. A host whose neighbour never answered is
-    /// not traced.
+    /// not traced. Through the kernel, which asks only once a probe is
+    /// written, the asking is done once the distances are known; see
+    /// [`ask_together`](Self::ask_together).
     async fn run(&mut self, group: Vec<IpAddr>) {
         let (gates, unreached) = resolve_ahead(
             &self.ctx,
@@ -711,7 +716,13 @@ impl Tracer {
             .into_iter()
             .filter(|target| !unreached.contains_key(target))
             .collect();
-        let distances = self.measure_distances(&group).await;
+        let mut distances = self.measure_distances(&group).await;
+        let hosts: Vec<IpAddr> = distances.iter().map(|(target, _)| *target).collect();
+        let unreached = self.ask_together(&hosts).await;
+        for (target, why) in &unreached {
+            info!(verbosity = 2, "{target} not traced: unreachable ({why})");
+        }
+        distances.retain(|(target, _)| !unreached.contains_key(target));
 
         for (target, distance) in distances {
             if self.ctx.handle.should_stop() {
@@ -756,6 +767,67 @@ impl Tracer {
                 self.answered
             );
         }
+    }
+
+    /// Writes one probe to every host in `targets` whose neighbour the kernel
+    /// is not known to hold, together, and waits until each neighbour has
+    /// answered or been given up on. Returns the hosts given up on, each with
+    /// why.
+    ///
+    /// The kernel asks for a neighbour only once a probe is written to it,
+    /// and the walks go one host at a time, so a neighbour left to a walk's
+    /// first probe is asked only when that walk begins. A host whose distance
+    /// the scan read from a hop counter is sent nothing before its walk, and
+    /// a wave of neighbours that stopped answering since would cost a whole
+    /// resolution's wait each, in turn. Asked here, they are given up on
+    /// together. The probe written is the distance round's, at full distance,
+    /// and its answer is not read: the walk asks every distance it needs.
+    ///
+    /// A frame sender's neighbours were asked for before the distances were
+    /// measured, and every gate is open or given up by now, so nothing is
+    /// written for them.
+    async fn ask_together(&mut self, targets: &[IpAddr]) -> BTreeMap<IpAddr, String> {
+        let mut unreached = BTreeMap::new();
+        let now = Instant::now();
+        let mut sources = HashMap::new();
+        for &target in targets {
+            let Some(source) = self.resolver.resolve(target) else {
+                continue;
+            };
+            let watch = self.transport.neighbors();
+            if self.neighbors.admit(watch, &mut self.resolver, target, now) == Admission::Send {
+                sources.insert(target, source);
+            }
+        }
+        // A gate the admission above left asking is one whose neighbour the
+        // kernel did not hold, and the probe written now is the write that
+        // asks. An open one is written nothing.
+        let mut waiting: Vec<IpAddr> = self
+            .neighbors
+            .waiting()
+            .into_iter()
+            .filter(|host| sources.contains_key(host))
+            .collect();
+        for &target in &waiting {
+            self.send(target, MAX_HOPS, sources[&target]);
+        }
+        self.in_flight.clear();
+
+        while !waiting.is_empty() && !self.ctx.handle.should_stop() {
+            tokio::time::sleep(NEIGHBOR_RECHECK).await;
+            let now = Instant::now();
+            let watch = self.transport.neighbors();
+            let (gates, resolver) = (&mut self.neighbors, &mut self.resolver);
+            waiting.retain(|&target| match gates.admit(watch, resolver, target, now) {
+                Admission::Send => false,
+                Admission::Hold(_) => true,
+                Admission::Unreachable => {
+                    unreached.insert(target, gates.unreached(target, NeighborState::Failed));
+                    false
+                }
+            });
+        }
+        unreached
     }
 
     /// How far away each host is.
@@ -1895,6 +1967,66 @@ mod tests {
                 == dead.len(),
             "every new neighbour is asked for before any host's second attempt, \
              so their resolutions run together rather than one after another"
+        );
+    }
+
+    /// Hosts whose distance the scan already read from a hop counter go
+    /// straight to their walks, one host at a time, and through the kernel a
+    /// walk's first probe is the write that asks for the host's neighbour.
+    /// Neighbours that stopped answering since the port scan are asked for
+    /// together before the first walk, so a wave of them is given up on
+    /// within one resolution's wait, not a wait apiece in turn.
+    ///
+    /// Asked walk by walk instead, each dead neighbour held the trace for the
+    /// whole wait before the next was asked: four of them, measured in a
+    /// namespace, took a quarter of a minute. The bound is two waits, against
+    /// the four a trace asking in turn takes at the least.
+    #[tokio::test]
+    async fn neighbours_of_hosts_with_a_known_distance_are_given_up_together() {
+        use crate::scanner::strategy::raw::neighbors::RESOLUTION_WAIT_LIMIT;
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::kernel_neighbors::KernelNeighbors;
+
+        let dead: Vec<IpAddr> = (225..=228)
+            .map(|last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+            .collect();
+        let (_session, ctx) = ScanSession::new();
+        for &host in &dead {
+            ctx.update_host(host, |host| host.record_hop_counter(64));
+        }
+        let (_tx, rx) = mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let table = KernelNeighbors::asking_on_write(sent.clone(), &[], &[]);
+        let transport =
+            ProbeTransport::from_parts(Box::new(sender), rx).with_kernel_neighbors(table);
+        let mut tracer = Tracer::new(
+            ctx.clone(),
+            transport,
+            TraceProbe::Echo,
+            41_236,
+            PathCache::new(),
+        );
+        tracer.resolver =
+            SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![
+                LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+            ])]);
+
+        let started = Instant::now();
+        tracer.run(dead.clone()).await;
+        let took = started.elapsed();
+
+        let sent = sent.lock().unwrap();
+        for &address in &dead {
+            assert_eq!(
+                sent.iter().filter(|(_, _, dst)| *dst == address).count(),
+                1,
+                "{address} was sent past the write that asked"
+            );
+        }
+        assert!(
+            took < RESOLUTION_WAIT_LIMIT * 2,
+            "four dead neighbours took {took:?}, a wait apiece"
         );
     }
 }
