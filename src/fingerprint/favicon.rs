@@ -36,7 +36,7 @@
 use async_trait::async_trait;
 use md5::{Digest, Md5};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,6 +54,15 @@ use super::response::{Collected, ResponseSet};
 /// that costs nothing; a scan allows for the path it measured on top (see
 /// [`on_path`](super::on_path)).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The least an icon request waits for its response to begin where the server
+/// has answered this search before, on a path that costs nothing; see
+/// [`icon_patience`].
+const ICON_PATIENCE_FLOOR: Duration = Duration::from_secs(1);
+
+/// How many times the slowest the server began answering for its page an icon
+/// request waits for its response to begin; see [`icon_patience`].
+const ICON_PACE_MULTIPLE: u32 = 4;
 
 /// The most of a response body to read.
 ///
@@ -202,9 +211,10 @@ fn md5_hex(bytes: &[u8]) -> String {
 /// root that redirects (which a self-hosted application very often does) needs a
 /// request to reach the markup.
 async fn icon_of(peer: &Authority, responses: &ResponseSet) -> Option<Vec<u8>> {
-    let (page, base) = page_of(peer, responses).await;
+    let Page { markup, base, pace } = page_of(peer, responses).await;
+    let patience = icon_patience(pace);
 
-    let declared = page
+    let declared = markup
         .as_deref()
         .and_then(declared_icon)
         .and_then(|href| resolve(&base, href));
@@ -217,14 +227,57 @@ async fn icon_of(peer: &Authority, responses: &ResponseSet) -> Option<Vec<u8>> {
         .map(String::as_str)
         .chain([CONVENTIONAL_PATH])
     {
-        if let Some(icon) = fetch(peer, path).await {
+        if let Some(icon) = fetch(peer, path, patience).await {
             return Some(icon);
         }
     }
     None
 }
 
-/// The markup this endpoint serves at its root, and the path it was served from.
+/// How long an icon request waits for its response to begin, given `pace`,
+/// the slowest the same server began answering this search's requests for its
+/// page, or [`None`] where the search asked it nothing.
+///
+/// A server that answered for its page promptly and has not begun answering
+/// for its icon several times as long after is holding the request rather
+/// than preparing a file: a WebSocket endpoint or an embedded API that answers
+/// its own paths and leaves any other open, as a smart TV's control port does
+/// over TLS. Waiting that out spends the search's whole budget on every such
+/// port for an icon that is not coming. An icon is a static file served by the
+/// process that just served the page, no more work than the page, so
+/// [`ICON_PACE_MULTIPLE`] times the page's pace covers a busy server's
+/// scheduling and an application woken behind a proxy that answered the root
+/// itself; the slowest of the page's answers is the pace for that reason. The
+/// pace was measured across the path, so it carries the path's round trip;
+/// the [floor](ICON_PATIENCE_FLOOR), which keeps a page answered from a cache
+/// in a millisecond from making its server's icon a race, is allowed for the
+/// path on top, as every fixed wait here is.
+///
+/// Where the search asked nothing, because first contact's reply already was
+/// the page, there is no pace to go by and the request has the search's
+/// budget. The patience bounds only the wait for the first byte: a large icon
+/// still takes the time its bytes need to arrive, within that budget.
+fn icon_patience(pace: Option<Duration>) -> Option<Duration> {
+    pace.map(|pace| {
+        super::on_path(ICON_PATIENCE_FLOOR).max(pace.saturating_mul(ICON_PACE_MULTIPLE))
+    })
+}
+
+/// The page a search reads for a declared icon, and what reading it showed of
+/// the server.
+struct Page {
+    /// The markup served at the root, or at the one redirect it named.
+    markup: Option<String>,
+    /// The path the markup was served from, which a relative icon resolves
+    /// against.
+    base: String,
+    /// The slowest the server began answering the requests this search sent
+    /// for the page, or [`None`] where it sent none; see [`icon_patience`].
+    pace: Option<Duration>,
+}
+
+/// The markup this endpoint serves at its root, the path it was served from,
+/// and how promptly the server answered for it.
 ///
 /// The path matters because a declared icon is usually relative to it: Jellyfin
 /// redirects `/` to `/web/index.html` and declares `favicon.<hash>.ico`, which
@@ -233,7 +286,7 @@ async fn icon_of(peer: &Authority, responses: &ResponseSet) -> Option<Vec<u8>> {
 /// Reuses what first contact read and follows one same-host redirect from it. A
 /// second hop is not followed: one is what a self-hosted root costs, and a chain
 /// is a server that does not want to be read.
-async fn page_of(peer: &Authority, responses: &ResponseSet) -> (Option<String>, String) {
+async fn page_of(peer: &Authority, responses: &ResponseSet) -> Page {
     let root = "/".to_string();
 
     // `None` where nothing was read, which is how the container tier drives this
@@ -245,7 +298,11 @@ async fn page_of(peer: &Authority, responses: &ResponseSet) -> (Option<String>, 
 
     // A reply that already declares an icon is the page, whatever drew it.
     if let Some(page) = first.filter(|page| declared_icon(page).is_some()) {
-        return (Some(page.clone()), root);
+        return Page {
+            markup: Some(page.clone()),
+            base: root,
+            pace: None,
+        };
     }
 
     // Otherwise ask for the root. A port some service registered a probe for is
@@ -257,18 +314,34 @@ async fn page_of(peer: &Authority, responses: &ResponseSet) -> (Option<String>, 
     let path = first
         .and_then(|page| super::redirect_path(page, Some(peer)))
         .unwrap_or_else(|| root.clone());
-    let Some(page) = fetch_text(peer, &path).await else {
-        return (first.cloned(), root);
+    let Some(answer) = exchange(peer, &path, None).await else {
+        return Page {
+            markup: first.cloned(),
+            base: root,
+            pace: None,
+        };
     };
+    let page = answer.text();
 
     // The root may redirect on this request rather than on the scan's. One hop,
     // because a chain is a server that does not want to be read.
-    match super::redirect_path(&page, Some(peer)) {
-        Some(next) => match fetch_text(peer, &next).await {
-            Some(followed) => (Some(followed), next),
-            None => (Some(page), path),
+    let followed = match super::redirect_path(&page, Some(peer)) {
+        Some(next) => exchange(peer, &next, None)
+            .await
+            .map(|followed| (followed, next)),
+        None => None,
+    };
+    match followed {
+        Some((followed, next)) => Page {
+            markup: Some(followed.text()),
+            base: next,
+            pace: Some(answer.began_after.max(followed.began_after)),
         },
-        None => (Some(page), path),
+        None => Page {
+            markup: Some(page),
+            base: path,
+            pace: Some(answer.began_after),
+        },
     }
 }
 
@@ -359,8 +432,11 @@ fn resolve(base: &str, href: &str) -> Option<String> {
 /// One same-host redirect is followed, because an icon is very often served from
 /// somewhere other than where it is asked for: Grafana answers `/favicon.ico`
 /// with a `302` to the file it actually holds.
-async fn fetch(peer: &Authority, path: &str) -> Option<Vec<u8>> {
-    let response = exchange(peer, path).await?;
+///
+/// Each request waits no longer than `patience` for its response to begin,
+/// where the search has one; see [`icon_patience`].
+async fn fetch(peer: &Authority, path: &str, patience: Option<Duration>) -> Option<Vec<u8>> {
+    let response = exchange(peer, path, patience).await?.bytes;
 
     if let Some(body) = body_of(&response) {
         return Some(body.to_vec());
@@ -368,14 +444,25 @@ async fn fetch(peer: &Authority, path: &str) -> Option<Vec<u8>> {
 
     let head = String::from_utf8_lossy(&response);
     let next = super::redirect_path(&head, Some(peer))?;
-    let followed = exchange(peer, &next).await?;
+    let followed = exchange(peer, &next, patience).await?.bytes;
     body_of(&followed).map(<[u8]>::to_vec)
 }
 
-/// The same exchange, as text, for a page rather than an icon.
-async fn fetch_text(peer: &Authority, path: &str) -> Option<String> {
-    let response = exchange(peer, path).await?;
-    Some(String::from_utf8_lossy(&response).into_owned())
+/// A response, and how long the server took to begin it.
+struct Answer {
+    /// The response, whole and bounded; see [`exchange`].
+    bytes: Vec<u8>,
+    /// From the request written to the response's first byte read, or to the
+    /// close where the server sent none: the path's round trip and the
+    /// server's own work on the request.
+    began_after: Duration,
+}
+
+impl Answer {
+    /// The response as text, for a page rather than an icon.
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.bytes).into_owned()
+    }
 }
 
 /// One request and the response it draws, whole and bounded.
@@ -390,32 +477,48 @@ async fn fetch_text(peer: &Authority, path: &str) -> Option<String> {
 /// Through a handshake of its own where the port answered through TLS, and
 /// never in the clear there: a request an HTTPS port can only refuse is
 /// traffic with nothing to learn from it.
-async fn exchange(peer: &Authority, path: &str) -> Option<Vec<u8>> {
+///
+/// A response that has not begun `patience` after the request was written is
+/// no response; [`None`] leaves the wait to the caller's budget.
+async fn exchange(peer: &Authority, path: &str, patience: Option<Duration>) -> Option<Answer> {
     let stream = super::analyzer_connect(peer.socket()).await.ok()?;
     match peer.is_tls() {
         true => {
             let (mut tunnel, _) = super::tls::handshake(stream, peer.server_name()).await?;
-            converse(&mut tunnel, peer, path).await
+            converse(&mut tunnel, peer, path, patience).await
         }
         false => {
             let mut stream = stream;
-            converse(&mut stream, peer, path).await
+            converse(&mut stream, peer, path, patience).await
         }
     }
 }
 
 /// Writes the request for `path` to `stream` and reads the response, whole
-/// and bounded; see [`exchange`].
-async fn converse<S>(stream: &mut S, peer: &Authority, path: &str) -> Option<Vec<u8>>
+/// and bounded, waiting no longer than `patience` for it to begin; see
+/// [`exchange`].
+async fn converse<S>(
+    stream: &mut S,
+    peer: &Authority,
+    path: &str,
+    patience: Option<Duration>,
+) -> Option<Answer>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     stream.write_all(&request(peer, path)).await.ok()?;
+    let asked = Instant::now();
 
     let mut response = Vec::new();
+    let mut began_after = None;
     let mut buffer = [0u8; 8192];
     loop {
-        let read = stream.read(&mut buffer).await.ok()?;
+        let read = match (began_after, patience) {
+            (None, Some(patience)) => timeout(patience, stream.read(&mut buffer)).await.ok()?,
+            _ => stream.read(&mut buffer).await,
+        }
+        .ok()?;
+        began_after.get_or_insert_with(|| asked.elapsed());
         if read == 0 {
             break;
         }
@@ -429,7 +532,10 @@ where
             break;
         }
     }
-    Some(response)
+    Some(Answer {
+        bytes: response,
+        began_after: began_after.unwrap_or_else(|| asked.elapsed()),
+    })
 }
 
 /// The body of a `200` response, or [`None`] for anything else.
@@ -653,7 +759,7 @@ mod tests {
             }
         });
 
-        let icon = fetch(&Authority::new(addr), "/favicon.ico")
+        let icon = fetch(&Authority::new(addr), "/favicon.ico", None)
             .await
             .expect("a bounded body");
         server.abort();
@@ -972,7 +1078,7 @@ mod tests {
             }
         });
 
-        let icon = fetch(&Authority::new(addr), "/favicon.ico").await;
+        let icon = fetch(&Authority::new(addr), "/favicon.ico", None).await;
         server.await.unwrap();
         assert_eq!(icon.as_deref(), Some(ICON));
     }
@@ -1030,6 +1136,84 @@ mod tests {
             collected.frames.first().map(Vec::as_slice),
             Some(ICON),
             "the icon was not read before the fetch budget ran out"
+        );
+    }
+
+    /// **A server that answered for its page and holds its icon request
+    /// unanswered is given up on at a multiple of how fast it answered, not
+    /// at the end of the search's budget.**
+    ///
+    /// A WebSocket endpoint or an embedded API answers its own paths and
+    /// leaves any other open; a smart TV's control port over TLS does. The
+    /// icon is not coming, and waiting out the budget made every such port's
+    /// identification three seconds longer. The server here answers the root
+    /// at once and never answers the icon, so the search can end before
+    /// [`FETCH_TIMEOUT`] only by giving up at the patience the root's pace
+    /// earned; a search that waited out its budget cannot come in under it.
+    #[tokio::test]
+    async fn an_icon_request_held_unanswered_is_given_up_on_at_the_pages_pace() {
+        const HOLD: Duration = Duration::from_secs(30);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (asked_tx, mut asked_rx) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
+                let asked_tx = asked_tx.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 512];
+                    let Ok(read) = stream.read(&mut buffer).await else {
+                        return;
+                    };
+                    let asked = String::from_utf8_lossy(&buffer[..read])
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_string();
+                    let _ = asked_tx.send(asked.clone());
+                    if asked == "/" {
+                        let page = b"<html><head></head></html>";
+                        let head =
+                            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", page.len());
+                        let _ = stream.write_all(&[head.as_bytes(), page].concat()).await;
+                    }
+                    tokio::time::sleep(HOLD).await;
+                });
+            }
+        });
+
+        let ctx = PortContext::new(3001, crate::model::port::Protocol::Tcp)
+            .with_addr(Some(addr))
+            .with_speaks_http(true);
+        let started = Instant::now();
+        let collected = FaviconAnalyzer.collect(&ctx, &ResponseSet::default()).await;
+        let took = started.elapsed();
+        server.abort();
+
+        let mut asked = Vec::new();
+        while let Ok(path) = asked_rx.try_recv() {
+            asked.push(path);
+        }
+        assert_eq!(asked, ["/", CONVENTIONAL_PATH], "both requests were sent");
+        assert!(collected.frames.is_empty());
+        assert!(
+            took < FETCH_TIMEOUT,
+            "the held icon request was waited out for {took:?}, the whole budget"
+        );
+    }
+
+    /// The patience scales with the pace the server showed, never falls
+    /// below the floor, and is not imposed where the search measured nothing.
+    #[test]
+    fn an_icons_patience_follows_the_pages_pace_above_a_floor() {
+        assert_eq!(icon_patience(None), None);
+        assert_eq!(
+            icon_patience(Some(Duration::from_millis(2))),
+            Some(ICON_PATIENCE_FLOOR)
+        );
+        assert_eq!(
+            icon_patience(Some(Duration::from_millis(900))),
+            Some(Duration::from_millis(900) * ICON_PACE_MULTIPLE)
         );
     }
 }
