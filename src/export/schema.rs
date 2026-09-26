@@ -1713,7 +1713,7 @@ impl<'a> HostDto<'a> {
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct NameDto<'a> {
-    /// The protocol the host stated it in: `ntlm` or `ldap`.
+    /// The protocol the host stated it in: `ntlm`, `ldap` or `kerberos`.
     pub source: &'static str,
     /// What it names: `host` and `netbios_host` for the machine, `domain` and
     /// `netbios_domain` for the domain or workgroup it belongs to, `forest`

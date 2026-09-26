@@ -10,7 +10,7 @@ description = "Kerberos KDC"
 # The realm is invented because a scanner does not know the target's, and a
 # request has to name one. `ZOND-SCAN` is that invention, and the reader knows
 # it: a KDC repeats the realm it was asked about, so a realm in the reply is
-# reported only when it differs from the one sent. See `framed::kerberos_error`.
+# recorded only when it differs from the one sent. See `framed::kerberos_realm`.
 #
 #   6a          [APPLICATION 10], an AS-REQ
 #     a1 .. 05  pvno 5
@@ -54,14 +54,14 @@ example = "krb-error 6 CLIENT_NOT_FOUND"
 [[match]]
 name = "kerberos_wrong_realm"
 # The case worth the whole probe. RFC 4120 has a KDC serving a different realm
-# answer error 68 and name the right one, and the reader reports a realm only
-# when it is not the one this engine asked about. On a domain controller that
-# name is the Active Directory domain.
-pattern = '^krb-error 68 realm=(\S+)'
+# answer error 68 and name the right one. On a domain controller that name is
+# the Active Directory domain, and it is recorded as one of the host's names
+# rather than offered here: a capture would put it in the service's
+# description, which a redacted report does not mask.
+pattern = '^krb-error 68(?: |$)'
 product = "Kerberos KDC"
 context = "krb.error"
-example = "krb-error 68 realm=CORP.EXAMPLE"
-metadata = { "service.extrainfo" = "realm {capture:1}" }
+example = "krb-error 68"
 
 [[match]]
 name = "kerberos_kdc"

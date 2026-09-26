@@ -367,13 +367,10 @@ const SELF_SIGNED_CERT: &[u8] = include_bytes!("testdata/selfsigned.der");
 
 #[test]
 fn tls_cert_identifies_self_signed_appliance() {
-    let responses = ResponseSet {
-        banners: Vec::new(),
-        tls: Some(TlsInfo {
-            certificates: vec![SELF_SIGNED_CERT.to_vec()],
-            ..TlsInfo::default()
-        }),
-    };
+    let responses = ResponseSet::default().with_tls(TlsInfo {
+        certificates: vec![SELF_SIGNED_CERT.to_vec()],
+        ..TlsInfo::default()
+    });
 
     let evidence = TlsCertAnalyzer.analyze(
         &PortContext {

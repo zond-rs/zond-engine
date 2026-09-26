@@ -69,6 +69,12 @@ pub enum NameKind {
     /// that Windows networking addresses it by: `DC01`.
     NetbiosHost,
     /// The DNS name of the domain the machine belongs to: `corp.example`.
+    ///
+    /// A Kerberos realm is recorded as one, in the case the KDC wrote it:
+    /// `CORP.EXAMPLE`. RFC 4120 §6.1 gives realms the style of a domain name,
+    /// Active Directory makes a domain's realm its DNS name in capitals, and
+    /// the source says the name was a realm, so a separate kind would put the
+    /// one fact under two headings.
     Domain,
     /// The NetBIOS name of the domain or workgroup the machine belongs to:
     /// `CORP`.
@@ -129,11 +135,16 @@ pub enum NameSource {
     /// serves to an anonymous search: `dnsHostName`, and the naming contexts a
     /// domain and a forest are read from.
     Ldap,
+    /// The realm a Kerberos KDC names in a `KRB-ERROR` (RFC 4120 §5.9.1),
+    /// which it sends to an unauthenticated request for a realm it does not
+    /// serve. Recorded only where it differs from the realm the request named,
+    /// since a KDC otherwise repeats what it was asked about.
+    Kerberos,
 }
 
 impl NameSource {
     /// Every source this build knows, in declaration order.
-    pub const ALL: &'static [Self] = &[Self::Ntlm, Self::Ldap];
+    pub const ALL: &'static [Self] = &[Self::Ntlm, Self::Ldap, Self::Kerberos];
 
     /// How a source is written for a person to read.
     ///
@@ -144,6 +155,7 @@ impl NameSource {
         match self {
             Self::Ntlm => "NTLM",
             Self::Ldap => "LDAP",
+            Self::Kerberos => "Kerberos",
         }
     }
 }

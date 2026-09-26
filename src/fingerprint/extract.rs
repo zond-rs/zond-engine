@@ -44,6 +44,7 @@
 
 use std::borrow::Cow;
 
+use crate::model::host::HostName;
 use crate::model::port::Protocol;
 
 /// A reply as the text the corpus matches, every byte of it kept.
@@ -195,8 +196,8 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
                 .collect(),
             Err(_) => Vec::new(),
         },
-        // A KRB-ERROR is proof of a KDC, and on a domain controller the realm
-        // it names is the Active Directory domain, where it names one at all.
+        // A KRB-ERROR is proof of a KDC. The realm it names is not text for
+        // the corpus but one of the host's names; see `names_from_datagram`.
         88 => super::framed::kerberos_error(datagram)
             .into_iter()
             .collect(),
@@ -324,6 +325,39 @@ pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
             .collect(),
         // What the server says its build is, before any login.
         1433 => super::framed::tds_version(bytes).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The names a UDP reply from `port` gives for the machine that sent it, read
+/// from the reply's structure.
+///
+/// Apart from [`from_datagram`] because what it returns is not matched. A rule
+/// that captures part of a text writes the capture into a service's
+/// description, and a description reaches every report unmasked, so a name
+/// that travelled as text would leak from a report redacted to hide it. A
+/// [`HostName`] is masked wherever a hostname is.
+pub(crate) fn names_from_datagram(port: u16, datagram: &[u8]) -> Vec<HostName> {
+    match port {
+        88 => super::framed::kerberos_realm(datagram)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The names a TCP reply from `port` gives for the machine that sent it: the
+/// counterpart to [`names_from_datagram`], as [`from_stream`] is to
+/// [`from_datagram`].
+pub(crate) fn names_from_stream(port: u16, bytes: &[u8]) -> Vec<HostName> {
+    match port {
+        // Behind the four-byte length RFC 4120 §7.2.2 puts in front of a
+        // message over TCP.
+        88 => bytes
+            .get(4..)
+            .and_then(super::framed::kerberos_realm)
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -1515,13 +1549,21 @@ mod framed_replies {
             identify(88, &texts[0]).map(|found| found.0),
             Some("MIT Kerberos".to_string())
         );
+        assert!(
+            super::names_from_datagram(88, &hex(MIT)).is_empty(),
+            "the probe's own realm was recorded as the host's"
+        );
     }
 
-    /// A realm the probe did not supply is reported, which is the case the whole
-    /// probe is for: on a domain controller it names the Active Directory
-    /// domain.
+    /// A realm the probe did not supply is read as the domain the KDC serves,
+    /// which is the case the whole probe is for: on a domain controller it
+    /// names the Active Directory domain. It is a name of the host's and not
+    /// text for the corpus, since a rule's capture would carry it into the
+    /// service's description, which a redacted report does not mask.
     #[test]
-    fn a_realm_this_engine_did_not_ask_about_is_reported() {
+    fn a_realm_this_engine_did_not_ask_about_is_a_name_and_never_text() {
+        use crate::model::host::{HostName, NameKind, NameSource};
+
         // A KRB-ERROR carrying error 68 and a realm of its own.
         let realm = b"CORP.EXAMPLE";
         let mut fields = vec![0xA6, 0x03, 0x02, 0x01, 68];
@@ -1537,12 +1579,22 @@ mod framed_replies {
         reply.extend_from_slice(&sequence);
 
         let texts = super::from_datagram(88, &reply);
-        assert_eq!(texts, vec!["krb-error 68 realm=CORP.EXAMPLE"]);
-        assert_eq!(
-            identify(88, &texts[0]).and_then(|found| found.1),
-            None,
-            "the realm reaches the report as extra info rather than as a version"
-        );
+        assert_eq!(texts, vec!["krb-error 68"]);
+        let found = SignatureDb::global()
+            .identify(88, Protocol::Udp, &texts[0])
+            .expect("a KDC");
+        assert_eq!(found.product.as_deref(), Some("Kerberos KDC"));
+
+        let named = [
+            HostName::new(NameKind::Domain, NameSource::Kerberos, "CORP.EXAMPLE").expect("a name"),
+        ];
+        assert_eq!(super::names_from_datagram(88, &reply), named);
+
+        // Over TCP the same message sits behind its four-byte length.
+        let mut stream = (reply.len() as u32).to_be_bytes().to_vec();
+        stream.extend_from_slice(&reply);
+        assert_eq!(super::from_stream(88, &stream), vec!["krb-error 68"]);
+        assert_eq!(super::names_from_stream(88, &stream), named);
     }
 
     /// What xl2tpd 1.3.16 on Debian 12 actually answered, captured off the wire.

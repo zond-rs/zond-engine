@@ -227,6 +227,7 @@ pub fn name_source_name(source: NameSource) -> &'static str {
     match source {
         NameSource::Ntlm => "ntlm",
         NameSource::Ldap => "ldap",
+        NameSource::Kerberos => "kerberos",
     }
 }
 
@@ -235,6 +236,7 @@ pub fn name_source(name: &str) -> Option<NameSource> {
     Some(match name {
         "ntlm" => NameSource::Ntlm,
         "ldap" => NameSource::Ldap,
+        "kerberos" => NameSource::Kerberos,
         _ => return None,
     })
 }

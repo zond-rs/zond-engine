@@ -190,7 +190,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "krb.error",
         reach: Reach::Produced,
-        note: "the error code, realm and text of a `KRB-ERROR`, read by `framed::kerberos_error`. The realm appears only where it differs from the one the probe invented, since a KDC repeats what it was asked about. Read from TCP as well, behind the four-byte length, by `extract::from_stream`",
+        note: "the error code and text of a `KRB-ERROR`, read by `framed::kerberos_error`. Never the realm, which is recorded as one of the host's names by `framed::kerberos_realm`. Read from TCP as well, behind the four-byte length, by `extract::from_stream`",
     },
     Context {
         name: "l2tp.sccrp",

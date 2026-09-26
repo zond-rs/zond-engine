@@ -5625,6 +5625,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::Probe
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::Probe
 #[non_exhaustive] pub struct zond_engine::fingerprint::ResponseSet
 pub zond_engine::fingerprint::ResponseSet::banners: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::fingerprint::ResponseSet::names: alloc::vec::Vec<zond_engine::model::host::name::HostName>
 pub zond_engine::fingerprint::ResponseSet::tls: core::option::Option<zond_engine::fingerprint::TlsInfo>
 impl zond_engine::fingerprint::ResponseSet
 pub fn zond_engine::fingerprint::ResponseSet::from_banners(alloc::vec::Vec<alloc::string::String>) -> Self
@@ -8314,6 +8315,7 @@ impl core::marker::UnsafeUnpin for zond_engine::model::host::name::NameKind
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name::NameKind
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::NameKind
 #[non_exhaustive] pub enum zond_engine::model::host::name::NameSource
+pub zond_engine::model::host::name::NameSource::Kerberos
 pub zond_engine::model::host::name::NameSource::Ldap
 pub zond_engine::model::host::name::NameSource::Ntlm
 impl zond_engine::model::host::name::NameSource
@@ -8931,6 +8933,7 @@ impl core::marker::UnsafeUnpin for zond_engine::model::host::name::NameKind
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name::NameKind
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::NameKind
 #[non_exhaustive] pub enum zond_engine::model::host::NameSource
+pub zond_engine::model::host::NameSource::Kerberos
 pub zond_engine::model::host::NameSource::Ldap
 pub zond_engine::model::host::NameSource::Ntlm
 impl zond_engine::model::host::name::NameSource

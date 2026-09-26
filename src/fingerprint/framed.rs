@@ -738,18 +738,38 @@ pub(super) fn ike_response(datagram: &[u8]) -> Option<String> {
 ///
 /// A KDC replies to an unknown principal by repeating the realm it was asked
 /// about, so the realm in the reply is usually this string coming back. See
-/// [`kerberos_error`].
+/// [`kerberos_realm`].
 const PROBE_REALM: &str = "ZOND-SCAN";
 
 /// What a Kerberos KDC says about a request it cannot serve.
 ///
 /// The probe asks for a principal in a realm nothing serves, and the reply is a
-/// `KRB-ERROR`. Three of its fields are worth reading: the error code, the
-/// human text where the implementation sends one, and the realm.
+/// `KRB-ERROR` (RFC 4120 §5.9.1). Two of its fields are read as the service's
+/// description: the error code, and the human text where the implementation
+/// sends one.
 ///
 /// ```text
 /// krb-error 6 CLIENT_NOT_FOUND
 /// ```
+///
+/// The realm it names is not among them. On a domain controller that realm is
+/// the Active Directory domain, which names the organisation, and a service's
+/// description reaches a report unmasked; [`kerberos_realm`] reads it as one
+/// of the host's names instead, which a report masks where it is asked to.
+///
+/// [`None`] for anything that is not a `KRB-ERROR`.
+#[must_use]
+pub(super) fn kerberos_error(datagram: &[u8]) -> Option<String> {
+    let error = KrbError::read(datagram)?;
+    let mut said = format!("krb-error {}", error.code);
+    if let Some(text) = error.text.filter(|text| !text.is_empty()) {
+        said.push(' ');
+        said.push_str(text);
+    }
+    Some(said)
+}
+
+/// The realm a KDC's `KRB-ERROR` names, as the domain it serves.
 ///
 /// ## Why the realm is usually absent
 ///
@@ -758,56 +778,72 @@ const PROBE_REALM: &str = "ZOND-SCAN";
 /// the KDC repeats that invented realm back in both `crealm` and `realm`, so
 /// what looks like a discovered domain is this engine's own guess reflected.
 ///
-/// The realm is therefore reported only when it differs from
-/// [`PROBE_REALM`]. RFC 4120 has a KDC that serves a different realm answer
+/// The realm is therefore read only when it differs from [`PROBE_REALM`].
+/// RFC 4120 has a KDC that serves a different realm answer
 /// `KDC_ERR_WRONG_REALM` and name the right one, and that case is worth the
 /// whole probe: on a domain controller it is the Active Directory domain, from
 /// one unauthenticated datagram. It was not reproduced here, MIT answered
 /// `KDC_ERR_C_PRINCIPAL_UNKNOWN` for a realm it does not serve, so the branch
 /// is written from the specification rather than from a measurement.
 ///
-/// [`None`] for anything that is not a `KRB-ERROR`.
+/// [`None`] for anything that is not a `KRB-ERROR`, and for one naming no
+/// realm but the probe's.
 #[must_use]
-pub(super) fn kerberos_error(datagram: &[u8]) -> Option<String> {
-    /// `[APPLICATION 30]`, which is what a `KRB-ERROR` is tagged with.
-    const KRB_ERROR: u8 = 0x7E;
+pub(super) fn kerberos_realm(datagram: &[u8]) -> Option<HostName> {
+    let realm = KrbError::read(datagram)?
+        .realm
+        .filter(|realm| *realm != PROBE_REALM)?;
+    HostName::new(NameKind::Domain, NameSource::Kerberos, realm)
+}
 
-    if *datagram.first()? != KRB_ERROR {
-        return None;
-    }
-    // The application tag wraps a SEQUENCE, and the fields are context-tagged
-    // inside it.
-    let body = der_value(datagram)?;
-    let fields = der_value(body)?;
+/// The fields of a `KRB-ERROR` anything here reads.
+struct KrbError<'a> {
+    /// `error-code`.
+    code: u32,
+    /// `realm`, the service realm, where it is text.
+    realm: Option<&'a str>,
+    /// `e-text`, which MIT fills in and which names the implementation.
+    text: Option<&'a str>,
+}
 
-    let mut code = None;
-    let mut realm = None;
-    let mut text = None;
-    let mut at = 0;
-    while at < fields.len() {
-        let (tag, value, next) = der_element(&fields[at..])?;
-        match tag {
-            // error-code, an INTEGER inside its context tag.
-            0xA6 => code = der_value(value).map(der_unsigned),
-            // realm, the service realm, a GeneralString.
-            0xA9 => realm = der_value(value).and_then(|v| std::str::from_utf8(v).ok()),
-            // e-text, which MIT fills in and which names the implementation.
-            0xAB => text = der_value(value).and_then(|v| std::str::from_utf8(v).ok()),
-            _ => {}
+impl<'a> KrbError<'a> {
+    /// Reads `datagram` as a `KRB-ERROR`, or [`None`] where it is not one or
+    /// carries no error code.
+    fn read(datagram: &'a [u8]) -> Option<Self> {
+        /// `[APPLICATION 30]`, which is what a `KRB-ERROR` is tagged with.
+        const KRB_ERROR: u8 = 0x7E;
+
+        if *datagram.first()? != KRB_ERROR {
+            return None;
         }
-        at += next;
-    }
+        // The application tag wraps a SEQUENCE, and the fields are
+        // context-tagged inside it.
+        let body = der_value(datagram)?;
+        let fields = der_value(body)?;
 
-    let code = code?;
-    let mut said = format!("krb-error {code}");
-    if let Some(realm) = realm.filter(|realm| *realm != PROBE_REALM) {
-        said.push_str(&format!(" realm={realm}"));
+        let mut code = None;
+        let mut realm = None;
+        let mut text = None;
+        let mut at = 0;
+        while at < fields.len() {
+            let (tag, value, next) = der_element(&fields[at..])?;
+            match tag {
+                // error-code, an INTEGER inside its context tag.
+                0xA6 => code = der_value(value).map(der_unsigned),
+                // realm and e-text, each a GeneralString.
+                0xA9 => realm = der_value(value).and_then(|v| std::str::from_utf8(v).ok()),
+                0xAB => text = der_value(value).and_then(|v| std::str::from_utf8(v).ok()),
+                _ => {}
+            }
+            at += next;
+        }
+
+        Some(Self {
+            code: code?,
+            realm,
+            text,
+        })
     }
-    if let Some(text) = text.filter(|text| !text.is_empty()) {
-        said.push(' ');
-        said.push_str(text);
-    }
-    Some(said)
 }
 
 /// The contents of the DER element at the start of `bytes`.

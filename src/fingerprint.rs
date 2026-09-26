@@ -617,6 +617,7 @@ async fn identify_tcp(
     // handed to the blocking pool.
     let fallback = first_printable(&responses.banners);
     let banners = responses.banners.clone();
+    let stated = responses.names.clone();
     let mut about_the_host = AboutTheHost::default();
     // The analyzers dial through the port's egress. They are handed a context
     // whose shape is public and cannot carry it, so it reaches them as the
@@ -670,6 +671,9 @@ async fn identify_tcp(
             }
         }
     }
+    // The names the replies gave are the machine's whether or not any rule
+    // named the service that gave them.
+    about_the_host.names.extend(stated);
 
     (port, about_the_host, banners)
 }
@@ -749,8 +753,8 @@ async fn fingerprint_udp_within(
     patience: Duration,
     path: PathAllowance,
 ) -> Option<Fingerprinted> {
-    let texts = match probe_udp(addr, egress, patience, path).await {
-        Datagram::Reply(texts) => texts,
+    let responses = match probe_udp(addr, egress, patience, path).await {
+        Datagram::Reply(responses) => responses,
         Datagram::Silent => return None,
         Datagram::Starved => {
             return Some(Fingerprinted {
@@ -764,8 +768,8 @@ async fn fingerprint_udp_within(
             });
         }
     };
-    let responses = ResponseSet::from_banners(texts);
     let banners = responses.banners.clone();
+    let stated = responses.names.clone();
 
     // No tunnel: nothing here carries UDP over TLS, and no peer address is
     // handed to the analyzers either, since an active analyzer dials TCP and
@@ -782,10 +786,19 @@ async fn fingerprint_udp_within(
         None,
     )
     .await
-    .filter(|verdict| !verdict.is_empty())?;
+    .filter(|verdict| !verdict.is_empty());
+    if verdict.is_none() && stated.is_empty() {
+        return None;
+    }
 
-    let about_the_host = AboutTheHost::from_evidence(&verdict.evidence);
-    if let Some(service) = verdict.to_service() {
+    // The names a reply gave are the machine's whether or not any rule named
+    // the service that gave them.
+    let mut about_the_host = verdict
+        .as_ref()
+        .map(|verdict| AboutTheHost::from_evidence(&verdict.evidence))
+        .unwrap_or_default();
+    about_the_host.names.extend(stated);
+    if let Some(service) = verdict.and_then(|verdict| verdict.to_service()) {
         port.set_service(service);
     }
 
@@ -834,8 +847,8 @@ enum Datagram<T> {
 /// discarded the timestamps, and left seventy-five rules unreached that had
 /// just been given a decoder.
 ///
-/// So each registered probe is tried in turn and the first that yields text
-/// wins. A port registering one probe, which is nearly all of them, costs
+/// So each registered probe is tried in turn and the first that yields text,
+/// or a name for the machine, wins. A port registering one probe, which is nearly all of them, costs
 /// exactly what it did before.
 ///
 /// A probe the process had no socket for ends the walk as starved rather than
@@ -846,13 +859,17 @@ async fn probe_udp(
     egress: Egress,
     patience: Duration,
     path: PathAllowance,
-) -> Datagram<Vec<String>> {
+) -> Datagram<ResponseSet> {
     for payload in SignatureDb::global().udp_probe_payloads(addr.port()) {
         match exchange_datagram(addr, payload, egress, patience, path).await {
             Datagram::Reply(reply) => {
-                let texts = extract::from_datagram(addr.port(), &reply);
-                if !texts.is_empty() {
-                    return Datagram::Reply(texts);
+                let read = ResponseSet {
+                    banners: extract::from_datagram(addr.port(), &reply),
+                    names: extract::names_from_datagram(addr.port(), &reply),
+                    ..ResponseSet::default()
+                };
+                if !read.banners.is_empty() || !read.names.is_empty() {
+                    return Datagram::Reply(read);
                 }
             }
             Datagram::Silent => {}
@@ -1386,31 +1403,32 @@ async fn plaintext(
     // The port's own service on the connection already open, or, where no
     // service names the port, the generic question, which follows its own
     // redirect.
-    let (mut banners, mut held) = match conversations.next_if(|_| named) {
+    let (mut responses, mut held) = match conversations.next_if(|_| named) {
         Some(first) => {
             let listen = !db.asked_first(port);
-            let banners = collect_responses(&mut stream, port, first, peer, listen).await;
+            let responses = collect_responses(&mut stream, port, first, peer, listen).await;
             // Read back off the decoded text, which is sound only because
             // every byte `looks_like_tls` constrains is under 0x80, comes
             // first, and so survives `extract::reply_text` unchanged and in
             // place.
-            if banners
+            if responses
+                .banners
                 .first()
                 .is_some_and(|first| looks_like_tls(first.as_bytes()))
             {
                 return ResponseSet::default();
             }
-            (banners, Some(stream))
+            (responses, Some(stream))
         }
         None => match ask_generically(stream, peer, egress).await {
-            GenericReply::Spoke(banners) => (banners, None),
-            GenericReply::Silent => (Vec::new(), None),
+            GenericReply::Spoke(banners) => (ResponseSet::from_banners(banners), None),
+            GenericReply::Silent => (ResponseSet::default(), None),
             GenericReply::Tls => return ResponseSet::default(),
         },
     };
 
     // Every other service's questions, each on a connection of its own.
-    let mut theirs = Vec::new();
+    let mut theirs = ResponseSet::default();
     for probes in conversations {
         if let Some(peer) = peer {
             drop(held.take());
@@ -1427,12 +1445,14 @@ async fn plaintext(
     // connection is closed. The generic question's was followed as it was
     // asked, so on a port nothing names only the rest are looked through.
     if named {
-        banners.extend(theirs);
-        banners = with_redirect_followed(banners, peer, egress).await;
+        responses.extend(theirs);
+        let banners = std::mem::take(&mut responses.banners);
+        responses.banners = with_redirect_followed(banners, peer, egress).await;
     } else {
-        banners.extend(with_redirect_followed(theirs, peer, egress).await);
+        theirs.banners = with_redirect_followed(theirs.banners, peer, egress).await;
+        responses.extend(theirs);
     }
-    ResponseSet::from_banners(banners)
+    responses
 }
 
 /// What a generic probe drew out of a port nothing in the database claims.
@@ -1698,7 +1718,7 @@ async fn tunneled(
     let db = SignatureDb::global();
     let peer = peer.through_tls();
     let mut conversations = db.tcp_probe_conversations(port);
-    let mut banners = match conversations.next() {
+    let mut drawn = match conversations.next() {
         Some(own) => {
             let listen = !db.asked_first(port);
             collect_responses(&mut tunnel, port, own, Some(&peer), listen).await
@@ -1725,15 +1745,11 @@ async fn tunneled(
         let Some(tunnel) = held.as_mut() else {
             break;
         };
-        banners.extend(ask_in_turn(tunnel, port, probes, Some(&peer)).await);
+        drawn.extend(ask_in_turn(tunnel, port, probes, Some(&peer)).await);
     }
     drop(held);
-    let banners = with_redirect_followed(banners, Some(&peer), egress).await;
-    let responses = ResponseSet {
-        banners,
-        tls: Some(info),
-    };
-    (responses, Some(Tunnel::Tls))
+    drawn.banners = with_redirect_followed(drawn.banners, Some(&peer), egress).await;
+    (drawn.with_tls(info), Some(Tunnel::Tls))
 }
 
 /// A fresh tunnel to a port whose handshake has already completed once, or
@@ -1764,24 +1780,25 @@ async fn collect_responses<S>(
     probes: &[Vec<u8>],
     peer: Option<&Authority>,
     listen: bool,
-) -> Vec<String>
+) -> ResponseSet
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut banners = Vec::new();
+    let mut drawn = ResponseSet::default();
 
     // Many services announce themselves on connect.
     if listen && let Some(banner) = read_response(stream, BANNER_READ_TIMEOUT).await {
-        banners.push(banner);
+        drawn.banners.push(banner);
     }
 
-    banners.extend(ask_in_turn(stream, port, probes, peer).await);
-    banners
+    drawn.extend(ask_in_turn(stream, port, probes, peer).await);
+    drawn
 }
 
 /// Sends `probes` over `stream` one after another, each addressed to `peer`
 /// where there is one, and returns what each drew: the fields of a reply this
-/// engine reads as structure, then its text.
+/// engine reads as structure, then its text, and apart from both the names it
+/// gave for the machine.
 ///
 /// Nothing is listened for first. A service that greets has already sent its
 /// greeting by the time the first probe goes, and it arrives ahead of the
@@ -1791,11 +1808,11 @@ async fn ask_in_turn<S>(
     port: u16,
     probes: &[Vec<u8>],
     peer: Option<&Authority>,
-) -> Vec<String>
+) -> ResponseSet
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut banners = Vec::new();
+    let mut drawn = ResponseSet::default();
     for payload in probes {
         let payload = match peer {
             Some(peer) => peer.addressed(payload),
@@ -1809,11 +1826,12 @@ where
         };
         // A reply this engine can read as structure is offered as the fields it
         // holds, before the text of the whole. See `extract::from_stream`.
-        banners.extend(extract::from_stream(port, &bytes));
-        banners.push(extract::reply_text(&bytes));
+        drawn.banners.extend(extract::from_stream(port, &bytes));
+        drawn.banners.push(extract::reply_text(&bytes));
+        drawn.names.extend(extract::names_from_stream(port, &bytes));
     }
 
-    banners
+    drawn
 }
 
 /// How the port being fingerprinted is dialled after its first connection,
@@ -3320,6 +3338,80 @@ mod tests {
             "recorded as identified"
         );
         assert_eq!(read(&folded), read(&found), "folded into the recorded port");
+    }
+
+    /// **The realm a KDC names reaches its host as a name, masked where a
+    /// report masks, and never the port's description.** Over sockets end to
+    /// end: the corpus probe over TCP, the KDC's `KRB-ERROR` naming a realm of
+    /// its own behind the four-byte length, and the host record a report is
+    /// written from.
+    ///
+    /// On a domain controller the realm is the Active Directory domain, which
+    /// names the organisation. Carried in the service's description it would
+    /// reach every redacted report in the clear.
+    #[tokio::test]
+    async fn a_kdc_s_realm_reaches_its_host_masked_and_not_its_description() {
+        use crate::export::schema::HostDto;
+        use crate::export::{ExportOptions, Redaction};
+        use crate::model::host::Host;
+        use crate::testing::loopback::accept_from_this_process;
+
+        // KDC_ERR_WRONG_REALM naming the realm (RFC 4120 §5.9.1), behind the
+        // length RFC 4120 §7.2.2 puts in front of a message over TCP.
+        let realm = b"CORP.EXAMPLE";
+        let mut fields = vec![0xA6, 0x03, 0x02, 0x01, 68];
+        fields.extend_from_slice(&[0xA9, realm.len() as u8 + 2, 0x1B, realm.len() as u8]);
+        fields.extend_from_slice(realm);
+        let mut sequence = vec![0x30, fields.len() as u8];
+        sequence.extend_from_slice(&fields);
+        let mut error = vec![0x7E, sequence.len() as u8];
+        error.extend_from_slice(&sequence);
+        let mut reply = (error.len() as u32).to_be_bytes().to_vec();
+        reply.extend_from_slice(&error);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let addr = listener.local_addr().expect("a local address");
+        let server = tokio::spawn(async move {
+            while let Ok(mut sock) = accept_from_this_process(&listener).await {
+                let reply = reply.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 1024];
+                    if sock.read(&mut buffer).await.is_ok_and(|read| read > 0) {
+                        let _ = sock.write_all(&reply).await;
+                    }
+                    while sock.read(&mut buffer).await.is_ok_and(|read| read > 0) {}
+                });
+            }
+        });
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let port = baseline_port(88, Protocol::Tcp, PortState::Open);
+        let found = fingerprint_tcp_detailed(stream, port, ServiceDetection::Probe).await;
+        server.abort();
+
+        let service = found.port.service().expect("the port is named");
+        assert_eq!(service.product(), Some("Kerberos KDC"));
+        assert!(
+            !format!("{service:?}").contains("CORP"),
+            "the realm reached the service: {service:?}"
+        );
+
+        let mut host = Host::new(addr.ip());
+        found.about_the_host.apply(&mut host);
+        let render = |options: ExportOptions| {
+            serde_json::to_value(HostDto::new(&host, &options)).expect("a host renders")
+        };
+        assert_eq!(
+            render(ExportOptions::new())["names"],
+            serde_json::json!([{"source": "kerberos", "kind": "domain", "name": "CORP.EXAMPLE"}])
+        );
+        let masked = render(ExportOptions::new().with_redaction(Redaction::Standard)).to_string();
+        assert!(
+            !masked.contains("CORP") && masked.contains(r#""source":"kerberos""#),
+            "the realm survived redaction: {masked}"
+        );
     }
 
     /// A port two services share has each asked on a connection of its own,

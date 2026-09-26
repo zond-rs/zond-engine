@@ -21,6 +21,8 @@
 //!
 //! [`TlsCertAnalyzer`]: super::tls_cert::TlsCertAnalyzer
 
+use crate::model::host::HostName;
+
 /// What a TLS handshake yielded: what was negotiated, and the certificate chain
 /// the peer presented as raw DER, leaf first.
 ///
@@ -105,13 +107,35 @@ pub struct ResponseSet {
     pub banners: Vec<String>,
     /// The TLS handshake result, if one was attempted and completed.
     pub tls: Option<TlsInfo>,
+    /// The names the responses gave for the machine, read from their
+    /// structure: the realm a Kerberos KDC names, for one.
+    ///
+    /// Kept out of [`banners`](Self::banners) because a banner is matched,
+    /// and what a rule captures from it becomes a service's description,
+    /// which no report masks. A name is the host's, and a report masks it
+    /// where it masks a hostname.
+    pub names: Vec<HostName>,
 }
 
 impl ResponseSet {
     /// A response set from plaintext banners alone (no TLS attempted).
     #[must_use]
     pub fn from_banners(banners: Vec<String>) -> Self {
-        Self { banners, tls: None }
+        Self {
+            banners,
+            ..Self::default()
+        }
+    }
+
+    /// Adds what `other` collected after what this one did.
+    ///
+    /// For responses gathered in the clear, which carry no handshake: a
+    /// handshake belongs to the one connection it completed on, and the
+    /// caller holding it is the one to record it.
+    pub(crate) fn extend(&mut self, other: ResponseSet) {
+        debug_assert!(other.tls.is_none(), "a handshake is not merged");
+        self.banners.extend(other.banners);
+        self.names.extend(other.names);
     }
 
     /// Records what a completed handshake yielded beside the banners.
