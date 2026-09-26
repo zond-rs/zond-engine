@@ -477,7 +477,7 @@ impl Enrichment {
             // again, or an `await` that makes two hot classification paths async
             // to reclaim nothing.
             let (tx, rx) = mpsc::unbounded_channel();
-            (Some(tx), Some(spawn_resolver(rx).await))
+            (Some(tx), Some(spawn_resolver(rx, ctx.clone()).await))
         } else {
             info!("DNS resolution skipped by user flag");
             (None, None)
@@ -498,10 +498,16 @@ impl Enrichment {
             }
         }
 
-        if let Some(task) = self.resolver
-            && let Ok(Some(mut resolver)) = task.await
-        {
-            resolver.resolve_hosts(ctx);
+        if let Some(task) = self.resolver {
+            match task.await {
+                Ok(Some(mut resolver)) => resolver.resolve_hosts(ctx),
+                // Filed where it failed to start.
+                Ok(None) => {}
+                Err(e) => ctx.record_failure(
+                    ScannerKind::Resolver,
+                    format!("panicked: {e} (hostnames lost)"),
+                ),
+            }
         }
     }
 }
@@ -2042,11 +2048,13 @@ pub(super) fn unsettled_ips(target_map: &TargetMap, settled: &Checkpoint) -> IpS
 /// The resolver listens for raw DNS and mDNS traffic and answers reverse lookups
 /// for any IP sent down `dns_rx`, independent of and concurrent with whatever
 /// scanning strategies are running. When it fails to start, most likely because
-/// no usable network socket could be opened, the failure is logged and `None` is
-/// returned rather than propagated, since a scan without hostname resolution is
-/// still useful.
+/// no usable network socket could be opened, the failure is filed against
+/// [`ScannerKind::Resolver`] and `None` is returned rather than the scan ended,
+/// since a scan without hostname resolution is still useful and the failure is
+/// what says its hosts' names are missing rather than absent.
 pub(super) async fn spawn_resolver(
     dns_rx: UnboundedReceiver<IpAddr>,
+    ctx: ScanContext,
 ) -> JoinHandle<Option<HostnameResolver>> {
     tokio::spawn(async move {
         match HostnameResolver::new(dns_rx) {
@@ -2057,7 +2065,10 @@ pub(super) async fn spawn_resolver(
                 Some(resolver.run().await)
             }
             Err(e) => {
-                error!("resolver failed to start: {e}");
+                ctx.record_failure(
+                    ScannerKind::Resolver,
+                    format!("not started: {e} (no hostnames)"),
+                );
                 None
             }
         }

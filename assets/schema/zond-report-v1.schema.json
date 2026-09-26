@@ -1469,7 +1469,8 @@
         "composite",
         "service",
         "detection",
-        "journal"
+        "journal",
+        "resolver"
       ]
     },
     "scope": {

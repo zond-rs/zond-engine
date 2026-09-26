@@ -13955,6 +13955,7 @@ pub zond_engine::report::ScannerKind::OsEcho
 pub zond_engine::report::ScannerKind::OsSeries
 pub zond_engine::report::ScannerKind::OsSnmp
 pub zond_engine::report::ScannerKind::Passive
+pub zond_engine::report::ScannerKind::Resolver
 pub zond_engine::report::ScannerKind::Routed
 pub zond_engine::report::ScannerKind::RoutedSctp
 pub zond_engine::report::ScannerKind::SctpPort
@@ -13963,7 +13964,7 @@ pub zond_engine::report::ScannerKind::SynPort
 pub zond_engine::report::ScannerKind::TcpPort
 pub zond_engine::report::ScannerKind::UdpPort
 impl zond_engine::report::ScannerKind
-pub const zond_engine::report::ScannerKind::ALL: [zond_engine::report::ScannerKind; 18]
+pub const zond_engine::report::ScannerKind::ALL: [zond_engine::report::ScannerKind; 19]
 pub const fn zond_engine::report::ScannerKind::for_raw_tcp(zond_engine::model::technique::TcpScanTechnique) -> Self
 impl core::clone::Clone for zond_engine::report::ScannerKind
 pub fn zond_engine::report::ScannerKind::clone(&self) -> zond_engine::report::ScannerKind

@@ -1360,9 +1360,12 @@ impl ScannerFailure {
     /// not be written does not: it probed nothing and dropped no answer, and
     /// what it costs is how much a resume of the scan would ask again. So it
     /// is kept in the report, to say the journal fell behind, and does not
-    /// make a scan that covered everything read as one that did not.
+    /// make a scan that covered everything read as one that did not. Nor does
+    /// a [`Resolver`](ScannerKind::Resolver) that failed: every target was
+    /// still asked and every answer kept, and what is missing is the names,
+    /// which the failure says.
     pub(crate) fn narrows_coverage(&self) -> bool {
-        self.scanner != ScannerKind::Journal
+        !matches!(self.scanner, ScannerKind::Journal | ScannerKind::Resolver)
     }
 }
 
@@ -3100,6 +3103,14 @@ pub enum ScannerKind {
     /// filing it as a scanning strategy would tell a caller that ports had gone
     /// unprobed when none had.
     Journal,
+    /// The hostname resolver a scan names its hosts with: the passive one
+    /// that reads a link's DNS and mDNS, or the reverse lookups asked of the
+    /// system's resolver.
+    ///
+    /// Named apart because what it loses is names and nothing else. Without
+    /// a failure filed under it, a scan whose resolver never started reports
+    /// hosts with no hostname, which reads as hosts that have none.
+    Resolver,
 }
 
 /// What a [`CongestionWindow`](crate::scanner::pacing::congestion::CongestionWindow) did over one run.
@@ -3136,7 +3147,7 @@ impl ScannerKind {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [ScannerKind; 18] = [
+    pub const ALL: [ScannerKind; 19] = [
         Self::Local,
         Self::Passive,
         Self::Routed,
@@ -3155,6 +3166,7 @@ impl ScannerKind {
         Self::Service,
         Self::Detection,
         Self::Journal,
+        Self::Resolver,
     ];
 
     /// What a raw TCP scan carrying `technique` reports itself as.

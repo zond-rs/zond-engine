@@ -67,6 +67,7 @@ use crate::protocols::{
     dns,
     mdns::{self, MdnsHost},
 };
+use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
 use crate::{counted, info, model::ip, warn};
 use pnet_packet::{Packet, udp::UdpPacket};
@@ -942,8 +943,10 @@ fn push_unique(servers: &mut Vec<SocketAddr>, server: SocketAddr) {
 /// lacks a hostname. The lookups run concurrently, at most thirty-two at a
 /// time so a wide range floods neither the resolver nor the descriptor table,
 /// and each answer is written back through [`ScanContext::write_host`] so it
-/// announces itself like any other finding. Any failure to build the resolver leaves the store untouched,
-/// since a scan without hostnames is still a useful scan.
+/// announces itself like any other finding. A resolver that cannot be built
+/// leaves the store untouched, since a scan without hostnames is still a
+/// useful scan, and is filed as a failure, since hosts left unnamed for it
+/// would otherwise read as hosts that have no name.
 ///
 /// A host nothing was heard from, one still
 /// [`Unknown`](crate::model::host::HostStatus::Unknown), is not looked up. It
@@ -1014,13 +1017,28 @@ const REVERSE_LOOKUPS_IN_FLIGHT: usize = 32;
 /// `unheard` says to.
 pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
     use hickory_resolver::TokioResolver;
+
+    let built = TokioResolver::builder_tokio().and_then(|builder| builder.build());
+    resolve_by(ctx, unheard, built).await;
+}
+
+/// [`resolve`], through the resolver `built` is, or filing why there is none.
+async fn resolve_by(
+    ctx: &ScanContext,
+    unheard: Unheard,
+    built: Result<hickory_resolver::TokioResolver, hickory_resolver::net::NetError>,
+) {
     use hickory_resolver::proto::rr::RData;
 
-    let Ok(builder) = TokioResolver::builder_tokio() else {
-        return;
-    };
-    let Ok(resolver) = builder.build() else {
-        return;
+    let resolver = match built {
+        Ok(resolver) => resolver,
+        Err(e) => {
+            ctx.record_failure(
+                ScannerKind::Resolver,
+                format!("not started: {e} (no hostnames)"),
+            );
+            return;
+        }
     };
 
     resolve_with(ctx, unheard, REVERSE_LOOKUPS_IN_FLIGHT, move |ip| {
@@ -1313,6 +1331,30 @@ mod tests {
             })
             .count();
         assert_eq!(named, 20, "every host with a name was named");
+    }
+
+    /// **A resolver that cannot be built says so in the report.** Without
+    /// the failure, every host the scan left unnamed for want of one reads as
+    /// a host that has no name. It costs no coverage: every target was still
+    /// asked, so the scan is not reported partial for it.
+    #[tokio::test]
+    async fn a_resolver_that_cannot_be_built_is_filed_as_a_failure() {
+        let (_session, ctx) = ScanSession::new();
+        ctx.update_host(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), |host| {
+            host.set_status(HostStatus::Up)
+        });
+
+        resolve_by(
+            &ctx,
+            Unheard::Skipped,
+            Err("no name server configured".into()),
+        )
+        .await;
+
+        let failures = ctx.failures_snapshot();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].scanner(), ScannerKind::Resolver);
+        assert!(!failures[0].narrows_coverage());
     }
 
     /// **A stopped scan stops looking names up.** The lookups are the tail of

@@ -557,6 +557,7 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
         ScannerKind::Service => "service",
         ScannerKind::Detection => "detection",
         ScannerKind::Journal => "journal",
+        ScannerKind::Resolver => "resolver",
     }
 }
 
@@ -581,6 +582,7 @@ pub fn scanner_kind(name: &str) -> Option<ScannerKind> {
         "service" => ScannerKind::Service,
         "detection" => ScannerKind::Detection,
         "journal" => ScannerKind::Journal,
+        "resolver" => ScannerKind::Resolver,
         _ => return None,
     })
 }
