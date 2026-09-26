@@ -121,6 +121,7 @@ use crate::config::ZondConfig;
 use crate::detect::Detections;
 use crate::journal::cursor::Checkpoint;
 use crate::model::{
+    ip::scoped::Zone,
     ip::set::{IpSet, Positions},
     port::PortSet,
     target::{TargetIndex, TargetMap},
@@ -343,25 +344,50 @@ fn recording_options(
     journal
 }
 
-/// Refuses a scan in a process whose descriptor limit, or whose table as it
-/// stands, leaves its connections no socket once its captures are open; see
-/// [`ScanError::TooFewDescriptors`].
+/// The links a scan probing `addresses` captures on, once it is known that
+/// the process has the descriptors for them; see
+/// [`capture_links_toward`](crate::transport::probe::capture_links_toward)
+/// and [`enough_descriptors`].
 ///
-/// A process that may choose its own packets opens a capture device on every
-/// interface it listens on for as long as its raw phases run, and they are
-/// counted into what it needs. A scan whose every target is loopback runs by
-/// connect and opens none, and is counted them all the same: the need is read
-/// before the plan is, and a limit that holds them costs such a scan nothing.
-fn enough_descriptors() -> Result<(), ScanError> {
-    let captures = if Privilege::current().is_raw() {
-        crate::transport::probe::capture_devices()
-    } else {
-        0
-    };
+/// One set for both, handed on to the context the scan's captures read, so
+/// what the up-front check counts is what the scan opens: a check counting
+/// every link lets through no scan a smaller need would refuse, and refuses
+/// scans that need a device or two on a machine with dozens of links.
+fn capture_plan(addresses: &IpSet, cfg: &ZondConfig) -> Result<Vec<Zone>, ScanError> {
+    let mut addresses = addresses.clone();
+    cfg.exclusions.withhold(&mut addresses);
+    let links = crate::transport::probe::capture_links_toward(&addresses, &cfg.send_source);
+    enough_descriptors(captures_needed(Privilege::current(), &links))?;
+    Ok(links)
+}
+
+/// How many capture devices a process holding `privilege` opens for a scan
+/// capturing on `links`: one a link where it may choose its own packets, and
+/// none where it probes by connect.
+///
+/// A raw process whose every target is loopback probes it by connect and
+/// opens nothing, and is counted its link all the same: the need is read
+/// before the phases decide, and one device more costs such a scan nothing.
+fn captures_needed(privilege: Privilege, links: &[Zone]) -> usize {
+    match privilege.is_raw() {
+        true => links.len(),
+        false => 0,
+    }
+}
+
+/// Refuses a scan in a process whose descriptor limit, or whose table as it
+/// stands, leaves its connections no socket once its `captures` capture
+/// devices are open; see [`ScanError::TooFewDescriptors`].
+fn enough_descriptors(captures: usize) -> Result<(), ScanError> {
     match crate::system::descriptors::too_few(captures) {
         Some((limit, needed)) => Err(ScanError::TooFewDescriptors { limit, needed }),
         None => Ok(()),
     }
+}
+
+/// Every address `target_map` names a port at.
+fn plan_addresses(target_map: &TargetMap) -> IpSet {
+    orchestrator::unsettled_ips(target_map, &Checkpoint::default())
 }
 
 /// Refuses a sitting that would not count its targets as its journal did.
@@ -608,7 +634,7 @@ pub async fn discover(
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
-    enough_descriptors()?;
+    let capture_links = capture_plan(&targets, cfg)?;
 
     // Numbered in what the exclusions leave, as a journal numbers a sweep,
     // and counted: the settlements are what the progress figures read, so a
@@ -631,7 +657,7 @@ pub async fn discover(
         .planning(Stage::Discovery, planned)
         .staging(discovery_stages(cfg))
         .build();
-    let handle = spawn_discovery(targets, cfg, ctx);
+    let handle = spawn_discovery(targets, capture_links, cfg, ctx);
     let stop = session.handle().clone();
     Ok((session, ScanTask::new(handle, stop)))
 }
@@ -680,9 +706,9 @@ pub async fn discover_with_journal(
     cfg: &ZondConfig,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
+    let mut capture_links = Vec::new();
     let journal = accepted(journal, |journal| {
         cfg.evasion.validate()?;
-        enough_descriptors()?;
         if journal.manifest().kind() != ScanKind::Discovery {
             return Err(ScanError::WrongPhase);
         }
@@ -697,6 +723,9 @@ pub async fn discover_with_journal(
         } else {
             addresses
         };
+        // Over the whole of what the job sweeps, which holds whatever part
+        // of it this sitting has left.
+        capture_links = capture_plan(swept, cfg)?;
         let this_run = crate::journal::manifest::Plan::discovery(
             swept,
             &cfg.exclusions,
@@ -754,7 +783,7 @@ pub async fn discover_with_journal(
     let earlier = journal.earlier_phases().to_vec();
 
     let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
-    let handle = spawn_discovery(sweep, cfg, ctx);
+    let handle = spawn_discovery(sweep, capture_links, cfg, ctx);
 
     let stop = session.handle().clone();
     Ok((
@@ -1123,6 +1152,7 @@ fn planned_targets(map: &TargetMap) -> Option<u64> {
 /// here knows what a journal is.
 fn spawn_discovery(
     mut targets: IpSet,
+    capture_links: Vec<Zone>,
     cfg: &ZondConfig,
     ctx: ScanContext,
 ) -> JoinHandle<ScanReport> {
@@ -1152,10 +1182,7 @@ fn spawn_discovery(
         let _held_back = held_back;
         // Before the sweep opens a capture, so each listens only where a
         // reply to it can arrive.
-        ctx.capture_on(crate::transport::probe::capture_links_toward(
-            &targets,
-            &cfg.send_source,
-        ));
+        ctx.capture_on(capture_links);
         ctx.enter_stage(Stage::Discovery, None);
         // No SCTP sweep and no ports of its own: `discover` is asked about
         // addresses and never about ports, so nothing has said which port
@@ -1646,11 +1673,11 @@ pub async fn scan(
     detections: Detections,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     cfg.evasion.validate()?;
-    enough_descriptors()?;
 
     let mut target_map = target_map;
     target_map.withhold_ports(&cfg.excluded_ports);
     let withheld = orchestrator::withhold_unprobeable_targets(&mut target_map);
+    let capture_links = capture_plan(&plan_addresses(&target_map), cfg)?;
     let planned = planned_targets(&target_map);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
 
@@ -1669,6 +1696,7 @@ pub async fn scan(
     let handle = spawn_scan(
         target_map,
         withheld,
+        capture_links,
         cfg,
         ctx,
         Checkpoint::default(),
@@ -1716,9 +1744,15 @@ pub async fn scan_with_journal(
     detections: Detections,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
+    let mut capture_links = Vec::new();
     let journal = accepted(journal, |journal| {
         cfg.evasion.validate()?;
-        enough_descriptors()?;
+        // Over the plan as the sitting will number it, which the excluded
+        // ports and the withholding below leave alike in every sitting.
+        let mut probed = target_map.clone();
+        probed.withhold_ports(&cfg.excluded_ports);
+        orchestrator::withhold_unprobeable_targets(&mut probed);
+        capture_links = capture_plan(&plan_addresses(&probed), cfg)?;
         if journal.manifest().kind() != ScanKind::PortScan {
             return Err(ScanError::WrongPhase);
         }
@@ -1776,7 +1810,15 @@ pub async fn scan_with_journal(
     // ended, and a caller watching it to know when to stop would wait for a scan
     // that was already over. See `ScanContext::progress`.
     let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
-    let handle = spawn_scan(target_map, withheld, cfg, ctx, resume_point, runs_liveness);
+    let handle = spawn_scan(
+        target_map,
+        withheld,
+        capture_links,
+        cfg,
+        ctx,
+        resume_point,
+        runs_liveness,
+    );
 
     let stop = session.handle().clone();
     Ok((
@@ -1811,10 +1853,13 @@ fn sitting_probes(
 /// `settled` is what an earlier sitting already covered, and is empty for a scan
 /// that is not continuing one. `withheld` is what
 /// [`orchestrator::withhold_unprobeable_targets`] took out of `target_map`,
-/// refused in the port phase's record.
+/// refused in the port phase's record. `capture_links` is where its captures
+/// listen, as [`capture_plan`] counted them.
+#[allow(clippy::too_many_arguments)]
 fn spawn_scan(
     target_map: TargetMap,
     withheld: orchestrator::Withheld,
+    capture_links: Vec<Zone>,
     cfg: &ZondConfig,
     ctx: ScanContext,
     settled: Checkpoint,
@@ -1843,11 +1888,7 @@ fn spawn_scan(
         ctx.number_targets(TargetIndex::of(&numbered));
         // Before any phase opens a capture, so each listens only where a
         // reply to this plan can arrive.
-        let addresses = orchestrator::unsettled_ips(&numbered, &Checkpoint::default());
-        ctx.capture_on(crate::transport::probe::capture_links_toward(
-            &addresses,
-            &cfg.send_source,
-        ));
+        ctx.capture_on(capture_links);
 
         // Phase one: which of these addresses has anything at it.
         //
@@ -2138,6 +2179,39 @@ mod tests {
         assert!(!directory.exists(), "a sweep that never ran left a record");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **A raw scan's up-front need counts a capture device for every link it
+    /// will capture on, and a scan by connect counts none.**
+    ///
+    /// Left out of the need, a table with room for the reserve alone lets the
+    /// scan start and refuses its captures one link at a time, and what those
+    /// links carry is never heard. Counted for every link of the machine
+    /// instead, a scan of loopback on a machine with dozens of links is
+    /// refused a limit it has plenty of room under.
+    #[test]
+    fn a_raw_scan_needs_a_capture_device_for_each_link_it_captures_on() {
+        use crate::model::ip::scoped::Zone;
+
+        let links = [Zone::new(1, "lo0"), Zone::new(4, "en0")];
+        assert_eq!(captures_needed(Privilege::Raw, &links), 2);
+        assert_eq!(captures_needed(Privilege::Connect, &links), 0);
+    }
+
+    /// A scan of loopback counts, and captures on, loopback's link and no
+    /// other, whatever else the machine has up.
+    #[test]
+    fn a_scan_of_loopback_plans_its_captures_on_loopback_alone() {
+        let cfg = ZondConfig::default();
+        let links =
+            capture_plan(&"127.0.0.1".parse().expect("an address"), &cfg).expect("room for it");
+
+        let loopback: Vec<_> = crate::system::interface::interfaces()
+            .into_iter()
+            .filter(crate::system::interface::Link::is_loopback)
+            .map(|link| link.zone())
+            .collect();
+        assert_eq!(links, loopback);
     }
 
     /// A port scan of a range too wide to walk refuses it in its port phase

@@ -1162,12 +1162,6 @@ fn capturable(links: &[Link]) -> Vec<Zone> {
         .collect()
 }
 
-/// How many capture devices a transport opened now would hold: one for each
-/// interface [`capturable_interfaces`] names.
-pub(crate) fn capture_devices() -> usize {
-    capturable_interfaces().len()
-}
-
 /// The links a reply to a probe of `targets` can arrive by, sent from
 /// `forced` where the scan pins its source: what a scan that knows its
 /// targets captures on.

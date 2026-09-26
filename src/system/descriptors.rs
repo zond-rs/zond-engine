@@ -258,8 +258,10 @@ fn reserve_within(soft: usize) -> usize {
 /// socket a unit holds beside its first.
 ///
 /// `captures` is the capture devices the scan will hold beside all of that:
-/// one for each link a scan taking the raw path listens on, thirty on a
-/// laptop with a VPN and a hypervisor, and none for a scan by connect. They
+/// one for each link a scan taking the raw path listens on, which is the links
+/// replies to its targets arrive by and every link, thirty on a laptop with a
+/// VPN and a hypervisor, where those cannot be told; none for a scan by
+/// connect. They
 /// are counted apart from the reserve because their number is the host's and
 /// not the scan's. Left out, a table with room for the reserve alone lets the
 /// scan start and refuses its captures one link at a time, and what that
