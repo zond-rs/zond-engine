@@ -821,23 +821,27 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// send it cost, refused for the file limit, by
     /// [`record_send`](Self::record_send): the probe is counted unasked and
     /// the run says why, while the host, never asked about, is not filed
-    /// unreachable, and its next probe asks the routing table again.
+    /// unreachable, and its next probe asks the routing table again. A
+    /// lookup the table gave no answer to is filed the same way, as a send
+    /// this machine refused in the table's words: whatever those words, they
+    /// are not an answer about the host, and read as one they would file it
+    /// unreachable or with no neighbour.
     pub(crate) fn source_for(
         &mut self,
         target: ProbeTarget,
         first_attempt: bool,
     ) -> Option<IpAddr> {
-        match self.resolver.source(target.0) {
-            Ok(source) => Some(source),
+        let refusal = match self.resolver.source(target.0) {
+            Ok(source) => return Some(source),
             Err(NoSource::Unreached) => {
                 self.record_no_route(target.0);
-                None
+                return None;
             }
-            Err(NoSource::Unasked(error)) => {
-                self.record_send(target, Err(&SendError::from_io(error)), first_attempt);
-                None
-            }
-        }
+            Err(NoSource::Unasked(error)) => SendError::from_io(error),
+            Err(NoSource::Unanswered(error)) => SendError::unanswered_route(&error),
+        };
+        self.record_send(target, Err(&refusal), first_attempt);
+        None
     }
 
     /// Records that no address on this host can reach `host`, so none of its
@@ -2507,6 +2511,35 @@ mod tests {
             core.refusals_failure().as_deref(),
             Some("1 port unasked, probes not sent (file limit reached)")
         );
+    }
+
+    /// A source lookup the routing table gave no answer to is a probe this
+    /// machine could not send, said in the lookup's words, and its host is
+    /// not filed unreachable: filed so, one lookup refused with `EHOSTDOWN`
+    /// read as a route refusing a live neighbour, and every port of it went
+    /// unasked for the rest of the scan. The words are not read as a send's
+    /// either, where `EHOSTDOWN` is a neighbour that did not answer.
+    #[cfg(unix)]
+    #[test]
+    fn a_source_lookup_the_routing_table_did_not_answer_leaves_its_host_to_be_asked_again() {
+        use crate::system::interface::{Link, LinkAddress, ProbeSockets, RouteAnswer};
+
+        let (mut core, _session) = core();
+        let segment = LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24);
+        core.resolver =
+            SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![segment])])
+                .asking_with(|_: IpAddr, _: &mut ProbeSockets| {
+                    RouteAnswer::connect_refused(libc::EHOSTDOWN)
+                });
+
+        assert_eq!(core.source_for((TARGET, 80), true), None);
+        assert!(
+            !core.is_unreachable(&TARGET),
+            "the host was filed unreachable"
+        );
+        assert!(!core.resolver.refused_by_route(TARGET));
+        let failure = core.refusals_failure().expect("the unsent probe is said");
+        assert!(failure.contains("route lookup failed"), "{failure}");
     }
 
     /// A core whose transport reads `state` as the kernel's word on

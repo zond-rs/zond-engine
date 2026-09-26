@@ -210,31 +210,61 @@ pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr>
 pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<IpAddr> {
     match ask_route(target, sockets) {
         RouteAnswer::From(source) => Some(source),
-        RouteAnswer::NoRoute | RouteAnswer::Forbidden | RouteAnswer::Unasked(_) => None,
+        RouteAnswer::NoRoute
+        | RouteAnswer::Forbidden
+        | RouteAnswer::Unanswered(_)
+        | RouteAnswer::Unasked(_) => None,
     }
 }
 
 /// What the kernel's routing table said about one destination.
+///
+/// Read off the error a UDP `connect` fails with, which is the route lookup's
+/// own and never the neighbour's: neither kernel consults the neighbour table
+/// on this path. Linux resolves the route in `ip_route_output_flow` and turns
+/// a route's type into an error through `fib_props`, and reads no neighbour
+/// state before a datagram is sent. XNU picks the source in `in_pcbladdr`,
+/// which does not look at the `RTF_REJECT` a failed ARP resolution sets; that
+/// flag turns sends away, from `arp_lookup_ip`, and is the sender's to report.
+/// So a refusal here is the table's answer about the destination, in one of
+/// the few words a table answers in, and anything else is a lookup that did
+/// not finish.
 #[derive(Debug)]
 pub(crate) enum RouteAnswer {
     /// It routes there, from this address.
     From(IpAddr),
     /// It has no route there it can use: `ENETUNREACH` or `EHOSTUNREACH`, or
-    /// anything else that is not [`Forbidden`](Self::Forbidden).
+    /// `EADDRNOTAVAIL` for a route with no address of this host's to send
+    /// from.
     ///
     /// What a missing route answers, and what a VPN holding the IPv6 default
     /// route without carrying IPv6 answers too, which is the case
     /// [`plausible_source`] steps around. An `unreachable` route an
     /// administrator added answers the same and cannot be told apart from
-    /// here.
+    /// here, and so does XNU's refusal of an interface this socket may not
+    /// send on.
     NoRoute,
     /// A route there refuses by policy: a `prohibit` route answers `EACCES`
-    /// and a `blackhole` route `EINVAL`, where Linux has them. No missing or
-    /// unusable route answers either, so a refusal in these words is a
-    /// decision this host's administrator made about the destination, and a
-    /// scan that stepped around it by naming a source would be the one
-    /// program on the machine that ignored it.
+    /// and a `blackhole` route `EINVAL`, where Linux has them, and an IPsec
+    /// policy that blocks the destination `EPERM`. No missing or unusable
+    /// route answers any of these, so a refusal in these words is a decision
+    /// this host's administrator made about the destination, and a scan that
+    /// stepped around it by naming a source would be the one program on the
+    /// machine that ignored it.
     Forbidden,
+    /// The table was asked and gave no answer, in words no route refuses in:
+    /// a lookup that ran out of memory or buffers, was interrupted or told to
+    /// try again, as Linux tells a socket whose IPsec keys are still being
+    /// negotiated, or found the interface down; and any error this does not
+    /// know.
+    ///
+    /// Says nothing about the destination, and is asked again. An error not
+    /// named here is read as this rather than as a refusal because the two
+    /// mistakes cost differently: a lookup wrongly asked again costs a few
+    /// questions and then settles as [`SourceResolver`] settles an
+    /// unanswered one, and a refusal wrongly remembered files a live host
+    /// unreachable for the rest of the scan.
+    Unanswered(std::io::Error),
     /// Nothing was asked: no socket to ask with, which says nothing about the
     /// destination.
     Unasked(std::io::Error),
@@ -242,14 +272,24 @@ pub(crate) enum RouteAnswer {
 
 impl RouteAnswer {
     /// What a refused `connect` says of the route, by the error it refused
-    /// with. See [`Forbidden`](Self::Forbidden).
-    fn refused_with(error: &std::io::Error) -> Self {
+    /// with. See [`Forbidden`](Self::Forbidden), [`NoRoute`](Self::NoRoute)
+    /// and [`Unanswered`](Self::Unanswered).
+    fn refused_with(error: std::io::Error) -> Self {
+        use std::io::ErrorKind;
         match error.kind() {
-            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput => {
-                Self::Forbidden
-            }
-            _ => Self::NoRoute,
+            ErrorKind::PermissionDenied | ErrorKind::InvalidInput => Self::Forbidden,
+            ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::AddrNotAvailable => Self::NoRoute,
+            _ => Self::Unanswered(error),
         }
+    }
+
+    /// What [`ask_route`] answers for a `connect` refused with `code`, for a
+    /// test that needs the table to refuse as no host a test runs on does.
+    #[cfg(all(test, unix))]
+    pub(crate) fn connect_refused(code: i32) -> Self {
+        Self::refused_with(std::io::Error::from_raw_os_error(code))
     }
 }
 
@@ -276,7 +316,7 @@ pub(crate) fn ask_route(target: IpAddr, sockets: &mut ProbeSockets) -> RouteAnsw
         }
     };
     if let Err(error) = socket.connect((target, 53)) {
-        return RouteAnswer::refused_with(&error);
+        return RouteAnswer::refused_with(error);
     }
     match socket.local_addr() {
         Ok(local) => RouteAnswer::From(local.ip()),
@@ -298,7 +338,25 @@ pub(crate) enum NoSource {
     /// it is, and asked again next time rather than remembered as an address
     /// nothing reaches.
     Unasked(std::io::Error),
+    /// The routing table was asked and gave no answer this time; see
+    /// [`RouteAnswer::Unanswered`]. A fact about this machine at this
+    /// moment, and asked again next time, up to
+    /// [`UNANSWERED_LOOKUPS`] times for one destination.
+    Unanswered(std::io::Error),
 }
+
+/// How many times [`SourceResolver`] asks the routing table about one
+/// destination that it has not answered before it settles the destination
+/// without the table's answer.
+///
+/// Each unanswered lookup costs the probe that needed it, which is not sent,
+/// so the bound is what a lookup that never succeeds costs a host: two
+/// probes, and the third sent on what the table has said, which is nothing.
+/// A shortage of memory or buffers passes between one probe and the next,
+/// and a table that failed three questions spread across a host's probes is
+/// not answering. A refusal is never what runs this out: a route that refuses
+/// says so in words [`RouteAnswer`] remembers the first time.
+pub(crate) const UNANSWERED_LOOKUPS: u8 = 3;
 
 /// Whether the routing table refuses `target`, a destination on one of this
 /// host's own segments.
@@ -309,8 +367,9 @@ pub(crate) enum NoSource {
 /// `unreachable` or `blackhole` route, or the rules a VPN's kill switch keeps
 /// the local network out with. A frame built for the neighbour never asks the
 /// table, so asking it here is the only way such a policy is heard. A table
-/// that could not be asked, for want of a socket to ask with, is not read as
-/// a refusal.
+/// that could not be asked, for want of a socket to ask with, or that gave no
+/// answer, is not read as a refusal: a policy refuses in its own words, which
+/// [`RouteAnswer`] reads.
 pub(crate) fn refuses_neighbour(target: IpAddr, sockets: &mut ProbeSockets) -> bool {
     matches!(
         ask_route(target, sockets),
@@ -346,6 +405,9 @@ pub struct SourceResolver {
     /// The destinations the routing table refused. See
     /// [`refused_by_route`](Self::refused_by_route).
     refused: std::collections::HashSet<IpAddr>,
+    /// How many lookups of each destination still unsettled the routing
+    /// table gave no answer to. See [`UNANSWERED_LOOKUPS`].
+    unanswered: HashMap<IpAddr, u8>,
     sockets: ProbeSockets,
     cache: HashMap<IpAddr, Option<IpAddr>>,
     /// The interfaces themselves, kept for [`plausible_source`]. The
@@ -382,6 +444,7 @@ impl SourceResolver {
             route: ask_route,
             asks_on_link: false,
             refused: std::collections::HashSet::new(),
+            unanswered: HashMap::new(),
             sockets: ProbeSockets::default(),
             cache: HashMap::new(),
             links: links.to_vec(),
@@ -523,24 +586,39 @@ impl SourceResolver {
     /// [`resolve`](Self::resolve), saying why there is no source.
     ///
     /// A lookup this process had no descriptor for is not remembered, and
-    /// the next asks the table afresh; see [`NoSource::Unasked`]. Everything
-    /// else is remembered for the life of the resolver.
+    /// the next asks the table afresh; see [`NoSource::Unasked`]. Nor is one
+    /// the table gave no answer to, up to [`UNANSWERED_LOOKUPS`] of them;
+    /// see [`NoSource::Unanswered`]. Everything else is remembered for the
+    /// life of the resolver.
     pub(crate) fn source(&mut self, target: IpAddr) -> Result<IpAddr, NoSource> {
         if let Some(cached) = self.cache.get(&target) {
             return cached.ok_or(NoSource::Unreached);
         }
 
         let source = self.find(target);
-        match &source {
-            Ok(address) => {
-                self.cache.insert(target, Some(*address));
-            }
-            Err(NoSource::Unreached) => {
-                self.cache.insert(target, None);
-            }
-            Err(NoSource::Unasked(_)) => {}
-        }
+        let settled = match &source {
+            Ok(address) => Some(*address),
+            Err(NoSource::Unreached) => None,
+            Err(NoSource::Unasked(_) | NoSource::Unanswered(_)) => return source,
+        };
+        self.cache.insert(target, settled);
+        self.unanswered.remove(&target);
         source
+    }
+
+    /// Counts a lookup of `target` the routing table gave no answer to, and
+    /// says whether to ask again: [`NoSource::Unanswered`] while the
+    /// destination has had fewer than [`UNANSWERED_LOOKUPS`], and `Ok` once
+    /// it has had that many, for the caller to settle it on what the table
+    /// has said, which is nothing.
+    fn unanswered(&mut self, target: IpAddr, error: std::io::Error) -> Result<(), NoSource> {
+        let count = self.unanswered.entry(target).or_default();
+        *count += 1;
+        if *count < UNANSWERED_LOOKUPS {
+            return Err(NoSource::Unanswered(error));
+        }
+        crate::info!(verbosity = 2, "{target} route lookup unanswered ({error})");
+        Ok(())
     }
 
     /// [`source`](Self::source), asked afresh.
@@ -549,6 +627,15 @@ impl SourceResolver {
     /// is not read as one that allows it: the question is what keeps the
     /// probes from a neighbour the host's policy refuses, and it is put again
     /// once a descriptor is free rather than skipped.
+    ///
+    /// Nor is a table that gave no answer, or a socket to ask it with that
+    /// could not be made for a reason other than the file limit, until it
+    /// has done so [`UNANSWERED_LOOKUPS`] times. The destination is then
+    /// settled on what the table has said, which is nothing: a target on
+    /// this host's segment is sent from the segment, since a policy that
+    /// refuses it says so in its own words the first time it is asked, and a
+    /// routed target is given what a target the table has no route to is
+    /// given, a forced source or the fallback, or none.
     fn find(&mut self, target: IpAddr) -> Result<IpAddr, NoSource> {
         if let Some(scoped) = self.scoped_source(target) {
             return Ok(scoped);
@@ -570,12 +657,16 @@ impl SourceResolver {
                 RouteAnswer::Unasked(error) if descriptors::exhausted(&error) => {
                     Err(NoSource::Unasked(error))
                 }
-                RouteAnswer::From(_) | RouteAnswer::Unasked(_) => Ok(on_link),
+                RouteAnswer::Unasked(error) | RouteAnswer::Unanswered(error) => {
+                    self.unanswered(target, error).map(|()| on_link)
+                }
+                RouteAnswer::From(_) => Ok(on_link),
             };
         }
 
-        let route = (self.route)(target, &mut self.sockets);
-        match route {
+        let routed = match (self.route)(target, &mut self.sockets) {
+            RouteAnswer::From(source) => Some(source),
+            RouteAnswer::NoRoute => None,
             RouteAnswer::Forbidden => {
                 // The limited broadcast address is refused as a segment's
                 // is, which says nothing about a route.
@@ -587,25 +678,29 @@ impl SourceResolver {
             RouteAnswer::Unasked(error) if descriptors::exhausted(&error) => {
                 return Err(NoSource::Unasked(error));
             }
-            _ => {}
-        }
+            RouteAnswer::Unasked(error) | RouteAnswer::Unanswered(error) => {
+                self.unanswered(target, error)?;
+                None
+            }
+        };
         if let Some(forced) = self.forced_source(target) {
             return Ok(forced);
         }
-        match route {
-            RouteAnswer::From(source) => Ok(source),
-            _ => plausible_source(&self.links, target).ok_or(NoSource::Unreached),
-        }
+        routed
+            .or_else(|| plausible_source(&self.links, target))
+            .ok_or(NoSource::Unreached)
     }
 
-    /// This resolver, asking the routing table through `route`, for a test
-    /// that needs the table to answer as no host a test runs on does.
+    /// This resolver, asking the routing table through `route` about every
+    /// destination a resolver of this host's asks about, for a test that
+    /// needs the table to answer as no host a test runs on does.
     #[cfg(all(test, unix))]
     pub(crate) fn asking_with(
         mut self,
         route: fn(IpAddr, &mut ProbeSockets) -> RouteAnswer,
     ) -> Self {
         self.route = route;
+        self.asks_on_link = true;
         self
     }
 }
@@ -887,16 +982,118 @@ mod tests {
     }
 
     /// A policy route is told from a missing one by the words the kernel
-    /// refuses in: `prohibit` answers `EACCES` and `blackhole` `EINVAL`, and a
-    /// missing or `unreachable` route `ENETUNREACH` or `EHOSTUNREACH`.
+    /// refuses in: `prohibit` answers `EACCES`, `blackhole` `EINVAL` and a
+    /// blocking IPsec policy `EPERM`, and a missing or `unreachable` route
+    /// `ENETUNREACH` or `EHOSTUNREACH`, or `EADDRNOTAVAIL` where it leaves no
+    /// address to send from. Every other word is a lookup that did not
+    /// finish, which says nothing of the destination: read as a missing
+    /// route, one `ENOBUFS` filed a live neighbour unreachable for a whole
+    /// scan.
     #[cfg(unix)]
     #[test]
-    fn a_policy_route_is_told_apart_by_its_refusal() {
-        let refused = |code| RouteAnswer::refused_with(&std::io::Error::from_raw_os_error(code));
-        assert!(matches!(refused(libc::EACCES), RouteAnswer::Forbidden));
-        assert!(matches!(refused(libc::EINVAL), RouteAnswer::Forbidden));
-        assert!(matches!(refused(libc::ENETUNREACH), RouteAnswer::NoRoute));
-        assert!(matches!(refused(libc::EHOSTUNREACH), RouteAnswer::NoRoute));
+    fn a_refused_lookup_is_read_as_a_policy_a_missing_route_or_no_answer() {
+        for code in [libc::EACCES, libc::EPERM, libc::EINVAL] {
+            assert!(
+                matches!(RouteAnswer::connect_refused(code), RouteAnswer::Forbidden),
+                "{code}"
+            );
+        }
+        for code in [libc::ENETUNREACH, libc::EHOSTUNREACH, libc::EADDRNOTAVAIL] {
+            assert!(
+                matches!(RouteAnswer::connect_refused(code), RouteAnswer::NoRoute),
+                "{code}"
+            );
+        }
+        for code in [
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::EAGAIN,
+            libc::EINTR,
+            libc::EHOSTDOWN,
+            libc::ENETDOWN,
+            libc::EPROTO,
+        ] {
+            assert!(
+                matches!(
+                    RouteAnswer::connect_refused(code),
+                    RouteAnswer::Unanswered(_)
+                ),
+                "{code}"
+            );
+        }
+    }
+
+    /// A lookup the routing table gave no answer to is asked again, for a
+    /// neighbour on this host's segment and for a routed target alike, and
+    /// the host is not named refused by a route. Remembered as a refusal, a
+    /// moment's shortage of buffers filed a live neighbour unreachable for
+    /// the rest of the scan, every port of it unasked.
+    #[cfg(unix)]
+    #[test]
+    fn a_lookup_the_routing_table_did_not_answer_is_asked_again() {
+        let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 14));
+        let routed = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
+        let mut resolver = SourceResolver {
+            route: |_, _| RouteAnswer::connect_refused(libc::ENOBUFS),
+            asks_on_link: true,
+            ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])])
+        };
+
+        for target in [neighbour, routed] {
+            assert_eq!(resolver.resolve(target), None, "{target}");
+            assert!(!resolver.refused_by_route(target), "{target}");
+        }
+
+        resolver.route = |_, _| RouteAnswer::From(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+        for target in [neighbour, routed] {
+            assert_eq!(
+                resolver.resolve(target),
+                Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10))),
+                "the next lookup of {target} asks again"
+            );
+        }
+    }
+
+    /// A table that never answers is asked a bounded number of times, and
+    /// the destination is then settled on what it has said, which is
+    /// nothing: a neighbour is sent from its segment, since a policy refuses
+    /// in its own words the first time, and a routed target with no route
+    /// has no source. Neither is named refused by a route, and neither is
+    /// asked about again, so a lookup that never succeeds costs a host a
+    /// few probes rather than one question per probe for the whole scan.
+    #[cfg(unix)]
+    #[test]
+    fn a_lookup_the_table_never_answers_is_settled_after_a_few_asks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+
+        let segment = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+        let mut resolver = SourceResolver {
+            route: |_, _| {
+                ASKED.fetch_add(1, Ordering::SeqCst);
+                RouteAnswer::connect_refused(libc::ENOBUFS)
+            },
+            asks_on_link: true,
+            ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])])
+        };
+        let asks = usize::from(UNANSWERED_LOOKUPS);
+
+        for (target, settled) in [
+            (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 14)), Some(segment)),
+            (IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)), None),
+        ] {
+            ASKED.store(0, Ordering::SeqCst);
+            for _ in 1..asks {
+                assert!(matches!(
+                    resolver.source(target),
+                    Err(NoSource::Unanswered(_))
+                ));
+            }
+            assert_eq!(resolver.resolve(target), settled, "{target}");
+            assert_eq!(resolver.resolve(target), settled, "{target}");
+            assert_eq!(ASKED.load(Ordering::SeqCst), asks, "{target}");
+            assert!(!resolver.refused_by_route(target), "{target}");
+        }
     }
 
     /// A link-local written with its interface is not this case at all: it

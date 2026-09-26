@@ -570,6 +570,17 @@ impl SendError {
         }
     }
 
+    /// A probe not sent because the routing table gave no answer to the
+    /// lookup of its source, in the words the lookup failed with.
+    ///
+    /// A refusal whatever those words are, never read by
+    /// [`from_io`](Self::from_io): a lookup that failed says nothing about
+    /// the destination, and an `EHOSTDOWN` read there would file the host as
+    /// one whose neighbour did not answer.
+    pub(crate) fn unanswered_route(error: &std::io::Error) -> Self {
+        Self::Refused(format!("route lookup failed: {error}"))
+    }
+
     /// Whether this failure is about the destination rather than about the
     /// sending host: no route to it, or no answer from the neighbour a route
     /// leads through.

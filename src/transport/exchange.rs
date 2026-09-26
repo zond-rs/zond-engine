@@ -190,7 +190,7 @@ impl Exchange {
     /// serialized, [`ExchangeError::NoSource`] if no address on this host
     /// reaches `to`, and [`ExchangeError::Send`] if the probe was refused on the
     /// way out, or this process had no descriptor to ask the routing table
-    /// for its source with.
+    /// for its source with, or the table gave no answer.
     pub async fn send(
         &mut self,
         segment: &Packet,
@@ -201,6 +201,7 @@ impl Exchange {
         let source = self.sources.source(to).map_err(|missing| match missing {
             NoSource::Unreached => ExchangeError::NoSource(to),
             NoSource::Unasked(error) => ExchangeError::Send(SendError::from_io(error)),
+            NoSource::Unanswered(error) => ExchangeError::Send(SendError::unanswered_route(&error)),
         })?;
         let zone = self.sources.zone_of(to);
 
