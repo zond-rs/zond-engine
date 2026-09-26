@@ -583,6 +583,9 @@ pub struct DiscoveryPlan {
     steps: Vec<DiscoveryStep>,
     refusals: Vec<RefusedStep>,
     ours: IpSet,
+    /// The neighbours this host's routing table refuses, left to the connect
+    /// step rather than asked by frame.
+    refused_by_route: IpSet,
 }
 
 impl DiscoveryPlan {
@@ -608,6 +611,7 @@ impl DiscoveryPlan {
     pub fn build(targets: IpSet, scope: Scope, exclusions: &Exclusions, forced: &[IpAddr]) -> Self {
         let mut steps = Vec::new();
         let mut refusals = Vec::new();
+        let mut refused_by_route = IpSet::new();
 
         let interface::RoutedTargets {
             mut local,
@@ -681,6 +685,7 @@ impl DiscoveryPlan {
                 targets.subtract(&refused);
                 for address in refused.iter() {
                     unmapped.insert(address);
+                    refused_by_route.insert(address);
                 }
                 info!(
                     verbosity = 1,
@@ -734,7 +739,15 @@ impl DiscoveryPlan {
             steps,
             refusals,
             ours,
+            refused_by_route,
         }
+    }
+
+    /// The neighbours this host's routing table refuses, which the plan left
+    /// to the connect step rather than asking by frame; see
+    /// [`refused_neighbours`](interface::refused_neighbours).
+    pub(crate) fn refused_by_route(&self) -> &IpSet {
+        &self.refused_by_route
     }
 
     /// Adds an SCTP sweep beside every routed step, asking `port`.
@@ -1539,6 +1552,7 @@ mod tests {
     fn what_a_frame_cannot_reach_moves_to_the_connect_step() {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
+            refused_by_route: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Local {
                     interface: Box::new(interface_with(20, "utun9", vec![v6("198.51.100.2")])),
@@ -1600,6 +1614,7 @@ mod tests {
     fn a_sweeps_step_stays_on_a_framed_link_and_goes_on_a_tunnel() {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
+            refused_by_route: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Local {
                     interface: Box::new(framed(4, "en0", vec![v6("192.0.2.10")])),
@@ -1635,6 +1650,7 @@ mod tests {
     fn withholding_leaves_the_connect_step_as_it_was() {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
+            refused_by_route: IpSet::new(),
             steps: vec![DiscoveryStep::Connect {
                 targets: set_of(&["127.0.0.1"]),
                 ports: SynPorts::common(),
@@ -1658,6 +1674,7 @@ mod tests {
     fn the_routed_steps_ask_the_ports_they_are_given() {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
+            refused_by_route: IpSet::new(),
             steps: vec![DiscoveryStep::Routed {
                 targets: vec![RoutedTarget {
                     target: v6("198.51.100.1"),
@@ -1686,6 +1703,7 @@ mod tests {
     fn the_connect_step_asks_the_ports_the_routed_steps_are_given() {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
+            refused_by_route: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Routed {
                     targets: vec![RoutedTarget {
@@ -1725,6 +1743,7 @@ mod tests {
     fn a_plan_left_no_tcp_port_refuses_its_tcp_steps() {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
+            refused_by_route: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Routed {
                     targets: vec![RoutedTarget {
@@ -1756,6 +1775,7 @@ mod tests {
     fn a_connect_step_made_for_what_frames_miss_asks_the_routed_ports() {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
+            refused_by_route: IpSet::new(),
             steps: vec![DiscoveryStep::Routed {
                 targets: vec![
                     RoutedTarget {
@@ -1794,6 +1814,7 @@ mod tests {
     fn an_sctp_sweep_is_added_to_the_routed_steps_alone() {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
+            refused_by_route: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Routed {
                     targets: vec![RoutedTarget {

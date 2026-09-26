@@ -193,6 +193,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: first.unroutable().to_vec(),
+            refused_by_route: first.refused_by_route().to_vec(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),

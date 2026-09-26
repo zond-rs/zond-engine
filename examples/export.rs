@@ -793,6 +793,7 @@ fn phase() -> ScanPhase {
         refusals: Vec::new(),
         attachments: Vec::new(),
         unroutable: Vec::new(),
+        refused_by_route: Vec::new(),
         timed_out: Vec::new(),
         icmp_rate_limited: Vec::new(),
         // Every target reached with the packets the scan chose. Left out of the

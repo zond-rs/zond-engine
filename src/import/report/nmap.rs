@@ -756,6 +756,7 @@ impl Run {
             // ground it covered, so nothing is invented here.
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),

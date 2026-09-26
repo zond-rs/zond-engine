@@ -1862,6 +1862,9 @@ pub struct PhaseParts {
     pub refusals: Vec<Refusal>,
     /// Addresses this host could not reach, so no probe was sent to them.
     pub unroutable: Vec<IpAddr>,
+    /// The addresses among `unroutable` that this host's routing table
+    /// refuses. See [`ScanPhase::refused_by_route`].
+    pub refused_by_route: Vec<IpAddr>,
     /// Addresses whose per-host budget ran out before the phase finished with
     /// them.
     pub timed_out: Vec<IpAddr>,
@@ -1921,6 +1924,7 @@ impl ScanPhase {
             failures: parts.failures,
             refusals: parts.refusals,
             unroutable: parts.unroutable,
+            refused_by_route: parts.refused_by_route,
             timed_out: parts.timed_out,
             icmp_rate_limited: parts.icmp_rate_limited,
             reached_by_connect: parts.reached_by_connect,
@@ -1972,6 +1976,9 @@ pub struct ScanPhase {
     /// different things from a reader. Telling somebody to scan an unreachable
     /// address on trust is advice that cannot work.
     unroutable: Vec<IpAddr>,
+    /// The addresses among `unroutable` that this host's routing table
+    /// refuses. See [`refused_by_route`](Self::refused_by_route).
+    refused_by_route: Vec<IpAddr>,
     /// Ground this phase declined before sending anything, and why.
     ///
     /// Beside `unroutable` rather than inside `failures`, on the reasoning
@@ -2100,6 +2107,29 @@ impl ScanPhase {
     /// scanning it on trust cannot reach it either.
     pub fn unroutable(&self) -> &[IpAddr] {
         &self.unroutable
+    }
+
+    /// The addresses among [`unroutable`](Self::unroutable) that this host's
+    /// own routing table refuses, ascending.
+    ///
+    /// A route an administrator added over an address, `prohibit`,
+    /// `blackhole` or `unreachable`, or the rules a VPN's kill switch keeps a
+    /// network out with, is the host's policy, and every program on it
+    /// honours it: ping, a connect, and this engine, which sends such an
+    /// address nothing. Named apart from the rest of the unreachable because
+    /// the remedy is on this machine rather than on the path: the route, not
+    /// the network, is why the address was not asked.
+    ///
+    /// Named where the engine can tell a route refused: a neighbour on one of
+    /// this host's segments, whose connected route only a policy overrides,
+    /// on a scan that frames its own probes; and any address the kernel
+    /// refuses in words only a policy uses, the permission denied of a
+    /// `prohibit` route or the invalid argument of a `blackhole` one, where
+    /// Linux has them. An `unreachable` route anywhere else answers as a
+    /// missing route does, and its address is among the unreachable without
+    /// being named here.
+    pub fn refused_by_route(&self) -> &[IpAddr] {
+        &self.refused_by_route
     }
 
     /// Addresses the phase left before it had finished with them, because the
@@ -3576,6 +3606,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),

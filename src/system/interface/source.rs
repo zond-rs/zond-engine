@@ -99,6 +99,28 @@ impl OnLinkTable {
         self.held.is_empty()
     }
 
+    /// Whether `target` is the network or the broadcast address of an IPv4
+    /// segment this host holds, which names the segment rather than a
+    /// neighbour on it.
+    ///
+    /// A kernel refuses a socket to the broadcast address the way it refuses
+    /// one to an address a policy keeps out, and some still treat the network
+    /// address as a broadcast, so a refusal for either says nothing about a
+    /// route. A `/31` and a `/32` have no such addresses.
+    fn is_segment_edge(&self, target: IpAddr) -> bool {
+        self.held.iter().any(|held| {
+            held.contains(&target)
+                && held.prefix() < 31
+                && match held.network() {
+                    crate::model::ip::range::IpRange::V4(range) => {
+                        target == IpAddr::V4(range.start_addr())
+                            || target == IpAddr::V4(range.end_addr())
+                    }
+                    crate::model::ip::range::IpRange::V6(_) => false,
+                }
+        })
+    }
+
     /// The table of this host's segments: the prefixes of its links that
     /// carry frames, where a destination is a neighbour whose hardware address
     /// the kernel resolves before anything is sent to it. A tunnel's prefix
@@ -537,7 +559,12 @@ impl SourceResolver {
             }
             return match (self.route)(target, &mut self.sockets) {
                 RouteAnswer::NoRoute | RouteAnswer::Forbidden => {
-                    self.refused.insert(target);
+                    // Unreached all the same, but not named refused by a
+                    // route: the kernel refuses a segment's broadcast address
+                    // on grounds of its own.
+                    if !self.onlink.is_segment_edge(target) {
+                        self.refused.insert(target);
+                    }
                     Err(NoSource::Unreached)
                 }
                 RouteAnswer::Unasked(error) if descriptors::exhausted(&error) => {
@@ -550,7 +577,11 @@ impl SourceResolver {
         let route = (self.route)(target, &mut self.sockets);
         match route {
             RouteAnswer::Forbidden => {
-                self.refused.insert(target);
+                // The limited broadcast address is refused as a segment's
+                // is, which says nothing about a route.
+                if !matches!(target, IpAddr::V4(v4) if v4.is_broadcast()) {
+                    self.refused.insert(target);
+                }
                 return Err(NoSource::Unreached);
             }
             RouteAnswer::Unasked(error) if descriptors::exhausted(&error) => {
@@ -781,6 +812,32 @@ mod tests {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
         assert_eq!(resolver.resolve(target), None);
         assert!(resolver.refused_by_route(target));
+    }
+
+    /// A segment's broadcast and network addresses, and the limited broadcast
+    /// address, are refused a source as a neighbour a route refuses is, since
+    /// the kernel refuses them too, and are not named refused by a route: a
+    /// kernel refuses a socket to a broadcast address on grounds of its own,
+    /// and a scan of a `/24` would otherwise name its two edges as addresses
+    /// a route on this machine keeps out.
+    #[test]
+    fn a_segment_s_edges_are_unreached_without_being_named_refused_by_a_route() {
+        let mut resolver = SourceResolver {
+            route: |_, _| RouteAnswer::Forbidden,
+            asks_on_link: true,
+            ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])])
+        };
+        for edge in [
+            Ipv4Addr::new(192, 0, 2, 0),
+            Ipv4Addr::new(192, 0, 2, 255),
+            Ipv4Addr::BROADCAST,
+        ] {
+            assert_eq!(resolver.resolve(IpAddr::V4(edge)), None, "{edge}");
+            assert!(!resolver.refused_by_route(IpAddr::V4(edge)), "{edge}");
+        }
+        let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13));
+        assert_eq!(resolver.resolve(neighbour), None);
+        assert!(resolver.refused_by_route(neighbour));
     }
 
     /// A routing table this process had no descriptor to ask is a shortage

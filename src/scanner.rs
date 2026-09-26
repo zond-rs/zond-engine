@@ -1281,6 +1281,9 @@ async fn run_discovery(
             plan::DiscoveryPlan::build(targets, reach, &cfg.exclusions, &cfg.send_source);
         plan.connect_instead(&unframed.targets);
         plan.asking_tcp(syn_ports);
+        for address in plan.refused_by_route().iter() {
+            ctx.note_refused_by_route(address);
+        }
         if let Some(port) = sctp_port {
             plan.also_over_sctp(port);
         }

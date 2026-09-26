@@ -626,6 +626,7 @@ struct PhaseDto {
     refusals: Vec<RefusalDto>,
     probe_stats: Vec<ProbeStatsDto>,
     unroutable: Vec<String>,
+    refused_by_route: Vec<String>,
     timed_out: Vec<String>,
     icmp_rate_limited: Vec<String>,
     reached_by_connect: Vec<RangeDto>,
@@ -685,6 +686,11 @@ impl PhaseDto {
                 .collect::<Result<_, _>>()?,
             unroutable: self
                 .unroutable
+                .iter()
+                .map(|ip| address(ip))
+                .collect::<Result<_, _>>()?,
+            refused_by_route: self
+                .refused_by_route
                 .iter()
                 .map(|ip| address(ip))
                 .collect::<Result<_, _>>()?,
@@ -2605,6 +2611,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
@@ -2630,6 +2637,61 @@ mod tests {
         assert_eq!(phase.liveness_skipped(), Some(LivenessSkip::PortsNoDearer));
         assert_eq!(phase.unheard_probes(), 2, "what the silent were asked");
         assert_eq!(restored.hosts().count(), 1, "only the host that answered");
+    }
+
+    /// An address a phase names as refused by a route on the scanning host is
+    /// named so through a written document and back, and through the record a
+    /// journal keeps, beside the unreachable it is among: dropped, a report
+    /// read back says the address could not be reached and not that the
+    /// remedy is a route on the machine that ran it.
+    #[test]
+    fn an_address_refused_by_a_route_survives_a_round_trip() {
+        use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let at = |last| IpAddr::V4(Ipv4Addr::new(203, 0, 113, last));
+        let mut ips =
+            crate::model::parse::ip::to_set(&["203.0.113.0/29"], None, None).expect("a range");
+        let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
+            attachments: Vec::new(),
+            kind: ScanKind::Discovery,
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            elapsed: Duration::from_secs(1),
+            privilege: Some(crate::system::privilege::Privilege::Raw),
+            targets: crate::report::TargetScope::from_ip_set(
+                &mut ips,
+                &crate::model::exclusion::Exclusions::none(),
+            ),
+            settings: ScanSettings::from(&crate::ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: vec![at(2), at(3)],
+            refused_by_route: vec![at(2)],
+            timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: None,
+            silent: Vec::new(),
+            stopped: None,
+            passes_cut: Vec::new(),
+            unreached: 0,
+            unheard_probes: 0,
+            probes: Vec::new(),
+            origin: None,
+        });
+        let original = ScanReport::new(phase, []);
+
+        let restored = read(&write(&original)).expect("a readable document");
+        assert_eq!(restored.phases()[0].unroutable(), [at(2), at(3)]);
+        assert_eq!(restored.phases()[0].refused_by_route(), [at(2)]);
+
+        let recorded = crate::record::PhaseRecord::from(&original.phases()[0]);
+        let journalled = serde_json::to_string(&recorded).expect("a record");
+        let recorded: crate::record::PhaseRecord =
+            serde_json::from_str(&journalled).expect("the record reads back");
+        assert_eq!(ScanPhase::from(&recorded).refused_by_route(), [at(2)]);
     }
 
     /// A phase recorded before it closed stays open through a written
@@ -2659,6 +2721,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),

@@ -268,6 +268,12 @@ enum Refusal {
     /// No route leads to the address. A fact about the address as seen from
     /// here rather than a fault, and reported against the address.
     NoRoute,
+    /// A route leads to the address and refuses it, in the words only a
+    /// route's policy uses: a `prohibit` or `blackhole` route where Linux has
+    /// them; see [`Egress::start_connect`]. Reported against the address as
+    /// [`NoRoute`](Self::NoRoute) is, and named as refused by a route, since
+    /// the remedy is this machine's routing table.
+    Forbidden,
     /// The source port every probe is pinned to was held; see
     /// [`SourcePortHeld`]. Named apart from [`Local`](Self::Local) because
     /// the operating system's words for it name neither the port nor the
@@ -290,10 +296,30 @@ impl Refusal {
             return Self::PortHeld(held.port, held.holder);
         }
         match error.kind() {
+            ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable
+                if refused_by_policy(error) =>
+            {
+                Self::Forbidden
+            }
             ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => Self::NoRoute,
             _ => Self::Local(error.to_string()),
         }
     }
+}
+
+/// Whether `error`, a host this machine cannot reach, is a route refusing in
+/// its policy's words: the permission denied a `prohibit` route answers, or
+/// the invalid argument of a `blackhole` one, carried inside it.
+fn refused_by_policy(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<io::Error>())
+        .is_some_and(|inner| {
+            matches!(
+                inner.kind(),
+                ErrorKind::PermissionDenied | ErrorKind::InvalidInput
+            )
+        })
 }
 
 /// What a scan's probes could not ask, and why, reported once it has drained.
@@ -310,6 +336,8 @@ struct Shortfall {
     identified_in_part: u128,
     /// Addresses no route led to.
     unroutable: std::collections::BTreeSet<IpAddr>,
+    /// The ones among them a route refused.
+    forbidden: std::collections::BTreeSet<IpAddr>,
     /// Targets the pinned source port was held for.
     port_held: u128,
     /// The pinned port, and what held it the first time.
@@ -327,6 +355,10 @@ impl Shortfall {
             Attempt::Starved => self.starved += 1,
             Attempt::Refused(Refusal::NoRoute) => {
                 self.unroutable.insert(ip);
+            }
+            Attempt::Refused(Refusal::Forbidden) => {
+                self.unroutable.insert(ip);
+                self.forbidden.insert(ip);
             }
             Attempt::Refused(Refusal::PortHeld(port, holder)) => {
                 self.port_held += 1;
@@ -370,6 +402,9 @@ impl Shortfall {
                 .read_host(address, |host| host.status() == HostStatus::Up)
                 .unwrap_or(false);
             if !reached {
+                if self.forbidden.contains(&address) {
+                    ctx.note_refused_by_route(address);
+                }
                 ctx.record_unroutable(address);
             }
         }
@@ -2189,10 +2224,10 @@ async fn prober(
         match knock {
             Some((Knock::Answered, start)) => return answered(ip, start),
             Some((Knock::Asked, _)) => asked = true,
-            Some((Knock::Refused(Refusal::NoRoute), _)) => {
+            Some((Knock::Refused(refusal @ (Refusal::NoRoute | Refusal::Forbidden)), _)) => {
                 return ProbedHost {
                     ip,
-                    fate: Fate::Refused(Refusal::NoRoute),
+                    fate: Fate::Refused(refusal),
                 };
             }
             Some((Knock::Refused(refusal), _)) => {
@@ -2962,6 +2997,33 @@ mod tests {
             "the handshake's round trip was not the host's while its port was identified"
         );
         assert!(identifying, "the identification ended before the test read");
+    }
+
+    /// A route that refuses in its policy's words is told from one that is
+    /// missing, so the address is named as refused by a route: Linux answers
+    /// a `prohibit` route with permission denied and a `blackhole` route with
+    /// an invalid argument, which the connect hands on inside a host it
+    /// cannot reach, and a missing or `unreachable` route with the plain
+    /// host or network unreachable.
+    #[cfg(unix)]
+    #[test]
+    fn a_route_refusing_by_policy_is_told_from_a_missing_one() {
+        let refused_with = |code| {
+            Refusal::of(&io::Error::new(
+                ErrorKind::HostUnreachable,
+                io::Error::from_raw_os_error(code),
+            ))
+        };
+        assert_eq!(refused_with(libc::EACCES), Refusal::Forbidden);
+        assert_eq!(refused_with(libc::EINVAL), Refusal::Forbidden);
+        assert_eq!(
+            Refusal::of(&io::Error::from_raw_os_error(libc::EHOSTUNREACH)),
+            Refusal::NoRoute
+        );
+        assert_eq!(
+            Refusal::of(&io::Error::from_raw_os_error(libc::ENETUNREACH)),
+            Refusal::NoRoute
+        );
     }
 
     /// Where an error surfaced decides what it means: the same code before

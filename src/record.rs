@@ -1423,6 +1423,14 @@ pub struct PhaseRecord {
     /// them.
     #[serde(default)]
     pub unroutable: Vec<IpAddr>,
+    /// The addresses among `unroutable` the scanning host's routing table
+    /// refuses.
+    ///
+    /// Skipped when empty, which is most sittings, and defaulted on the way
+    /// in, so a record written before this field existed reads back as a
+    /// sitting that named no address refused by a route.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused_by_route: Vec<IpAddr>,
     /// Addresses the sitting left before it had finished with them, because
     /// their own budget ran out.
     ///
@@ -1649,6 +1657,7 @@ impl From<&ScanPhase> for PhaseRecord {
             failures: phase.failures().iter().map(FailureRecord::from).collect(),
             refusals: phase.refusals().iter().map(RefusalRecord::from).collect(),
             unroutable: phase.unroutable().to_vec(),
+            refused_by_route: phase.refused_by_route().to_vec(),
             timed_out: phase.timed_out().to_vec(),
             icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
             reached_by_connect: phase
@@ -1704,6 +1713,7 @@ impl From<&PhaseRecord> for ScanPhase {
             failures: record.failures.iter().map(ScannerFailure::from).collect(),
             refusals: record.refusals.iter().map(Refusal::from).collect(),
             unroutable: record.unroutable.clone(),
+            refused_by_route: record.refused_by_route.clone(),
             timed_out: record.timed_out.clone(),
             icmp_rate_limited: record.icmp_rate_limited.clone(),
             // A range whose ends do not describe one is dropped rather than

@@ -586,6 +586,12 @@ pub struct PhaseDto<'a> {
     /// An address here was never probed at all, which is a different finding
     /// from one that was probed and stayed silent.
     pub unroutable: Vec<String>,
+    /// The addresses among `unroutable` this host's own routing table
+    /// refuses, ascending: a route an administrator added over them, or a
+    /// VPN's kill switch. Left out when empty. The remedy is on the scanning
+    /// machine rather than on the path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refused_by_route: Vec<String>,
     /// Addresses the phase stopped working on because their own budget ran out,
     /// ascending.
     ///
@@ -785,6 +791,11 @@ impl<'a> PhaseDto<'a> {
             refusals: phase.refusals().iter().map(RefusalDto::new).collect(),
             unroutable: phase
                 .unroutable()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            refused_by_route: phase
+                .refused_by_route()
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect(),

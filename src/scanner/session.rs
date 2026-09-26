@@ -1849,6 +1849,9 @@ pub struct ScanContext {
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
     /// Addresses this host could not reach, so no probe was sent to them.
     pub(crate) unroutable: Arc<UnroutableLog>,
+    /// Addresses this host's routing table refuses. See
+    /// [`note_refused_by_route`](Self::note_refused_by_route).
+    pub(crate) refused_by_route: Arc<UnroutableLog>,
     /// Addresses the scan stopped working on because their budget ran out.
     pub(crate) timed_out: Arc<TimedOutLog>,
     /// The passes a stop skipped or cut short.
@@ -2540,6 +2543,23 @@ impl ScanContext {
     /// The unroutable addresses filed so far, taken.
     pub(crate) fn take_unroutable(&self) -> Vec<IpAddr> {
         self.unroutable.drain()
+    }
+
+    /// Notes that this host's own routing table refuses `address`, which is
+    /// why whatever files it [unroutable](Self::record_unroutable) sent it
+    /// nothing.
+    ///
+    /// A note on the reason rather than a filing: the strategy that meets
+    /// the address files it, and a phase names an address refused by a route
+    /// only where it also files it unroutable. See
+    /// [`ScanPhase::refused_by_route`](crate::report::ScanPhase::refused_by_route).
+    pub(crate) fn note_refused_by_route(&self, address: IpAddr) {
+        self.refused_by_route.insert(address);
+    }
+
+    /// The addresses noted refused by a route so far, taken.
+    pub(crate) fn take_refused_by_route(&self) -> Vec<IpAddr> {
+        self.refused_by_route.drain()
     }
 
     /// Whether `address` has been filed as unroutable in this phase, left in
@@ -3546,6 +3566,7 @@ impl SessionBuilder {
             refusals: Arc::new(RefusalLog::default()),
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
+            refused_by_route: Arc::new(UnroutableLog::default()),
             timed_out: Arc::new(TimedOutLog::default()),
             passes_cut: Arc::new(PassLog::default()),
             icmp_rate_limited: Arc::new(RateLimitedLog::default()),

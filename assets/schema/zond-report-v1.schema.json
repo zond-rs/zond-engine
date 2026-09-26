@@ -913,6 +913,14 @@
             "minLength": 1
           }
         },
+        "refused_by_route": {
+          "description": "The addresses among `unroutable` that the scanning host's own routing table refuses, ascending: a route an administrator added over them, `prohibit`, `blackhole` or `unreachable`, or the rules a VPN's kill switch keeps a network out with. Absent where there were none, which is nearly every phase. Every program on the scanning host honours such a route, and so does the engine, which sends these addresses nothing; the remedy is on the scanning machine rather than on the path.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "timed_out": {
           "description": "Addresses this phase stopped working on because their own wall-clock budget ran out, ascending. Absent where none did, which is every phase that set no per-host budget. An address here carries whatever the phase managed to ask about and nothing after that: the ports it never reached are present with the scan's silence verdict, so without this list a page of `filtered` reads as a quiet machine rather than as a scan that ran out of time. The record of this phase: what the report as a whole left early is the document's own `timed_out`.",
           "type": "array",

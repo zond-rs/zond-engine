@@ -1311,6 +1311,21 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
+    // Of those, the ones this machine's own routing table refuses, which is
+    // where the remedy is.
+    if !phase.refused_by_route.is_empty() {
+        let addresses: Vec<String> = phase.refused_by_route.iter().map(|ip| esc(ip)).collect();
+        fact(
+            out,
+            "refused by a route",
+            &format!(
+                "{}{}",
+                addresses.join(", "),
+                dim(&[esc("this host's routing table")])
+            ),
+        )?;
+    }
+
     // Addresses the scan started on and left before it had finished. Their
     // ports are on the page carrying the scan's silence verdict, so without
     // this line they read as quiet machines.

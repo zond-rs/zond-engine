@@ -349,5 +349,10 @@ async fn a_neighbour_behind_a_refusing_route_is_unroutable_rather_than_up() {
             [segment.peer()],
             "{kind}: the peer is not filed as unreachable"
         );
+        assert_eq!(
+            outcome.report.phases()[0].refused_by_route(),
+            [segment.peer()],
+            "{kind}: the peer is not named as refused by a route"
+        );
     }
 }

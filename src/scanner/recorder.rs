@@ -143,6 +143,7 @@ impl Opened {
             failures,
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
@@ -278,6 +279,13 @@ impl PhaseRecorder {
         targets.record_withheld_machines(ctx.withheld_by_hardware());
 
         let unroutable = ctx.take_unroutable();
+        // Only what the phase filed: a note on why an address went unasked
+        // names nothing the phase did not leave unasked.
+        let refused_by_route: Vec<std::net::IpAddr> = ctx
+            .take_refused_by_route()
+            .into_iter()
+            .filter(|address| unroutable.binary_search(address).is_ok())
+            .collect();
         // Taken whatever the kind, so a context reused for another phase starts
         // with no silence it did not hear.
         let heard_nothing = ctx.take_silent();
@@ -317,6 +325,7 @@ impl PhaseRecorder {
             failures: ctx.take_failures(),
             refusals: ctx.take_refusals(),
             unroutable,
+            refused_by_route,
             timed_out: ctx.take_timed_out(),
             icmp_rate_limited: ctx.take_icmp_rate_limited(),
             // Taken whatever the privilege, so a context reused for another
@@ -546,6 +555,33 @@ mod tests {
             "no strategy failed; that address is simply not reachable from here"
         );
         assert_eq!(report.failures().count(), 0);
+    }
+
+    /// An address this host's routing table refuses is named as refused by a
+    /// route beside the unreachable it is among, so a reader is told the
+    /// remedy is on this machine; and an address noted refused that the phase
+    /// never filed is not named, since the note is a reason and names nothing
+    /// the phase did not leave unasked.
+    #[test]
+    fn an_address_a_route_refuses_is_named_among_the_unreachable() {
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let mut targets = IpSet::from_str("203.0.113.1-203.0.113.3").expect("a valid range");
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
+        let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Raw, scope, &cfg);
+
+        ctx.note_refused_by_route(ip(1));
+        ctx.record_unroutable(ip(1));
+        ctx.record_unroutable(ip(2));
+        ctx.note_refused_by_route(ip(3));
+        ctx.settle_address(ip(3), crate::journal::settle::Settled::Exhausted);
+
+        let report = recorder.finish(&ctx);
+        let phase = &report.phases()[0];
+
+        assert_eq!(phase.unroutable(), [ip(1), ip(2)]);
+        assert_eq!(phase.refused_by_route(), [ip(1)]);
+        assert!(!report.is_partial());
     }
 
     /// scanner would have written.
