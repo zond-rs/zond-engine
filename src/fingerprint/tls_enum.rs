@@ -70,13 +70,14 @@
 //! the registry would cost.
 
 use std::net::SocketAddr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
+use super::authority::Authority;
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::model::tls::{
     CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
@@ -135,8 +136,8 @@ const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(250), Duration::from_
 ///
 /// Empty where the endpoint accepted nothing under any version. That is a real
 /// answer and not a failure: a server may be strictly configured, or may have
-/// been asked without the name it insists on, since an endpoint known only by
-/// its address is asked for no name. See
+/// been asked without the name it insists on, since this asks for no name;
+/// [`enumerate_tls_named`] asks for one. See
 /// [`Offer::server_name`](crate::protocols::tls::Offer::server_name).
 ///
 /// A version whose walk the endpoint cut short, by going on not answering when
@@ -147,6 +148,20 @@ const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(250), Duration::from_
 /// source enumerates through the same walk with its connections pinned there.
 pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
     enumerate_tls_while(addr, None, Egress::KERNEL, || true).await
+}
+
+/// [`enumerate_tls`], asking for `addr` by `name`, the host name its address
+/// was reached by.
+///
+/// Every hello carries the name as its server name, which a server holding its
+/// sites by name needs before it accepts any offer: asked by address alone, it
+/// reads as accepting nothing. The suites found are those of the site the name
+/// routes to, which on a shared address need not be those of its default one.
+/// A name a hello cannot carry, an address among them, is left off, and the
+/// walk is the one [`enumerate_tls`] makes.
+pub async fn enumerate_tls_named(addr: SocketAddr, name: &str) -> TlsSupport {
+    let server_name = Authority::new(addr).named(Some(Arc::from(name))).sni();
+    enumerate_tls_while(addr, server_name.as_deref(), Egress::KERNEL, || true).await
 }
 
 /// [`enumerate_tls`], asking `may_probe` before every connection and ending
@@ -808,7 +823,7 @@ mod tests {
     async fn an_endpoint_holding_its_sites_by_name_is_enumerated_by_the_name() {
         let addr = crate::testing::loopback::https_site("box.example", |_| None).await;
 
-        let named = enumerate_tls_while(addr, Some("box.example"), Egress::KERNEL, || true).await;
+        let named = enumerate_tls_named(addr, "box.example").await;
         assert!(named.accepts(TlsVersion::Tls13), "{named:?}");
         assert!(named.accepts(TlsVersion::Tls12), "{named:?}");
         assert!(named.unfinished().is_empty(), "{named:?}");

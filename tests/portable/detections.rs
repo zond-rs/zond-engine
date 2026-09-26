@@ -936,3 +936,47 @@ fn a_caller_runs_one_flow_against_one_port_without_a_scan() {
         findings[0].title()
     );
 }
+
+/// A caller outside the crate asks a port for the site a host name routes to,
+/// through the probe a flow speaks with, the capabilities a module is served,
+/// and the TLS enumeration.
+///
+/// A server holding its sites by name refuses a handshake naming none of them.
+/// Unable to pass the name, a caller's detection reads a reset and its
+/// enumeration finds nothing accepted, on the very servers the name decides.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_caller_asks_a_port_for_the_site_a_host_name_routes_to() {
+    use zond_engine::detect::compute::Budget;
+    use zond_engine::detect::flow::{Probe as _, SocketProbe};
+    use zond_engine::fingerprint::enumerate_tls_named;
+
+    const REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let addr =
+        crate::support::loopback::https_site("box.example", |_| Some("the named site")).await;
+
+    let (probed, served) = tokio::task::spawn_blocking(move || {
+        let budget = Budget::new(0, Duration::from_secs(5));
+        let probed = SocketProbe::new(addr, Protocol::Tcp, Some(Tunnel::Tls), &budget)
+            .named("box.example")
+            .speak(REQUEST);
+        let served = LiveCapabilities::new(addr, Protocol::Tcp, Some(Tunnel::Tls), &budget)
+            .named("box.example")
+            .speak(REQUEST);
+        (probed, served)
+    })
+    .await
+    .expect("the exchanges ran");
+
+    let probed = probed.expect("the probe reached the named site");
+    let served = served.expect("the capabilities reached the named site");
+    for reply in [probed, served] {
+        assert!(
+            reply.starts_with(b"HTTP/1.1 200 OK") && reply.ends_with(b"the named site"),
+            "{}",
+            String::from_utf8_lossy(&reply)
+        );
+    }
+
+    let support = enumerate_tls_named(addr, "box.example").await;
+    assert!(!support.suites().is_empty(), "{support:?}");
+}

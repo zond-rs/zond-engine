@@ -114,12 +114,19 @@ impl LiveCapabilities {
         self
     }
 
-    /// The same capabilities, asking for the port by `name` where a target
-    /// reached its address by one: the site the target named, in the handshake
-    /// and in the `Host` of a request that stands for the port. See
-    /// [`Authority::readdressed`].
-    pub(crate) fn named(mut self, name: Option<Arc<str>>) -> Self {
-        self.peer = self.peer.named(name);
+    /// The same capabilities, asking for the port by `name`, the host name its
+    /// address was reached by.
+    ///
+    /// A server holding several sites at one address routes by the name a
+    /// client asks for, so without one it answers with its default site or
+    /// refuses the handshake. Named, the port is asked for that site: the
+    /// handshake with an `ssl/*` service carries it as its server name, and an
+    /// HTTP request whose `Host` stands for the port, as `localhost` or the
+    /// address itself, is sent naming it. A `Host` naming some other site is
+    /// sent as written. A name a handshake cannot carry, an address among
+    /// them, leaves the handshake without a server name.
+    pub fn named(mut self, name: impl Into<Arc<str>>) -> Self {
+        self.peer = self.peer.named(Some(name.into()));
         self
     }
 
@@ -276,7 +283,7 @@ mod tests {
 
         let reply = tokio::task::spawn_blocking(move || {
             let mut caps = LiveCapabilities::new(addr, Protocol::Tcp, Some(Tunnel::Tls), &budget())
-                .named(Some(std::sync::Arc::from("box.example")));
+                .named("box.example");
             caps.speak(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         })
         .await

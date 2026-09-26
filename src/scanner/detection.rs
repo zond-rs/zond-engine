@@ -425,10 +425,13 @@ async fn detect_one(
                 // The permit first: building the probe starts the flow's clock,
                 // and the wait for a socket must not come out of its budget.
                 let permit = gate.acquire();
+                let probe =
+                    SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps)).via(egress);
                 Some(Box::new(Pooled {
-                    inner: SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps))
-                        .via(egress)
-                        .named(name.clone()),
+                    inner: match &name {
+                        Some(name) => probe.named(Arc::clone(name)),
+                        None => probe,
+                    },
                     _permit: permit,
                 }) as Box<dyn Probe>)
             },
@@ -476,10 +479,12 @@ async fn detect_one(
                 // starts the flow's clock: the wait for a socket must not come
                 // out of the flow's own time budget.
                 let permit = gate.acquire();
+                let caps = LiveCapabilities::new(addr, protocol, tunnel, &grant.budget).via(egress);
                 Some(Box::new(Permitted {
-                    inner: LiveCapabilities::new(addr, protocol, tunnel, &grant.budget)
-                        .via(egress)
-                        .named(name.clone()),
+                    inner: match &name {
+                        Some(name) => caps.named(Arc::clone(name)),
+                        None => caps,
+                    },
                     _permit: permit,
                 }) as Box<dyn Capabilities>)
             },

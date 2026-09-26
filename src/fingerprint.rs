@@ -102,7 +102,7 @@ pub use signature::{
 pub(crate) use signature::unescape;
 pub use ssh::SshAnalyzer;
 pub use tls_cert::TlsCertAnalyzer;
-pub use tls_enum::{EXCHANGE_TIMEOUT, MAX_OFFERS_PER_VERSION, enumerate_tls};
+pub use tls_enum::{EXCHANGE_TIMEOUT, MAX_OFFERS_PER_VERSION, enumerate_tls, enumerate_tls_named};
 // The same walk answering to a scan's budget; see its documentation.
 pub(crate) use tls_enum::enumerate_tls_while;
 
