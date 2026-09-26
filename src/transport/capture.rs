@@ -834,6 +834,24 @@ pub enum CaptureError {
         #[source]
         source: pcap::Error,
     },
+
+    /// The process or the system ran out of descriptors partway through the
+    /// links, so a capture would have been deaf on the links it did not
+    /// reach.
+    ///
+    /// Not skipped as a link that declined is. A link that declines is one a
+    /// scan's targets do not answer through, while these are refused for a
+    /// shortage of this machine's, and any of them may be the one the replies
+    /// come back on: heard on the rest alone, those replies would read as
+    /// targets that did not answer.
+    #[error(
+        "no capture on {} (file limit reached)",
+        crate::logging::counted(links.len() as u128, "link", "links")
+    )]
+    OutOfDescriptors {
+        /// The links refused a capture, by name, in the order they were tried.
+        links: Vec<String>,
+    },
 }
 
 impl CaptureError {
@@ -850,6 +868,37 @@ impl CaptureError {
                 !refused.is_empty() && refused.iter().all(|(_, error)| error.is_denied())
             }
             _ => false,
+        }
+    }
+
+    /// Whether this is one link refused because no descriptor was left to open
+    /// its capture with.
+    ///
+    /// Read from the library's words, since `libpcap` reports the shortage
+    /// under the same status as any other failure to open a device. Its words
+    /// for it are the C library's own for the errno it met, the ones this
+    /// process's own errors carry, so the match is against those rather than
+    /// against a spelling of them.
+    pub(crate) fn is_exhausted(&self) -> bool {
+        let Self::Open {
+            source: pcap::Error::PcapError(message),
+            ..
+        } = self
+        else {
+            return false;
+        };
+        #[cfg(unix)]
+        {
+            [libc::EMFILE, libc::ENFILE].into_iter().any(|code| {
+                let error = std::io::Error::from_raw_os_error(code).to_string();
+                let words = error.split(" (os error").next().unwrap_or(&error);
+                message.contains(words)
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = message;
+            false
         }
     }
 
@@ -1081,7 +1130,8 @@ pub fn frames(
 /// has many, most of them irrelevant to any given capture, and refusing because
 /// a virtual bridge declined would be wrong. Only *every* link failing is an
 /// error, since a capture with no link is a receive path that can never hear
-/// anything.
+/// anything, and so is any link refused for want of a descriptor; see
+/// [`CaptureError::OutOfDescriptors`].
 fn spawn_captures<D>(
     links: &[Zone],
     options: &CaptureOptions,
@@ -1155,6 +1205,21 @@ where
             }
             Err(e) => unheard.push((zone, e)),
         }
+    }
+
+    let exhausted: Vec<String> = unheard
+        .iter()
+        .filter(|(_, error)| error.is_exhausted())
+        .map(|(zone, _)| zone.name().to_owned())
+        .collect();
+    if !exhausted.is_empty() {
+        // Stops and joins the readers already started, closing their links.
+        drop(CaptureGuard {
+            stop,
+            handles,
+            stats,
+        });
+        return Err(CaptureError::OutOfDescriptors { links: exhausted });
     }
 
     if !unheard.is_empty() {
@@ -2066,6 +2131,47 @@ mod tests {
             assert!(!refused.is_denied(), "status {status}");
             assert!(!refused.to_string().contains("privilege"), "{refused}");
         }
+    }
+
+    /// A link refused because the process had no descriptor left is told
+    /// apart from one that declined, so the capture can refuse whole rather
+    /// than listen on the links it reached and read the replies of the rest
+    /// as silence. `libpcap` gives the shortage the status of any failure to
+    /// open, and says which it was only in the C library's words for the
+    /// errno.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_refused_for_want_of_a_descriptor_is_told_apart_from_one_that_declined() {
+        let words = |code| {
+            let error = std::io::Error::from_raw_os_error(code).to_string();
+            error.split(" (os error").next().unwrap().to_owned()
+        };
+        for code in [libc::EMFILE, libc::ENFILE] {
+            let refused = libpcap::refusal(
+                "utun4",
+                -1,
+                format!("(cannot open BPF device) /dev/bpf0: {}", words(code)),
+            );
+            assert!(refused.is_exhausted(), "{refused}");
+            assert!(!refused.is_denied());
+        }
+
+        let declined = libpcap::refusal("utun4", -1, "no such device".into());
+        assert!(!declined.is_exhausted());
+        let denied = libpcap::refusal(
+            "utun4",
+            libpcap::PCAP_ERROR_PERM_DENIED,
+            words(libc::EACCES),
+        );
+        assert!(!denied.is_exhausted());
+
+        let out = CaptureError::OutOfDescriptors {
+            links: vec!["utun4".into(), "utun5".into()],
+        };
+        assert_eq!(
+            out.to_string(),
+            "no capture on 2 links (file limit reached)"
+        );
     }
 
     /// A capture no link would take names each link and its reason, and

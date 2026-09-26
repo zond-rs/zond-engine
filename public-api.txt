@@ -17299,6 +17299,8 @@ pub zond_engine::transport::capture::CaptureError::NoReader::source: core::io::e
 pub zond_engine::transport::capture::CaptureError::Open
 pub zond_engine::transport::capture::CaptureError::Open::interface: alloc::string::String
 pub zond_engine::transport::capture::CaptureError::Open::source: pcap::Error
+pub zond_engine::transport::capture::CaptureError::OutOfDescriptors
+pub zond_engine::transport::capture::CaptureError::OutOfDescriptors::links: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType
 pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType::dlt: i32
 pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType::interface: alloc::string::String

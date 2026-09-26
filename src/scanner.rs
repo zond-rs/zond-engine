@@ -344,10 +344,21 @@ fn recording_options(
 }
 
 /// Refuses a scan in a process whose descriptor limit, or whose table as it
-/// stands, leaves its connections no socket; see
+/// stands, leaves its connections no socket once its captures are open; see
 /// [`ScanError::TooFewDescriptors`].
+///
+/// A process that may choose its own packets opens a capture device on every
+/// interface it listens on for as long as its raw phases run, and they are
+/// counted into what it needs. A scan whose every target is loopback runs by
+/// connect and opens none, and is counted them all the same: the need is read
+/// before the plan is, and a limit that holds them costs such a scan nothing.
 fn enough_descriptors() -> Result<(), ScanError> {
-    match crate::system::descriptors::too_few() {
+    let captures = if Privilege::current().is_raw() {
+        crate::transport::probe::capture_devices()
+    } else {
+        0
+    };
+    match crate::system::descriptors::too_few(captures) {
         Some((limit, needed)) => Err(ScanError::TooFewDescriptors { limit, needed }),
         None => Ok(()),
     }

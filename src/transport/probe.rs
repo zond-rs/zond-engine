@@ -1108,6 +1108,12 @@ fn capturable_interfaces() -> Vec<Zone> {
         .collect()
 }
 
+/// How many capture devices a transport opened now would hold: one for each
+/// interface [`capturable_interfaces`] names.
+pub(crate) fn capture_devices() -> usize {
+    capturable_interfaces().len()
+}
+
 /// A record of one recorded send: `(segment, source, destination)`.
 #[cfg(test)]
 pub type SentProbe = (Vec<u8>, IpAddr, IpAddr);

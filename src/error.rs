@@ -570,6 +570,7 @@ impl Coded for CaptureError {
             CaptureError::Filter { .. } => "capture.filter",
             CaptureError::Open { .. } => "capture.open",
             CaptureError::Denied { .. } => "capture.denied",
+            CaptureError::OutOfDescriptors { .. } => "capture.out_of_descriptors",
         }
     }
 }
@@ -871,6 +872,7 @@ mod tests {
             "capture.no_interface",
             "capture.no_reader",
             "capture.open",
+            "capture.out_of_descriptors",
             "capture.unsupported_link_type",
             "catalogue.io",
             "catalogue.malformed",

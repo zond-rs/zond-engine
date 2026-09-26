@@ -254,11 +254,19 @@ fn reserve_within(soft: usize) -> usize {
 ///
 /// The reserve is counted beside what is open rather than overlapping it,
 /// though some of what it stands for may be open already, because it is also
-/// what the scan opens once it has begun: its captures, the resolver's
-/// sockets, a second socket a unit holds beside its first.
-pub(crate) fn too_few() -> Option<(usize, usize)> {
+/// what the scan opens once it has begun: the resolver's sockets, a second
+/// socket a unit holds beside its first.
+///
+/// `captures` is the capture devices the scan will hold beside all of that:
+/// one for each link a scan taking the raw path listens on, thirty on a
+/// laptop with a VPN and a hypervisor, and none for a scan by connect. They
+/// are counted apart from the reserve because their number is the host's and
+/// not the scan's. Left out, a table with room for the reserve alone lets the
+/// scan start and refuses its captures one link at a time, and what that
+/// leaves reads as a network that did not answer.
+pub(crate) fn too_few(captures: usize) -> Option<(usize, usize)> {
     let soft = soft_limit();
-    too_few_within(soft, soft.and_then(open_descriptors))
+    too_few_within(soft, soft.and_then(open_descriptors), captures)
 }
 
 /// Takes out of the gate, for as long as the scan holds what this returns,
@@ -302,8 +310,12 @@ fn held_back_within(available: usize, soft: usize, open: usize) -> usize {
 
 /// [`too_few`], for a process whose soft limit is `soft` and which holds
 /// `open` descriptors, where that could be counted.
-fn too_few_within(soft: Option<usize>, open: Option<usize>) -> Option<(usize, usize)> {
-    let needed = open.unwrap_or(0) + RESERVE + 1;
+fn too_few_within(
+    soft: Option<usize>,
+    open: Option<usize>,
+    captures: usize,
+) -> Option<(usize, usize)> {
+    let needed = open.unwrap_or(0) + RESERVE + captures + 1;
     soft.filter(|&soft| soft < needed)
         .map(|soft| (soft, needed))
 }
@@ -510,12 +522,12 @@ mod tests {
     /// what to raise the limit to.
     #[test]
     fn a_limit_that_leaves_no_socket_beside_the_reserve_refuses_the_scan() {
-        assert_eq!(too_few_within(Some(16), None), Some((16, RESERVE + 1)));
-        assert_eq!(too_few_within(Some(0), None), Some((0, RESERVE + 1)));
-        assert_eq!(too_few_within(Some(RESERVE + 1), None), None);
-        assert_eq!(too_few_within(Some(256), None), None);
+        assert_eq!(too_few_within(Some(16), None, 0), Some((16, RESERVE + 1)));
+        assert_eq!(too_few_within(Some(0), None, 0), Some((0, RESERVE + 1)));
+        assert_eq!(too_few_within(Some(RESERVE + 1), None, 0), None);
+        assert_eq!(too_few_within(Some(256), None, 0), None);
         assert_eq!(
-            too_few_within(None, None),
+            too_few_within(None, None, 0),
             None,
             "no limit to fall short of"
         );
@@ -526,12 +538,30 @@ mod tests {
     #[test]
     fn what_is_open_already_is_needed_beside_the_reserve() {
         assert_eq!(
-            too_few_within(Some(64), Some(57)),
+            too_few_within(Some(64), Some(57), 0),
             Some((64, 57 + RESERVE + 1))
         );
-        assert_eq!(too_few_within(Some(64), Some(10)), None);
-        assert_eq!(too_few_within(Some(256), Some(64)), None);
-        assert_eq!(too_few_within(None, Some(57)), None);
+        assert_eq!(too_few_within(Some(64), Some(10), 0), None);
+        assert_eq!(too_few_within(Some(256), Some(64), 0), None);
+        assert_eq!(too_few_within(None, Some(57), 0), None);
+    }
+
+    /// A scan taking the raw path holds a capture device on every link it
+    /// listens on, and a table with room for what is open and the reserve
+    /// alone is refused it: let through, the scan's captures are refused one
+    /// link at a time and the replies those links carry are never heard.
+    ///
+    /// Twenty-seven open and twenty-eight links, as a laptop with a VPN and a
+    /// hypervisor has them, under a limit of 64: room for the reserve and a
+    /// socket, and not for the captures beside them.
+    #[test]
+    fn a_raw_scan_needs_a_descriptor_for_every_link_it_captures_on() {
+        assert_eq!(too_few_within(Some(64), Some(27), 0), None, "by connect");
+        assert_eq!(
+            too_few_within(Some(64), Some(27), 28),
+            Some((64, 27 + RESERVE + 28 + 1))
+        );
+        assert_eq!(too_few_within(Some(256), Some(27), 28), None);
     }
 
     /// A process whose table is nearly full before the scan starts, held by
@@ -552,7 +582,7 @@ mod tests {
         // Seven free, as a parent that filled the table leaves them.
         held.truncate(held.len() - 7);
 
-        let refused = too_few();
+        let refused = too_few(0);
         drop(held);
 
         let (limit, needed) = refused.expect("a scan with seven descriptors free");
@@ -571,7 +601,7 @@ mod tests {
     #[test]
     fn a_gate_is_held_to_the_sockets_the_table_has_room_for() {
         // A limit of 64 with 40 open passes the refusal, and leaves eight.
-        assert_eq!(too_few_within(Some(64), Some(40)), None);
+        assert_eq!(too_few_within(Some(64), Some(40), 0), None);
         assert_eq!(held_back_within(budget_within(Some(64)), 64, 40), 32 - 8);
         // A table the reserve covers holds nothing back.
         assert_eq!(held_back_within(budget_within(Some(256)), 256, 10), 0);
@@ -598,7 +628,7 @@ mod tests {
         let free = 24;
         held.truncate(held.len() - free);
         assert_eq!(
-            too_few(),
+            too_few(0),
             None,
             "a table with {free} free passes the refusal"
         );
