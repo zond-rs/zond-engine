@@ -50,7 +50,9 @@
 //! own files: sized from it, a gate would keep for good a shortfall that
 //! passed, or a room that did not last. The refusal is asked afresh by each
 //! scan, of the table as it stands then, which is the moment a scan either
-//! fits or does not.
+//! fits or does not. A scan that fits in a table fuller than the reserve
+//! allows for holds back, for its own duration, the permits that table has no
+//! socket for; see [`hold_back`].
 //!
 //! The limit is read and never raised. Raising it is a decision about the
 //! whole process, which a library does not own: the soft limit is inherited by
@@ -257,6 +259,45 @@ fn reserve_within(soft: usize) -> usize {
 pub(crate) fn too_few() -> Option<(usize, usize)> {
     let soft = soft_limit();
     too_few_within(soft, soft.and_then(open_descriptors))
+}
+
+/// Takes out of the gate, for as long as the scan holds what this returns,
+/// every permit the table as it stands has no socket for.
+///
+/// The gate is sized from the limit alone, and a process that holds more
+/// than the reserve when a scan starts, a table a parent filled or an
+/// application's own files, has fewer sockets to give than the gate has
+/// permits. A scan passing [`too_few`] then runs connections the gate lets
+/// through into a full table, where each waits out its [`PATIENCE`] beside
+/// the ones holding the sockets and is filed unasked, and what the reserve
+/// keeps for the journal and the report is spent on connections. Held back,
+/// the connections take what the table holds and no more, and the reserve
+/// stays whole.
+///
+/// Counted as permits the gate still has against sockets the table still
+/// has, so a scan already running in the process is counted once: each of
+/// its connections holds a permit and a descriptor alike, and what the
+/// difference measures is the descriptors held outside the gate. Held until
+/// the scan ends rather than handed back as the table empties, since the gate
+/// has no way to learn the rest of the process closed a file.
+pub(crate) fn hold_back() -> Option<Descriptor> {
+    let soft = soft_limit()?;
+    let open = open_descriptors(soft)?;
+    let gate = gate();
+    let excess = held_back_within(gate.available_permits(), soft, open);
+    if excess == 0 {
+        return None;
+    }
+    gate.try_acquire_many(u32::try_from(excess).ok()?).ok()
+}
+
+/// How many of `available` permits [`hold_back`] takes out of the gate in a
+/// process whose soft limit is `soft` and which holds `open` descriptors:
+/// every one past the sockets the table has room for beside the
+/// [`RESERVE`], and never the last one, so a scan let through still runs.
+fn held_back_within(available: usize, soft: usize, open: usize) -> usize {
+    let room = soft.saturating_sub(open + RESERVE).max(1);
+    available.saturating_sub(room)
 }
 
 /// [`too_few`], for a process whose soft limit is `soft` and which holds
@@ -520,6 +561,62 @@ mod tests {
             needed > 64 + RESERVE - 7,
             "{needed} names no limit that would hold what is open and the reserve"
         );
+    }
+
+    /// A scan let through into a table fuller than the reserve allows for is
+    /// left as many permits as the table has sockets, beside the reserve, and
+    /// no more. Promised the gate's whole budget, its connections past what
+    /// the table holds would wait out their patience for sockets the ones
+    /// before them hold, and be filed unasked.
+    #[test]
+    fn a_gate_is_held_to_the_sockets_the_table_has_room_for() {
+        // A limit of 64 with 40 open passes the refusal, and leaves eight.
+        assert_eq!(too_few_within(Some(64), Some(40)), None);
+        assert_eq!(held_back_within(budget_within(Some(64)), 64, 40), 32 - 8);
+        // A table the reserve covers holds nothing back.
+        assert_eq!(held_back_within(budget_within(Some(256)), 256, 10), 0);
+        // What another scan's connections hold is counted once: its permits
+        // are gone from the gate and its sockets from the table alike.
+        assert_eq!(held_back_within(32 - 5, 64, 40 + 5), 32 - 8);
+        // The last permit is never taken.
+        assert_eq!(held_back_within(32, 64, 64), 31);
+    }
+
+    /// Held back in a process whose table is fuller than the reserve allows
+    /// for, the gate hands out no more permits than the table has sockets
+    /// for, and gives them back when the scan lets go.
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_in_a_crowded_table_holds_back_what_it_has_no_socket_for() {
+        if !testing::in_a_process_of_its_own(
+            module_path!(),
+            "a_scan_in_a_crowded_table_holds_back_what_it_has_no_socket_for",
+        ) {
+            return;
+        }
+        let mut held = testing::exhaust(64);
+        let free = 24;
+        held.truncate(held.len() - free);
+        assert_eq!(
+            too_few(),
+            None,
+            "a table with {free} free passes the refusal"
+        );
+
+        let whole = gate().available_permits();
+        let held_back = hold_back();
+        let left = gate().available_permits();
+        drop(held_back);
+        let returned = gate().available_permits();
+        drop(held);
+
+        assert_eq!(whole, 32);
+        assert!(
+            left <= free - RESERVE,
+            "{left} permits left for {free} free descriptors, {RESERVE} of them the reserve's"
+        );
+        assert!(left >= 1, "a scan let through was left no permit");
+        assert_eq!(returned, whole);
     }
 
     /// A socket refused because the table is full is asked for again rather

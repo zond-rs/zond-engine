@@ -1130,8 +1130,11 @@ fn spawn_discovery(
         Scope::Targeted
     };
     let cfg = cfg.clone();
+    let held_back = crate::system::descriptors::hold_back();
 
     tokio::spawn(async move {
+        // Held for as long as the sweep runs; see `descriptors::hold_back`.
+        let _held_back = held_back;
         ctx.enter_stage(Stage::Discovery, None);
         // No SCTP sweep and no ports of its own: `discover` is asked about
         // addresses and never about ports, so nothing has said which port
@@ -1791,8 +1794,11 @@ fn spawn_scan(
     // runs under, which an idle scan holds to what sends the target nothing.
     let requested = cfg.clone();
     let cfg = running_under(&requested);
+    let held_back = crate::system::descriptors::hold_back();
 
     tokio::spawn(async move {
+        // Held for as long as the scan runs; see `descriptors::hold_back`.
+        let _held_back = held_back;
         // The plan the port phase walks, numbered in what the exclusions
         // leave of it, and known before either phase runs, so an address
         // either one files as unreachable settles every target at it. The
