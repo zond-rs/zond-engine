@@ -519,8 +519,30 @@ pub(crate) mod tests {
     pub(crate) const PEER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x02);
     pub(crate) const ICMPV6_ECHO_LEN: usize = 8;
 
+    /// The reply a neighbour at `sender_ip` sends to this host's request.
     pub(crate) fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
-        arp::build_request(PEER_MAC, sender_ip, Ipv4Addr::new(198, 51, 100, 1))
+        use pnet_packet::arp::{ArpHardwareTypes, ArpOperations, MutableArpPacket};
+
+        let mut body = vec![0u8; MutableArpPacket::minimum_packet_size()];
+        let mut reply = MutableArpPacket::new(&mut body).expect("sized for the packet");
+        reply.set_hardware_type(ArpHardwareTypes::Ethernet);
+        reply.set_protocol_type(pnet_packet::ethernet::EtherTypes::Ipv4);
+        reply.set_hw_addr_len(6);
+        reply.set_proto_addr_len(4);
+        reply.set_operation(ArpOperations::Reply);
+        reply.set_sender_hw_addr(PEER_MAC);
+        reply.set_sender_proto_addr(sender_ip);
+        reply.set_target_hw_addr(LOCAL_MAC);
+        reply.set_target_proto_addr(Ipv4Addr::new(198, 51, 100, 1));
+        let header =
+            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Arp);
+        [header, body].concat()
+    }
+
+    /// A request a neighbour at `sender_ip` broadcasts for an address of its
+    /// own asking.
+    pub(crate) fn arp_request_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
+        arp::build_request(PEER_MAC, sender_ip, Ipv4Addr::new(198, 51, 100, 254))
     }
 
     /// An Ethernet-framed IPv6 packet to `destination`, carrying `body` as

@@ -152,17 +152,29 @@ type Ledger = ProbeLedger<IpAddr, ()>;
 /// before anything else - and a sweep that never asks twice simply reports the
 /// hosts it missed as absent.
 ///
-/// The timings are a segment's, not an internet path's: a neighbour that is
-/// going to answer does so in well under a millisecond, so the floor is what
-/// governs almost immediately and a silent address is settled in about a second
-/// rather than in the seconds a wide-area profile would spend.
+/// Until the segment has answered anything, an address is asked on the
+/// kernel's schedule: three requests a second apart, and silent only once the
+/// third has gone unanswered for a second, which is the evidence the kernel
+/// takes before it calls a neighbour failed, and the evidence the frame
+/// path's own address resolution takes before a port scan's probe gives up on
+/// one. Judged sooner, a neighbour the port scans would resolve is written off
+/// here, and one answering in more than the sweep's patience answers after the
+/// process that asked has gone, into the capture of whichever process asks
+/// next, so one run finds it and the next does not.
+///
+/// Once the segment has answered, the round trip it answered in governs: a
+/// wired neighbour answers in well under a millisecond, the floor takes over
+/// almost at once, and the silent addresses of a segment that answers are
+/// settled in a fraction of a second. So the second of patience is paid by a
+/// sweep that hears nothing, which is the sweep that has nothing faster to go
+/// on.
 ///
 /// No silent-host rule, because there would be nothing for it to do: each
 /// address here is probed once, so no host ever accumulates the exhausted
 /// probes that rule counts.
 const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     3,
-    Duration::from_millis(150),
+    Duration::from_secs(1),
     Duration::from_millis(25),
     Duration::from_secs(1),
     2.0,
@@ -1331,6 +1343,33 @@ impl LocalScanner {
         }
     }
 
+    /// Whether an ARP frame is a reply sent to this scanner, the one kind that
+    /// can answer the request it put to the frame's sender.
+    ///
+    /// A neighbour's own request, an announcement, and a reply to another
+    /// machine that a promiscuous capture overhears all prove the sender is
+    /// there, and none of them answers this scan's question. Taken as the
+    /// answer, each would retire the request and time it from the moment it
+    /// left to the moment somebody else's conversation happened to pass.
+    ///
+    /// A reply to this machine's address is taken as the answer to this
+    /// scanner's request whoever on the machine asked. ARP carries no token,
+    /// so a reply to a request another process sent a moment earlier, one
+    /// that stopped waiting before its answer came, is indistinguishable on
+    /// the wire from a reply to this one. Accepting it costs nothing in what
+    /// the sweep reports, since the neighbour did answer for its address;
+    /// what it can cost is a round trip timed short, which seeds the passes
+    /// after this one short, and they retransmit early and measure the path
+    /// for themselves. Refusing every reply that could be another's would
+    /// refuse every reply. What keeps the case rare is the patience of
+    /// [`RETRY_POLICY`]: a neighbour answering within it answers the process
+    /// that asked.
+    fn answers_our_request(&self, frame: &Frame<'_>) -> bool {
+        frame.destination() == self.identity.mac
+            && pnet_packet::arp::ArpPacket::new(frame.payload())
+                .is_some_and(|arp| arp.get_operation() == pnet_packet::arp::ArpOperations::Reply)
+    }
+
     /// Whether the sweep has nothing left to send and nothing left to wait for.
     fn idle(&self, now: Instant) -> bool {
         self.sweep.retries.is_empty() && self.sweep.ledger.is_empty() && self.ipv6.is_idle(now)
@@ -1453,7 +1492,18 @@ impl LocalScanner {
         // was put to the whole segment and answers no address's own probe.
         let mut answered_attempt = None;
 
-        let rtt = match reading.matched {
+        // Every ARP frame proves its sender is there, and only a reply sent to
+        // this scanner can answer the request it put; see `answers_our_request`.
+        let matched = match reading.matched {
+            ProtocolMatch::Solicited(_)
+                if protocol == StatusProtocol::Arp && !self.answers_our_request(&eth_frame) =>
+            {
+                ProtocolMatch::Unsolicited
+            }
+            matched => matched,
+        };
+
+        let rtt = match matched {
             // `interpret_response` returns `None` rather than this, so the arm
             // exists only to satisfy the match.
             ProtocolMatch::Unhandled => return Ok(()),
@@ -1470,7 +1520,8 @@ impl LocalScanner {
             //
             // Asked directly instead, which is the same treatment an overheard
             // address gets, and the only way one of these senders is ever
-            // measured.
+            // measured. An IPv4 neighbour is not: its own request is still
+            // outstanding and is what measures it.
             ProtocolMatch::Unsolicited => {
                 self.confirm(subject);
                 None
@@ -1873,8 +1924,8 @@ impl LocalScanner {
 mod tests {
     use super::*;
     use crate::scanner::strategy::frames::tests::{
-        LOCAL_MAC, PEER_MAC, advertisement_body, arp_reply_frame, dhcp_reply_frame,
-        echo_reply_frame, mdns_frame, ndp_frame,
+        LOCAL_MAC, PEER_MAC, advertisement_body, arp_reply_frame, arp_request_frame,
+        dhcp_reply_frame, echo_reply_frame, mdns_frame, ndp_frame,
     };
     use pnet_base::MacAddr;
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -2038,6 +2089,109 @@ mod tests {
         assert!(
             host.min_rtt().is_some(),
             "the answer was read after its probe was written off"
+        );
+    }
+
+    /// A neighbour that, asked for its address, first broadcasts a request of
+    /// its own and answers the question it was asked `delay` later.
+    struct AsksBeforeAnswering {
+        delay: Duration,
+        frames: tokio::sync::mpsc::Sender<CapturedFrame>,
+        answered: bool,
+    }
+
+    impl AsksBeforeAnswering {
+        fn captured(bytes: Vec<u8>, received_at: Instant) -> CapturedFrame {
+            CapturedFrame {
+                zone: Zone::new(7, "sim0"),
+                link: LinkType::Ethernet,
+                bytes,
+                observed_at: std::time::SystemTime::now(),
+                received_at,
+            }
+        }
+    }
+
+    impl crate::transport::capture::FrameSink for AsksBeforeAnswering {
+        fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+            let asked = ethernet::parse(frame)
+                .ok()
+                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp)
+                .and_then(|frame| pnet_packet::arp::ArpPacket::owned(frame.payload().to_vec()))
+                .map(|request| request.get_target_proto_addr());
+            let Some(target) = asked.filter(|_| !self.answered) else {
+                return Ok(());
+            };
+            self.answered = true;
+            self.frames
+                .try_send(Self::captured(arp_request_frame(target), Instant::now()))
+                .expect("room for the neighbour's own request");
+            let frames = self.frames.clone();
+            let arrives = Instant::now() + self.delay;
+            tokio::spawn(async move {
+                tokio::time::sleep_until(arrives.into()).await;
+                let _ = frames
+                    .send(Self::captured(arp_reply_frame(target), arrives))
+                    .await;
+            });
+            Ok(())
+        }
+    }
+
+    /// A neighbour's own request, heard while the sweep's request to it is
+    /// outstanding, proves it is there and times nothing: the neighbour is
+    /// timed by its reply, where the sweep is still listening when it comes.
+    ///
+    /// Every ARP frame proves its sender present, and a neighbour that has
+    /// just been asked often asks something itself before it answers. Taken
+    /// as the answer, that request retires the sweep's and times the
+    /// neighbour at the gap between the two, a round trip the passes after
+    /// the sweep then time their own probes from.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_neighbours_own_request_does_not_answer_the_sweeps() {
+        use crate::system::interface::LinkAddress;
+
+        let target = Ipv4Addr::new(198, 51, 100, 2);
+        let delay = Duration::from_millis(80);
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        let (frames, rx) = tokio::sync::mpsc::channel(16);
+        let handle = EthernetHandle::from_parts(
+            Box::new(AsksBeforeAnswering {
+                delay,
+                frames,
+                answered: false,
+            }),
+            rx,
+        );
+        let link = Link::new("sim0", 7)
+            .with_mac(LOCAL_MAC.into_core())
+            .with_addresses(vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+                24,
+            )]);
+        let mut targets = IpSet::new();
+        targets.insert(IpAddr::V4(target));
+        let mut scanner = LocalScanner::build(
+            link,
+            targets,
+            ctx,
+            None,
+            Scope::Targeted,
+            handle,
+            RETRY_POLICY,
+        )
+        .expect("a scanner over the simulated segment");
+
+        scanner.discover_hosts().await.expect("the sweep runs");
+
+        let host = session
+            .hosts()
+            .get(IpAddr::V4(target))
+            .expect("the neighbour answered and is not on record");
+        assert!(
+            host.min_rtt().is_none_or(|rtt| rtt >= delay),
+            "a neighbour answering in {delay:?} was timed at {:?}",
+            host.min_rtt()
         );
     }
 

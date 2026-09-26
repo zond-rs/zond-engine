@@ -621,6 +621,29 @@ async fn a_slow_arp_reply_still_discovers_the_host() {
     assert!(session.hosts().contains(v4(10)));
 }
 
+/// A neighbour answering ARP in nearly two seconds is found on a segment
+/// where nothing has answered faster.
+///
+/// Before anything has answered, the sweep has no round trip to time an
+/// address by, and a silent address is judged on the evidence the kernel
+/// takes, three requests a second apart. Judged sooner, the neighbour is
+/// written off while its answer is on the way, and the answer lands in the
+/// capture of the next process to ask, which then finds it: one run calls the
+/// host silent and the next finds it up.
+#[tokio::test]
+async fn a_neighbour_answering_arp_in_two_seconds_is_found() {
+    let lan = FakeLan::new().host(
+        v4(10),
+        LanHost::at(PEER_A).delay(Duration::from_millis(1_900)),
+    );
+    let session = sweep(&lan, &[v4(10)], Scope::Targeted).await;
+
+    assert!(
+        session.hosts().contains(v4(10)),
+        "a neighbour answering in 1.9s was called silent"
+    );
+}
+
 /// A reply is timed from when the capture took it, not from when the sweep got
 /// round to reading it.
 ///
