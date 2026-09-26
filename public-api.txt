@@ -16239,6 +16239,7 @@ pub async fn zond_engine::scanner::listen(zond_engine::scanner::ListenScope, &zo
 pub async fn zond_engine::scanner::listen_with_journal(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::scanner::scan(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::detect::corpus::Detections) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::scanner::scan_with_journal(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::detect::corpus::Detections, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
+pub fn zond_engine::scanner::withhold_unprobeable(&mut zond_engine::model::target::TargetMap)
 pub mod zond_engine::signature
 #[non_exhaustive] pub enum zond_engine::signature::SignatureError
 pub zond_engine::signature::SignatureError::Altered

@@ -320,20 +320,22 @@ impl TargetMap {
     /// Takes out every target a port phase cannot probe, which it does before
     /// anything numbers the plan: the link-local ranges that name no
     /// interface or name an address another range names on another, then the
-    /// IPv6 ranges `walkable` refuses as too wide to walk.
+    /// IPv6 ranges `walkable` refuses as too wide to walk. Hands back what it
+    /// took out and the interface each link-local range it kept was named on.
     ///
-    /// One reading for the two places that have to agree on it: the port
-    /// phase, which numbers what is left and refuses the rest, and a journal,
-    /// which counts what is left as the job's total. A total that counted a
-    /// withheld target would never be reached, and a finished job would read
-    /// as one with work left. What is taken out depends on the targets alone,
-    /// so every sitting of a job takes out the same ones.
+    /// One reading for every place that has to agree on it: the port phase,
+    /// which numbers what is left and refuses the rest, a journal, which
+    /// counts what is left as the job's total, and a caller announcing what a
+    /// scan will ask. A total that counted a withheld target would never be reached, and a
+    /// finished job would read as one with work left. What is taken out
+    /// depends on the targets alone, so every sitting of a job takes out the
+    /// same ones.
     ///
     /// `interfaces` is the host's interface table as index and name, which
     /// names the zones handed back; `walkable` is the host's own limit on
     /// what a walk may cover. Both are the caller's to supply, this module
     /// asking nothing of the host.
-    pub(crate) fn withhold_unprobeable(
+    pub(crate) fn take_unprobeable(
         &mut self,
         interfaces: &[(u32, &str)],
         walkable: impl Fn(&Ipv6Range) -> bool,
@@ -398,7 +400,7 @@ impl TargetMap {
     }
 }
 
-/// What [`TargetMap::withhold_unprobeable`] took out, and the zones the
+/// What [`TargetMap::take_unprobeable`] took out, and the zones the
 /// link-local ranges it kept were named on.
 pub(crate) struct Unprobeable {
     /// The interface each kept link-local range was named on.

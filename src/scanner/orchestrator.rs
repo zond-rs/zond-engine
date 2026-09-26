@@ -2200,7 +2200,7 @@ impl Withheld {
 /// The link-local question comes first: an unscoped `fe80::/64` is both too
 /// wide to walk and on no segment, and the refusal that names the interface to
 /// write is the one the caller can act on. Which targets go is
-/// [`TargetMap::withhold_unprobeable`]'s to say, since a journal counts the
+/// [`TargetMap::take_unprobeable`]'s to say, since a journal counts the
 /// job's total by the same reading.
 ///
 /// # A link-local range
@@ -2253,7 +2253,7 @@ pub(super) fn withhold_unprobeable_targets(target_map: &mut TargetMap) -> Withhe
         .map(|link| (link.index(), link.name()))
         .collect();
 
-    let taken = target_map.withhold_unprobeable(&names, interface::is_enumerable);
+    let taken = target_map.take_unprobeable(&names, interface::is_enumerable);
     Withheld {
         unwalkable: taken.unwalkable,
         unscoped: taken.unscoped,

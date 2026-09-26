@@ -228,7 +228,7 @@ impl Plan {
     /// what its port phase takes out before numbering it: a link-local range
     /// naming no interface, or an address two ranges name on two interfaces,
     /// and a range too wide to walk; see
-    /// [`TargetMap::withhold_unprobeable`]. Those are refused rather than
+    /// [`TargetMap::take_unprobeable`]. Those are refused rather than
     /// asked, in every sitting alike, so a total counting them would be
     /// reached by none.
     ///
@@ -240,7 +240,7 @@ impl Plan {
             Resolved::PortScan { targets, .. } => {
                 let mut numbered = targets.clone();
                 numbered.withhold_ports(excluded_ports);
-                numbered.withhold_unprobeable(&[], crate::system::interface::is_enumerable);
+                numbered.take_unprobeable(&[], crate::system::interface::is_enumerable);
                 numbered.gross_targets().unwrap_or_default()
             }
             Resolved::Discovery { .. } | Resolved::Listen { .. } => self.total_targets(),

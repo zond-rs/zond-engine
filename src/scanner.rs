@@ -1640,6 +1640,19 @@ fn listening_privilege(refusal: Option<&strategy::StrategyError>) -> Privilege {
     }
 }
 
+/// Takes out of `target_map` every target [`scan`] withholds rather than
+/// probes: a link-local range that names no interface, an address two
+/// link-local ranges name on two different ones, and an IPv6 range too wide
+/// to walk one address at a time.
+///
+/// A scan takes these out before it numbers its plan and names each in its
+/// report as refused, so what is left is what it asks. A caller measuring
+/// what a scan will cost before starting it does this to a copy, as it does
+/// [`TargetMap::withhold_ports`] with the ports it excludes.
+pub fn withhold_unprobeable(target_map: &mut TargetMap) {
+    target_map.take_unprobeable(&[], interface::is_enumerable);
+}
+
 /// Probes a known set of targets for open ports.
 ///
 /// Two phases, and the first keeps the second from being wasted. Every address
