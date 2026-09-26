@@ -816,7 +816,7 @@ impl Asking<'_> {
             endpoint,
             patience,
             measured,
-            ctx.handle.clone(),
+            ctx.clone(),
             crowd,
         )
     }
@@ -1108,6 +1108,21 @@ fn udp_evidence(state: PortState) -> Option<ScanResponse> {
     }
 }
 
+/// Files a completed handshake with the host it reached: the host is up, and
+/// the handshake's round trip is a sample of its path.
+fn note_handshake(ctx: &ScanContext, ip: IpAddr, rtt: Duration) {
+    ctx.update_host(ip, |host| {
+        host.record_evidence(
+            HostStatus::Up,
+            StatusReason::new(
+                StatusProtocol::TcpConnect,
+                "tcp connect answered by the host",
+            ),
+        );
+        host.add_rtt_from(rtt, StatusProtocol::TcpConnect);
+    });
+}
+
 /// Probes a single [`PlannedTarget`] over a full TCP connect handshake and
 /// classifies its port. Returns `None` only for a target this strategy doesn't
 /// handle.
@@ -1131,6 +1146,8 @@ fn udp_evidence(state: PortState) -> Option<ScanResponse> {
 /// identified in its host's `crowd`, every wait on it allowing for the path
 /// as `measured`, the round trips the scan took to the host before, and the
 /// one its own handshake took show it; see [`PathAllowance::of_round_trips`].
+/// The handshake is filed with its host in `ctx` before the identification
+/// begins; see [`note_handshake`].
 #[allow(clippy::too_many_arguments)]
 async fn port_prober(
     planned: PlannedTarget,
@@ -1140,9 +1157,10 @@ async fn port_prober(
     socket_addr: SocketAddr,
     patience: Duration,
     measured: Vec<Duration>,
-    handle: ScanHandle,
+    ctx: ScanContext,
     crowd: std::sync::Arc<crate::scanner::service::Crowd>,
 ) -> ProbedPort {
+    let handle = &ctx.handle;
     let target = planned.target;
     if target.protocol == Protocol::Udp {
         // UDP can't be probed through a TCP stream; skip rather than misreport.
@@ -1187,7 +1205,7 @@ async fn port_prober(
 
     let mut met_itself = None;
     for _ in 0..SELF_MEETINGS {
-        let (handshake, rtt, descriptor) = match dial(&handle, descriptors::PATIENCE, || {
+        let (handshake, rtt, descriptor) = match dial(handle, descriptors::PATIENCE, || {
             std::future::ready(egress.start_connect(socket_addr, shaping))
         })
         .await
@@ -1200,7 +1218,7 @@ async fn port_prober(
                 // The SYN left, so a stop that cuts the wait leaves a port
                 // asked with no verdict, as the raw path files a probe whose
                 // schedule the stop cut: unasked, and asked again by a resume.
-                let Some(finished) = handshake(connecting, patience, &handle).await else {
+                let Some(finished) = handshake(connecting, patience, handle).await else {
                     return unasked(Outcome::Interrupted, Attempt::Sent);
                 };
                 // Read before the fingerprint talks to the port, which is the
@@ -1227,6 +1245,14 @@ async fn port_prober(
                 // phase can read without dialling again: the responses a
                 // passive detection needs, and what the same bytes said about
                 // the machine. The descriptor is held until it is done.
+                // Filed with the host at once rather than with the verdict,
+                // which the identification holds for as long as the port
+                // takes to answer it, seconds on a port that says nothing:
+                // every other port of the host asked meanwhile sizes its
+                // wait from this, and across a path slower than an ordinary
+                // wait covers, a port that waits as on an ordinary path
+                // gives up on its answer and reads filtered.
+                note_handshake(&ctx, target.ip, rtt);
                 // The handshake is a round trip over the very path the
                 // conversation that follows takes, measured a moment ago,
                 // and the latest of those the scan has taken.
@@ -1249,12 +1275,14 @@ async fn port_prober(
                     ))
                     .await;
                 drop(descriptor);
+                // The round trip is filed already, and a second sample of the
+                // same handshake would weigh it twice.
                 let Some(identified) = identified else {
                     return verdict(
                         PortState::Open,
                         Some(ScanResponse::TcpSynAck),
                         true,
-                        Some(rtt),
+                        None,
                         Outcome::Answered { position },
                     );
                 };
@@ -1265,7 +1293,7 @@ async fn port_prober(
                     about_the_host: identified.about_the_host,
                     identified_in_part: identified.starved,
                     answered: true,
-                    rtt: Some(rtt),
+                    rtt: None,
                     outcome: Outcome::Answered { position },
                     attempt: Attempt::Sent,
                     // A TCP handshake proves a service, and the service is the
@@ -2389,6 +2417,7 @@ mod tests {
             },
         );
 
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
         let probed = port_prober(
             planned,
             ServiceDetection::Off,
@@ -2397,11 +2426,10 @@ mod tests {
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
             Vec::new(),
-            ScanHandle::new(),
+            ctx.clone(),
             Default::default(),
         )
         .await;
-        let (session, ctx) = crate::scanner::session::ScanSession::new();
         absorb_probe(
             &ctx,
             probed,
@@ -2433,6 +2461,7 @@ mod tests {
             let listener = std::net::TcpListener::bind((ip, 0)).expect("bind to reserve");
             listener.local_addr().expect("reserved addr").port()
         };
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
         let probed = port_prober(
             tcp_target(ip, port),
             ServiceDetection::Off,
@@ -2441,11 +2470,10 @@ mod tests {
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
             Vec::new(),
-            ScanHandle::new(),
+            ctx.clone(),
             Default::default(),
         )
         .await;
-        let (session, ctx) = crate::scanner::session::ScanSession::new();
         absorb_probe(
             &ctx,
             probed,
@@ -2559,7 +2587,7 @@ mod tests {
                 SocketAddr::new(ip, port),
                 CONNECT_PROBE_TIMEOUT,
                 Vec::new(),
-                ScanHandle::new(),
+                crate::scanner::session::ScanSession::new().1,
                 Default::default(),
             )
             .await
@@ -2594,8 +2622,8 @@ mod tests {
             .expect("a free port");
         let port = listener.local_addr().expect("its address").port();
 
-        let handle = ScanHandle::new();
-        let stopper = handle.clone();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let stopper = ctx.handle.clone();
         let (returned, mut probe_done) = tokio::sync::oneshot::channel::<()>();
         // Takes every connection and says nothing on any of them, and asks
         // for the stop once the first is in.
@@ -2638,7 +2666,7 @@ mod tests {
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
             Vec::new(),
-            handle,
+            ctx,
             Default::default(),
         )
         .await
@@ -2714,8 +2742,8 @@ mod tests {
             .expect("an inet address")
             .port();
 
-        let handle = ScanHandle::new();
-        let stopper = handle.clone();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let stopper = ctx.handle.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(300)).await;
             stopper.abort();
@@ -2734,7 +2762,7 @@ mod tests {
                 SocketAddr::new(ip, port),
                 patience,
                 Vec::new(),
-                handle,
+                ctx,
                 Default::default(),
             ),
         )
@@ -2797,6 +2825,67 @@ mod tests {
 
         assert_eq!(probed.port, None, "the second asking filed a port");
         assert!(matches!(probed.attempt, Attempt::Sent), "its send counts");
+    }
+
+    /// A handshake's round trip is the host's as soon as the handshake
+    /// completes, while the port it opened is still being identified.
+    ///
+    /// Every other port of the host asked meanwhile sizes its wait from the
+    /// host's measured path, and an identification on a port that says
+    /// nothing runs for seconds. Filed only with the verdict, the round trip
+    /// reached the host after its identification returned, and across a path
+    /// slower than an ordinary wait covers every port asked in the meantime
+    /// waited as on an ordinary path and read filtered.
+    #[tokio::test]
+    async fn a_handshake_times_the_host_before_its_port_is_identified() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("a free port");
+        let port = listener.local_addr().expect("its address").port();
+        let (accepted, first) = tokio::sync::oneshot::channel();
+        // Takes the connection and says nothing, so the identification waits.
+        let listening = tokio::spawn(async move {
+            let held = accept_from_this_process(&listener)
+                .await
+                .expect("the probe connects");
+            let _ = accepted.send(());
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(held);
+        });
+
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let probing = tokio::spawn(port_prober(
+            tcp_target(ip, port),
+            ServiceDetection::Banner,
+            Shaping::default(),
+            Egress::KERNEL,
+            SocketAddr::new(ip, port),
+            CONNECT_PROBE_TIMEOUT,
+            Vec::new(),
+            ctx.clone(),
+            Default::default(),
+        ));
+        first.await.expect("the listener took the connection");
+
+        let mut timed = None;
+        for _ in 0..200 {
+            timed = ctx.read_host(ip, Host::median_rtt).flatten();
+            if timed.is_some() || probing.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let identifying = !probing.is_finished();
+        ctx.handle.abort();
+        let _ = probing.await;
+        listening.abort();
+
+        assert!(
+            timed.is_some(),
+            "the handshake's round trip was not the host's while its port was identified"
+        );
+        assert!(identifying, "the identification ended before the test read");
     }
 
     /// Where an error surfaced decides what it means: the same code before
