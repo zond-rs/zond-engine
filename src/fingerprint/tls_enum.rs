@@ -135,9 +135,9 @@ const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(250), Duration::from_
 ///
 /// Empty where the endpoint accepted nothing under any version. That is a real
 /// answer and not a failure: a server may be strictly configured, or may have
-/// been asked without the name it insists on. See
-/// [`Offer::server_name`](crate::protocols::tls::Offer::server_name) for why the
-/// name is usually absent.
+/// been asked without the name it insists on, since an endpoint known only by
+/// its address is asked for no name. See
+/// [`Offer::server_name`](crate::protocols::tls::Offer::server_name).
 ///
 /// A version whose walk the endpoint cut short, by going on not answering when
 /// asked again, is listed under [`TlsSupport::unfinished`], and whatever it had
@@ -146,7 +146,7 @@ const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(250), Duration::from_
 /// Every connection goes where the routing table sends it. A scan forced to a
 /// source enumerates through the same walk with its connections pinned there.
 pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
-    enumerate_tls_while(addr, Egress::KERNEL, || true).await
+    enumerate_tls_while(addr, None, Egress::KERNEL, || true).await
 }
 
 /// [`enumerate_tls`], asking `may_probe` before every connection and ending
@@ -159,9 +159,13 @@ pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
 /// it was named by the server, and each version it cut short is listed as
 /// [`Interruption::Stopped`].
 ///
-/// Every connection leaves by `egress`.
+/// Every connection leaves by `egress`, and every hello asks for
+/// `server_name` where there is one: the name a target reached the address by,
+/// without which a server holding its sites by name refuses every offer and
+/// the endpoint reads as accepting nothing.
 pub(crate) async fn enumerate_tls_while(
     addr: SocketAddr,
+    server_name: Option<&str>,
     egress: Egress,
     may_probe: impl Fn() -> bool,
 ) -> TlsSupport {
@@ -172,12 +176,13 @@ pub(crate) async fn enumerate_tls_while(
     let control = &control;
     // Fixed at five, so the versions are joined rather than spawned: what they
     // share is borrowed from this frame, and none of them outlives this call.
+    let under = |version| walk(addr, server_name, egress, version, control, may_probe);
     let (ssl30, tls10, tls11, tls12, tls13) = tokio::join!(
-        walk(addr, egress, TlsVersion::Ssl30, control, may_probe),
-        walk(addr, egress, TlsVersion::Tls10, control, may_probe),
-        walk(addr, egress, TlsVersion::Tls11, control, may_probe),
-        walk(addr, egress, TlsVersion::Tls12, control, may_probe),
-        walk(addr, egress, TlsVersion::Tls13, control, may_probe),
+        under(TlsVersion::Ssl30),
+        under(TlsVersion::Tls10),
+        under(TlsVersion::Tls11),
+        under(TlsVersion::Tls12),
+        under(TlsVersion::Tls13),
     );
 
     let mut support = TlsSupport::new();
@@ -201,6 +206,7 @@ pub(crate) async fn enumerate_tls_while(
 /// endpoint had declined anything, where it did.
 async fn walk(
     addr: SocketAddr,
+    server_name: Option<&str>,
     egress: Egress,
     version: TlsVersion,
     control: &OnceLock<Control>,
@@ -230,10 +236,7 @@ async fn walk(
         let offer = Offer {
             version,
             suites: &remaining,
-            // No name to ask for. The limitation, and the fix, are the ones
-            // `fingerprint::tls` documents: the name a target was resolved from
-            // is not recorded, so there is none to send by the time this runs.
-            server_name: None,
+            server_name,
         };
 
         let asked = ask(
@@ -333,13 +336,13 @@ struct Control {
 }
 
 impl Control {
-    /// The offer of that suite alone, which an endpoint still answering
-    /// answers with a hello.
-    fn offer(&self) -> Offer<'_> {
+    /// The offer of that suite alone, asking for `server_name` as the walk's
+    /// own offers do, which an endpoint still answering answers with a hello.
+    fn offer<'a>(&'a self, server_name: Option<&'a str>) -> Offer<'a> {
         Offer {
             version: self.version,
             suites: std::slice::from_ref(&self.suite),
-            server_name: None,
+            server_name,
         }
     }
 }
@@ -417,7 +420,7 @@ async fn ask(
                 if !may_probe() {
                     return Answer::Interrupted(Interruption::Stopped);
                 }
-                match exchange(addr, egress, &control.offer(), patience).await {
+                match exchange(addr, egress, &control.offer(offer.server_name), patience).await {
                     Exchange::Answered(ServerResponse::Hello { .. }) => return Answer::Declined,
                     Exchange::Starved => return Answer::Interrupted(Interruption::FileLimit),
                     _ => {}
@@ -795,6 +798,23 @@ mod tests {
 
         let found: BTreeSet<u16> = support.suites().iter().map(|suite| suite.code()).collect();
         assert_eq!(found, accepted.into_iter().collect::<BTreeSet<_>>());
+    }
+
+    /// A server holding its sites by name refuses a hello naming none of them,
+    /// so an endpoint a target reached by name is enumerated asking for that
+    /// name, and what it accepts is found; asked for nothing, it accepts
+    /// nothing.
+    #[tokio::test]
+    async fn an_endpoint_holding_its_sites_by_name_is_enumerated_by_the_name() {
+        let addr = crate::testing::loopback::https_site("box.example", |_| None).await;
+
+        let named = enumerate_tls_while(addr, Some("box.example"), Egress::KERNEL, || true).await;
+        assert!(named.accepts(TlsVersion::Tls13), "{named:?}");
+        assert!(named.accepts(TlsVersion::Tls12), "{named:?}");
+        assert!(named.unfinished().is_empty(), "{named:?}");
+
+        let nameless = enumerate_tls(addr).await;
+        assert!(nameless.suites().is_empty(), "{nameless:?}");
     }
 
     /// The offer narrows: each answer removes one suite, so the number of

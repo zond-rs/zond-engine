@@ -1963,9 +1963,17 @@ async fn enumerate_one(
 )> {
     let socket = address.to_socket_addr(number)?;
     let ip = address.addr();
-    let support = crate::fingerprint::enumerate_tls_while(socket, ctx.egress_toward(ip), || {
-        !ctx.stopping_before(Pass::Tls) && !ctx.host_expired(ip)
-    })
+    // Asked for the name the target reached the address by, as identification's
+    // handshake was, or a server holding its sites by name refuses every offer.
+    let server_name = crate::fingerprint::authority::Authority::new(socket)
+        .named(ctx.target_name(ip))
+        .sni();
+    let support = crate::fingerprint::enumerate_tls_while(
+        socket,
+        server_name.as_deref(),
+        ctx.egress_toward(ip),
+        || !ctx.stopping_before(Pass::Tls) && !ctx.host_expired(ip),
+    )
     .await;
     // An endpoint that accepted nothing and left no walk unfinished is left
     // alone rather than recorded as an empty enumeration: the two are the same

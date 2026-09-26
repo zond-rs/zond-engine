@@ -165,14 +165,13 @@ pub struct Offer<'a> {
     /// preference of its own ignores the order; one that takes the client's
     /// picks the first it can, so the strongest belongs first.
     pub suites: &'a [CipherSuite],
-    /// The name to ask for, where the scan knows one.
+    /// The name to ask for, where the scan knows one: the name a target
+    /// reached the address by.
     ///
     /// `None` sends no `server_name` extension, and a growing number of servers
-    /// answer a nameless hello with an alert or nothing at all. That is a real
-    /// limit on what an enumeration can see, and it is the same one
-    /// the `fingerprint::tls` module documents: the fix is
-    /// upstream, in recording the name a target was resolved from, rather than
-    /// here.
+    /// answer a nameless hello with an alert or nothing at all, so an endpoint
+    /// known only by its address can show an enumeration less than it would
+    /// show a client that named it.
     pub server_name: Option<&'a str>,
 }
 

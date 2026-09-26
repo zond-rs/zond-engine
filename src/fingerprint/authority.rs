@@ -97,6 +97,16 @@ impl Authority {
             .unwrap_or_else(|| ServerName::IpAddress(self.socket.ip().into()))
     }
 
+    /// The name a handshake's server name extension carries, for a caller
+    /// writing its own hello: the one [`server_name`](Self::server_name) puts on
+    /// the wire, and `None` where it puts none.
+    pub(crate) fn sni(&self) -> Option<String> {
+        match self.server_name() {
+            ServerName::DnsName(name) => Some(name.as_ref().to_owned()),
+            _ => None,
+        }
+    }
+
     /// `payload` with the `Host` header of the HTTP request it carries set to
     /// this port's; see [`header`](Self::header).
     ///
@@ -377,6 +387,8 @@ mod tests {
             at("192.0.2.1:443").server_name(),
             ServerName::IpAddress(_)
         ));
+        assert_eq!(named.sni().as_deref(), Some("box.example"));
+        assert_eq!(at("192.0.2.1:443").sni(), None);
     }
 
     /// The placeholder an authored probe carries becomes the port asked, and

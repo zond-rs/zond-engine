@@ -1116,10 +1116,16 @@ impl Analyzer for JarmAnalyzer {
             return Collected::default();
         };
 
-        // The address as SNI, because it is the only name this engine has: a
-        // scan addresses a host by number, and the published hashes this is
-        // matched against were harvested the same way.
-        let host = addr.ip().to_string();
+        // The name a target reached the address by, as the handshake that
+        // identified the port carried it: a server holding its sites by name
+        // answers a hello naming none of them with an alert, or not at all.
+        // Where there is no name the address stands in, as the reference
+        // implementation sends whatever it was pointed at, and the published
+        // hashes this is matched against were harvested by address.
+        let host = super::authority::Authority::new(addr)
+            .named(ctx.host_name.as_deref().map(std::sync::Arc::from))
+            .sni()
+            .unwrap_or_else(|| addr.ip().to_string());
         match fingerprint(addr, &host).await {
             Some(found) => Collected::from_frames(vec![found.into_bytes()]),
             None => Collected::default(),
@@ -1509,6 +1515,29 @@ mod tests {
         let handshaken = ResponseSet::default().with_tls(super::super::TlsInfo::new(Vec::new()));
         let _ = JarmAnalyzer.collect(&ctx, &handshaken).await;
         assert_eq!(dialled.load(Ordering::SeqCst), PROBES.len(), "ten hellos");
+    }
+
+    /// A server holding its sites by name answers only a hello naming one, so
+    /// the port of an address a target reached by name is fingerprinted asking
+    /// for that name. Asked for its address, it answers none of the ten.
+    #[tokio::test]
+    async fn a_port_holding_its_sites_by_name_is_fingerprinted_by_the_name() {
+        let addr = crate::testing::loopback::https_site("box.example", |_| None).await;
+        let handshaken = ResponseSet::default().with_tls(super::super::TlsInfo::new(Vec::new()));
+        let at = |name: Option<&str>| {
+            PortContext::new(addr.port(), Protocol::Tcp)
+                .with_addr(Some(addr))
+                .with_detection(ServiceDetection::Thorough)
+                .with_host_name(name.map(str::to_string))
+        };
+
+        let named = JarmAnalyzer
+            .collect(&at(Some("box.example")), &handshaken)
+            .await;
+        assert_eq!(named.frames.len(), 1, "no fingerprint for the named site");
+
+        let nameless = JarmAnalyzer.collect(&at(None), &handshaken).await;
+        assert!(nameless.frames.is_empty(), "the address was answered");
     }
 
     /// A listener that answers every hello the same way, with
