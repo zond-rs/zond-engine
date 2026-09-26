@@ -24,70 +24,17 @@
 //! the passes it claims to cover.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::Ipv4Addr;
-use std::sync::{Arc, Mutex};
 
-use tokio::io::AsyncReadExt;
-use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
-
+use crate::support::loopback::SilentPort;
 use crate::support::*;
 use zond_engine::config::{DetectionEnvelope, ServiceDetection, ZondConfig};
 use zond_engine::detect::Detections;
 use zond_engine::model::finding::DetectionClass;
 use zond_engine::model::port::{PortState, Protocol};
 
-/// A silent listener keeping every byte it was sent, across every connection.
-struct Printer {
-    port: u16,
-    received: Arc<Mutex<Vec<u8>>>,
-    _task: JoinHandle<()>,
-}
-
-impl Printer {
-    /// Everything any connection sent, in arrival order per connection.
-    fn received(&self) -> Vec<u8> {
-        self.received.lock().expect("the byte log").clone()
-    }
-
-    /// Whether the bytes it was sent contain `needle`.
-    fn saw(&self, needle: &str) -> bool {
-        String::from_utf8_lossy(&self.received()).contains(needle)
-    }
-}
-
-/// Stands a printer up on an ephemeral loopback port. It accepts every
-/// connection, never writes, and reads until the scanner hangs up.
-async fn spawn_printer() -> Printer {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .expect("bind loopback printer");
-    let port = listener.local_addr().expect("printer local addr").port();
-    let received = Arc::new(Mutex::new(Vec::new()));
-
-    let log = Arc::clone(&received);
-    let task = tokio::spawn(async move {
-        while let Ok((mut sock, _)) = listener.accept().await {
-            let log = Arc::clone(&log);
-            tokio::spawn(async move {
-                let mut buffer = [0u8; 4096];
-                while let Ok(n) = sock.read(&mut buffer).await {
-                    if n == 0 {
-                        break;
-                    }
-                    log.lock()
-                        .expect("the byte log")
-                        .extend_from_slice(&buffer[..n]);
-                }
-            });
-        }
-    });
-
-    Printer {
-        port,
-        received,
-        _task: task,
-    }
+/// Whether `printer` was sent `needle` by this process, on any connection.
+fn saw(printer: &SilentPort, needle: &str) -> bool {
+    String::from_utf8_lossy(&printer.received()).contains(needle)
 }
 
 /// A flow and a compute module, each gated onto `port` by number and each
@@ -167,17 +114,18 @@ fn everything(listen_only: BTreeSet<u16>) -> ZondConfig {
 /// here is a byte of a print job.
 #[tokio::test]
 async fn a_listen_only_port_is_found_open_and_sent_nothing_by_any_pass() {
-    let printer = spawn_printer().await;
+    let printer = SilentPort::open();
+    let port = printer.addr().port();
 
     let outcome = run_scan_with(
-        target_map(LOOPBACK, &printer.port.to_string()),
-        &everything(BTreeSet::from([printer.port])),
-        detections_on(printer.port),
+        target_map(LOOPBACK, &port.to_string()),
+        &everything(BTreeSet::from([port])),
+        detections_on(port),
     )
     .await;
 
     assert_eq!(
-        outcome.port_state(LOOPBACK, printer.port),
+        outcome.port_state(LOOPBACK, port),
         Some(PortState::Open),
         "the port-state probe is not held back"
     );
@@ -191,7 +139,7 @@ async fn a_listen_only_port_is_found_open_and_sent_nothing_by_any_pass() {
 
     let settings = outcome.report.phases().last().expect("a phase").settings();
     assert!(
-        settings.listened_only_to(printer.port, Protocol::Tcp),
+        settings.listened_only_to(port, Protocol::Tcp),
         "the report does not say the port was held back: {:?}",
         settings.listen_only_ports
     );
@@ -205,27 +153,28 @@ async fn a_listen_only_port_is_found_open_and_sent_nothing_by_any_pass() {
 /// prove nothing.
 #[tokio::test]
 async fn the_same_scan_with_nothing_held_back_reaches_the_port() {
-    let printer = spawn_printer().await;
+    let printer = SilentPort::open();
+    let port = printer.addr().port();
 
     let outcome = run_scan_with(
-        target_map(LOOPBACK, &printer.port.to_string()),
+        target_map(LOOPBACK, &port.to_string()),
         &everything(BTreeSet::new()),
-        detections_on(printer.port),
+        detections_on(port),
     )
     .await;
 
-    assert_eq!(
-        outcome.port_state(LOOPBACK, printer.port),
-        Some(PortState::Open)
-    );
+    assert_eq!(outcome.port_state(LOOPBACK, port), Some(PortState::Open));
     assert!(
-        printer.saw("GET / HTTP/1.1"),
+        saw(&printer, "GET / HTTP/1.1"),
         "identification asked the port nothing: {:?}",
         String::from_utf8_lossy(&printer.received())
     );
-    assert!(printer.saw("FLOW-PAGE"), "the flow did not reach the port");
     assert!(
-        printer.saw("MODULE-PAGE"),
+        saw(&printer, "FLOW-PAGE"),
+        "the flow did not reach the port"
+    );
+    assert!(
+        saw(&printer, "MODULE-PAGE"),
         "the compute module did not reach the port"
     );
 

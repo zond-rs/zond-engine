@@ -41,7 +41,6 @@
 //! ever reach it.
 
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -50,6 +49,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use crate::support::loopback::{SilentPort, accept_from_this_process, from_this_process};
 use crate::support::*;
 use zond_engine::config::limits::CONNECT_CONCURRENCY;
 use zond_engine::config::{DetectionEnvelope, ServiceDetection, ZondConfig};
@@ -137,7 +137,7 @@ async fn spawn_server(
 
     let log = Arc::clone(&requests);
     let task = tokio::spawn(async move {
-        while let Ok((mut sock, _)) = listener.accept().await {
+        while let Ok(mut sock) = accept_from_this_process(&listener).await {
             // One task per connection: the port scan holds one open while it
             // settles the state, and a flow opens its own alongside.
             let log = Arc::clone(&log);
@@ -609,22 +609,12 @@ fn a_module_that_does_not_compile_is_refused_before_any_port_is_touched() {
 /// The build rejects this manifest, but the guarantee does not rest on the
 /// build: the class decides which verbs the runtime registers, so the module
 /// names a function that is *absent* rather than one that returns an error. The
-/// listener counts what a socket would have opened, which is what makes this an
+/// port counts what a socket would have opened, which is what makes this an
 /// assertion about the network rather than about an error string.
 #[test]
 fn a_passive_detection_that_asks_to_speak_is_handed_no_socket_at_all() {
-    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback");
-    let addr = listener.local_addr().expect("listener addr");
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&accepted);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            if stream.is_err() {
-                break;
-            }
-            counter.fetch_add(1, Ordering::SeqCst);
-        }
-    });
+    let silent = SilentPort::open();
+    let addr = silent.addr();
 
     // Parsed, not built: the authoring schema is `non_exhaustive`, and a parse also
     // reaches the manifest without the validation the builder applies, which is the
@@ -669,7 +659,7 @@ fn a_passive_detection_that_asks_to_speak_is_handed_no_socket_at_all() {
     }
 
     assert_eq!(
-        accepted.load(Ordering::SeqCst),
+        silent.connections(),
         0,
         "a passive detection opened a connection to the scanned port"
     );
@@ -820,7 +810,9 @@ fn a_detection_speaks_through_tls_to_a_service_that_answered_inside_it() {
     // proves the bytes crossed the tunnel decrypted in both directions.
     let config = std::sync::Arc::new(server_config);
     let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().expect("an inbound connection");
+        let mut socket = from_this_process(&listener)
+            .next()
+            .expect("an inbound connection");
         let mut conn = rustls::ServerConnection::new(config).expect("a server connection");
         let mut tls = rustls::Stream::new(&mut conn, &mut socket);
         let mut probe = [0u8; 4];
@@ -882,7 +874,9 @@ fn a_caller_runs_one_flow_against_one_port_without_a_scan() {
     let addr = listener.local_addr().expect("the listener's address");
 
     let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().expect("an inbound connection");
+        let mut socket = from_this_process(&listener)
+            .next()
+            .expect("an inbound connection");
         let _ = socket.read(&mut [0u8; 64]);
         socket
             .write_all(b"# Server\r\nredis_version:7.2.4\r\n")

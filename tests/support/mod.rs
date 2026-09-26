@@ -58,6 +58,8 @@ use zond_engine::scanner::{self, ScanTask};
 use zond_engine::system::interface::{Addressing, Link, LinkAddress, LinkKind, SourceResolver};
 use zond_engine::transport::mac::IntoCoreMac;
 
+use loopback::accept_from_this_process;
+
 /// The loopback address every portable test targets.
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
@@ -131,7 +133,7 @@ pub async fn spawn_banner_server(banner: &'static [u8]) -> Server {
     let port = listener.local_addr().expect("server local addr").port();
 
     let task = tokio::spawn(async move {
-        while let Ok((mut sock, _)) = listener.accept().await {
+        while let Ok(mut sock) = accept_from_this_process(&listener).await {
             let _ = sock.write_all(banner).await;
             let _ = sock.flush().await;
             // Drop closes the connection; the banner has already been sent.

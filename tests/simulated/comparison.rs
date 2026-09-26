@@ -44,6 +44,7 @@ use tokio::task::JoinHandle;
 
 use crate::support::fake_lan::{FakeLan, LanHost};
 use crate::support::fake_net::{FakeNet, Layer4, Policy};
+use crate::support::loopback::accept_from_this_process;
 use crate::support::*;
 
 use zond_engine::diff::{
@@ -640,7 +641,7 @@ async fn spawn_upgradable_server(banner: Arc<Mutex<&'static [u8]>>) -> (u16, Joi
     let port = listener.local_addr().expect("the server's address").port();
 
     let task = tokio::spawn(async move {
-        while let Ok((mut socket, _)) = listener.accept().await {
+        while let Ok(mut socket) = accept_from_this_process(&listener).await {
             let greeting = *banner.lock().expect("the banner");
             let _ = socket.write_all(greeting).await;
             let _ = socket.flush().await;

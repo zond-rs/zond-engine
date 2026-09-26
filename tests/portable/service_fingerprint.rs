@@ -30,6 +30,7 @@ use zond_engine::config::ServiceDetection;
 use zond_engine::fingerprint::{baseline_port, fingerprint_tcp};
 use zond_engine::model::port::{PortState, Protocol};
 
+use crate::support::loopback::accept_from_this_process;
 use crate::support::*;
 
 /// An SSH server announcing an OpenSSH banner must be resolved all the way to
@@ -270,7 +271,7 @@ async fn spawn_challenge_server(question: &'static [u8], answer: &'static [u8]) 
     let port = listener.local_addr().expect("its address").port();
 
     tokio::spawn(async move {
-        while let Ok((mut sock, _)) = listener.accept().await {
+        while let Ok(mut sock) = accept_from_this_process(&listener).await {
             tokio::spawn(async move {
                 let mut buffer = [0u8; 512];
                 let Ok(read) = sock.read(&mut buffer).await else {
@@ -779,7 +780,7 @@ async fn a_web_port_on_a_named_target_is_asked_for_by_that_name() {
     let (asked, mut heard) = tokio::sync::mpsc::unbounded_channel();
     let server = tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
+            let Ok(mut stream) = accept_from_this_process(&listener).await else {
                 return;
             };
             let asked = asked.clone();
