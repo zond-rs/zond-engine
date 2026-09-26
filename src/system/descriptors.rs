@@ -40,9 +40,9 @@
 //!
 //! A limit that leaves nothing once the reserve is set aside is too small for
 //! a scan to keep both its connections and its journal, and so is a table
-//! already too full, when the scan starts, to hold the reserve and a socket
-//! beside what is open: a scan is refused under either before anything is
-//! sent; see [`too_few`].
+//! already too full, when the scan starts, to hold a socket beside what is
+//! open and what the scan opens as it runs: a scan is refused under either
+//! before anything is sent; see [`too_few`].
 //!
 //! What is open is counted for that refusal and not for the gate's size. The
 //! gate is sized once for the life of the process, and what is open at that
@@ -228,6 +228,23 @@ pub(crate) fn starved_briefly() -> String {
 /// of its own room in proportion to them.
 pub(crate) const RESERVE: usize = 16;
 
+/// What a scan opens once it is running, beside its connections' sockets and
+/// its captures: the sockets it asks the routing table through, a transport's
+/// send sockets, a journal entry being written, a system library's brief read
+/// of its configuration, and the second socket a unit holds for a moment
+/// beside its first.
+///
+/// The part of the [`RESERVE`] still to come when a scan starts. The rest of
+/// it is open by then: the standard streams, the runtime's event queues, the
+/// sockets the platform's libraries keep, and a command-line scanner's report
+/// files, which it creates before the scan so a destination it cannot write
+/// is refused before anything is sent. [`too_few`] and [`hold_back`] read the
+/// table as it stands, where those are counted already, and add only this
+/// beside it: charged the whole reserve on top, a process is charged its own
+/// descriptors twice, and a table twenty-four short of its limit leaves a
+/// scan one connection at a time rather than eight.
+pub(crate) const OPENED_WHILE_RUNNING: usize = 8;
+
 /// How many sockets the connections of this process's scans may hold at once.
 pub(crate) fn budget() -> usize {
     budget_within(soft_limit())
@@ -256,21 +273,21 @@ fn reserve_within(soft: usize) -> usize {
 /// The descriptor limit this process has and the least a scan needs, when the
 /// first is below the second.
 ///
-/// A scan needs a socket for its connections beside the [`RESERVE`] the rest
-/// of the process keeps, and beside whatever the process holds open when the
-/// scan starts: a table a parent filled before handing it over, or an
-/// application's own files. Below that the budget would have to come out of
-/// the reserve, and the journal, the report, and the application around the
-/// scan would find their files refused somewhere in the middle of it, where
+/// A scan needs a socket for its connections beside whatever the process
+/// holds open when the scan starts, its own descriptors and the rest: a table
+/// a parent filled before handing it over, or an application's own files. It
+/// needs them beside what it opens as it runs, too, which is what is left of
+/// the [`RESERVE`] once the process has started; see
+/// [`OPENED_WHILE_RUNNING`]. Below that the budget would have to come out of
+/// the reserve, and the journal and the application around the scan would
+/// find their files refused somewhere in the middle of it, where
 /// the failure says nothing about why; or the connections would find none
 /// free and wait out their [`PATIENCE`] to be filed unasked. Refused before
 /// anything is sent, the scan is not half run, and the reason names its
 /// remedy: a limit that holds what is open and the scan.
 ///
-/// The reserve is counted beside what is open rather than overlapping it,
-/// though some of what it stands for may be open already, because it is also
-/// what the scan opens once it has begun: the resolver's sockets, a second
-/// socket a unit holds beside its first.
+/// Where what is open cannot be counted, the whole reserve is needed, since
+/// none of what it stands for was counted either.
 ///
 /// `captures` is the capture devices the scan will hold beside all of that:
 /// one for each link a scan taking the raw path listens on, which is the links
@@ -278,7 +295,7 @@ fn reserve_within(soft: usize) -> usize {
 /// VPN and a hypervisor, where those cannot be told; none for a scan by
 /// connect. They
 /// are counted apart from the reserve because their number is the host's and
-/// not the scan's. Left out, a table with room for the reserve alone lets the
+/// not the scan's. Left out, a table with room for the rest alone lets the
 /// scan start and refuses its captures one link at a time, and what that
 /// leaves reads as a network that did not answer.
 pub(crate) fn too_few(captures: usize) -> Option<(usize, usize)> {
@@ -295,9 +312,9 @@ pub(crate) fn too_few(captures: usize) -> Option<(usize, usize)> {
 /// permits. A scan passing [`too_few`] then runs connections the gate lets
 /// through into a full table, where each waits out its [`PATIENCE`] beside
 /// the ones holding the sockets and is filed unasked, and what the reserve
-/// keeps for the journal and the report is spent on connections. Held back,
-/// the connections take what the table holds and no more, and the reserve
-/// stays whole.
+/// keeps for the journal is spent on connections. Held back, the connections
+/// take what the table holds beside what the scan opens as it runs, and no
+/// more; see [`OPENED_WHILE_RUNNING`].
 ///
 /// Counted as permits the gate still has against sockets the table still
 /// has, so a scan already running in the process is counted once: each of
@@ -318,10 +335,11 @@ pub(crate) fn hold_back() -> Option<Descriptor> {
 
 /// How many of `available` permits [`hold_back`] takes out of the gate in a
 /// process whose soft limit is `soft` and which holds `open` descriptors:
-/// every one past the sockets the table has room for beside the
-/// [`RESERVE`], and never the last one, so a scan let through still runs.
+/// every one past the sockets the table has room for beside
+/// [`OPENED_WHILE_RUNNING`], and never the last one, so a scan let through
+/// still runs.
 fn held_back_within(available: usize, soft: usize, open: usize) -> usize {
-    let room = soft.saturating_sub(open + RESERVE).max(1);
+    let room = soft.saturating_sub(open + OPENED_WHILE_RUNNING).max(1);
     available.saturating_sub(room)
 }
 
@@ -332,7 +350,8 @@ fn too_few_within(
     open: Option<usize>,
     captures: usize,
 ) -> Option<(usize, usize)> {
-    let needed = open.unwrap_or(0) + RESERVE + captures + 1;
+    let beside = open.map_or(RESERVE, |open| open + OPENED_WHILE_RUNNING);
+    let needed = beside + captures + 1;
     soft.filter(|&soft| soft < needed)
         .map(|soft| (soft, needed))
 }
@@ -579,13 +598,14 @@ mod tests {
         );
     }
 
-    /// What is open when the scan starts is held beside the reserve and the
-    /// socket, and the limit named is one that would hold all three.
+    /// What is open when the scan starts is held beside what the scan opens
+    /// as it runs and the socket, and the limit named is one that would hold
+    /// all three.
     #[test]
-    fn what_is_open_already_is_needed_beside_the_reserve() {
+    fn what_is_open_already_is_needed_beside_what_the_scan_opens() {
         assert_eq!(
             too_few_within(Some(64), Some(57), 0),
-            Some((64, 57 + RESERVE + 1))
+            Some((64, 57 + OPENED_WHILE_RUNNING + 1))
         );
         assert_eq!(too_few_within(Some(64), Some(10), 0), None);
         assert_eq!(too_few_within(Some(256), Some(64), 0), None);
@@ -593,21 +613,22 @@ mod tests {
     }
 
     /// A scan taking the raw path holds a capture device on every link it
-    /// listens on, and a table with room for what is open and the reserve
-    /// alone is refused it: let through, the scan's captures are refused one
-    /// link at a time and the replies those links carry are never heard.
+    /// listens on, and a table with room for what is open and the rest of
+    /// the scan alone is refused it: let through, the scan's captures are
+    /// refused one link at a time and the replies those links carry are
+    /// never heard.
     ///
-    /// Twenty-seven open and twenty-eight links, as a laptop with a VPN and a
-    /// hypervisor has them, under a limit of 64: room for the reserve and a
-    /// socket, and not for the captures beside them.
+    /// Thirty open and twenty-eight links, as a laptop with a VPN and a
+    /// hypervisor has them, under a limit of 64: room for what the scan opens
+    /// as it runs and a socket, and not for the captures beside them.
     #[test]
     fn a_raw_scan_needs_a_descriptor_for_every_link_it_captures_on() {
-        assert_eq!(too_few_within(Some(64), Some(27), 0), None, "by connect");
+        assert_eq!(too_few_within(Some(64), Some(30), 0), None, "by connect");
         assert_eq!(
-            too_few_within(Some(64), Some(27), 28),
-            Some((64, 27 + RESERVE + 28 + 1))
+            too_few_within(Some(64), Some(30), 28),
+            Some((64, 30 + OPENED_WHILE_RUNNING + 28 + 1))
         );
-        assert_eq!(too_few_within(Some(256), Some(27), 28), None);
+        assert_eq!(too_few_within(Some(256), Some(30), 28), None);
     }
 
     /// A process whose table is nearly full before the scan starts, held by
@@ -634,28 +655,50 @@ mod tests {
         let (limit, needed) = refused.expect("a scan with seven descriptors free");
         assert_eq!(limit, 64);
         assert!(
-            needed > 64 + RESERVE - 7,
-            "{needed} names no limit that would hold what is open and the reserve"
+            needed > 64 - 7 + OPENED_WHILE_RUNNING,
+            "{needed} names no limit that would hold what is open and the scan"
         );
     }
 
     /// A scan let through into a table fuller than the reserve allows for is
-    /// left as many permits as the table has sockets, beside the reserve, and
-    /// no more. Promised the gate's whole budget, its connections past what
+    /// left as many permits as the table has sockets, beside what the scan
+    /// opens as it runs, and no more. Promised the gate's whole budget, its connections past what
     /// the table holds would wait out their patience for sockets the ones
     /// before them hold, and be filed unasked.
     #[test]
     fn a_gate_is_held_to_the_sockets_the_table_has_room_for() {
-        // A limit of 64 with 40 open passes the refusal, and leaves eight.
+        // A limit of 64 with 40 open passes the refusal, and leaves sixteen.
         assert_eq!(too_few_within(Some(64), Some(40), 0), None);
-        assert_eq!(held_back_within(budget_within(Some(64)), 64, 40), 32 - 8);
+        assert_eq!(held_back_within(budget_within(Some(64)), 64, 40), 32 - 16);
         // A table the reserve covers holds nothing back.
         assert_eq!(held_back_within(budget_within(Some(256)), 256, 10), 0);
         // What another scan's connections hold is counted once: its permits
         // are gone from the gate and its sockets from the table alike.
-        assert_eq!(held_back_within(32 - 5, 64, 40 + 5), 32 - 8);
+        assert_eq!(held_back_within(32 - 5, 64, 40 + 5), 32 - 16);
         // The last permit is never taken.
         assert_eq!(held_back_within(32, 64, 64), 31);
+    }
+
+    /// What a process holds of its own when its scan starts is counted once,
+    /// as part of what is open, and not a second time as the reserve it is
+    /// part of. Charged twice, a command-line scan in a table twenty-four
+    /// short of its limit of 64 was left one connection at a time: its sixty
+    /// silent ports took 333 s to identify, against 11 s in an open table,
+    /// though the table had room for nine at once.
+    #[test]
+    fn what_the_process_holds_of_its_own_is_counted_once() {
+        // Twenty-four free when the command line starts, and seven of those
+        // its own by the time its scan does: three event queues, a socket
+        // pair and its duplicate, and a network policy handle.
+        let open = 64 - 24 + 7;
+        let gate = budget_within(Some(64));
+        let left = gate - held_back_within(gate, 64, open);
+        assert_eq!(
+            left,
+            64 - open - OPENED_WHILE_RUNNING,
+            "every socket the table has beside what the scan opens as it runs"
+        );
+        assert!(left > 1, "{left} connection at a time");
     }
 
     /// Held back in a process whose table is fuller than the reserve allows
@@ -687,11 +730,12 @@ mod tests {
         drop(held);
 
         assert_eq!(whole, 32);
-        assert!(
-            left <= free - RESERVE,
-            "{left} permits left for {free} free descriptors, {RESERVE} of them the reserve's"
+        assert_eq!(
+            left,
+            free - OPENED_WHILE_RUNNING,
+            "permits left for {free} free descriptors, {OPENED_WHILE_RUNNING} of them \
+             what the scan opens as it runs"
         );
-        assert!(left >= 1, "a scan let through was left no permit");
         assert_eq!(returned, whole);
     }
 
