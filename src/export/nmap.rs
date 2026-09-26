@@ -2006,6 +2006,11 @@ mod tests {
         assert_eq!(os.family(), Some("Linux"));
         assert_eq!(os.generation(), Some("5.X"));
         assert_eq!(
+            os.device(),
+            Some("general purpose"),
+            "the class's type was dropped"
+        );
+        assert_eq!(
             os.vendor(),
             None,
             "a vendor nobody established came back named"

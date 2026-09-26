@@ -938,8 +938,8 @@ impl HostAcc {
         self.os = Some(OsFingerprint::new(name, accuracy));
     }
 
-    /// Takes an `<osclass>`, which carries the family and generation the match
-    /// above it does not. Only the first class of the first match contributes,
+    /// Takes an `<osclass>`, which carries the family, generation, vendor and
+    /// device type the match above it does not. Only the first class of the first match contributes,
     /// for the reason [`match_os`](Self::match_os) gives.
     fn classify_os(&mut self, element: &Element) {
         let Some(os) = self.os.take() else {
@@ -963,6 +963,9 @@ impl HostAcc {
         }
         if let Some(vendor) = value(b"vendor") {
             os = os.with_vendor(vendor);
+        }
+        if let Some(device) = value(b"type") {
+            os = os.with_device(device);
         }
         self.os = Some(os);
     }
@@ -1396,6 +1399,7 @@ mod tests {
         assert_eq!(os.name(), "Linux 5.0 - 5.14");
         assert_eq!(os.family(), Some("Linux"));
         assert_eq!(os.generation(), Some("5.X"));
+        assert_eq!(os.device(), Some("general purpose"));
         assert_eq!(os.accuracy(), 97);
         assert!(
             os.cpes()
