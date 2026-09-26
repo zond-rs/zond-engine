@@ -41,7 +41,7 @@ pub mod model;
 pub mod os;
 
 mod analyzer;
-mod authority;
+pub(crate) mod authority;
 mod context;
 mod db;
 mod extract;
@@ -3445,30 +3445,7 @@ mod tests {
     /// answered the way Go's server answers one, with a plaintext `400`. Its
     /// root redirects to `/web/`, as a self-hosted application's often does.
     async fn https_by_name(name: &str) -> (SocketAddr, Heard) {
-        use rustls::server::ResolvesServerCertUsingSni;
-        use rustls::sign::CertifiedKey;
-
-        let cert = rcgen::generate_simple_self_signed(vec![name.to_string()])
-            .expect("a self-signed certificate");
-        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
-            rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()),
-        );
-        let signing = rustls::crypto::ring::sign::any_supported_type(&key).expect("a signing key");
-        let mut by_name = ResolvesServerCertUsingSni::new();
-        by_name
-            .add(
-                name,
-                CertifiedKey::new(vec![cert.cert.der().clone()], signing),
-            )
-            .expect("the name takes the certificate");
-        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("ring supports the default versions")
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(by_name));
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let acceptor = crate::testing::loopback::tls_by_name(name);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

@@ -4,10 +4,8 @@
 # quiet; step two runs only against an affected version and attempts the
 # traversal to confirm, so a patched server is never probed for the exploit.
 #
-# The `Host:` header is a fixed `localhost`, as the signature corpus sends it.
-# Seeding the scanned host as a `{target}` variable is a separate, deferred
-# decision; until it lands a flow names the host it already reached, not one it
-# chooses.
+# The `Host:` header's `localhost` stands for the port being asked, as in the
+# signature corpus: a scan sends it naming the port as the target addressed it.
 
 [detection]
 id      = "grafana-path-traversal"

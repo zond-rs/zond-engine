@@ -101,6 +101,84 @@ pub(crate) async fn accept_from_this_process(
     }
 }
 
+/// A TLS acceptor keeping a certificate for `name` alone, as a server holding
+/// its sites by name keeps one per site, so a handshake naming nothing, or
+/// another name, is refused. The certificate is minted per call, so no key
+/// lives in the tree.
+pub(crate) fn tls_by_name(name: &str) -> tokio_rustls::TlsAcceptor {
+    use rustls::server::ResolvesServerCertUsingSni;
+    use rustls::sign::CertifiedKey;
+
+    let cert = rcgen::generate_simple_self_signed(vec![name.to_string()])
+        .expect("a self-signed certificate");
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+        cert.key_pair.serialize_der(),
+    ));
+    let signing = rustls::crypto::ring::sign::any_supported_type(&key).expect("a signing key");
+    let mut by_name = ResolvesServerCertUsingSni::new();
+    by_name
+        .add(
+            name,
+            CertifiedKey::new(vec![cert.cert.der().clone()], signing),
+        )
+        .expect("the name takes the certificate");
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("ring supports the default versions")
+    .with_no_client_auth()
+    .with_cert_resolver(Arc::new(by_name));
+    tokio_rustls::TlsAcceptor::from(Arc::new(config))
+}
+
+/// A loopback HTTPS site held by `name`, as a server holding several sites at
+/// one address holds one: a handshake that does not name it is refused, and a
+/// request whose `Host` is not `name` and the port is answered `404`, as the
+/// default site would. A request for the site is answered `200` with the body
+/// `page` gives for it, or `404` where it gives none.
+pub(crate) async fn https_site(name: &str, page: fn(&str) -> Option<&'static str>) -> SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let acceptor = tls_by_name(name);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds loopback");
+    let addr = listener.local_addr().expect("a local address");
+    let site = format!("\r\nhost: {name}:{}\r\n", addr.port());
+    tokio::spawn(async move {
+        while let Ok(stream) = accept_from_this_process(&listener).await {
+            let (acceptor, site) = (acceptor.clone(), site.clone());
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut buffer = [0u8; 4096];
+                let read = tls.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let body = request
+                    .to_ascii_lowercase()
+                    .contains(&site)
+                    .then(|| page(&request))
+                    .flatten();
+                let reply = match body {
+                    Some(body) => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    ),
+                    None => {
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    }
+                };
+                let _ = tls.write_all(reply.as_bytes()).await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    addr
+}
+
 /// A loopback port that says nothing and keeps a record of each connection
 /// this process opens to it and everything it sends, standing in for a
 /// service that waits to be spoken to first, for a printer's raw-print port,

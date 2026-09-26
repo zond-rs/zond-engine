@@ -45,6 +45,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::fingerprint::Tunnel;
+use crate::fingerprint::authority::Authority;
 use crate::fingerprint::pattern::{self, CompiledPattern};
 use crate::protocols::http::message_end as http_message_end;
 use crate::system::descriptors;
@@ -153,7 +154,8 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
 ///
 /// A `tunnel` wraps the connected socket in the transport the port answered
 /// inside before a byte of the probe is sent, so an `ssl/*` service is reached
-/// through a handshake and every other port in the clear. A handshake that
+/// through a handshake naming the site `peer` is asked for by, and every other
+/// port in the clear. A handshake that
 /// cannot be set up is a reset; one that fails to complete surfaces as the first
 /// read or write erroring, like any other broken port.
 ///
@@ -172,7 +174,7 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
 /// as the end. [`None`] leaves the reply to end at the idle gap, which is right
 /// for a service that answers one command per connection.
 pub(crate) fn tcp(
-    addr: SocketAddr,
+    peer: &Authority,
     egress: Egress,
     tunnel: Option<Tunnel>,
     bytes: &[u8],
@@ -182,11 +184,12 @@ pub(crate) fn tcp(
 ) -> Result<Reply, ExchangeError> {
     let left = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
     let tcp = egress
-        .connect_within(addr, left.min(CONNECT_PROBE_TIMEOUT), left)
+        .connect_within(peer.socket(), left.min(CONNECT_PROBE_TIMEOUT), left)
         .map_err(|error| ExchangeError::of(&error))?;
     tcp.set_read_timeout(Some(remaining(deadline).ok_or(ExchangeError::TimedOut)?))
         .map_err(|error| ExchangeError::of(&error))?;
-    let mut stream = super::tls::wrap(tcp, addr.ip(), tunnel).ok_or(ExchangeError::Reset)?;
+    let mut stream =
+        super::tls::wrap(tcp, peer.server_name(), tunnel).ok_or(ExchangeError::Reset)?;
     let sent = Instant::now();
     stream
         .write_all(bytes)
@@ -377,7 +380,7 @@ mod tests {
         held.truncate(held.len() - 2);
 
         let reply = super::tcp(
-            addr,
+            &super::Authority::new(addr),
             crate::transport::dial::Egress::KERNEL,
             None,
             b"GET / HTTP/1.1\r\n\r\n",

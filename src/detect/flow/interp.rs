@@ -136,12 +136,13 @@ enum Flow {
 /// reached it on, seeded into the environment as `host` and `port` before the
 /// first step.
 ///
-/// A flow that sends HTTP needs to name the host it is talking to, a `Host:`
-/// header, a redirect it follows, and without this it can only hard-code
-/// `localhost`, which a virtual-host-routed server, most of the web, answers with
-/// the wrong site or a redirect away. These two variables are the host it
-/// reached, not one it chose: the address the scan resolved and connected to, so
-/// a flow still cannot address a machine the scan never looked at.
+/// A flow that sends HTTP names the host it is talking to, in a `Host:` header or
+/// a redirect it follows. These two variables are the host it reached, not one
+/// it chose: the address the scan resolved and connected to, so a flow still
+/// cannot address a machine the scan never looked at. A scan sends a `Host`
+/// naming that address, or `localhost`, as the site the target named where it
+/// reached the address by a name, since a server routing by name answers any
+/// other with the wrong site or a redirect away.
 ///
 /// The environment otherwise holds only what a `bind` captured off the wire,
 /// which is what lets a flow's matching stay a pure function of the bytes it was
@@ -153,8 +154,8 @@ enum Flow {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct FlowSeed {
-    /// The address the flow reached, seeded as `{host}`. The scanned IP as text;
-    /// no hostname is available by the time a detection runs.
+    /// The address the flow reached, seeded as `{host}`: the scanned IP as
+    /// text, whatever name a target reached it by.
     pub host: String,
     /// The port the flow reached it on, seeded as `{port}`.
     pub port: u16,

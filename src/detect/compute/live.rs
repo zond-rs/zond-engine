@@ -31,11 +31,14 @@
 //! so a socket-scoped module never reaches it. When one is, this is where a
 //! resolver is served, bounded the way `speak` is.
 
+use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::detect::exchange::{self, ExchangeError};
 use crate::fingerprint::Tunnel;
+use crate::fingerprint::authority::Authority;
 use crate::model::port::Protocol;
 use crate::transport::dial::Egress;
 
@@ -44,9 +47,12 @@ use super::capability::{CapError, Capabilities, ScanInstant};
 
 /// The capabilities a module is served against a live port, holding the budget
 /// and debiting it as it goes. Bound to the one address it was built for, so a
-/// module can reach nothing else.
+/// module can reach nothing else. An HTTP request whose `Host` stands for that
+/// address, as `localhost` or the address itself, is sent naming the port the
+/// way a browser would.
 pub struct LiveCapabilities {
-    addr: SocketAddr,
+    /// The port, as a request to it and a handshake with it name it.
+    peer: Authority,
     protocol: Protocol,
     /// The tunnel the port answered inside, if any: a module speaks TLS to an
     /// `ssl/*` service and plaintext to the rest, over the same `speak`.
@@ -89,7 +95,7 @@ impl LiveCapabilities {
         budget: &Budget,
     ) -> Self {
         Self {
-            addr,
+            peer: Authority::for_tunnel(addr, tunnel),
             protocol,
             tunnel,
             egress: Egress::KERNEL,
@@ -105,6 +111,15 @@ impl LiveCapabilities {
     /// probe did.
     pub(crate) fn via(mut self, egress: Egress) -> Self {
         self.egress = egress;
+        self
+    }
+
+    /// The same capabilities, asking for the port by `name` where a target
+    /// reached its address by one: the site the target named, in the handshake
+    /// and in the `Host` of a request that stands for the port. See
+    /// [`Authority::readdressed`].
+    pub(crate) fn named(mut self, name: Option<Arc<str>>) -> Self {
+        self.peer = self.peer.named(name);
         self
     }
 
@@ -129,6 +144,12 @@ impl LiveCapabilities {
 
 impl Capabilities for LiveCapabilities {
     fn speak(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CapError> {
+        // Addressed before the budget is asked, which pays for what is sent.
+        let bytes = match self.protocol {
+            Protocol::Tcp => self.peer.readdressed(bytes),
+            _ => Cow::Borrowed(bytes),
+        };
+        let bytes = &*bytes;
         // Refuse before a packet leaves what the budget cannot pay for.
         if self.connections_left == 0 {
             return Err(CapError::ConnectionBudgetExhausted);
@@ -149,7 +170,7 @@ impl Capabilities for LiveCapabilities {
         // The reply may consume at most what the byte budget has left.
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
-                self.addr,
+                &self.peer,
                 self.egress,
                 self.tunnel,
                 bytes,
@@ -165,7 +186,7 @@ impl Capabilities for LiveCapabilities {
             // budget: a module trying guess after guess hears each out and still
             // reaches the last. See [`datagram_deadline`](Self::datagram_deadline).
             Protocol::Udp => exchange::udp(
-                self.addr,
+                self.peer.socket(),
                 self.egress,
                 bytes,
                 datagram_until,
@@ -241,6 +262,31 @@ mod tests {
         assert!(
             matches!(&error, CapError::Denied(reason) if reason.contains("file descriptor limit")),
             "{error:?}"
+        );
+    }
+
+    /// A module's request reaches the site a target named on a port that
+    /// holds its sites by name: the handshake names it, and the `Host` the
+    /// module wrote as a stand-in is sent naming it. Unnamed, the handshake is
+    /// refused and the module reads a reset.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_module_speaks_to_a_named_port_as_the_site_it_was_named() {
+        let addr =
+            crate::testing::loopback::https_site("box.example", |_| Some("the named site")).await;
+
+        let reply = tokio::task::spawn_blocking(move || {
+            let mut caps = LiveCapabilities::new(addr, Protocol::Tcp, Some(Tunnel::Tls), &budget())
+                .named(Some(std::sync::Arc::from("box.example")));
+            caps.speak(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        })
+        .await
+        .expect("the exchange ran");
+
+        let reply = reply.expect("the named site answered");
+        assert!(
+            reply.starts_with(b"HTTP/1.1 200 OK") && reply.ends_with(b"the named site"),
+            "{}",
+            String::from_utf8_lossy(&reply)
         );
     }
 

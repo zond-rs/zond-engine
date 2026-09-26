@@ -30,18 +30,20 @@
 //! probes routinely serve expired, self-signed, or wrong-host certificates a
 //! validating client would hang up on before a byte of the protocol inside.
 //!
-//! ## No name on the wire
+//! ## The name on the wire
 //!
-//! The server name is the peer's address, so no SNI is sent, the same as the
-//! certificate path and for the same reason: no hostname exists by the time a
-//! detection runs. A forward-resolved target does not record the name it came
-//! from and reverse resolution lands after service detection, so the flow that
-//! seeds `{host}` seeds the address it reached, and this hands rustls that same
-//! address. A server that refuses a no-SNI handshake reads, from here, as a port
-//! that stopped answering, which the probe treats as any other silent port.
+//! The handshake carries the name a target reached the address by, where it
+//! named one, as identification's handshake does: a server holding its sites
+//! by name completes a handshake only for a client naming one it holds, and
+//! serves the site it was named. Where the target was an address, the server
+//! name is that address, which puts no server name on the wire at all, since
+//! an address is not allowed there. A server that refuses a nameless handshake
+//! reads, from here, as a port that stopped answering, which the probe treats
+//! as any other silent port. See
+//! [`Authority::server_name`](crate::fingerprint::authority::Authority::server_name).
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, TcpStream};
+use std::net::TcpStream;
 use std::sync::{Arc, OnceLock};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -80,7 +82,7 @@ impl ReadWrite for StreamOwned<ClientConnection, TcpStream> {
 ///
 /// A `None` tunnel hands the socket straight back: the plain-TCP path is the
 /// common one and costs nothing here. A [`Tunnel::Tls`] completes a client
-/// handshake against `peer` and returns the live tunnel to probe through; the
+/// handshake naming `server_name` and returns the live tunnel to probe through; the
 /// handshake itself runs lazily on the first read or write, so it is bounded by
 /// the read timeout the caller already set on `tcp` rather than by a clock of its
 /// own. [`None`] only if the connection cannot be turned into a TLS client at
@@ -88,14 +90,13 @@ impl ReadWrite for StreamOwned<ClientConnection, TcpStream> {
 /// first exchange going unanswered, exactly like a silent port.
 pub(crate) fn wrap(
     tcp: TcpStream,
-    peer: IpAddr,
+    server_name: ServerName<'static>,
     tunnel: Option<Tunnel>,
 ) -> Option<Box<dyn ReadWrite>> {
     match tunnel {
         None => Some(Box::new(tcp)),
         Some(Tunnel::Tls) => {
-            let name = ServerName::IpAddress(peer.into());
-            let conn = ClientConnection::new(config().clone(), name).ok()?;
+            let conn = ClientConnection::new(config().clone(), server_name).ok()?;
             Some(Box::new(StreamOwned::new(conn, tcp)))
         }
     }
@@ -192,7 +193,8 @@ mod tests {
         let accepted = std::thread::spawn(move || from_this_process(&listener).next());
 
         let tcp = TcpStream::connect(addr).unwrap();
-        let mut wrapped = wrap(tcp, addr.ip(), None).expect("a plain socket wraps to itself");
+        let mut wrapped = wrap(tcp, ServerName::IpAddress(addr.ip().into()), None)
+            .expect("a plain socket wraps to itself");
         let mut server = accepted.join().unwrap().expect("an accept");
 
         wrapped.write_all(b"ping").unwrap();

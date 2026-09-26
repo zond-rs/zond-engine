@@ -56,6 +56,18 @@ impl Authority {
         }
     }
 
+    /// The port at `socket`, spoken to through `tunnel`.
+    pub(crate) fn for_tunnel(
+        socket: SocketAddr,
+        tunnel: Option<crate::fingerprint::Tunnel>,
+    ) -> Self {
+        Self {
+            socket,
+            name: None,
+            tls: matches!(tunnel, Some(crate::fingerprint::Tunnel::Tls)),
+        }
+    }
+
     /// The same port, asked for by `name` where there is one.
     pub(crate) fn named(mut self, name: Option<Arc<str>>) -> Self {
         self.name = name;
@@ -94,6 +106,28 @@ impl Authority {
     /// no `Host`, is sent as written, which leaves a probe for another protocol
     /// and a deliberate HTTP/1.0 request without one untouched.
     pub(crate) fn addressed<'a>(&self, payload: &'a [u8]) -> Cow<'a, [u8]> {
+        self.with_host(payload, |_| true)
+    }
+
+    /// `payload` with the `Host` of the HTTP request it carries set to this
+    /// port's, where that `Host` stands for the port rather than naming a site
+    /// of its own.
+    ///
+    /// A detection is written once for every host, as a probe is, so the host
+    /// it writes is ordinarily a stand-in: `localhost`, the address the
+    /// detection was handed, or nothing. Each is replaced as
+    /// [`addressed`](Self::addressed) replaces a probe's, so a detection asks
+    /// for the site the target named. A `Host` naming any other site is the
+    /// detection's question, how the server treats a name it may not hold, and
+    /// is sent as written.
+    pub(crate) fn readdressed<'a>(&self, payload: &'a [u8]) -> Cow<'a, [u8]> {
+        self.with_host(payload, |value| self.stands_for_this_port(value))
+    }
+
+    /// `payload` with the value of its HTTP/1 request's `Host` header replaced
+    /// by this port's [`header`](Self::header), where `replace` says so of the
+    /// value it carries.
+    fn with_host<'a>(&self, payload: &'a [u8], replace: impl Fn(&[u8]) -> bool) -> Cow<'a, [u8]> {
         let Some(head) = find(payload, b"\r\n\r\n") else {
             return Cow::Borrowed(payload);
         };
@@ -112,6 +146,9 @@ impl Authority {
             if let Some(colon) = line.iter().position(|&byte| byte == b':')
                 && line[..colon].eq_ignore_ascii_case(b"host")
             {
+                if !replace(&line[colon + 1..]) {
+                    return Cow::Borrowed(payload);
+                }
                 let mut addressed = Vec::with_capacity(payload.len() + 64);
                 addressed.extend_from_slice(&payload[..at + colon + 1]);
                 addressed.push(b' ');
@@ -212,6 +249,28 @@ impl Authority {
             query if !query.starts_with('/') => format!("/{query}"),
             path => path.to_string(),
         })
+    }
+
+    /// Whether the value of a `Host` header stands for this port: empty,
+    /// `localhost`, its address in any spelling, or the name it is asked for
+    /// by, with or without a port.
+    fn stands_for_this_port(&self, value: &[u8]) -> bool {
+        let Ok(value) = std::str::from_utf8(value) else {
+            return false;
+        };
+        let value = value.trim();
+        // A bare IPv6 address, as a template seeded with one writes it, reads
+        // as a host and a port split at its last colon; it is taken whole
+        // first.
+        if value.is_empty()
+            || value
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address == self.socket.ip())
+        {
+            return true;
+        }
+        split_authority(value)
+            .is_some_and(|(host, _)| host.eq_ignore_ascii_case("localhost") || self.names(host))
     }
 
     /// Whether `host`, as a URL writes it with any brackets taken off, names
@@ -344,6 +403,36 @@ mod tests {
             b"PING\r\nHost: localhost\r\n\r\n",
         ] {
             assert!(matches!(named.addressed(untouched), Cow::Borrowed(_)));
+        }
+    }
+
+    /// A detection's stand-in for the port it asks is replaced whatever form
+    /// it takes, and a `Host` naming another site is the detection's own
+    /// question and goes as written.
+    #[test]
+    fn a_detection_request_is_addressed_only_where_it_stands_for_the_port() {
+        let named = at("[2001:db8::1]:8080").named(Some(Arc::from("box.example")));
+        let request = |host: &str| format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n").into_bytes();
+        let addressed = request("box.example:8080");
+        for stand_in in [
+            "localhost",
+            "LOCALHOST:80",
+            "2001:db8::1",
+            "[2001:db8::1]:8080",
+            "box.example",
+            "",
+        ] {
+            assert_eq!(
+                &*named.readdressed(&request(stand_in)),
+                &addressed[..],
+                "`{stand_in}` stands for the port"
+            );
+        }
+        for other in ["evil.example", "192.0.2.9", "[2001:db8::2]"] {
+            assert!(
+                matches!(named.readdressed(&request(other)), Cow::Borrowed(_)),
+                "`{other}` names another site"
+            );
         }
     }
 

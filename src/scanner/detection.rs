@@ -265,6 +265,9 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
 /// phase gathered for a passive module to read.
 struct PortTarget {
     address: ScopedIp,
+    /// The name a target reached the address by, which the port is asked for
+    /// by; see [`ScanContext::target_name`].
+    name: Option<Arc<str>>,
     number: u16,
     protocol: Protocol,
     service: Option<String>,
@@ -346,6 +349,7 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
                 let responses = ctx.take_responses(&address, number, protocol);
                 targets.push(PortTarget {
                     address: address.clone(),
+                    name: ctx.target_name(address.addr()),
                     number,
                     protocol,
                     service,
@@ -375,6 +379,7 @@ async fn detect_one(
 ) -> Option<PortResult> {
     let PortTarget {
         address,
+        name,
         number,
         protocol,
         service,
@@ -421,7 +426,9 @@ async fn detect_one(
                 // and the wait for a socket must not come out of its budget.
                 let permit = gate.acquire();
                 Some(Box::new(Pooled {
-                    inner: SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps)).via(egress),
+                    inner: SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps))
+                        .via(egress)
+                        .named(name.clone()),
                     _permit: permit,
                 }) as Box<dyn Probe>)
             },
@@ -441,7 +448,7 @@ async fn detect_one(
             tunnel,
             speaks_http: false,
             detection,
-            host_name: None,
+            host_name: name.as_deref().map(str::to_string),
         };
         let computed = compute_stage::detect_port(
             modules.runtime(),
@@ -470,7 +477,9 @@ async fn detect_one(
                 // out of the flow's own time budget.
                 let permit = gate.acquire();
                 Some(Box::new(Permitted {
-                    inner: LiveCapabilities::new(addr, protocol, tunnel, &grant.budget).via(egress),
+                    inner: LiveCapabilities::new(addr, protocol, tunnel, &grant.budget)
+                        .via(egress)
+                        .named(name.clone()),
                     _permit: permit,
                 }) as Box<dyn Capabilities>)
             },
@@ -1045,6 +1054,57 @@ mod tests {
         assert_eq!(findings[0].detection().id(), "redis-unauth-access");
         // Its provenance is the flow's real content hash.
         assert_eq!(findings[0].detection().content_hash().len(), 64);
+    }
+
+    /// A server holding its sites by name answers only a client naming one: a
+    /// handshake naming nothing is refused, and a request for another site
+    /// reads the default one. So a detection on a port whose address a target
+    /// reached by name asks for that name, in the handshake and in the request,
+    /// whatever stand-in its request was written with; otherwise it reports on
+    /// a site nobody pointed it at, or on nothing.
+    #[tokio::test]
+    async fn a_detection_asks_a_named_port_for_the_site_the_target_named() {
+        let addr = crate::testing::loopback::https_site("box.example", |request| {
+            request
+                .starts_with("GET /server-status ")
+                .then_some("<title>Apache Status</title><h1>Apache Server Status</h1>")
+        })
+        .await;
+
+        let (session, ctx) = ScanSession::builder()
+            .naming(std::collections::BTreeMap::from([(
+                addr.ip(),
+                "box.example".to_string(),
+            )]))
+            .build();
+        let mut host = Host::new(addr.ip());
+        host.add_port(
+            Port::new(addr.port(), Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("ssl/http", 100)),
+        );
+        session.hosts().insert(addr.ip(), host);
+
+        // The shipped flow writes the address it was handed as its `Host`.
+        detect(
+            &ctx,
+            ServiceDetection::default(),
+            DetectionEnvelope::up_to(crate::model::finding::DetectionClass::ActiveBenign),
+        )
+        .await;
+
+        let host = session.hosts().get(addr.ip()).unwrap();
+        let port = host
+            .ports()
+            .find(|port| port.number() == addr.port())
+            .unwrap();
+        assert!(
+            port.findings()
+                .any(|finding| finding.detection().id() == "http-server-status"),
+            "the flow did not reach the named site: {:?}",
+            port.findings()
+                .map(|finding| finding.title())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// A UDP detection whose own first datagram is its probe runs against a

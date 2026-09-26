@@ -13,11 +13,13 @@
 //! detection outside a scan builds it the same way.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::detect::compute::Budget;
 use crate::detect::exchange;
 use crate::fingerprint::Tunnel;
+use crate::fingerprint::authority::Authority;
 use crate::model::port::Protocol;
 use crate::transport::dial::Egress;
 
@@ -28,7 +30,9 @@ use super::{Probe, ProbeRefusal};
 ///
 /// Each [`speak`](Probe::speak) is one request and its reply, which is what the
 /// corpus's stateless exchanges need. It is bound to the address it was built
-/// for and reaches nothing else.
+/// for and reaches nothing else, and an HTTP request whose `Host` stands for
+/// that address, as `localhost` or the address itself, is sent naming the port
+/// the way a browser would.
 ///
 /// The budget is enforced here, which is what makes a detection's declaration
 /// mean something: an exchange the budget cannot pay for is refused before a
@@ -51,7 +55,8 @@ use super::{Probe, ProbeRefusal};
 /// # }
 /// ```
 pub struct SocketProbe {
-    addr: SocketAddr,
+    /// The port, as a request to it and a handshake with it name it.
+    peer: Authority,
     protocol: Protocol,
     /// The tunnel the port answered inside, if any: a flow speaks TLS to an
     /// `ssl/*` service and plaintext to the rest, over the same exchange.
@@ -115,7 +120,7 @@ impl SocketProbe {
         budget: &Budget,
     ) -> Self {
         Self {
-            addr,
+            peer: Authority::for_tunnel(addr, tunnel),
             protocol,
             tunnel,
             egress: Egress::KERNEL,
@@ -134,6 +139,15 @@ impl SocketProbe {
     /// did.
     pub(crate) fn via(mut self, egress: Egress) -> Self {
         self.egress = egress;
+        self
+    }
+
+    /// The same probe, asking for the port by `name` where a target reached
+    /// its address by one: the site the target named, in the handshake and in
+    /// the `Host` of a request that stands for the port. See
+    /// [`Authority::readdressed`].
+    pub(crate) fn named(mut self, name: Option<Arc<str>>) -> Self {
+        self.peer = self.peer.named(name);
         self
     }
 
@@ -174,6 +188,12 @@ struct DatagramWait {
 
 impl Probe for SocketProbe {
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        // Addressed before the budget is asked, which pays for what is sent.
+        let bytes = match self.protocol {
+            Protocol::Tcp => self.peer.readdressed(bytes),
+            _ => std::borrow::Cow::Borrowed(bytes),
+        };
+        let bytes = &*bytes;
         // Refuse the exchange the budget cannot pay for, before any packet leaves,
         // recording which budget so a silent port and a spent one stay distinct.
         self.last_refusal = None;
@@ -202,7 +222,7 @@ impl Probe for SocketProbe {
         // no socket to make the exchange with.
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
-                self.addr,
+                &self.peer,
                 self.egress,
                 self.tunnel,
                 bytes,
@@ -211,7 +231,7 @@ impl Probe for SocketProbe {
                 self.reply_end.as_ref().map(|(_, end)| end),
             ),
             Protocol::Udp => exchange::udp(
-                self.addr,
+                self.peer.socket(),
                 self.egress,
                 bytes,
                 datagram.until,
