@@ -409,7 +409,7 @@ fn loopback_link() -> Option<String> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    crate::system::interface::interfaces()
+    crate::system::interface::interfaces_or_none()
         .into_iter()
         .find(|link| link.is_loopback() && link.is_up())
         .map(|link| link.name().to_string())

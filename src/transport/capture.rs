@@ -1328,7 +1328,7 @@ where
 /// somebody matching it against the capture library's own device list will be
 /// reading.
 fn tell_unheard(unheard: &[(&Zone, CaptureError)], every_link_failed: bool) {
-    let links = crate::system::interface::interfaces();
+    let links = crate::system::interface::interfaces_or_none();
     let mut told = TOLD
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2478,6 +2478,7 @@ mod tests {
     #[test]
     fn a_frame_channel_bounds_its_wait_itself_rather_than_trusting_libpcap() {
         let Some(loopback) = crate::system::interface::interfaces()
+            .expect("this machine's interfaces")
             .into_iter()
             .find(|link| link.is_loopback())
         else {

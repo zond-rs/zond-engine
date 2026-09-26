@@ -386,6 +386,7 @@ impl Coded for LinkError {
             LinkError::Unknown { .. } => "link.unknown",
             LinkError::NoLan => "link.no_lan",
             LinkError::NoLinks => "link.no_links",
+            LinkError::Unreadable { .. } => "link.unreadable",
         }
     }
 }
@@ -953,6 +954,7 @@ mod tests {
             "link.no_lan",
             "link.no_links",
             "link.unknown",
+            "link.unreadable",
             "mac.malformed",
             "nvd.io",
             "nvd.malformed",

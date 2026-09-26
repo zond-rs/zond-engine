@@ -140,7 +140,7 @@ impl ForcedSources {
         if forced.is_empty() {
             return Self::default();
         }
-        let sources = Self::with_links(forced, &crate::system::interface::interfaces());
+        let sources = Self::with_links(forced, &crate::system::interface::interfaces_or_none());
         for pin in &sources.pins {
             match pin.interface {
                 Some(index) => info!(
@@ -966,6 +966,7 @@ mod tests {
         use crate::system::interface::{interfaces, map_ips_to_interfaces_forced};
 
         let Some(held) = interfaces()
+            .expect("this machine's interfaces")
             .into_iter()
             .filter(|link| link.is_up() && !link.is_loopback())
             .flat_map(|link| link.addresses().to_vec())
@@ -1044,6 +1045,7 @@ mod tests {
     /// kernel's own choice and only the interface can be told apart.
     fn loopback_pin() -> (Egress, u32) {
         let lo = crate::system::interface::interfaces()
+            .expect("this machine's interfaces")
             .into_iter()
             .find(Link::is_loopback)
             .expect("a loopback interface");

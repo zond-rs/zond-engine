@@ -39,6 +39,7 @@
 //! of them read by anything in this engine, and a field nothing reads is a
 //! field that is wrong on some platform without anybody finding out.
 
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use crate::model::ip::range::{IpRange, cidr_range};
@@ -412,8 +413,36 @@ impl Addressing {
 /// stated set of links and a scan against the real machine the same code path,
 /// and what stops a second enumeration appearing with a second library's
 /// opinion of what is up.
-pub fn interfaces() -> Vec<Link> {
-    host_table().into_iter().map(Link::from_netdev).collect()
+///
+/// # Errors
+///
+/// When the host cannot be asked, which is a process with no descriptor free:
+/// the error is the one the system gave for that, or, where the read reports
+/// no failure of its own, one saying the table came back empty. Every host
+/// has a loopback interface, so an empty table is never the answer; it is
+/// what a read that failed without saying so returns.
+///
+/// On macOS the first read in a process with no descriptor free is refused
+/// rather than made: the system framework it goes through would dereference
+/// what it failed to open and end the process with a segmentation fault. Once
+/// one read has succeeded, later ones need no descriptor there and are made
+/// whatever the table holds.
+pub fn interfaces() -> io::Result<Vec<Link>> {
+    Ok(host_table()?.into_iter().map(Link::from_netdev).collect())
+}
+
+/// [`interfaces`], or none where the host cannot be asked, for a reader with
+/// no error of its own to give. The readers of [`host_table`] with none to
+/// give take an empty table there for the same reason.
+///
+/// The table is unreadable only in a process with no descriptor free, and
+/// every such reader already has an answer for a host that holds nothing: a
+/// source it cannot pick, a link it cannot name, a segment it treats as off
+/// this host. That is the answer a full table earns, since nothing it would
+/// do with a link could open a socket either. A scan is refused before it
+/// starts in such a table; see [`too_few`](crate::system::descriptors::too_few).
+pub(crate) fn interfaces_or_none() -> Vec<Link> {
+    interfaces().unwrap_or_default()
 }
 
 /// The host's interface table as `netdev` reads it, with the one fact it reads
@@ -421,8 +450,9 @@ pub fn interfaces() -> Vec<Link> {
 ///
 /// Every part of the crate that needs something [`Link`] does not carry, such
 /// as a gateway's hardware address, reads the table through here rather than
-/// from `netdev` directly, so a correction made here holds everywhere. A
-/// census in `tests/hygiene/architecture.rs` keeps it that way.
+/// from `netdev` directly, so a correction made here holds everywhere, and so
+/// does the refusal below. A census in `tests/hygiene/architecture.rs` keeps
+/// it that way.
 ///
 /// The correction is to a point-to-point link's own address on Linux. `netdev`
 /// reads each address from netlink and keeps the first of the message's
@@ -434,15 +464,81 @@ pub fn interfaces() -> Vec<Link> {
 /// reported as this machine, up without being asked, and a probe pinned to that
 /// address as its source cannot be sent, while the tunnel's real address is
 /// missing as a source altogether.
-pub(crate) fn host_table() -> Vec<netdev::Interface> {
-    let mut table = netdev::get_interfaces();
+///
+/// The refusal is of a read that would end the process; see [`asked_safely`].
+/// `netdev` reports no failure of its own: a read it could not make comes back
+/// as an empty table, which is refused as the failure it is.
+pub(crate) fn host_table() -> io::Result<Vec<netdev::Interface>> {
+    let mut table = asked_safely(netdev::get_interfaces)?;
+    if table.is_empty() {
+        return Err(io::Error::other(
+            "the interface table came back empty, which no host's is",
+        ));
+    }
     let peers = point_to_point_peers();
     if !peers.is_empty() {
         for interface in &mut table {
             own_addresses_for_peers(interface, &peers);
         }
     }
-    table
+    Ok(table)
+}
+
+/// Runs `read` where it cannot end the process, or refuses it.
+///
+/// On macOS `netdev` reads each interface's kind and display name from
+/// SystemConfiguration, and the first time a process asks, the framework
+/// opens a descriptor to load what it answers from. With none free that open
+/// fails, and the framework goes on to dereference what it did not get: the
+/// process dies of a segmentation fault, a crash no caller can catch, in the
+/// middle of whatever it was doing. Once loaded, the framework needs no
+/// descriptor again, and a table read later in the same process is read whole
+/// with none free.
+///
+/// So the first read, and any after it until one has succeeded, is let
+/// through only once a descriptor has been opened and closed again, and
+/// refused with the system's own error for the open where none could be.
+/// Reads wait on each other while that holds, so two of them cannot both find
+/// the same descriptor free. What this cannot rule out is another thread of
+/// the process taking that descriptor in the instant between the check and
+/// the read; the engine's own connections never take a table's last few (see
+/// [`OPENED_WHILE_RUNNING`](crate::system::descriptors::OPENED_WHILE_RUNNING)),
+/// which leaves only a process that fills its table from another thread at
+/// the moment of its very first read.
+///
+/// Guarding the read is the choice over replacing it. Reading the table
+/// without the framework would mean reading addresses, flags, gateways and
+/// their hardware addresses from the kernel by hand, work `netdev` does and
+/// keeps up with, to avoid a failure that can happen once per process; and
+/// the framework is where `netdev` learns a Wi-Fi interface from a wired one
+/// there.
+#[cfg(target_os = "macos")]
+fn asked_safely<T>(read: impl FnOnce() -> T) -> io::Result<T> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static LOADED: AtomicBool = AtomicBool::new(false);
+    static FIRST: Mutex<()> = Mutex::new(());
+
+    if LOADED.load(Ordering::Acquire) {
+        return Ok(read());
+    }
+    let _first = FIRST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !LOADED.load(Ordering::Acquire) {
+        drop(std::fs::File::open("/dev/null")?);
+    }
+    let answer = read();
+    LOADED.store(true, Ordering::Release);
+    Ok(answer)
+}
+
+/// Elsewhere the read fails without harm where it has no descriptor, and the
+/// empty table it returns is refused by [`host_table`].
+#[cfg(not(target_os = "macos"))]
+fn asked_safely<T>(read: impl FnOnce() -> T) -> io::Result<T> {
+    Ok(read())
 }
 
 /// A point-to-point link's peer, paired with the address this host holds on
@@ -1042,6 +1138,67 @@ mod tests {
         assert_eq!(read(Some("")).display_name(), guid);
     }
 
+    /// A process with no descriptor free is told the interface table cannot
+    /// be read. On macOS the read goes through a system framework that, asked
+    /// for the first time with no descriptor to open, dereferences what it
+    /// failed to open and takes the process down with a segmentation fault no
+    /// caller can catch; elsewhere the read comes back empty, which is no
+    /// host's table and would be taken for a machine with no network.
+    #[cfg(unix)]
+    #[test]
+    fn a_first_read_in_a_full_table_is_refused_rather_than_ending_the_process() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "a_first_read_in_a_full_table_is_refused_rather_than_ending_the_process",
+        ) {
+            return;
+        }
+        let held = exhaust(64);
+        let read = interfaces();
+        drop(held);
+
+        let refused = read.expect_err("a table read with no descriptor free");
+        if cfg!(target_os = "macos") {
+            assert_eq!(refused.raw_os_error(), Some(libc::EMFILE), "{refused}");
+        }
+        assert!(
+            !interfaces()
+                .expect("the table, once there is room")
+                .is_empty(),
+            "every host has a loopback interface"
+        );
+    }
+
+    /// Once a process has read its interface table, it reads it whole again
+    /// with no descriptor free. A scan whose connections fill the table still
+    /// needs to know which addresses are on its own segments, and refused a
+    /// read there it would treat every neighbour as beyond a router.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_table_read_once_is_read_again_with_no_descriptor_free() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "a_table_read_once_is_read_again_with_no_descriptor_free",
+        ) {
+            return;
+        }
+        let names = |links: Vec<Link>| {
+            let mut names: Vec<String> = links.iter().map(|l| l.name().to_owned()).collect();
+            names.sort();
+            names
+        };
+        let before = names(interfaces().expect("the table, with room to read it"));
+        let held = exhaust(64);
+        let again = interfaces();
+        drop(held);
+
+        assert_eq!(names(again.expect("a second read in a full table")), before);
+    }
+
     /// Whatever the host says, read through the one function that reads it.
     ///
     /// Not an assertion about this machine, a container has one interface and a
@@ -1052,7 +1209,7 @@ mod tests {
     /// that runs it.
     #[test]
     fn every_interface_this_machine_has_reads_back_consistently() {
-        for link in interfaces() {
+        for link in interfaces().expect("this machine's interfaces") {
             assert!(!link.name().is_empty(), "an interface with no name");
 
             if link.is_loopback() {

@@ -117,7 +117,7 @@ pub(crate) fn prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) ->
 /// which is an answer about the host and not a failure to find one out, and a
 /// caller has nothing to do differently between the two.
 pub fn lan_link() -> Option<LanLink> {
-    lan_link_with(crate::system::interface::interfaces())
+    lan_link_with(crate::system::interface::interfaces_or_none())
 }
 
 /// The IPv4 half of [`lan_link`], for callers that only sweep IPv4.

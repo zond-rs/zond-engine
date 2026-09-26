@@ -67,6 +67,15 @@ pub enum LinkError {
     /// Nothing was written and this machine has no interface that is up.
     #[error("this machine has no interface that is up, so there is nothing to listen to")]
     NoLinks,
+
+    /// This machine's interface table could not be read, so no name could be
+    /// looked up in it; see [`interfaces`](crate::system::interface::interfaces).
+    #[error("this machine's interfaces could not be read: {source}")]
+    Unreadable {
+        /// What the read met.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Resolves link expressions into the links a listening phase reads.
@@ -108,7 +117,9 @@ pub enum LinkError {
 /// # }
 /// ```
 pub fn for_listening<S: AsRef<str>>(exprs: &[S]) -> Result<Vec<Zone>, LinkError> {
-    for_listening_on(exprs, &crate::system::interface::interfaces())
+    let links = crate::system::interface::interfaces()
+        .map_err(|source| LinkError::Unreadable { source })?;
+    for_listening_on(exprs, &links)
 }
 
 /// [`for_listening`], against an interface table supplied rather than read.

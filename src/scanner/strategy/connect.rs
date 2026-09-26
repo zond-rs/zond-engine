@@ -1940,16 +1940,7 @@ async fn sweep(
     let folder = ctx.clone();
     let mut starved = 0u128;
     let mut shortfall = Shortfall::default();
-    // Read only where the table has room for a scan to start. On macOS the
-    // interface table is read through the system's own frameworks, which
-    // dereference a null pointer in a process with no descriptor free, and a
-    // sweep started in such a table waits for a socket rather than ending the
-    // process; without the table, every first connect waits as for an address
-    // off this host's segments.
-    let segments = match descriptors::too_few(0) {
-        None => OnLinkTable::of_segments(),
-        Some(_) => OnLinkTable::from_links(&[]),
-    };
+    let segments = OnLinkTable::of_segments();
     // No more probes than the process has sockets for: past the budget a
     // probe would only queue at the gate, holding a task and nothing else.
     let mut pool = ProbePool::new(

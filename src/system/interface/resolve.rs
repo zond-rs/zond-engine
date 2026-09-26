@@ -38,7 +38,7 @@ use crate::system::interface;
 /// The engine's answer to [`ZoneResolverFn`](crate::model::parse::ip::ZoneResolverFn):
 /// the parser knows the syntax and this knows the host.
 pub fn resolve_zone(name: &str) -> Option<u32> {
-    crate::system::interface::interfaces()
+    crate::system::interface::interfaces_or_none()
         .into_iter()
         .find(|link| link.name() == name)
         .map(|link| link.index())

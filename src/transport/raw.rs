@@ -421,14 +421,15 @@ fn send_on<T: Packet>(
 fn pin(sender: &TransportSender, source: IpAddr) -> Result<(), RawSocketError> {
     use std::os::fd::BorrowedFd;
 
-    let link = crate::system::interface::interfaces()
-        .into_iter()
-        .find(|link| link.addresses().iter().any(|held| held.address() == source))
-        .ok_or(RawSocketError::NotHeld { address: source })?;
     let failed = |error| RawSocketError::Pin {
         address: source,
         source: error,
     };
+    let link = crate::system::interface::interfaces()
+        .map_err(failed)?
+        .into_iter()
+        .find(|link| link.addresses().iter().any(|held| held.address() == source))
+        .ok_or(RawSocketError::NotHeld { address: source })?;
 
     // SAFETY: the descriptor belongs to `sender`, which outlives this borrow,
     // and is open: `pnet` closes it only when the sender is dropped.
@@ -623,6 +624,7 @@ mod tests {
     fn a_scoped_send_reaches_the_kernel_with_its_interface_on_it() {
         // A real broadcast interface, lowest index first, so the pick is stable.
         let mut links: Vec<_> = crate::system::interface::interfaces()
+            .expect("this machine's interfaces")
             .into_iter()
             .filter(|link| link.is_up() && !link.is_loopback() && !link.is_point_to_point())
             .collect();

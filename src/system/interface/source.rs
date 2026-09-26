@@ -37,7 +37,7 @@ use crate::system::interface::{Link, LinkAddress};
 /// one assigned address. Centralizes a filter that source selection, interface
 /// prioritization, and target routing would otherwise each repeat.
 pub(crate) fn viable_interfaces() -> Vec<Link> {
-    crate::system::interface::interfaces()
+    crate::system::interface::interfaces_or_none()
         .into_iter()
         .filter(|link| link.is_up() && !link.is_loopback() && !link.addresses().is_empty())
         .collect()

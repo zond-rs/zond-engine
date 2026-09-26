@@ -230,7 +230,7 @@ impl OnLink {
     pub fn of_links(links: &[Zone]) -> Self {
         let mut ranges = IpSet::new();
 
-        for interface in crate::system::interface::interfaces() {
+        for interface in crate::system::interface::interfaces_or_none() {
             if !links.iter().any(|link| link.name() == interface.name()) {
                 continue;
             }
@@ -1566,6 +1566,7 @@ mod tests {
     #[test]
     fn a_listener_opens_on_a_loopback_link() {
         let Some(loopback) = crate::system::interface::interfaces()
+            .expect("this machine's interfaces")
             .into_iter()
             .find(|link| link.is_loopback())
         else {

@@ -1117,6 +1117,7 @@ impl Routes {
 fn gateways() -> Vec<SocketAddr> {
     let mut servers = Vec::new();
     for gateway in crate::system::interface::host_table()
+        .unwrap_or_default()
         .into_iter()
         .filter_map(|i| i.gateway)
     {

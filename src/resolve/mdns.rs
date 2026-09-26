@@ -234,7 +234,7 @@ fn open_group_socket(interface: Ipv4Addr) -> std::io::Result<UdpSocket> {
 /// interface with no IPv4 address is not here, because it cannot reach the v4
 /// group.
 fn multicast_interfaces() -> Vec<Ipv4Addr> {
-    crate::system::interface::interfaces()
+    crate::system::interface::interfaces_or_none()
         .into_iter()
         .filter(|link| link.is_up() && !link.is_loopback())
         .filter_map(|link| link.ipv4().map(|(v4, _)| v4).find(|v4| !v4.is_loopback()))

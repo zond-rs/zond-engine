@@ -48,7 +48,7 @@ pub use link::{
 };
 // Not published: the raw table for the few readers that need what a `Link`
 // does not carry, a gateway's hardware address among them. See `host_table`.
-pub(crate) use link::host_table;
+pub(crate) use link::{host_table, interfaces_or_none};
 pub use resolve::{resolve_keyword, resolve_zone};
 pub use routing::{
     MAX_ENUMERABLE_ADDRESSES, RoutedTarget, RoutedTargets, is_enumerable, map_ips_to_interfaces,

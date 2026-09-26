@@ -114,7 +114,7 @@ pub(super) struct Vantage {
 impl Vantage {
     /// Reads this machine's interfaces and routing table.
     pub(super) fn from_system() -> Self {
-        Self::from_interfaces(host_table().into_iter().map(|iface| {
+        Self::from_interfaces(host_table().unwrap_or_default().into_iter().map(|iface| {
             let mut addresses: Vec<IpAddr> = iface
                 .ipv4
                 .iter()

@@ -2245,7 +2245,7 @@ pub(super) fn withhold_unprobeable_targets(target_map: &mut TargetMap) -> Withhe
         .flat_map(|unit| unit.ips().v6())
         .any(|range| range.zone().is_some());
     let links = match named_a_zone {
-        true => crate::system::interface::interfaces(),
+        true => crate::system::interface::interfaces_or_none(),
         false => Vec::new(),
     };
     let names: Vec<(u32, &str)> = links

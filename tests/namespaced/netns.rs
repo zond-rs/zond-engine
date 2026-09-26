@@ -188,6 +188,7 @@ pub fn available() -> bool {
 /// a [`Segment::tunnel`], found by the address the fixture gave it.
 pub fn zone_holding(address: Ipv4Addr) -> zond_engine::model::ip::scoped::Zone {
     zond_engine::system::interface::interfaces()
+        .expect("the namespace's interfaces")
         .into_iter()
         .find(|link| {
             link.addresses()
@@ -679,6 +680,7 @@ impl Segment {
     pub fn zone(&self) -> zond_engine::model::ip::scoped::Zone {
         let name = self.link();
         zond_engine::system::interface::interfaces()
+            .expect("the namespace's interfaces")
             .into_iter()
             .find(|link| link.name() == name)
             .map(|link| link.zone())

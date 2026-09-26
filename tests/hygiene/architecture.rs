@@ -246,8 +246,9 @@ fn modules_named(text: &str) -> Vec<String> {
 /// `netdev` reads a Linux point-to-point link's peer as this host's own
 /// address, and `system::interface::host_table` puts that right. A reader that
 /// asks `netdev` for the table directly gets it back uncorrected, and with it a
-/// VPN's gateway reported as this machine, so the correction holds only while
-/// nothing goes around it.
+/// VPN's gateway reported as this machine; on macOS, asked first in a process
+/// with no descriptor free, it ends the process, which `host_table` refuses to
+/// do. Both hold only while nothing goes around it.
 #[test]
 fn the_interface_table_is_read_only_through_the_interface_module() {
     const READER: &str = "src/system/interface/link.rs";
@@ -272,7 +273,8 @@ fn the_interface_table_is_read_only_through_the_interface_module() {
         around.is_empty(),
         "these read the interface table from netdev directly: {around:?}\n\nRead it \
          through `crate::system::interface::host_table` (or `interfaces` for `Link`s), \
-         which corrects the addresses netdev misreads on a Linux point-to-point link."
+         which corrects the addresses netdev misreads on a Linux point-to-point link \
+         and refuses a first read on macOS that would crash in a full descriptor table."
     );
 }
 

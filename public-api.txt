@@ -15038,7 +15038,10 @@ pub zond_engine::resolve::LinkError::NoLinks
 pub zond_engine::resolve::LinkError::Unknown
 pub zond_engine::resolve::LinkError::Unknown::available: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::resolve::LinkError::Unknown::expression: alloc::string::String
+pub zond_engine::resolve::LinkError::Unreadable
+pub zond_engine::resolve::LinkError::Unreadable::source: core::io::error::Error
 impl core::error::Error for zond_engine::resolve::LinkError
+pub fn zond_engine::resolve::LinkError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::resolve::LinkError
 pub fn zond_engine::resolve::LinkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::resolve::LinkError
@@ -15050,8 +15053,8 @@ impl core::marker::Send for zond_engine::resolve::LinkError
 impl core::marker::Sync for zond_engine::resolve::LinkError
 impl core::marker::Unpin for zond_engine::resolve::LinkError
 impl core::marker::UnsafeUnpin for zond_engine::resolve::LinkError
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::LinkError
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::LinkError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::LinkError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::LinkError
 pub struct zond_engine::resolve::DiscoveryTargets
 impl zond_engine::resolve::DiscoveryTargets
 pub fn zond_engine::resolve::DiscoveryTargets::apply_to(&self, &mut zond_engine::config::ZondConfig)
@@ -16555,7 +16558,7 @@ impl core::marker::UnsafeUnpin for zond_engine::system::interface::SourceResolve
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::interface::SourceResolver
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::interface::SourceResolver
 pub const zond_engine::system::interface::MAX_ENUMERABLE_ADDRESSES: u128
-pub fn zond_engine::system::interface::interfaces() -> alloc::vec::Vec<zond_engine::system::interface::Link>
+pub fn zond_engine::system::interface::interfaces() -> core::io::error::Result<alloc::vec::Vec<zond_engine::system::interface::Link>>
 pub fn zond_engine::system::interface::is_enumerable(&zond_engine::model::ip::range::Ipv6Range) -> bool
 pub fn zond_engine::system::interface::is_layer_2_capable(&zond_engine::system::interface::Link) -> bool
 pub fn zond_engine::system::interface::is_on_link(&zond_engine::system::interface::Link, &zond_engine::model::ip::set::IpSet) -> bool

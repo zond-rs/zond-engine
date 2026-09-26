@@ -2228,6 +2228,7 @@ mod tests {
             capture_plan(&"127.0.0.1".parse().expect("an address"), &cfg).expect("room for it");
 
         let loopback: Vec<_> = crate::system::interface::interfaces()
+            .expect("this machine's interfaces")
             .into_iter()
             .filter(crate::system::interface::Link::is_loopback)
             .map(|link| link.zone())

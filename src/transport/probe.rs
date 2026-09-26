@@ -1154,7 +1154,7 @@ impl ProbeTransport {
 /// the name, and it is what a finding scoped to a link needs, since a
 /// link-local address names a different machine on every one of them.
 pub(crate) fn capturable_interfaces() -> Vec<Zone> {
-    capturable(&crate::system::interface::interfaces())
+    capturable(&crate::system::interface::interfaces_or_none())
 }
 
 /// [`capturable_interfaces`] among `links`.
@@ -1199,7 +1199,7 @@ pub(crate) fn capture_links_toward(targets: &IpSet, forced: &[IpAddr]) -> Vec<Zo
         map_ips_to_interfaces_forced,
     };
 
-    let links = crate::system::interface::interfaces();
+    let links = crate::system::interface::interfaces_or_none();
     // What the routing below would walk address by address: every IPv4
     // range, and the IPv6 ones small enough to walk at all.
     let mut routed_one_by_one = IpSet::new();
