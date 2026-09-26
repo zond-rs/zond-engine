@@ -782,15 +782,16 @@ impl Asking<'_> {
         // port's own cap applies here rather than in a pass of its own.
         let identify = ctx.service_detection_on(self.detection, target.port(), target.protocol());
         // A host that answers on every port has only its likeliest identified;
-        // see `Tarpits`. It is known for one once it has answered on enough.
+        // see `Tarpits`. It is known for one once it has answered on enough,
+        // or said nothing on enough of the ports identified so far.
+        let crowd = self.crowds.of(target.ip(), ctx.target_name(target.ip()));
         let identify = match ctx.read_host(target.ip(), |host| {
             self.tarpits
-                .identifies(host, target.port(), target.protocol())
+                .identifies(host, Some(&crowd), target.port(), target.protocol())
         }) {
             Some(false) => ServiceDetection::Off,
             _ => identify,
         };
-        let crowd = self.crowds.of(target.ip(), ctx.target_name(target.ip()));
         port_prober(
             target,
             identify,

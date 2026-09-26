@@ -41,7 +41,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -87,19 +87,16 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     // Snapshot the targets up front so no DashMap guard is held across an await.
     let tarpits = Tarpits::default();
     let targets = fingerprintable_ports(ctx, over, detection, &tarpits);
-    tarpits.report(ctx, ScannerKind::Service);
-    if targets.is_empty() {
-        return;
-    }
     // A stopped scan opens nothing further, and the report names the pass it
     // left with ports in front of it.
-    if ctx.stopping_before(Pass::Services) {
+    if targets.is_empty() || ctx.stopping_before(Pass::Services) {
+        tarpits.report(ctx, ScannerKind::Service);
         return;
     }
 
     ctx.enter_stage(Stage::Services, Some(targets.len() as u64));
 
-    let asked = targets.len();
+    let mut asked = 0;
     let mut quiet = QuietPorts::default();
     let mut in_part = QuietPorts::default();
     let crowds = Crowds::default();
@@ -146,14 +143,20 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
         if ctx.host_expired(address) {
             continue;
         }
+        // Asked here rather than when the list was drawn, because what
+        // decides it is what the host's ports taken so far have answered.
+        let crowd = crowds.of(address, ctx.target_name(address));
+        let identifies = ctx.read_host(address, |host| {
+            tarpits.identifies(host, Some(&crowd), target.number, target.protocol)
+        });
+        if identifies == Some(false) {
+            ctx.stage_advanced();
+            continue;
+        }
+        asked += 1;
         let egress = ctx.egress_toward(address);
         let detection = ctx.service_detection_on(detection, target.number, target.protocol);
-        let identifying = fingerprint_one(
-            target,
-            detection,
-            egress,
-            crowds.of(address, ctx.target_name(address)),
-        );
+        let identifying = fingerprint_one(target, detection, egress, crowd);
         // Ended with the scan rather than at its own ceiling, which on a port
         // that accepts and says nothing is the better part of half a minute.
         // One cut short keeps what the port phase recorded.
@@ -173,6 +176,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     // flight, which keep what the port phase recorded and nothing more.
     ctx.stopping_before(Pass::Services);
     close_pass(ctx, &crowds, &quiet, in_part, asked).await;
+    tarpits.report(ctx, ScannerKind::Service);
 }
 
 /// Ends a pass whose first identifications are done: asks again the ports
@@ -354,7 +358,8 @@ impl QuietPorts {
 ///
 /// Only its likeliest: a host that answers on every port is asked what runs
 /// where a real service behind it would be, and no further. See [`Tarpits`],
-/// which counts the rest.
+/// which counts the rest. Only the host's open ports are known here; one
+/// found out by its silence is passed over as its ports are taken.
 ///
 /// [`reads_replies`]: crate::fingerprint::reads_replies
 fn fingerprintable_ports(
@@ -378,7 +383,7 @@ fn fingerprintable_ports(
             if port.protocol() == over
                 && port.state() == PortState::Open
                 && crate::fingerprint::reads_replies(port.number(), port.protocol())
-                && tarpits.identifies(host.value(), port.number(), port.protocol())
+                && tarpits.identifies(host.value(), None, port.number(), port.protocol())
             {
                 targets.push(Target {
                     address: address.clone(),
@@ -410,15 +415,36 @@ fn fingerprintable_ports(
 /// [`TCP_TIER_BOUNDS`]: crate::model::port::catalog::TCP_TIER_BOUNDS
 pub(crate) const TARPIT_PORTS_IDENTIFIED: usize = crate::model::port::catalog::TCP_TIER_BOUNDS[0];
 
+/// How many of a host's ports have to take a connection and say nothing to
+/// every question put to them, and more of them than said anything, before
+/// the host is identified as one that answers on every port is.
+///
+/// A host marked [`NetworkRole::Tarpit`] is known for one only once it has
+/// answered on [`TARPIT_OPEN_PORTS`], and a scan that identifies each port
+/// over the connection that finds it open has waited out every
+/// identification up to then: a thousand conversations, each the better part
+/// of its whole wait. Its silence gives it away sooner. A host running a few
+/// hundred real services answers on most of them, and one that has said
+/// nothing on as many ports as a tarpit's likeliest, and on more than it
+/// answered, has nothing more to tell than a tarpit does. Counted only where
+/// the identification asked something, since a service that waits to be
+/// spoken to is silent to one that only listens.
+///
+/// [`NetworkRole::Tarpit`]: crate::model::host::NetworkRole::Tarpit
+/// [`TARPIT_OPEN_PORTS`]: crate::model::host::TARPIT_OPEN_PORTS
+pub(crate) const SILENT_PORTS_OF_A_TARPIT: usize = TARPIT_PORTS_IDENTIFIED;
+
 /// The open ports a pass leaves unidentified on hosts that answer on every
 /// port, counted per host, for one line each once the pass has decided.
 ///
 /// Such a host carries [`NetworkRole::Tarpit`], which says its ports are not
-/// to be acted on. Its likeliest ports are still identified, as
-/// [`TARPIT_PORTS_IDENTIFIED`] says, and the rest keep what the port scan
-/// recorded: open, and the name their number gives them. That is the scan
-/// covering less than it was asked to, so it is filed where a shortfall is,
-/// and said at the console once per host rather than once per port.
+/// to be acted on, or has given itself away sooner by saying nothing on its
+/// ports; see [`SILENT_PORTS_OF_A_TARPIT`]. Its likeliest ports are still
+/// identified, as [`TARPIT_PORTS_IDENTIFIED`] says, and the rest keep what the
+/// port scan recorded: open, and the name their number gives them. That is
+/// the scan covering less than it was asked to, so it is filed where a
+/// shortfall is, and said at the console once per host rather than once per
+/// port.
 ///
 /// [`NetworkRole::Tarpit`]: crate::model::host::NetworkRole::Tarpit
 #[derive(Debug, Default)]
@@ -429,16 +455,33 @@ pub(crate) struct Tarpits {
     /// over, and only those found open: a scan that identifies each port over
     /// the connection that finds it open decides before it knows, and a port
     /// that turned out closed was never one to identify.
-    passed_over: Mutex<std::collections::BTreeMap<ScopedIp, BTreeSet<(u16, Protocol)>>>,
+    passed_over: Mutex<std::collections::BTreeMap<ScopedIp, PassedOver>>,
+}
+
+/// What a [`Tarpits`] passed over on one host, and the most ports it had
+/// heard nothing on when it did.
+#[derive(Debug, Default)]
+struct PassedOver {
+    ports: BTreeSet<(u16, Protocol)>,
+    silent: usize,
 }
 
 impl Tarpits {
     /// Whether `number` over `protocol` on `host` is to be identified, which
-    /// every port is except one of a tarpit's beyond its likeliest.
-    pub(crate) fn identifies(&self, host: &Host, number: u16, protocol: Protocol) -> bool {
+    /// every port is except one beyond its likeliest of a host that answers
+    /// on every port: marked for it, or found out by what `crowd`, its
+    /// identifications in this pass, has heard.
+    pub(crate) fn identifies(
+        &self,
+        host: &Host,
+        crowd: Option<&Crowd>,
+        number: u16,
+        protocol: Protocol,
+    ) -> bool {
         use crate::model::port::catalog::{top_tcp, top_udp};
 
-        if !host.network_roles().contains(&NetworkRole::Tarpit) {
+        let silent = crowd.and_then(Crowd::answers_nothing);
+        if !host.network_roles().contains(&NetworkRole::Tarpit) && silent.is_none() {
             return true;
         }
         let likeliest = match protocol {
@@ -449,12 +492,13 @@ impl Tarpits {
         if likeliest.contains(&number) {
             return true;
         }
-        self.passed_over
+        let mut passed_over = self
+            .passed_over
             .lock()
-            .unwrap_or_else(|held| held.into_inner())
-            .entry(host.scoped_ip())
-            .or_default()
-            .insert((number, protocol));
+            .unwrap_or_else(|held| held.into_inner());
+        let host = passed_over.entry(host.scoped_ip()).or_default();
+        host.ports.insert((number, protocol));
+        host.silent = host.silent.max(silent.unwrap_or(0));
         false
     }
 
@@ -468,36 +512,59 @@ impl Tarpits {
                 .lock()
                 .unwrap_or_else(|held| held.into_inner()),
         );
-        for (host, ports) in passed_over {
+        for (host, passed) in passed_over {
             let counted = ctx.read_host(host.clone(), |recorded| {
                 let left = recorded
                     .ports()
                     .filter(|port| port.state() == PortState::Open)
-                    .filter(|port| ports.contains(&(port.number(), port.protocol())))
+                    .filter(|port| passed.ports.contains(&(port.number(), port.protocol())))
                     .count();
-                (left, recorded.open_port_count())
+                let why = match recorded.network_roles().contains(&NetworkRole::Tarpit) {
+                    true => Why::Open(recorded.open_port_count()),
+                    false => Why::Silent(passed.silent),
+                };
+                (left, why)
             });
-            let Some((count, open)) = counted.filter(|(count, _)| *count > 0) else {
+            let Some((count, why)) = counted.filter(|(count, _)| *count > 0) else {
                 continue;
             };
-            warn!("{}", Self::line(&host, count));
-            ctx.file_cut_short(kind, Self::summary(&host, count, open));
+            warn!("{}", Self::line(&host, count, why));
+            ctx.file_cut_short(kind, Self::summary(&host, count, why));
         }
     }
 
     /// The console line for `count` ports of `host`.
-    fn line(host: &ScopedIp, count: usize) -> String {
-        format!("{host}: {count} open ports not fingerprinted (tarpit)")
+    fn line(host: &ScopedIp, count: usize, why: Why) -> String {
+        let why = match why {
+            Why::Open(_) => "tarpit".to_owned(),
+            Why::Silent(silent) => format!("said nothing on {silent}"),
+        };
+        format!("{host}: {count} open ports not fingerprinted ({why})")
     }
 
-    /// The report's entry for `count` ports of `host`, which had `open`.
-    fn summary(host: &ScopedIp, count: usize, open: usize) -> String {
+    /// The report's entry for `count` ports of `host`.
+    fn summary(host: &ScopedIp, count: usize, why: Why) -> String {
+        let why = match why {
+            Why::Open(open) => format!("a host open on {open} ports answers everything"),
+            Why::Silent(silent) => {
+                format!("{silent} of its ports took a connection and said nothing when asked")
+            }
+        };
         format!(
-            "{host}: {count} open ports were not fingerprinted: a host open on {open} \
-             ports answers everything, and only the {TARPIT_PORTS_IDENTIFIED} \
-             likeliest were asked what they run"
+            "{host}: {count} open ports were not fingerprinted: {why}, and once it \
+             was known for that only its likeliest were asked what they run"
         )
     }
+}
+
+/// What gave a host passed over by [`Tarpits`] away.
+#[derive(Debug, Clone, Copy)]
+enum Why {
+    /// It is marked a tarpit, open on this many ports.
+    Open(usize),
+    /// It had said nothing on this many ports when the pass began passing
+    /// its ports over.
+    Silent(usize),
 }
 
 /// One open port to identify, and the path to it.
@@ -896,6 +963,11 @@ pub(crate) struct Crowd {
     /// asked, each waited on until its clock ran out; see
     /// [`Crowds::report_silence`].
     silent: Mutex<Vec<(ScopedIp, u16)>>,
+    /// How many of the host's first identifications drew something.
+    answered: AtomicUsize,
+    /// How many of them asked a question and heard nothing to any, each
+    /// waited out; see [`SILENT_PORTS_OF_A_TARPIT`].
+    unanswered: AtomicUsize,
 }
 
 /// A port a [`Crowd`] owes a second asking, and what that asking needs.
@@ -953,6 +1025,11 @@ impl Crowd {
         .await;
         let alone = visit.leave();
         self.heard(&found);
+        if !found.responses.is_empty() {
+            self.answered.fetch_add(1, Ordering::Relaxed);
+        } else if found.ran_out_waiting && !found.starved && detection.sends() {
+            self.unanswered.fetch_add(1, Ordering::Relaxed);
+        }
         if found.responses.is_empty() && found.ran_out_waiting && !found.starved {
             self.silent
                 .lock()
@@ -983,6 +1060,17 @@ impl Crowd {
                 });
         }
         found
+    }
+
+    /// How many of the host's ports have said nothing to what their
+    /// identification asked, where that is enough, and more than answered,
+    /// for the host to be identified as one that answers on every port;
+    /// `None` where it is not. See [`SILENT_PORTS_OF_A_TARPIT`].
+    pub(crate) fn answers_nothing(&self) -> Option<usize> {
+        let unanswered = self.unanswered.load(Ordering::Relaxed);
+        (unanswered >= SILENT_PORTS_OF_A_TARPIT
+            && unanswered > self.answered.load(Ordering::Relaxed))
+        .then_some(unanswered)
     }
 
     /// The ports this crowd owes a second asking, taken, or none where the
@@ -1587,6 +1675,67 @@ mod tests {
             )),
             "{}",
             failures[0].reason()
+        );
+        drop(session);
+    }
+
+    /// **A host that has said nothing on as many ports as a tarpit's
+    /// likeliest, and on more than it answered, has only its likeliest
+    /// identified from then on, and the report counts what was left.**
+    ///
+    /// Known for a tarpit only at a thousand open ports, a host whose ports
+    /// are identified as they are found open has had a thousand
+    /// conversations waited out by then. One running a few hundred real
+    /// services answers on most of them and is identified whole.
+    #[test]
+    fn a_host_silent_on_its_ports_is_identified_as_a_tarpit_is() {
+        use crate::model::port::catalog::top_tcp;
+
+        let (session, ctx) = ScanSession::new();
+        let silent: IpAddr = "192.0.2.1".parse().expect("a documentation address");
+        let talkative: IpAddr = "192.0.2.2".parse().expect("a documentation address");
+        let unlikely = 51_000;
+        let likeliest = top_tcp(TARPIT_PORTS_IDENTIFIED)[0];
+        assert!(!top_tcp(TARPIT_PORTS_IDENTIFIED).contains(&unlikely));
+        for ip in [silent, talkative] {
+            ctx.update_host(ip, |host| {
+                for number in [likeliest, unlikely] {
+                    host.add_port(Port::new(number, Protocol::Tcp, PortState::Open));
+                }
+            });
+        }
+        let crowd = |answered, unanswered| Crowd {
+            answered: AtomicUsize::new(answered),
+            unanswered: AtomicUsize::new(unanswered),
+            ..Crowd::default()
+        };
+        let quiet = crowd(3, SILENT_PORTS_OF_A_TARPIT);
+        let busy = crowd(SILENT_PORTS_OF_A_TARPIT, SILENT_PORTS_OF_A_TARPIT);
+        let short = crowd(0, SILENT_PORTS_OF_A_TARPIT - 1);
+
+        let tarpits = Tarpits::default();
+        let identifies = |ip, crowd: &Crowd, number| {
+            ctx.read_host(ip, |host| {
+                tarpits.identifies(host, Some(crowd), number, Protocol::Tcp)
+            })
+            .expect("recorded")
+        };
+        assert!(!identifies(silent, &quiet, unlikely), "the silent host's");
+        assert!(identifies(silent, &quiet, likeliest), "its likeliest");
+        assert!(identifies(talkative, &busy, unlikely), "answered as often");
+        assert!(identifies(talkative, &short, unlikely), "too few to tell");
+
+        tarpits.report(&ctx, ScannerKind::Service);
+        let failures = ctx.take_failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(
+            failures[0].reason(),
+            format!(
+                "192.0.2.1: 1 open ports were not fingerprinted: \
+                 {SILENT_PORTS_OF_A_TARPIT} of its ports took a connection and said \
+                 nothing when asked, and once it was known for that only its \
+                 likeliest were asked what they run"
+            )
         );
         drop(session);
     }
