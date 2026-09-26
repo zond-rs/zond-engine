@@ -1167,6 +1167,7 @@ fn as_handshake_reading(mut evidence: Evidence) -> Evidence {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::loopback::accept_from_this_process;
 
     /// The entropy the golden vectors below were generated with: the reference
     /// implementation run with `os.urandom` returning `0xab` and `choose_grease`
@@ -1484,7 +1485,7 @@ mod tests {
 
         let counted = Arc::clone(&dialled);
         tokio::spawn(async move {
-            while listener.accept().await.is_ok() {
+            while accept_from_this_process(&listener).await.is_ok() {
                 counted.fetch_add(1, Ordering::SeqCst);
             }
         });
@@ -1526,7 +1527,7 @@ mod tests {
         let addr = listener.local_addr().expect("has an address");
 
         tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 let mut hello = vec![0u8; 4096];
                 if stream.read(&mut hello).await.is_err() {
                     continue;

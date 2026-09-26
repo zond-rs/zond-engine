@@ -464,6 +464,7 @@ fn is_success(status: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::loopback::accept_from_this_process;
 
     /// The digest of the empty string, which is the one MD5 vector everybody
     /// knows by sight, so a broken hash is visible rather than merely different.
@@ -539,7 +540,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let mut asked = Vec::new();
             for _ in 0..2 {
-                let Ok((mut stream, _)) = listener.accept().await else {
+                let Ok(mut stream) = accept_from_this_process(&listener).await else {
                     break;
                 };
                 let mut buffer = [0u8; 512];
@@ -636,7 +637,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut stream = accept_from_this_process(&listener).await.unwrap();
             let mut buffer = [0u8; 512];
             let _ = stream.read(&mut buffer).await;
             stream
@@ -782,7 +783,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let mut asked = Vec::new();
             for _ in 0..3 {
-                let Ok((mut stream, _)) = listener.accept().await else {
+                let Ok(mut stream) = accept_from_this_process(&listener).await else {
                     break;
                 };
                 let mut buffer = [0u8; 512];
@@ -876,7 +877,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let mut asked = Vec::new();
             loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
+                let Ok(mut stream) = accept_from_this_process(&listener).await else {
                     break;
                 };
                 let mut buffer = [0u8; 512];
@@ -948,7 +949,7 @@ mod tests {
 
         let server = tokio::spawn(async move {
             for _ in 0..2 {
-                let Ok((mut stream, _)) = listener.accept().await else {
+                let Ok(mut stream) = accept_from_this_process(&listener).await else {
                     break;
                 };
                 let mut buffer = [0u8; 512];
@@ -994,7 +995,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 tokio::spawn(async move {
                     let mut buffer = [0u8; 512];
                     let Ok(read) = stream.read(&mut buffer).await else {

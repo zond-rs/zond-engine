@@ -703,11 +703,12 @@ async fn a_session_service_is_named_from_its_answer_over_a_socket() {
     use tokio::net::{TcpListener, TcpStream};
 
     use crate::model::port::{PortState, Protocol};
+    use crate::testing::loopback::accept_from_this_process;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
     let addr = listener.local_addr().expect("its address");
     let server = tokio::spawn(async move {
-        let Ok((mut sock, _)) = listener.accept().await else {
+        let Ok(mut sock) = accept_from_this_process(&listener).await else {
             return;
         };
         let mut request = [0u8; 128];
@@ -783,11 +784,12 @@ async fn an_rdp_server_is_named_from_its_negotiation_over_a_socket() {
     use tokio::net::{TcpListener, TcpStream};
 
     use crate::model::port::{PortState, Protocol};
+    use crate::testing::loopback::accept_from_this_process;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
     let addr = listener.local_addr().expect("its address");
     let server = tokio::spawn(async move {
-        let Ok((mut sock, _)) = listener.accept().await else {
+        let Ok(mut sock) = accept_from_this_process(&listener).await else {
             return;
         };
         let mut request = [0u8; 64];

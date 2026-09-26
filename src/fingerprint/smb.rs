@@ -324,6 +324,7 @@ fn der(tag: u8, content: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::fingerprint::framed;
+    use crate::testing::loopback::accept_from_this_process;
 
     /// `message` behind its NetBIOS session header.
     fn framed_message(message: &[u8]) -> Vec<u8> {
@@ -472,7 +473,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
         let addr = listener.local_addr().expect("its address");
         tokio::spawn(async move {
-            while let Ok((mut sock, _)) = listener.accept().await {
+            while let Ok(mut sock) = accept_from_this_process(&listener).await {
                 let (rung, follow_up) = (rung.clone(), follow_up.clone());
                 tokio::spawn(async move {
                     let mut request = [0u8; 1024];

@@ -577,6 +577,7 @@ async fn first_record(stream: &mut TcpStream) -> Record {
 mod tests {
     use super::*;
     use crate::model::tls::SuiteFault;
+    use crate::testing::loopback::accept_from_this_process;
     use std::collections::BTreeSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -665,7 +666,7 @@ mod tests {
 
             tokio::spawn(async move {
                 loop {
-                    let Ok((mut stream, _)) = listener.accept().await else {
+                    let Ok(mut stream) = accept_from_this_process(&listener).await else {
                         return;
                     };
                     let taken = self.seen.fetch_add(1, Ordering::SeqCst) + 1;
@@ -972,7 +973,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
         let addr = listener.local_addr().expect("has an address");
         tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 let mut scratch = [0u8; 1024];
                 let _ = stream.read(&mut scratch).await;
                 let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
@@ -993,7 +994,7 @@ mod tests {
         let server = FakeTlsServer::new(0x0303, [0xC02F]);
 
         tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 let mut buffer = vec![0u8; 4096];
                 let Ok(read) = stream.read(&mut buffer).await else {
                     continue;
@@ -1284,7 +1285,7 @@ mod tests {
         let server = FakeTlsServer::new(0x0304, [0x1301]).answering_in_the_extension();
 
         tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 let mut buffer = vec![0u8; 4096];
                 let Ok(read) = stream.read(&mut buffer).await else {
                     continue;

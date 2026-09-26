@@ -339,6 +339,7 @@ fn skip_name_list(buf: &[u8], cursor: &mut usize) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::loopback::accept_from_this_process;
     use proptest::prelude::*;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
@@ -429,7 +430,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut sock = accept_from_this_process(&listener).await.unwrap();
             sock.write_all(b"SSH-2.0-OpenSSH_9.6p1\r\n").await.unwrap();
             let packet = frame_packet(&kexinit_payload("curve25519-sha256", "ssh-ed25519"));
             sock.write_all(&packet).await.unwrap();
@@ -492,7 +493,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut sock = accept_from_this_process(&listener).await.unwrap();
             sock.write_all(
                 b"*******************************************\r\n\
                   * Authorised access only. Activity is logged. *\r\n\

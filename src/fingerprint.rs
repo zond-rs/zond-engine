@@ -2050,6 +2050,7 @@ fn first_printable(responses: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::loopback::accept_from_this_process;
 
     /// One SNMP reply is one witness to what a host runs.
     ///
@@ -2297,14 +2298,18 @@ mod tests {
         };
         let addr = listener.local_addr().expect("a local address");
         let server = tokio::spawn(async move {
-            let (mut first, _) = listener.accept().await.expect("the first connection");
+            let mut first = accept_from_this_process(&listener)
+                .await
+                .expect("the first connection");
             let mut buffer = [0u8; 1024];
             let _ = first.read(&mut buffer).await;
             let _ = first
                 .write_all(b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n")
                 .await;
             drop(first);
-            let (mut second, _) = listener.accept().await.expect("the redirect followed");
+            let mut second = accept_from_this_process(&listener)
+                .await
+                .expect("the redirect followed");
             let read = second.read(&mut buffer).await.unwrap_or(0);
             let _ = second
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
@@ -2471,7 +2476,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
         let addr = listener.local_addr().expect("its address");
         let server = tokio::spawn(async move {
-            let Ok((mut sock, _)) = listener.accept().await else {
+            let Ok(mut sock) = accept_from_this_process(&listener).await else {
                 return;
             };
             let long = "A".repeat(1_500);
@@ -2542,7 +2547,7 @@ mod tests {
             // Twice: the modern handshake dials first and is answered with an
             // alert, then the legacy probe dials on its own connection.
             for round in 0..2 {
-                let Ok((mut sock, _)) = listener.accept().await else {
+                let Ok(mut sock) = accept_from_this_process(&listener).await else {
                     return;
                 };
                 let mut buffer = [0u8; 1024];
@@ -2602,7 +2607,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
         let addr = listener.local_addr().expect("its address");
         let server = tokio::spawn(async move {
-            let Ok((mut sock, _)) = listener.accept().await else {
+            let Ok(mut sock) = accept_from_this_process(&listener).await else {
                 return;
             };
             // Just inside the grace, for longer than any budget here allows.
@@ -2786,29 +2791,27 @@ mod tests {
     /// is dialled.
     #[tokio::test]
     async fn a_port_only_listened_to_is_not_dialled_again_by_an_analyzer() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("binds loopback");
         let addr = listener.local_addr().expect("a local address");
-        let connections = Arc::new(AtomicUsize::new(0));
-        let received = Arc::new(AtomicUsize::new(0));
-        let (seen, bytes) = (Arc::clone(&connections), Arc::clone(&received));
+        // What each connection sent, reported once it closes, so a count
+        // taken after the pass returns misses nothing still on its way.
+        let (closed, mut sent) = tokio::sync::mpsc::unbounded_channel::<usize>();
         let server = tokio::spawn(async move {
-            while let Ok((mut sock, _)) = listener.accept().await {
-                seen.fetch_add(1, Ordering::SeqCst);
-                let bytes = Arc::clone(&bytes);
+            while let Ok(mut sock) = accept_from_this_process(&listener).await {
+                let closed = closed.clone();
                 tokio::spawn(async move {
                     let _ = sock.write_all(b"SSH-2.0-OpenSSH_9.6p1 Debian-3\r\n").await;
                     let mut buffer = [0u8; 1024];
+                    let mut received = 0;
                     while let Ok(n) = sock.read(&mut buffer).await {
                         if n == 0 {
                             break;
                         }
-                        bytes.fetch_add(n, Ordering::SeqCst);
+                        received += n;
                     }
+                    let _ = closed.send(received);
                 });
             }
         });
@@ -2825,20 +2828,27 @@ mod tests {
         )
         .await
         .port;
+        // Stopped taking connections, the server lets its last sender go with
+        // the last connection it took, and the channel ends once all are read.
         server.abort();
+        let mut per_connection = Vec::new();
+        let every_close = async {
+            while let Some(received) = sent.recv().await {
+                per_connection.push(received);
+            }
+        };
+        timeout(Duration::from_secs(60), every_close)
+            .await
+            .expect("every connection to the port closes");
 
         assert_eq!(
             port.service().map(Service::name),
             Some("ssh"),
             "the greeting alone names the service"
         );
+        assert_eq!(per_connection.len(), 1, "the port was dialled again");
         assert_eq!(
-            connections.load(Ordering::SeqCst),
-            1,
-            "the port was dialled again"
-        );
-        assert_eq!(
-            received.load(Ordering::SeqCst),
+            per_connection.iter().sum::<usize>(),
             0,
             "the port was sent a payload"
         );
@@ -2855,7 +2865,9 @@ mod tests {
             .expect("binds loopback");
         let addr = listener.local_addr().expect("a local address");
         let server = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.expect("one connection");
+            let mut sock = accept_from_this_process(&listener)
+                .await
+                .expect("one connection");
             let mut received = Vec::new();
             let _ = sock.read_to_end(&mut received).await;
             received
@@ -3154,14 +3166,18 @@ mod tests {
             .expect("binds loopback");
         let addr = listener.local_addr().expect("a local address");
         let server = tokio::spawn(async move {
-            let (mut first, _) = listener.accept().await.expect("the first connection");
+            let mut first = accept_from_this_process(&listener)
+                .await
+                .expect("the first connection");
             let mut buffer = [0u8; 1024];
             let _ = first.read(&mut buffer).await;
             // Held open, as a server keeping the connection alive does.
             let _ = first
                 .write_all(b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n")
                 .await;
-            let (mut second, _) = listener.accept().await.expect("the redirect followed");
+            let mut second = accept_from_this_process(&listener)
+                .await
+                .expect("the redirect followed");
             // By now the first has to have been let go.
             let first_open = !matches!(
                 tokio::time::timeout(Duration::from_millis(500), first.read(&mut buffer)).await,
@@ -3217,7 +3233,7 @@ mod tests {
             let framed = Arc::new(AtomicBool::new(false));
             let heard = Arc::clone(&framed);
             let agent = tokio::spawn(async move {
-                while let Ok((mut sock, _)) = listener.accept().await {
+                while let Ok(mut sock) = accept_from_this_process(&listener).await {
                     let mut buffer = [0u8; 1024];
                     let read = sock.read(&mut buffer).await.unwrap_or(0);
                     if buffer[..read].starts_with(b"ZBXD\x01") {
@@ -3315,7 +3331,7 @@ mod tests {
         let heard: Heard = Arc::default();
         let record = Arc::clone(&heard);
         tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
+            while let Ok(stream) = accept_from_this_process(&listener).await {
                 let (acceptor, record) = (acceptor.clone(), Arc::clone(&record));
                 tokio::spawn(async move {
                     let mut first = [0u8; 1];
@@ -3586,7 +3602,7 @@ mod tests {
                 &b"HTTP/1.1 302 Found\r\nLocation: /web/\r\nContent-Length: 0\r\n\r\n"[..],
                 b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
             ] {
-                let Ok((mut sock, _)) = listener.accept().await else {
+                let Ok(mut sock) = accept_from_this_process(&listener).await else {
                     break;
                 };
                 let mut buffer = [0u8; 1024];
