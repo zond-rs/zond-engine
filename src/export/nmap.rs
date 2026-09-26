@@ -1372,6 +1372,7 @@ mod tests {
         failures: Vec<ScannerFailure>,
     ) -> ScanPhase {
         ScanPhase::from_parts(crate::report::PhaseParts {
+            open: false,
             kind,
             started_at: std::time::SystemTime::UNIX_EPOCH,
             elapsed: std::time::Duration::from_secs(1),

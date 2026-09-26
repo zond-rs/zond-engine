@@ -182,6 +182,7 @@ mod tests {
 
         let first = &stopped.phases()[0];
         let finished = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: first.kind(),
             started_at: first.started_at(),

@@ -111,7 +111,9 @@ impl Opened {
     /// strategies' statistics. A record of a phase that never closed claims
     /// none of those rather than guessing at them, and none of them settles
     /// anything a resume would skip. Nor does it say it was stopped, since
-    /// nothing stopped it that it could name.
+    /// nothing stopped it that it could name. It says it is open instead,
+    /// which a sitting that ends replaces with the phase it closed; see
+    /// [`ScanPhase::is_open`].
     ///
     /// `silent` is the exception: the addresses the phase has already heard
     /// nothing from on every target it owes them, which its close would name
@@ -148,6 +150,7 @@ impl Opened {
             probes: Vec::new(),
             origin: None,
             attachments: Vec::new(),
+            open: true,
         })
     }
 }
@@ -314,6 +317,7 @@ impl PhaseRecorder {
             probes: ctx.take_probe_stats(),
             origin: None,
             attachments: ctx.take_attachments(),
+            open: false,
         });
 
         ctx.close_phase(&phase);

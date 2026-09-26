@@ -1896,6 +1896,9 @@ pub struct PhaseParts {
     pub origin: Option<PhaseOrigin>,
     /// Which switch ports the machine running the phase was plugged into.
     pub attachments: Vec<Attachment>,
+    /// Whether this is the phase as it stood before it closed. See
+    /// [`ScanPhase::is_open`].
+    pub open: bool,
 }
 
 impl ScanPhase {
@@ -1934,6 +1937,7 @@ impl ScanPhase {
             probes: parts.probes,
             origin: parts.origin,
             attachments: parts.attachments,
+            open: parts.open,
         }
     }
 
@@ -2022,6 +2026,9 @@ pub struct ScanPhase {
     origin: Option<PhaseOrigin>,
     /// Which switch ports the machine running this phase was plugged into.
     attachments: Vec<Attachment>,
+    /// Whether this is the phase as it stood before it closed. See
+    /// [`is_open`](Self::is_open).
+    open: bool,
 }
 
 impl ScanPhase {
@@ -2256,6 +2263,25 @@ impl ScanPhase {
     /// left, which has no one port to name.
     pub fn passes_cut(&self) -> &[Pass] {
         &self.passes_cut
+    }
+
+    /// Whether this is the phase as it stood before it closed: a record its
+    /// sitting kept as it ran, for a sitting killed outright, which never
+    /// reaches the close that records a phase whole.
+    ///
+    /// Read from a journal, an open phase is one whose sitting was killed, or
+    /// was still running when the journal was read. It says what the phase
+    /// opened with, how long it had run and what failed in it, and claims
+    /// nothing only its close establishes: no [stop](Self::stopped), no
+    /// [unreached](Self::unreached) target, no [pass cut](Self::passes_cut).
+    /// Those read as a phase that ran to its end, and this is what says it
+    /// did not, which is why [`ScanReport::is_partial`] counts it.
+    ///
+    /// Not a [`StopReason`]. Those are what a running scan names as it
+    /// stops; nothing running names a kill, and a phase that is open was not
+    /// stopped by anything it could name.
+    pub fn is_open(&self) -> bool {
+        self.open
     }
 
     /// How many of this port phase's targets it never asked and holds on no
@@ -2695,10 +2721,11 @@ impl ScanReport {
     /// reached a verdict on ([`undecided`](Self::undecided)), a port
     /// recorded [`Unasked`](crate::model::port::PortState::Unasked), a
     /// target never asked that no host holds ([`unreached`](Self::unreached)),
-    /// or a pass over the findings a stop left ([`passes_cut`](Self::passes_cut)).
-    /// Each of those is the report covering less than it set out to, and a
-    /// consumer handed `false` for any of them would take a cut-short run as a
-    /// complete one.
+    /// a pass over the findings a stop left ([`passes_cut`](Self::passes_cut)),
+    /// or a phase whose sitting was killed before it closed
+    /// ([`ScanPhase::is_open`]). Each of those is the report covering less
+    /// than it set out to, and a consumer handed `false` for any of them would
+    /// take a cut-short run as a complete one.
     ///
     /// Read over the report rather than phase by phase, where the report
     /// holds more than one account of the same ground: a resumed job carries
@@ -2728,6 +2755,23 @@ impl ScanReport {
             || self.left_ports_unasked()
             || self.unreached() > 0
             || !self.passes_cut().is_empty()
+            || self.left_open()
+    }
+
+    /// Whether a phase here is [open](ScanPhase::is_open) and no later phase
+    /// of its kind from the same account closed: the report of a job whose
+    /// last sitting was killed, or is still running.
+    ///
+    /// On the terms [`passes_cut`](Self::passes_cut) gives: a resumed job's
+    /// next sitting asks what the killed one did not settle, so one that
+    /// closes is what the killed sitting left, done.
+    pub fn left_open(&self) -> bool {
+        self.phases.iter().enumerate().any(|(at, phase)| {
+            phase.open
+                && !self.phases[at + 1..].iter().any(|later| {
+                    later.kind == phase.kind && later.origin == phase.origin && !later.open
+                })
+        })
     }
 
     /// The passes a stop left that no later sitting of the same account ran,
@@ -3469,6 +3513,7 @@ mod tests {
 
     fn phase(kind: ScanKind) -> ScanPhase {
         ScanPhase {
+            open: false,
             attachments: Vec::new(),
             kind,
             started_at: SystemTime::UNIX_EPOCH,

@@ -3675,6 +3675,7 @@ pub zond_engine::export::schema::PhaseDto::failures: alloc::vec::Vec<zond_engine
 pub zond_engine::export::schema::PhaseDto::icmp_rate_limited: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::export::schema::PhaseDto::kind: &'static str
 pub zond_engine::export::schema::PhaseDto::liveness_skipped: core::option::Option<&'static str>
+pub zond_engine::export::schema::PhaseDto::open: bool
 pub zond_engine::export::schema::PhaseDto::origin: core::option::Option<zond_engine::export::schema::PhaseOriginDto<'a>>
 pub zond_engine::export::schema::PhaseDto::passes_cut: alloc::vec::Vec<&'static str>
 pub zond_engine::export::schema::PhaseDto::privileged: core::option::Option<bool>
@@ -13450,6 +13451,7 @@ pub zond_engine::record::PhaseRecord::failures: alloc::vec::Vec<zond_engine::rec
 pub zond_engine::record::PhaseRecord::icmp_rate_limited: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::record::PhaseRecord::kind: alloc::string::String
 pub zond_engine::record::PhaseRecord::liveness_skipped: core::option::Option<alloc::string::String>
+pub zond_engine::record::PhaseRecord::open: bool
 pub zond_engine::record::PhaseRecord::origin: core::option::Option<zond_engine::record::PhaseOriginRecord>
 pub zond_engine::record::PhaseRecord::passes_cut: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::record::PhaseRecord::privileged: core::option::Option<bool>
@@ -14325,6 +14327,7 @@ pub zond_engine::report::PhaseParts::failures: alloc::vec::Vec<zond_engine::repo
 pub zond_engine::report::PhaseParts::icmp_rate_limited: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::report::PhaseParts::kind: zond_engine::report::ScanKind
 pub zond_engine::report::PhaseParts::liveness_skipped: core::option::Option<zond_engine::report::LivenessSkip>
+pub zond_engine::report::PhaseParts::open: bool
 pub zond_engine::report::PhaseParts::origin: core::option::Option<zond_engine::report::PhaseOrigin>
 pub zond_engine::report::PhaseParts::passes_cut: alloc::vec::Vec<zond_engine::report::Pass>
 pub zond_engine::report::PhaseParts::privilege: core::option::Option<zond_engine::system::privilege::Privilege>
@@ -14460,6 +14463,7 @@ pub fn zond_engine::report::ScanPhase::attachments(&self) -> &[zond_engine::repo
 pub fn zond_engine::report::ScanPhase::elapsed(&self) -> core::time::Duration
 pub fn zond_engine::report::ScanPhase::failures(&self) -> &[zond_engine::report::ScannerFailure]
 pub fn zond_engine::report::ScanPhase::icmp_rate_limited(&self) -> &[core::net::ip_addr::IpAddr]
+pub fn zond_engine::report::ScanPhase::is_open(&self) -> bool
 pub fn zond_engine::report::ScanPhase::kind(&self) -> zond_engine::report::ScanKind
 pub fn zond_engine::report::ScanPhase::liveness_skipped(&self) -> core::option::Option<zond_engine::report::LivenessSkip>
 pub fn zond_engine::report::ScanPhase::origin(&self) -> core::option::Option<&zond_engine::report::PhaseOrigin>
@@ -14511,6 +14515,7 @@ pub fn zond_engine::report::ScanReport::hosts(&self) -> impl core::iter::traits:
 pub fn zond_engine::report::ScanReport::into_phases(self) -> alloc::vec::Vec<zond_engine::report::ScanPhase>
 pub fn zond_engine::report::ScanReport::is_merged(&self) -> bool
 pub fn zond_engine::report::ScanReport::is_partial(&self) -> bool
+pub fn zond_engine::report::ScanReport::left_open(&self) -> bool
 pub fn zond_engine::report::ScanReport::merge(&mut self, zond_engine::report::ScanReport)
 pub fn zond_engine::report::ScanReport::new(zond_engine::report::ScanPhase, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::model::host::Host>) -> Self
 pub fn zond_engine::report::ScanReport::observed_at(&self) -> std::time::SystemTime
@@ -18767,6 +18772,7 @@ pub fn zond_engine::report::ScanReport::hosts(&self) -> impl core::iter::traits:
 pub fn zond_engine::report::ScanReport::into_phases(self) -> alloc::vec::Vec<zond_engine::report::ScanPhase>
 pub fn zond_engine::report::ScanReport::is_merged(&self) -> bool
 pub fn zond_engine::report::ScanReport::is_partial(&self) -> bool
+pub fn zond_engine::report::ScanReport::left_open(&self) -> bool
 pub fn zond_engine::report::ScanReport::merge(&mut self, zond_engine::report::ScanReport)
 pub fn zond_engine::report::ScanReport::new(zond_engine::report::ScanPhase, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::model::host::Host>) -> Self
 pub fn zond_engine::report::ScanReport::observed_at(&self) -> std::time::SystemTime

@@ -1462,6 +1462,14 @@ pub struct PhaseRecord {
     /// Which switch ports the machine running this sitting was plugged into.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AttachmentRecord>,
+    /// Whether this is the sitting as it stood before it closed, as a sitting
+    /// writes itself down while it runs.
+    ///
+    /// Skipped when false, which is every sitting that closed, and defaulted
+    /// on the way in, so a record written before this field existed reads as
+    /// one that closed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open: bool,
 }
 
 /// Where the machine running a sitting was plugged in, as a file holds it.
@@ -1626,6 +1634,7 @@ impl From<&ScanPhase> for PhaseRecord {
                 .iter()
                 .map(AttachmentRecord::from)
                 .collect(),
+            open: phase.is_open(),
         }
     }
 }
@@ -1684,6 +1693,7 @@ impl From<&PhaseRecord> for ScanPhase {
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(PhaseOrigin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),
+            open: record.open,
         })
     }
 }

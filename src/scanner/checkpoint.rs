@@ -298,9 +298,9 @@ impl Cut {
 /// those a host's own budget ran out on, which a pass passed over.
 ///
 /// `phases` are this sitting's own, as it closes, and never what the journal
-/// holds of it: a checkpoint writes the phase still open as one nothing has
-/// stopped, so a killed sitting read back from disk looks like one that ran to
-/// its end. Only a sitting that reaches its close can say it did.
+/// holds of it: what a checkpoint writes of the phase still open says only
+/// that it had not closed, not which passes it had finished. Only a sitting
+/// that reaches its close can say it did.
 fn finished_hosts(ctx: &ScanProgress, phases: &[ScanPhase]) -> Vec<String> {
     let ran_to_its_end = !phases.is_empty()
         && phases
@@ -760,6 +760,55 @@ mod tests {
         let (resumed, _) = Journal::resume(&directory, &plan, Privilege::Raw).expect("resumes");
         assert_eq!(resumed.earlier_phases().len(), 1, "a resume carries it too");
         drop(resumed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A sitting killed outright leaves its open phase marked as one that
+    /// never closed, and the job's report partial until a later sitting
+    /// closes a phase of its kind.
+    ///
+    /// Read back, a phase that never closed claims nothing its close would
+    /// have established, no stop, no unreached target, no pass cut short, and
+    /// without a mark of its own it reads as a phase that ran to its end, and
+    /// the job's report of it as a scan that covered its ground.
+    #[test]
+    fn a_killed_sitting_marks_its_open_phase_and_the_report_partial() {
+        let root = scratch("killed-open");
+        let plan = one_target();
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "test").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+
+        let _recorder = open_a_port_phase(&ctx);
+        let mut writer = Writer::new(journal);
+        writer.checkpoint(&ctx.progress());
+        drop(writer);
+
+        let report = crate::journal::store::report(&directory).expect("reads");
+        assert!(
+            report.phases()[0].is_open(),
+            "the killed phase never closed"
+        );
+        assert!(
+            report.is_partial(),
+            "a job whose only sitting was killed reads as complete"
+        );
+
+        // A later sitting that closes a phase of the same kind is what the
+        // killed one left, done.
+        let (mut resumed, _) = Journal::resume(&directory, &plan, Privilege::Raw).expect("resumes");
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let closed = open_a_port_phase(&ctx).finish(&ctx);
+        resumed.end_sitting(closed.phases()).expect("records");
+        drop(resumed);
+
+        let report = crate::journal::store::report(&directory).expect("reads");
+        let open: Vec<bool> = report.phases().iter().map(ScanPhase::is_open).collect();
+        assert_eq!(open, [true, false], "each sitting's phase as it ended");
+        assert!(
+            !report.is_partial(),
+            "the resume finished what the kill left"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -545,6 +545,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // A port phase a liveness pass preceded leaves this out, which is most
         // of them, and so does every phase that is not a port scan.
         ("phase", "liveness_skipped"),
+        // Every phase that closed leaves this out, which is all but the last
+        // of a sitting killed before it ended.
+        ("phase", "open"),
         ("phase", "origin"),
         // A phase no stop cut a pass of, which is nearly every phase.
         ("phase", "passes_cut"),

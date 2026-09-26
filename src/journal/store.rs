@@ -46,7 +46,8 @@
 //! the journal is read is a sitting that never ended, and its phases are read
 //! beside the rest. A phase that never closed says what it opened with, how
 //! long it ran and what failed in it, and claims nothing only its close could
-//! establish. A phase read from both, left by
+//! establish; it says instead that it is open, which is what keeps it from
+//! reading as a phase that ran to its end. A phase read from both, left by
 //! a sitting stopped between the append and the removal, is read once.
 //!
 //! [`Journal::create`] begins one, [`Journal::resume`] continues one, and
@@ -2045,6 +2046,7 @@ mod tests {
 
         let silent: IpSet = silent.parse().expect("a range");
         ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: SystemTime::UNIX_EPOCH,

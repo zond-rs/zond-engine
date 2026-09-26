@@ -637,6 +637,7 @@ struct PhaseDto {
     unreached: Option<String>,
     unheard_probes: Option<String>,
     origin: Option<PhaseOriginDto>,
+    open: bool,
 }
 
 /// Which document a phase came from, for a report merged out of several.
@@ -661,6 +662,7 @@ impl PhaseDto {
         }
 
         Ok(PhaseRecord {
+            open: self.open,
             // Not read back: a phase somebody else's document describes was
             // not run from this machine, so where it was plugged in is not
             // something the reader can learn or has any business inventing.
@@ -2464,6 +2466,7 @@ mod tests {
         let mut ips =
             crate::model::parse::ip::to_set(&["203.0.113.0/29"], None, None).expect("a range");
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: std::time::SystemTime::UNIX_EPOCH,
@@ -2502,6 +2505,54 @@ mod tests {
         assert_eq!(phase.liveness_skipped(), Some(LivenessSkip::PortsNoDearer));
         assert_eq!(phase.unheard_probes(), 2, "what the silent were asked");
         assert_eq!(restored.hosts().count(), 1, "only the host that answered");
+    }
+
+    /// A phase recorded before it closed stays open through a written
+    /// document and back, and the document it is read from stays partial.
+    ///
+    /// Read back closed, it is a phase that claims no stop and no target left
+    /// unasked, which is a scan that covered its ground; see
+    /// [`ScanPhase::is_open`](crate::report::ScanPhase::is_open).
+    #[test]
+    fn a_phase_that_never_closed_survives_a_round_trip_open() {
+        use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings};
+
+        let mut ips =
+            crate::model::parse::ip::to_set(&["203.0.113.0/29"], None, None).expect("a range");
+        let phase = ScanPhase::from_parts(PhaseParts {
+            open: true,
+            attachments: Vec::new(),
+            kind: ScanKind::PortScan,
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            elapsed: Duration::from_secs(1),
+            privilege: Some(crate::system::privilege::Privilege::Raw),
+            targets: crate::report::TargetScope::from_ip_set(
+                &mut ips,
+                &crate::model::exclusion::Exclusions::none(),
+            ),
+            settings: ScanSettings::from(&crate::ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: None,
+            silent: Vec::new(),
+            stopped: None,
+            passes_cut: Vec::new(),
+            unreached: 0,
+            unheard_probes: 0,
+            probes: Vec::new(),
+            origin: None,
+        });
+        let original = ScanReport::new(phase, []);
+        assert!(original.is_partial(), "an open phase is ground not covered");
+
+        let restored = read(&write(&original)).expect("a readable document");
+        assert!(restored.phases()[0].is_open());
+        assert!(restored.is_partial());
     }
 
     #[test]

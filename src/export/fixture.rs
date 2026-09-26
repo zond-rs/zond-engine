@@ -464,6 +464,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
     ));
 
     let phase = ScanPhase::from_parts(PhaseParts {
+        open: false,
         // No attachment: where the measuring machine was plugged in has
         // nothing to do with what changed between the two scans.
         attachments: Vec::new(),

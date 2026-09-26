@@ -772,6 +772,8 @@ impl Run {
             unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
+            // Nmap writes its document once the scan is done.
+            open: false,
         });
 
         ScanReport::recorded(self.attribution(), vec![phase], self.hosts)

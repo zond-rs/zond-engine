@@ -777,6 +777,7 @@ fn phase() -> ScanPhase {
     });
 
     ScanPhase::from_parts(PhaseParts {
+        open: false,
         kind: ScanKind::PortScan,
         started_at: SystemTime::now() - Duration::from_secs(9),
         elapsed: Duration::from_millis(8_400),

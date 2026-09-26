@@ -712,6 +712,16 @@ pub struct PhaseDto<'a> {
     /// Never a claim that the machine is attached to nothing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AttachmentDto<'a>>,
+    /// Whether this is the phase as it stood before it closed: its sitting
+    /// was killed outright, or was still running when its journal was read.
+    ///
+    /// Left out for a phase that closed, which is every phase but the last of
+    /// a sitting that never ended. An open phase says what it opened with, how
+    /// long it had run and what failed in it, and claims nothing only its
+    /// close establishes: its `stopped`, `unreached` and `passes_cut` are
+    /// absent for that reason rather than because nothing cut it short.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
 }
 
 /// Where the machine running a phase was plugged in.
@@ -826,6 +836,7 @@ impl<'a> PhaseDto<'a> {
                     observed_at: rfc3339(attachment.observed_at()),
                 })
                 .collect(),
+            open: phase.is_open(),
         }
     }
 }

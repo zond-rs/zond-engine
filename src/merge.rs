@@ -987,6 +987,7 @@ mod tests {
     /// A report of one phase that ran on `at`, attributed to `engine`.
     fn report(engine: &str, at: SystemTime, hosts: Vec<Host>) -> ScanReport {
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: at,
@@ -2477,6 +2478,7 @@ mod tests {
             open.v4().iter().copied().map(IpRange::V4).collect()
         });
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::Discovery,
             started_at: at,

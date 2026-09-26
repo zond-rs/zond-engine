@@ -934,6 +934,10 @@
             ]
           }
         },
+        "open": {
+          "description": "Whether this is the phase as it stood before it closed: the sitting running it was killed outright, or was still running when its journal was read. Absent for a phase that closed, which is every phase but the last of a sitting that never ended. An open phase says what it opened with, how long it had run and what failed in it, and claims nothing only its close establishes: its `stopped`, `unreached` and `passes_cut` are absent for that reason rather than because nothing cut it short, and the document reads as partial until a later phase of the same kind closes.",
+          "type": "boolean"
+        },
         "unreached": {
           "description": "How many of this port phase's targets it never asked and holds on no host: never reached by its walk because the scan was stopped first, passed for an address its liveness pass reached no verdict on, or left unasked at an address it names `undecided`. Absent when none were, which is every phase that asked everything it was handed and every phase that is not a `port_scan`. A count rather than a list: what a stop leaves is scattered across the plan, and every target the phase was handed is probed, on its host as `unasked`, counted here, or settled unprobed for an address its liveness pass found silent or could not reach. The record of this phase: what the job as a whole has left is the document's own `unreached`.",
           "$ref": "#/$defs/count_string"

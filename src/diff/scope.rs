@@ -249,6 +249,7 @@ mod tests {
         });
 
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::Discovery,
             started_at: SystemTime::UNIX_EPOCH,
@@ -283,6 +284,7 @@ mod tests {
         let open = to_set(&[open], None, None).expect("a parseable range");
 
         ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::Discovery,
             started_at: SystemTime::UNIX_EPOCH,
@@ -318,6 +320,7 @@ mod tests {
         let mut walked = to_set(&["203.0.113.0/24"], None, None).expect("a range");
         let silent = to_set(&["203.0.113.5"], None, None).expect("an address");
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: SystemTime::UNIX_EPOCH,

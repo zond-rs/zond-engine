@@ -1409,6 +1409,22 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
+    // A phase recorded before it closed: its sitting was killed, or had not
+    // ended when its journal was read. What only its close would say, a stop
+    // or a count never asked, is absent for that reason, and without this line
+    // the phase reads as one that ran to its end.
+    if phase.open {
+        fact(
+            out,
+            "closed",
+            &format!(
+                "{}{}",
+                esc("never"),
+                dim(&[esc("its sitting ended before the phase did")])
+            ),
+        )?;
+    }
+
     // Why a port phase ran with no liveness pass. The phase list reads the same
     // for all three, and the reason is what says how to read the hosts below.
     if let Some(skip) = phase.liveness_skipped {
