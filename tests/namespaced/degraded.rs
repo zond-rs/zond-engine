@@ -175,3 +175,65 @@ async fn a_connect_scan_reads_an_open_port_two_seconds_away_open() {
         "an open port across a 1.9s path read as something else"
     );
 }
+
+/// A connect port scan across a path of nearly two seconds that nothing
+/// measured before it asks each port it asks after the path is found once.
+///
+/// The first port asked of an unmeasured host waits long enough to find the
+/// path, and what it measures sizes the waits of the ports behind it. Waited
+/// as on an ordinary path instead, every first asking gives up while its
+/// answer is on the way, and each port is asked twice: here, three closed
+/// ports asked one at a time would cost six connects rather than three.
+#[tokio::test]
+async fn a_connect_scan_asks_a_slow_host_s_ports_once_its_path_is_found() {
+    use zond_engine::config::ServiceDetection;
+    use zond_engine::model::target::{PlannedTarget, Target};
+    use zond_engine::scanner::session::ScanSession;
+
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let closed: Vec<u16> = (0..3).map(|_| segment.closed_tcp_port()).collect();
+    let target = segment.peer();
+    // Resolved before the path slows, as the sweep test above does it.
+    let _ = std::net::TcpStream::connect((target, closed[0]));
+    segment.degrade(&["delay", "1900ms"]);
+
+    let (session, ctx) = ScanSession::new();
+    let (tx, rx) = tokio::sync::mpsc::channel(closed.len());
+    for (position, port) in closed.iter().enumerate() {
+        tx.send(PlannedTarget::new(
+            position as u64,
+            Target::new(target, *port, zond_engine::model::port::Protocol::Tcp),
+        ))
+        .await
+        .expect("queue");
+    }
+    drop(tx);
+
+    // One at a time, so every port after the first is asked once the path
+    // is known.
+    zond_engine::scanner::strategy::connect::scan(
+        rx,
+        1,
+        ctx.clone(),
+        ServiceDetection::Off,
+        &zond_engine::EvasionProfile::default(),
+        &zond_engine::ZoneMap::new(),
+    )
+    .await
+    .expect("the connect scan runs");
+
+    let sent: u64 = ctx
+        .probe_stats_snapshot()
+        .iter()
+        .map(|stats| stats.sends_attempted())
+        .sum();
+    assert_eq!(sent, closed.len() as u64, "ports asked more than once");
+    assert!(
+        session.hosts().contains(target),
+        "a host answering across a 1.9s path was called silent"
+    );
+}

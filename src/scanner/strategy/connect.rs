@@ -736,6 +736,7 @@ pub async fn scan(
     let crowds = crate::scanner::service::Crowds::default();
     let tarpits = crate::scanner::service::Tarpits::default();
     let slow = SlowPaths::default();
+    let finding = PathFinding::of(OnLinkTable::of_segments());
     let mut pool = ProbePool::new(
         concurrency_limit,
         ctx.clone(),
@@ -773,8 +774,7 @@ pub async fn scan(
             record_unasked(&ctx, &target);
             continue;
         }
-        let patience = connect_patience(measured_path(&ctx, target.ip()));
-        pool.admit(asking.port(target, patience)).await;
+        pool.admit(asking.first(target, &finding)).await;
     }
 
     // Anything still queued was never sent, and carries no position to settle.
@@ -853,11 +853,38 @@ struct Asking<'a> {
 }
 
 impl Asking<'_> {
+    /// The first asking of `target`, its connect's wait decided by `finding`
+    /// as the probe starts.
+    ///
+    /// Decided then rather than when the target is taken, because the probe
+    /// may wait for a place in the pool, and what the probes ahead of it
+    /// measured of the path while it waited is what its wait should allow.
+    fn first(
+        &self,
+        target: PlannedTarget,
+        finding: &PathFinding,
+    ) -> impl Future<Output = ProbedPort> + Send + 'static {
+        let (ctx, finding, ip) = (self.ctx.clone(), finding.clone(), target.ip());
+        self.port_waiting(target, move || {
+            finding.patience(measured_path(&ctx, ip), ip)
+        })
+    }
+
     /// The probe of `target`, its connect waiting `patience`.
     fn port(
         &self,
         target: PlannedTarget,
         patience: Duration,
+    ) -> impl Future<Output = ProbedPort> + Send + 'static {
+        self.port_waiting(target, move || patience)
+    }
+
+    /// The probe of `target`, its connect waiting what `patience` says as the
+    /// probe starts.
+    fn port_waiting(
+        &self,
+        target: PlannedTarget,
+        patience: impl FnOnce() -> Duration + Send + 'static,
     ) -> impl Future<Output = ProbedPort> + Send + 'static {
         let ctx = self.ctx;
         let endpoint = self.zones.endpoint(target.ip(), target.port());
@@ -876,16 +903,20 @@ impl Asking<'_> {
             Some(false) => ServiceDetection::Off,
             _ => identify,
         };
-        port_prober(
-            target,
-            identify,
-            self.shaping,
-            egress,
-            endpoint,
-            patience,
-            ctx.clone(),
-            crowd,
-        )
+        let (shaping, ctx) = (self.shaping, ctx.clone());
+        async move {
+            port_prober(
+                target,
+                identify,
+                shaping,
+                egress,
+                endpoint,
+                patience(),
+                ctx,
+                crowd,
+            )
+            .await
+        }
     }
 
     /// [`port`](Self::port), asked a second time: what it draws revises the
@@ -935,15 +966,76 @@ struct Silence {
 ///
 /// A host that answered nothing has no measurement to go on, and may be a
 /// host whose every port is filtered or one whose every answer was given up
-/// on. One of its ports, the one likeliest to be listening, is asked again
-/// with [`PATH_FINDING_TIMEOUT`]. If it answers, the host is measured and the
-/// rest follow as above; if it stays silent, the host is as silent as the
-/// wait for the longest path a connect looks for can show, and costs one
-/// connect more to know it. Nothing else is asked twice, so a filtered host
-/// costs one connect and a slow one the ports it was owed.
+/// on. So the first port the scan asks of a host nothing has measured is the
+/// one that finds the path: its connect waits as a liveness sweep's first
+/// connect to an address does, [`path_finding_wait`], and what it measures
+/// sizes the wait of every port of the host that starts after it; see
+/// [`PathFinding`]. On a slow path only the ports that started while it was
+/// still on its way are owed a second asking, where finding the path once
+/// the first askings were done owed one to every port: across a 1.9 s path,
+/// a scan of 200 ports at [`CONNECT_CONCURRENCY`] asks 98 of them twice
+/// rather than all 200, and took 15.7 to 18.3 s against 17.8 to 22.5. On a
+/// filtered host it costs what finding the path afterwards would: one connect
+/// of that wait, spent at the start rather than at the end.
+///
+/// [`CONNECT_CONCURRENCY`]: crate::config::limits::CONNECT_CONCURRENCY
+///
+/// The ports that start while the path is being found wait as on an
+/// ordinary path rather than for the answer. Holding them would hold their
+/// places in the scan's pool idle for the length of the path-finding wait on
+/// every host whose first port is filtered, which is most hosts a wide scan
+/// asks, to spare a second asking on the rare one that is far away.
+///
+/// A host whose path-finding connect was cut short, by a stop or by this
+/// machine, and that answered nothing else, has one of its ports, the one
+/// likeliest to be listening, asked again with that wait once the first
+/// askings are done. If it answers, the host is measured and the rest follow
+/// as above; if it stays silent, the host is as silent as the wait for the
+/// longest path a connect looks for can show. Nothing else is asked twice,
+/// so a filtered host costs one connect of that wait and a slow one the ports
+/// asked before its path was known.
 #[derive(Debug, Default)]
 struct SlowPaths {
     silent: std::sync::Mutex<std::collections::HashMap<IpAddr, Vec<Silence>>>,
+}
+
+/// Which hosts of a connect port scan a first connect has been sent to find
+/// the path to, and how long each first asking waits; see [`SlowPaths`].
+#[derive(Clone)]
+struct PathFinding {
+    /// This host's segments, whose addresses are resolved before the first
+    /// SYN leaves; see [`path_finding_wait`].
+    segments: Arc<OnLinkTable>,
+    /// The hosts a path-finding connect has been sent to.
+    sent: Arc<std::sync::Mutex<std::collections::HashSet<IpAddr>>>,
+}
+
+impl PathFinding {
+    /// Nothing sent yet, to addresses on `segments` or beyond them.
+    fn of(segments: OnLinkTable) -> Self {
+        Self {
+            segments: Arc::new(segments),
+            sent: Arc::default(),
+        }
+    }
+
+    /// How long the first asking of a port on `ip` waits, across `path` as
+    /// measured so far: the [path-finding wait](path_finding_wait) for the
+    /// first port asked of a host nothing has measured, and
+    /// [`connect_patience`] for every other.
+    fn patience(&self, path: PathAllowance, ip: IpAddr) -> Duration {
+        let finds_the_path = path == PathAllowance::NONE
+            && self
+                .sent
+                .lock()
+                .unwrap_or_else(|held| held.into_inner())
+                .insert(ip);
+        if finds_the_path {
+            path_finding_wait(is_neighbour(&self.segments, ip))
+        } else {
+            connect_patience(path)
+        }
+    }
 }
 
 impl SlowPaths {
@@ -977,7 +1069,12 @@ impl SlowPaths {
 
         let mut finders = std::collections::HashSet::new();
         for (ip, ports) in &owed {
-            if !open(ip) || measured_path(ctx, *ip) != PathAllowance::NONE {
+            // A port of the host that already waited the path-finding wait
+            // and heard nothing found as much as asking it again would.
+            let found = ports
+                .iter()
+                .any(|silence| silence.waited >= PATH_FINDING_TIMEOUT);
+            if found || !open(ip) || measured_path(ctx, *ip) != PathAllowance::NONE {
                 continue;
             }
             let Some(likeliest) = ports.iter().min_by_key(|silence| {
@@ -2418,6 +2515,53 @@ mod tests {
                 connect_patience(path)
             );
         }
+    }
+
+    /// The first port asked of a host nothing has measured waits long enough
+    /// to find the path, and every other port asks as the measurement so far
+    /// allows.
+    ///
+    /// Waited as on an ordinary path, every first asking across a path slower
+    /// than that wait gave up on its answer, and each port was asked twice.
+    #[test]
+    fn the_first_port_asked_of_an_unmeasured_host_finds_the_path() {
+        use crate::system::interface::{Link, LinkAddress};
+
+        let finding = PathFinding::of(OnLinkTable::from_links(&[Link::new("test0", 1)
+            .with_addresses(vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                24,
+            )])]));
+        let host = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+        let other = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 8));
+        let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+
+        assert_eq!(
+            finding.patience(PathAllowance::NONE, host),
+            PATH_FINDING_TIMEOUT
+        );
+        assert_eq!(
+            finding.patience(PathAllowance::NONE, host),
+            CONNECT_PROBE_TIMEOUT
+        );
+        assert_eq!(
+            finding.patience(PathAllowance::NONE, other),
+            PATH_FINDING_TIMEOUT
+        );
+        // A neighbour's first connect waits for its resolution too.
+        assert_eq!(
+            finding.patience(PathAllowance::NONE, neighbour),
+            NEIGHBOUR_PATH_FINDING_TIMEOUT
+        );
+
+        // A host already measured has its path, and its first port asks as
+        // the measurement says.
+        let measured = PathAllowance::of_round_trip(Duration::from_millis(1_900));
+        let third = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9));
+        assert_eq!(
+            finding.patience(measured, third),
+            connect_patience(measured)
+        );
     }
 
     fn udp_target(ip: IpAddr, port: u16) -> PlannedTarget {
