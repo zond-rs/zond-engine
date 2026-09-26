@@ -486,6 +486,12 @@ impl Dispatcher {
         let (tx, rx) = mpsc::channel(batch_size.saturating_mul(2));
         let scan_handle = ctx.handle.clone();
         let order = self.order(ctx.order_seed);
+        // The settlements count along the walk this stream takes, whether or
+        // not the session was told the plan it would be taken over. Before the
+        // first target leaves, so every settlement is counted along it.
+        if let Some((_, order)) = &order {
+            ctx.settlements().walk_along(*order);
+        }
         let ctx = ctx.clone();
         // What the walk owes an account of: every target of the plan an
         // earlier sitting did not settle. Where it stops early, what it gave
@@ -1283,6 +1289,36 @@ mod tests {
             cursor.settle(position);
             assert_eq!(cursor.pending_count(), 0, "{position} waited in the set");
         }
+    }
+
+    /// A session built without a plan still counts its settlements along the
+    /// walk its dispatcher takes.
+    ///
+    /// Such a session draws a seed like any other, so its dispatcher walks a
+    /// rearrangement of the plan; counted in plan order alone, nearly every
+    /// answer would wait above the watermark, half the plan by the halfway
+    /// mark, held in memory and copied into every checkpoint.
+    #[tokio::test]
+    async fn a_session_told_no_plan_counts_along_the_walk_its_dispatcher_takes() {
+        use crate::journal::settle::Outcome;
+
+        let (_session, ctx) = ScanSession::builder().build();
+        assert!(ctx.order_seed.is_some(), "a session left alone walks");
+
+        let mut rx = Dispatcher::new(wide(20)).with_batch_size(64).run(&ctx);
+        let mut most_waiting = 0;
+        let mut asked = 0;
+        while let Some(planned) = rx.recv().await {
+            ctx.record_outcome(Outcome::Answered {
+                position: planned.position,
+            });
+            asked += 1;
+            most_waiting = most_waiting.max(ctx.settlements().checkpoint().settled_above.len());
+        }
+
+        assert_eq!(asked, 4_096);
+        assert_eq!(ctx.settlements().settled_count(), 4_096);
+        assert_eq!(most_waiting, 0, "answers waited above the watermark");
     }
 
     /// A resumed sitting asks about what is left and nothing else, in whatever

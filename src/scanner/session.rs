@@ -3207,7 +3207,9 @@ impl SessionBuilder {
         // Counted along the walk the dispatcher takes, where it takes one: a
         // seed and a plan it can number whole. The two have to agree, or the
         // walk watermark follows an order nothing asks in and every answer
-        // waits in the set, which is the cost it exists to avoid.
+        // waits in the set, which is the cost it exists to avoid. Without a
+        // plan the walk is not known here, and the dispatcher names it when
+        // it starts; see `Settlements::walk_along`.
         let order_seed = match self.order {
             Order::Drawn => Some(rand::random()),
             Order::Seeded(seed) => Some(seed),

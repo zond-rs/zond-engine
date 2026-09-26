@@ -263,6 +263,18 @@ impl Settlements {
         }
     }
 
+    /// Counts along `order` as well, from here on, where nothing has given
+    /// this count a walk yet.
+    ///
+    /// For the stream that takes the walk to name it. A session built without
+    /// a plan cannot know the walk its dispatcher will take, and a count kept
+    /// in plan order alone of targets asked along a walk holds nearly every
+    /// settled position above its watermark: half the plan at the halfway
+    /// mark. A count that already has a walk keeps it; see [`Cursor::along`].
+    pub(crate) fn walk_along(&self, order: Permutation) {
+        self.with_cursor(|cursor| *cursor = std::mem::take(cursor).along(order));
+    }
+
     /// Records what became of one target.
     pub fn record(&self, outcome: Outcome) {
         self.counter(outcome).fetch_add(1, Ordering::Relaxed);
