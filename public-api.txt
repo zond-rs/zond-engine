@@ -14189,6 +14189,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::StatusReasonR
 pub struct zond_engine::record::TelemetryRecord
 pub zond_engine::record::TelemetryRecord::hop_counter: core::option::Option<u8>
 pub zond_engine::record::TelemetryRecord::rtt_protocol: core::option::Option<alloc::string::String>
+pub zond_engine::record::TelemetryRecord::rtt_sources: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::record::TelemetryRecord::rtts: alloc::vec::Vec<core::time::Duration>
 impl core::clone::Clone for zond_engine::record::TelemetryRecord
 pub fn zond_engine::record::TelemetryRecord::clone(&self) -> zond_engine::record::TelemetryRecord

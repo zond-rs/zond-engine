@@ -306,6 +306,31 @@ impl HostTelemetry {
         });
     }
 
+    /// Adds a sample read back from a record, of the kind and from the probe
+    /// the record names, stamped now.
+    ///
+    /// Now is a sound stamp, and the only one there is: an [`Instant`] from
+    /// the process that wrote the record orders against nothing here. What the
+    /// stamp has to get right is the order, and it does. A record lists its
+    /// samples oldest first and they are added in that order, and a scan reads
+    /// its journal before it sends anything, so every restored sample is
+    /// stamped before any this process measures, as it was taken before them.
+    /// [`merge`](Self::merge) keeps samples stamped alike in the order it was
+    /// handed them. The spacing between samples is lost, and nothing reads it.
+    pub(crate) fn restore_rtt(
+        &mut self,
+        rtt: Duration,
+        source: RttSource,
+        protocol: Option<StatusProtocol>,
+    ) {
+        self.push(RttSample {
+            at: Instant::now(),
+            rtt,
+            source,
+            protocol,
+        });
+    }
+
     /// [`add_rtt`](Self::add_rtt) at a caller-chosen instant.
     ///
     /// Private: the only reason to record a sample under a time other than now

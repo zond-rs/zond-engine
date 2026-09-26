@@ -42,6 +42,7 @@ use std::borrow::Cow;
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, Reference, Severity};
 use crate::model::host::OsSource;
+use crate::model::host::telemetry::RttSource;
 use crate::model::host::{
     Filtering, HostStatus, IpProtocolState, NameKind, NameSource, NetworkRole, StatusProtocol,
 };
@@ -443,6 +444,27 @@ pub fn status_protocol_name(protocol: &StatusProtocol) -> Cow<'_, str> {
     }
 }
 
+/// What kind of round trip a sample is.
+///
+/// Crate-private while the record carrying it is the only reader.
+pub(crate) fn rtt_source_name(source: RttSource) -> &'static str {
+    match source {
+        RttSource::Direct => "direct",
+        RttSource::SegmentWide => "segment_wide",
+        RttSource::FirstToNeighbour => "first_to_neighbour",
+    }
+}
+
+/// [`rtt_source_name`] read back.
+pub(crate) fn rtt_source(name: &str) -> Option<RttSource> {
+    Some(match name {
+        "direct" => RttSource::Direct,
+        "segment_wide" => RttSource::SegmentWide,
+        "first_to_neighbour" => RttSource::FirstToNeighbour,
+        _ => return None,
+    })
+}
+
 /// [`status_protocol_name`] read back.
 ///
 /// An empty custom name is refused: it renders as the bare prefix and would read
@@ -774,6 +796,14 @@ mod tests {
     /// compiler holds to the enum.
     #[test]
     fn every_name_parses_back() {
+        for value in [
+            RttSource::Direct,
+            RttSource::SegmentWide,
+            RttSource::FirstToNeighbour,
+        ] {
+            assert_eq!(rtt_source(rtt_source_name(value)), Some(value));
+        }
+
         for &value in HostStatus::ALL {
             assert_eq!(host_status(host_status_name(value)), Some(value));
         }

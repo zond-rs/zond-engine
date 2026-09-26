@@ -78,7 +78,7 @@ use crate::model::finding::{
 };
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
-use crate::model::host::telemetry::HostTelemetry;
+use crate::model::host::telemetry::{HostTelemetry, RttSource};
 use crate::model::host::{
     EvidenceSource, HardwareInfo, Host, HostName, IpProtocolState, StatusProtocol, StatusReason,
 };
@@ -689,12 +689,15 @@ impl From<&ZoneRecord> for Zone {
     }
 }
 
-/// A host's round-trip summary.
+/// A host's round-trip samples: each one's duration and kind, and the probe
+/// they were measured from.
 ///
-/// The samples themselves are not carried. Each is stamped with a monotonic
+/// Not when each was taken. A sample is stamped with a monotonic
 /// [`Instant`](std::time::Instant), which orders a history within one process
-/// and means nothing outside it, so the durations are replayed and the history
-/// starts fresh.
+/// and means nothing outside it, so the samples are replayed in the order
+/// written and stamped as they are read. That keeps them in the order they
+/// were taken: a scan reads its journal before it sends anything, so every
+/// sample it restores is stamped before any it measures.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TelemetryRecord {
     /// The measured round trips, oldest first.
@@ -714,6 +717,19 @@ pub struct TelemetryRecord {
     /// were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtt_protocol: Option<String>,
+    /// What kind of round trip each of `rtts` is, position by position:
+    /// `direct`, or one of the upper bounds `segment_wide` and
+    /// `first_to_neighbour`, which a host's latency is drawn from only where
+    /// it has no direct sample. See
+    /// [`RttSource`].
+    ///
+    /// Empty where every sample is direct, which is most hosts, and in a
+    /// record written before the field existed, whose samples read back
+    /// direct as they always did. A name this build does not know reads as an
+    /// upper bound, the kind that claims less; a sample the list does not
+    /// reach reads as direct.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rtt_sources: Vec<String>,
 }
 
 impl From<&HostTelemetry> for TelemetryRecord {
@@ -728,6 +744,19 @@ impl From<&HostTelemetry> for TelemetryRecord {
             rtt_protocol: telemetry
                 .rtt_protocol()
                 .map(|protocol| wire::status_protocol_name(&protocol).into_owned()),
+            rtt_sources: if telemetry
+                .history()
+                .iter()
+                .all(|sample| sample.source == RttSource::Direct)
+            {
+                Vec::new()
+            } else {
+                telemetry
+                    .history()
+                    .iter()
+                    .map(|sample| wire::rtt_source_name(sample.source).to_owned())
+                    .collect()
+            },
         }
     }
 }
@@ -735,13 +764,15 @@ impl From<&HostTelemetry> for TelemetryRecord {
 impl TelemetryRecord {
     /// Replays the measurements onto `host`.
     fn restore(&self, host: &mut Host) {
-        match self.rtt_protocol.as_deref().and_then(wire::status_protocol) {
-            Some(protocol) => {
-                for rtt in &self.rtts {
-                    host.add_rtt_from(*rtt, protocol.clone());
-                }
-            }
-            None => host.add_rtts(self.rtts.iter().copied()),
+        let protocol = self.rtt_protocol.as_deref().and_then(wire::status_protocol);
+        for (index, rtt) in self.rtts.iter().enumerate() {
+            let source = self
+                .rtt_sources
+                .get(index)
+                .map_or(RttSource::Direct, |name| {
+                    wire::rtt_source(name).unwrap_or(RttSource::SegmentWide)
+                });
+            host.restore_rtt(*rtt, source, protocol.clone());
         }
         if let Some(arrived) = self.hop_counter {
             host.record_hop_counter(arrived);
@@ -3243,12 +3274,59 @@ mod tests {
 
         let record = HostRecord::from(&host);
         assert_eq!(record.telemetry.rtt_protocol.as_deref(), Some("arp"));
+        assert!(
+            record.telemetry.rtt_sources.is_empty(),
+            "round trips alone are written as they always were"
+        );
 
         let mut restored = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
         record.telemetry.restore(&mut restored);
 
         assert_eq!(restored.rtt_protocol(), Some(StatusProtocol::Arp));
         assert_eq!(restored.min_rtt(), host.min_rtt());
+    }
+
+    /// An upper bound on a round trip comes back as an upper bound, and a
+    /// round trip as a round trip.
+    ///
+    /// The two are never pooled: a neighbour's first reply, slowed by the
+    /// address resolution it waited on, averaged with the replies after it
+    /// reports a latency no reply had. A resumed scan reads its hosts from the
+    /// journal and sizes its waits and reports its latencies from what it read.
+    #[test]
+    fn what_kind_of_round_trip_a_sample_is_survives_the_journal() {
+        use crate::model::host::StatusProtocol;
+
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+        let mut host = Host::new(ip);
+        host.add_first_to_neighbour_rtt_from(Duration::from_millis(40), StatusProtocol::TcpConnect);
+        host.add_rtt_from(Duration::from_millis(7), StatusProtocol::TcpConnect);
+        host.add_rtt_from(Duration::from_millis(9), StatusProtocol::TcpConnect);
+        let mut bounded = Host::new(ip);
+        bounded.add_segment_wide_rtt_from(Duration::from_millis(5), StatusProtocol::IcmpEcho);
+        bounded.add_segment_wide_rtt_from(Duration::from_millis(50), StatusProtocol::IcmpEcho);
+
+        for (host, average) in [(host, 8), (bounded, 5)] {
+            let line = serde_json::to_string(&HostRecord::from(&host)).expect("serializes");
+            let record: HostRecord = serde_json::from_str(&line).expect("deserializes");
+            let mut restored = Host::new(ip);
+            record.telemetry.restore(&mut restored);
+
+            assert_eq!(host.average_rtt(), Some(Duration::from_millis(average)));
+            assert_eq!(
+                restored.average_rtt(),
+                host.average_rtt(),
+                "read back from {line}"
+            );
+            let sources = |host: &Host| {
+                host.telemetry()
+                    .history()
+                    .iter()
+                    .map(|sample| sample.source)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(sources(&restored), sources(&host));
+        }
     }
 
     #[test]

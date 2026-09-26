@@ -1347,6 +1347,17 @@ impl Host {
         self
     }
 
+    /// Adds a round-trip sample read back from a record; see
+    /// [`HostTelemetry::restore_rtt`](crate::model::host::telemetry::HostTelemetry::restore_rtt).
+    pub(crate) fn restore_rtt(
+        &mut self,
+        rtt: std::time::Duration,
+        source: crate::model::host::telemetry::RttSource,
+        protocol: Option<StatusProtocol>,
+    ) {
+        self.telemetry.restore_rtt(rtt, source, protocol);
+    }
+
     /// Records several round-trip measurements at once.
     pub fn add_rtts(&mut self, rtts: impl IntoIterator<Item = std::time::Duration>) {
         for rtt in rtts {

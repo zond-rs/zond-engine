@@ -1616,6 +1616,7 @@ impl TelemetryDto {
             rtts: Vec::new(),
             hop_counter: None,
             rtt_protocol: None,
+            rtt_sources: Vec::new(),
         }
     }
 }
