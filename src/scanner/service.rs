@@ -391,7 +391,8 @@ impl QuietPorts {
 /// Only its likeliest: a host that answers on every port is asked what runs
 /// where a real service behind it would be, and no further. See [`Tarpits`],
 /// which counts the rest. Only the host's open ports are known here; one
-/// found out by its silence is passed over as its ports are taken.
+/// found out by its silence is passed over as its ports are taken, in the
+/// order [`asking_order`] puts them.
 ///
 /// [`reads_replies`]: crate::fingerprint::reads_replies
 fn fingerprintable_ports(
@@ -412,6 +413,7 @@ fn fingerprintable_ports(
         }
         let address = host.value().scoped_ip();
         let path = PathAllowance::of_round_trips(host.value().telemetry().round_trips());
+        let first = targets.len();
         for port in host.value().ports() {
             if port.protocol() == over
                 && port.state() == PortState::Open
@@ -428,8 +430,83 @@ fn fingerprintable_ports(
                 });
             }
         }
+        asking_order(&mut targets[first..], over);
     }
     targets
+}
+
+/// Puts one host's ports over `protocol` in the order their identifications
+/// are asked: its likeliest first, most likely first, and then the rest
+/// spread across the port range rather than walked from the lowest.
+///
+/// The order is what the silence of a host's ports is read from. Once as
+/// many have said nothing as [`SILENT_PORTS_OF_A_TARPIT`], and more than
+/// answered, the rest of the host beyond its likeliest is passed over, so
+/// the ports asked before that are the sample the host is judged by, and the
+/// only ones beyond its likeliest it is asked about at all. Walked in
+/// ascending order, the sample is the host's lowest ports: a host with a
+/// block of a hundred and fifty services low in the range that wait to be
+/// spoken to in a protocol of their own is judged by that block alone, and
+/// a service above it that would have answered is never asked.
+///
+/// The likeliest come first because they are asked whatever the host turns
+/// out to be, and what they answer is counted against its silence: a real
+/// host's likeliest ports are where its services are, and each that answers
+/// holds off a verdict its quiet ones would otherwise reach.
+///
+/// The rest are spread by where in the range they sit. The port range is
+/// halved, and the host's lowest port in each half is asked first; then it
+/// is quartered, and the lowest in each quarter not yet asked of follow; and
+/// so on down to single ports. Ports one service opens sit together, so a
+/// block of them is sampled a port at a time as the halving reaches it,
+/// while a port alone in its part of the range is asked as soon as the
+/// halving first gives that part a place of its own. A tarpit, silent all
+/// through its range, is read from its sample as soon as from its lowest
+/// ports. The order is the ports' own, so a scan of one host asks in the
+/// same order every time.
+fn asking_order(host: &mut [Target], protocol: Protocol) {
+    let likeliest = likeliest(protocol);
+    let rank = |number: u16| likeliest.iter().position(|&likely| likely == number);
+    let mut rest: Vec<u16> = host
+        .iter()
+        .map(|target| target.number)
+        .filter(|&number| rank(number).is_none())
+        .collect();
+    rest.sort_unstable();
+    host.sort_by_cached_key(|target| match rank(target.number) {
+        Some(rank) => (0, rank),
+        None => {
+            let place = rest.binary_search(&target.number).unwrap_or_default();
+            (
+                1 + halvings_to_part_of_its_own(&rest, place),
+                usize::from(target.number),
+            )
+        }
+    });
+}
+
+/// How many times the port range has to be halved before the part holding
+/// `sorted[place]` holds no lower port of `sorted`: none for the lowest, one
+/// for the lowest in the upper half where the lower half holds a port, and
+/// sixteen for a port whose neighbour below differs from it only in the last
+/// bit.
+fn halvings_to_part_of_its_own(sorted: &[u16], place: usize) -> usize {
+    match place.checked_sub(1).map(|below| sorted[below]) {
+        None => 0,
+        Some(below) => (below ^ sorted[place]).leading_zeros() as usize + 1,
+    }
+}
+
+/// The ports over `protocol` a host that answers on every port still has
+/// identified, most likely first; see [`TARPIT_PORTS_IDENTIFIED`].
+fn likeliest(protocol: Protocol) -> &'static [u16] {
+    use crate::model::port::catalog::{top_tcp, top_udp};
+
+    match protocol {
+        Protocol::Tcp => top_tcp(TARPIT_PORTS_IDENTIFIED),
+        Protocol::Udp => top_udp(TARPIT_PORTS_IDENTIFIED),
+        Protocol::Sctp => &[],
+    }
 }
 
 /// How many open ports of one host that answers on every port are
@@ -513,18 +590,11 @@ impl Tarpits {
         number: u16,
         protocol: Protocol,
     ) -> bool {
-        use crate::model::port::catalog::{top_tcp, top_udp};
-
         let silent = crowd.and_then(Crowd::answers_nothing);
         if !host.network_roles().contains(&NetworkRole::Tarpit) && silent.is_none() {
             return true;
         }
-        let likeliest = match protocol {
-            Protocol::Tcp => top_tcp(TARPIT_PORTS_IDENTIFIED),
-            Protocol::Udp => top_udp(TARPIT_PORTS_IDENTIFIED),
-            Protocol::Sctp => &[],
-        };
-        if likeliest.contains(&number) {
+        if likeliest(protocol).contains(&number) {
             return true;
         }
         let mut passed_over = self
@@ -1724,6 +1794,63 @@ mod tests {
             )),
             "{}",
             failures[0].reason()
+        );
+        drop(session);
+    }
+
+    /// **A service high in a host's range is asked before a block of silent
+    /// ports low in it can give the host away as a tarpit.**
+    ///
+    /// The ports asked before a host's silence decides it are the only ones
+    /// beyond its likeliest it is asked about. Walked from the lowest, a host
+    /// with a hundred and fifty services low in its range that wait to be
+    /// spoken to in their own protocol is judged by those alone, and the one
+    /// above them that would have said what it runs is passed over unasked.
+    /// Walked here one identification at a time, each settled before the next
+    /// is decided, which is the order in which the silence counts fastest.
+    #[test]
+    fn a_service_above_a_block_of_silent_ports_is_asked_before_the_block_gives_the_host_away() {
+        let (session, ctx) = ScanSession::new();
+        let address: IpAddr = "192.0.2.1".parse().expect("a documentation address");
+        let silent = 1..=150u16;
+        let talkative = 50_000;
+        ctx.update_host(address, |host| {
+            for number in silent.clone().chain([talkative]) {
+                host.add_port(Port::new(number, Protocol::Tcp, PortState::Open));
+            }
+        });
+
+        let tarpits = Tarpits::default();
+        let targets = fingerprintable_ports(
+            &ctx,
+            Protocol::Tcp,
+            ServiceDetection::Probe,
+            Which::Every,
+            &tarpits,
+        );
+        let crowd = Crowd::default();
+        let mut asked = Vec::new();
+        for target in &targets {
+            let identifies = ctx
+                .read_host(address, |host| {
+                    tarpits.identifies(host, Some(&crowd), target.number, target.protocol)
+                })
+                .expect("recorded");
+            if !identifies {
+                continue;
+            }
+            asked.push(target.number);
+            let heard = match target.number == talkative {
+                true => &crowd.answered,
+                false => &crowd.unanswered,
+            };
+            heard.fetch_add(1, Ordering::Relaxed);
+        }
+
+        assert!(asked.contains(&talkative), "asked only {asked:?}");
+        assert!(
+            asked.len() < targets.len(),
+            "the host's silence still gave it away"
         );
         drop(session);
     }
