@@ -2183,7 +2183,10 @@ impl ScanPhase {
     /// and names here what it heard nothing from without finishing asking: a
     /// port it never reached, a probe it cut off, or the address's own budget
     /// running out. As the pass would have made no host of such an address,
-    /// the report lists none; a resumed job asks its ports again.
+    /// the report lists none; a resumed job asks its ports again. Such a phase
+    /// that never closed, its sitting killed, names here every address of a
+    /// record it had not decided yet, for the same reason; a resumed job asks
+    /// what it left there and decides the record with it.
     ///
     /// Empty for a phase that reached a verdict on everything it was asked
     /// about, and for every other phase: another port scan settles ports
@@ -2325,7 +2328,10 @@ impl ScanPhase {
     ///
     /// Each sitting of a resumed job counts its own. A target asked and
     /// answered by silence is settled and never asked again, so the counts of
-    /// several sittings add up rather than overlap. Zero for every phase that
+    /// several sittings add up rather than overlap. A phase that never closed
+    /// counts the probes of the addresses it names silent; those it sent the
+    /// ones it names undecided are counted by the sitting that decides them,
+    /// which restores their records, or by none if the job is not resumed. Zero for every phase that
     /// did not stand in for a liveness pass, and in a record written before
     /// the count was kept, where a reader that needs the number can derive it
     /// from the silent addresses only if the phase walked one port set for
@@ -3114,12 +3120,33 @@ pub(crate) struct Unheard(IpSet);
 impl Unheard {
     /// The addresses `phases` heard nothing from.
     pub(crate) fn of<'a>(phases: impl IntoIterator<Item = &'a ScanPhase>) -> Self {
+        Self::reading(phases, true)
+    }
+
+    /// The addresses `phases` heard nothing from, less those a phase that
+    /// never closed has yet to decide: what a sitting continuing the job
+    /// leaves out of what it restores.
+    ///
+    /// A port phase standing in for a liveness pass, killed before its end,
+    /// names undecided every address of a record it had not reached a verdict
+    /// on, so the job's report makes no host of one. The next sitting asks
+    /// what that phase left there and decides the record with it: restored,
+    /// the ports asked of it stay on the host an answer proves, and are
+    /// counted where the address proves silent. What the phase named silent
+    /// it had decided, and is left out here too.
+    pub(crate) fn decided<'a>(phases: impl IntoIterator<Item = &'a ScanPhase>) -> Self {
+        Self::reading(phases, false)
+    }
+
+    /// [`of`](Self::of), or [`decided`](Self::decided) where `pending` is
+    /// false.
+    fn reading<'a>(phases: impl IntoIterator<Item = &'a ScanPhase>, pending: bool) -> Self {
         let mut unheard = IpSet::new();
         for phase in phases {
             for range in &phase.silent {
                 unheard.insert_range(*range);
             }
-            if phase.kind == ScanKind::PortScan {
+            if phase.kind == ScanKind::PortScan && (pending || !phase.open) {
                 for range in &phase.undecided {
                     unheard.insert_range(*range);
                 }

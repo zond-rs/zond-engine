@@ -295,8 +295,10 @@ impl Journal {
         let checkpoint = read_checkpoint(directory)?;
         let earlier = read_phases(directory)?;
         // Less the records the earlier sittings heard nothing from, which a
-        // report of the job drops by the same reading; see `Unheard`.
-        let unheard = Unheard::of(&earlier);
+        // report of the job drops by the same reading, but for those a
+        // sitting killed before its verdicts left for this one to decide; see
+        // `Unheard::decided`.
+        let unheard = Unheard::decided(&earlier);
         let mut restored = read_findings(directory)?;
         restored.retain(|host| !unheard.drops(host));
         // What the file already holds, so a restored host a new sitting changes
@@ -376,7 +378,10 @@ impl Journal {
     /// sitting of it.
     ///
     /// A record of an address an earlier sitting went on to hear nothing from
-    /// is left out, as the job's report leaves it out.
+    /// is left out, as the job's report leaves it out. One a sitting killed
+    /// before its port phase's verdicts had yet to decide is here, though the
+    /// report leaves it out as well: this sitting asks what is left at the
+    /// address and decides it.
     pub fn restored(&self) -> &[Host] {
         &self.restored
     }
@@ -2141,56 +2146,115 @@ mod tests {
     }
 
     /// **A sitting killed before its port phase decides what it heard nothing
-    /// from leaves no record of those addresses.** A phase standing in for a
-    /// liveness pass forgets its unanswered records only at its end, and the
-    /// report drops one only by the lists the phase is written down with; a
-    /// sitting killed outright writes no phase, so a record a checkpoint had
-    /// put on disk came back on resume as an unknown host nothing answered at.
+    /// from leaves each record it had yet to decide to the next sitting, and
+    /// out of the job's report.** A phase standing in for a liveness pass
+    /// decides its unanswered records only at its end, and a target it asked
+    /// is settled as the answer, or the silence, is stored. Kept off the disk
+    /// until a verdict a killed sitting never reaches, a record's ports would
+    /// be settled with nothing on file to show for them: on no host if the
+    /// address answers the next sitting, and counted by no sitting if it
+    /// never does. Its probes at an address it had heard nothing from on
+    /// every target are its own to count, being decided.
     #[tokio::test]
-    async fn a_sitting_killed_before_its_verdicts_leaves_no_unheard_record() {
+    async fn a_sitting_killed_before_its_verdicts_leaves_its_undecided_records_to_the_next() {
+        use crate::config::ZondConfig;
+        use crate::journal::settle::Outcome;
+        use crate::model::port::{Port, PortState, Protocol};
+        use crate::model::target::TargetIndex;
+        use crate::report::{LivenessSkip, TargetScope};
+        use crate::scanner::recorder::PhaseRecorder;
+
         let root = scratch("unheard-killed");
-        let map = plan("192.0.2.1-192.0.2.8", "80");
+        let map = plan("192.0.2.1-192.0.2.8", "80,443");
         let journal = begin(&root, &map);
         let directory = journal.directory().to_path_buf();
+        let address = |address: &str| address.parse::<std::net::IpAddr>().expect("an address");
+        let position = |at: &str, port: u16| {
+            map.iter()
+                .position(|target| target.ip == address(at) && target.port == port)
+                .expect("a planned target") as u64
+        };
 
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        ctx.number_targets(TargetIndex::of(&map));
+        let _phase = PhaseRecorder::start(
+            ScanKind::PortScan,
+            Privilege::Raw,
+            TargetScope::from_ip_set(
+                &mut "192.0.2.1-192.0.2.8".parse().expect("a range"),
+                &Exclusions::none(),
+            ),
+            &ZondConfig::default(),
+        )
+        .skipping_liveness(LivenessSkip::PortsNoDearer)
+        .opening_in(&ctx);
         ctx.await_verdicts();
-        ctx.update_host(
-            "192.0.2.1".parse::<std::net::IpAddr>().expect("an address"),
-            |host| {
-                host.set_status(crate::model::host::HostStatus::Up);
-            },
-        );
-        ctx.write_host(
-            "192.0.2.5".parse::<std::net::IpAddr>().expect("an address"),
-            |host| {
-                *host = unheard("192.0.2.5");
-                true
-            },
-        );
+        // A host; an address asked on one of its ports so far; and one asked
+        // on both, heard from on neither.
+        ctx.update_host(address("192.0.2.1"), |host| {
+            host.set_status(crate::model::host::HostStatus::Up);
+        });
+        ctx.write_host(address("192.0.2.5"), |host| {
+            *host = unheard("192.0.2.5");
+            true
+        });
+        ctx.record_outcome(Outcome::Exhausted {
+            position: position("192.0.2.5", 80),
+        });
+        ctx.write_host(address("192.0.2.6"), |host| {
+            *host = unheard("192.0.2.6");
+            host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+            true
+        });
+        for port in [80, 443] {
+            ctx.record_outcome(Outcome::Exhausted {
+                position: position("192.0.2.6", port),
+            });
+        }
 
         // One checkpoint lands, and the process dies before the phase ends.
         let ticker = spawn_checkpoints(journal, ctx.progress());
         tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
         ticker.kill().await;
 
+        let hosts = report(&directory)
+            .expect("reads")
+            .hosts()
+            .map(Host::primary_ip)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hosts,
+            [address("192.0.2.1")],
+            "the report lists an undecided address"
+        );
+
         let (journal, _) =
             Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
-        let restored: Vec<_> = journal.restored().iter().map(Host::primary_ip).collect();
+        let restored: Vec<_> = journal
+            .restored()
+            .iter()
+            .map(|host| (host.primary_ip(), host.ports().count()))
+            .collect();
         assert_eq!(
             restored,
-            ["192.0.2.1".parse::<std::net::IpAddr>().expect("an address")],
-            "only the host that answered is on disk"
+            [(address("192.0.2.1"), 0), (address("192.0.2.5"), 1)],
+            "the undecided record, and only it beside the host, is the next sitting's"
         );
+        let unheard: u128 = journal
+            .earlier_phases()
+            .iter()
+            .map(ScanPhase::unheard_probes)
+            .sum();
+        assert_eq!(unheard, 2, "the silent address's probes went uncounted");
         journal.close().expect("closes");
         std::fs::remove_dir_all(&root).ok();
     }
 
     /// **A sitting killed before its verdicts still names the addresses it
     /// had heard nothing from on every target.** Their targets are settled on
-    /// disk, so a resume asks nothing more of them, and their records were
-    /// held back from it; named only by the phase's end, which a killed
-    /// sitting never reaches, they would be in no list of the job.
+    /// disk, so a resume asks nothing more of them and restores no record of
+    /// them; named only by the phase's end, which a killed sitting never
+    /// reaches, they would be in no list of the job.
     #[tokio::test]
     async fn a_sitting_killed_before_its_verdicts_still_names_what_it_heard_nothing_from() {
         use crate::config::ZondConfig;
@@ -2252,10 +2316,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A record held for its verdict is written once the phase keeps it.**
-    /// Held back rather than taken, so an address the phase neither forgot
-    /// nor heard from, one no route led to, still reaches the findings when
-    /// the sitting ends.
+    /// **A record awaiting its verdict is in the findings once the phase keeps
+    /// it.** An address the phase neither forgot nor heard from, one no route
+    /// led to, is a finding when the sitting ends.
     #[tokio::test]
     async fn a_record_held_for_its_verdict_is_written_once_the_phase_keeps_it() {
         let root = scratch("unheard-kept");

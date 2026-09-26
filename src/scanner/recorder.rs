@@ -109,25 +109,29 @@ impl Opened {
     /// `failures`, the failures filed since it opened.
     ///
     /// What only its close can establish is left empty: the addresses it
-    /// reached no verdict on or left early, what it never reached, and its
-    /// strategies' statistics. A record of a phase that never closed claims
+    /// left early, what it never reached, and its strategies' statistics. A record of a phase that never closed claims
     /// none of those rather than guessing at them, and none of them settles
     /// anything a resume would skip. Nor does it say it was stopped, since
     /// nothing stopped it that it could name. It says it is open instead,
     /// which a sitting that ends replaces with the phase it closed; see
     /// [`ScanPhase::is_open`].
     ///
-    /// `silent` is the exception: the addresses the phase has already heard
-    /// nothing from on every target it owes them, which its close would name
-    /// whatever else it asked; see
-    /// [`ScanProgress::heard_nothing_so_far`](crate::scanner::session::ScanProgress::heard_nothing_so_far).
-    /// Their targets are settled, and a resume skips them, so a record that
-    /// left them out would leave them accounted for nowhere in the job.
+    /// What a port phase standing in for a liveness pass has concluded of
+    /// the records nothing answered at is the exception, as `so_far` has it;
+    /// see
+    /// [`ScanProgress::verdicts_so_far`](crate::scanner::session::ScanProgress::verdicts_so_far).
+    /// The addresses it has already heard nothing from on every target it
+    /// owes them are named silent, with the probes they were sent, as its
+    /// close would name them whatever else it asked: their targets are
+    /// settled, and a resume skips them, so a record that left them out would
+    /// leave them accounted for nowhere in the job. The addresses of the other
+    /// records are named undecided, as a close that came now would name them,
+    /// so the job's report makes no host of what the phase has not decided.
     #[cfg(feature = "journal-format")]
     pub(crate) fn standing(
         &self,
         failures: Vec<crate::report::ScannerFailure>,
-        silent: Vec<IpRange>,
+        so_far: &crate::scanner::session::SoFar,
     ) -> ScanPhase {
         ScanPhase::from_parts(PhaseParts {
             kind: self.kind,
@@ -142,13 +146,13 @@ impl Opened {
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
-            undecided: Vec::new(),
+            undecided: crate::scanner::session::ranges_of(&so_far.awaiting),
             liveness_skipped: self.liveness_skipped,
-            silent,
+            silent: so_far.silent.clone(),
             stopped: None,
             passes_cut: Vec::new(),
             unreached: 0,
-            unheard_probes: 0,
+            unheard_probes: u128::from(so_far.unheard_probes),
             probes: Vec::new(),
             origin: None,
             attachments: Vec::new(),

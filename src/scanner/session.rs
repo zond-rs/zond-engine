@@ -1440,6 +1440,28 @@ fn awaits_verdict(host: &Host) -> bool {
     host.status() == crate::model::host::HostStatus::Unknown
 }
 
+/// What a port phase standing in for a liveness pass has concluded so far of
+/// the records nothing has answered at; see
+/// [`ScanProgress::verdicts_so_far`].
+#[cfg(feature = "journal-format")]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SoFar {
+    /// The addresses heard nothing from on every target, each settled.
+    pub(crate) silent: Vec<IpRange>,
+    /// The addresses of every other record nothing has answered at.
+    pub(crate) awaiting: IpSet,
+    /// How many targets the silent addresses were asked.
+    pub(crate) unheard_probes: u64,
+}
+
+/// `set`'s ranges, IPv4 first.
+#[cfg(feature = "journal-format")]
+pub(crate) fn ranges_of(set: &IpSet) -> Vec<IpRange> {
+    let v4 = set.v4().iter().copied().map(IpRange::V4);
+    let v6 = set.v6().iter().copied().map(IpRange::V6);
+    v4.chain(v6).collect()
+}
+
 /// What a journal needs from a running scan, and nothing more.
 ///
 /// See [`ScanContext::progress`] for why this exists rather than a context.
@@ -1457,7 +1479,7 @@ pub struct ScanProgress {
     #[cfg(feature = "journal-format")]
     sitting: Arc<Sitting>,
     /// How the port phase numbers its targets, which says what an address
-    /// is owed; see [`heard_nothing_so_far`](Self::heard_nothing_so_far).
+    /// is owed; see [`verdicts_so_far`](Self::verdicts_so_far).
     #[cfg(feature = "journal-format")]
     numbering: Arc<OnceLock<crate::model::target::TargetIndex>>,
 }
@@ -1499,70 +1521,65 @@ impl ScanProgress {
         self.store.iter().map(|entry| entry.key().clone()).collect()
     }
 
-    /// Takes the hosts whose findings have changed since this was last called
-    /// and that are findings to write down, leaving the rest marked changed.
+    /// Takes the hosts whose findings have changed since this was last
+    /// called, for a journal to append as a scan runs.
     ///
-    /// What a journal appends as a scan runs. Every changed host, unless a
-    /// port phase standing in for a liveness pass has yet to reach its
-    /// verdicts: then a record nothing has answered at is held back until the
-    /// phase decides it, since the phase may yet forget it as silent or
-    /// undecided, and a sitting killed before it names which would leave the
-    /// record on disk with nothing to drop it by. Held rather than taken, so
-    /// the record is written once the phase keeps it or something answers.
-    /// See [`ScanContext::await_verdicts`].
+    /// A record a port phase standing in for a liveness pass has yet to
+    /// decide is taken with the rest: its targets are settled as they are
+    /// asked, and a resume skips a settled target, so a record kept off the
+    /// disk until the phase's verdict, which a sitting killed outright never
+    /// reaches, would leave them settled with nothing on file to show for
+    /// them. The report of the job leaves it out by the phase as it stands,
+    /// which names it undecided, and the next sitting restores it and decides
+    /// it; see [`verdicts_so_far`](Self::verdicts_so_far).
     ///
     /// Each host carries its own fields and the ports marked on it since it
     /// was last taken, not every port it holds; see `changes_since`.
     #[cfg(feature = "journal-format")]
     pub(crate) fn take_changed_findings(&self) -> Vec<Host> {
-        let changes = changes_since(&self.store, &self.changed);
-        if !self.verdicts_pending.load(Ordering::Acquire) {
-            return changes;
-        }
-        let (held, findings): (Vec<Host>, Vec<Host>) =
-            changes.into_iter().partition(awaits_verdict);
-        for host in &held {
-            self.changed.put_back(host);
-        }
-        findings
+        changes_since(&self.store, &self.changed)
     }
 
     /// This sitting's phases as they stand: those closed, and the open one
-    /// so far, naming `silent` as the addresses it heard nothing from. See
-    /// [`Sitting`].
+    /// so far, as `so_far` has it. See [`Sitting`].
     #[cfg(feature = "journal-format")]
-    pub(crate) fn standing_phases(&self, silent: &[IpRange]) -> Vec<crate::report::ScanPhase> {
-        self.sitting.standing(self.failures.snapshot(), silent)
+    pub(crate) fn standing_phases(&self, so_far: &SoFar) -> Vec<crate::report::ScanPhase> {
+        self.sitting.standing(self.failures.snapshot(), so_far)
     }
 
-    /// Every address a port phase standing in for a liveness pass has asked
-    /// every target of, with each settled in `cursor`, and heard nothing
-    /// from: what the phase will find silent at its end, whatever else it
-    /// asks. Empty for any other phase.
+    /// What a port phase standing in for a liveness pass has concluded so
+    /// far of the records nothing has answered at, read against `cursor`.
+    /// Empty for any other phase.
     ///
     /// For a checkpoint to write into the phase as it stands, so a sitting
-    /// killed before its end still names them. Their targets are settled, so
-    /// a resume asks nothing more of them, and the records the phase held
-    /// back from the journal never reach it: named nowhere else, they would
-    /// be accounted for by no sitting of the job.
+    /// killed before its end still accounts for each record it wrote down.
     ///
-    /// Asked in full is a port on the record for every target the plan
+    /// **Silent**, and counted: an address asked on every target, with each
+    /// settled in `cursor`, and heard from on none, which the phase will find
+    /// silent at its end whatever else it asks. A resume asks nothing more of
+    /// it and restores no record of it, so its probes are this sitting's to
+    /// count. Asked in full is a port on the record for every target the plan
     /// numbers at the address, each asked. An address filed unreachable, or
     /// withheld by the exclusions, had its targets settled with nothing asked,
-    /// and is not named; nor is one whose own budget ran out, which left a
+    /// and is not silent; nor is one whose own budget ran out, which left a
     /// target unasked and so unsettled.
+    ///
+    /// **Awaiting** every other address of such a record: one the phase has
+    /// not finished asking, or not reached a verdict on. The phase as it
+    /// stands names it undecided, so the job's report makes no host of it, and
+    /// the next sitting restores the record and decides it with the rest of
+    /// what it asks there, counting the probes it had been sent then.
     #[cfg(feature = "journal-format")]
-    pub(crate) fn heard_nothing_so_far(
-        &self,
-        cursor: &crate::journal::cursor::Checkpoint,
-    ) -> Vec<IpRange> {
+    pub(crate) fn verdicts_so_far(&self, cursor: &crate::journal::cursor::Checkpoint) -> SoFar {
         if !self.verdicts_pending.load(Ordering::Acquire) {
-            return Vec::new();
+            return SoFar::default();
         }
         let Some(numbering) = self.numbering.get() else {
-            return Vec::new();
+            return SoFar::default();
         };
         let mut silent = IpSet::new();
+        let mut awaiting = IpSet::new();
+        let mut unheard_probes = 0u64;
         for entry in self.store.iter() {
             let host = entry.value();
             if !awaits_verdict(host) {
@@ -1581,12 +1598,18 @@ impl ScanProgress {
                 .count() as u64;
             if owed > 0 && settled && asked == owed {
                 silent.insert(address);
+                unheard_probes += asked;
+            } else {
+                awaiting.insert(address);
             }
         }
         silent.canonicalize();
-        let v4 = silent.v4().iter().copied().map(IpRange::V4);
-        let v6 = silent.v6().iter().copied().map(IpRange::V6);
-        v4.chain(v6).collect()
+        awaiting.canonicalize();
+        SoFar {
+            silent: ranges_of(&silent),
+            awaiting,
+            unheard_probes,
+        }
     }
 
     /// Marks `hosts` changed again, for a journal whose write of them failed.
@@ -1614,18 +1637,13 @@ impl ScanProgress {
         self.tapes.hand_back(runs);
     }
 
-    /// Every host found so far that is a finding to write down, ordered by the
-    /// address each is keyed under: all of them, less the records held back
-    /// while a port phase standing in for a liveness pass has yet to decide
-    /// them. What a journal compacts its findings to; see
+    /// Every host found so far, ordered by the address each is keyed under,
+    /// the records a port phase has yet to decide among them. What a journal
+    /// compacts its findings to; see
     /// [`take_changed_findings`](Self::take_changed_findings).
     #[cfg(feature = "journal-format")]
     pub(crate) fn findings_snapshot(&self) -> Vec<Host> {
-        let mut hosts = self.hosts_snapshot();
-        if self.verdicts_pending.load(Ordering::Acquire) {
-            hosts.retain(|host| !awaits_verdict(host));
-        }
-        hosts
+        self.hosts_snapshot()
     }
 
     /// Files a failure to the report. Not to the event stream; see
@@ -1789,12 +1807,12 @@ impl Sitting {
     }
 
     /// The closed phases, and the open one as it stands with `failures` filed
-    /// against it and `silent` named as the addresses it heard nothing from.
+    /// against it and what it has concluded as `so_far` has it.
     #[cfg(feature = "journal-format")]
     fn standing(
         &self,
         failures: Vec<ScannerFailure>,
-        silent: &[IpRange],
+        so_far: &SoFar,
     ) -> Vec<crate::report::ScanPhase> {
         let phases = self.phases.lock().unwrap_or_else(|e| e.into_inner());
         let mut standing = phases.closed.clone();
@@ -1802,7 +1820,7 @@ impl Sitting {
             phases
                 .open
                 .as_ref()
-                .map(|open| open.standing(failures, silent.to_vec())),
+                .map(|open| open.standing(failures, so_far)),
         );
         standing
     }
@@ -2541,24 +2559,22 @@ impl ScanContext {
         self.timed_out.contains(address)
     }
 
-    /// Holds back from the journal every record nothing has answered at, until
-    /// [`verdicts_reached`](Self::verdicts_reached).
+    /// Marks every record nothing has answered at as one the phase has yet to
+    /// decide, until [`verdicts_reached`](Self::verdicts_reached).
     ///
     /// For a port phase standing in for a liveness pass, which decides only
     /// at its end which of those records are hosts, forgetting the rest as
     /// silent or undecided. The report drops a record the phase forgot by the
-    /// lists the phase is written down with, and a sitting killed outright is
-    /// never written down: a record a checkpoint had already put on disk would
-    /// come back on resume as a host nobody heard from, with nothing to drop
-    /// it by. Held back, a record reaches the disk when something answers at
-    /// it or the phase keeps it.
+    /// lists the phase is written down with, and a sitting killed outright
+    /// never writes its closed phase: the checkpoints write the phase as it
+    /// stands instead, naming what it has concluded so far and what it has
+    /// yet to; see [`ScanProgress::verdicts_so_far`].
     pub(crate) fn await_verdicts(&self) {
         self.verdicts_pending.store(true, Ordering::Release);
     }
 
     /// Ends what [`await_verdicts`](Self::await_verdicts) began, once the phase
-    /// has forgotten the records it heard nothing from. The ones it kept are
-    /// still marked changed, so the next write takes them.
+    /// has forgotten the records it heard nothing from.
     pub(crate) fn verdicts_reached(&self) {
         self.verdicts_pending.store(false, Ordering::Release);
     }

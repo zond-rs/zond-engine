@@ -46,9 +46,9 @@ use crate::journal::Journal;
 use crate::journal::cursor::Checkpoint;
 use crate::journal::format::JournalError;
 use crate::model::host::Host;
-use crate::model::ip::range::IpRange;
+use crate::model::ip::set::IpSet;
 use crate::report::{ScanKind, ScanPhase, ScannerKind, Unheard};
-use crate::scanner::session::ScanProgress;
+use crate::scanner::session::{ScanProgress, SoFar};
 
 /// How often a running scan writes down how far it got.
 ///
@@ -146,9 +146,9 @@ struct Writer {
     /// checkpoint that is written, so a failure that returns after that is
     /// told again, being news again.
     failing: bool,
-    /// The addresses the open phase heard nothing from, as named beside the
-    /// last cursor written; see [`Cut::silent`].
-    silent: Vec<IpRange>,
+    /// What the open phase has concluded, as named beside the last cursor
+    /// written; see [`Cut::so_far`].
+    so_far: SoFar,
 }
 
 impl Writer {
@@ -156,7 +156,7 @@ impl Writer {
         Self {
             journal,
             failing: false,
-            silent: Vec::new(),
+            so_far: SoFar::default(),
         }
     }
 
@@ -194,13 +194,29 @@ impl Writer {
             ctx.hand_back(&cut.changed);
         }
 
-        // Named beside the cursor that settles them, and so only once that
-        // cursor is written: named while their targets are not settled on
-        // disk, a resume would ask them again and find what the record
-        // already said it had not heard.
+        // Silent addresses are named beside the cursor that settles them, and
+        // so only once that cursor is written: named while their targets are
+        // not settled on disk, a resume would ask them again and find what
+        // the record already said it had not heard. Every other record
+        // awaiting its verdict is named undecided, whichever cursor stands, so
+        // none on disk is a host in the job's report.
+        let mut awaiting = cut.so_far.awaiting;
         if outcome.is_ok() {
-            self.silent = cut.silent;
+            self.so_far = SoFar {
+                awaiting: IpSet::new(),
+                ..cut.so_far
+            };
         }
+        let mut named = IpSet::new();
+        for range in &self.so_far.silent {
+            named.insert_range(*range);
+        }
+        named.canonicalize();
+        awaiting.subtract(&named);
+        let standing = SoFar {
+            awaiting,
+            ..self.so_far.clone()
+        };
 
         match outcome {
             Err(error) if !self.failing => {
@@ -228,7 +244,7 @@ impl Writer {
         }
         let _ = self
             .journal
-            .record_standing(&ctx.standing_phases(&self.silent));
+            .record_standing(&ctx.standing_phases(&standing));
     }
 
     /// Writes the sitting's last checkpoint and closes the journal.
@@ -260,13 +276,11 @@ impl Writer {
 /// that changed on the way there.
 struct Cut {
     cursor: Checkpoint,
-    /// Findings only: a record a port phase may yet forget as heard nothing
-    /// from waits for its verdict. See `ScanContext::await_verdicts`.
     changed: Vec<Host>,
-    /// The addresses of the records held back that the phase has already
-    /// heard nothing from on every target, each settled in `cursor`. See
-    /// [`ScanProgress::heard_nothing_so_far`].
-    silent: Vec<IpRange>,
+    /// What the open phase has concluded of the records nothing answered at,
+    /// its silent addresses each settled in `cursor`. See
+    /// [`ScanProgress::verdicts_so_far`].
+    so_far: SoFar,
 }
 
 impl Cut {
@@ -283,11 +297,11 @@ impl Cut {
         let cursor = ctx.settlements().checkpoint();
         between();
         let changed = ctx.take_changed_findings();
-        let silent = ctx.heard_nothing_so_far(&cursor);
+        let so_far = ctx.verdicts_so_far(&cursor);
         Self {
             cursor,
             changed,
-            silent,
+            so_far,
         }
     }
 }
