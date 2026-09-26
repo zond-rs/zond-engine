@@ -107,13 +107,24 @@ impl Opened {
     /// `failures`, the failures filed since it opened.
     ///
     /// What only its close can establish is left empty: the addresses it
-    /// reached no verdict on, heard nothing from or left early, what it never
-    /// reached, and its strategies' statistics. A record of a phase that never
-    /// closed claims none of those rather than guessing at them, and none of
-    /// them settles anything a resume would skip. Nor does it say it was
-    /// stopped, since nothing stopped it that it could name.
+    /// reached no verdict on or left early, what it never reached, and its
+    /// strategies' statistics. A record of a phase that never closed claims
+    /// none of those rather than guessing at them, and none of them settles
+    /// anything a resume would skip. Nor does it say it was stopped, since
+    /// nothing stopped it that it could name.
+    ///
+    /// `silent` is the exception: the addresses the phase has already heard
+    /// nothing from on every target it owes them, which its close would name
+    /// whatever else it asked; see
+    /// [`ScanProgress::heard_nothing_so_far`](crate::scanner::session::ScanProgress::heard_nothing_so_far).
+    /// Their targets are settled, and a resume skips them, so a record that
+    /// left them out would leave them accounted for nowhere in the job.
     #[cfg(feature = "journal-format")]
-    pub(crate) fn standing(&self, failures: Vec<crate::report::ScannerFailure>) -> ScanPhase {
+    pub(crate) fn standing(
+        &self,
+        failures: Vec<crate::report::ScannerFailure>,
+        silent: Vec<IpRange>,
+    ) -> ScanPhase {
         ScanPhase::from_parts(PhaseParts {
             kind: self.kind,
             started_at: self.started_at,
@@ -129,7 +140,7 @@ impl Opened {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: self.liveness_skipped,
-            silent: Vec::new(),
+            silent,
             stopped: None,
             passes_cut: Vec::new(),
             unreached: 0,

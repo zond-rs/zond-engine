@@ -46,6 +46,7 @@ use crate::journal::Journal;
 use crate::journal::cursor::Checkpoint;
 use crate::journal::format::JournalError;
 use crate::model::host::Host;
+use crate::model::ip::range::IpRange;
 use crate::report::{ScanKind, ScanPhase, ScannerKind, Unheard};
 use crate::scanner::session::ScanProgress;
 
@@ -145,6 +146,9 @@ struct Writer {
     /// checkpoint that is written, so a failure that returns after that is
     /// told again, being news again.
     failing: bool,
+    /// The addresses the open phase heard nothing from, as named beside the
+    /// last cursor written; see [`Cut::silent`].
+    silent: Vec<IpRange>,
 }
 
 impl Writer {
@@ -152,6 +156,7 @@ impl Writer {
         Self {
             journal,
             failing: false,
+            silent: Vec::new(),
         }
     }
 
@@ -189,6 +194,14 @@ impl Writer {
             ctx.hand_back(&cut.changed);
         }
 
+        // Named beside the cursor that settles them, and so only once that
+        // cursor is written: named while their targets are not settled on
+        // disk, a resume would ask them again and find what the record
+        // already said it had not heard.
+        if outcome.is_ok() {
+            self.silent = cut.silent;
+        }
+
         match outcome {
             Err(error) if !self.failing => {
                 self.failing = true;
@@ -208,7 +221,9 @@ impl Writer {
         // disturb the checkpoint and is not folded above. Nor does the
         // sitting's standing record, which the next checkpoint rewrites whole.
         let _ = self.journal.record_detections(&ctx.take_tapes());
-        let _ = self.journal.record_standing(&ctx.standing_phases());
+        let _ = self
+            .journal
+            .record_standing(&ctx.standing_phases(&self.silent));
     }
 
     /// Writes the sitting's last checkpoint and closes the journal.
@@ -243,6 +258,10 @@ struct Cut {
     /// Findings only: a record a port phase may yet forget as heard nothing
     /// from waits for its verdict. See `ScanContext::await_verdicts`.
     changed: Vec<Host>,
+    /// The addresses of the records held back that the phase has already
+    /// heard nothing from on every target, each settled in `cursor`. See
+    /// [`ScanProgress::heard_nothing_so_far`].
+    silent: Vec<IpRange>,
 }
 
 impl Cut {
@@ -259,7 +278,12 @@ impl Cut {
         let cursor = ctx.settlements().checkpoint();
         between();
         let changed = ctx.take_changed_findings();
-        Self { cursor, changed }
+        let silent = ctx.heard_nothing_so_far(&cursor);
+        Self {
+            cursor,
+            changed,
+            silent,
+        }
     }
 }
 

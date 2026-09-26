@@ -1380,6 +1380,10 @@ pub struct ScanProgress {
     verdicts_pending: Arc<AtomicBool>,
     #[cfg(feature = "journal-format")]
     sitting: Arc<Sitting>,
+    /// How the port phase numbers its targets, which says what an address
+    /// is owed; see [`heard_nothing_so_far`](Self::heard_nothing_so_far).
+    #[cfg(feature = "journal-format")]
+    numbering: Arc<OnceLock<crate::model::target::TargetIndex>>,
 }
 
 impl ScanProgress {
@@ -1446,10 +1450,65 @@ impl ScanProgress {
     }
 
     /// This sitting's phases as they stand: those closed, and the open one
-    /// so far. See [`Sitting`].
+    /// so far, naming `silent` as the addresses it heard nothing from. See
+    /// [`Sitting`].
     #[cfg(feature = "journal-format")]
-    pub(crate) fn standing_phases(&self) -> Vec<crate::report::ScanPhase> {
-        self.sitting.standing(self.failures.snapshot())
+    pub(crate) fn standing_phases(&self, silent: &[IpRange]) -> Vec<crate::report::ScanPhase> {
+        self.sitting.standing(self.failures.snapshot(), silent)
+    }
+
+    /// Every address a port phase standing in for a liveness pass has asked
+    /// every target of, with each settled in `cursor`, and heard nothing
+    /// from: what the phase will find silent at its end, whatever else it
+    /// asks. Empty for any other phase.
+    ///
+    /// For a checkpoint to write into the phase as it stands, so a sitting
+    /// killed before its end still names them. Their targets are settled, so
+    /// a resume asks nothing more of them, and the records the phase held
+    /// back from the journal never reach it: named nowhere else, they would
+    /// be accounted for by no sitting of the job.
+    ///
+    /// Asked in full is a port on the record for every target the plan
+    /// numbers at the address, each asked. An address filed unreachable, or
+    /// withheld by the exclusions, had its targets settled with nothing asked,
+    /// and is not named; nor is one whose own budget ran out, which left a
+    /// target unasked and so unsettled.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn heard_nothing_so_far(
+        &self,
+        cursor: &crate::journal::cursor::Checkpoint,
+    ) -> Vec<IpRange> {
+        if !self.verdicts_pending.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        let Some(numbering) = self.numbering.get() else {
+            return Vec::new();
+        };
+        let mut silent = IpSet::new();
+        for entry in self.store.iter() {
+            let host = entry.value();
+            if !awaits_verdict(host) {
+                continue;
+            }
+            let address = entry.key().addr();
+            let mut owed = 0u64;
+            let mut settled = true;
+            for run in numbering.runs_at(address) {
+                owed += run.end - run.start;
+                settled &= run.clone().all(|position| cursor.is_settled(position));
+            }
+            let asked = host
+                .ports()
+                .filter(|port| port.state() != PortState::Unasked)
+                .count() as u64;
+            if owed > 0 && settled && asked == owed {
+                silent.insert(address);
+            }
+        }
+        silent.canonicalize();
+        let v4 = silent.v4().iter().copied().map(IpRange::V4);
+        let v6 = silent.v6().iter().copied().map(IpRange::V6);
+        v4.chain(v6).collect()
     }
 
     /// Marks `hosts` changed again, for a journal whose write of them failed.
@@ -1589,12 +1648,21 @@ impl Sitting {
     }
 
     /// The closed phases, and the open one as it stands with `failures` filed
-    /// against it.
+    /// against it and `silent` named as the addresses it heard nothing from.
     #[cfg(feature = "journal-format")]
-    fn standing(&self, failures: Vec<ScannerFailure>) -> Vec<crate::report::ScanPhase> {
+    fn standing(
+        &self,
+        failures: Vec<ScannerFailure>,
+        silent: &[IpRange],
+    ) -> Vec<crate::report::ScanPhase> {
         let phases = self.phases.lock().unwrap_or_else(|e| e.into_inner());
         let mut standing = phases.closed.clone();
-        standing.extend(phases.open.as_ref().map(|open| open.standing(failures)));
+        standing.extend(
+            phases
+                .open
+                .as_ref()
+                .map(|open| open.standing(failures, silent.to_vec())),
+        );
         standing
     }
 }
@@ -2787,6 +2855,8 @@ impl ScanContext {
             verdicts_pending: Arc::clone(&self.verdicts_pending),
             #[cfg(feature = "journal-format")]
             sitting: Arc::clone(&self.sitting),
+            #[cfg(feature = "journal-format")]
+            numbering: Arc::clone(&self.numbering),
         }
     }
 

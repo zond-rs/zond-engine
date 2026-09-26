@@ -2127,6 +2127,72 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// **A sitting killed before its verdicts still names the addresses it
+    /// had heard nothing from on every target.** Their targets are settled on
+    /// disk, so a resume asks nothing more of them, and their records were
+    /// held back from it; named only by the phase's end, which a killed
+    /// sitting never reaches, they would be in no list of the job.
+    #[tokio::test]
+    async fn a_sitting_killed_before_its_verdicts_still_names_what_it_heard_nothing_from() {
+        use crate::config::ZondConfig;
+        use crate::journal::settle::Outcome;
+        use crate::model::target::TargetIndex;
+        use crate::report::TargetScope;
+        use crate::scanner::recorder::PhaseRecorder;
+
+        let root = scratch("unheard-named");
+        let map = plan("192.0.2.1-192.0.2.8", "80");
+        let journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        ctx.number_targets(TargetIndex::of(&map));
+        let _phase = PhaseRecorder::start(
+            ScanKind::PortScan,
+            Privilege::Raw,
+            TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
+            &ZondConfig::default(),
+        )
+        .opening_in(&ctx);
+        ctx.await_verdicts();
+        // Asked and settled silent, and asked with its answer still owed.
+        for address in ["192.0.2.5", "192.0.2.6"] {
+            ctx.write_host(
+                address.parse::<std::net::IpAddr>().expect("an address"),
+                |host| {
+                    *host = unheard(address);
+                    true
+                },
+            );
+        }
+        ctx.record_outcome(Outcome::Exhausted { position: 4 });
+
+        let ticker = spawn_checkpoints(journal, ctx.progress());
+        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
+        ticker.kill().await;
+
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
+        let silent: Vec<_> = journal
+            .earlier_phases()
+            .iter()
+            .flat_map(|phase| phase.silent().iter().copied())
+            .collect();
+        let named: IpSet = "192.0.2.5".parse().expect("an address");
+        assert_eq!(
+            silent,
+            named
+                .v4()
+                .iter()
+                .copied()
+                .map(crate::model::ip::range::IpRange::V4)
+                .collect::<Vec<_>>(),
+            "the settled silent address is named, and only it"
+        );
+        journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// **A record held for its verdict is written once the phase keeps it.**
     /// Held back rather than taken, so an address the phase neither forgot
     /// nor heard from, one no route led to, still reaches the findings when
