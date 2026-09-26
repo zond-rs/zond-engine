@@ -76,6 +76,7 @@ fn versioned_product(rule: &super::signature::MatchRule) -> Option<String> {
 const JARM_CONTEXT: &str = "tls.jarm";
 
 use super::model::{Evidence, Tunnel};
+use super::on_the_matching_thread;
 use crate::model::host::OsEvidence;
 
 use super::matcher::Signature;
@@ -520,10 +521,20 @@ impl SignatureDb {
     /// records which tier named the service, so the resolver can prefer a match
     /// the port corroborates. What it does not set is the tunnel, which is a fact
     /// about how the bytes arrived rather than about what they say.
+    ///
+    /// # Where the match runs
+    ///
+    /// On the engine's identification thread, whichever thread calls this,
+    /// which waits for it. A compiled signature keeps a search cache for each
+    /// thread that matches with it for as long as it is compiled, so matching
+    /// wherever callers happen to be would leave each signature one per
+    /// thread; kept on one, it has one.
     pub fn identify(&self, port: u16, protocol: Protocol, response: &str) -> Option<Evidence> {
-        let port_signatures = self.signatures_for_port(port);
-        let attested_by = super::extract::attested_by(port, protocol);
-        identify_within(self, port_signatures, response, attested_by)
+        on_the_matching_thread(|| {
+            let port_signatures = self.signatures_for_port(port);
+            let attested_by = super::extract::attested_by(port, protocol);
+            identify_within(self, port_signatures, response, attested_by)
+        })
     }
 
     /// What the corpus makes of one extracted field, matched against the whole
@@ -534,17 +545,21 @@ impl SignatureDb {
     /// one of those is registered under whatever service owns it, so narrowing
     /// by port would skip exactly the rules wanted, and the literal prefilter is
     /// what keeps matching the whole set affordable.
+    ///
+    /// Matched on the identification thread, as [`identify`](Self::identify) is.
     pub(crate) fn identify_field(&self, text: &str) -> Option<Evidence> {
         let mut candidates = self.prefilter().candidates(text);
         candidates.sort_unstable();
         candidates.dedup();
         self.warm(&candidates);
-        best_match(
-            self,
-            &candidates,
-            &[text],
-            crate::model::host::OsSource::ServiceBanner,
-        )
+        on_the_matching_thread(|| {
+            best_match(
+                self,
+                &candidates,
+                &[text],
+                crate::model::host::OsSource::ServiceBanner,
+            )
+        })
     }
 
     /// What the corpus canonically calls the operating system `name`.
@@ -563,14 +578,18 @@ impl SignatureDb {
     ///
     /// [`None`] where nothing recognises the name, which is the ordinary outcome
     /// for a product that is not an operating system at all.
+    ///
+    /// Matched on the identification thread, as [`identify`](Self::identify) is.
     pub(crate) fn canonical_os_name(&self, name: &str) -> Option<OsEvidence> {
         self.warm(&self.os_name_signatures);
-        best_match_within(
-            self,
-            &self.os_name_signatures,
-            &[name],
-            crate::model::host::OsSource::ServiceBanner,
-        )?
+        on_the_matching_thread(|| {
+            best_match_within(
+                self,
+                &self.os_name_signatures,
+                &[name],
+                crate::model::host::OsSource::ServiceBanner,
+            )
+        })?
         .os
     }
 
@@ -595,14 +614,18 @@ impl SignatureDb {
     /// [`None`] where nothing published this hash, which is the ordinary outcome
     /// and the honest one: JARM says two hosts run the same stack, and the
     /// corpus says what that stack is only for the stacks somebody named.
+    ///
+    /// Matched on the identification thread, as [`identify`](Self::identify) is.
     pub(crate) fn identify_jarm(&self, found: &str) -> Option<Evidence> {
         self.warm(&self.jarm_signatures);
-        best_match_within(
-            self,
-            &self.jarm_signatures,
-            &[found],
-            crate::model::host::OsSource::ServiceBanner,
-        )
+        on_the_matching_thread(|| {
+            best_match_within(
+                self,
+                &self.jarm_signatures,
+                &[found],
+                crate::model::host::OsSource::ServiceBanner,
+            )
+        })
     }
 
     /// The instruction set the corpus reads out of `text`, where it reads one.
@@ -616,23 +639,27 @@ impl SignatureDb {
     /// `x86` rule that matches inside it.
     ///
     /// [`None`] where the text names no architecture, which is most text.
+    ///
+    /// Matched on the identification thread, as [`identify`](Self::identify) is.
     pub(crate) fn architecture_of(&self, text: &str) -> Option<String> {
         self.warm(&self.architecture_signatures);
 
-        self.architecture_signatures
-            .iter()
-            .filter_map(|&idx| {
-                self.signature(idx)?
-                    .identify(text, crate::model::host::OsSource::ServiceBanner)
-            })
-            .reduce(|best, m| {
-                if m.quality.specificity() > best.quality.specificity() {
-                    m
-                } else {
-                    best
-                }
-            })?
-            .arch
+        on_the_matching_thread(|| {
+            self.architecture_signatures
+                .iter()
+                .filter_map(|&idx| {
+                    self.signature(idx)?
+                        .identify(text, crate::model::host::OsSource::ServiceBanner)
+                })
+                .reduce(|best, m| {
+                    if m.quality.specificity() > best.quality.specificity() {
+                        m
+                    } else {
+                        best
+                    }
+                })
+        })?
+        .arch
     }
 
     /// The primary service name registered for `port`, if any. No compilation.

@@ -32,6 +32,7 @@
 //! its step's match result, so a finding fires only in the case it names. An
 //! absent guard always holds; an unparseable one never does.
 
+use crate::detect::patterns;
 use crate::fingerprint::{MAX_COMPILED_REGEX_BYTES, pattern, unescape};
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionId, Excerpt, Finding, Version};
@@ -331,10 +332,14 @@ fn on_no_match(step: &Step) -> Flow {
     }
 }
 
-/// Whether `spec`'s pattern matches `text`.
+/// Whether `spec`'s pattern matches `text`. A pattern that will not compile
+/// matches nothing.
 fn matches(spec: &MatchSpec, text: &str) -> bool {
-    pattern::compile(spec.pattern(), MAX_COMPILED_REGEX_BYTES)
-        .is_ok_and(|compiled| compiled.identify(text, spec.version_group()).is_some())
+    let group = spec.version_group();
+    patterns::matching(spec.pattern(), |compiled| {
+        compiled.identify(text, group).is_some()
+    })
+    .unwrap_or(false)
 }
 
 /// Compiles every pattern a flow will match on, refusing one that will not
@@ -383,11 +388,13 @@ pub(crate) fn check_patterns(flow: &FlowDetection) -> Result<(), String> {
 /// capture group of that name, or the numeric `version_group` an imported pattern
 /// numbers instead.
 fn capture(spec: &MatchSpec, text: &str, name: &str) -> Option<String> {
-    let compiled = pattern::compile(spec.pattern(), MAX_COMPILED_REGEX_BYTES).ok()?;
-    compiled.capture(text, name).or_else(|| {
-        spec.version_group()
-            .and_then(|group| compiled.identify(text, Some(group)).and_then(|m| m.version))
+    let group = spec.version_group();
+    patterns::matching(spec.pattern(), |compiled| {
+        compiled.capture(text, name).or_else(|| {
+            group.and_then(|group| compiled.identify(text, Some(group)).and_then(|m| m.version))
+        })
     })
+    .flatten()
 }
 
 /// Builds the finding a [`FindingSpec`] describes, resolving its `{var}`

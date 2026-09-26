@@ -81,6 +81,8 @@ mod convert;
 // the API, and an exchange with no budget behind it is not one.
 mod exchange;
 mod gate;
+// A flow's patterns, compiled once and matched on one thread kept for it.
+mod patterns;
 mod source;
 // The synchronous TLS client an exchange speaks through when a port answered
 // inside a tunnel.

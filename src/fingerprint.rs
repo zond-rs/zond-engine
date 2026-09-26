@@ -2106,6 +2106,21 @@ pub async fn analyze_with(
 /// network.
 const ANALYSIS_THREADS: usize = 1;
 
+/// The identification threads, see [`ANALYSIS_THREADS`], started on first
+/// use, or `None` where they could not be.
+fn analysis_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(ANALYSIS_THREADS)
+            .thread_name(|index| format!("zond-identify-{index}"))
+            .build()
+            .ok()
+    })
+    .as_ref()
+}
+
 /// Runs `work` on the identification threads, see [`ANALYSIS_THREADS`], and
 /// hands back what it returns, or `None` if it panicked.
 ///
@@ -2114,16 +2129,7 @@ const ANALYSIS_THREADS: usize = 1;
 async fn off_the_reactor<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Option<T> {
-    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
-
-    let pool = POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(ANALYSIS_THREADS)
-            .thread_name(|index| format!("zond-identify-{index}"))
-            .build()
-            .ok()
-    });
-    let Some(pool) = pool else {
+    let Some(pool) = analysis_pool() else {
         return tokio::task::spawn_blocking(work).await.ok();
     };
 
@@ -2136,6 +2142,28 @@ async fn off_the_reactor<T: Send + 'static>(
         let _ = sender.send(done.ok());
     });
     receiver.await.ok().flatten()
+}
+
+/// Runs `match_work`, a match against the signature corpus, on the
+/// identification threads, blocking the caller until it is done, and hands
+/// back what it returns.
+///
+/// For a caller asking the corpus directly rather than through
+/// [`analyze_with`]. A compiled regex keeps a search cache for each thread
+/// that uses it, for as long as it is compiled, which for the corpus is the
+/// life of the process, so matches made wherever callers happen to be would
+/// leave every signature a cache per thread that ever touched it; see
+/// [`ANALYSIS_THREADS`]. Kept on one thread, each signature has one.
+///
+/// Called on the identification threads it runs in place. Where they could
+/// not be started it runs on the caller's thread, which costs memory and
+/// nothing else. A panic in `match_work` reaches the caller as it would have
+/// in place.
+pub(crate) fn on_the_matching_thread<T: Send>(match_work: impl FnOnce() -> T + Send) -> T {
+    match analysis_pool() {
+        Some(pool) => pool.install(match_work),
+        None => match_work(),
+    }
 }
 
 /// Reads one bounded chunk from `stream`, giving up after `wait`. Returns `None`
@@ -2650,6 +2678,28 @@ mod tests {
         )
         .await;
         assert!(after.is_some(), "and identification carries on after it");
+    }
+
+    /// A caller matching against the corpus directly, from any thread, is
+    /// matched on the thread identification keeps, so the signatures it
+    /// reaches keep the one search cache identification left them.
+    #[test]
+    fn a_direct_match_against_the_corpus_runs_on_the_identification_thread() {
+        let threads: std::collections::BTreeSet<Option<String>> = (0..4)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    on_the_matching_thread(|| std::thread::current().name().map(str::to_owned))
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|thread| thread.join().expect("joins"))
+            .collect();
+        assert_eq!(
+            threads,
+            [Some("zond-identify-0".to_string())].into(),
+            "matched on {threads:?}"
+        );
     }
 
     #[tokio::test]

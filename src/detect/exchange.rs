@@ -43,10 +43,10 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use super::patterns::KeptPattern;
 use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::fingerprint::Tunnel;
 use crate::fingerprint::authority::Authority;
-use crate::fingerprint::pattern::{self, CompiledPattern};
 use crate::protocols::http::message_end as http_message_end;
 use crate::system::descriptors;
 use crate::transport::dial::Egress;
@@ -61,21 +61,24 @@ use crate::transport::dial::Egress;
 /// This is the flow's own statement of where such a reply ends, a line the
 /// answer closes with, so the read waits through the pause for it rather than
 /// taking the pause for the end.
-pub(crate) struct ReplyEnd(CompiledPattern);
+pub(crate) struct ReplyEnd(KeptPattern);
 
 impl ReplyEnd {
-    /// Compiles `pattern`, or [`None`] where it will not compile. The corpus is
+    /// `pattern`, or [`None`] where it will not compile. The corpus is
     /// validated at build, so a shipped flow's pattern is sound here; a caller's
     /// unsound one simply leaves the reply to end as it would with none set.
+    ///
+    /// Compiled once for the process and matched on the flow-matching
+    /// thread, as every flow pattern is; see [`patterns`](super::patterns).
     pub(crate) fn compile(pattern: &str) -> Option<Self> {
-        pattern::compile(pattern, crate::fingerprint::MAX_COMPILED_REGEX_BYTES)
-            .ok()
-            .map(Self)
+        KeptPattern::of(pattern).map(Self)
     }
 
     /// Whether `reply` has reached the line the flow named as its end.
     fn reached(&self, reply: &[u8]) -> bool {
-        self.0.identify(&latin1(reply), None).is_some()
+        let reply = latin1(reply);
+        self.0
+            .matching(|compiled| compiled.identify(&reply, None).is_some())
     }
 }
 

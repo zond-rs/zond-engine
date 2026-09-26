@@ -79,10 +79,8 @@ pub struct SocketProbe {
     /// The exchanges the flow may still make, this probe's own included, once
     /// the flow has said how many it plans. See [`Probe::plan`].
     exchanges_left: Option<u32>,
-    /// Where the coming `speak`'s reply ends, its source kept beside the
-    /// compiled form so a `for_each` sending the same step does not recompile
-    /// it. See [`Probe::reads_until`].
-    reply_end: Option<(String, exchange::ReplyEnd)>,
+    /// Where the coming `speak`'s reply ends. See [`Probe::reads_until`].
+    reply_end: Option<exchange::ReplyEnd>,
 }
 
 /// The least a datagram is waited on for its reply, however many the flow
@@ -235,7 +233,7 @@ impl Probe for SocketProbe {
                 bytes,
                 self.deadline,
                 self.bytes_left,
-                self.reply_end.as_ref().map(|(_, end)| end),
+                self.reply_end.as_ref(),
             ),
             Protocol::Udp => exchange::udp(
                 self.peer.socket(),
@@ -289,20 +287,9 @@ impl Probe for SocketProbe {
     }
 
     fn reads_until(&mut self, pattern: Option<&str>) {
-        // Kept compiled across a `for_each` that sends the same step: recompile
-        // only when the pattern changes, and clear it when a step names none.
-        match pattern {
-            Some(source)
-                if self
-                    .reply_end
-                    .as_ref()
-                    .is_some_and(|(kept, _)| kept == source) => {}
-            Some(source) => {
-                self.reply_end = exchange::ReplyEnd::compile(source)
-                    .map(|compiled| (source.to_string(), compiled));
-            }
-            None => self.reply_end = None,
-        }
+        // A pattern is compiled once for the process, so a `for_each` sending
+        // the same step looks it up again rather than compiling it again.
+        self.reply_end = pattern.and_then(exchange::ReplyEnd::compile);
     }
 }
 
