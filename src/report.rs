@@ -3731,9 +3731,12 @@ mod tests {
     /// and only the hosts inside it are gathered to find out.** A host list
     /// is as long as its report is large, and a copy of every address on it,
     /// held to subtract from a handful the phases left open, is a second copy
-    /// of the report.
+    /// of the report. The answer is the same either way, so what is gathered is
+    /// counted where a set takes each address in.
     #[test]
     fn only_a_live_host_inside_what_was_left_open_is_gathered_to_close_it() {
+        use crate::model::ip::set::ranges_added;
+
         let mut sweep = phase(ScanKind::Discovery);
         let (first, last) = (Ipv4Addr::new(203, 0, 113, 0), Ipv4Addr::new(203, 0, 113, 9));
         sweep
@@ -3756,9 +3759,17 @@ mod tests {
         let hosts = [&inside].into_iter().chain(&outside);
         assert_eq!(listed_within(hosts, &open).len(), 1);
 
+        let live_outside = outside.len();
         let report = ScanReport::new(sweep, outside.into_iter().chain([inside]));
         let v4 = |a, b| IpRange::V4(Ipv4Range::new(ip4(a), ip4(b)).expect("a range"));
+        let before = ranges_added::so_far();
         assert_eq!(report.undecided(), [v4(0, 4), v4(6, 9)]);
+        let added = ranges_added::so_far() - before;
+        assert!(
+            added < live_outside,
+            "{added} ranges were gathered to close what was left open, beside \
+             {live_outside} live hosts outside it"
+        );
     }
 
     fn ip4(last: u8) -> Ipv4Addr {
@@ -3785,6 +3796,49 @@ mod tests {
         let mut asked = Host::new(ip(3));
         asked.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
         assert!(!ScanReport::new(sweep, [asked]).left_ports_unasked());
+    }
+
+    /// **A report that left no port unasked reads no host's addresses to say
+    /// so, and one that left some reads only the hosts holding one.** Nearly
+    /// every report leaves nothing unasked, and asking whether a report is
+    /// partial asks this, so a walk over every address of every host would be
+    /// paid in full to find nothing.
+    #[test]
+    fn ports_left_unasked_are_looked_for_without_reading_every_host() {
+        use crate::model::host::address_reads;
+
+        let asked: Vec<Host> = (0..=255)
+            .map(|last| {
+                let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, last)));
+                host.set_status(HostStatus::Up);
+                host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+                host
+            })
+            .collect();
+        let mut unasked = Host::new(ip(1));
+        unasked.set_status(HostStatus::Up);
+        unasked.add_port(Port::new(22, Protocol::Tcp, PortState::Unasked));
+
+        let nothing_left = ScanReport::new(phase(ScanKind::PortScan), asked.clone());
+        let before = address_reads::so_far();
+        assert!(!nothing_left.left_ports_unasked());
+        assert_eq!(
+            address_reads::so_far() - before,
+            0,
+            "a report that left nothing unasked read its hosts' addresses"
+        );
+
+        let one_left = ScanReport::new(
+            phase(ScanKind::PortScan),
+            asked.into_iter().chain([unasked]),
+        );
+        let before = address_reads::so_far();
+        assert!(one_left.left_ports_unasked());
+        assert_eq!(
+            address_reads::so_far() - before,
+            1,
+            "addresses were read beyond the one host with a port unasked"
+        );
     }
 
     /// An address a port phase asked on every port and heard nothing from is

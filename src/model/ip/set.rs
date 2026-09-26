@@ -79,6 +79,33 @@ pub struct IpSet {
     v6_dirty: bool,
 }
 
+/// How many ranges this thread has added to a set, a single address being a
+/// range of one, for a test that has to know a set was built from only what
+/// it needed to hold.
+///
+/// Counted where a range first enters a set, which every way of building one
+/// passes through: a range moved between sets, or rewritten by a merge or a
+/// subtraction, was counted as it entered. Per thread, so the tests running
+/// beside one never move its count.
+#[cfg(test)]
+pub(crate) mod ranges_added {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ADDED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Counts one range added.
+    pub(super) fn note() {
+        ADDED.with(|added| added.set(added.get() + 1));
+    }
+
+    /// How many ranges this thread has added.
+    pub(crate) fn so_far() -> usize {
+        ADDED.with(Cell::get)
+    }
+}
+
 impl IpSet {
     /// Creates a new, empty `IpSet`.
     pub fn new() -> Self {
@@ -108,12 +135,16 @@ impl IpSet {
 
     /// Appends an IPv4 range without immediate merging.
     pub fn push_v4_range(&mut self, range: Ipv4Range) {
+        #[cfg(test)]
+        ranges_added::note();
         self.v4.push(range);
         self.v4_dirty = true;
     }
 
     /// Appends an IPv6 range without immediate merging.
     pub fn push_v6_range(&mut self, range: Ipv6Range) {
+        #[cfg(test)]
+        ranges_added::note();
         self.v6.push(range);
         self.v6_dirty = true;
     }

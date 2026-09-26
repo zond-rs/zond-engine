@@ -47,6 +47,29 @@ pub mod protocol;
 pub mod status;
 pub mod telemetry;
 
+/// How many times this thread has read a host's addresses, for a test that has
+/// to know a walk over a report read them only where it needed to.
+///
+/// Counted per thread, so the tests running beside one never move its count.
+#[cfg(test)]
+pub(crate) mod address_reads {
+    use std::cell::Cell;
+
+    thread_local! {
+        static READS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Counts one read.
+    pub(super) fn note() {
+        READS.with(|reads| reads.set(reads.get() + 1));
+    }
+
+    /// How many reads this thread has made.
+    pub(crate) fn so_far() -> usize {
+        READS.with(Cell::get)
+    }
+}
+
 pub use hardware::{HardwareDescription, HardwareInfo};
 pub use name::{HostName, NameKind, NameSource};
 pub use os::{OsEvidence, OsFingerprint, OsSource};
@@ -717,6 +740,8 @@ impl Host {
 
     /// Returns all known IP addresses for this host.
     pub fn ips(&self) -> &BTreeSet<IpAddr> {
+        #[cfg(test)]
+        address_reads::note();
         &self.ips
     }
 
