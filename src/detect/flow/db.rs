@@ -151,14 +151,14 @@ mod tests {
 
     /// What each shipped flow may do, pinned as the exceptions to the default.
     ///
-    /// A detection's class decides whether a default scan runs it at all: the
-    /// envelope's ceiling is `ActiveBenign`, so `Exploit` and `Dos` ship inert
-    /// until an operator raises the ceiling, and `ActiveMutating` writes to the
-    /// target. Moving a detection across that line either way is a security
-    /// decision, not a detail.
+    /// A detection's class decides what it may do to a target: `Exploit` and
+    /// `Dos` ship inert until an operator raises the ceiling to them, and
+    /// `ActiveMutating` writes to the target. Moving a detection across that
+    /// line either way is a security decision, not a detail.
     ///
-    /// So the tripwire is the set of detections whose class is *not* the
-    /// active-benign default, checked against a blessed list. Adding an ordinary
+    /// So the tripwire is the set of detections whose class is *not*
+    /// active-benign, the class ordinary detections ship in, checked against a
+    /// blessed list. Adding an ordinary
     /// active-benign detection needs no edit here; one that ships anything else
     /// fails this test until it is listed by name, which is the review that must
     /// not be skipped. Enumerating the whole corpus bought nothing over this and

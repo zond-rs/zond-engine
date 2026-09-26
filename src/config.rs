@@ -1518,10 +1518,13 @@ pub struct ZondConfig {
     ///
     /// After service detection names a port, the flow corpus can probe it further
     /// to conclude what is *wrong* with it, not just what it is. This is the
-    /// ceiling on how far that goes: the default permits passive and active-benign
-    /// detections, and a detection that mutates, exploits, or degrades the target
-    /// runs only where the operator raises the ceiling to it. Read by the
-    /// detection phase, after service detection, and only when it ran.
+    /// ceiling on how far that goes. The default permits passive detections
+    /// alone, which read what the service pass already collected; an
+    /// active-benign one, which asks the service something of its own, and one
+    /// that mutates, exploits, or degrades the target run only where the
+    /// operator raises the ceiling to them. [`DetectionEnvelope`]'s `Default`
+    /// has the reasoning. Read by the detection phase, after service detection,
+    /// and only when it ran.
     pub detection: DetectionEnvelope,
 
     /// What the scan changes about the probes it sends, over the defaults.
