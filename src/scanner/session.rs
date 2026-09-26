@@ -3460,9 +3460,7 @@ impl SessionBuilder {
                     if self.exclusions.is_empty() {
                         return Vec::new();
                     }
-                    let mut table = crate::system::neighbor_cache::ipv4_neighbors();
-                    table.extend(crate::system::neighbor_cache::ipv6_neighbors());
-                    table.iter().map(|entry| (entry.ip, entry.mac)).collect()
+                    crate::system::neighbor_cache::neighbour_table()
                 }),
             )),
             exclusions: Arc::new(self.exclusions),

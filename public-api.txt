@@ -17254,6 +17254,7 @@ impl core::marker::UnsafeUnpin for zond_engine::system::neighbor_cache::Neighbor
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::neighbor_cache::Neighbor
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::neighbor_cache::Neighbor
 pub fn zond_engine::system::neighbor_cache::ipv6_neighbors() -> alloc::vec::Vec<zond_engine::system::neighbor_cache::Neighbor>
+pub fn zond_engine::system::neighbor_cache::with_machines_tied(&zond_engine::model::exclusion::Exclusions) -> zond_engine::model::exclusion::Exclusions
 pub mod zond_engine::system::privilege
 pub enum zond_engine::system::privilege::Privilege
 pub zond_engine::system::privilege::Privilege::Connect

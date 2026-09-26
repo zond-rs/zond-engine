@@ -277,6 +277,15 @@ impl Exclusions {
             .collect()
     }
 
+    /// This policy and every other address `table`, a neighbour table's
+    /// addresses and the hardware each resolved to, ties to a machine it
+    /// names: the policy as a scan reading that table holds it, which a front
+    /// end reads through the neighbour cache before a scan starts.
+    pub(crate) fn tied_in(&self, table: Vec<(IpAddr, Option<MacAddr>)>) -> Self {
+        let machines = self.hardware_in(table.iter().copied());
+        self.widened(self.tied_to(&machines, table))
+    }
+
     /// This policy and `addresses` beside it, as one policy.
     ///
     /// For holding a phase's targets to a machine the policy names at the
@@ -422,6 +431,28 @@ mod tests {
             BTreeSet::from([machine])
         );
         assert!(Exclusions::none().hardware_in(table).is_empty());
+    }
+
+    /// **A count taken before a scan starts withholds what the scan will.** A
+    /// target named at another address of an excluded machine is sent
+    /// nothing, and a front end counting against the policy alone says it
+    /// withheld nothing while the scan's report says it withheld the target.
+    #[test]
+    fn a_target_at_another_address_of_an_excluded_machine_is_counted_withheld() {
+        let at = |ip: &str, mac: Option<MacAddr>| (ip.parse().expect("literal"), mac);
+        let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
+        let table = vec![
+            at("192.0.2.30", Some(machine)),
+            at("192.0.2.40", Some(machine)),
+            at("192.0.2.41", Some(MacAddr::new(0x02, 0, 0, 0, 0, 0x41))),
+        ];
+        let policy = Exclusions::new(ips("192.0.2.30"));
+        let named = || ips("192.0.2.40-192.0.2.41");
+
+        assert_eq!(policy.withhold(&mut named()), 0, "the policy alone");
+        let mut targets = named();
+        assert_eq!(policy.tied_in(table).withhold(&mut targets), 1);
+        assert_eq!(targets, ips("192.0.2.41"), "the other machine is asked");
     }
 
     /// **The table names the rest of the machine before anything is sent.**

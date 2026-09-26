@@ -92,6 +92,38 @@ pub(crate) fn ipv4_neighbors() -> Vec<Neighbor> {
     platform::ipv4_neighbors()
 }
 
+/// `exclusions` as a scan starting now holds them: the addresses they name,
+/// and every other address this host's neighbour tables tie to a machine
+/// they name.
+///
+/// For a front end counting, before a scan starts, what the scan will
+/// withhold. A target named at another address of an excluded machine is sent
+/// nothing, and a count taken from the policy alone says the policy withheld
+/// nothing while the scan's report says it withheld that target. Read from
+/// the same tables the scan reads as it starts, and learned the same way,
+/// without a packet: the hardware an excluded address resolved to is the
+/// machine, and every address listed at that hardware is part of it. The
+/// scan reads them again, so a table that changes in between is answered
+/// by the scan's own report, which is the account that holds.
+pub fn with_machines_tied(
+    exclusions: &crate::model::exclusion::Exclusions,
+) -> crate::model::exclusion::Exclusions {
+    if exclusions.is_empty() {
+        return exclusions.clone();
+    }
+    exclusions.tied_in(neighbour_table())
+}
+
+/// Both tables as the addresses they list and the hardware each resolved to,
+/// `None` where it has not: what ties an address to a machine, for holding a
+/// scan's exclusions to every address of a machine they name. See
+/// [`Exclusions::hardware_in`](crate::model::exclusion::Exclusions::hardware_in).
+pub(crate) fn neighbour_table() -> Vec<(std::net::IpAddr, Option<MacAddr>)> {
+    let mut table = ipv4_neighbors();
+    table.extend(ipv6_neighbors());
+    table.iter().map(|entry| (entry.ip, entry.mac)).collect()
+}
+
 /// The entries of a `/proc/net/arp` listing, each device named turned into
 /// its index by `index_of`.
 ///
