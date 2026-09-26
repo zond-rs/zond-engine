@@ -527,7 +527,7 @@ mod tests {
     /// record and the handshake must each count exactly what follows them.
     #[test]
     fn a_hello_declares_its_own_lengths_correctly() {
-        for version in TlsVersion::ALL {
+        for &version in TlsVersion::ALL {
             let suites = offer(version);
             let hello = client_hello(&Offer {
                 version,

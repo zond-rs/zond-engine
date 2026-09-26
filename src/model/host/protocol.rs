@@ -94,7 +94,7 @@ impl IpProtocolState {
     /// Here for the reason
     /// [`Protocol::ALL`](crate::model::port::Protocol::ALL) gives, and read by
     /// the gate holding the exported schema to what this build can write.
-    pub const ALL: [IpProtocolState; 5] = [
+    pub const ALL: &'static [Self] = &[
         Self::Unasked,
         Self::OpenFiltered,
         Self::Filtered,
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn a_protocol_nobody_asked_about_establishes_nothing() {
         assert!(!IpProtocolState::Unasked.is_established());
-        for state in IpProtocolState::ALL {
+        for &state in IpProtocolState::ALL {
             assert_eq!(
                 state.is_established(),
                 state != IpProtocolState::Unasked,

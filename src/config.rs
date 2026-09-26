@@ -161,7 +161,7 @@ pub enum ScanEffort {
 impl ScanEffort {
     /// Every level, ordered from least effort to most. The index of a level in
     /// this array is its [`level`](Self::level) number.
-    pub const ALL: [ScanEffort; 4] = [
+    pub const ALL: &'static [Self] = &[
         ScanEffort::Single,
         ScanEffort::Fast,
         ScanEffort::Balanced,
@@ -232,7 +232,7 @@ pub struct UnknownScanEffort {
 impl fmt::Display for UnknownScanEffort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "unknown scan effort '{}', ", self.input)?;
-        expected_levels(&ScanEffort::ALL, ScanEffort::name, f)
+        expected_levels(ScanEffort::ALL, ScanEffort::name, f)
     }
 }
 
@@ -254,7 +254,7 @@ impl std::str::FromStr for ScanEffort {
     /// assert!("maximum".parse::<ScanEffort>().is_err());
     /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_level(s, &Self::ALL, Self::name, Self::from_level).ok_or_else(|| UnknownScanEffort {
+        parse_level(s, Self::ALL, Self::name, Self::from_level).ok_or_else(|| UnknownScanEffort {
             input: s.to_string(),
         })
     }
@@ -371,7 +371,7 @@ pub enum OsDetection {
 impl OsDetection {
     /// Every level, ordered from least effort to most. The index of a level in
     /// this array is its [`level`](Self::level) number.
-    pub const ALL: [OsDetection; 4] = [
+    pub const ALL: &'static [Self] = &[
         OsDetection::Off,
         OsDetection::Passive,
         OsDetection::Active,
@@ -468,7 +468,7 @@ pub struct UnknownOsDetection {
 impl fmt::Display for UnknownOsDetection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "unknown OS detection level '{}', ", self.input)?;
-        expected_levels(&OsDetection::ALL, OsDetection::name, f)
+        expected_levels(OsDetection::ALL, OsDetection::name, f)
     }
 }
 
@@ -497,7 +497,7 @@ impl FromStr for OsDetection {
     /// assert!("maximum".parse::<OsDetection>().is_err());
     /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_level(s, &Self::ALL, Self::name, Self::from_level).ok_or_else(|| UnknownOsDetection {
+        parse_level(s, Self::ALL, Self::name, Self::from_level).ok_or_else(|| UnknownOsDetection {
             input: s.to_string(),
         })
     }
@@ -586,7 +586,7 @@ pub enum ServiceDetection {
 impl ServiceDetection {
     /// Every level, ordered from least effort to most. The index of a level in
     /// this array is its [`level`](Self::level) number.
-    pub const ALL: [ServiceDetection; 4] = [
+    pub const ALL: &'static [Self] = &[
         ServiceDetection::Off,
         ServiceDetection::Banner,
         ServiceDetection::Probe,
@@ -703,7 +703,7 @@ pub struct UnknownServiceDetection {
 impl fmt::Display for UnknownServiceDetection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "unknown service detection level '{}', ", self.input)?;
-        expected_levels(&ServiceDetection::ALL, ServiceDetection::name, f)
+        expected_levels(ServiceDetection::ALL, ServiceDetection::name, f)
     }
 }
 
@@ -724,7 +724,7 @@ impl FromStr for ServiceDetection {
     /// assert!("exhaustive".parse::<ServiceDetection>().is_err());
     /// ```
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        parse_level(input, &Self::ALL, Self::name, Self::from_level).ok_or_else(|| {
+        parse_level(input, Self::ALL, Self::name, Self::from_level).ok_or_else(|| {
             UnknownServiceDetection {
                 input: input.to_string(),
             }
@@ -1823,19 +1823,19 @@ mod tests {
         }
 
         check(
-            &ScanEffort::ALL,
+            ScanEffort::ALL,
             ScanEffort::name,
             ScanEffort::level,
             ScanEffort::from_level,
         );
         check(
-            &OsDetection::ALL,
+            OsDetection::ALL,
             OsDetection::name,
             OsDetection::level,
             OsDetection::from_level,
         );
         check(
-            &ServiceDetection::ALL,
+            ServiceDetection::ALL,
             ServiceDetection::name,
             ServiceDetection::level,
             ServiceDetection::from_level,
@@ -1848,7 +1848,7 @@ mod tests {
     /// two different scans.
     #[test]
     fn every_scale_parses_the_same_by_name_and_by_number() {
-        for effort in ScanEffort::ALL {
+        for &effort in ScanEffort::ALL {
             assert_eq!(effort.name().parse(), Ok(effort));
             assert_eq!(effort.name().to_uppercase().parse(), Ok(effort));
             assert_eq!(format!("  {}  ", effort.level()).parse(), Ok(effort));
@@ -1856,11 +1856,11 @@ mod tests {
         assert!("4".parse::<ScanEffort>().is_err());
         assert!("maximum".parse::<ScanEffort>().is_err());
 
-        for detection in OsDetection::ALL {
+        for &detection in OsDetection::ALL {
             assert_eq!(detection.name().parse(), Ok(detection));
             assert_eq!(detection.level().to_string().parse(), Ok(detection));
         }
-        for detection in ServiceDetection::ALL {
+        for &detection in ServiceDetection::ALL {
             assert_eq!(detection.name().parse(), Ok(detection));
             assert_eq!(detection.level().to_string().parse(), Ok(detection));
         }
@@ -1875,13 +1875,13 @@ mod tests {
     #[test]
     fn a_parse_error_names_every_level_that_would_have_worked() {
         let effort = "maximum".parse::<ScanEffort>().unwrap_err().to_string();
-        for level in ScanEffort::ALL {
+        for &level in ScanEffort::ALL {
             assert!(effort.contains(level.name()), "{effort} omits {level}");
         }
         assert!(effort.contains("0 to 3"), "{effort}");
 
         let os = "9".parse::<OsDetection>().unwrap_err().to_string();
-        for level in OsDetection::ALL {
+        for &level in OsDetection::ALL {
             assert!(os.contains(level.name()), "{os} omits {level}");
         }
 
@@ -1889,7 +1889,7 @@ mod tests {
             .parse::<ServiceDetection>()
             .unwrap_err()
             .to_string();
-        for level in ServiceDetection::ALL {
+        for &level in ServiceDetection::ALL {
             assert!(service.contains(level.name()), "{service} omits {level}");
         }
         assert!(service.contains("0 to 3"), "{service}");

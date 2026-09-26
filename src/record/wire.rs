@@ -766,77 +766,77 @@ mod tests {
     /// compiler holds to the enum.
     #[test]
     fn every_name_parses_back() {
-        for value in HostStatus::ALL {
+        for &value in HostStatus::ALL {
             assert_eq!(host_status(host_status_name(value)), Some(value));
         }
 
-        for value in PortState::ALL {
+        for &value in PortState::ALL {
             assert_eq!(port_state(port_state_name(value)), Some(value));
         }
 
-        for value in ScanKind::ALL {
+        for &value in ScanKind::ALL {
             assert_eq!(scan_kind(scan_kind_name(value)), Some(value));
         }
 
-        for value in LivenessSkip::ALL {
+        for &value in LivenessSkip::ALL {
             assert_eq!(liveness_skip(liveness_skip_name(value)), Some(value));
         }
 
-        for value in IpProtocolState::ALL {
+        for &value in IpProtocolState::ALL {
             assert_eq!(
                 ip_protocol_state(ip_protocol_state_name(value)),
                 Some(value)
             );
         }
 
-        for value in Filtering::ALL {
+        for &value in Filtering::ALL {
             assert_eq!(filtering(filtering_name(value)), Some(value));
         }
 
-        for value in NameKind::ALL {
+        for &value in NameKind::ALL {
             assert_eq!(name_kind(name_kind_name(value)), Some(value));
         }
 
-        for value in NameSource::ALL {
+        for &value in NameSource::ALL {
             assert_eq!(name_source(name_source_name(value)), Some(value));
         }
 
-        for value in AttachmentSource::ALL {
+        for &value in AttachmentSource::ALL {
             assert_eq!(
                 attachment_source(attachment_source_name(value)),
                 Some(value)
             );
         }
 
-        for value in ScannerKind::ALL {
+        for &value in ScannerKind::ALL {
             assert_eq!(scanner_kind(scanner_kind_name(value)), Some(value));
         }
 
-        for value in StopReason::ALL {
+        for &value in StopReason::ALL {
             assert_eq!(stop_reason(stop_reason_name(value)), Some(value));
         }
 
-        for value in Pass::ALL {
+        for &value in Pass::ALL {
             assert_eq!(pass(pass_name(value)), Some(value));
         }
 
-        for value in Protocol::ALL {
+        for &value in Protocol::ALL {
             assert_eq!(protocol(protocol_name(value)), Some(value));
         }
 
-        for value in NetworkRole::ALL {
+        for &value in NetworkRole::ALL {
             assert_eq!(network_role(network_role_name(value)), Some(value));
         }
 
-        for value in Severity::ALL {
+        for &value in Severity::ALL {
             assert_eq!(severity(severity_name(value)), Some(value));
         }
 
-        for value in DetectionClass::ALL {
+        for &value in DetectionClass::ALL {
             assert_eq!(detection_class(detection_class_name(value)), Some(value));
         }
 
-        for value in Confidence::ALL {
+        for &value in Confidence::ALL {
             assert_eq!(confidence(confidence_name(value)), Some(value));
         }
 

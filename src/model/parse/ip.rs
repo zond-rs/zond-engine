@@ -89,7 +89,7 @@ impl Keyword {
     ///
     /// [`names_keyword`] reads the same function, so a scan that should have
     /// asked for a segment sweep would not have.
-    pub const ALL: [Keyword; 1] = [Self::Lan];
+    pub const ALL: &'static [Self] = &[Self::Lan];
 
     /// The word as it is written in a target expression.
     pub fn as_str(self) -> &'static str {
@@ -106,7 +106,8 @@ impl Keyword {
     pub fn from_token(token: &str) -> Option<Self> {
         let token = token.trim();
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|keyword| token.eq_ignore_ascii_case(keyword.as_str()))
     }
 }

@@ -58,7 +58,7 @@ impl Confidence {
 
     /// Every level, weakest-first, for a caller that iterates rather than writing
     /// the list out, the wire-name round trip among them.
-    pub const ALL: [Confidence; 5] = [
+    pub const ALL: &'static [Self] = &[
         Self::Heuristic,
         Self::Weak,
         Self::Probable,

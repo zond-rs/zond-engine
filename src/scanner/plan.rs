@@ -2119,7 +2119,7 @@ mod tests {
         }
 
         let (_session, ctx) = ScanSession::new();
-        for technique in TcpScanTechnique::ALL {
+        for &technique in TcpScanTechnique::ALL {
             let (_tx, rx) = tokio::sync::mpsc::channel(1024);
             let scanner = TcpPortScanner::with_transport(
                 interface::SourceResolver::from_links(&[]),
@@ -2142,7 +2142,7 @@ mod tests {
     /// no bearing on that, so every one of them has to count as raw.
     #[test]
     fn every_raw_step_is_recognisable_as_one() {
-        for technique in TcpScanTechnique::ALL {
+        for &technique in TcpScanTechnique::ALL {
             assert!(PortScanStep::RawTcp { technique }.is_raw(), "{technique}");
         }
         assert!(PortScanStep::RawUdp.is_raw());

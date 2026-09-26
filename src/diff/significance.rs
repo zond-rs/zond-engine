@@ -119,7 +119,7 @@ impl Significance {
     /// Here for the reason [`PortState::ALL`](crate::model::port::PortState::ALL)
     /// gives, and read by the gate holding the exported comparison schema to what
     /// this build can write.
-    pub const ALL: [Significance; 3] = [Self::Routine, Self::Notable, Self::Urgent];
+    pub const ALL: &'static [Self] = &[Self::Routine, Self::Notable, Self::Urgent];
 
     /// The human label, capitalised for a report a person reads.
     ///

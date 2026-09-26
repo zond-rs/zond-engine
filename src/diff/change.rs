@@ -215,7 +215,7 @@ impl Coverage {
     /// comparison schema is one a document can carry and no consumer's validator
     /// will accept. The export conformance suite reads this and the schema's own
     /// list and fails unless they hold the same names.
-    pub const ALL: [Coverage; 5] = [
+    pub const ALL: &'static [Self] = &[
         Self::Covered,
         Self::Withheld,
         Self::OutOfScope,

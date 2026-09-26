@@ -215,7 +215,7 @@ impl Class {
     ///
     /// Ordered by what running one costs the target, which is the order the
     /// variants are declared in and the order an envelope's ceiling reads.
-    pub const ALL: [Class; 6] = [
+    pub const ALL: &'static [Self] = &[
         Self::Derived,
         Self::Passive,
         Self::ActiveBenign,
@@ -304,7 +304,7 @@ mod tests {
             }
         }
 
-        let places: Vec<usize> = Class::ALL.into_iter().map(place).collect();
+        let places: Vec<usize> = Class::ALL.iter().copied().map(place).collect();
 
         assert_eq!(
             places,

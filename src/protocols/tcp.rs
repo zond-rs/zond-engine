@@ -739,7 +739,7 @@ mod tests {
     /// under each other's.
     #[test]
     fn every_technique_reads_its_nonce_back_out_of_a_conformant_reset() {
-        for technique in TcpScanTechnique::ALL {
+        for &technique in TcpScanTechnique::ALL {
             let sent = probe(technique);
             let rst = conformant_rst(&sent);
             let reply = parse(&rst).unwrap();

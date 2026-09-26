@@ -89,7 +89,7 @@ impl NameKind {
     ///
     /// Every round trip through [`wire`](crate::record::wire) is tested over
     /// this, so a kind added without a spelling fails until it has one.
-    pub const ALL: [NameKind; 5] = [
+    pub const ALL: &'static [Self] = &[
         Self::Host,
         Self::NetbiosHost,
         Self::Domain,
@@ -133,7 +133,7 @@ pub enum NameSource {
 
 impl NameSource {
     /// Every source this build knows, in declaration order.
-    pub const ALL: [NameSource; 2] = [Self::Ntlm, Self::Ldap];
+    pub const ALL: &'static [Self] = &[Self::Ntlm, Self::Ldap];
 
     /// How a source is written for a person to read.
     ///

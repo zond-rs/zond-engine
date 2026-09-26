@@ -330,7 +330,7 @@ fn write_scan_info(out: &mut dyn Write, phase: &ScanPhase) -> Result<(), ExportE
         return Ok(());
     };
 
-    for protocol in Protocol::ALL {
+    for &protocol in Protocol::ALL {
         let ranges = ports.ranges(protocol);
         if ranges.is_empty() {
             continue;
@@ -2165,7 +2165,7 @@ mod tests {
             "closed|filtered",
         ];
 
-        for state in PortState::ALL {
+        for &state in PortState::ALL {
             let Some(name) = port_state(state) else {
                 assert_eq!(
                     state,

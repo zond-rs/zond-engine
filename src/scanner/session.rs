@@ -147,7 +147,7 @@ impl Stage {
     /// of its own has no other way to check that it covered them all. A variant
     /// added without a place in that protocol is a value this engine reports and
     /// no consumer can name.
-    pub const ALL: [Stage; 11] = [
+    pub const ALL: &'static [Self] = &[
         Self::Discovery,
         Self::Ports,
         Self::Services,
@@ -3923,7 +3923,7 @@ mod tests {
             "a stage is listed once and no stage twice"
         );
 
-        for stage in Stage::ALL {
+        for &stage in Stage::ALL {
             assert_eq!(
                 Stage::from_code(stage.code()),
                 stage,

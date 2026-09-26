@@ -327,7 +327,7 @@ impl NetworkRole {
     /// finding that survives a scan and disappears on the way to the report.
     /// Every round trip through [`wire`](crate::record::wire) is tested over
     /// this, so a new variant fails those tests until it is spelled everywhere.
-    pub const ALL: [NetworkRole; 10] = [
+    pub const ALL: &'static [Self] = &[
         Self::Router,
         Self::DnsServer,
         Self::DhcpServer,
@@ -419,7 +419,7 @@ impl Filtering {
     /// trip is driven by this list. The order and the absence of repeats are
     /// held by `model`'s own test. Completeness is held by neither, and closing
     /// it needs a derive macro this crate does not carry.
-    pub const ALL: [Filtering; 4] = [
+    pub const ALL: &'static [Self] = &[
         Self::InlineMiddlebox,
         Self::StatefulFilter,
         Self::PortTrustingAcl,
@@ -2155,7 +2155,7 @@ mod tests {
     fn a_full_scan_of_both_transports_is_recorded_whole() {
         let mut host = Host::new(IP_ADDR);
 
-        for protocol in Protocol::ALL {
+        for &protocol in Protocol::ALL {
             for port in u16::MIN..=u16::MAX {
                 assert!(
                     host.add_port(Port::new(port, protocol, PortState::Closed)),

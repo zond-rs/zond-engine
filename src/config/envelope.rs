@@ -176,7 +176,8 @@ impl FromStr for DetectionEnvelope {
         }
 
         DetectionClass::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|class| {
                 class
                     .label()
@@ -231,7 +232,7 @@ mod tests {
         assert_eq!("OFF".parse(), Ok(DetectionEnvelope::none()));
         assert_eq!("0".parse(), Ok(DetectionEnvelope::none()));
 
-        for (level, class) in DetectionClass::ALL.into_iter().enumerate() {
+        for (level, class) in DetectionClass::ALL.iter().copied().enumerate() {
             let asked = (level + 1).to_string();
             assert_eq!(
                 asked.parse(),
@@ -256,7 +257,7 @@ mod tests {
     fn off_permits_nothing_and_is_the_bottom_of_the_scale() {
         let off = DetectionEnvelope::none();
 
-        for class in DetectionClass::ALL {
+        for &class in DetectionClass::ALL {
             assert!(!off.permits(class), "{} ran under off", class.label());
         }
         assert_eq!(off.ceiling(), None);
@@ -284,7 +285,7 @@ mod tests {
     /// so offering it as a flag meant writing the word-to-class table again.
     #[test]
     fn a_ceiling_parses_by_name_and_by_number_like_every_other_scale() {
-        for (index, class) in DetectionClass::ALL.into_iter().enumerate() {
+        for (index, class) in DetectionClass::ALL.iter().copied().enumerate() {
             let expected = DetectionEnvelope::up_to(class);
             assert_eq!(class.label().parse(), Ok(expected), "{class:?} by name");
             // Off holds zero, so a class sits one above its own index.
@@ -325,7 +326,7 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        for class in DetectionClass::ALL {
+        for &class in DetectionClass::ALL {
             assert!(
                 message.contains(class.label()),
                 "{message} omits {}",
@@ -337,7 +338,7 @@ mod tests {
     /// An envelope renders as the ceiling it is, and reads back as itself.
     #[test]
     fn a_rendered_envelope_parses_back_to_the_same_ceiling() {
-        for class in DetectionClass::ALL {
+        for &class in DetectionClass::ALL {
             let envelope = DetectionEnvelope::up_to(class);
             assert_eq!(envelope.to_string().parse(), Ok(envelope));
         }

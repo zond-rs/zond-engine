@@ -926,8 +926,9 @@ mod tests {
         assert_eq!(
             support.unfinished(),
             TlsVersion::ALL
-                .map(|version| UnfinishedVersion::new(version, Interruption::Unanswered))
-                .as_slice()
+                .iter()
+                .map(|&version| UnfinishedVersion::new(version, Interruption::Unanswered))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1238,7 +1239,7 @@ mod tests {
     /// `CipherSuite::ALL` must not silently leave the walk truncating.
     #[test]
     fn the_offer_ceiling_is_never_below_what_a_version_can_offer() {
-        for version in TlsVersion::ALL {
+        for &version in TlsVersion::ALL {
             let offered = CipherSuite::offered_under(version).count();
             assert!(
                 offered <= MAX_OFFERS_PER_VERSION,

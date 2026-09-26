@@ -142,17 +142,17 @@ mod tests {
     /// A vocabulary added to this module belongs below.
     #[test]
     fn every_vocabulary_lists_itself_in_declaration_order() {
-        holds_declaration_order("Confidence", &Confidence::ALL, |v| *v as usize);
-        holds_declaration_order("Keyword", &Keyword::ALL, |v| *v as usize);
-        holds_declaration_order("Severity", &Severity::ALL, |v| *v as usize);
-        holds_declaration_order("DetectionClass", &DetectionClass::ALL, |v| *v as usize);
-        holds_declaration_order("NetworkRole", &NetworkRole::ALL, |v| *v as usize);
-        holds_declaration_order("Filtering", &Filtering::ALL, |v| *v as usize);
-        holds_declaration_order("HostStatus", &HostStatus::ALL, |v| *v as usize);
-        holds_declaration_order("IpProtocolState", &IpProtocolState::ALL, |v| *v as usize);
-        holds_declaration_order("Protocol", &Protocol::ALL, |v| *v as usize);
-        holds_declaration_order("PortState", &PortState::ALL, |v| *v as usize);
-        holds_declaration_order("TcpScanTechnique", &TcpScanTechnique::ALL, |v| *v as usize);
+        holds_declaration_order("Confidence", Confidence::ALL, |v| *v as usize);
+        holds_declaration_order("Keyword", Keyword::ALL, |v| *v as usize);
+        holds_declaration_order("Severity", Severity::ALL, |v| *v as usize);
+        holds_declaration_order("DetectionClass", DetectionClass::ALL, |v| *v as usize);
+        holds_declaration_order("NetworkRole", NetworkRole::ALL, |v| *v as usize);
+        holds_declaration_order("Filtering", Filtering::ALL, |v| *v as usize);
+        holds_declaration_order("HostStatus", HostStatus::ALL, |v| *v as usize);
+        holds_declaration_order("IpProtocolState", IpProtocolState::ALL, |v| *v as usize);
+        holds_declaration_order("Protocol", Protocol::ALL, |v| *v as usize);
+        holds_declaration_order("PortState", PortState::ALL, |v| *v as usize);
+        holds_declaration_order("TcpScanTechnique", TcpScanTechnique::ALL, |v| *v as usize);
 
         holds_declaration_order("StatusProtocol", StatusProtocol::ALL, |v| {
             status_protocol_index(v).expect("ALL holds no `Custom`")

@@ -2634,8 +2634,8 @@ mod tests {
         host.set_status(HostStatus::Up);
         // Every kind, from every source, so a name the record drops for either
         // reason fails the round trip below.
-        for kind in crate::model::host::NameKind::ALL {
-            for source in crate::model::host::NameSource::ALL {
+        for &kind in crate::model::host::NameKind::ALL {
+            for &source in crate::model::host::NameSource::ALL {
                 let name = format!("{kind:?}-{source:?}.example");
                 host.record_name(HostName::new(kind, source, &name).expect("a name"));
             }

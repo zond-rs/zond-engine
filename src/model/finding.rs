@@ -143,7 +143,7 @@ impl Severity {
 
     /// Every severity, weakest-first, for a caller that iterates rather than
     /// writing the list out.
-    pub const ALL: [Severity; 5] = [
+    pub const ALL: &'static [Self] = &[
         Self::Info,
         Self::Low,
         Self::Medium,
@@ -202,7 +202,7 @@ impl DetectionClass {
     }
 
     /// Every class, least-intrusive-first.
-    pub const ALL: [DetectionClass; 5] = [
+    pub const ALL: &'static [Self] = &[
         Self::Passive,
         Self::ActiveBenign,
         Self::ActiveMutating,

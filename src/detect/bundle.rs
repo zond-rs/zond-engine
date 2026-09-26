@@ -167,7 +167,7 @@ impl Tier {
     /// Here for the reason [`Class::ALL`](crate::detect::manifest::Class::ALL)
     /// is: the enum is `#[non_exhaustive]`, and a front end describing the
     /// corpus over its own protocol needs to know when it has missed one.
-    pub const ALL: [Tier; 3] = [Self::Flow, Self::Compute, Self::Host];
+    pub const ALL: &'static [Self] = &[Self::Flow, Self::Compute, Self::Host];
 }
 
 /// Why a bundle could not be verified.
@@ -541,7 +541,7 @@ mod tests {
             }
         }
 
-        let places: Vec<usize> = super::Tier::ALL.into_iter().map(place).collect();
+        let places: Vec<usize> = super::Tier::ALL.iter().copied().map(place).collect();
 
         assert_eq!(
             places,

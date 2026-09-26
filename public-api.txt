@@ -69,7 +69,7 @@ pub zond_engine::config::OsDetection::Aggressive
 pub zond_engine::config::OsDetection::Off
 pub zond_engine::config::OsDetection::Passive
 impl zond_engine::config::OsDetection
-pub const zond_engine::config::OsDetection::ALL: [zond_engine::config::OsDetection; 4]
+pub const zond_engine::config::OsDetection::ALL: &'static [Self]
 pub const fn zond_engine::config::OsDetection::from_level(u8) -> core::option::Option<Self>
 pub const fn zond_engine::config::OsDetection::is_active(self) -> bool
 pub const fn zond_engine::config::OsDetection::is_enabled(self) -> bool
@@ -110,7 +110,7 @@ pub zond_engine::config::ScanEffort::Fast
 pub zond_engine::config::ScanEffort::Single
 pub zond_engine::config::ScanEffort::Thorough
 impl zond_engine::config::ScanEffort
-pub const zond_engine::config::ScanEffort::ALL: [zond_engine::config::ScanEffort; 4]
+pub const zond_engine::config::ScanEffort::ALL: &'static [Self]
 pub const fn zond_engine::config::ScanEffort::from_level(u8) -> core::option::Option<Self>
 pub const fn zond_engine::config::ScanEffort::level(self) -> u8
 pub const fn zond_engine::config::ScanEffort::name(self) -> &'static str
@@ -149,7 +149,7 @@ pub zond_engine::config::ServiceDetection::Off
 pub zond_engine::config::ServiceDetection::Probe
 pub zond_engine::config::ServiceDetection::Thorough
 impl zond_engine::config::ServiceDetection
-pub const zond_engine::config::ServiceDetection::ALL: [zond_engine::config::ServiceDetection; 4]
+pub const zond_engine::config::ServiceDetection::ALL: &'static [Self]
 pub const fn zond_engine::config::ServiceDetection::connects(self) -> bool
 pub const fn zond_engine::config::ServiceDetection::from_level(u8) -> core::option::Option<Self>
 pub const fn zond_engine::config::ServiceDetection::level(self) -> u8
@@ -566,7 +566,7 @@ pub zond_engine::detect::bundle::Tier::Compute
 pub zond_engine::detect::bundle::Tier::Flow
 pub zond_engine::detect::bundle::Tier::Host
 impl zond_engine::detect::bundle::Tier
-pub const zond_engine::detect::bundle::Tier::ALL: [zond_engine::detect::bundle::Tier; 3]
+pub const zond_engine::detect::bundle::Tier::ALL: &'static [Self]
 impl zond_engine::detect::bundle::Tier
 pub const fn zond_engine::detect::bundle::Tier::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::detect::bundle::Tier
@@ -1589,7 +1589,7 @@ pub zond_engine::detect::manifest::Class::Dos
 pub zond_engine::detect::manifest::Class::Exploit
 pub zond_engine::detect::manifest::Class::Passive
 impl zond_engine::detect::manifest::Class
-pub const zond_engine::detect::manifest::Class::ALL: [zond_engine::detect::manifest::Class; 6]
+pub const zond_engine::detect::manifest::Class::ALL: &'static [Self]
 impl zond_engine::detect::manifest::Class
 pub fn zond_engine::detect::manifest::Class::into_model(self) -> zond_engine::model::finding::DetectionClass
 impl zond_engine::detect::manifest::Class
@@ -1801,7 +1801,7 @@ pub zond_engine::diff::change::Coverage::Unreached
 pub zond_engine::diff::change::Coverage::Unstated
 pub zond_engine::diff::change::Coverage::Withheld
 impl zond_engine::diff::change::Coverage
-pub const zond_engine::diff::change::Coverage::ALL: [zond_engine::diff::change::Coverage; 5]
+pub const zond_engine::diff::change::Coverage::ALL: &'static [Self]
 pub fn zond_engine::diff::change::Coverage::is_covered(&self) -> bool
 pub fn zond_engine::diff::change::Coverage::is_excluded(&self) -> bool
 impl core::clone::Clone for zond_engine::diff::change::Coverage
@@ -2143,7 +2143,7 @@ pub zond_engine::diff::significance::Significance::Notable
 pub zond_engine::diff::significance::Significance::Routine
 pub zond_engine::diff::significance::Significance::Urgent
 impl zond_engine::diff::significance::Significance
-pub const zond_engine::diff::significance::Significance::ALL: [zond_engine::diff::significance::Significance; 3]
+pub const zond_engine::diff::significance::Significance::ALL: &'static [Self]
 pub const fn zond_engine::diff::significance::Significance::label(self) -> &'static str
 pub const fn zond_engine::diff::significance::Significance::of_severity(zond_engine::model::finding::Severity) -> Self
 impl core::clone::Clone for zond_engine::diff::significance::Significance
@@ -2201,7 +2201,7 @@ pub zond_engine::diff::Coverage::Unreached
 pub zond_engine::diff::Coverage::Unstated
 pub zond_engine::diff::Coverage::Withheld
 impl zond_engine::diff::change::Coverage
-pub const zond_engine::diff::change::Coverage::ALL: [zond_engine::diff::change::Coverage; 5]
+pub const zond_engine::diff::change::Coverage::ALL: &'static [Self]
 pub fn zond_engine::diff::change::Coverage::is_covered(&self) -> bool
 pub fn zond_engine::diff::change::Coverage::is_excluded(&self) -> bool
 impl core::clone::Clone for zond_engine::diff::change::Coverage
@@ -2396,7 +2396,7 @@ pub zond_engine::diff::Significance::Notable
 pub zond_engine::diff::Significance::Routine
 pub zond_engine::diff::Significance::Urgent
 impl zond_engine::diff::significance::Significance
-pub const zond_engine::diff::significance::Significance::ALL: [zond_engine::diff::significance::Significance; 3]
+pub const zond_engine::diff::significance::Significance::ALL: &'static [Self]
 pub const fn zond_engine::diff::significance::Significance::label(self) -> &'static str
 pub const fn zond_engine::diff::significance::Significance::of_severity(zond_engine::model::finding::Severity) -> Self
 impl core::clone::Clone for zond_engine::diff::significance::Significance
@@ -7863,7 +7863,7 @@ pub zond_engine::model::confidence::Confidence::Probable
 pub zond_engine::model::confidence::Confidence::Strong
 pub zond_engine::model::confidence::Confidence::Weak
 impl zond_engine::model::confidence::Confidence
-pub const zond_engine::model::confidence::Confidence::ALL: [zond_engine::model::confidence::Confidence; 5]
+pub const zond_engine::model::confidence::Confidence::ALL: &'static [Self]
 pub fn zond_engine::model::confidence::Confidence::as_score(self) -> u8
 impl core::clone::Clone for zond_engine::model::confidence::Confidence
 pub fn zond_engine::model::confidence::Confidence::clone(&self) -> zond_engine::model::confidence::Confidence
@@ -7925,7 +7925,7 @@ pub zond_engine::model::finding::DetectionClass::Dos
 pub zond_engine::model::finding::DetectionClass::Exploit
 pub zond_engine::model::finding::DetectionClass::Passive
 impl zond_engine::model::finding::DetectionClass
-pub const zond_engine::model::finding::DetectionClass::ALL: [zond_engine::model::finding::DetectionClass; 5]
+pub const zond_engine::model::finding::DetectionClass::ALL: &'static [Self]
 pub const fn zond_engine::model::finding::DetectionClass::label(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::finding::DetectionClass
 pub fn zond_engine::model::finding::DetectionClass::clone(&self) -> zond_engine::model::finding::DetectionClass
@@ -8011,7 +8011,7 @@ pub zond_engine::model::finding::Severity::Info
 pub zond_engine::model::finding::Severity::Low
 pub zond_engine::model::finding::Severity::Medium
 impl zond_engine::model::finding::Severity
-pub const zond_engine::model::finding::Severity::ALL: [zond_engine::model::finding::Severity; 5]
+pub const zond_engine::model::finding::Severity::ALL: &'static [Self]
 pub const fn zond_engine::model::finding::Severity::as_score(self) -> u8
 pub const fn zond_engine::model::finding::Severity::label(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::finding::Severity
@@ -8273,7 +8273,7 @@ pub zond_engine::model::host::name::NameKind::Host
 pub zond_engine::model::host::name::NameKind::NetbiosDomain
 pub zond_engine::model::host::name::NameKind::NetbiosHost
 impl zond_engine::model::host::name::NameKind
-pub const zond_engine::model::host::name::NameKind::ALL: [zond_engine::model::host::name::NameKind; 5]
+pub const zond_engine::model::host::name::NameKind::ALL: &'static [Self]
 pub const fn zond_engine::model::host::name::NameKind::label(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::host::name::NameKind
 pub fn zond_engine::model::host::name::NameKind::clone(&self) -> zond_engine::model::host::name::NameKind
@@ -8301,7 +8301,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::Na
 pub zond_engine::model::host::name::NameSource::Ldap
 pub zond_engine::model::host::name::NameSource::Ntlm
 impl zond_engine::model::host::name::NameSource
-pub const zond_engine::model::host::name::NameSource::ALL: [zond_engine::model::host::name::NameSource; 2]
+pub const zond_engine::model::host::name::NameSource::ALL: &'static [Self]
 pub const fn zond_engine::model::host::name::NameSource::label(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::host::name::NameSource
 pub fn zond_engine::model::host::name::NameSource::clone(&self) -> zond_engine::model::host::name::NameSource
@@ -8531,7 +8531,7 @@ pub zond_engine::model::host::protocol::IpProtocolState::Open
 pub zond_engine::model::host::protocol::IpProtocolState::OpenFiltered
 pub zond_engine::model::host::protocol::IpProtocolState::Unasked
 impl zond_engine::model::host::protocol::IpProtocolState
-pub const zond_engine::model::host::protocol::IpProtocolState::ALL: [zond_engine::model::host::protocol::IpProtocolState; 5]
+pub const zond_engine::model::host::protocol::IpProtocolState::ALL: &'static [Self]
 pub fn zond_engine::model::host::protocol::IpProtocolState::is_accepted(&self) -> bool
 pub fn zond_engine::model::host::protocol::IpProtocolState::is_established(&self) -> bool
 impl core::clone::Clone for zond_engine::model::host::protocol::IpProtocolState
@@ -8589,7 +8589,7 @@ pub zond_engine::model::host::status::HostStatus::Filtered
 pub zond_engine::model::host::status::HostStatus::Unknown
 pub zond_engine::model::host::status::HostStatus::Up
 impl zond_engine::model::host::status::HostStatus
-pub const zond_engine::model::host::status::HostStatus::ALL: [zond_engine::model::host::status::HostStatus; 4]
+pub const zond_engine::model::host::status::HostStatus::ALL: &'static [Self]
 impl zond_engine::model::host::status::HostStatus
 pub fn zond_engine::model::host::status::HostStatus::is_alive(&self) -> bool
 pub fn zond_engine::model::host::status::HostStatus::is_down(&self) -> bool
@@ -8632,7 +8632,7 @@ pub zond_engine::model::host::status::StatusProtocol::TcpConnect
 pub zond_engine::model::host::status::StatusProtocol::TcpSyn
 pub zond_engine::model::host::status::StatusProtocol::Udp
 impl zond_engine::model::host::status::StatusProtocol
-pub const zond_engine::model::host::status::StatusProtocol::ALL: &'static [zond_engine::model::host::status::StatusProtocol]
+pub const zond_engine::model::host::status::StatusProtocol::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::model::host::status::StatusProtocol
 pub fn zond_engine::model::host::status::StatusProtocol::clone(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::cmp::Eq for zond_engine::model::host::status::StatusProtocol
@@ -8791,7 +8791,7 @@ pub zond_engine::model::host::Filtering::PortTrustingAcl
 pub zond_engine::model::host::Filtering::StatefulFilter
 pub zond_engine::model::host::Filtering::StatelessFilter
 impl zond_engine::model::host::Filtering
-pub const zond_engine::model::host::Filtering::ALL: [zond_engine::model::host::Filtering; 4]
+pub const zond_engine::model::host::Filtering::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::model::host::Filtering
 pub fn zond_engine::model::host::Filtering::clone(&self) -> zond_engine::model::host::Filtering
 impl core::cmp::Eq for zond_engine::model::host::Filtering
@@ -8820,7 +8820,7 @@ pub zond_engine::model::host::HostStatus::Filtered
 pub zond_engine::model::host::HostStatus::Unknown
 pub zond_engine::model::host::HostStatus::Up
 impl zond_engine::model::host::status::HostStatus
-pub const zond_engine::model::host::status::HostStatus::ALL: [zond_engine::model::host::status::HostStatus; 4]
+pub const zond_engine::model::host::status::HostStatus::ALL: &'static [Self]
 impl zond_engine::model::host::status::HostStatus
 pub fn zond_engine::model::host::status::HostStatus::is_alive(&self) -> bool
 pub fn zond_engine::model::host::status::HostStatus::is_down(&self) -> bool
@@ -8856,7 +8856,7 @@ pub zond_engine::model::host::IpProtocolState::Open
 pub zond_engine::model::host::IpProtocolState::OpenFiltered
 pub zond_engine::model::host::IpProtocolState::Unasked
 impl zond_engine::model::host::protocol::IpProtocolState
-pub const zond_engine::model::host::protocol::IpProtocolState::ALL: [zond_engine::model::host::protocol::IpProtocolState; 5]
+pub const zond_engine::model::host::protocol::IpProtocolState::ALL: &'static [Self]
 pub fn zond_engine::model::host::protocol::IpProtocolState::is_accepted(&self) -> bool
 pub fn zond_engine::model::host::protocol::IpProtocolState::is_established(&self) -> bool
 impl core::clone::Clone for zond_engine::model::host::protocol::IpProtocolState
@@ -8888,7 +8888,7 @@ pub zond_engine::model::host::NameKind::Host
 pub zond_engine::model::host::NameKind::NetbiosDomain
 pub zond_engine::model::host::NameKind::NetbiosHost
 impl zond_engine::model::host::name::NameKind
-pub const zond_engine::model::host::name::NameKind::ALL: [zond_engine::model::host::name::NameKind; 5]
+pub const zond_engine::model::host::name::NameKind::ALL: &'static [Self]
 pub const fn zond_engine::model::host::name::NameKind::label(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::host::name::NameKind
 pub fn zond_engine::model::host::name::NameKind::clone(&self) -> zond_engine::model::host::name::NameKind
@@ -8916,7 +8916,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::Na
 pub zond_engine::model::host::NameSource::Ldap
 pub zond_engine::model::host::NameSource::Ntlm
 impl zond_engine::model::host::name::NameSource
-pub const zond_engine::model::host::name::NameSource::ALL: [zond_engine::model::host::name::NameSource; 2]
+pub const zond_engine::model::host::name::NameSource::ALL: &'static [Self]
 pub const fn zond_engine::model::host::name::NameSource::label(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::host::name::NameSource
 pub fn zond_engine::model::host::name::NameSource::clone(&self) -> zond_engine::model::host::name::NameSource
@@ -8952,7 +8952,7 @@ pub zond_engine::model::host::NetworkRole::Switch
 pub zond_engine::model::host::NetworkRole::Tarpit
 pub zond_engine::model::host::NetworkRole::Truncated
 impl zond_engine::model::host::NetworkRole
-pub const zond_engine::model::host::NetworkRole::ALL: [zond_engine::model::host::NetworkRole; 10]
+pub const zond_engine::model::host::NetworkRole::ALL: &'static [Self]
 pub const fn zond_engine::model::host::NetworkRole::label(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::host::NetworkRole
 pub fn zond_engine::model::host::NetworkRole::clone(&self) -> zond_engine::model::host::NetworkRole
@@ -9019,7 +9019,7 @@ pub zond_engine::model::host::StatusProtocol::TcpConnect
 pub zond_engine::model::host::StatusProtocol::TcpSyn
 pub zond_engine::model::host::StatusProtocol::Udp
 impl zond_engine::model::host::status::StatusProtocol
-pub const zond_engine::model::host::status::StatusProtocol::ALL: &'static [zond_engine::model::host::status::StatusProtocol]
+pub const zond_engine::model::host::status::StatusProtocol::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::model::host::status::StatusProtocol
 pub fn zond_engine::model::host::status::StatusProtocol::clone(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::cmp::Eq for zond_engine::model::host::status::StatusProtocol
@@ -10274,7 +10274,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::ip::IpP
 #[non_exhaustive] pub enum zond_engine::model::parse::ip::Keyword
 pub zond_engine::model::parse::ip::Keyword::Lan
 impl zond_engine::model::parse::ip::Keyword
-pub const zond_engine::model::parse::ip::Keyword::ALL: [zond_engine::model::parse::ip::Keyword; 1]
+pub const zond_engine::model::parse::ip::Keyword::ALL: &'static [Self]
 pub fn zond_engine::model::parse::ip::Keyword::as_str(self) -> &'static str
 pub fn zond_engine::model::parse::ip::Keyword::from_token(&str) -> core::option::Option<Self>
 impl core::clone::Clone for zond_engine::model::parse::ip::Keyword
@@ -10441,7 +10441,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::ip::IpP
 #[non_exhaustive] pub enum zond_engine::model::parse::Keyword
 pub zond_engine::model::parse::Keyword::Lan
 impl zond_engine::model::parse::ip::Keyword
-pub const zond_engine::model::parse::ip::Keyword::ALL: [zond_engine::model::parse::ip::Keyword; 1]
+pub const zond_engine::model::parse::ip::Keyword::ALL: &'static [Self]
 pub fn zond_engine::model::parse::ip::Keyword::as_str(self) -> &'static str
 pub fn zond_engine::model::parse::ip::Keyword::from_token(&str) -> core::option::Option<Self>
 impl core::clone::Clone for zond_engine::model::parse::ip::Keyword
@@ -10882,7 +10882,7 @@ pub zond_engine::model::port::PortState::OpenFiltered
 pub zond_engine::model::port::PortState::Unasked
 pub zond_engine::model::port::PortState::Unfiltered
 impl zond_engine::model::port::PortState
-pub const zond_engine::model::port::PortState::ALL: [zond_engine::model::port::PortState; 7]
+pub const zond_engine::model::port::PortState::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::model::port::PortState
 pub fn zond_engine::model::port::PortState::clone(&self) -> zond_engine::model::port::PortState
 impl core::cmp::Eq for zond_engine::model::port::PortState
@@ -10908,7 +10908,7 @@ pub zond_engine::model::port::Protocol::Sctp
 pub zond_engine::model::port::Protocol::Tcp
 pub zond_engine::model::port::Protocol::Udp
 impl zond_engine::model::port::Protocol
-pub const zond_engine::model::port::Protocol::ALL: [zond_engine::model::port::Protocol; 3]
+pub const zond_engine::model::port::Protocol::ALL: &'static [Self]
 pub const fn zond_engine::model::port::Protocol::spec_prefix(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::port::Protocol
 pub fn zond_engine::model::port::Protocol::clone(&self) -> zond_engine::model::port::Protocol
@@ -11365,7 +11365,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::Sct
 pub zond_engine::model::technique::SctpScanTechnique::CookieEcho
 pub zond_engine::model::technique::SctpScanTechnique::Init
 impl zond_engine::model::technique::SctpScanTechnique
-pub const zond_engine::model::technique::SctpScanTechnique::ALL: [Self; 2]
+pub const zond_engine::model::technique::SctpScanTechnique::ALL: &'static [Self]
 pub const fn zond_engine::model::technique::SctpScanTechnique::finds_open_ports(self) -> bool
 pub const fn zond_engine::model::technique::SctpScanTechnique::name(self) -> &'static str
 pub const fn zond_engine::model::technique::SctpScanTechnique::silence_label(self) -> &'static str
@@ -11431,7 +11431,7 @@ pub zond_engine::model::technique::TcpScanTechnique::Syn
 pub zond_engine::model::technique::TcpScanTechnique::Window
 pub zond_engine::model::technique::TcpScanTechnique::Xmas
 impl zond_engine::model::technique::TcpScanTechnique
-pub const zond_engine::model::technique::TcpScanTechnique::ALL: [Self; 7]
+pub const zond_engine::model::technique::TcpScanTechnique::ALL: &'static [Self]
 pub const fn zond_engine::model::technique::TcpScanTechnique::finds_open_ports(self) -> bool
 pub const fn zond_engine::model::technique::TcpScanTechnique::has_connect_fallback(self) -> bool
 pub const fn zond_engine::model::technique::TcpScanTechnique::name(self) -> &'static str
@@ -11586,7 +11586,7 @@ pub zond_engine::model::tls::Interruption::FileLimit
 pub zond_engine::model::tls::Interruption::Stopped
 pub zond_engine::model::tls::Interruption::Unanswered
 impl zond_engine::model::tls::Interruption
-pub const zond_engine::model::tls::Interruption::ALL: [Self; 3]
+pub const zond_engine::model::tls::Interruption::ALL: &'static [Self]
 pub const fn zond_engine::model::tls::Interruption::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::tls::Interruption
 pub fn zond_engine::model::tls::Interruption::clone(&self) -> zond_engine::model::tls::Interruption
@@ -11683,7 +11683,7 @@ pub zond_engine::model::tls::SuiteFault::Rc4
 pub zond_engine::model::tls::SuiteFault::Sha1Mac
 pub zond_engine::model::tls::SuiteFault::SmallBlock
 impl zond_engine::model::tls::SuiteFault
-pub const zond_engine::model::tls::SuiteFault::ALL: [Self; 9]
+pub const zond_engine::model::tls::SuiteFault::ALL: &'static [Self]
 pub const fn zond_engine::model::tls::SuiteFault::is_disqualifying(self) -> bool
 pub const fn zond_engine::model::tls::SuiteFault::name(self) -> &'static str
 pub const fn zond_engine::model::tls::SuiteFault::severity(self) -> zond_engine::model::finding::Severity
@@ -11717,7 +11717,7 @@ pub zond_engine::model::tls::SuiteStrength::Insecure
 pub zond_engine::model::tls::SuiteStrength::Strong
 pub zond_engine::model::tls::SuiteStrength::Weak
 impl zond_engine::model::tls::SuiteStrength
-pub const zond_engine::model::tls::SuiteStrength::ALL: [Self; 3]
+pub const zond_engine::model::tls::SuiteStrength::ALL: &'static [Self]
 pub const fn zond_engine::model::tls::SuiteStrength::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::tls::SuiteStrength
 pub fn zond_engine::model::tls::SuiteStrength::clone(&self) -> zond_engine::model::tls::SuiteStrength
@@ -11750,7 +11750,7 @@ pub zond_engine::model::tls::TlsVersion::Tls11
 pub zond_engine::model::tls::TlsVersion::Tls12
 pub zond_engine::model::tls::TlsVersion::Tls13
 impl zond_engine::model::tls::TlsVersion
-pub const zond_engine::model::tls::TlsVersion::ALL: [Self; 5]
+pub const zond_engine::model::tls::TlsVersion::ALL: &'static [Self]
 pub const fn zond_engine::model::tls::TlsVersion::code(self) -> u16
 pub const fn zond_engine::model::tls::TlsVersion::deprecated_by(self) -> core::option::Option<&'static str>
 pub const fn zond_engine::model::tls::TlsVersion::from_code(u16) -> core::option::Option<Self>
@@ -11786,7 +11786,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::TlsVer
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::TlsVersion
 pub struct zond_engine::model::tls::CipherSuite
 impl zond_engine::model::tls::CipherSuite
-pub const zond_engine::model::tls::CipherSuite::ALL: [Self; 85]
+pub const zond_engine::model::tls::CipherSuite::ALL: &'static [Self]
 pub const zond_engine::model::tls::CipherSuite::MOST_OFFERED_UNDER_ONE_VERSION: usize
 pub fn zond_engine::model::tls::CipherSuite::offered_under(zond_engine::model::tls::TlsVersion) -> impl core::iter::traits::iterator::Iterator<Item = Self>
 impl zond_engine::model::tls::CipherSuite
@@ -14257,7 +14257,7 @@ pub mod zond_engine::report
 pub zond_engine::report::AttachmentSource::Cdp
 pub zond_engine::report::AttachmentSource::Lldp
 impl zond_engine::report::AttachmentSource
-pub const zond_engine::report::AttachmentSource::ALL: [zond_engine::report::AttachmentSource; 2]
+pub const zond_engine::report::AttachmentSource::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::report::AttachmentSource
 pub fn zond_engine::report::AttachmentSource::clone(&self) -> zond_engine::report::AttachmentSource
 impl core::cmp::Eq for zond_engine::report::AttachmentSource
@@ -14285,7 +14285,7 @@ pub zond_engine::report::LivenessSkip::AssumeUp
 pub zond_engine::report::LivenessSkip::IdleScan
 pub zond_engine::report::LivenessSkip::PortsNoDearer
 impl zond_engine::report::LivenessSkip
-pub const zond_engine::report::LivenessSkip::ALL: [zond_engine::report::LivenessSkip; 3]
+pub const zond_engine::report::LivenessSkip::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::report::LivenessSkip
 pub fn zond_engine::report::LivenessSkip::clone(&self) -> zond_engine::report::LivenessSkip
 impl core::cmp::Eq for zond_engine::report::LivenessSkip
@@ -14313,7 +14313,7 @@ pub zond_engine::report::Pass::Services
 pub zond_engine::report::Pass::Tls
 pub zond_engine::report::Pass::Traceroute
 impl zond_engine::report::Pass
-pub const zond_engine::report::Pass::ALL: [zond_engine::report::Pass; 7]
+pub const zond_engine::report::Pass::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::report::Pass
 pub fn zond_engine::report::Pass::clone(&self) -> zond_engine::report::Pass
 impl core::cmp::Eq for zond_engine::report::Pass
@@ -14368,7 +14368,7 @@ pub zond_engine::report::ScanKind::Discovery
 pub zond_engine::report::ScanKind::Listen
 pub zond_engine::report::ScanKind::PortScan
 impl zond_engine::report::ScanKind
-pub const zond_engine::report::ScanKind::ALL: [zond_engine::report::ScanKind; 3]
+pub const zond_engine::report::ScanKind::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::report::ScanKind
 pub fn zond_engine::report::ScanKind::clone(&self) -> zond_engine::report::ScanKind
 impl core::cmp::Eq for zond_engine::report::ScanKind
@@ -14414,7 +14414,7 @@ pub zond_engine::report::ScannerKind::SynPort
 pub zond_engine::report::ScannerKind::TcpPort
 pub zond_engine::report::ScannerKind::UdpPort
 impl zond_engine::report::ScannerKind
-pub const zond_engine::report::ScannerKind::ALL: [zond_engine::report::ScannerKind; 19]
+pub const zond_engine::report::ScannerKind::ALL: &'static [Self]
 pub const fn zond_engine::report::ScannerKind::for_raw_tcp(zond_engine::model::technique::TcpScanTechnique) -> Self
 impl core::clone::Clone for zond_engine::report::ScannerKind
 pub fn zond_engine::report::ScannerKind::clone(&self) -> zond_engine::report::ScannerKind
@@ -14440,7 +14440,7 @@ pub zond_engine::report::StopReason::DeadlineExpired
 pub zond_engine::report::StopReason::StreamClosed
 pub zond_engine::report::StopReason::TimedOut
 impl zond_engine::report::StopReason
-pub const zond_engine::report::StopReason::ALL: [zond_engine::report::StopReason; 6]
+pub const zond_engine::report::StopReason::ALL: &'static [Self]
 pub fn zond_engine::report::StopReason::is_complete(&self) -> bool
 impl core::clone::Clone for zond_engine::report::StopReason
 pub fn zond_engine::report::StopReason::clone(&self) -> zond_engine::report::StopReason
@@ -15738,7 +15738,7 @@ pub zond_engine::scanner::session::Stage::Services
 pub zond_engine::scanner::session::Stage::Tls
 pub zond_engine::scanner::session::Stage::Traceroute
 impl zond_engine::scanner::session::Stage
-pub const zond_engine::scanner::session::Stage::ALL: [zond_engine::scanner::session::Stage; 11]
+pub const zond_engine::scanner::session::Stage::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::scanner::session::Stage
 pub fn zond_engine::scanner::session::Stage::clone(&self) -> zond_engine::scanner::session::Stage
 impl core::cmp::Eq for zond_engine::scanner::session::Stage
@@ -17986,7 +17986,7 @@ pub zond_engine::transport::probe::SendMode::Auto
 pub zond_engine::transport::probe::SendMode::Ethernet
 pub zond_engine::transport::probe::SendMode::RawSocket
 impl zond_engine::transport::probe::SendMode
-pub const zond_engine::transport::probe::SendMode::ALL: [zond_engine::transport::probe::SendMode; 3]
+pub const zond_engine::transport::probe::SendMode::ALL: &'static [Self]
 pub const fn zond_engine::transport::probe::SendMode::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::transport::probe::SendMode
 pub fn zond_engine::transport::probe::SendMode::clone(&self) -> zond_engine::transport::probe::SendMode
@@ -18215,7 +18215,7 @@ pub zond_engine::HostStatus::Filtered
 pub zond_engine::HostStatus::Unknown
 pub zond_engine::HostStatus::Up
 impl zond_engine::model::host::status::HostStatus
-pub const zond_engine::model::host::status::HostStatus::ALL: [zond_engine::model::host::status::HostStatus; 4]
+pub const zond_engine::model::host::status::HostStatus::ALL: &'static [Self]
 impl zond_engine::model::host::status::HostStatus
 pub fn zond_engine::model::host::status::HostStatus::is_alive(&self) -> bool
 pub fn zond_engine::model::host::status::HostStatus::is_down(&self) -> bool
@@ -18253,7 +18253,7 @@ pub zond_engine::PortState::OpenFiltered
 pub zond_engine::PortState::Unasked
 pub zond_engine::PortState::Unfiltered
 impl zond_engine::model::port::PortState
-pub const zond_engine::model::port::PortState::ALL: [zond_engine::model::port::PortState; 7]
+pub const zond_engine::model::port::PortState::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::model::port::PortState
 pub fn zond_engine::model::port::PortState::clone(&self) -> zond_engine::model::port::PortState
 impl core::cmp::Eq for zond_engine::model::port::PortState
@@ -18279,7 +18279,7 @@ pub zond_engine::Protocol::Sctp
 pub zond_engine::Protocol::Tcp
 pub zond_engine::Protocol::Udp
 impl zond_engine::model::port::Protocol
-pub const zond_engine::model::port::Protocol::ALL: [zond_engine::model::port::Protocol; 3]
+pub const zond_engine::model::port::Protocol::ALL: &'static [Self]
 pub const fn zond_engine::model::port::Protocol::spec_prefix(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::port::Protocol
 pub fn zond_engine::model::port::Protocol::clone(&self) -> zond_engine::model::port::Protocol
@@ -18309,7 +18309,7 @@ pub zond_engine::ScanEffort::Fast
 pub zond_engine::ScanEffort::Single
 pub zond_engine::ScanEffort::Thorough
 impl zond_engine::config::ScanEffort
-pub const zond_engine::config::ScanEffort::ALL: [zond_engine::config::ScanEffort; 4]
+pub const zond_engine::config::ScanEffort::ALL: &'static [Self]
 pub const fn zond_engine::config::ScanEffort::from_level(u8) -> core::option::Option<Self>
 pub const fn zond_engine::config::ScanEffort::level(self) -> u8
 pub const fn zond_engine::config::ScanEffort::name(self) -> &'static str
@@ -18399,7 +18399,7 @@ pub zond_engine::SendMode::Auto
 pub zond_engine::SendMode::Ethernet
 pub zond_engine::SendMode::RawSocket
 impl zond_engine::transport::probe::SendMode
-pub const zond_engine::transport::probe::SendMode::ALL: [zond_engine::transport::probe::SendMode; 3]
+pub const zond_engine::transport::probe::SendMode::ALL: &'static [Self]
 pub const fn zond_engine::transport::probe::SendMode::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::transport::probe::SendMode
 pub fn zond_engine::transport::probe::SendMode::clone(&self) -> zond_engine::transport::probe::SendMode
@@ -18437,7 +18437,7 @@ pub zond_engine::Stage::Services
 pub zond_engine::Stage::Tls
 pub zond_engine::Stage::Traceroute
 impl zond_engine::scanner::session::Stage
-pub const zond_engine::scanner::session::Stage::ALL: [zond_engine::scanner::session::Stage; 11]
+pub const zond_engine::scanner::session::Stage::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::scanner::session::Stage
 pub fn zond_engine::scanner::session::Stage::clone(&self) -> zond_engine::scanner::session::Stage
 impl core::cmp::Eq for zond_engine::scanner::session::Stage
@@ -18501,7 +18501,7 @@ pub zond_engine::TcpScanTechnique::Syn
 pub zond_engine::TcpScanTechnique::Window
 pub zond_engine::TcpScanTechnique::Xmas
 impl zond_engine::model::technique::TcpScanTechnique
-pub const zond_engine::model::technique::TcpScanTechnique::ALL: [Self; 7]
+pub const zond_engine::model::technique::TcpScanTechnique::ALL: &'static [Self]
 pub const fn zond_engine::model::technique::TcpScanTechnique::finds_open_ports(self) -> bool
 pub const fn zond_engine::model::technique::TcpScanTechnique::has_connect_fallback(self) -> bool
 pub const fn zond_engine::model::technique::TcpScanTechnique::name(self) -> &'static str

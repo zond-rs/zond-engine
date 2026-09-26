@@ -122,7 +122,7 @@ impl ScanKind {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [ScanKind; 3] = [Self::Discovery, Self::PortScan, Self::Listen];
+    pub const ALL: &'static [Self] = &[Self::Discovery, Self::PortScan, Self::Listen];
 }
 
 impl fmt::Display for ScanKind {
@@ -169,7 +169,7 @@ impl LivenessSkip {
     /// Here for the reason [`ScanKind::ALL`] is: the enum is
     /// `#[non_exhaustive]`, and the export conformance suite reads this list
     /// against the published schema's own.
-    pub const ALL: [LivenessSkip; 3] = [Self::AssumeUp, Self::IdleScan, Self::PortsNoDearer];
+    pub const ALL: &'static [Self] = &[Self::AssumeUp, Self::IdleScan, Self::PortsNoDearer];
 }
 
 /// A pass a scan runs over what its probes found, named for what a stop can
@@ -212,7 +212,7 @@ impl Pass {
     /// Here for the reason [`ScanKind::ALL`] is: the enum is
     /// `#[non_exhaustive]`, and the export conformance suite reads this list
     /// against the published schema's own.
-    pub const ALL: [Pass; 7] = [
+    pub const ALL: &'static [Self] = &[
         Self::Services,
         Self::Detections,
         Self::Tls,
@@ -1082,7 +1082,7 @@ impl StopReason {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [StopReason; 6] = [
+    pub const ALL: &'static [Self] = &[
         Self::Aborted,
         Self::AllResponded,
         Self::AttemptsSpent,
@@ -1684,7 +1684,7 @@ impl AttachmentSource {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [AttachmentSource; 2] = [Self::Lldp, Self::Cdp];
+    pub const ALL: &'static [Self] = &[Self::Lldp, Self::Cdp];
 }
 
 impl Attachment {
@@ -3402,7 +3402,7 @@ impl ScannerKind {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [ScannerKind; 19] = [
+    pub const ALL: &'static [Self] = &[
         Self::Local,
         Self::Passive,
         Self::Routed,

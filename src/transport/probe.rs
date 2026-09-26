@@ -94,7 +94,7 @@ pub enum SendMode {
 }
 impl SendMode {
     /// Every mode, in the order a front end should offer them.
-    pub const ALL: [SendMode; 3] = [SendMode::Auto, SendMode::RawSocket, SendMode::Ethernet];
+    pub const ALL: &'static [Self] = &[SendMode::Auto, SendMode::RawSocket, SendMode::Ethernet];
 
     /// The name this mode is written under, wherever it arrives as text.
     pub const fn name(self) -> &'static str {
@@ -159,7 +159,8 @@ impl FromStr for SendMode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let name = s.trim().to_ascii_lowercase();
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|mode| mode.name() == name)
             .ok_or_else(|| UnknownSendMode {
                 input: s.to_string(),

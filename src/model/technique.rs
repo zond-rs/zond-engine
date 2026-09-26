@@ -186,7 +186,7 @@ impl SctpScanTechnique {
     /// Here for the reason [`TcpScanTechnique::ALL`] is: a front end offering
     /// the choice enumerates it from the engine rather than from a list of its
     /// own that drifts the first time one is added.
-    pub const ALL: [Self; 2] = [Self::Init, Self::CookieEcho];
+    pub const ALL: &'static [Self] = &[Self::Init, Self::CookieEcho];
 
     /// The canonical name, which is also what [`FromStr`] accepts and
     /// [`fmt::Display`] renders.
@@ -300,7 +300,8 @@ impl FromStr for SctpScanTechnique {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let name = s.trim().to_ascii_lowercase();
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|technique| technique.name() == name)
             .ok_or_else(|| UnknownSctpTechnique {
                 input: s.to_string(),
@@ -401,7 +402,7 @@ impl TcpScanTechnique {
     /// Exists so a front end offering the choice enumerates it from the engine
     /// rather than from a list of its own that drifts the first time one is
     /// added.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: &'static [Self] = &[
         Self::Syn,
         Self::Fin,
         Self::Null,
@@ -610,7 +611,8 @@ impl FromStr for TcpScanTechnique {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let name = s.trim().to_ascii_lowercase();
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|technique| technique.name() == name)
             .ok_or_else(|| UnknownTechnique {
                 input: s.to_string(),
@@ -635,7 +637,7 @@ mod tests {
     /// asks by and the one a report answers with can never drift apart.
     #[test]
     fn every_technique_parses_back_from_the_name_it_prints() {
-        for technique in TcpScanTechnique::ALL {
+        for &technique in TcpScanTechnique::ALL {
             assert_eq!(technique.to_string().parse(), Ok(technique));
         }
     }
@@ -656,7 +658,7 @@ mod tests {
             .to_string();
 
         assert!(error.contains("stealth"));
-        for technique in TcpScanTechnique::ALL {
+        for &technique in TcpScanTechnique::ALL {
             assert!(
                 error.contains(technique.name()),
                 "{technique} is missing: {error}"
@@ -704,7 +706,7 @@ mod tests {
     /// reset windows with one about connections.
     #[test]
     fn only_a_syn_scan_falls_back_to_connect() {
-        for technique in TcpScanTechnique::ALL {
+        for &technique in TcpScanTechnique::ALL {
             assert_eq!(
                 technique.has_connect_fallback(),
                 technique == TcpScanTechnique::Syn,
@@ -719,7 +721,7 @@ mod tests {
     /// answered something else and must not be read as an open port.
     #[test]
     fn only_a_syn_scan_reads_a_syn_ack() {
-        for technique in TcpScanTechnique::ALL {
+        for &technique in TcpScanTechnique::ALL {
             let verdict = technique.verdict(TcpReply::SynAck);
             assert_eq!(
                 verdict.is_some(),
@@ -748,7 +750,7 @@ mod tests {
     /// admitting ICMP costs every ICMP packet on the host.
     #[test]
     fn only_a_syn_scan_declines_icmp_errors() {
-        for technique in TcpScanTechnique::ALL {
+        for &technique in TcpScanTechnique::ALL {
             assert_eq!(
                 technique.reads_icmp_errors(),
                 technique != TcpScanTechnique::Syn
@@ -762,7 +764,7 @@ mod tests {
     /// file and a name in a report cannot drift apart.
     #[test]
     fn every_sctp_technique_parses_back_from_the_name_it_prints() {
-        for technique in SctpScanTechnique::ALL {
+        for &technique in SctpScanTechnique::ALL {
             assert_eq!(technique.to_string().parse(), Ok(technique));
         }
     }
@@ -771,7 +773,7 @@ mod tests {
     fn an_unknown_sctp_name_is_rejected_with_the_ones_that_would_work() {
         let error = "cookie".parse::<SctpScanTechnique>().expect_err("refused");
         let message = error.to_string();
-        for technique in SctpScanTechnique::ALL {
+        for &technique in SctpScanTechnique::ALL {
             assert!(
                 message.contains(technique.name()),
                 "the error should name {}",

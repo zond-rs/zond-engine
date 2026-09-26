@@ -253,7 +253,8 @@ impl PortSet {
     /// Note: This counts every individual port within every range.
     pub fn len(&self) -> usize {
         Protocol::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .map(|protocol| self.len_on(protocol))
             .sum()
     }
@@ -261,7 +262,8 @@ impl PortSet {
     /// Returns `true` if no ports are defined on any protocol.
     pub fn is_empty(&self) -> bool {
         Protocol::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .all(|protocol| self.ranges(protocol).is_empty())
     }
 
@@ -270,7 +272,7 @@ impl PortSet {
     /// Walks the protocols in [`Protocol::ALL`] order, so a set renders and
     /// enumerates the same way whatever order it was written in.
     pub fn iter(&self) -> impl Iterator<Item = (u16, Protocol)> + '_ {
-        Protocol::ALL.into_iter().flat_map(move |protocol| {
+        Protocol::ALL.iter().copied().flat_map(move |protocol| {
             self.ranges(protocol)
                 .iter()
                 .flat_map(move |range| range.clone().map(move |port| (port, protocol)))
@@ -323,7 +325,7 @@ impl PortSet {
     /// two entries and not a hundred and thirty thousand.
     pub fn union(&self, other: &PortSet) -> PortSet {
         let mut merged = PortSet::new();
-        for protocol in Protocol::ALL {
+        for &protocol in Protocol::ALL {
             let lane = merged.lane_mut(protocol);
             lane.extend(self.ranges(protocol).iter().cloned());
             lane.extend(other.ranges(protocol).iter().cloned());
@@ -347,7 +349,7 @@ impl PortSet {
     /// ```
     pub fn difference(&self, other: &PortSet) -> PortSet {
         let mut kept = PortSet::new();
-        for protocol in Protocol::ALL {
+        for &protocol in Protocol::ALL {
             let cuts = other.ranges(protocol);
             let lane = kept.lane_mut(protocol);
             for range in self.ranges(protocol) {
@@ -479,7 +481,7 @@ impl Default for PortSet {
 impl fmt::Display for PortSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
-        for protocol in Protocol::ALL {
+        for &protocol in Protocol::ALL {
             for range in self.ranges(protocol) {
                 if !first {
                     f.write_str(",")?;
@@ -505,7 +507,7 @@ impl fmt::Display for PortSet {
 /// names TCP outright, which a specification needs once it has switched to
 /// another transport and wants to switch back.
 fn split_qualifier(word: &str) -> (Option<Protocol>, &str) {
-    for protocol in Protocol::ALL {
+    for &protocol in Protocol::ALL {
         let qualifier = protocol.qualifier();
         if let Some(head) = word.get(..qualifier.len())
             && head.eq_ignore_ascii_case(qualifier)
@@ -651,7 +653,7 @@ impl TryFrom<&str> for PortSet {
             }
         }
 
-        for protocol in Protocol::ALL {
+        for &protocol in Protocol::ALL {
             Self::merge_ranges(set.lane_mut(protocol));
         }
 
@@ -691,7 +693,7 @@ impl FromIterator<(u16, Protocol)> for PortSet {
         for (port, protocol) in iter {
             set.lane_mut(protocol).push(port..=port);
         }
-        for protocol in Protocol::ALL {
+        for &protocol in Protocol::ALL {
             Self::merge_ranges(set.lane_mut(protocol));
         }
         set

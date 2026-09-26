@@ -686,11 +686,13 @@ pub(super) fn build_port_scanner(
     // cover has already been refused above, in the same words, and must not be
     // refused a second time by the coverage check below.
     let intended: Vec<Protocol> = Protocol::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|protocol| plan.covers(*protocol) && named.contains(protocol))
         .collect();
     let mut refused: Vec<(Protocol, Reach)> = Protocol::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|protocol| plan.refuses(*protocol))
         .map(|protocol| (protocol, Reach::Any))
         .collect();
@@ -2372,7 +2374,8 @@ pub(super) async fn run_port_phase(
     let beyond = caps.beyond_frames(&probed, &cfg.send_source, interface::FrameSender::Probe);
     let raw = RawReach::of(&probed, beyond.targets.clone());
     let named: Vec<Protocol> = Protocol::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|protocol| target_map.names(*protocol))
         .collect();
     let built = build_port_scanner(

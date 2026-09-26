@@ -74,7 +74,7 @@ impl TlsVersion {
     ///
     /// An enumeration walks this in order, so the report's version list is in
     /// the same order for every endpoint and two scans diff cleanly.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: &'static [Self] = &[
         Self::Ssl30,
         Self::Tls10,
         Self::Tls11,
@@ -201,7 +201,8 @@ impl FromStr for TlsVersion {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let name = s.trim().to_ascii_lowercase();
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|version| version.name().to_ascii_lowercase() == name)
             .ok_or_else(|| UnknownTlsVersion {
                 input: s.to_string(),
@@ -402,7 +403,7 @@ pub enum SuiteFault {
 
 impl SuiteFault {
     /// Every fault this build recognises, least costly first.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: &'static [Self] = &[
         Self::NoForwardSecrecy,
         Self::Sha1Mac,
         Self::CbcMode,
@@ -519,7 +520,7 @@ pub enum SuiteStrength {
 
 impl SuiteStrength {
     /// Every grade, strongest first.
-    pub const ALL: [Self; 3] = [Self::Strong, Self::Weak, Self::Insecure];
+    pub const ALL: &'static [Self] = &[Self::Strong, Self::Weak, Self::Insecure];
 
     /// The name this grade is written under wherever it reaches text.
     pub const fn name(self) -> &'static str {
@@ -625,7 +626,8 @@ impl CipherSuite {
     /// with nothing against it.
     pub fn faults(self) -> Vec<SuiteFault> {
         SuiteFault::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|fault| self.has_fault(*fault))
             .collect()
     }
@@ -634,7 +636,8 @@ impl CipherSuite {
     /// nothing against it.
     pub fn worst_fault(self) -> Option<SuiteFault> {
         SuiteFault::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .rev()
             .find(|fault| self.has_fault(*fault))
     }
@@ -682,7 +685,7 @@ impl CipherSuite {
     /// something it was never offered, which an enumeration treats as the end of
     /// that version rather than as a suite.
     pub fn from_code(code: u16) -> Option<Self> {
-        Self::ALL.into_iter().find(|suite| suite.code == code)
+        Self::ALL.iter().copied().find(|suite| suite.code == code)
     }
 }
 
@@ -732,7 +735,7 @@ impl CipherSuite {
     /// they go into a ClientHello: a server with its own preference ignores the
     /// order, and one that takes the client's should be handed the best suite it
     /// can accept rather than the worst.
-    pub const ALL: [Self; 85] = [
+    pub const ALL: &'static [Self] = &[
         // ── TLS 1.3 (RFC 8446 §B.4) ──────────────────────────────────────────
         // Named for their AEAD and hash alone: key exchange and authentication
         // moved into extensions, so they are properties of the connection rather
@@ -1411,7 +1414,8 @@ impl CipherSuite {
     /// Every suite that may be offered under `version`, in registry order.
     pub fn offered_under(version: TlsVersion) -> impl Iterator<Item = Self> {
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(move |suite| suite.is_offered_under(version))
     }
 
@@ -1539,7 +1543,7 @@ pub enum Interruption {
 
 impl Interruption {
     /// Every cause, in the order the enum declares them.
-    pub const ALL: [Self; 3] = [Self::Unanswered, Self::Stopped, Self::FileLimit];
+    pub const ALL: &'static [Self] = &[Self::Unanswered, Self::Stopped, Self::FileLimit];
 
     /// The name this cause is written under wherever it reaches text.
     pub const fn name(self) -> &'static str {
@@ -1553,7 +1557,7 @@ impl Interruption {
     /// [`name`](Self::name) read back, or `None` for a name this build does
     /// not know.
     pub(crate) fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|cause| cause.name() == name)
+        Self::ALL.iter().copied().find(|cause| cause.name() == name)
     }
 }
 
@@ -1826,7 +1830,8 @@ impl TlsSupport {
     /// negotiates RC4" rather than on the nine suite names that establish it.
     pub fn faults(&self) -> Vec<SuiteFault> {
         SuiteFault::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|fault| {
                 self.versions
                     .iter()
@@ -1884,7 +1889,7 @@ fn detection_id() -> DetectionId {
         // and derived grade. The grade is included so that a change to the fault
         // rules moves the hash even when no suite did.
         let mut census = String::with_capacity(CipherSuite::ALL.len() * 64);
-        for suite in CipherSuite::ALL {
+        for &suite in CipherSuite::ALL {
             use std::fmt::Write;
             let _ = write!(
                 census,
@@ -2146,7 +2151,7 @@ mod tests {
     #[test]
     fn every_suite_has_a_number_of_its_own() {
         let mut seen = BTreeSet::new();
-        for suite in CipherSuite::ALL {
+        for &suite in CipherSuite::ALL {
             assert!(
                 seen.insert(suite.code()),
                 "0x{:04X} is registered twice, the second as {}",
@@ -2160,7 +2165,7 @@ mod tests {
     #[test]
     fn every_suite_has_a_name_of_its_own() {
         let mut seen = BTreeSet::new();
-        for suite in CipherSuite::ALL {
+        for &suite in CipherSuite::ALL {
             assert!(seen.insert(suite.name()), "{} is registered twice", suite);
         }
     }
@@ -2178,7 +2183,7 @@ mod tests {
     /// numbers are grouped by their defining document above so that a reader can.
     #[test]
     fn every_suite_describes_what_its_name_says() {
-        for suite in CipherSuite::ALL {
+        for &suite in CipherSuite::ALL {
             let name = suite.name();
 
             // TLS 1.3 names its AEAD and hash and nothing else, RFC 8446 §B.4.
@@ -2290,7 +2295,8 @@ mod tests {
     fn a_suite_is_graded_by_the_worst_thing_about_it() {
         let named = |name: &str| {
             CipherSuite::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .find(|suite| suite.name() == name)
                 .unwrap_or_else(|| panic!("{name} is in the registry"))
         };
@@ -2378,7 +2384,7 @@ mod tests {
     /// so a report read back names the version it recorded.
     #[test]
     fn every_version_round_trips_through_its_number_and_its_name() {
-        for version in TlsVersion::ALL {
+        for &version in TlsVersion::ALL {
             assert_eq!(TlsVersion::from_code(version.code()), Some(version));
             assert_eq!(version.to_string().parse(), Ok(version));
         }
@@ -2390,7 +2396,7 @@ mod tests {
     /// each names the document that did it.
     #[test]
     fn the_deprecated_versions_are_the_ones_a_standard_withdrew() {
-        for version in TlsVersion::ALL {
+        for &version in TlsVersion::ALL {
             assert_eq!(
                 version.is_deprecated(),
                 version.deprecated_by().is_some(),
@@ -2407,7 +2413,7 @@ mod tests {
     /// Every suite is reachable by the number a server would select it with.
     #[test]
     fn every_suite_is_found_by_its_number() {
-        for suite in CipherSuite::ALL {
+        for &suite in CipherSuite::ALL {
             assert_eq!(CipherSuite::from_code(suite.code()), Some(suite));
         }
         assert_eq!(CipherSuite::from_code(0xFFFF), None);
@@ -2418,7 +2424,7 @@ mod tests {
     /// later cannot land outside the rule.
     #[test]
     fn the_grade_follows_from_the_worst_fault_for_every_suite() {
-        for suite in CipherSuite::ALL {
+        for &suite in CipherSuite::ALL {
             let expected = match suite.worst_fault() {
                 None => SuiteStrength::Strong,
                 Some(fault) if fault.is_disqualifying() => SuiteStrength::Insecure,
@@ -2501,7 +2507,7 @@ mod tests {
     /// a walk did not finish in the words it was written with.
     #[test]
     fn every_interruption_round_trips_through_its_name() {
-        for cause in Interruption::ALL {
+        for &cause in Interruption::ALL {
             assert_eq!(Interruption::from_name(cause.name()), Some(cause));
         }
         assert_eq!(Interruption::from_name("abandoned"), None);
@@ -2672,7 +2678,8 @@ mod tests {
     #[test]
     fn one_fault_across_many_suites_is_one_finding() {
         let rc4: Vec<CipherSuite> = CipherSuite::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|suite| suite.has_fault(SuiteFault::Rc4) && !suite.is_export())
             .collect();
         assert!(rc4.len() > 3, "the registry carries several RC4 suites");
@@ -2705,7 +2712,8 @@ mod tests {
     #[test]
     fn a_suite_accepted_under_several_versions_is_listed_once() {
         let rc4 = CipherSuite::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|suite| suite.has_fault(SuiteFault::Rc4) && !suite.is_export())
             .expect("the registry carries an RC4 suite");
 
@@ -2739,7 +2747,7 @@ mod tests {
     /// network first, which is not what this crate calls critical.
     #[test]
     fn no_tls_fault_is_reported_as_critical() {
-        for fault in SuiteFault::ALL {
+        for &fault in SuiteFault::ALL {
             assert!(
                 fault.severity() < Severity::Critical,
                 "{fault} reached critical"
@@ -2791,7 +2799,8 @@ mod tests {
         let mut support = TlsSupport::new();
         for version in [TlsVersion::Ssl30, TlsVersion::Tls10, TlsVersion::Tls11] {
             let carriers: Vec<CipherSuite> = SuiteFault::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .filter_map(|fault| {
                     CipherSuite::offered_under(version).find(|suite| suite.has_fault(fault))
                 })

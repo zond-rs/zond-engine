@@ -77,7 +77,7 @@ impl HostStatus {
     /// gives: the enum is `#[non_exhaustive]`, so a status added without a name
     /// on the wire or a place in the exported schema would be a finding that
     /// survives a scan and cannot be written down.
-    pub const ALL: [HostStatus; 4] = [Self::Unknown, Self::Down, Self::Filtered, Self::Up];
+    pub const ALL: &'static [Self] = &[Self::Unknown, Self::Down, Self::Filtered, Self::Up];
 }
 
 /// Known protocols or events that provide evidence of host reachability.
@@ -183,12 +183,7 @@ impl StatusProtocol {
     /// promise to a third party that both report readers then refuse, and it is
     /// how `sctp` sat in `$defs/protocol` for a release. This was the one closed
     /// enum in the document the suite could not see.
-    ///
-    /// A slice where every other `ALL` in the module is a fixed-size array. The
-    /// difference is `Custom`: a variant holding an `Arc<str>` makes this enum
-    /// the one vocabulary that is not `Copy`, and an array would be moved out of
-    /// by the first `for` loop to read it.
-    pub const ALL: &'static [StatusProtocol] = &[
+    pub const ALL: &'static [Self] = &[
         Self::Arp,
         Self::Ndp,
         Self::IcmpEcho,

@@ -103,7 +103,14 @@ impl Protocol {
     /// schema, is a port that survives a scan and cannot be written down. The
     /// export conformance suite reads this and the schema's own list and fails
     /// unless they hold the same names.
-    pub const ALL: [Protocol; 3] = [Self::Tcp, Self::Udp, Self::Sctp];
+    ///
+    /// Every `ALL` in this crate is a slice, never a fixed-size array. An
+    /// array's length is part of its type, so a caller that wrote down
+    /// `[Protocol; 3]` would stop compiling at the next variant, which is the
+    /// break `#[non_exhaustive]` exists to prevent. The list is every variant
+    /// this build knows, not a promise about the next one: iterate it, never
+    /// match against it as though it were complete.
+    pub const ALL: &'static [Self] = &[Self::Tcp, Self::Udp, Self::Sctp];
 
     /// What a written port specification puts in front of this protocol's
     /// ports: nothing for TCP, `u:` for UDP, `s:` for SCTP.
@@ -232,7 +239,7 @@ impl PortState {
     /// states in whatever order it holds, so any order but the declaration's is
     /// one the type says is wrong. `model`'s own test holds every `ALL` to its
     /// enum's declaration order.
-    pub const ALL: [PortState; 7] = [
+    pub const ALL: &'static [Self] = &[
         Self::Unasked,
         Self::ClosedFiltered,
         Self::Filtered,
@@ -590,7 +597,7 @@ mod tests {
     /// about it and cannot invent anything either.
     #[test]
     fn an_unasked_port_loses_to_every_verdict() {
-        for verdict in PortState::ALL {
+        for &verdict in PortState::ALL {
             if verdict == PortState::Unasked {
                 continue;
             }
