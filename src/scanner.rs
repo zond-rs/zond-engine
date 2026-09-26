@@ -604,7 +604,14 @@ pub async fn discover(
     cfg.evasion.validate()?;
     enough_descriptors()?;
 
-    let planned = planned_addresses(&Positions::of(&targets));
+    // Numbered in what the exclusions leave, as a journal numbers a sweep,
+    // and counted: the settlements are what the progress figures read, so a
+    // sweep numbering nothing reports none of its work however far it gets.
+    let mut numbered = targets.clone();
+    cfg.exclusions.withhold(&mut numbered);
+    numbered.canonicalize();
+    let positions = numbered.positions();
+    let planned = planned_addresses(&positions);
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
@@ -614,6 +621,7 @@ pub async fn discover(
         .host_probe_interval(cfg.host_probe_interval)
         .send_source(cfg.send_source.clone())
         .listening_only_to(cfg.listen_only_ports.clone())
+        .counting(positions)
         .planning(Stage::Discovery, planned)
         .staging(discovery_stages(cfg))
         .build();
@@ -771,6 +779,12 @@ fn discovery_stages(cfg: &ZondConfig) -> Vec<Stage> {
     if cfg.traceroute {
         stages.push(Stage::Traceroute);
     }
+    if cfg.characterise {
+        stages.push(Stage::Filters);
+    }
+    if !cfg.ip_protocols.is_empty() {
+        stages.push(Stage::IpProtocols);
+    }
 
     stages
 }
@@ -816,6 +830,12 @@ fn scan_stages(cfg: &ZondConfig, runs_liveness: bool) -> Vec<Stage> {
     }
     if cfg.traceroute {
         stages.push(Stage::Traceroute);
+    }
+    if cfg.characterise {
+        stages.push(Stage::Filters);
+    }
+    if !cfg.ip_protocols.is_empty() {
+        stages.push(Stage::IpProtocols);
     }
 
     stages
@@ -1118,9 +1138,9 @@ fn spawn_discovery(
         // A sweep knows no ports, so every trace here is made of echoes. A port
         // scan traces better, having somewhere to aim.
         orchestrator::run_traceroute(&ctx, &cfg, caps).await;
-        ctx.enter_stage(Stage::Finishing, None);
         orchestrator::run_characterise(&ctx, &cfg, caps).await;
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
+        ctx.enter_stage(Stage::Finishing, None);
         // Last, and after every strategy that could add an address: what this
         // machine's own interfaces and routes say about what was found.
         vantage::attribute(&ctx);
@@ -1881,9 +1901,9 @@ fn spawn_scan(
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
         // Last: the ports are what decide a trace's shape.
         orchestrator::run_traceroute(&ctx, &cfg, caps).await;
-        ctx.enter_stage(Stage::Finishing, None);
         orchestrator::run_characterise(&ctx, &cfg, caps).await;
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
+        ctx.enter_stage(Stage::Finishing, None);
         vantage::attribute(&ctx);
         orchestrator::run_correlation(&ctx, cfg.service_detection);
         orchestrator::run_cert_posture(&ctx);
@@ -2064,6 +2084,25 @@ mod tests {
             .filter(|refusal| refusal.reason().contains("too large to walk"))
             .collect();
         assert_eq!(refused.len(), 1, "{:?}", report.phases());
+    }
+
+    /// A sweep counts what it settles, so its progress reads its work. Left
+    /// uncounted, a plain sweep reported nothing settled and no fraction for
+    /// the whole of its run, however far it got.
+    #[tokio::test]
+    async fn a_sweep_counts_the_addresses_it_settles() {
+        let cfg = ZondConfig {
+            no_dns: true,
+            ..ZondConfig::default()
+        };
+        let (session, task) = discover("127.0.0.1".parse().expect("an address"), &cfg)
+            .await
+            .expect("the sweep starts");
+        let _report = task.await.expect("the sweep ran");
+
+        let progress = session.progress();
+        assert_eq!(progress.planned(), Some(1));
+        assert_eq!(progress.settled(), 1, "the one address answered");
     }
 
     /// **Dropping the task stops the scan.** Nothing can read the report of a

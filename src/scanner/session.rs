@@ -127,6 +127,10 @@ pub enum Stage {
     Os,
     /// Tracing the path to each host.
     Traceroute,
+    /// Characterising the filter in front of each host that answered.
+    Filters,
+    /// Asking each host that answered which IP protocols its stack takes.
+    IpProtocols,
     /// Reading a link, which ends when the caller says so rather than when the
     /// work runs out.
     Listening,
@@ -143,7 +147,7 @@ impl Stage {
     /// of its own has no other way to check that it covered them all. A variant
     /// added without a place in that protocol is a value this engine reports and
     /// no consumer can name.
-    pub const ALL: [Stage; 9] = [
+    pub const ALL: [Stage; 11] = [
         Self::Discovery,
         Self::Ports,
         Self::Services,
@@ -151,6 +155,8 @@ impl Stage {
         Self::Tls,
         Self::Os,
         Self::Traceroute,
+        Self::Filters,
+        Self::IpProtocols,
         Self::Listening,
         Self::Finishing,
     ];
@@ -165,8 +171,10 @@ impl Stage {
             Stage::Tls => 4,
             Stage::Os => 5,
             Stage::Traceroute => 6,
-            Stage::Listening => 7,
-            Stage::Finishing => 8,
+            Stage::Filters => 7,
+            Stage::IpProtocols => 8,
+            Stage::Listening => 9,
+            Stage::Finishing => 10,
         }
     }
 
@@ -180,8 +188,10 @@ impl Stage {
             4 => Stage::Tls,
             5 => Stage::Os,
             6 => Stage::Traceroute,
-            7 => Stage::Listening,
-            8 => Stage::Finishing,
+            7 => Stage::Filters,
+            8 => Stage::IpProtocols,
+            9 => Stage::Listening,
+            10 => Stage::Finishing,
             _ => Stage::Discovery,
         }
     }
@@ -197,6 +207,8 @@ impl std::fmt::Display for Stage {
             Stage::Tls => "tls",
             Stage::Os => "os",
             Stage::Traceroute => "traceroute",
+            Stage::Filters => "filters",
+            Stage::IpProtocols => "ip protocols",
             Stage::Listening => "listening",
             Stage::Finishing => "finishing",
         };
@@ -221,6 +233,17 @@ pub(crate) struct Stages {
     planned: Vec<Stage>,
     /// How many of those are behind it, which only ever grows.
     reached: AtomicUsize,
+    /// The furthest [`overall`](Self::overall) has reported, as the position
+    /// and total it reported it in.
+    ///
+    /// Held because what a stage turns out to hold is not always known when
+    /// it begins. Service detection learns the size of its second protocol's
+    /// run only when that run starts, and a reading taken against the smaller
+    /// total overstated how far through the stage the scan was; the next,
+    /// against the larger, would step back. What a caller was shown stands
+    /// until the work catches up with it. Behind a lock rather than beside the
+    /// atomics, since only the readers touch it, eight times a second.
+    shown: Mutex<(u64, u64)>,
 }
 
 impl Stages {
@@ -244,11 +267,18 @@ impl Stages {
 
         // Past the last stage the scan expected: whatever it is doing now, the
         // work it was counting is behind it.
-        let Some((done, total)) = within.filter(|_| self.planned.contains(&self.stage())) else {
-            return Some((reached.min(stages), stages));
+        let reading = match within.filter(|_| self.planned.contains(&self.stage())) {
+            Some((done, total)) => (reached * total + done.min(total), stages * total),
+            None => (reached.min(stages), stages),
         };
 
-        Some((reached * total + done.min(total), stages * total))
+        let mut shown = self.shown.lock().unwrap_or_else(|held| held.into_inner());
+        let behind = u128::from(reading.0) * u128::from(shown.1)
+            < u128::from(shown.0) * u128::from(reading.1);
+        if shown.1 == 0 || !behind {
+            *shown = reading;
+        }
+        Some(*shown)
     }
 
     /// Moves to `stage`, answering whether that was a change worth announcing.
@@ -637,6 +667,14 @@ impl Progress {
     /// that it is running rather than reporting nought percent of the wrong
     /// thing.
     ///
+    /// The plan's figure counts the work of probing, so a target settled
+    /// without a probe counts on neither side: one whose host the liveness
+    /// pass found silent, one the exclusions withhold, one no route leads to,
+    /// and one on a host the pass reached no verdict on, which is left for a
+    /// later sitting. Those settle as fast as the walk passes them, and
+    /// counted as work done a range with five live hosts behind a thousand
+    /// ports reads nearly finished within a second of starting.
+    ///
     /// An empty stage is complete, and one that somehow finishes more units than
     /// it counted reports 1.0 rather than overshooting.
     pub fn fraction(&self) -> Option<f64> {
@@ -651,7 +689,11 @@ impl Progress {
     /// One figure for a whole run rather than one per stage, so a bar drawn from
     /// it fills once instead of refilling at every stage boundary. It only moves
     /// forward: a stage that was expected and turned out to have nothing to do
-    /// is stepped over, which is why the figure can jump.
+    /// is stepped over, which is why the figure can jump, and a stage that
+    /// turns out to hold more than it said when it began, as service detection
+    /// does when its second protocol's run starts, holds the figure where it
+    /// was until the work catches up. It reads whole only once the last stage
+    /// expected is behind the scan.
     ///
     /// The expected stages are a superset. Whether services, detections and TLS
     /// have anything to do depends on what the ports turn out to be, and none of
@@ -674,7 +716,18 @@ impl Progress {
     pub fn counted(&self) -> Option<(u64, u64)> {
         match self.stage_total() {
             Some(total) => Some((self.stage_done(), total)),
-            None if self.stage() == self.plan_stage => Some((self.settled(), self.planned?)),
+            None if self.stage() == self.plan_stage => {
+                let planned = self.planned?;
+                let settlements = &self.settlements;
+                let unprobed = settlements.count(Outcome::Skipped { position: 0 })
+                    + settlements.count(Outcome::Withheld { position: 0 })
+                    + settlements.count(Outcome::Unreachable { position: 0 });
+                let undecided = settlements.count(Outcome::Undecided);
+                Some((
+                    self.settled().saturating_sub(unprobed),
+                    planned.saturating_sub(unprobed + undecided),
+                ))
+            }
             None => None,
         }
     }
@@ -3273,6 +3326,89 @@ mod tests {
         assert_eq!(done * 2, total, "half the run: {done}/{total}");
     }
 
+    /// **Across a whole scan the figure only grows, and is whole only at the
+    /// end.** Walked through the stages a port scan runs, in its order: a
+    /// liveness pass, a port phase whose plan is mostly hosts the pass found
+    /// silent, service detection run once for TCP and again for UDP, the
+    /// detections, and the passes that probe after the trace. Each is a way
+    /// a figure went wrong: the silent hosts' targets read as work done, the
+    /// second service run stepped it back, and the last two probed under a
+    /// figure already at its end.
+    #[test]
+    fn a_scans_figure_only_grows_and_is_whole_only_at_its_end() {
+        let (session, ctx) = ScanSession::builder()
+            .planning(Stage::Ports, Some(1_000))
+            .staging(vec![
+                Stage::Discovery,
+                Stage::Ports,
+                Stage::Services,
+                Stage::Detections,
+                Stage::Os,
+                Stage::Traceroute,
+                Stage::Filters,
+                Stage::IpProtocols,
+            ])
+            .build();
+        let progress = session.progress().clone();
+        let mut readings: Vec<(&str, (u64, u64))> = Vec::new();
+        let mut read = |what| readings.push((what, progress.overall().expect("staged")));
+
+        ctx.enter_stage(Stage::Discovery, None);
+        read("liveness");
+        ctx.enter_stage(Stage::Ports, None);
+        for position in 10..1_000 {
+            ctx.record_outcome(Outcome::Skipped { position });
+        }
+        read("silent hosts passed over");
+        let passed_over = progress.fraction().expect("the plan's own stage");
+        for position in 0..10 {
+            ctx.record_outcome(Outcome::Answered { position });
+        }
+        read("ports probed");
+        ctx.enter_stage(Stage::Services, Some(4));
+        for _ in 0..4 {
+            ctx.stage_advanced();
+        }
+        read("tcp services");
+        ctx.enter_stage(Stage::Services, Some(4));
+        read("udp services begun");
+        for _ in 0..4 {
+            ctx.stage_advanced();
+        }
+        read("udp services");
+        for stage in [
+            Stage::Detections,
+            Stage::Os,
+            Stage::Traceroute,
+            Stage::Filters,
+            Stage::IpProtocols,
+        ] {
+            ctx.enter_stage(stage, None);
+            read("a later pass");
+        }
+        ctx.enter_stage(Stage::Finishing, None);
+        read("finishing");
+
+        let share = |(done, total): (u64, u64)| done as f64 / total as f64;
+        assert_eq!(
+            passed_over, 0.0,
+            "silent hosts passed over read as ports probed"
+        );
+        for pair in readings.windows(2) {
+            assert!(
+                share(pair[1].1) >= share(pair[0].1),
+                "the figure stepped back from {:?} to {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        let (last, others) = readings.split_last().expect("readings");
+        assert_eq!(share(last.1), 1.0, "a finished scan reads whole");
+        for (what, reading) in others {
+            assert!(share(*reading) < 1.0, "{what} read whole: {reading:?}");
+        }
+    }
+
     /// A stage that turned out to have nothing to do is stepped over.
     ///
     /// Whether services, detections and TLS have any work depends on which ports
@@ -3497,7 +3633,7 @@ mod tests {
         );
 
         ctx.record_outcome(Outcome::Answered { position: 0 });
-        ctx.record_outcome(Outcome::Skipped { position: 1 });
+        ctx.record_outcome(Outcome::Exhausted { position: 1 });
 
         let progress = session.progress();
         assert_eq!(progress.settled(), 2);

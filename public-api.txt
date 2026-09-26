@@ -15263,7 +15263,9 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::Sca
 #[non_exhaustive] pub enum zond_engine::scanner::session::Stage
 pub zond_engine::scanner::session::Stage::Detections
 pub zond_engine::scanner::session::Stage::Discovery
+pub zond_engine::scanner::session::Stage::Filters
 pub zond_engine::scanner::session::Stage::Finishing
+pub zond_engine::scanner::session::Stage::IpProtocols
 pub zond_engine::scanner::session::Stage::Listening
 pub zond_engine::scanner::session::Stage::Os
 pub zond_engine::scanner::session::Stage::Ports
@@ -15271,7 +15273,7 @@ pub zond_engine::scanner::session::Stage::Services
 pub zond_engine::scanner::session::Stage::Tls
 pub zond_engine::scanner::session::Stage::Traceroute
 impl zond_engine::scanner::session::Stage
-pub const zond_engine::scanner::session::Stage::ALL: [zond_engine::scanner::session::Stage; 9]
+pub const zond_engine::scanner::session::Stage::ALL: [zond_engine::scanner::session::Stage; 11]
 impl core::clone::Clone for zond_engine::scanner::session::Stage
 pub fn zond_engine::scanner::session::Stage::clone(&self) -> zond_engine::scanner::session::Stage
 impl core::cmp::Eq for zond_engine::scanner::session::Stage
@@ -16671,6 +16673,8 @@ impl core::future::into_future::IntoFuture for zond_engine::scanner::ScanTask
 pub type zond_engine::scanner::ScanTask::IntoFuture = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = <zond_engine::scanner::ScanTask as core::future::into_future::IntoFuture>::Output> + core::marker::Send)>>
 pub type zond_engine::scanner::ScanTask::Output = core::result::Result<zond_engine::report::ScanReport, zond_engine::scanner::ScanError>
 pub fn zond_engine::scanner::ScanTask::into_future(self) -> Self::IntoFuture
+impl core::ops::drop::Drop for zond_engine::scanner::ScanTask
+pub fn zond_engine::scanner::ScanTask::drop(&mut self)
 impl core::marker::Freeze for zond_engine::scanner::ScanTask
 impl core::marker::Send for zond_engine::scanner::ScanTask
 impl core::marker::Sync for zond_engine::scanner::ScanTask
@@ -17936,7 +17940,9 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::Sen
 #[non_exhaustive] pub enum zond_engine::Stage
 pub zond_engine::Stage::Detections
 pub zond_engine::Stage::Discovery
+pub zond_engine::Stage::Filters
 pub zond_engine::Stage::Finishing
+pub zond_engine::Stage::IpProtocols
 pub zond_engine::Stage::Listening
 pub zond_engine::Stage::Os
 pub zond_engine::Stage::Ports
@@ -17944,7 +17950,7 @@ pub zond_engine::Stage::Services
 pub zond_engine::Stage::Tls
 pub zond_engine::Stage::Traceroute
 impl zond_engine::scanner::session::Stage
-pub const zond_engine::scanner::session::Stage::ALL: [zond_engine::scanner::session::Stage; 9]
+pub const zond_engine::scanner::session::Stage::ALL: [zond_engine::scanner::session::Stage; 11]
 impl core::clone::Clone for zond_engine::scanner::session::Stage
 pub fn zond_engine::scanner::session::Stage::clone(&self) -> zond_engine::scanner::session::Stage
 impl core::cmp::Eq for zond_engine::scanner::session::Stage
@@ -18604,6 +18610,8 @@ impl core::future::into_future::IntoFuture for zond_engine::scanner::ScanTask
 pub type zond_engine::scanner::ScanTask::IntoFuture = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = <zond_engine::scanner::ScanTask as core::future::into_future::IntoFuture>::Output> + core::marker::Send)>>
 pub type zond_engine::scanner::ScanTask::Output = core::result::Result<zond_engine::report::ScanReport, zond_engine::scanner::ScanError>
 pub fn zond_engine::scanner::ScanTask::into_future(self) -> Self::IntoFuture
+impl core::ops::drop::Drop for zond_engine::scanner::ScanTask
+pub fn zond_engine::scanner::ScanTask::drop(&mut self)
 impl core::marker::Freeze for zond_engine::scanner::ScanTask
 impl core::marker::Send for zond_engine::scanner::ScanTask
 impl core::marker::Sync for zond_engine::scanner::ScanTask

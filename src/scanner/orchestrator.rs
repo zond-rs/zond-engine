@@ -1708,6 +1708,7 @@ pub(super) async fn run_characterise(
         return;
     }
 
+    ctx.enter_stage(Stage::Filters, None);
     strategy::topology::characterise::characterise(ctx, subjects).await;
 }
 
@@ -1738,6 +1739,11 @@ pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::Zon
         }
     }
 
+    if targets.is_empty() {
+        return;
+    }
+
+    ctx.enter_stage(Stage::IpProtocols, None);
     strategy::protocols::probe(ctx, &targets, &cfg.ip_protocols).await;
 }
 
