@@ -483,6 +483,45 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// A pass over a host that changed nothing costs the journal no record.
+    ///
+    /// Every write-back pass, correlation, posture, the passive OS reading,
+    /// edits hosts through the store and marks each one changed whether or
+    /// not the edit moved anything. Written regardless, each such pass over a
+    /// host is a record of it in the findings file, and a wide scan's file
+    /// grows with passes that learned nothing.
+    #[test]
+    fn a_pass_that_changed_nothing_writes_no_record() {
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let root = scratch("unchanged");
+        let journal =
+            Journal::create(&root, &one_target(), Privilege::Raw, "test").expect("creates");
+        let findings = journal.directory().join("hosts.jsonl");
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let progress = ctx.progress();
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+
+        ctx.update_host(ip, |host| {
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        });
+        let mut writer = Writer::new(journal);
+        writer.checkpoint(&progress);
+        let written = std::fs::metadata(&findings).expect("written").len();
+
+        // A pass that looked the host over and found nothing to add.
+        ctx.write_host(ip, |_| false);
+        writer.checkpoint(&progress);
+
+        assert_eq!(
+            std::fs::metadata(&findings).expect("written").len(),
+            written,
+            "the findings file grew for a pass that changed nothing"
+        );
+        drop(writer);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// Detection tapes a checkpoint could not write are written by the next
     /// one that can.
     ///

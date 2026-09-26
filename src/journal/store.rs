@@ -388,21 +388,27 @@ impl Journal {
     /// checkpoint for the rest of the run. Each record carries the host's own
     /// fields and only the ports that changed since the file last held them;
     /// see the module documentation for why that reads back as the whole host.
+    /// A host may carry only some of its ports, and those it leaves out stand
+    /// as the file holds them. A host the file already holds as it is gets no
+    /// record.
     ///
     /// What was written is remembered only once the write has succeeded, so a
     /// failed one leaves every port it carried to be written again.
     pub fn record_hosts(&mut self, hosts: &[Host]) -> Result<(), JournalError> {
-        if hosts.is_empty() {
+        let mut records = Vec::with_capacity(hosts.len());
+        for host in hosts {
+            records.extend(self.written.delta(host)?);
+        }
+        if records.is_empty() {
             return Ok(());
         }
 
         let path = self.directory.join(HOSTS);
         let file = open_for_append(&path)?;
 
-        let mut deltas = Vec::with_capacity(hosts.len());
+        let mut deltas = Vec::with_capacity(records.len());
         let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
-        for host in hosts {
-            let (record, delta) = self.written.delta(host)?;
+        for (record, delta) in records {
             writer.write(&record)?;
             deltas.push(delta);
         }
@@ -600,9 +606,10 @@ impl Journal {
             for host in all {
                 // Measured against nothing written, so the record is the whole
                 // host and what it remembers is all of it.
-                let (record, delta) = Written::default().delta(host)?;
-                writer.write(&record)?;
-                written.update(delta);
+                if let Some((record, delta)) = Written::default().delta(host)? {
+                    writer.write(&record)?;
+                    written.update(delta);
+                }
             }
             writer.flush()?;
         }
@@ -855,8 +862,8 @@ struct Written {
 /// What the findings file holds of one host.
 #[derive(Debug, Default)]
 struct HeldHost {
-    /// How long its last record was, less its ports.
-    rest: u64,
+    /// Its last record, less its ports.
+    rest: Option<Mark>,
     ports: std::collections::HashMap<PortKey, Mark>,
 }
 
@@ -874,14 +881,14 @@ struct Mark {
 #[derive(Debug)]
 struct Delta {
     key: ScopedIp,
-    rest: u64,
+    rest: Mark,
     ports: Vec<(PortKey, Mark)>,
 }
 
 impl Delta {
     /// How many bytes the record holds, near enough.
     fn length(&self) -> u64 {
-        self.rest
+        u64::from(self.rest.length)
             + self
                 .ports
                 .iter()
@@ -897,23 +904,32 @@ impl Written {
         let mut written = Self::default();
         let mut live = 0;
         for host in hosts {
-            let (_, delta) = Self::default().delta(host)?;
-            live += delta.length();
-            written.update(delta);
+            // A file that holds nothing of a host holds all of it as new.
+            if let Some((_, delta)) = Self::default().delta(host)? {
+                live += delta.length();
+                written.update(delta);
+            }
         }
         written.superseded = length.saturating_sub(live);
         Ok(written)
     }
 
     /// `host` as a record carrying only the ports whose record differs from
-    /// what was last written of them, and what writing it would hold.
-    fn delta(&self, host: &Host) -> Result<(HostRecord, Delta), JournalError> {
+    /// what was last written of them, and what writing it would hold; `None`
+    /// where the file already holds all of it.
+    ///
+    /// Compared rather than trusted to have changed: a host is marked changed
+    /// by whatever edited it, and an edit that confirmed what was on record,
+    /// a finding reached again or a service named as it was, changes nothing a
+    /// record would carry. Written anyway, every such pass over a host would
+    /// cost a record of it.
+    fn delta(&self, host: &Host) -> Result<Option<(HostRecord, Delta)>, JournalError> {
         let held = self.hosts.get(&host.scoped_ip());
         let mut record = HostRecord::from(host);
         // `HostRecord` lists the ports in the order the host yields them, so
         // the two walk together.
         let ports = std::mem::take(&mut record.ports);
-        let rest = u64::from(mark(&record)?.length);
+        let rest = mark(&record)?;
         let mut changed = Vec::new();
         for (port, written) in host.ports().zip(ports) {
             debug_assert_eq!(
@@ -931,12 +947,17 @@ impl Written {
                 record.ports.push(written);
             }
         }
+        let unchanged = changed.is_empty()
+            && held.and_then(|held| held.rest).map(|was| was.digest) == Some(rest.digest);
+        if unchanged {
+            return Ok(None);
+        }
         let delta = Delta {
             key: host.scoped_ip(),
             rest,
             ports: changed,
         };
-        Ok((record, delta))
+        Ok(Some((record, delta)))
     }
 
     /// Records that the file holds what `delta` wrote, over whatever it held
@@ -945,12 +966,12 @@ impl Written {
         let held = match self.hosts.entry(delta.key) {
             std::collections::hash_map::Entry::Occupied(slot) => {
                 let held = slot.into_mut();
-                self.superseded += held.rest;
+                self.superseded += held.rest.map_or(0, |was| u64::from(was.length));
                 held
             }
             std::collections::hash_map::Entry::Vacant(slot) => slot.insert(HeldHost::default()),
         };
-        held.rest = delta.rest;
+        held.rest = Some(delta.rest);
         for (key, mark) in delta.ports {
             if let Some(was) = held.ports.insert(key, mark) {
                 self.superseded += u64::from(was.length);
@@ -3762,20 +3783,28 @@ mod tests {
         host.add_port(Port::new(22, Protocol::Tcp, PortState::Closed));
         let mut written = Written::default();
 
-        let (_, first) = written.delta(&host).expect("measures");
-        let (rest, port) = (first.rest, u64::from(first.ports[0].1.length));
+        let (_, first) = written.delta(&host).expect("measures").expect("new");
+        let (rest, port) = (
+            u64::from(first.rest.length),
+            u64::from(first.ports[0].1.length),
+        );
         written.update(first);
         assert_eq!(written.superseded, 0, "a first record supersedes nothing");
 
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
-        let (_, second) = written.delta(&host).expect("measures");
+        let (_, second) = written.delta(&host).expect("measures").expect("a new port");
         assert_eq!(second.ports.len(), 1, "only the new port is written");
         written.update(second);
         assert_eq!(written.superseded, rest, "the host's own fields, again");
 
         host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
-        let (_, third) = written.delta(&host).expect("measures");
-        let rest_again = written.hosts[&host.scoped_ip()].rest;
+        let (_, third) = written
+            .delta(&host)
+            .expect("measures")
+            .expect("a moved port");
+        let rest_again = written.hosts[&host.scoped_ip()]
+            .rest
+            .map_or(0, |mark| u64::from(mark.length));
         written.update(third);
         assert_eq!(
             written.superseded,
