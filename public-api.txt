@@ -5859,7 +5859,7 @@ pub fn zond_engine::fingerprint::rule_id(&str, &str) -> alloc::string::String
 pub fn zond_engine::fingerprint::tls_security(&zond_engine::fingerprint::TlsInfo) -> zond_engine::model::port::security::Security
 pub mod zond_engine::format
 pub mod zond_engine::format::csv
-pub const zond_engine::format::csv::COLUMNS: [&str; 25]
+pub const zond_engine::format::csv::COLUMNS: &[&str]
 pub const zond_engine::format::csv::FORMULA_LEADERS: [char; 6]
 pub const zond_engine::format::csv::PORT_COLUMNS: usize
 pub mod zond_engine::format::time

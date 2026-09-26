@@ -24,6 +24,11 @@
 //! no ports still gets a row with the port columns empty, since a discovery
 //! sweep would otherwise export an empty file.
 //!
+//! The names a host gave for itself are one cell, the last, each written
+//! `source kind: name` as a comparison writes it and masked wherever the
+//! hostname is. Last because a column is only ever added at the end; see
+//! [`COLUMNS`].
+//!
 //! ## Formula injection
 //!
 //! A scanner writes attacker-controlled text, such as hostnames, service banners
@@ -55,8 +60,8 @@
 use std::io::Write;
 
 use crate::export::schema::{
-    host_status_name, network_role_name, port_state_name, protocol_name, reference_text,
-    scan_response_name, severity_name,
+    host_status_name, name_kind_name, name_source_name, network_role_name, port_state_name,
+    protocol_name, reference_text, scan_response_name, severity_name,
 };
 use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::format::csv::{COLUMNS, FORMULA_LEADERS, PORT_COLUMNS};
@@ -133,6 +138,7 @@ impl Exporter for CsvExporter {
                 for _ in 0..PORT_COLUMNS {
                     row.push("");
                 }
+                host_columns.write_after_port(&mut row);
                 row.finish(out)?;
                 continue;
             }
@@ -141,6 +147,7 @@ impl Exporter for CsvExporter {
                 let mut row = Row::new();
                 host_columns.write(&mut row);
                 write_port(&mut row, port, &self.options);
+                host_columns.write_after_port(&mut row);
                 row.finish(out)?;
             }
         }
@@ -167,6 +174,7 @@ struct HostColumns {
     rtt_median_us: String,
     first_seen: String,
     last_seen: String,
+    names: String,
 }
 
 impl HostColumns {
@@ -210,6 +218,20 @@ impl HostColumns {
                 .unwrap_or_default(),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
+            // Joined by `; ` rather than the space the other lists take: a
+            // name may hold a space, and `push` quotes a cell holding a `;`.
+            names: host
+                .names()
+                .map(|name| {
+                    format!(
+                        "{} {}: {}",
+                        name_source_name(name.source()),
+                        name_kind_name(name.kind()),
+                        redaction.hostname(name.name())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
         }
     }
 
@@ -227,6 +249,11 @@ impl HostColumns {
         row.push(&self.rtt_median_us);
         row.push(&self.first_seen);
         row.push(&self.last_seen);
+    }
+
+    /// The host columns after the port's; see [`COLUMNS`].
+    fn write_after_port(&self, row: &mut Row) {
+        row.push(&self.names);
     }
 }
 
@@ -533,6 +560,36 @@ mod tests {
         assert_eq!(column(&rows[3], "cert_common_name"), "roXXXXXal");
         // The vendor comes from the OUI, which masking preserves.
         assert_eq!(column(&rows[1], "mac_vendor"), "Raspberry Pi Trading Ltd");
+    }
+
+    /// The names a host gave for itself are one cell, each spelled as a
+    /// comparison spells it, and masked where the hostname is. The cell comes
+    /// last, after the port's columns, so a tool that reads the others by
+    /// position reads a file with it as it read one without.
+    #[test]
+    fn a_host_s_names_are_its_last_cell_and_masked_where_the_hostname_is() {
+        let names = "ldap host: gw01.corp.example; ldap domain: corp.example; \
+                     ldap forest: corp.example";
+
+        let plain = rows(&CsvExporter::new(ExportOptions::new()));
+        assert_eq!(COLUMNS.last(), Some(&"names"));
+        assert_eq!(COLUMNS[COLUMNS.len() - 2], "findings");
+        assert_eq!(column(&plain[1], "names"), names);
+        assert_eq!(
+            column(&plain[3], "names"),
+            names,
+            "on each of the host's rows"
+        );
+        assert_eq!(column(plain.last().expect("a bare host"), "names"), "");
+
+        let masked = rows(&CsvExporter::new(
+            ExportOptions::new().with_redaction(Redaction::Standard),
+        ));
+        let cell = column(&masked[1], "names");
+        assert!(
+            cell.starts_with("ldap host: ") && !cell.contains("corp"),
+            "{cell}"
+        );
     }
 
     /// A device name is attacker-controlled text, and a spreadsheet executes a
