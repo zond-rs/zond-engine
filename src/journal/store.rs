@@ -1348,8 +1348,10 @@ struct FinishedRecord {
 
 /// Reads back what a journal's earlier sittings found.
 ///
-/// Records are folded together with [`Host::merge`], so a host written once when
-/// it answered and again when its ports were classified comes back whole.
+/// Records are folded together, each as a later account of the host than the
+/// ones before it, so a host written once when it answered and again when its
+/// ports were classified comes back whole, with the round trips its last
+/// record held; see [`Host::merge_later_account`].
 ///
 /// Two records are the same host when they share any address rather than when
 /// their primary addresses match. Local discovery promotes a host's primary
@@ -1404,10 +1406,10 @@ fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
                 // same machine, so they fold into one another as well.
                 for &other in absorb {
                     if let Some(other) = hosts[other].take() {
-                        merge_into(&mut hosts, keep, other);
+                        merge_into(&mut hosts, keep, other, Host::merge);
                     }
                 }
-                merge_into(&mut hosts, keep, host);
+                merge_into(&mut hosts, keep, host, Host::merge_later_account);
                 keep
             }
             None => {
@@ -1436,10 +1438,16 @@ fn scoped_ips(host: &Host) -> impl Iterator<Item = ScopedIp> + '_ {
     })
 }
 
-/// Folds `host` into the one at `slot`, or puts it there if the slot is empty.
-fn merge_into(hosts: &mut [Option<Host>], slot: usize, host: Host) {
+/// Folds `host` into the one at `slot` by `fold`, or puts it there if the
+/// slot is empty.
+///
+/// A record folds in as a later account of what the slot holds, since the
+/// file is appended in the order its records were written; see
+/// [`Host::merge_later_account`]. Two slots a record shows to be one machine
+/// fold as any two accounts of a host do.
+fn merge_into(hosts: &mut [Option<Host>], slot: usize, host: Host, fold: fn(&mut Host, Host)) {
     match hosts[slot].as_mut() {
-        Some(existing) => existing.merge(host),
+        Some(existing) => fold(existing, host),
         None => hosts[slot] = Some(host),
     }
 }
@@ -3551,6 +3559,44 @@ mod tests {
 
         journal.close().expect("closes");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A host recorded more than once reads back with the round trips its
+    /// last record holds, not with every record's added together.
+    ///
+    /// Each record carries the host's whole window of round trips as it stood
+    /// then, so a later one repeats what an earlier one held. Folded in as
+    /// new samples, the repeats count the early round trips twice: a resumed
+    /// job's report moved its average while its fastest and slowest, which a
+    /// repeat cannot move, stayed where they were.
+    #[test]
+    fn a_host_recorded_twice_keeps_the_round_trips_its_last_record_holds() {
+        use std::time::Duration;
+
+        let root = scratch("latency");
+        let mut journal = begin(&root, &plan("192.0.2.1", "80"));
+        let mut host = Host::new("192.0.2.1".parse().expect("an address"));
+        host.add_rtts([Duration::from_millis(1), Duration::from_millis(2)]);
+        journal.record_hosts(&[host.clone()]).expect("records");
+        host.add_rtts([Duration::from_millis(6), Duration::from_millis(7)]);
+        journal
+            .record_hosts(&[host.clone()])
+            .expect("records again");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let read = report(&directory).expect("reads");
+        std::fs::remove_dir_all(&root).ok();
+        let [restored] = read.hosts().collect::<Vec<_>>()[..] else {
+            panic!("one host on record");
+        };
+        let figures = |host: &Host| (host.min_rtt(), host.average_rtt(), host.max_rtt());
+        assert_eq!(figures(restored), figures(&host), "min, average, max");
+        assert_eq!(
+            restored.telemetry().history().len(),
+            host.telemetry().history().len(),
+            "round trips held"
+        );
     }
 
     /// Reading a journal refuses a link standing where one of its files

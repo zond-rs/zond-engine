@@ -1618,6 +1618,22 @@ impl Host {
         }
     }
 
+    /// Folds `later`, an account of this host written after the one this
+    /// holds, taking its round trips in place of these rather than beside
+    /// them.
+    ///
+    /// For a record that carries the host's whole window of round trips as it
+    /// stood when it was written, which a journal's does: a later one repeats
+    /// every sample an earlier one held, and joined as new samples they would
+    /// count twice, moving the average while the fastest and slowest stayed
+    /// put. A later account holding no round trip leaves these. Everything
+    /// else folds as [`merge`](Self::merge) folds it.
+    pub(crate) fn merge_later_account(&mut self, later: Host) {
+        let window = later.telemetry.clone();
+        self.merge(later);
+        self.telemetry.take_window(window);
+    }
+
     /// Folds another record of this host into this one.
     ///
     /// This is how findings from separate scan stages become a single record.

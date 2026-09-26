@@ -474,6 +474,23 @@ impl HostTelemetry {
         (gaps > 0).then(|| total / gaps)
     }
 
+    /// Takes `later`'s round trips in place of these, where it holds any,
+    /// keeping the wider of the two windows.
+    ///
+    /// For a later account of the same window rather than new samples; see
+    /// [`Host::merge_later_account`](crate::model::host::Host::merge_later_account).
+    /// The hop counter is left as [`merge`](Self::merge) left it.
+    pub(crate) fn take_window(&mut self, later: HostTelemetry) {
+        if later.rtt_history.is_empty() {
+            return;
+        }
+        self.max_samples = self.max_samples.max(later.max_samples);
+        self.rtt_history = later.rtt_history;
+        while self.rtt_history.len() > self.max_samples {
+            self.rtt_history.pop_front();
+        }
+    }
+
     /// Folds another record's samples into this one, keeping the combined
     /// history in time order and dropping the oldest of it past the window.
     ///
