@@ -223,7 +223,7 @@ impl LayerSpec {
             } => Layer::Ethernet(Ethernet {
                 source: MacAddr::from(*source),
                 destination: MacAddr::from(*destination),
-                ethertype: field(ethertype),
+                ethertype: field(*ethertype),
             }),
             Self::Ipv4 {
                 source,
@@ -245,7 +245,7 @@ impl LayerSpec {
                 fragment_offset: *fragment_offset,
                 ttl: *ttl,
                 identification: field(*identification),
-                protocol: field(protocol),
+                protocol: field(*protocol),
                 total_length: field(*total_length),
                 checksum: field(*checksum),
                 options: options.clone(),
@@ -263,7 +263,7 @@ impl LayerSpec {
                 traffic_class: *traffic_class,
                 hop_limit: *hop_limit,
                 flow_label: field(*flow_label),
-                next_header: field(next_header),
+                next_header: field(*next_header),
                 payload_length: field(*payload_length),
                 ..Ipv6::new(Ipv6Addr::from(*source), Ipv6Addr::from(*destination))
             }),

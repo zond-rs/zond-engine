@@ -135,11 +135,7 @@ fuzz_target!(|data: &[u8]| {
     // the positions have to come back as they were, minus what settled.
     let ip: IpAddr = "192.0.2.1".parse().expect("an address");
     let plan: Vec<Target> = (0..window)
-        .map(|position| Target {
-            ip,
-            port: position as u16,
-            protocol: Protocol::Tcp,
-        })
+        .map(|position| Target::new(ip, position as u16, Protocol::Tcp))
         .collect();
 
     let left: Vec<u64> = checkpoint
