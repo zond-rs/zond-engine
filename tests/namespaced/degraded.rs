@@ -87,3 +87,95 @@ async fn a_slow_link_still_finds_an_open_port() {
         "a listener 40ms away should still read Open"
     );
 }
+
+/// The connect sweep, which is how an unprivileged run asks, finds a host
+/// whose every answer takes nearly two seconds.
+///
+/// A connect waits a fixed time where nothing has measured the path, and
+/// across a path slower than that wait each connect gives up while the answer
+/// to its SYN is on the way: the host reads silent, however many ports it
+/// answers on. Driven at the strategy, because this tier runs with raw sockets
+/// and a scan here takes the raw path.
+#[tokio::test]
+async fn a_connect_sweep_finds_a_host_two_seconds_away() {
+    use zond_engine::EvasionProfile;
+    use zond_engine::scanner::session::ScanSession;
+    use zond_engine::scanner::strategy::connect;
+
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let target = segment.peer();
+    // Resolved before the path slows, so what the sweep crosses is a slow
+    // path and not a slow address resolution in front of one.
+    let closed = segment.closed_tcp_port();
+    let _ = std::net::TcpStream::connect((target, closed));
+    segment.degrade(&["delay", "1900ms"]);
+
+    let (session, ctx) = ScanSession::new();
+    connect::discover(target.into(), ctx, &EvasionProfile::default())
+        .await
+        .expect("the sweep runs");
+
+    assert!(
+        session.hosts().contains(target),
+        "a host answering across a 1.9s path was called silent"
+    );
+}
+
+/// A connect port scan reads an open port open across a path of nearly two
+/// seconds that nothing measured before it asked.
+///
+/// A scan told the host is up runs no liveness pass, so its first connect is
+/// the first thing to cross the path, and waited as on an ordinary one it
+/// gives up on the answer and files the port filtered. The host answering
+/// nothing is what sends one of its ports a connect that waits long enough
+/// to find the path.
+#[tokio::test]
+async fn a_connect_scan_reads_an_open_port_two_seconds_away_open() {
+    use zond_engine::config::ServiceDetection;
+    use zond_engine::model::target::{PlannedTarget, Target};
+    use zond_engine::scanner::session::ScanSession;
+
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let open = segment.listen_tcp();
+    segment.degrade(&["delay", "1900ms"]);
+    let target = segment.peer();
+
+    let (session, ctx) = ScanSession::new();
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(PlannedTarget::new(
+        0,
+        Target {
+            ip: target,
+            port: open,
+            protocol: zond_engine::model::port::Protocol::Tcp,
+        },
+    ))
+    .await
+    .expect("queue");
+    drop(tx);
+
+    zond_engine::scanner::strategy::connect::scan(
+        rx,
+        1,
+        ctx,
+        ServiceDetection::Off,
+        &zond_engine::EvasionProfile::default(),
+        &zond_engine::ZoneMap::new(),
+    )
+    .await
+    .expect("the connect scan runs");
+
+    assert_eq!(
+        crate::support::port_state(&session, target, open),
+        Some(PortState::Open),
+        "an open port across a 1.9s path read as something else"
+    );
+}

@@ -43,11 +43,13 @@
 //! shows the ration, and this path makes none.
 
 use crate::config::ServiceDetection;
-use crate::config::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
+use crate::config::limits::{
+    CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY, HOST_SYN_RETRANSMIT, PATH_FINDING_TIMEOUT,
+};
 use crate::counted;
 use crate::evasion::EvasionProfile;
 use crate::journal::settle::{Outcome, Settled};
-use crate::logging::error;
+use crate::logging::{error, info};
 use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
 use crate::model::ip::scoped::ZoneMap;
 use crate::model::ip::set::IpSet;
@@ -225,6 +227,13 @@ struct Probed {
     /// and a socket bound to 53 produce the same `Open`, and only one of them
     /// is a name server. See [`payload::declared_role`].
     role: Option<NetworkRole>,
+    /// The connect that heard nothing, and how long it waited, for a port
+    /// filed filtered because its connect ran out of time; see [`SlowPaths`].
+    silence: Option<Silence>,
+    /// Whether this probe's outcome settles its target. A second asking's
+    /// does not: the first asking settled the target already, and the second
+    /// only revises what it was filed as.
+    settles: bool,
 }
 
 /// The outcome of one finished [`port_prober`] task.
@@ -644,12 +653,26 @@ pub async fn scan(
     // see [`Crowd`](crate::scanner::service::Crowd).
     let crowds = crate::scanner::service::Crowds::default();
     let tarpits = crate::scanner::service::Tarpits::default();
+    let slow = SlowPaths::default();
     let mut pool = ProbePool::new(
         concurrency_limit,
         ctx.clone(),
         ScannerKind::Connect,
-        |probed, audit: &mut ProbeAudit| absorb_probe(&folder, probed, audit, &mut shortfall),
+        |probed: ProbedPort, audit: &mut ProbeAudit| {
+            if let Some(silence) = probed.as_ref().and_then(|probed| probed.silence) {
+                slow.note(silence);
+            }
+            absorb_probe(&folder, probed, audit, &mut shortfall);
+        },
     );
+    let asking = Asking {
+        ctx: &ctx,
+        detection,
+        shaping,
+        zones,
+        crowds: &crowds,
+        tarpits: &tarpits,
+    };
 
     let mut probes = 0u128;
     let mut reason = StopReason::AttemptsSpent;
@@ -668,30 +691,8 @@ pub async fn scan(
             record_unasked(&ctx, &target);
             continue;
         }
-        let endpoint = zones.endpoint(target.ip(), target.port());
-        let egress = ctx.egress_toward(target.ip());
-        // Identified over the connection that finds the port open, so the
-        // port's own cap applies here rather than in a pass of its own.
-        let identify = ctx.service_detection_on(detection, target.port(), target.protocol());
-        // A host that answers on every port has only its likeliest identified;
-        // see `Tarpits`. It is known for one once it has answered on enough.
-        let identify = match ctx.read_host(target.ip(), |host| {
-            tarpits.identifies(host, target.port(), target.protocol())
-        }) {
-            Some(false) => ServiceDetection::Off,
-            _ => identify,
-        };
-        let crowd = crowds.of(target.ip(), ctx.target_name(target.ip()));
-        pool.admit(port_prober(
-            target,
-            identify,
-            shaping,
-            egress,
-            endpoint,
-            ctx.handle.clone(),
-            crowd,
-        ))
-        .await;
+        let patience = connect_patience(measured_path(&ctx, target.ip()));
+        pool.admit(asking.port(target, patience)).await;
     }
 
     // Anything still queued was never sent, and carries no position to settle.
@@ -707,6 +708,7 @@ pub async fn scan(
     // Every target dispatched; wait out the probes still in flight, then the
     // second askings they left owed.
     pool.drain().await;
+    slow.ask_again(&asking, &mut pool).await;
     let audit = pool.into_audit();
     // Identification runs inside this walk rather than as a pass after it, so
     // a stop that came while it ran ended the identifications in flight and
@@ -727,6 +729,201 @@ pub async fn scan(
     shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);
     Ok(())
+}
+
+/// How long a connect to a host whose typical round trip is `path` waits for
+/// its answer, or to one nothing has measured where `path` is `None`.
+///
+/// [`CONNECT_PROBE_TIMEOUT`] where that covers the path, which is every path
+/// whose round trip is under a sixth of a second, so an ordinary scan waits
+/// what it always waits. On a longer one the wait is set as that timeout is:
+/// the host stack's SYN retransmission and then its answer across the path,
+/// with the headroom a first measurement earns (see [`PathAllowance`]). A
+/// wait sized for a path that costs nothing gives up on every answer that
+/// crosses a slow one, and an open port reads filtered.
+fn connect_patience(path: Option<Duration>) -> Duration {
+    PathAllowance::of_median(path)
+        .over(HOST_SYN_RETRANSMIT)
+        .max(CONNECT_PROBE_TIMEOUT)
+}
+
+/// The typical round trip the scan has measured to `ip`, if it has one.
+fn measured_path(ctx: &ScanContext, ip: IpAddr) -> Option<Duration> {
+    ctx.read_host(ip, Host::median_rtt).flatten()
+}
+
+/// What a connect port scan asks each port with, so a second asking asks it
+/// as the first did.
+struct Asking<'a> {
+    ctx: &'a ScanContext,
+    detection: ServiceDetection,
+    shaping: Shaping,
+    zones: &'a ZoneMap,
+    crowds: &'a crate::scanner::service::Crowds,
+    tarpits: &'a crate::scanner::service::Tarpits,
+}
+
+impl Asking<'_> {
+    /// The probe of `target`, its connect waiting `patience`.
+    fn port(
+        &self,
+        target: PlannedTarget,
+        patience: Duration,
+    ) -> impl Future<Output = ProbedPort> + Send + 'static {
+        let ctx = self.ctx;
+        let endpoint = self.zones.endpoint(target.ip(), target.port());
+        let egress = ctx.egress_toward(target.ip());
+        // Identified over the connection that finds the port open, so the
+        // port's own cap applies here rather than in a pass of its own.
+        let identify = ctx.service_detection_on(self.detection, target.port(), target.protocol());
+        // A host that answers on every port has only its likeliest identified;
+        // see `Tarpits`. It is known for one once it has answered on enough.
+        let identify = match ctx.read_host(target.ip(), |host| {
+            self.tarpits
+                .identifies(host, target.port(), target.protocol())
+        }) {
+            Some(false) => ServiceDetection::Off,
+            _ => identify,
+        };
+        let crowd = self.crowds.of(target.ip(), ctx.target_name(target.ip()));
+        port_prober(
+            target,
+            identify,
+            self.shaping,
+            egress,
+            endpoint,
+            patience,
+            ctx.handle.clone(),
+            crowd,
+        )
+    }
+
+    /// [`port`](Self::port), asked a second time: what it draws revises the
+    /// port's record and settles nothing, since the first asking settled it.
+    fn again(
+        &self,
+        target: PlannedTarget,
+        patience: Duration,
+    ) -> impl Future<Output = ProbedPort> + Send + 'static {
+        let asked = self.port(target, patience);
+        async move {
+            asked.await.map(|probed| Probed {
+                settles: false,
+                ..probed
+            })
+        }
+    }
+}
+
+/// A port whose connect heard nothing, and how long it waited.
+#[derive(Debug, Clone, Copy)]
+struct Silence {
+    target: PlannedTarget,
+    waited: Duration,
+}
+
+/// The ports a connect port scan filed filtered on a wait the path to their
+/// host needs more than, and the second asking each is owed.
+///
+/// A connect's wait is sized from the path its host was measured on when the
+/// port was asked, and a port asked before anything was measured waits as on
+/// an ordinary path. Across a path slower than that the wait gives up on
+/// every answer, and the port is filed filtered for being far away. Two cases
+/// reach here once the scan's first askings are all done.
+///
+/// A host measured since, by a port of its that answered, has each port that
+/// waited less than the measured path needs asked again with that wait; see
+/// [`connect_patience`]. On an ordinary path that is no port at all, since
+/// the measured path needs no more than the ordinary wait.
+///
+/// A host that answered nothing has no measurement to go on, and may be a
+/// host whose every port is filtered or one whose every answer was given up
+/// on. One of its ports, the one likeliest to be listening, is asked again
+/// with [`PATH_FINDING_TIMEOUT`]. If it answers, the host is measured and the
+/// rest follow as above; if it stays silent, the host is as silent as the
+/// wait for the longest path a connect looks for can show, and costs one
+/// connect more to know it. Nothing else is asked twice, so a filtered host
+/// costs one connect and a slow one the ports it was owed.
+#[derive(Debug, Default)]
+struct SlowPaths {
+    silent: std::sync::Mutex<std::collections::HashMap<IpAddr, Vec<Silence>>>,
+}
+
+impl SlowPaths {
+    /// Notes a port whose connect heard nothing.
+    fn note(&self, silence: Silence) {
+        self.silent
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .entry(silence.target.ip())
+            .or_default()
+            .push(silence);
+    }
+
+    /// Takes every silence noted so far.
+    fn take(&self) -> std::collections::HashMap<IpAddr, Vec<Silence>> {
+        std::mem::take(&mut *self.silent.lock().unwrap_or_else(|held| held.into_inner()))
+    }
+
+    /// Asks again, through `pool`, every port owed a second asking, finding
+    /// the path to each host that answered nothing first; see [`SlowPaths`].
+    ///
+    /// A scan told to stop asks nothing more, and a host past its own budget
+    /// is left as it is.
+    async fn ask_again<F>(&self, asking: &Asking<'_>, pool: &mut ProbePool<ProbedPort, F>)
+    where
+        F: FnMut(ProbedPort, &mut ProbeAudit),
+    {
+        let ctx = asking.ctx;
+        let owed = self.take();
+        let open = |ip: &IpAddr| ctx.handle.stopped().is_none() && !ctx.host_expired(*ip);
+
+        let mut finders = std::collections::HashSet::new();
+        for (ip, ports) in &owed {
+            if !open(ip) || measured_path(ctx, *ip).is_some() {
+                continue;
+            }
+            let Some(likeliest) = ports.iter().min_by_key(|silence| {
+                let number = silence.target.port();
+                let rank = crate::model::port::TCP_BY_PREVALENCE
+                    .iter()
+                    .position(|&listed| listed == number);
+                (rank.is_none(), rank, number)
+            }) else {
+                continue;
+            };
+            finders.insert(likeliest.target);
+            pool.admit(asking.again(likeliest.target, PATH_FINDING_TIMEOUT))
+                .await;
+        }
+        pool.drain().await;
+
+        let mut asked = finders.len() as u128;
+        for (ip, ports) in &owed {
+            let Some(path) = measured_path(ctx, *ip).filter(|_| open(ip)) else {
+                continue;
+            };
+            let patience = connect_patience(Some(path));
+            for silence in ports {
+                if silence.waited < patience && !finders.contains(&silence.target) {
+                    asked += 1;
+                    pool.admit(asking.again(silence.target, patience)).await;
+                }
+            }
+        }
+        pool.drain().await;
+
+        // What the second askings heard nothing on waited as long as the path
+        // needs, so nothing is owed again.
+        self.take();
+        if asked > 0 {
+            info!(
+                verbosity = 1,
+                "{} asked again, waiting for a slower path",
+                counted(asked, "filtered port", "filtered ports")
+            );
+        }
+    }
 }
 
 /// Folds one finished probe into the store: the port it classified, if it
@@ -770,9 +967,11 @@ fn absorb_probe(
         audit.record_host_found(None);
     }
     // Settled once what it found is stored; see `ScanContext::record_outcome`.
-    let outcome = probed.outcome;
+    let (outcome, settles) = (probed.outcome, probed.settles);
     file_probe(ctx, probed);
-    ctx.record_outcome(outcome);
+    if settles {
+        ctx.record_outcome(outcome);
+    }
 }
 
 /// The store's half of [`absorb_probe`]: the port, the responses and what the
@@ -896,14 +1095,18 @@ fn udp_evidence(state: PortState) -> Option<ScanResponse> {
 /// fingerprint is done with it; a port the process has no socket for, or that
 /// the scan stopped before asking, is `Unasked` too.
 ///
-/// An open port is identified in its host's `crowd`, every wait on it
-/// allowing for the round trip its own handshake took.
+/// The handshake is given `patience` to be answered, which the scan sizes
+/// from the path to the host; see [`connect_patience`]. An open port is
+/// identified in its host's `crowd`, every wait on it allowing for the round
+/// trip its own handshake took.
+#[allow(clippy::too_many_arguments)]
 async fn port_prober(
     planned: PlannedTarget,
     detection: ServiceDetection,
     shaping: Shaping,
     egress: Egress,
     socket_addr: SocketAddr,
+    patience: Duration,
     handle: ScanHandle,
     crowd: std::sync::Arc<crate::scanner::service::Crowd>,
 ) -> ProbedPort {
@@ -928,6 +1131,8 @@ async fn port_prober(
             outcome,
             attempt: Attempt::Sent,
             role: None,
+            silence: None,
+            settles: true,
         })
     };
     let unasked = |outcome, attempt| {
@@ -942,6 +1147,8 @@ async fn port_prober(
             outcome,
             attempt,
             role: None,
+            silence: None,
+            settles: true,
         })
     };
 
@@ -957,7 +1164,7 @@ async fn port_prober(
                 began,
                 descriptor,
             } => {
-                let handshake = Handshake::sent(handshake(connecting).await);
+                let handshake = Handshake::sent(handshake(connecting, patience).await);
                 // Read before the fingerprint talks to the port, which is the
                 // service's time rather than the path's.
                 (handshake, began.elapsed(), Some(descriptor))
@@ -1025,6 +1232,8 @@ async fn port_prober(
                     // A TCP handshake proves a service, and the service is the
                     // port's to name. No role is read from one.
                     role: None,
+                    silence: None,
+                    settles: true,
                 })
             }
             // A refusal is the clearest verdict this scanner ever gets, and it
@@ -1065,13 +1274,23 @@ async fn port_prober(
             ),
             // Silence: the probe was dropped, the classic firewall signature.
             // Settled, because a connect gets one attempt and this was it.
+            // Noted with the wait it was given, which a path measured longer
+            // later in the scan may show to have been too short; see
+            // `SlowPaths`.
             Handshake::Silent => verdict(
                 PortState::Filtered,
                 Some(ScanResponse::NoResponse),
                 false,
                 None,
                 Outcome::Exhausted { position },
-            ),
+            )
+            .map(|probed| Probed {
+                silence: Some(Silence {
+                    target: planned,
+                    waited: patience,
+                }),
+                ..probed
+            }),
             Handshake::MetItself(e) => {
                 met_itself = Some(e);
                 continue;
@@ -1216,13 +1435,12 @@ fn is_unreachable(error: &io::Error) -> bool {
     }
 }
 
-/// The second half of a connect, given [`CONNECT_PROBE_TIMEOUT`] to be
-/// answered.
+/// The second half of a connect, given `patience` to be answered.
 ///
 /// The budget running out and the stack giving up first are the same outcome,
 /// a SYN out and nothing back, so both come back as [`ErrorKind::TimedOut`].
-async fn handshake(connecting: Connecting) -> io::Result<TcpStream> {
-    timeout(CONNECT_PROBE_TIMEOUT, connecting.finish())
+async fn handshake(connecting: Connecting, patience: Duration) -> io::Result<TcpStream> {
+    timeout(patience, connecting.finish())
         .await
         .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()))
 }
@@ -1289,6 +1507,8 @@ async fn udp_port_prober(
             attempt,
             // Filled in by the one arm that has a reply to read it from.
             role: None,
+            silence: None,
+            settles: true,
         })
     };
 
@@ -1553,9 +1773,12 @@ pub async fn discover(
 /// One task per address, not per port. Its ports are tried in turn, in the
 /// order the set holds them, and the first TCP-layer answer ends the address,
 /// so a host that answers on SSH costs one connect whatever the set's size. A
-/// silent address costs a connect per port, each waiting out the
-/// [`CONNECT_PROBE_TIMEOUT`], so a silent range takes up to eight timeouts an
-/// address where the common five alone take five. The socket budget is the
+/// silent address costs a connect per port, the first waiting three seconds
+/// and each after it the [`CONNECT_PROBE_TIMEOUT`], so a silent range takes up
+/// to nine timeouts an address where the common five alone take six. The
+/// first waits longer because nothing has measured the path to the address
+/// yet, and a host across a path slower than the ordinary timeout covers is
+/// heard by that connect or by none. The socket budget is the
 /// same either way: one descriptor per address in flight, held one connect at
 /// a time, so a larger set lengthens a silent sweep and never widens it. A task
 /// per port would spend the same descriptor-seconds on fewer addresses at a
@@ -1569,9 +1792,7 @@ pub async fn discover(
 ///
 /// Addresses are drawn from
 /// [`dispatch_addresses`](crate::scanner::dispatcher::dispatch_addresses) to
-/// spread load across the network instead of hammering one subnet at a time, and
-/// each connect waits out the [`CONNECT_PROBE_TIMEOUT`] so that hosts on slow or
-/// distant links still register.
+/// spread load across the network instead of hammering one subnet at a time.
 pub async fn discover_on(
     ips: IpSet,
     ctx: ScanContext,
@@ -1788,6 +2009,10 @@ async fn prober(
 ) -> ProbedHost {
     let mut asked = false;
     let mut refused = None;
+    // The first connect to leave is how the path to the address is found, and
+    // waits for the longest path a connect looks for; every one after it waits
+    // as on an ordinary path. See `PATH_FINDING_TIMEOUT`.
+    let mut waiting = PATH_FINDING_TIMEOUT;
     let cut_short = |asked| ProbedHost {
         ip,
         fate: if asked {
@@ -1817,11 +2042,11 @@ async fn prober(
                     result: Ok(connecting),
                     began,
                     descriptor,
-                } => (
-                    Handshake::sent(handshake(connecting).await),
-                    began,
-                    Some(descriptor),
-                ),
+                } => {
+                    let sent = Handshake::sent(handshake(connecting, waiting).await);
+                    waiting = CONNECT_PROBE_TIMEOUT;
+                    (sent, began, Some(descriptor))
+                }
                 Dialled::Ran {
                     result: Err(e),
                     began,
@@ -1954,6 +2179,28 @@ mod tests {
     use crate::testing::loopback::accept_from_this_process;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use tokio::net::UdpSocket;
+
+    /// A connect waits what it always waits on an ordinary path, and on a
+    /// path nothing measured, and across a slow one long enough for the host
+    /// stack's retransmitted SYN to be answered across it.
+    ///
+    /// The ordinary wait is what every scan pays per filtered port, so a
+    /// measured path that is merely not free leaves it alone; the slow path's
+    /// is what keeps an open port two seconds away from reading filtered.
+    #[test]
+    fn a_connect_waits_as_ever_on_an_ordinary_path_and_longer_on_a_slow_one() {
+        assert_eq!(connect_patience(None), CONNECT_PROBE_TIMEOUT);
+        assert_eq!(
+            connect_patience(Some(Duration::from_millis(40))),
+            CONNECT_PROBE_TIMEOUT
+        );
+        let slow = Duration::from_millis(1_900);
+        assert!(
+            connect_patience(Some(slow)) > HOST_SYN_RETRANSMIT + slow,
+            "a connect across {slow:?} waits {:?}",
+            connect_patience(Some(slow))
+        );
+    }
 
     fn udp_target(ip: IpAddr, port: u16) -> PlannedTarget {
         PlannedTarget::new(
@@ -2088,6 +2335,7 @@ mod tests {
             Shaping::default(),
             Egress::KERNEL,
             SocketAddr::new(ip, port),
+            CONNECT_PROBE_TIMEOUT,
             ScanHandle::new(),
             Default::default(),
         )
@@ -2130,6 +2378,7 @@ mod tests {
             Shaping::default(),
             Egress::KERNEL,
             SocketAddr::new(ip, port),
+            CONNECT_PROBE_TIMEOUT,
             ScanHandle::new(),
             Default::default(),
         )
@@ -2244,6 +2493,7 @@ mod tests {
                 shaping,
                 Egress::KERNEL,
                 SocketAddr::new(ip, port),
+                CONNECT_PROBE_TIMEOUT,
                 ScanHandle::new(),
                 Default::default(),
             )
@@ -2321,6 +2571,7 @@ mod tests {
             Shaping::default(),
             Egress::KERNEL,
             SocketAddr::new(ip, port),
+            CONNECT_PROBE_TIMEOUT,
             handle,
             Default::default(),
         )

@@ -120,7 +120,8 @@ where
     /// panic count is filed here rather than as each one happens: a defect that
     /// takes down one probe usually takes down every probe like it, and a
     /// report carrying that same entry a thousand times says nothing the first
-    /// one did not.
+    /// one did not. A pool drained again, after more probes were admitted to
+    /// it, reports only the panics since.
     pub async fn drain(&mut self) {
         while !self.set.is_empty() {
             self.reap().await;
@@ -135,6 +136,7 @@ where
                     counted(self.panicked as u128, "probe", "probes")
                 ),
             );
+            self.panicked = 0;
         }
     }
 

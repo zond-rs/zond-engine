@@ -57,8 +57,26 @@ pub const CONNECT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// The initial retransmission timeout a host TCP stack uses for a SYN
 /// (RFC 6298 §2.1), which [`CONNECT_PROBE_TIMEOUT`] has to outlive.
-#[cfg(test)]
-const HOST_SYN_RETRANSMIT: Duration = Duration::from_secs(1);
+pub(crate) const HOST_SYN_RETRANSMIT: Duration = Duration::from_secs(1);
+
+/// How long a connect waits where it is how the path to a host is found: the
+/// first a liveness sweep makes to an address, and the one a port scan makes
+/// again to a host that answered none of its ports.
+///
+/// [`CONNECT_PROBE_TIMEOUT`] hears a host across a path of up to half a
+/// second, which is every ordinary path, and on a longer one it hears
+/// nothing: each connect gives up while the answer to its SYN is on the way,
+/// so a live host reads silent and its open ports filtered. A connect cannot
+/// time the path it has not yet crossed, so one connect per host waits this
+/// long instead, and what it measures sizes the waits that follow it.
+///
+/// Three seconds, the longest a connect waits without waiting on the host
+/// stack's second retransmission, as [`CONNECT_PROBE_TIMEOUT`] declines to:
+/// the first SYN's answer is heard across a round trip of up to three
+/// seconds, the retransmission's across one of up to two. Three seconds is
+/// also the evidence the kernel takes before it calls a neighbour on its own
+/// segment failed.
+pub(crate) const PATH_FINDING_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How many targets the connect port scan and the passes after it (service
 /// detection, detections, TLS enumeration) work on at once.
