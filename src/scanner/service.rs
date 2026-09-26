@@ -220,11 +220,19 @@ impl QuietPorts {
     /// The one console line they amount to: which ports, then why in a word or
     /// two. The report's entry says the rest.
     fn line(first: &str, reason: &Unreached, count: usize) -> String {
-        let ports = match count - 1 {
+        format!(
+            "{} not fingerprinted ({})",
+            Self::named_briefly(first, count),
+            reason.terse()
+        )
+    }
+
+    /// [`named`](Self::named), in the fewer words a console line has.
+    fn named_briefly(first: &str, count: usize) -> String {
+        match count - 1 {
             0 => first.to_string(),
             rest => format!("{first} and {rest} more"),
-        };
-        format!("{ports} not fingerprinted ({})", reason.terse())
+        }
     }
 
     /// `count` ports, named from the first of them.
@@ -239,15 +247,21 @@ impl QuietPorts {
     /// Says once that these ports were identified only in part, a later
     /// connection of theirs refused a socket.
     ///
-    /// A failure for the reason every connection refused a socket is one:
-    /// what those ports were asked is a floor, the questions that went
-    /// unasked went unasked for this machine's file limit, and a report that
-    /// did not say so would read as ports that had nothing more to say.
+    /// Filed, since what those ports were asked is a floor, the questions
+    /// that went unasked went unasked for this machine's file limit, and a
+    /// report that did not say so would read as ports that had nothing more
+    /// to say. Filed as cut short, and warned in one short line naming the
+    /// limit, because nothing broke: the remedy is to raise the limit.
     fn report_in_part(&self, ctx: &ScanContext) {
         let (Some(first), Some(reason)) = (&self.first, &self.reason) else {
             return;
         };
-        ctx.record_failure(
+        warn!(
+            "{} identified in part ({})",
+            Self::named_briefly(first, self.count),
+            reason.terse()
+        );
+        ctx.file_cut_short(
             ScannerKind::Service,
             format!(
                 "{} identified in part: {}",
@@ -537,7 +551,7 @@ impl Unreached {
     fn terse(&self) -> String {
         match self {
             Self::Silent(within) => format!("no answer in {:?}", tenths(*within)),
-            Self::Starved => "file limit reached".to_string(),
+            Self::Starved => descriptors::starved_briefly(),
             Self::Failed { kind, .. } => kind.to_string(),
         }
     }
@@ -974,9 +988,10 @@ mod tests {
     }
 
     /// Ports whose identification lost a later connection to a full table are
-    /// one failure between them, naming the first, the count and the limit,
+    /// one entry between them, naming the first, the count and the limit,
     /// so what they were identified by reads as a floor rather than as all
-    /// they had to say.
+    /// they had to say. The entry is marked cut short, since nothing broke
+    /// and the remedy is to raise the limit.
     #[test]
     fn ports_identified_in_part_are_one_failure_naming_the_limit() {
         let (session, ctx) = ScanSession::new();
@@ -997,6 +1012,7 @@ mod tests {
             "{}",
             failures[0].reason()
         );
+        assert!(failures[0].is_cut_short(), "a limit, not a fault");
         drop(session);
     }
 

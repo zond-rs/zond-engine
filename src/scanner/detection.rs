@@ -94,14 +94,16 @@ type PortResult = (ScopedIp, u16, Protocol, Vec<Finding>, Vec<Unfinished>);
 ///
 /// Both reach the report the same way, as work the phase did not complete, since
 /// either leaves the port's question open and a report read for coverage has to
-/// count both. What differs is what the console calls them. A budget that ran out
-/// is the detection's own declared ceiling holding against a target that cost
-/// more than it allowed: nothing failed, and calling it a failed scanner sends a
+/// count both. What differs is the entry's mark and what the console calls them.
+/// A budget that ran out is the detection's own declared ceiling holding against
+/// a target that cost more than it allowed, and a socket refused is the
+/// process's file limit: nothing failed, and calling it a failed scanner sends a
 /// reader looking for a fault that is not there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Unfinished {
-    /// A budget the detection runs under ran out before it had its answer.
-    /// Carries the detection's id and which budget, as a phrase.
+    /// A limit the detection runs under, its budget or the process's file
+    /// limit, was reached before it had its answer. Carries the detection's id
+    /// and which limit, as a phrase.
     CutShort { id: String, why: String },
     /// The detection broke, or the runtime refused it something it asked for.
     Failed { id: String, why: String },
@@ -542,10 +544,10 @@ fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
 /// it, a budget and its size or the port going unresponsive, and how many of
 /// the flow's requests had been answered by then.
 ///
-/// A flow the process had no socket for is filed as a failure rather than as
-/// cut short, as every other connection refused a socket is: nothing about
-/// the port or the detection held, the process ran out of descriptors, and
-/// the report names the limit and its remedy.
+/// A flow the process had no socket for is cut short by the process's file
+/// limit, as every other connection refused a socket is: nothing about the
+/// port or the detection held and nothing broke, and the entry names the
+/// limit, whose remedy is the caller's.
 fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
     let answered = format!("({}/{} answered)", shortfall.answered, shortfall.requests);
     let stopped = match shortfall.stopped {
@@ -569,9 +571,9 @@ fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
     }
 }
 
-/// A flow the process had no socket for, as the failure it is filed as.
+/// A flow the process had no socket for, cut short by the file limit.
 fn starved(shortfall: &Shortfall) -> Unfinished {
-    Unfinished::Failed {
+    Unfinished::CutShort {
         id: shortfall.detection.clone(),
         why: format!(
             "no socket ({}/{} answered{})",
@@ -1240,12 +1242,13 @@ mod tests {
         drop(session);
     }
 
-    /// A flow the process had no socket for is filed as a failure naming the
-    /// descriptor limit and its remedy, as every other connection refused a
-    /// socket is, so a scan that lost a detection this way is never read as
-    /// one whose ports were cleared.
+    /// A flow the process had no socket for is filed naming the descriptor
+    /// limit, so a scan that lost a detection this way is never read as one
+    /// whose ports were cleared. Filed and warned as cut short, as every other
+    /// connection refused a socket is: nothing broke, and a reader told a
+    /// scanner failed looks for a fault rather than at the limit.
     #[test]
-    fn a_detection_refused_a_socket_is_reported_as_a_failure_naming_the_limit() {
+    fn a_detection_refused_a_socket_is_reported_as_cut_short_naming_the_limit() {
         let (session, ctx) = ScanSession::new();
         let shortfall = Shortfall {
             detection: "backup-files".to_string(),
@@ -1260,12 +1263,13 @@ mod tests {
         assert_eq!(failures.len(), 1, "the shortfall was not filed");
         let reason = failures[0].reason();
         assert!(
-            reason.starts_with("backup-files on 192.0.2.1:443: no socket (1/6 answered"),
+            reason.starts_with("backup-files on 192.0.2.1:443 cut short: no socket (1/6 answered"),
             "{reason}"
         );
+        assert!(failures[0].is_cut_short(), "a limit, not a fault");
         assert!(
-            matches!(lines.as_slice(), [(tracing::Level::ERROR, _)]),
-            "not announced as a failure: {lines:?}"
+            matches!(lines.as_slice(), [(tracing::Level::WARN, _)]),
+            "announced as a failure: {lines:?}"
         );
         drop(session);
     }

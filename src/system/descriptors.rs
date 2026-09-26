@@ -188,6 +188,16 @@ pub(crate) fn starved_while(wait: &str) -> String {
     format!("file descriptor limit{limit} reached, no socket free {wait}")
 }
 
+/// [`starved`] in the few words a console line has room for: the limit and
+/// its size, which is what the reader raises. The report's entry says the
+/// rest.
+pub(crate) fn starved_briefly() -> String {
+    match soft_limit() {
+        Some(limit) => format!("file limit {limit}"),
+        None => String::from("file limit"),
+    }
+}
+
 /// The fewest descriptors the gate leaves to the rest of the process, however
 /// small its limit.
 ///

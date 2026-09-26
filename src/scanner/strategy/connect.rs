@@ -341,11 +341,15 @@ impl Shortfall {
             report_starved(ctx, scanner, unasked, descriptors::PATIENCE);
         }
         if self.identified_in_part > 0 {
-            ctx.record_failure(
+            let ports = counted(self.identified_in_part, "port", "ports");
+            crate::warn!(
+                "{ports} identified in part ({})",
+                descriptors::starved_briefly()
+            );
+            ctx.file_cut_short(
                 scanner,
                 format!(
-                    "{} identified in part: {}",
-                    counted(self.identified_in_part, "port", "ports"),
+                    "{ports} identified in part: {}",
                     descriptors::starved(descriptors::PATIENCE)
                 ),
             );
@@ -1471,15 +1475,20 @@ where
 }
 
 /// Files the targets a run left unasked because the process had no socket to
-/// give them, once, as the failure it is. `patience` is how long each waited.
+/// give them, once. `patience` is how long each waited, and `unasked` names
+/// what was left, counted.
 ///
-/// A failure rather than a log line because it narrows the result: those
-/// targets have no verdict, and a report that did not say why would read as
-/// a network that did not answer. The remedy is the caller's, not the
-/// engine's, which reads the file limit and does not raise it.
-/// `unasked` names what was left, counted.
+/// Filed, because it narrows the result: those targets have no verdict, and
+/// a report that did not say why would read as a network that did not answer.
+/// Filed [cut short](crate::report::ScannerFailure::is_cut_short) rather than
+/// failed, and warned in one short line naming the limit rather than
+/// announced as a scanner that failed, because nothing broke. The process
+/// reached the file limit it was started under, the remedy is the caller's,
+/// raising it, and a reader told the scanner failed looks for a fault in the
+/// engine or the network that is not there.
 fn report_starved(ctx: &ScanContext, scanner: ScannerKind, unasked: String, patience: Duration) {
-    ctx.record_failure(
+    crate::warn!("{unasked} unasked ({})", descriptors::starved_briefly());
+    ctx.file_cut_short(
         scanner,
         format!("{unasked} left unasked: {}", descriptors::starved(patience)),
     );
@@ -2545,6 +2554,41 @@ mod tests {
         }
     }
 
+    /// **Targets the process had no socket for are the file limit, said in
+    /// one short warning naming it and filed as cut short, not as a scanner
+    /// that failed.** Nothing broke: the process reached the limit it was
+    /// started under, and the remedy is to raise it. The report still counts
+    /// the targets, since they have no verdict.
+    #[test]
+    fn descriptor_starvation_is_warned_naming_the_limit_and_filed_as_cut_short() {
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let mut shortfall = Shortfall::default();
+        shortfall.count(IpAddr::V4(Ipv4Addr::LOCALHOST), &Attempt::Starved);
+        shortfall.count(IpAddr::V4(Ipv4Addr::LOCALHOST), &Attempt::Starved);
+        shortfall.identified_in_part = 1;
+
+        let lines = crate::logging::logged(|| {
+            shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
+        });
+
+        let limit = descriptors::starved_briefly();
+        let said: Vec<&str> = lines.iter().map(|line| line.message.as_str()).collect();
+        assert_eq!(
+            said,
+            [
+                format!("2 ports unasked ({limit})"),
+                format!("1 port identified in part ({limit})"),
+            ]
+        );
+        let filed = ctx.failures_snapshot();
+        assert_eq!(filed.len(), 2, "{filed:?}");
+        assert!(
+            filed.iter().all(|failure| failure.is_cut_short()
+                && failure.reason().contains("file descriptor limit")),
+            "{filed:?}"
+        );
+    }
+
     /// TCP targets belong to the connect scanner next door; this prober must
     /// leave them alone rather than misreport them over the wrong protocol.
     #[tokio::test]
@@ -2759,7 +2803,8 @@ mod tests {
     /// unsettled for a resume to ask, the send is counted as failed rather
     /// than made, and the report names the file limit as the reason, so a
     /// sweep that found nothing cannot be read as a network that answered
-    /// nothing.
+    /// nothing. It is filed as cut short, since the remedy is to raise the
+    /// limit and there is no fault to look for.
     #[cfg(unix)]
     #[test]
     fn a_sweep_that_never_gets_a_socket_reports_it_rather_than_an_empty_network() {
@@ -2803,10 +2848,12 @@ mod tests {
             );
             let failures = ctx.failures_snapshot();
             assert!(
-                failures
-                    .iter()
-                    .any(|failure| failure.reason().contains("file descriptor limit of 64")),
-                "the report names the limit the sweep ran into, and has {failures:?}"
+                failures.iter().any(|failure| failure
+                    .reason()
+                    .contains("file descriptor limit of 64")
+                    && failure.is_cut_short()),
+                "the report names the limit the sweep ran into, as a limit and \
+                 not a fault, and has {failures:?}"
             );
         });
     }
