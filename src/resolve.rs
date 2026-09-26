@@ -11,9 +11,10 @@
 //! Turns the names a person writes, such as `example.com`, `raspberrypi.local`
 //! and `nas`, into the addresses a scan can probe. This is the half of
 //! resolution that runs before a scan, deciding what it will cover. The reverse
-//! half, which
-//! attaches names to hosts a scan has already found, lives in
-//! [`crate::scanner::rdns`] and answers the opposite question.
+//! half, which attaches names to hosts a scan has already found, lives in
+//! [`crate::scanner::rdns`] and answers the opposite question from the same
+//! sources: the hosts file first, then the server the address's reverse zone
+//! is scoped to or the global ones.
 //!
 //! ## Where a name is answered
 //!
@@ -105,8 +106,8 @@ use std::time::Duration;
 
 use crate::warn;
 
-use hosts::HostsTable;
-use unicast::{DnsConfig, Unicast};
+pub(crate) use hosts::HostsTable;
+pub(crate) use unicast::{DnsConfig, Reverse, ScopedServers, Unicast, covers, reverse_name};
 
 /// The default mDNS reply window. See [`ResolveConfig::mdns_timeout`] for why it
 /// is a whole second.
@@ -269,14 +270,15 @@ impl Resolver {
         if let Some(listed) = from_hosts(snapshot, name) {
             return listed;
         }
+        let unicast = &snapshot.unicast;
 
         if is_multicast_local(name) {
-            return self.resolve_local(snapshot, name).await;
+            return self.resolve_local(unicast, name).await;
         }
 
-        let unicast = snapshot.unicast.lookup(name).await;
-        if !unicast.is_empty() || !is_single_label(name) {
-            return unicast;
+        let answered = unicast.lookup(name).await;
+        if !answered.is_empty() || !is_single_label(name) {
+            return answered;
         }
 
         // A bare `nas` that unicast could not place is, on a home or office
@@ -286,14 +288,14 @@ impl Resolver {
         if let Some(listed) = from_hosts(snapshot, &local) {
             return listed;
         }
-        self.resolve_local(snapshot, &local).await
+        self.resolve_local(unicast, &local).await
     }
 
     /// A `.local` name the hosts file does not list: unicast first when a
     /// configured server answers for its domain, then the link.
-    async fn resolve_local(&self, snapshot: &Snapshot, name: &str) -> Vec<IpAddr> {
-        if snapshot.unicast.claims(name) {
-            let unicast = snapshot.unicast.lookup(name).await;
+    async fn resolve_local(&self, unicast: &Unicast, name: &str) -> Vec<IpAddr> {
+        if unicast.claims(name) {
+            let unicast = unicast.lookup(name).await;
             if !unicast.is_empty() {
                 return unicast;
             }
@@ -308,6 +310,30 @@ impl Resolver {
         }
         let window = self.config.mdns_timeout.max(MIN_MDNS_TIMEOUT);
         mdns::resolve(name, window).await
+    }
+}
+
+impl Snapshot {
+    /// Resolves `ip` back to a name from the same sources, and by the same
+    /// routes, a name is resolved forward.
+    ///
+    /// The hosts file first, and alone for an address it lists: it is
+    /// authoritative in both directions, and a lab box's address asked of a
+    /// resolver somebody else operates tells them what was found. A loopback
+    /// address it does not list is asked of nobody, since RFC 6761 section
+    /// 6.3 has its reverse zone answered on the machine rather than sent to a
+    /// server, and the answer a library makes up for it, `localhost` for every
+    /// address in `127.0.0.0/8`, names nothing the hosts file said. Anything
+    /// else goes to the server its reverse zone is scoped to, or the global
+    /// ones; see [`Unicast::reverse`].
+    pub(crate) async fn reverse(&self, ip: IpAddr) -> Reverse {
+        if let Some(name) = self.hosts.name_of(ip) {
+            return Reverse::Listed(name.to_owned());
+        }
+        if ip.is_loopback() {
+            return Reverse::Unasked;
+        }
+        self.unicast.reverse(ip).await
     }
 }
 
@@ -448,14 +474,15 @@ mod tests {
 
     use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
     use hickory_resolver::proto::op::{Message, MessageType, ResponseCode};
-    use hickory_resolver::proto::rr::rdata::{A, SOA};
+    use hickory_resolver::proto::rr::rdata::{A, PTR, SOA};
     use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
 
     use crate::logging::logged;
     use unicast::ScopedServers;
 
     /// A name server on loopback that answers A queries for the names it
-    /// holds and NXDOMAIN for any other, noting every question it is asked.
+    /// holds, PTR queries for the addresses it names, and NXDOMAIN for any
+    /// other, noting every question it is asked.
     ///
     /// Its NXDOMAIN carries the zone's SOA, as a real server's does, because
     /// that is what lets a client cache the failure: an answer without one
@@ -463,6 +490,8 @@ mod tests {
     struct FakeDns {
         at: SocketAddr,
         records: Arc<Mutex<HashMap<String, Ipv4Addr>>>,
+        /// Hostnames keyed by the reverse name a PTR query asks.
+        names: Arc<Mutex<HashMap<String, String>>>,
         asked: Arc<Mutex<Vec<String>>>,
         serving: tokio::task::JoinHandle<()>,
     }
@@ -480,8 +509,10 @@ mod tests {
                     .collect::<HashMap<_, _>>(),
             ));
             let asked = Arc::new(Mutex::new(Vec::new()));
+            let names = Arc::new(Mutex::new(HashMap::new()));
 
             let (held, noted) = (Arc::clone(&records), Arc::clone(&asked));
+            let reverse = Arc::clone(&names);
             let serving = tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
                 while let Ok((len, from)) = socket.recv_from(&mut buf).await {
@@ -498,12 +529,21 @@ mod tests {
                         .push(format!("{name} {}", question.query_type()));
 
                     let known = held.lock().expect("unpoisoned").get(&name).copied();
+                    let named = reverse.lock().expect("unpoisoned").get(&name).cloned();
                     let mut reply = Message::response(query.metadata.id, query.metadata.op_code);
                     reply.metadata.message_type = MessageType::Response;
                     reply.metadata.recursion_desired = query.metadata.recursion_desired;
                     reply.metadata.recursion_available = true;
                     reply.add_query(question.clone());
                     match known {
+                        _ if question.query_type() == RecordType::PTR && named.is_some() => {
+                            let host = named.expect("checked above");
+                            reply.add_answer(Record::from_rdata(
+                                question.name().clone(),
+                                300,
+                                RData::PTR(PTR(Name::from_ascii(&host).expect("a host name"))),
+                            ));
+                        }
                         Some(ip) if question.query_type() == RecordType::A => {
                             reply.add_answer(Record::from_rdata(
                                 question.name().clone(),
@@ -528,9 +568,18 @@ mod tests {
             Self {
                 at,
                 records,
+                names,
                 asked,
                 serving,
             }
+        }
+
+        /// Starts answering a reverse lookup of `ip` with `host`.
+        fn name(&self, ip: IpAddr, host: &str) {
+            self.names
+                .lock()
+                .expect("unpoisoned")
+                .insert(format!("{}.", reverse_name(ip)), format!("{host}."));
         }
 
         /// The questions this server has been asked, as `name. TYPE`.
@@ -825,5 +874,141 @@ mod tests {
             resolver.resolve("newbox.example").await,
             vec![v4("198.51.100.44")]
         );
+    }
+
+    // ── Where an address is answered ────────────────────────────────────────
+
+    /// An address under a scoped reverse zone is asked of that zone's server
+    /// alone, and any other address of the global one.
+    ///
+    /// A VPN that serves the reverse zone of its own addresses installs a
+    /// scoped resolver for it as it does for its domain. Asked of the global
+    /// resolver, the PTR both fails and tells a resolver outside the VPN which
+    /// private address the scan found.
+    #[tokio::test]
+    async fn an_address_under_a_scoped_reverse_zone_is_asked_of_that_zones_server_alone() {
+        let global = FakeDns::start(&[]).await;
+        global.name(v4("203.0.113.80"), "www.example");
+        let scoped = FakeDns::start(&[]).await;
+        scoped.name(v4("198.51.100.20"), "host.corp.example");
+        let resolver = resolver_over(
+            "",
+            Ok(global.as_global(&[])),
+            vec![ScopedServers {
+                domain: "100.51.198.in-addr.arpa".into(),
+                servers: Ok(vec![scoped.at]),
+            }],
+        );
+        let snapshot = resolver.snapshot();
+
+        assert_eq!(
+            snapshot.reverse(v4("198.51.100.20")).await,
+            Reverse::Named("host.corp.example.".into())
+        );
+        assert_eq!(
+            global.asked(),
+            Vec::<String>::new(),
+            "an address in the scoped zone reached the global resolver"
+        );
+
+        assert_eq!(
+            snapshot.reverse(v4("203.0.113.80")).await,
+            Reverse::Named("www.example.".into())
+        );
+        assert_eq!(
+            scoped.asked(),
+            vec!["20.100.51.198.in-addr.arpa. PTR".to_string()],
+            "an address outside the zone reached its server"
+        );
+    }
+
+    /// An address the hosts file lists is named by the first line listing it
+    /// and asked of nobody, as a name the file lists is answered forward.
+    ///
+    /// The later line of an old box and its replacement names a host the rest
+    /// of the system does not call it, and a query for a lab box's address
+    /// tells a resolver somebody else operates what the scan found.
+    #[tokio::test]
+    async fn an_address_the_hosts_file_lists_is_named_by_its_first_line_and_asked_of_nobody() {
+        let global = FakeDns::start(&[]).await;
+        global.name(v4("198.51.100.23"), "from-dns.example");
+        let resolver = resolver_over(
+            "198.51.100.23 old-box.example\n198.51.100.23 new-box.example\n",
+            Ok(global.as_global(&[])),
+            Vec::new(),
+        );
+
+        assert_eq!(
+            resolver.snapshot().reverse(v4("198.51.100.23")).await,
+            Reverse::Listed("old-box.example".into())
+        );
+        assert_eq!(global.asked(), Vec::<String>::new());
+    }
+
+    /// A loopback address is named by the hosts file or not at all, and never
+    /// asked of a server.
+    ///
+    /// RFC 6761 keeps loopback's reverse zone off the network, and the name a
+    /// DNS library makes up in its place, `localhost` for every address in
+    /// `127.0.0.0/8`, is a name no line gave the address being scanned.
+    #[tokio::test]
+    async fn a_loopback_address_is_named_by_the_hosts_file_or_not_at_all() {
+        let global = FakeDns::start(&[]).await;
+        let resolver = resolver_over(
+            "127.0.0.1 localhost\n",
+            Ok(global.as_global(&[])),
+            Vec::new(),
+        );
+        let snapshot = resolver.snapshot();
+
+        assert_eq!(
+            snapshot.reverse(v4("127.0.0.1")).await,
+            Reverse::Listed("localhost".into())
+        );
+        assert_eq!(snapshot.reverse(v4("127.0.0.9")).await, Reverse::Unasked);
+        assert_eq!(snapshot.reverse(v4("::1")).await, Reverse::Unasked);
+        assert_eq!(global.asked(), Vec::<String>::new());
+    }
+
+    /// With no DNS server configured, reverse lookups say so once, as forward
+    /// ones do, and the hosts file still names what it lists.
+    ///
+    /// A lab VM with no name server in `resolv.conf` has its boxes named only
+    /// in its hosts file; saying nothing would leave every other host
+    /// unnamed with no sign of why, and saying it per host would bury the
+    /// scan under one line per address.
+    #[test]
+    fn with_no_dns_server_configured_reverse_lookups_say_so_once() {
+        let resolver = resolver_over(
+            "198.51.100.5 hostsonly\n",
+            Err("no nameservers found in config".into()),
+            Vec::new(),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime builds");
+
+        let mut answers = Vec::new();
+        let lines = logged(|| {
+            let snapshot = resolver.snapshot();
+            for ip in ["198.51.100.5", "198.51.100.6", "198.51.100.7"] {
+                answers.push(runtime.block_on(snapshot.reverse(v4(ip))));
+            }
+        });
+
+        assert_eq!(
+            answers,
+            vec![
+                Reverse::Listed("hostsonly".into()),
+                Reverse::Unasked,
+                Reverse::Unasked
+            ]
+        );
+        let said: Vec<_> = lines
+            .iter()
+            .filter(|l| l.verbosity == 0 && l.message.contains("no DNS server configured"))
+            .collect();
+        assert_eq!(said.len(), 1, "{lines:?}");
     }
 }

@@ -29,11 +29,14 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-/// The names a hosts file lists, each with its addresses in file order.
+/// The names a hosts file lists, each with its addresses in file order, and
+/// the name each address is known by.
 #[derive(Debug, Default)]
 pub(crate) struct HostsTable {
     /// Keyed by the folded name, so `Box.HTB` and `box.htb.` find one entry.
     by_name: HashMap<String, Vec<IpAddr>>,
+    /// The first name on the first line listing each address, as written.
+    by_address: HashMap<IpAddr, String>,
 }
 
 /// What the file says about one name.
@@ -69,10 +72,16 @@ impl HostsTable {
         let mut table = Self::default();
         for line in text.lines() {
             let line = line.split_once('#').map_or(line, |(kept, _)| kept);
-            let mut fields = line.split_whitespace();
+            let mut fields = line.split_whitespace().peekable();
             let Some(Ok(address)) = fields.next().map(str::parse::<IpAddr>) else {
                 continue;
             };
+            if let Some(canonical) = fields.peek() {
+                table
+                    .by_address
+                    .entry(address)
+                    .or_insert_with(|| canonical.trim_end_matches('.').to_owned());
+            }
             for name in fields {
                 let listed = table.by_name.entry(fold(name)).or_default();
                 if !listed.contains(&address) {
@@ -111,6 +120,17 @@ impl HostsTable {
             }
         }
         Some(answer)
+    }
+
+    /// The name the file gives `address`, or `None` when no line lists it.
+    ///
+    /// The first name on the first line listing the address, which is the
+    /// line's canonical name and the one the system's own reverse lookup
+    /// returns: of an old box and its replacement at one address, the line
+    /// above is what `getnameinfo` reports, so a scan names the host as the
+    /// rest of the system does.
+    pub(crate) fn name_of(&self, address: IpAddr) -> Option<&str> {
+        self.by_address.get(&address).map(String::as_str)
     }
 }
 
@@ -195,5 +215,21 @@ mod tests {
             }),
             "one address per family, and the repeat of the first is no conflict"
         );
+    }
+
+    /// An address takes the canonical name of the first line listing it, as
+    /// the system's reverse lookup gives it; a table keeping the last line
+    /// would name a host after whichever box was listed at its address later.
+    #[test]
+    fn an_address_is_named_by_the_first_line_listing_it() {
+        let table = HostsTable::parse(
+            "198.51.100.23 old-box.example old-box\n\
+             198.51.100.23 new-box.example\n\
+             2001:db8::23 Box6.Example.\n",
+        );
+
+        assert_eq!(table.name_of(ip("198.51.100.23")), Some("old-box.example"));
+        assert_eq!(table.name_of(ip("2001:db8::23")), Some("Box6.Example"));
+        assert_eq!(table.name_of(ip("198.51.100.24")), None);
     }
 }

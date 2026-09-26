@@ -223,18 +223,105 @@ impl Unicast {
         let client = match &self.global {
             Ok(client) => client,
             Err(why) => {
-                self.unconfigured.call_once(|| {
-                    warn!("DNS lookups skipped (no DNS server configured)");
-                    info!(
-                        verbosity = 1,
-                        "system resolver configuration unusable: {why}"
-                    );
-                });
+                self.say_unconfigured(why);
                 return Vec::new();
             }
         };
         ask(client, name).await
     }
+
+    /// Asks the server that answers for `ip`'s reverse zone for its PTR
+    /// record.
+    ///
+    /// Routed as [`lookup`](Self::lookup) routes a name, by the name the
+    /// question carries: a VPN that serves the reverse zone of its own
+    /// addresses installs a scoped resolver for `16.172.in-addr.arpa` as it
+    /// does for its forward domain, and a PTR for one of those addresses asked
+    /// of the global servers both fails and tells them which private address
+    /// the scan found. A missing configuration is said as `lookup` says it,
+    /// once per pass for both directions.
+    pub(crate) async fn reverse(&self, ip: IpAddr) -> Reverse {
+        let name = reverse_name(ip);
+        if let Some(scope) = self
+            .scoped
+            .iter()
+            .find(|scope| covers(&scope.domain, &name))
+        {
+            return match &scope.client {
+                Ok(client) => ask_reverse(client, ip).await,
+                Err(why) => {
+                    scope
+                        .unasked
+                        .call_once(|| warn!("DNS for {} not asked ({why})", scope.domain));
+                    Reverse::Unasked
+                }
+            };
+        }
+        match &self.global {
+            Ok(client) => ask_reverse(client, ip).await,
+            Err(why) => {
+                self.say_unconfigured(why);
+                Reverse::Unasked
+            }
+        }
+    }
+
+    /// Says, once per pass, that the host has no server for a name no scoped
+    /// resolver answers for.
+    fn say_unconfigured(&self, why: &str) {
+        self.unconfigured.call_once(|| {
+            warn!("DNS lookups skipped (no DNS server configured)");
+            info!(
+                verbosity = 1,
+                "system resolver configuration unusable: {why}"
+            );
+        });
+    }
+}
+
+/// What a reverse lookup of one address came back with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Reverse {
+    /// The name the hosts file gives the address; nothing was asked.
+    Listed(String),
+    /// The name a server answered with.
+    Named(String),
+    /// A server answered, with no name in it.
+    Unnamed,
+    /// No answer at all: the server let the question time out, or could not
+    /// be reached.
+    Unanswered,
+    /// Nobody was asked: no server answers for the address's reverse zone, or
+    /// the address is one no server is asked about.
+    Unasked,
+}
+
+/// Asks `client` for `ip`'s PTR record.
+async fn ask_reverse<P: ConnectionProvider>(client: &Resolver<P>, ip: IpAddr) -> Reverse {
+    use hickory_resolver::proto::rr::RData;
+
+    let lookup = match client.reverse_lookup(ip).await {
+        Ok(lookup) => lookup,
+        // An answer that there is nothing, or any other the server gave, is
+        // the server answering. A timeout or a transport failure is not.
+        Err(hickory_resolver::net::NetError::Dns(_)) => return Reverse::Unnamed,
+        Err(_) => return Reverse::Unanswered,
+    };
+    lookup
+        .answers()
+        .iter()
+        .find_map(|record| match &record.data {
+            RData::PTR(ptr) => Some(ptr.to_string()),
+            _ => None,
+        })
+        .map_or(Reverse::Unnamed, Reverse::Named)
+}
+
+/// The name a reverse lookup of `ip` asks, folded as [`covers`] compares it:
+/// `4.3.2.1.in-addr.arpa` for `1.2.3.4`, and the nibbles under `ip6.arpa` for
+/// an IPv6 address.
+pub(crate) fn reverse_name(ip: IpAddr) -> String {
+    fold(&hickory_resolver::proto::rr::Name::from(ip).to_ascii())
 }
 
 /// A scoped domain and the client that answers for it.
@@ -386,7 +473,7 @@ impl DnsUdpSocket for ZonedUdp {
 }
 
 /// Whether `domain` is `name` or one of its ancestors, label by label.
-fn covers(domain: &str, name: &str) -> bool {
+pub(crate) fn covers(domain: &str, name: &str) -> bool {
     !domain.is_empty()
         && (name == domain
             || name
