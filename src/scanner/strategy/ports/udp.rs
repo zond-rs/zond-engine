@@ -267,9 +267,11 @@ impl UdpPortScanner {
     /// Builds a scanner around an already-opened transport, so the caller
     /// decides how probes reach the wire and where replies come from.
     ///
-    /// `src_port` must be the port the transport's capture filter was built
-    /// around, since it is what both halves use to recognize this scan's own
-    /// traffic - see the module documentation. Paired with a synthetic
+    /// Probes leave from the port the transport's capture admits replies to,
+    /// since it is what both halves use to recognize this scan's own traffic -
+    /// see the module documentation and [`ProbeTransport::reply_port`].
+    /// `src_port` is the port for a transport that fixes none, which is one
+    /// built from parts. Paired with a synthetic
     /// transport (`ProbeTransport::from_parts`, behind the `test-support`
     /// feature) this is the seam that lets classification be driven against a
     /// simulated network rather than a real one.
@@ -297,8 +299,8 @@ impl UdpPortScanner {
     ///
     /// Everything in `tuning` that decides how the transport is opened is the
     /// caller's to have honoured already, since the transport arrives open.
-    /// That includes the profile's source port: `src_port` is the one the
-    /// transport's capture was built around, and it is the one probed from.
+    /// That includes the profile's source port: the transport's reply port is
+    /// the one probed from, and `src_port` only where it fixes none.
     pub fn with_transport_tuned(
         resolver: SourceResolver,
         ctx: ScanContext,

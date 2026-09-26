@@ -17143,6 +17143,7 @@ pub fn zond_engine::transport::probe::ProbeTransport::open_link_first(zond_engin
 pub fn zond_engine::transport::probe::ProbeTransport::open_on(zond_engine::transport::probe::ProbeKind, &[zond_engine::model::ip::scoped::Zone]) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>
 pub fn zond_engine::transport::probe::ProbeTransport::open_receiver(zond_engine::transport::probe::ProbeKind) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>
 pub fn zond_engine::transport::probe::ProbeTransport::open_with(zond_engine::transport::probe::ProbeKind, zond_engine::transport::probe::SendMode) -> core::result::Result<Self, zond_engine::transport::probe::TransportError>
+pub fn zond_engine::transport::probe::ProbeTransport::reply_port(&self) -> core::option::Option<u16>
 impl core::marker::Freeze for zond_engine::transport::probe::ProbeTransport
 impl core::marker::Send for zond_engine::transport::probe::ProbeTransport
 impl core::marker::Sync for zond_engine::transport::probe::ProbeTransport

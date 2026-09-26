@@ -177,9 +177,11 @@ impl TcpPortScanner {
     /// Builds a scanner around an already-opened transport, so the caller
     /// decides how probes reach the wire and where replies come from.
     ///
-    /// `src_port` must be the port the transport's capture filter was built
-    /// around, as [`ProbeKind::TcpProbe`]'s `reply_port` names it, since that
-    /// is what recognizes this scan's own replies. Paired with a synthetic
+    /// Probes leave from the port the transport's capture admits replies to,
+    /// as [`ProbeKind::TcpProbe`]'s `reply_port` names it, since that is what
+    /// recognizes this scan's own replies; see
+    /// [`ProbeTransport::reply_port`]. `src_port` is the port for a transport
+    /// that fixes none, which is one built from parts. Paired with a synthetic
     /// transport (`ProbeTransport::from_parts`, behind the `test-support`
     /// feature) this is the seam that lets probe and reply correlation be
     /// driven against a simulated network rather than a real one, with no
@@ -210,8 +212,8 @@ impl TcpPortScanner {
     ///
     /// Everything in `tuning` that decides how the transport is opened is the
     /// caller's to have honoured already, since the transport arrives open.
-    /// That includes the profile's source port: `src_port` is the one the
-    /// transport's capture was built around, and it is the one probed from.
+    /// That includes the profile's source port: the transport's reply port is
+    /// the one probed from, and `src_port` only where it fixes none.
     pub fn with_transport_tuned(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -1274,6 +1276,41 @@ mod tests {
             Some(58),
             "the hop counter the reply arrived under was not kept"
         );
+    }
+
+    /// A scan over a transport opened for replies to one port sends from that
+    /// port, whatever port it was handed beside the transport, and reads the
+    /// answers that come back to it. Sent from the other, every answer would
+    /// arrive at a port the capture filters out, and every open port would
+    /// read as silent.
+    #[test]
+    fn a_scan_sends_from_the_port_its_transport_hears_replies_on() {
+        const HEARD_ON: u16 = 43_210;
+        assert_ne!(HEARD_ON, SRC_PORT);
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(8);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport =
+            ProbeTransport::from_parts(Box::new(sender), reply_rx).replying_to(HEARD_ON);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx,
+            TcpScanTechnique::Syn,
+            transport,
+            8,
+            SRC_PORT,
+        );
+
+        let token = probe(&mut scanner, &sent, 80);
+        let (segment, _, _) = sent.lock().unwrap()[0].clone();
+        let left_from = tcp::parse(&segment).expect("a TCP probe").source_port();
+        assert_eq!(left_from, HEARD_ON);
+
+        let reply = segment_to(80, HEARD_ON, scanner.technique, token, SYN | ACK);
+        scanner.handle_tcp_reply(&captured_with_ttl(reply, 64), Instant::now());
+        assert_eq!(port_state(&session, 80), Some(PortState::Open));
     }
 
     /// A reset is recorded as the reset it was, not as the absence of a reply.

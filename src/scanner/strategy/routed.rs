@@ -337,6 +337,23 @@ impl SweepProbe {
         Self::Init { src_port, dst_port }
     }
 
+    /// This sweep, its probes leaving from `port` where a transport's capture
+    /// admits replies to that port alone: an answer to any other never reaches
+    /// the sweep.
+    const fn leaving_from(self, port: Option<u16>) -> Self {
+        match (self, port) {
+            (Self::Syn { dst_ports, .. }, Some(port)) => Self::Syn {
+                src_port: Some(port),
+                dst_ports,
+            },
+            (Self::Init { dst_port, .. }, Some(port)) => Self::Init {
+                src_port: port,
+                dst_port,
+            },
+            (probe, _) => probe,
+        }
+    }
+
     /// The transport this sweep's probes and answers travel over.
     const fn transport(self) -> ProbeKind {
         match self {
@@ -773,7 +790,9 @@ impl RoutedScanner {
     ///
     /// The transport has to be one `probe` would have opened: an INIT sweep
     /// reading a capture filtered for TCP hears nothing, and the silence is
-    /// indistinguishable from a range with nothing on it.
+    /// indistinguishable from a range with nothing on it. Its probes leave from
+    /// the port the transport admits replies to, where it fixes one, whatever
+    /// port `probe` names; see [`ProbeTransport::reply_port`].
     pub fn with_transport_asking(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
@@ -829,6 +848,7 @@ impl RoutedScanner {
         }
 
         let target_count = sources.len();
+        let probe = probe.leaving_from(transport.reply_port());
 
         let (send_tick, batch, deadline_config) = schedule(
             target_count,
@@ -1231,6 +1251,33 @@ mod tests {
         SynPorts::for_scan(&PortSet::try_from(spec).expect("a port specification"))
             .as_slice()
             .to_vec()
+    }
+
+    /// A sweep over a transport opened for replies to one port leaves from
+    /// that port, whatever port its probe named: the capture hears nothing
+    /// sent to any other, and a sweep that left from one would read every
+    /// host down.
+    #[test]
+    fn a_sweep_leaves_from_the_port_its_transport_hears_replies_on() {
+        let (_session, ctx) = ScanSession::new();
+        let (_reply_tx, rx) = tokio::sync::mpsc::channel(1);
+        let transport =
+            ProbeTransport::from_parts(Box::new(MockSender::default()), rx).replying_to(5_000);
+        let sweep = RoutedScanner::with_transport_asking(
+            Vec::new(),
+            ctx,
+            None,
+            transport,
+            SweepProbe::init(4_000, 80),
+        );
+        assert_eq!(sweep.probe, SweepProbe::init(5_000, 80));
+
+        let unfixed = SweepProbe::syn(None);
+        assert_eq!(
+            unfixed.leaving_from(None),
+            unfixed,
+            "a transport fixing none"
+        );
     }
 
     /// A sweep asks at least what the unprivileged sweep asks, so privilege

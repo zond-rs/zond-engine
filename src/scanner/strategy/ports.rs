@@ -498,7 +498,8 @@ pub(super) struct CoreParts<'a> {
     /// What the caller asked for, which is where the evasion settings and the
     /// source port come from.
     pub tuning: &'a ProbeTuning,
-    /// The port every probe in this scan leaves from.
+    /// The port every probe in this scan leaves from, where `transport` fixes
+    /// none; see [`ProbeTransport::reply_port`].
     pub src_port: u16,
     /// How many endpoints the scan will ask about.
     pub target_count: usize,
@@ -538,6 +539,8 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             max_unresolved,
         } = parts;
 
+        // The transport's, where it has one: its capture hears no other.
+        let src_port = transport.reply_port().unwrap_or(src_port);
         let (send_tick, batch) = super::raw::pacing_for(rate);
         let deadline = deadline_for(
             deadline,

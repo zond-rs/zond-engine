@@ -264,6 +264,20 @@ pub enum ProbeKind {
 }
 
 impl ProbeKind {
+    /// The port a transport for this kind admits replies to, where the kind
+    /// fixes one.
+    const fn reply_port(self) -> Option<u16> {
+        match self {
+            ProbeKind::TcpProbe { reply_port, .. }
+            | ProbeKind::UdpProbe { reply_port }
+            | ProbeKind::Sctp { reply_port } => Some(reply_port),
+            ProbeKind::TcpSyn
+            | ProbeKind::UdpResolve
+            | ProbeKind::IcmpEcho { .. }
+            | ProbeKind::IpProtocol { .. } => None,
+        }
+    }
+
     /// The raw-socket transport type used for the send half.
     fn transport_type(self) -> TransportType {
         match self {
@@ -889,6 +903,9 @@ pub struct ProbeTransport {
     /// Boxed so the watch's locks sit behind a pointer rather than inside the
     /// transport, whose auto traits are public and would otherwise carry them.
     neighbors: Option<Box<NeighborWatch>>,
+    /// The port the capture admits replies to, where the kind it was opened
+    /// for fixes one. See [`reply_port`](Self::reply_port).
+    reply_port: Option<u16>,
 }
 
 /// Where the address resolution a transport's sends depend on stands, read by
@@ -924,6 +941,29 @@ impl ProbeTransport {
     /// See [`NeighborWatch`].
     pub(crate) fn neighbors(&self) -> Option<&NeighborWatch> {
         self.neighbors.as_deref()
+    }
+
+    /// The port this transport's capture admits replies to, where the kind it
+    /// was opened for fixes one: [`ProbeKind::TcpProbe`], [`ProbeKind::UdpProbe`]
+    /// and [`ProbeKind::Sctp`]. `None` for a kind that fixes none, and for a
+    /// transport built from parts, whose receive stream carries whatever is
+    /// pushed onto it.
+    ///
+    /// A scan over this transport sends from this port, whatever port it was
+    /// handed beside it: its probes' answers come back to the port they left
+    /// from, and an answer to any other is filtered out before the scan could
+    /// read it. The port a transport was opened for is the one fact both halves
+    /// act on, so it is kept here, where the capture that filters on it is.
+    pub fn reply_port(&self) -> Option<u16> {
+        self.reply_port
+    }
+
+    /// This transport, standing in for one whose capture admits replies to
+    /// `port` alone.
+    #[cfg(test)]
+    pub(crate) fn replying_to(mut self, port: u16) -> Self {
+        self.reply_port = Some(port);
+        self
     }
 
     /// This transport, reading `neighbors` as the kernel's neighbour table.
@@ -1004,6 +1044,7 @@ impl ProbeTransport {
             capture,
             neighbors: KernelNeighbors::from_system()
                 .map(|table| Box::new(NeighborWatch::Kernel(table))),
+            reply_port: kind.reply_port(),
         })
     }
 
@@ -1037,6 +1078,7 @@ impl ProbeTransport {
             rx,
             capture,
             neighbors,
+            reply_port: kind.reply_port(),
         })
     }
 
@@ -1072,6 +1114,7 @@ impl ProbeTransport {
             rx,
             capture,
             neighbors,
+            reply_port: kind.reply_port(),
         })
     }
 
@@ -1101,6 +1144,7 @@ impl ProbeTransport {
             rx,
             capture,
             neighbors: None,
+            reply_port: kind.reply_port(),
         })
     }
 
@@ -1121,6 +1165,7 @@ impl ProbeTransport {
             rx,
             capture: CaptureGuard::noop(),
             neighbors: None,
+            reply_port: None,
         }
     }
 
@@ -1133,6 +1178,7 @@ impl ProbeTransport {
             rx,
             capture: CaptureGuard::stopped_early(),
             neighbors: None,
+            reply_port: None,
         }
     }
 }

@@ -144,8 +144,10 @@ impl SctpPortScanner {
     /// Builds a scanner around an already-opened transport, so a caller decides
     /// how probes reach the wire and where replies come from.
     ///
-    /// `src_port` must be the port the transport's capture filter was built
-    /// around, since it is what makes a captured packet this scan's.
+    /// Probes leave from the port the transport's capture admits replies to,
+    /// since it is what makes a captured packet this scan's; see
+    /// [`ProbeTransport::reply_port`]. `src_port` is the port for a transport
+    /// that fixes none, which is one built from parts.
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -169,8 +171,8 @@ impl SctpPortScanner {
     ///
     /// Everything in `tuning` that decides how the transport is opened is the
     /// caller's to have honoured already, since the transport arrives open.
-    /// That includes the profile's source port: `src_port` is the one the
-    /// transport's capture was built around, and it is the one probed from.
+    /// That includes the profile's source port: the transport's reply port is
+    /// the one probed from, and `src_port` only where it fixes none.
     pub fn with_transport_tuned(
         resolver: SourceResolver,
         ctx: ScanContext,
