@@ -417,10 +417,10 @@ impl Addressing {
 /// # Errors
 ///
 /// When the host cannot be asked, which is a process with no descriptor free:
-/// the error is the one the system gave for that, or, where the read reports
-/// no failure of its own, one saying the table came back empty. Every host
-/// has a loopback interface, so an empty table is never the answer; it is
-/// what a read that failed without saying so returns.
+/// the error is the one the system gives for that, `EMFILE`, or, where no
+/// shortage can be found to blame, one saying the table came back empty.
+/// Every host has a loopback interface, so an empty table is never the
+/// answer; it is what a read that failed without saying so returns.
 ///
 /// On macOS the first read in a process with no descriptor free is refused
 /// rather than made: the system framework it goes through would dereference
@@ -467,10 +467,17 @@ pub(crate) fn interfaces_or_none() -> Vec<Link> {
 ///
 /// The refusal is of a read that would end the process; see [`asked_safely`].
 /// `netdev` reports no failure of its own: a read it could not make comes back
-/// as an empty table, which is refused as the failure it is.
+/// as an empty table, which is refused as the failure it is. It keeps no
+/// error to pass on, and the error number it leaves behind is whatever the
+/// last of its calls set, so what emptied the table is asked again instead:
+/// the one cause known to empty it is a process with no descriptor free, so
+/// a descriptor is opened and closed, and the system's refusal of it, the
+/// same `EMFILE` the read met, is the error given. Only a table empty with a
+/// descriptor to spare is reported as merely empty.
 pub(crate) fn host_table() -> io::Result<Vec<netdev::Interface>> {
     let mut table = asked_safely(netdev::get_interfaces)?;
     if table.is_empty() {
+        descriptor_free()?;
         return Err(io::Error::other(
             "the interface table came back empty, which no host's is",
         ));
@@ -527,11 +534,21 @@ fn asked_safely<T>(read: impl FnOnce() -> T) -> io::Result<T> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !LOADED.load(Ordering::Acquire) {
-        drop(std::fs::File::open("/dev/null")?);
+        descriptor_free()?;
     }
     let answer = read();
     LOADED.store(true, Ordering::Release);
     Ok(answer)
+}
+
+/// Opens a descriptor and closes it again, or gives the system's reason it
+/// could not: `EMFILE` in a process with none free.
+fn descriptor_free() -> io::Result<()> {
+    #[cfg(unix)]
+    drop(std::fs::File::open("/dev/null")?);
+    #[cfg(windows)]
+    drop(std::fs::File::open("NUL")?);
+    Ok(())
 }
 
 /// Elsewhere the read fails without harm where it has no descriptor, and the
@@ -1139,11 +1156,13 @@ mod tests {
     }
 
     /// A process with no descriptor free is told the interface table cannot
-    /// be read. On macOS the read goes through a system framework that, asked
-    /// for the first time with no descriptor to open, dereferences what it
-    /// failed to open and takes the process down with a segmentation fault no
-    /// caller can catch; elsewhere the read comes back empty, which is no
-    /// host's table and would be taken for a machine with no network.
+    /// be read, and why: the system's `EMFILE`, which names the shortage a
+    /// caller can do something about. On macOS the read goes through a system
+    /// framework that, asked for the first time with no descriptor to open,
+    /// dereferences what it failed to open and takes the process down with a
+    /// segmentation fault no caller can catch; elsewhere the read comes back
+    /// empty, which is no host's table and would be taken for a machine with
+    /// no network.
     #[cfg(unix)]
     #[test]
     fn a_first_read_in_a_full_table_is_refused_rather_than_ending_the_process() {
@@ -1160,9 +1179,7 @@ mod tests {
         drop(held);
 
         let refused = read.expect_err("a table read with no descriptor free");
-        if cfg!(target_os = "macos") {
-            assert_eq!(refused.raw_os_error(), Some(libc::EMFILE), "{refused}");
-        }
+        assert_eq!(refused.raw_os_error(), Some(libc::EMFILE), "{refused}");
         assert!(
             !interfaces()
                 .expect("the table, once there is room")
