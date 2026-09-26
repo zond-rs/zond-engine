@@ -1032,8 +1032,8 @@ mod tests {
         assert_eq!(quiet.first.as_deref(), Some("[2001:db8::1]:443"));
     }
 
-    use crate::scanner::loopback::{SilentPort, accept_from_this_process, from_this_process};
     use crate::scanner::session::ScanSession;
+    use crate::testing::loopback::{SilentPort, accept_from_this_process, from_this_process};
     use std::net::IpAddr;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

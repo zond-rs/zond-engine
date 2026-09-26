@@ -32,6 +32,12 @@
 pub mod fake_lan;
 pub mod fake_net;
 
+// The crate's own fixture, loaded by path because a tier sees nothing the
+// crate compiles for its tests alone: the loopback services every tier and
+// the crate's unit tests stand up hear only the process they run in.
+#[path = "../../src/testing/loopback.rs"]
+pub mod loopback;
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use pnet_base::MacAddr;

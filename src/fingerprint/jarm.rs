@@ -1646,7 +1646,7 @@ mod tests {
     /// stand in for the real ones, which are the same arithmetic in seconds.
     #[tokio::test]
     async fn a_server_that_stops_answering_costs_the_budget_and_yields_nothing() {
-        use crate::scanner::loopback::accept_from_this_process;
+        use crate::testing::loopback::accept_from_this_process;
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");

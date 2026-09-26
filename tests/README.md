@@ -14,7 +14,7 @@ A tier is one test binary, and its directory is what it contains:
 
 ```text
 tests/
-  support/       the shared harness: fixtures, fake_net, fake_lan
+  support/       the shared harness: fixtures, fake_net, fake_lan, loopback
   hygiene/       checks on the repository rather than on the engine
   portable/      Tier 1, loopback and files
   simulated/     Tier 2, fake_net and fake_lan

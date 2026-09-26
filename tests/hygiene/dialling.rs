@@ -383,7 +383,7 @@ fn sources() -> Vec<PathBuf> {
     let test_only = test_only_modules();
     every_source()
         .into_iter()
-        .filter(|path| !test_only.contains(path))
+        .filter(|path| !test_only.iter().any(|module| path.starts_with(module)))
         .collect()
 }
 
@@ -408,8 +408,10 @@ fn every_source() -> Vec<PathBuf> {
     out
 }
 
-/// The files belonging to a module some parent declared `#[cfg(test)]`, which
-/// [`without_tests`] cannot see from inside the file.
+/// The files and directories belonging to a module some parent declared
+/// `#[cfg(test)]`, which [`without_tests`] cannot see from inside the file.
+/// A directory stands for every module under it, which the gate on their
+/// ancestor compiles out as surely as it does the ancestor.
 fn test_only_modules() -> BTreeSet<PathBuf> {
     let mut out = BTreeSet::new();
     for path in every_source() {
@@ -432,7 +434,7 @@ fn test_only_modules() -> BTreeSet<PathBuf> {
                 None => continue,
             };
             out.insert(dir.join(format!("{name}.rs")));
-            out.insert(dir.join(name).join("mod.rs"));
+            out.insert(dir.join(name));
         }
     }
     out

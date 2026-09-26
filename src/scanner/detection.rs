@@ -996,7 +996,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             if let Ok(mut sock) =
-                crate::scanner::loopback::accept_from_this_process(&listener).await
+                crate::testing::loopback::accept_from_this_process(&listener).await
             {
                 let mut probe = [0u8; 64];
                 let _ = sock.read(&mut probe).await;

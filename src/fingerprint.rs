@@ -2914,7 +2914,7 @@ mod tests {
     /// detail beside the name.
     #[tokio::test]
     async fn an_unrecognised_answer_reads_the_same_however_the_port_was_found() {
-        use crate::scanner::loopback::accept_from_this_process;
+        use crate::testing::loopback::accept_from_this_process;
 
         let greeting = "WIDGET/4.2 ready";
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2966,7 +2966,7 @@ mod tests {
     /// what it heard first on each connection it took is what the test reads.
     #[tokio::test]
     async fn a_shared_port_asks_each_service_on_a_connection_of_its_own() {
-        use crate::scanner::loopback::accept_from_this_process;
+        use crate::testing::loopback::accept_from_this_process;
         use std::sync::{Arc, Mutex};
 
         let shared = 3000;

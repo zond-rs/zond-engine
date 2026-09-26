@@ -282,7 +282,7 @@ impl Probe for SocketProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scanner::loopback::from_this_process;
+    use crate::testing::loopback::from_this_process;
     use std::time::Duration;
 
     /// A budget with the ceilings this file is about, and nothing spent on the

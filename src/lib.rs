@@ -288,6 +288,11 @@ pub mod system;
 pub mod transport;
 pub(crate) mod version;
 
+// Fixtures the tests share, such as loopback services that hear only this
+// process. Compiled for tests alone.
+#[cfg(test)]
+pub(crate) mod testing;
+
 // Nothing here is public: it is the five macros the engine emits its own
 // diagnostics through, and a library that exported those would shadow
 // `tracing`'s and `log`'s macros of the same names in any consumer that

@@ -2359,8 +2359,8 @@ mod tests {
     /// left unidentified, though the scan decided about it before it knew.
     #[tokio::test]
     async fn a_tarpits_unlikely_port_is_found_open_and_not_asked_what_it_runs() {
-        use crate::scanner::loopback::SilentPort;
         use crate::scanner::service::TARPIT_PORTS_IDENTIFIED;
+        use crate::testing::loopback::SilentPort;
 
         let mut heard = Vec::new();
         for tarpit in [true, false] {
