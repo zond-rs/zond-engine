@@ -31,7 +31,7 @@ vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
 example = "\n      dGllczGEAAAAlQQWMS4yLjg0MC4xMTM1NTYuMS40LjgwMAQuZGF0YS5yZW1vdmVkLjCEAAAAK\n      AQdZG9tYWluQ29udHJvbGxlckZ1bmN0aW9uYWxpdHkxhAAAAAMEATc=\n    "
-metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2016", "os.cpe23" = "cpe:/o:microsoft:windows_server_2016:-" }
+metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "service.extrainfo" = "functional level 7: Windows Server 2016, 2019 or 2022", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server" }
 
 [[match]]
 name = "Microsoft LDS on Windows Server Server 2016"
@@ -40,14 +40,14 @@ vendor = "Microsoft"
 product = "Lightweight Directory Server"
 context = "ldap.search_result"
 example = "\n      aWVzMYQAAACvBBcxLjIuODQwLjExMzU1Ni4xLjQuMTg1MQQuZGF0YS5yZW1vdmVkLjCEAAAAK\n      AQdZG9tYWluQ29udHJvbGxlckZ1bmN0aW9uYWxpdHkxhAAAAAMEATc=\n    "
-metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory_lightweight_directory_service:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2016", "os.cpe23" = "cpe:/o:microsoft:windows_server_2016:-" }
+metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory_lightweight_directory_service:-", "service.extrainfo" = "functional level 7: Windows Server 2016, 2019 or 2022", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server" }
 
 [[match]]
 name = "Windows Server Server 2016"
 pattern = "(?im:domainControllerFunctionality1.{1,5}\\x04\\x017)"
 context = "ldap.search_result"
 example = "\n      MIQAAAAoBB1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNw==\n    "
-metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2016", "os.cpe23" = "cpe:/o:microsoft:windows_server_2016:-" }
+metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server" }
 
 [[match]]
 name = "Active Directory Controller on Windows Server 2012 R2"

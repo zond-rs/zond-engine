@@ -816,3 +816,57 @@ async fn an_rdp_server_is_named_from_its_negotiation_over_a_socket() {
     assert_eq!(service.name(), "rdp");
     assert_eq!(service.extrainfo(), Some("security layer: CredSSP (NLA)"));
 }
+
+/// A domain controller's functional level names its release only as far as
+/// the level does.
+///
+/// Level 7 is the highest Server 2016, 2019 and 2022 support alike, so it
+/// names Windows Server and no release. A 2016 reading there would stand on
+/// every 2019 and 2022 controller with a CPE sending it to the wrong
+/// vulnerability records, and nothing else a modern controller answers would
+/// contradict it. Level 10 is Server 2025's alone, and level 6 still names
+/// 2012 R2.
+#[test]
+fn a_functional_level_names_the_release_only_as_far_as_it_goes() {
+    use crate::model::port::Protocol::Tcp;
+
+    /// The root DSE attributes the rules read, in the four-byte lengths Active
+    /// Directory writes.
+    fn root_dse(level: &[u8]) -> String {
+        let mut bytes = b"\x04\x15supportedCapabilities1\x84\x00\x00\x00\x18\x04\x16".to_vec();
+        bytes.extend_from_slice(b"1.2.840.113556.1.4.8000\x84\x00\x00\x00\x28");
+        bytes.extend_from_slice(b"\x04\x1ddomainControllerFunctionality1\x84\x00\x00\x00");
+        bytes.push(2 + level.len() as u8);
+        bytes.extend_from_slice(&[0x04, level.len() as u8]);
+        bytes.extend_from_slice(level);
+        super::extract::reply_text(&bytes)
+    }
+
+    // The CPE a reading carries, release and all: `windows` is the family's
+    // own, which is as far as level 7 goes.
+    let cases: &[(&[u8], &str, &str)] = &[
+        (b"7", "Windows Server", "cpe:/o:microsoft:windows:-"),
+        (
+            b"10",
+            "Windows Server 2025",
+            "cpe:/o:microsoft:windows_server_2025:-",
+        ),
+        (
+            b"6",
+            "Windows Server 2012 R2",
+            "cpe:/o:microsoft:windows_server_2012:-",
+        ),
+    ];
+    for (level, product, cpe) in cases {
+        let found = SignatureDb::global()
+            .identify(389, Tcp, &root_dse(level))
+            .expect("a controller's root DSE is read");
+        let os = found.os.expect("the level names an operating system");
+        assert_eq!(os.product.as_deref(), Some(*product), "level {level:?}");
+        assert_eq!(os.cpe.as_deref(), Some(*cpe), "level {level:?}");
+        assert_eq!(
+            found.product.as_deref(),
+            Some("Active Directory Controller")
+        );
+    }
+}

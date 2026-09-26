@@ -53,3 +53,23 @@ pattern = '(?s)^\x30(?:[\x0c-\x7f]|\x81.|\x82..|\x84....)\x02\x01'
 product = "ldap"
 # A bind response from Active Directory: success, no DN, no message.
 example = "0\u0084\u0000\u0000\u0000\u0010\u0002\u0001\u0001a\u0084\u0000\u0000\u0000\u0007\u000a\u0001\u0000\u0004\u0000\u0004\u0000"
+
+# ── What a domain controller's root DSE says about its release ───────────────
+#
+# `domainControllerFunctionality` is the highest functional level the
+# controller itself supports, and MS-ADTS fixes the level each release
+# supports. Levels 0 to 7 are read by the imported
+# rules; 7 is shared by Server 2016, 2019 and 2022, so it names no release.
+# Level 10, `DS_BEHAVIOR_WIN2025`, is Server 2025's alone.
+#
+# The value is a set of one OCTET STRING: `31`, a length in whatever form the
+# server writes, then `04 02 "10"`. Active Directory writes the set's length in
+# five bytes, which is what `.{1,5}` spans.
+[[match]]
+name = "domain_controller_level_2025"
+pattern = '(?i)1\.2\.840\.113556\.1\.4\.800.*domainControllerFunctionality1.{1,5}\x04\x0210'
+vendor = "Microsoft"
+product = "Active Directory Controller"
+context = "ldap.search_result"
+example = "\u0004\u00161.2.840.113556.1.4.8000\u0084\u0000\u0000\u0000\u0029\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0004\u0004\u000210"
+metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "service.extrainfo" = "functional level 10", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2025", "os.cpe23" = "cpe:/o:microsoft:windows_server_2025:-" }

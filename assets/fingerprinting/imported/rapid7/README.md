@@ -181,3 +181,19 @@ These fingerprints are automatically converted from the original XML format into
 - OS Family/Version
 - Hardware Device Type
 - Version Capture Groups
+
+### Functional level 7 named as Windows Server 2016 (2026-09-26, 3 rules)
+
+`Active Directory Controller on Windows Server 2016`, `Microsoft LDS on Windows
+Server Server 2016` and `Windows Server Server 2016` read
+`domainControllerFunctionality` 7 and named the release 2016 with its CPE. Level
+7 is the highest a domain controller on Server 2016, 2019 or 2022 reports
+(MS-ADTS, `DS_BEHAVIOR_WIN2016`); no later level existed until Server
+2025, which reports 10. So the value proves one of three releases, and the 2016
+CPE sent every 2019 and 2022 controller to the wrong vulnerability records.
+
+The three now name `Windows Server` with no release and no operating-system
+CPE, and the two that identify a directory state the level and the releases it
+covers in `service.extrainfo`. Their names are left as imported, since a rule's
+name is its identifier. Level 10 is read by `network/ldap.toml`, which is
+authored here.
