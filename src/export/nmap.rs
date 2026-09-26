@@ -1022,10 +1022,11 @@ fn port_state(state: PortState) -> Option<&'static str> {
 /// The packet that decided a port's state, in nmap's words.
 ///
 /// Nmap's `reason` names that packet, and this engine records it on the port's
-/// [`Discovery`], so the word is read from there: a UDP port that answered is
-/// `udp-response`, a connection the operating system refused `conn-refused`, an
-/// open port a window scan read off a reset `reset`. Nothing is inferred from the
-/// state where the record names the packet.
+/// [`Discovery`](crate::model::port::discovery::Discovery), so the word is
+/// read from there: a UDP port that answered is `udp-response`, a connection
+/// the operating system refused `conn-refused`, an open port a window scan
+/// read off a reset `reset`. Nothing is inferred from the state where the
+/// record names the packet.
 ///
 /// A port with no record of its packet falls back to the one packet its state
 /// and transport admit, where there is exactly one: only a SYN/ACK opens a TCP
@@ -1465,8 +1466,8 @@ mod tests {
     /// Nmap's reason is per port and says which packet arrived, and a consumer
     /// reading it learns how the verdict was reached: a UDP port that answered
     /// is not a TCP handshake, and a connection the operating system refused is
-    /// not a reset anybody saw. A reason chosen by state alone told every
-    /// open UDP port's reader a SYN/ACK arrived.
+    /// not a reset anybody saw. A reason chosen by state alone would tell
+    /// every open UDP port's reader that a SYN/ACK arrived.
     #[test]
     fn a_ports_reason_names_the_packet_that_decided_it() {
         use crate::model::port::discovery::Discovery;
@@ -1517,10 +1518,11 @@ mod tests {
 
     /// A host's reason names the evidence it holds, the most direct first.
     ///
-    /// Every live host was an `echo-reply`, including one only its neighbour
-    /// table answered for on a segment that drops pings, and one a router
-    /// reported unreachable was `no-response`, which a reader of this format
-    /// takes for silence and so reads back as unknown rather than down.
+    /// A reason chosen by status alone would make every live host an
+    /// `echo-reply`, including one only its neighbour table answered for on a
+    /// segment that drops pings, and one a router reported unreachable
+    /// `no-response`, which a reader of this format takes for silence and so
+    /// reads back as unknown rather than down.
     #[test]
     fn a_hosts_reason_names_the_evidence_it_holds() {
         use std::net::{IpAddr, Ipv4Addr};
@@ -1670,8 +1672,8 @@ mod tests {
     /// summarises one, and every port in the summary reads back as it went out.
     ///
     /// Each listed port is a service row to an importer and a lookup to an
-    /// exploit search, so a full-range scan listed whole put 65,535 of both
-    /// into every tool that read it, nearly all the port-number label of a
+    /// exploit search, so a full-range scan listed whole puts 65,535 of both
+    /// into every tool that reads it, nearly all the port-number label of a
     /// closed port. What stays listed is what a summary would lose: the open
     /// port, and a closed one somebody identified a service on.
     #[cfg(feature = "import-nmap")]
@@ -1762,9 +1764,9 @@ mod tests {
 
     /// An SCTP port reads back as one, listed or summarised.
     ///
-    /// Nmap writes SCTP as `protocol="sctp"` and this engine scans it, so a
-    /// reader refusing the transport refused every document an SCTP scan
-    /// exported, not just the port.
+    /// Nmap writes SCTP as `protocol="sctp"` and this engine scans it, and a
+    /// reader refusing the transport refuses every document an SCTP scan
+    /// exports, not just the port.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn an_sctp_port_survives_the_round_trip() {
@@ -1791,9 +1793,9 @@ mod tests {
     /// The run statistics count the addresses the scan covered, not the hosts
     /// it recorded.
     ///
-    /// A sweep of a /24 with a handful answering covered 256 addresses, and a
-    /// consumer reporting coverage from `<runstats>` was told it covered the
-    /// handful, every one of them up.
+    /// A sweep of a /24 with a handful answering covers 256 addresses, and a
+    /// count of the recorded hosts would tell a consumer reporting coverage
+    /// from `<runstats>` that it covered the handful, every one of them up.
     #[test]
     fn the_run_statistics_count_what_the_scan_covered() {
         use crate::report::{ScanKind, TargetScope};
@@ -1834,8 +1836,8 @@ mod tests {
     /// Line breaks in a value survive a standard XML parser.
     ///
     /// XML allows a raw line feed in an attribute value and a parser reading it
-    /// turns it into a space, so a banner's second line arrived in every tool
-    /// downstream joined to its first.
+    /// turns it into a space, so written raw, a banner's second line reaches
+    /// every tool downstream joined to its first.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn a_line_break_in_a_value_is_written_as_a_reference_and_reads_back() {
@@ -1871,7 +1873,7 @@ mod tests {
     /// with its CPEs, where nmap's readers look for them.
     ///
     /// An importer files a host under the class's family and a vulnerability
-    /// lookup keys on the CPE, and a match written with its name alone gave
+    /// lookup keys on the CPE, and a match written with its name alone gives
     /// both nothing.
     #[cfg(feature = "import-nmap")]
     #[test]
