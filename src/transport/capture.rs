@@ -38,7 +38,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pcap::{Active, Capture};
-use pnet_packet::ip::IpNextHeaderProtocol;
 #[cfg(not(windows))]
 use std::os::unix::io::AsRawFd;
 use tokio::sync::mpsc;
@@ -46,11 +45,11 @@ use tokio::sync::mpsc;
 use crate::logging::error;
 use crate::model::capture::{CaptureCounts, IpObservation};
 use crate::model::ip::scoped::Zone;
+use crate::model::mac::MacAddr;
 use crate::protocols::ethernet::VLAN_TAG_LEN;
 use crate::protocols::sizes::{ETH_HDR_LEN, IP_V6_HDR_LEN};
 use crate::transport::frame::{self, LinkType};
 use crate::{counted, info, warn};
-use pnet_base::MacAddr;
 
 /// How much of each frame a scan's receive path keeps: a whole frame at
 /// Ethernet's standard MTU, behind the deepest link header this crate strips.
@@ -357,7 +356,7 @@ impl CaptureFilter {
                     if let Err(malformed) = compiles_for_ethernet(clause) {
                         return Err(CaptureError::Filter {
                             filter: clause.clone(),
-                            source: malformed,
+                            source: LibraryError::new(malformed),
                         });
                     }
                     left_out.push(clause.clone());
@@ -369,7 +368,7 @@ impl CaptureFilter {
         match refused {
             Some(source) if kept.is_empty() => Err(CaptureError::Filter {
                 filter: self.to_string(),
-                source,
+                source: LibraryError::new(source),
             }),
             _ => Ok((kept.join(" or "), left_out)),
         }
@@ -448,8 +447,9 @@ pub struct CapturedSegment {
     /// tell a scan's own probe from the answer to it. `None` for a synthetic
     /// stream with no IP header, as [`observation`](Self::observation) is.
     pub destination: Option<IpAddr>,
-    /// The protocol [`bytes`](Self::bytes) should be parsed as.
-    pub protocol: IpNextHeaderProtocol,
+    /// The protocol [`bytes`](Self::bytes) should be parsed as, by its IANA
+    /// number: 6 for TCP, 17 for UDP, 58 for ICMPv6.
+    pub protocol: u8,
     /// The Layer-4 segment, link and IP headers already stripped.
     pub bytes: Vec<u8>,
     /// What the IP header this segment arrived under said about the stack that
@@ -506,7 +506,7 @@ impl CapturedSegment {
     /// Exists so the ordinary synthetic case is one call rather than a struct
     /// literal ending in `observation: None`, and so that adding a further
     /// observed field later does not break every test that builds one.
-    pub fn synthetic(source: IpAddr, protocol: IpNextHeaderProtocol, bytes: Vec<u8>) -> Self {
+    pub fn synthetic(source: IpAddr, protocol: u8, bytes: Vec<u8>) -> Self {
         Self {
             source,
             destination: None,
@@ -794,25 +794,25 @@ pub enum CaptureError {
     /// Ethernet address means nothing on a tunnel, and `libpcap` refuses to
     /// compile one for it. The expression is named because in both cases it is
     /// the thing to look at.
-    #[error("the filter `{filter}` would not compile: {}", library_message(.source))]
+    #[error("the filter `{filter}` would not compile: {source}")]
     Filter {
         /// The expression that was rejected.
         filter: String,
         /// What `libpcap` said.
         #[source]
-        source: pcap::Error,
+        source: LibraryError,
     },
 
     /// One named link could not be opened, for a reason other than privilege.
     /// Unlike `NoInterface` this names the link, because a caller asked for
     /// that one in particular and there is nothing else to fall back to.
-    #[error("{interface} could not be opened: {}", library_message(.source))]
+    #[error("{interface} could not be opened: {source}")]
     Open {
         /// The link that refused.
         interface: String,
         /// What `libpcap` said.
         #[source]
-        source: pcap::Error,
+        source: LibraryError,
     },
 
     /// One named link could not be opened because this process may not
@@ -823,16 +823,13 @@ pub enum CaptureError {
     /// right to capture short of it, such as membership of `access_bpf` on
     /// macOS or `cap_net_raw` on Linux. It is decided by the status `libpcap`
     /// activated the handle with, never by reading its message.
-    #[error(
-        "{interface} could not be opened without privileges this process lacks: {}",
-        library_message(.source)
-    )]
+    #[error("{interface} could not be opened without privileges this process lacks: {source}")]
     Denied {
         /// The link that refused.
         interface: String,
         /// What `libpcap` said.
         #[source]
-        source: pcap::Error,
+        source: LibraryError,
     },
 
     /// The process or the system ran out of descriptors partway through the
@@ -880,11 +877,10 @@ impl CaptureError {
     /// process's own errors carry, so the match is against those rather than
     /// against a spelling of them.
     pub(crate) fn is_exhausted(&self) -> bool {
-        let Self::Open {
-            source: pcap::Error::PcapError(message),
-            ..
-        } = self
-        else {
+        let Self::Open { source, .. } = self else {
+            return false;
+        };
+        let pcap::Error::PcapError(message) = &source.0 else {
             return false;
         };
         #[cfg(unix)]
@@ -914,11 +910,10 @@ impl CaptureError {
                 [(_, only)] => only.reason(),
                 several => refusals_reason(several),
             },
-            Self::Open { source, .. } => library_message(source).into_owned(),
-            Self::Denied { source, .. } => format!(
-                "this process lacks the privileges to capture on it: {}",
-                library_message(source)
-            ),
+            Self::Open { source, .. } => source.to_string(),
+            Self::Denied { source, .. } => {
+                format!("this process lacks the privileges to capture on it: {source}")
+            }
             Self::UnsupportedLinkType { dlt, .. } => {
                 format!("it carries data-link type {dlt}, which nothing here parses")
             }
@@ -962,18 +957,37 @@ fn refusals_reason(refused: &[(String, CaptureError)]) -> String {
         .join("; ")
 }
 
-/// What the capture library said, in its own words.
+/// What the capture library said when it refused, in its own words.
 ///
-/// The `pcap` crate prefixes every message the library returns with `libpcap
-/// error:`, whatever the library is. On Windows it is Npcap, and the prefix
-/// reads as a library missing when one is installed and has said precisely what
-/// it refused, so the message is quoted bare.
-fn library_message(error: &pcap::Error) -> std::borrow::Cow<'_, str> {
-    match error {
-        pcap::Error::PcapError(message) => message.into(),
-        other => other.to_string().into(),
+/// This crate's type rather than the binding's, so that which binding reaches
+/// `libpcap` or Npcap, and which release of it, stays this crate's business:
+/// a caller reads the library's words through `Display`, and nothing in a
+/// signature names the binding.
+///
+/// The words are quoted bare. The binding prefixes every message the library
+/// returns with `libpcap error:`, whatever the library is. On Windows it is
+/// Npcap, and the prefix reads as a library missing when one is installed and
+/// has said precisely what it refused.
+#[derive(Debug)]
+pub struct LibraryError(pcap::Error);
+
+impl LibraryError {
+    /// Wraps what the binding returned.
+    pub(crate) fn new(error: pcap::Error) -> Self {
+        Self(error)
     }
 }
+
+impl std::fmt::Display for LibraryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            pcap::Error::PcapError(message) => f.write_str(message),
+            other => other.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for LibraryError {}
 
 /// Opens a filtered capture on each named link and starts reading, parsing
 /// every admitted frame down to the Layer-4 segment a scanner reads.
@@ -1493,7 +1507,7 @@ fn open(name: &str, options: &CaptureOptions) -> Result<Opened, CaptureError> {
     #[cfg(not(windows))]
     let capture = capture.setnonblock().map_err(|source| CaptureError::Open {
         interface: name.to_owned(),
-        source,
+        source: LibraryError::new(source),
     })?;
 
     let mut capture = capture;
@@ -1508,7 +1522,10 @@ fn open(name: &str, options: &CaptureOptions) -> Result<Opened, CaptureError> {
     let (filter, left_out) = options.filter.for_link(&capture)?;
     capture
         .filter(&filter, true)
-        .map_err(|source| CaptureError::Filter { filter, source })?;
+        .map_err(|source| CaptureError::Filter {
+            filter,
+            source: LibraryError::new(source),
+        })?;
 
     Ok(Opened {
         capture,
@@ -1700,7 +1717,7 @@ impl FrameSender {
             .filter("less 0", true)
             .map_err(|source| CaptureError::Open {
                 interface: link.to_owned(),
-                source,
+                source: LibraryError::new(source),
             })?;
 
         Ok(Self { capture })
@@ -1781,7 +1798,7 @@ impl FrameChannel {
         #[cfg(not(windows))]
         let capture = capture.setnonblock().map_err(|source| CaptureError::Open {
             interface: link.to_owned(),
-            source,
+            source: LibraryError::new(source),
         })?;
 
         let mut capture = capture;
@@ -1789,7 +1806,7 @@ impl FrameChannel {
             .filter(filter, true)
             .map_err(|source| CaptureError::Filter {
                 filter: filter.to_owned(),
-                source,
+                source: LibraryError::new(source),
             })?;
 
         Ok(Self {
@@ -1898,7 +1915,7 @@ mod libpcap {
 
     use pcap::{Active, Capture};
 
-    use super::{CaptureError, device_name};
+    use super::{CaptureError, LibraryError, device_name};
 
     /// `libpcap`'s capture handle, which this side only ever holds a pointer
     /// to.
@@ -1964,7 +1981,7 @@ mod libpcap {
     ) -> Result<(Capture<Active>, Option<String>), CaptureError> {
         let device = CString::new(device_name(link)).map_err(|_| CaptureError::Open {
             interface: link.to_owned(),
-            source: pcap::Error::InvalidInputString,
+            source: LibraryError::new(pcap::Error::InvalidInputString),
         })?;
 
         let mut errbuf = [0 as c_char; ERRBUF_SIZE];
@@ -1978,7 +1995,9 @@ mod libpcap {
             let message = unsafe { CStr::from_ptr(errbuf.as_ptr()) };
             return Err(CaptureError::Open {
                 interface: link.to_owned(),
-                source: pcap::Error::PcapError(message.to_string_lossy().into_owned()),
+                source: LibraryError::new(pcap::Error::PcapError(
+                    message.to_string_lossy().into_owned(),
+                )),
             });
         };
 
@@ -2024,7 +2043,7 @@ mod libpcap {
     /// that matched the words would come to blame privilege for a failure it
     /// did not cause, or miss the one it did.
     pub(super) fn refusal(link: &str, status: c_int, message: String) -> CaptureError {
-        let source = pcap::Error::PcapError(message);
+        let source = LibraryError::new(pcap::Error::PcapError(message));
         match status {
             PCAP_ERROR_PERM_DENIED | PCAP_ERROR_PROMISC_PERM_DENIED => CaptureError::Denied {
                 interface: link.to_owned(),
@@ -2097,7 +2116,7 @@ mod tests {
         let message = "Error opening adapter: Network interface was not found.";
         let refused = CaptureError::Open {
             interface: guid.to_owned(),
-            source: pcap::Error::PcapError(message.to_owned()),
+            source: LibraryError::new(pcap::Error::PcapError(message.to_owned())),
         };
 
         assert_eq!(
@@ -2180,13 +2199,13 @@ mod tests {
     fn a_capture_no_link_would_take_says_why_each_refused() {
         let denied = |link: &str| CaptureError::Denied {
             interface: link.to_owned(),
-            source: pcap::Error::PcapError("Operation not permitted".into()),
+            source: LibraryError::new(pcap::Error::PcapError("Operation not permitted".into())),
         };
         let filter = CaptureError::Filter {
             filter: "ether dst 02:00:00:00:00:01".into(),
-            source: pcap::Error::PcapError(
+            source: LibraryError::new(pcap::Error::PcapError(
                 "ethernet addresses supported only on ethernet/FDDI/token ring".into(),
-            ),
+            )),
         };
 
         let unprivileged = CaptureError::NoInterface {
@@ -2254,7 +2273,9 @@ mod tests {
                 link.to_owned(),
                 CaptureError::Open {
                     interface: link.to_owned(),
-                    source: pcap::Error::PcapError("/dev/bpf: Too many open files".into()),
+                    source: LibraryError::new(pcap::Error::PcapError(
+                        "/dev/bpf: Too many open files".into(),
+                    )),
                 },
             )
         };
@@ -2514,7 +2535,7 @@ mod tests {
         let before = Instant::now();
         let segment = CapturedSegment::synthetic(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
-            IpNextHeaderProtocols::Tcp,
+            IpNextHeaderProtocols::Tcp.0,
             vec![0; 20],
         );
         let after = Instant::now();

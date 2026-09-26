@@ -16,11 +16,11 @@
 //! replies, whatever it thinks of being scanned, because ignoring ARP means its
 //! own router cannot reach it either.
 
+use crate::model::mac::MacAddr;
 use crate::protocols::craft::{Arp, Ethernet, Packet};
 use crate::protocols::error::{PacketError, Result};
 use crate::protocols::ethernet::Frame;
 use crate::protocols::sizes::{ARP_LEN, MIN_ETH_FRAME_NO_FCS};
-use pnet_base::MacAddr;
 use pnet_packet::arp::ArpPacket;
 use pnet_packet::ethernet::EtherTypes;
 use std::net::Ipv4Addr;
@@ -44,7 +44,7 @@ const PROTO_ADDR_LEN_V4: u8 = 4;
 pub fn build_request(src_mac: MacAddr, src_addr: Ipv4Addr, dst_addr: Ipv4Addr) -> Vec<u8> {
     frame(
         src_mac,
-        MacAddr::broadcast(),
+        MacAddr::BROADCAST,
         Arp::request(src_mac, src_addr, dst_addr),
     )
 }
@@ -128,8 +128,9 @@ pub fn sender_address(frame: &Frame<'_>) -> Result<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::mac::MacAddr;
+    use crate::protocols::mac::{IntoCoreMac, IntoPnetMac};
     use crate::protocols::sizes::ETH_HDR_LEN;
-    use pnet_base::MacAddr;
     use pnet_packet::arp::ArpHardwareTypes;
     use pnet_packet::arp::{ArpOperations, MutableArpPacket};
     use pnet_packet::ethernet::MutableEthernetPacket;
@@ -139,8 +140,8 @@ mod tests {
         let mut eth_buffer = vec![0u8; ETH_HDR_LEN];
         {
             let mut eth_pkt = MutableEthernetPacket::new(&mut eth_buffer).unwrap();
-            eth_pkt.set_destination(MacAddr::broadcast());
-            eth_pkt.set_source(MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06));
+            eth_pkt.set_destination(MacAddr::BROADCAST.into_pnet());
+            eth_pkt.set_source(MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06).into_pnet());
             eth_pkt.set_ethertype(EtherTypes::Arp);
         }
 
@@ -154,9 +155,10 @@ mod tests {
             arp_pkt.set_hw_addr_len(6);
             arp_pkt.set_proto_addr_len(4);
             arp_pkt.set_operation(ArpOperations::Reply);
-            arp_pkt.set_sender_hw_addr(MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06));
+            arp_pkt
+                .set_sender_hw_addr(MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06).into_pnet());
             arp_pkt.set_sender_proto_addr(sender_ip);
-            arp_pkt.set_target_hw_addr(MacAddr::zero());
+            arp_pkt.set_target_hw_addr(MacAddr::ZERO.into_pnet());
             arp_pkt.set_target_proto_addr(Ipv4Addr::new(192, 0, 2, 1));
         }
 
@@ -177,9 +179,9 @@ mod tests {
 
         let eth_packet =
             super::super::ethernet::parse(&buffer).expect("Failed to parse Ethernet packet");
-        assert_eq!(eth_packet.destination(), MacAddr::broadcast());
+        assert_eq!(eth_packet.destination(), MacAddr::BROADCAST);
         assert_eq!(eth_packet.source(), src_mac);
-        assert_eq!(eth_packet.ethertype(), EtherTypes::Arp);
+        assert_eq!(eth_packet.ethertype(), EtherTypes::Arp.0);
 
         let arp_payload = eth_packet.payload();
         assert!(arp_payload.len() >= ARP_LEN);
@@ -190,11 +192,11 @@ mod tests {
         assert_eq!(arp_packet.get_protocol_type(), EtherTypes::Ipv4);
         assert_eq!(arp_packet.get_hw_addr_len(), 6);
         assert_eq!(arp_packet.get_proto_addr_len(), 4);
-        assert_eq!(arp_packet.get_sender_hw_addr(), src_mac);
+        assert_eq!(arp_packet.get_sender_hw_addr().into_core(), src_mac);
         assert_eq!(arp_packet.get_sender_proto_addr(), src_addr);
         assert_eq!(
-            arp_packet.get_target_hw_addr(),
-            MacAddr::zero(),
+            arp_packet.get_target_hw_addr().into_core(),
+            MacAddr::ZERO,
             "undefined in a request, and zero is what every ordinary stack sends"
         );
         assert_eq!(arp_packet.get_target_proto_addr(), dst_addr);
@@ -219,7 +221,7 @@ mod tests {
         let arp = ArpPacket::new(eth.payload()).expect("an ARP packet");
         assert_eq!(arp.get_operation(), ArpOperations::Request);
         assert_eq!(
-            arp.get_target_hw_addr(),
+            arp.get_target_hw_addr().into_core(),
             dst_mac,
             "the entry being validated is named, so a host that moved is visible"
         );

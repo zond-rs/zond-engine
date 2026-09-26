@@ -196,7 +196,7 @@ pub fn start_capture(link: &Link, filter: &str) -> Result<EthernetHandle, Channe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::capture::CaptureError;
+    use crate::transport::capture::{CaptureError, LibraryError};
 
     /// How often `needle` appears in `haystack`.
     fn occurrences(haystack: &str, needle: &str) -> usize {
@@ -218,7 +218,9 @@ mod tests {
                     "en0".into(),
                     CaptureError::Open {
                         interface: "en0".into(),
-                        source: pcap::Error::PcapError("BIOCSETIF failed".into()),
+                        source: LibraryError::new(pcap::Error::PcapError(
+                            "BIOCSETIF failed".into(),
+                        )),
                     },
                 )],
             },
@@ -237,7 +239,9 @@ mod tests {
             interface: "en0".into(),
             source: CaptureError::Denied {
                 interface: "en0".into(),
-                source: pcap::Error::PcapError("/dev/bpf0: Permission denied".into()),
+                source: LibraryError::new(pcap::Error::PcapError(
+                    "/dev/bpf0: Permission denied".into(),
+                )),
             },
         };
         let said = refused.to_string();

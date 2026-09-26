@@ -74,7 +74,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet_packet::tcp::TcpPacket;
 
 use crate::counted;
@@ -476,7 +476,7 @@ impl Tracer {
     fn answered_distance(&self, segment: &CapturedSegment) -> Option<u8> {
         match self.probe {
             TraceProbe::Syn { .. } => {
-                if segment.protocol != IpNextHeaderProtocols::Tcp {
+                if segment.protocol != IpNextHeaderProtocols::Tcp.0 {
                     return None;
                 }
                 let reply = TcpPacket::new(&segment.bytes)?;
@@ -492,7 +492,7 @@ impl Tracer {
             TraceProbe::Echo => {
                 // The protocol the message arrived under says which family's
                 // numbering its type is in; the message itself cannot.
-                let over_ipv6 = match segment.protocol {
+                let over_ipv6 = match IpNextHeaderProtocol(segment.protocol) {
                     IpNextHeaderProtocols::Icmp => false,
                     IpNextHeaderProtocols::Icmpv6 => true,
                     _ => return None,
@@ -530,7 +530,7 @@ impl Tracer {
 fn attribute(probe: TraceProbe, marker: u16, quoted: &IpSegment<'_>) -> Option<Sent> {
     let head: [u8; 8] = quoted.payload.get(..8)?.try_into().ok()?;
 
-    let distance = match (probe, quoted.protocol) {
+    let distance = match (probe, IpNextHeaderProtocol(quoted.protocol)) {
         (TraceProbe::Syn { .. }, IpNextHeaderProtocols::Tcp) => {
             // The source port, then the sequence number's high bytes. Two
             // independent checks of the same value, because a router quoting a
@@ -1226,7 +1226,7 @@ mod tests {
                 received_at: Instant::now(),
                 source,
                 destination: None,
-                protocol,
+                protocol: protocol.0,
                 bytes,
                 observation: Some(IpObservation::V4(Ipv4Observation {
                     ttl,
@@ -1280,7 +1280,7 @@ mod tests {
                     s,
                     d,
                     segment.len() as u16,
-                    IpNextHeaderProtocols::Tcp,
+                    IpNextHeaderProtocols::Tcp.0,
                     emission.hop_limit,
                 )
                 .expect("a header builds");
@@ -1690,9 +1690,14 @@ mod tests {
         let (IpAddr::V4(s), IpAddr::V4(d)) = (source, target) else {
             unreachable!("the fixture is IPv4")
         };
-        let header =
-            crate::protocols::ip::build_ipv4_header(s, d, segment.len() as u16, protocol, distance)
-                .expect("a header builds");
+        let header = crate::protocols::ip::build_ipv4_header(
+            s,
+            d,
+            segment.len() as u16,
+            protocol.0,
+            distance,
+        )
+        .expect("a header builds");
 
         header.into_iter().chain(segment).collect()
     }

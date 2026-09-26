@@ -50,8 +50,8 @@ use std::time::{Duration, Instant};
 use crate::support::fake_lan::{FakeLan, LanHost, LanProbe};
 use crate::support::fake_net::{FakeNet, Layer4, Policy};
 use crate::support::*;
-use pnet_base::MacAddr;
 use zond_engine::model::ip::set::IpSet;
+use zond_engine::model::mac::MacAddr;
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::report::ScannerKind;
@@ -80,7 +80,7 @@ const SOLICITATION_ATTEMPTS: usize = 3;
 /// The fixed source port the simulated UDP scans probe from.
 const UDP_SRC_PORT: u16 = 54_321;
 
-const PEER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
+const PEER_MAC: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 
 // ── TCP SYN ────────────────────────────────────────────────────────────────
 

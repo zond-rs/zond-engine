@@ -125,7 +125,7 @@ pub enum LinkKind {
 
 /// A network interface on this machine.
 ///
-/// Built from the host's interface table by [`from_netdev`](Self::from_netdev),
+/// Built from the host's interface table by `from_netdev`,
 /// or by hand in a test. Every predicate below is a fact this crate acts on;
 /// see the module note for why none of them is delegated to the library that
 /// read the table.
@@ -590,7 +590,7 @@ impl Link {
     /// translating or, as the last one did, filling in a zero. The operational
     /// state is what Windows actually publishes, through `GetAdaptersAddresses`,
     /// and what Linux and the BSDs can be asked for as readily.
-    pub fn from_netdev(interface: netdev::Interface) -> Self {
+    pub(crate) fn from_netdev(interface: netdev::Interface) -> Self {
         use netdev::interface::types::InterfaceType;
 
         let kind = if interface.is_loopback() {

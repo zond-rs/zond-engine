@@ -2719,6 +2719,8 @@ impl zond_engine::error::Coded for zond_engine::signature::SignatureError
 pub fn zond_engine::signature::SignatureError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::capture::CaptureError
 pub fn zond_engine::transport::capture::CaptureError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::capture::LibraryError
+pub fn zond_engine::transport::capture::LibraryError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::channel::ChannelError
 pub fn zond_engine::transport::channel::ChannelError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::exchange::ExchangeError
@@ -2729,8 +2731,6 @@ impl zond_engine::error::Coded for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::probe::UnknownSendMode
 pub fn zond_engine::transport::probe::UnknownSendMode::code(&self) -> &'static str
-impl zond_engine::error::Coded for zond_engine::transport::raw::RawSocketError
-pub fn zond_engine::transport::raw::RawSocketError::code(&self) -> &'static str
 pub mod zond_engine::evasion
 #[non_exhaustive] pub enum zond_engine::evasion::EvasionError
 pub zond_engine::evasion::EvasionError::FragmentTooSmall
@@ -7067,8 +7067,6 @@ pub zond_engine::journal::format::JournalError::VersionTooNew::found: u32
 pub zond_engine::journal::format::JournalError::VersionTooNew::understood: u32
 impl core::convert::From<core::io::error::Error> for zond_engine::journal::format::JournalError
 pub fn zond_engine::journal::format::JournalError::from(core::io::error::Error) -> Self
-impl core::convert::From<serde_json::error::Error> for zond_engine::journal::format::JournalError
-pub fn zond_engine::journal::format::JournalError::from(serde_json::error::Error) -> Self
 impl core::convert::From<zond_engine::journal::format::JournalError> for zond_engine::journal::store::OpenError
 pub fn zond_engine::journal::store::OpenError::from(zond_engine::journal::format::JournalError) -> Self
 impl core::error::Error for zond_engine::journal::format::JournalError
@@ -7538,8 +7536,6 @@ pub zond_engine::journal::store::OpenError::VersionTooOld::understood: u32
 pub zond_engine::journal::store::OpenError::WrongPhase
 pub zond_engine::journal::store::OpenError::WrongPhase::asked: &'static str
 pub zond_engine::journal::store::OpenError::WrongPhase::held: &'static str
-impl core::convert::From<serde_json::error::Error> for zond_engine::journal::store::OpenError
-pub fn zond_engine::journal::store::OpenError::from(serde_json::error::Error) -> Self
 impl core::convert::From<zond_engine::journal::format::JournalError> for zond_engine::journal::store::OpenError
 pub fn zond_engine::journal::store::OpenError::from(zond_engine::journal::format::JournalError) -> Self
 impl core::convert::From<zond_engine::journal::lock::LockRefused> for zond_engine::journal::store::OpenError
@@ -10153,8 +10149,12 @@ pub fn zond_engine::model::ip::is_globally_scoped(&core::net::ip_addr::Ipv6Addr)
 pub mod zond_engine::model::mac
 pub struct zond_engine::model::mac::MacAddr(_)
 impl zond_engine::model::mac::MacAddr
+pub const zond_engine::model::mac::MacAddr::BROADCAST: Self
+pub const zond_engine::model::mac::MacAddr::ZERO: Self
+pub const fn zond_engine::model::mac::MacAddr::is_broadcast(self) -> bool
 pub const fn zond_engine::model::mac::MacAddr::is_locally_administered(self) -> bool
 pub const fn zond_engine::model::mac::MacAddr::is_multicast(self) -> bool
+pub const fn zond_engine::model::mac::MacAddr::is_zero(self) -> bool
 pub const fn zond_engine::model::mac::MacAddr::new(u8, u8, u8, u8, u8, u8) -> Self
 pub const fn zond_engine::model::mac::MacAddr::octets(self) -> [u8; 6]
 impl core::clone::Clone for zond_engine::model::mac::MacAddr
@@ -10181,8 +10181,6 @@ impl core::marker::StructuralPartialEq for zond_engine::model::mac::MacAddr
 impl core::str::traits::FromStr for zond_engine::model::mac::MacAddr
 pub type zond_engine::model::mac::MacAddr::Err = zond_engine::model::mac::MacAddrParseError
 pub fn zond_engine::model::mac::MacAddr::from_str(&str) -> core::result::Result<Self, Self::Err>
-impl zond_engine::transport::mac::IntoPnetMac for zond_engine::model::mac::MacAddr
-pub fn zond_engine::model::mac::MacAddr::into_pnet(self) -> pnet_base::macaddr::MacAddr
 impl core::marker::Freeze for zond_engine::model::mac::MacAddr
 impl core::marker::Send for zond_engine::model::mac::MacAddr
 impl core::marker::Sync for zond_engine::model::mac::MacAddr
@@ -11932,8 +11930,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::Versio
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::VersionSupport
 pub mod zond_engine::protocols
 pub mod zond_engine::protocols::arp
-pub fn zond_engine::protocols::arp::build_request(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::arp::build_unicast_request(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::arp::build_request(zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::arp::build_unicast_request(zond_engine::model::mac::MacAddr, zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::arp::sender_address(&zond_engine::protocols::ethernet::Frame<'_>) -> zond_engine::protocols::error::Result<core::net::ip_addr::Ipv4Addr>
 pub mod zond_engine::protocols::cdp
 #[non_exhaustive] pub struct zond_engine::protocols::cdp::Announcement<'a>
@@ -11986,7 +11984,7 @@ impl core::marker::Unpin for zond_engine::protocols::cdp::Capabilities
 impl core::marker::UnsafeUnpin for zond_engine::protocols::cdp::Capabilities
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::cdp::Capabilities
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::cdp::Capabilities
-pub const zond_engine::protocols::cdp::GROUP_ADDRESS: pnet_base::macaddr::MacAddr
+pub const zond_engine::protocols::cdp::GROUP_ADDRESS: zond_engine::model::mac::MacAddr
 pub fn zond_engine::protocols::cdp::parse<'a>(&zond_engine::protocols::ethernet::Frame<'a>) -> core::option::Option<zond_engine::protocols::cdp::Announcement<'a>>
 pub mod zond_engine::protocols::craft
 pub mod zond_engine::protocols::craft::arp_operations
@@ -12088,15 +12086,15 @@ pub struct zond_engine::protocols::craft::Arp
 pub zond_engine::protocols::craft::Arp::hw_addr_len: u8
 pub zond_engine::protocols::craft::Arp::operation: u16
 pub zond_engine::protocols::craft::Arp::proto_addr_len: u8
-pub zond_engine::protocols::craft::Arp::sender_hw_addr: pnet_base::macaddr::MacAddr
+pub zond_engine::protocols::craft::Arp::sender_hw_addr: zond_engine::model::mac::MacAddr
 pub zond_engine::protocols::craft::Arp::sender_proto_addr: core::net::ip_addr::Ipv4Addr
-pub zond_engine::protocols::craft::Arp::target_hw_addr: pnet_base::macaddr::MacAddr
+pub zond_engine::protocols::craft::Arp::target_hw_addr: zond_engine::model::mac::MacAddr
 pub zond_engine::protocols::craft::Arp::target_proto_addr: core::net::ip_addr::Ipv4Addr
 impl zond_engine::protocols::craft::Arp
-pub fn zond_engine::protocols::craft::Arp::reply(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr) -> Self
-pub fn zond_engine::protocols::craft::Arp::request(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> Self
+pub fn zond_engine::protocols::craft::Arp::reply(zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv4Addr, zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv4Addr) -> Self
+pub fn zond_engine::protocols::craft::Arp::request(zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> Self
 pub fn zond_engine::protocols::craft::Arp::to_bytes(&self) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::craft::Arp::with_target_hw_addr(self, pnet_base::macaddr::MacAddr) -> Self
+pub fn zond_engine::protocols::craft::Arp::with_target_hw_addr(self, zond_engine::model::mac::MacAddr) -> Self
 impl core::clone::Clone for zond_engine::protocols::craft::Arp
 pub fn zond_engine::protocols::craft::Arp::clone(&self) -> zond_engine::protocols::craft::Arp
 impl core::cmp::Eq for zond_engine::protocols::craft::Arp
@@ -12119,13 +12117,13 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::craft::Arp
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::craft::Arp
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::craft::Arp
 pub struct zond_engine::protocols::craft::Ethernet
-pub zond_engine::protocols::craft::Ethernet::destination: pnet_base::macaddr::MacAddr
-pub zond_engine::protocols::craft::Ethernet::ethertype: zond_engine::protocols::craft::Field<pnet_packet::ethernet::EtherType>
-pub zond_engine::protocols::craft::Ethernet::source: pnet_base::macaddr::MacAddr
+pub zond_engine::protocols::craft::Ethernet::destination: zond_engine::model::mac::MacAddr
+pub zond_engine::protocols::craft::Ethernet::ethertype: zond_engine::protocols::craft::Field<u16>
+pub zond_engine::protocols::craft::Ethernet::source: zond_engine::model::mac::MacAddr
 impl zond_engine::protocols::craft::Ethernet
 pub fn zond_engine::protocols::craft::Ethernet::header_bytes(&self) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::craft::Ethernet::new(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr) -> Self
-pub fn zond_engine::protocols::craft::Ethernet::with_ethertype(self, pnet_packet::ethernet::EtherType) -> Self
+pub fn zond_engine::protocols::craft::Ethernet::new(zond_engine::model::mac::MacAddr, zond_engine::model::mac::MacAddr) -> Self
+pub fn zond_engine::protocols::craft::Ethernet::with_ethertype(self, u16) -> Self
 impl core::clone::Clone for zond_engine::protocols::craft::Ethernet
 pub fn zond_engine::protocols::craft::Ethernet::clone(&self) -> zond_engine::protocols::craft::Ethernet
 impl core::cmp::Eq for zond_engine::protocols::craft::Ethernet
@@ -12225,7 +12223,7 @@ pub zond_engine::protocols::craft::Ipv4::flags: u8
 pub zond_engine::protocols::craft::Ipv4::fragment_offset: u16
 pub zond_engine::protocols::craft::Ipv4::identification: zond_engine::protocols::craft::Field<u16>
 pub zond_engine::protocols::craft::Ipv4::options: alloc::vec::Vec<u8>
-pub zond_engine::protocols::craft::Ipv4::protocol: zond_engine::protocols::craft::Field<pnet_packet::ip::IpNextHeaderProtocol>
+pub zond_engine::protocols::craft::Ipv4::protocol: zond_engine::protocols::craft::Field<u8>
 pub zond_engine::protocols::craft::Ipv4::source: core::net::ip_addr::Ipv4Addr
 pub zond_engine::protocols::craft::Ipv4::total_length: zond_engine::protocols::craft::Field<u16>
 pub zond_engine::protocols::craft::Ipv4::ttl: u8
@@ -12260,7 +12258,7 @@ pub struct zond_engine::protocols::craft::Ipv6
 pub zond_engine::protocols::craft::Ipv6::destination: core::net::ip_addr::Ipv6Addr
 pub zond_engine::protocols::craft::Ipv6::flow_label: zond_engine::protocols::craft::Field<u32>
 pub zond_engine::protocols::craft::Ipv6::hop_limit: u8
-pub zond_engine::protocols::craft::Ipv6::next_header: zond_engine::protocols::craft::Field<pnet_packet::ip::IpNextHeaderProtocol>
+pub zond_engine::protocols::craft::Ipv6::next_header: zond_engine::protocols::craft::Field<u8>
 pub zond_engine::protocols::craft::Ipv6::payload_length: zond_engine::protocols::craft::Field<u16>
 pub zond_engine::protocols::craft::Ipv6::source: core::net::ip_addr::Ipv6Addr
 pub zond_engine::protocols::craft::Ipv6::traffic_class: u8
@@ -12430,7 +12428,7 @@ pub fn zond_engine::protocols::craft::corrupt_internet_checksum(u16) -> u16
 pub fn zond_engine::protocols::craft::random_padding(u16) -> alloc::vec::Vec<u8>
 pub mod zond_engine::protocols::dhcp
 #[non_exhaustive] pub struct zond_engine::protocols::dhcp::ClientRequest<'a>
-pub zond_engine::protocols::dhcp::ClientRequest::client_mac: core::option::Option<pnet_base::macaddr::MacAddr>
+pub zond_engine::protocols::dhcp::ClientRequest::client_mac: core::option::Option<zond_engine::model::mac::MacAddr>
 pub zond_engine::protocols::dhcp::ClientRequest::hostname: core::option::Option<&'a str>
 pub zond_engine::protocols::dhcp::ClientRequest::parameter_request_list: core::option::Option<&'a [u8]>
 pub zond_engine::protocols::dhcp::ClientRequest::requested_address: core::option::Option<core::net::ip_addr::Ipv4Addr>
@@ -12475,7 +12473,7 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::dhc
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::dhcp::ServerReply<'a>
 pub const zond_engine::protocols::dhcp::CLIENT_PORT: u16
 pub const zond_engine::protocols::dhcp::SERVER_PORT: u16
-pub fn zond_engine::protocols::dhcp::build_inform(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::dhcp::build_inform(zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::dhcp::client_request<'a>(&zond_engine::protocols::ethernet::Frame<'a>) -> core::option::Option<zond_engine::protocols::dhcp::ClientRequest<'a>>
 pub fn zond_engine::protocols::dhcp::server_reply<'a>(&zond_engine::protocols::ethernet::Frame<'a>) -> core::option::Option<zond_engine::protocols::dhcp::ServerReply<'a>>
 pub mod zond_engine::protocols::dns
@@ -12576,12 +12574,12 @@ pub mod zond_engine::protocols::ethernet
 pub struct zond_engine::protocols::ethernet::Frame<'a>
 impl<'a> zond_engine::protocols::ethernet::Frame<'a>
 pub fn zond_engine::protocols::ethernet::Frame<'a>::bytes(&self) -> &'a [u8]
-pub fn zond_engine::protocols::ethernet::Frame<'a>::destination(&self) -> pnet_base::macaddr::MacAddr
-pub fn zond_engine::protocols::ethernet::Frame<'a>::ethertype(&self) -> pnet_packet::ethernet::EtherType
+pub fn zond_engine::protocols::ethernet::Frame<'a>::destination(&self) -> zond_engine::model::mac::MacAddr
+pub fn zond_engine::protocols::ethernet::Frame<'a>::ethertype(&self) -> u16
 pub fn zond_engine::protocols::ethernet::Frame<'a>::payload(&self) -> &'a [u8]
 pub fn zond_engine::protocols::ethernet::Frame<'a>::payload_as_claimed(&self) -> core::option::Option<&'a [u8]>
 pub fn zond_engine::protocols::ethernet::Frame<'a>::payload_length(&self) -> core::option::Option<usize>
-pub fn zond_engine::protocols::ethernet::Frame<'a>::source(&self) -> pnet_base::macaddr::MacAddr
+pub fn zond_engine::protocols::ethernet::Frame<'a>::source(&self) -> zond_engine::model::mac::MacAddr
 pub fn zond_engine::protocols::ethernet::Frame<'a>::vlans(&self) -> &[zond_engine::protocols::ethernet::VlanTag]
 impl<'a> core::clone::Clone for zond_engine::protocols::ethernet::Frame<'a>
 pub fn zond_engine::protocols::ethernet::Frame<'a>::clone(&self) -> zond_engine::protocols::ethernet::Frame<'a>
@@ -12624,7 +12622,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::etherne
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::ethernet::VlanTag
 pub const zond_engine::protocols::ethernet::MAX_VLAN_TAGS: usize
 pub const zond_engine::protocols::ethernet::VLAN_TAG_LEN: usize
-pub fn zond_engine::protocols::ethernet::build_header(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, pnet_packet::ethernet::EtherType) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::ethernet::build_header(zond_engine::model::mac::MacAddr, zond_engine::model::mac::MacAddr, u16) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::ethernet::parse(&[u8]) -> zond_engine::protocols::error::Result<zond_engine::protocols::ethernet::Frame<'_>>
 pub mod zond_engine::protocols::icmp
 #[non_exhaustive] pub enum zond_engine::protocols::icmp::EchoReply
@@ -12699,11 +12697,11 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::icmp::TimestampReply
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::icmp::TimestampReply
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::icmp::TimestampReply
 pub const zond_engine::protocols::icmp::ECHO_PROBE_CODE: u8
-pub fn zond_engine::protocols::icmp::build_all_nodes_echo_request_v6(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr, u16, u16) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::icmp::build_echo_request(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u8, u16, u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::icmp::build_all_nodes_echo_request_v6(zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv6Addr, u16, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::icmp::build_echo_request(zond_engine::model::mac::MacAddr, zond_engine::model::mac::MacAddr, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u8, u16, u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::icmp::build_echo_request_message(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u8, u16, u16, &[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::icmp::build_echo_request_v4(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, u16) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::icmp::build_echo_request_v6(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u8, u16, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::icmp::build_echo_request_v4(zond_engine::model::mac::MacAddr, zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::icmp::build_echo_request_v6(zond_engine::model::mac::MacAddr, zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u8, u16, u16) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::icmp::build_timestamp_request(u16, u16) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::icmp::classify_echo_reply(&[u8], u16, bool) -> zond_engine::protocols::icmp::EchoReply
 pub fn zond_engine::protocols::icmp::classify_timestamp_reply(&[u8], u16) -> zond_engine::protocols::icmp::TimestampAnswer
@@ -12714,19 +12712,19 @@ pub const zond_engine::protocols::ip::HOP_LIMIT_ON_LINK: u8
 pub const zond_engine::protocols::ip::HOP_LIMIT_ROUTED: u8
 pub const zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU: u16
 pub const zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU_V6: u16
-pub fn zond_engine::protocols::ip::build_ipv4_header(core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, pnet_packet::ip::IpNextHeaderProtocol, u8) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::ip::build_ipv6_header(core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u16, pnet_packet::ip::IpNextHeaderProtocol, u8) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::ip::build_ipv4_header(core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, u8, u8) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::ip::build_ipv6_header(core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u16, u8, u8) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::ip::fragment_ipv4(&zond_engine::protocols::craft::Ipv4, &[u8], u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>>
 pub fn zond_engine::protocols::ip::fragment_ipv6(&zond_engine::protocols::craft::Ipv6, &[u8], u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>>
 pub fn zond_engine::protocols::ip::icmpv6_echo_token(&zond_engine::protocols::ethernet::Frame<'_>) -> core::option::Option<(u16, u16)>
-pub fn zond_engine::protocols::ip::icmpv6_type(&zond_engine::protocols::ethernet::Frame<'_>) -> core::option::Option<pnet_packet::icmpv6::Icmpv6Type>
+pub fn zond_engine::protocols::ip::icmpv6_type(&zond_engine::protocols::ethernet::Frame<'_>) -> core::option::Option<u8>
 pub fn zond_engine::protocols::ip::ipv4_source(&zond_engine::protocols::ethernet::Frame<'_>) -> zond_engine::protocols::error::Result<core::net::ip_addr::Ipv4Addr>
 pub fn zond_engine::protocols::ip::ipv6_destination(&zond_engine::protocols::ethernet::Frame<'_>) -> zond_engine::protocols::error::Result<core::net::ip_addr::Ipv6Addr>
 pub fn zond_engine::protocols::ip::ipv6_source(&zond_engine::protocols::ethernet::Frame<'_>) -> zond_engine::protocols::error::Result<core::net::ip_addr::Ipv6Addr>
 pub fn zond_engine::protocols::ip::udp_payload<'a>(&zond_engine::protocols::ethernet::Frame<'a>, u16) -> core::option::Option<&'a [u8]>
 pub mod zond_engine::protocols::lldp
 #[non_exhaustive] pub enum zond_engine::protocols::lldp::Identifier<'a>
-pub zond_engine::protocols::lldp::Identifier::Mac(pnet_base::macaddr::MacAddr)
+pub zond_engine::protocols::lldp::Identifier::Mac(zond_engine::model::mac::MacAddr)
 pub zond_engine::protocols::lldp::Identifier::Network(core::net::ip_addr::IpAddr)
 pub zond_engine::protocols::lldp::Identifier::Other
 pub zond_engine::protocols::lldp::Identifier::Other::bytes: &'a [u8]
@@ -12800,8 +12798,8 @@ impl core::marker::Unpin for zond_engine::protocols::lldp::Capabilities
 impl core::marker::UnsafeUnpin for zond_engine::protocols::lldp::Capabilities
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::lldp::Capabilities
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::lldp::Capabilities
-pub const zond_engine::protocols::lldp::ETHERTYPE: pnet_packet::ethernet::EtherType
-pub fn zond_engine::protocols::lldp::addressed_to_a_bridge_group(pnet_base::macaddr::MacAddr) -> bool
+pub const zond_engine::protocols::lldp::ETHERTYPE: u16
+pub fn zond_engine::protocols::lldp::addressed_to_a_bridge_group(zond_engine::model::mac::MacAddr) -> bool
 pub fn zond_engine::protocols::lldp::parse<'a>(&zond_engine::protocols::ethernet::Frame<'a>) -> core::option::Option<zond_engine::protocols::lldp::Advertisement<'a>>
 pub mod zond_engine::protocols::mdns
 #[non_exhaustive] pub struct zond_engine::protocols::mdns::MdnsHost
@@ -12852,10 +12850,10 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::ndp::Advertisement
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::ndp::Advertisement
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::ndp::Advertisement
 pub fn zond_engine::protocols::ndp::advertisement(&zond_engine::protocols::ethernet::Frame<'_>) -> core::option::Option<zond_engine::protocols::ndp::Advertisement>
-pub fn zond_engine::protocols::ndp::build_neighbor_solicitation(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::ndp::build_router_solicitation(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::ndp::build_neighbor_solicitation(zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::ndp::build_router_solicitation(zond_engine::model::mac::MacAddr, core::net::ip_addr::Ipv6Addr) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::ndp::is_router_advertisement(&zond_engine::protocols::ethernet::Frame<'_>) -> bool
-pub fn zond_engine::protocols::ndp::multicast_mac(core::net::ip_addr::Ipv6Addr) -> pnet_base::macaddr::MacAddr
+pub fn zond_engine::protocols::ndp::multicast_mac(core::net::ip_addr::Ipv6Addr) -> zond_engine::model::mac::MacAddr
 pub fn zond_engine::protocols::ndp::solicited_node_multicast(core::net::ip_addr::Ipv6Addr) -> core::net::ip_addr::Ipv6Addr
 pub mod zond_engine::protocols::netbios
 pub struct zond_engine::protocols::netbios::NameTable
@@ -16413,8 +16411,6 @@ pub fn zond_engine::system::interface::Link::with_link_up(self, bool) -> Self
 pub fn zond_engine::system::interface::Link::with_mac(self, zond_engine::model::mac::MacAddr) -> Self
 pub fn zond_engine::system::interface::Link::with_physical(self, bool) -> Self
 pub fn zond_engine::system::interface::Link::zone(&self) -> zond_engine::model::ip::scoped::Zone
-impl zond_engine::system::interface::Link
-pub fn zond_engine::system::interface::Link::from_netdev(netdev::interface::interface::Interface) -> Self
 impl core::clone::Clone for zond_engine::system::interface::Link
 pub fn zond_engine::system::interface::Link::clone(&self) -> zond_engine::system::interface::Link
 impl core::cmp::Eq for zond_engine::system::interface::Link
@@ -16576,10 +16572,10 @@ pub mod zond_engine::transport::capture
 #[non_exhaustive] pub enum zond_engine::transport::capture::CaptureError
 pub zond_engine::transport::capture::CaptureError::Denied
 pub zond_engine::transport::capture::CaptureError::Denied::interface: alloc::string::String
-pub zond_engine::transport::capture::CaptureError::Denied::source: pcap::Error
+pub zond_engine::transport::capture::CaptureError::Denied::source: zond_engine::transport::capture::LibraryError
 pub zond_engine::transport::capture::CaptureError::Filter
 pub zond_engine::transport::capture::CaptureError::Filter::filter: alloc::string::String
-pub zond_engine::transport::capture::CaptureError::Filter::source: pcap::Error
+pub zond_engine::transport::capture::CaptureError::Filter::source: zond_engine::transport::capture::LibraryError
 pub zond_engine::transport::capture::CaptureError::NoInterface
 pub zond_engine::transport::capture::CaptureError::NoInterface::refused: alloc::vec::Vec<(alloc::string::String, zond_engine::transport::capture::CaptureError)>
 pub zond_engine::transport::capture::CaptureError::NoReader
@@ -16587,7 +16583,7 @@ pub zond_engine::transport::capture::CaptureError::NoReader::opened: usize
 pub zond_engine::transport::capture::CaptureError::NoReader::source: core::io::error::Error
 pub zond_engine::transport::capture::CaptureError::Open
 pub zond_engine::transport::capture::CaptureError::Open::interface: alloc::string::String
-pub zond_engine::transport::capture::CaptureError::Open::source: pcap::Error
+pub zond_engine::transport::capture::CaptureError::Open::source: zond_engine::transport::capture::LibraryError
 pub zond_engine::transport::capture::CaptureError::OutOfDescriptors
 pub zond_engine::transport::capture::CaptureError::OutOfDescriptors::links: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType
@@ -16694,12 +16690,12 @@ pub struct zond_engine::transport::capture::CapturedSegment
 pub zond_engine::transport::capture::CapturedSegment::bytes: alloc::vec::Vec<u8>
 pub zond_engine::transport::capture::CapturedSegment::destination: core::option::Option<core::net::ip_addr::IpAddr>
 pub zond_engine::transport::capture::CapturedSegment::observation: core::option::Option<zond_engine::model::capture::IpObservation>
-pub zond_engine::transport::capture::CapturedSegment::protocol: pnet_packet::ip::IpNextHeaderProtocol
+pub zond_engine::transport::capture::CapturedSegment::protocol: u8
 pub zond_engine::transport::capture::CapturedSegment::received_at: std::time::Instant
 pub zond_engine::transport::capture::CapturedSegment::source: core::net::ip_addr::IpAddr
-pub zond_engine::transport::capture::CapturedSegment::source_mac: core::option::Option<pnet_base::macaddr::MacAddr>
+pub zond_engine::transport::capture::CapturedSegment::source_mac: core::option::Option<zond_engine::model::mac::MacAddr>
 impl zond_engine::transport::capture::CapturedSegment
-pub fn zond_engine::transport::capture::CapturedSegment::synthetic(core::net::ip_addr::IpAddr, pnet_packet::ip::IpNextHeaderProtocol, alloc::vec::Vec<u8>) -> Self
+pub fn zond_engine::transport::capture::CapturedSegment::synthetic(core::net::ip_addr::IpAddr, u8, alloc::vec::Vec<u8>) -> Self
 impl core::clone::Clone for zond_engine::transport::capture::CapturedSegment
 pub fn zond_engine::transport::capture::CapturedSegment::clone(&self) -> zond_engine::transport::capture::CapturedSegment
 impl core::cmp::Eq for zond_engine::transport::capture::CapturedSegment
@@ -16740,6 +16736,21 @@ impl core::marker::Unpin for zond_engine::transport::capture::FrameSender
 impl core::marker::UnsafeUnpin for zond_engine::transport::capture::FrameSender
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::FrameSender
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::FrameSender
+pub struct zond_engine::transport::capture::LibraryError(_)
+impl core::error::Error for zond_engine::transport::capture::LibraryError
+impl core::fmt::Debug for zond_engine::transport::capture::LibraryError
+pub fn zond_engine::transport::capture::LibraryError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::transport::capture::LibraryError
+pub fn zond_engine::transport::capture::LibraryError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::transport::capture::LibraryError
+pub fn zond_engine::transport::capture::LibraryError::code(&self) -> &'static str
+impl core::marker::Freeze for zond_engine::transport::capture::LibraryError
+impl core::marker::Send for zond_engine::transport::capture::LibraryError
+impl core::marker::Sync for zond_engine::transport::capture::LibraryError
+impl core::marker::Unpin for zond_engine::transport::capture::LibraryError
+impl core::marker::UnsafeUnpin for zond_engine::transport::capture::LibraryError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::LibraryError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::LibraryError
 pub const zond_engine::transport::capture::MIN_SNAP_LEN: u32
 pub const zond_engine::transport::capture::REPLY_SNAP_LEN: u32
 pub trait zond_engine::transport::capture::FrameSink: core::marker::Send
@@ -16862,11 +16873,11 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::frame::
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::frame::LinkType
 pub struct zond_engine::transport::frame::FrameSpec
 pub zond_engine::transport::frame::FrameSpec::dst: core::net::ip_addr::IpAddr
-pub zond_engine::transport::frame::FrameSpec::dst_mac: pnet_base::macaddr::MacAddr
+pub zond_engine::transport::frame::FrameSpec::dst_mac: zond_engine::model::mac::MacAddr
 pub zond_engine::transport::frame::FrameSpec::hop_limit: u8
-pub zond_engine::transport::frame::FrameSpec::protocol: pnet_packet::ip::IpNextHeaderProtocol
+pub zond_engine::transport::frame::FrameSpec::protocol: u8
 pub zond_engine::transport::frame::FrameSpec::src: core::net::ip_addr::IpAddr
-pub zond_engine::transport::frame::FrameSpec::src_mac: pnet_base::macaddr::MacAddr
+pub zond_engine::transport::frame::FrameSpec::src_mac: zond_engine::model::mac::MacAddr
 impl core::clone::Clone for zond_engine::transport::frame::FrameSpec
 pub fn zond_engine::transport::frame::FrameSpec::clone(&self) -> zond_engine::transport::frame::FrameSpec
 impl core::fmt::Debug for zond_engine::transport::frame::FrameSpec
@@ -16883,7 +16894,7 @@ pub struct zond_engine::transport::frame::IpSegment<'a>
 pub zond_engine::transport::frame::IpSegment::destination: core::net::ip_addr::IpAddr
 pub zond_engine::transport::frame::IpSegment::observation: zond_engine::model::capture::IpObservation
 pub zond_engine::transport::frame::IpSegment::payload: &'a [u8]
-pub zond_engine::transport::frame::IpSegment::protocol: pnet_packet::ip::IpNextHeaderProtocol
+pub zond_engine::transport::frame::IpSegment::protocol: u8
 pub zond_engine::transport::frame::IpSegment::source: core::net::ip_addr::IpAddr
 impl<'a> core::clone::Clone for zond_engine::transport::frame::IpSegment<'a>
 pub fn zond_engine::transport::frame::IpSegment<'a>::clone(&self) -> zond_engine::transport::frame::IpSegment<'a>
@@ -16903,70 +16914,11 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::fra
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::transport::frame::IpSegment<'a>
 pub fn zond_engine::transport::frame::build_ethernet_frame(&zond_engine::transport::frame::FrameSpec, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, zond_engine::protocols::error::PacketError>
 pub fn zond_engine::transport::frame::build_fragmented_ethernet_frames(&zond_engine::transport::frame::FrameSpec, &[u8], u16) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, zond_engine::protocols::error::PacketError>
-pub fn zond_engine::transport::frame::parse_captured(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<(zond_engine::transport::frame::IpSegment<'_>, core::option::Option<pnet_base::macaddr::MacAddr>)>
+pub fn zond_engine::transport::frame::parse_captured(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<(zond_engine::transport::frame::IpSegment<'_>, core::option::Option<zond_engine::model::mac::MacAddr>)>
 pub fn zond_engine::transport::frame::parse_captured_segment(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<zond_engine::transport::frame::IpSegment<'_>>
 pub fn zond_engine::transport::frame::parse_ip_segment(&[u8]) -> core::option::Option<zond_engine::transport::frame::IpSegment<'_>>
-pub fn zond_engine::transport::frame::source_mac(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<pnet_base::macaddr::MacAddr>
+pub fn zond_engine::transport::frame::source_mac(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<zond_engine::model::mac::MacAddr>
 pub fn zond_engine::transport::frame::strip_to_ip(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<&[u8]>
-pub mod zond_engine::transport::link
-pub struct zond_engine::transport::link::EthernetSender
-impl zond_engine::transport::link::EthernetSender
-pub fn zond_engine::transport::link::EthernetSender::from_system(zond_engine::transport::probe::IpProtocols) -> core::option::Option<Self>
-impl zond_engine::transport::probe::ProbeSender for zond_engine::transport::link::EthernetSender
-pub fn zond_engine::transport::link::EthernetSender::send(&self, &[u8], core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, core::option::Option<u32>, zond_engine::transport::probe::Emission) -> core::result::Result<(), zond_engine::transport::probe::SendError>
-impl !core::marker::Freeze for zond_engine::transport::link::EthernetSender
-impl core::marker::Send for zond_engine::transport::link::EthernetSender
-impl core::marker::Sync for zond_engine::transport::link::EthernetSender
-impl core::marker::Unpin for zond_engine::transport::link::EthernetSender
-impl core::marker::UnsafeUnpin for zond_engine::transport::link::EthernetSender
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::link::EthernetSender
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::link::EthernetSender
-pub mod zond_engine::transport::mac
-pub trait zond_engine::transport::mac::IntoCoreMac
-pub fn zond_engine::transport::mac::IntoCoreMac::into_core(self) -> zond_engine::model::mac::MacAddr
-impl zond_engine::transport::mac::IntoCoreMac for pnet_base::macaddr::MacAddr
-pub fn pnet_base::macaddr::MacAddr::into_core(self) -> zond_engine::model::mac::MacAddr
-pub trait zond_engine::transport::mac::IntoPnetMac
-pub fn zond_engine::transport::mac::IntoPnetMac::into_pnet(self) -> pnet_base::macaddr::MacAddr
-impl zond_engine::transport::mac::IntoPnetMac for zond_engine::model::mac::MacAddr
-pub fn zond_engine::model::mac::MacAddr::into_pnet(self) -> pnet_base::macaddr::MacAddr
-pub mod zond_engine::transport::neighbor
-pub struct zond_engine::transport::neighbor::LinkRoute
-pub zond_engine::transport::neighbor::LinkRoute::interface: alloc::string::String
-pub zond_engine::transport::neighbor::LinkRoute::next_hop: core::net::ip_addr::IpAddr
-pub zond_engine::transport::neighbor::LinkRoute::next_hop_mac: core::option::Option<pnet_base::macaddr::MacAddr>
-pub zond_engine::transport::neighbor::LinkRoute::on_link: bool
-pub zond_engine::transport::neighbor::LinkRoute::src_ip: core::net::ip_addr::IpAddr
-pub zond_engine::transport::neighbor::LinkRoute::src_mac: pnet_base::macaddr::MacAddr
-impl core::clone::Clone for zond_engine::transport::neighbor::LinkRoute
-pub fn zond_engine::transport::neighbor::LinkRoute::clone(&self) -> zond_engine::transport::neighbor::LinkRoute
-impl core::cmp::Eq for zond_engine::transport::neighbor::LinkRoute
-impl core::cmp::PartialEq for zond_engine::transport::neighbor::LinkRoute
-pub fn zond_engine::transport::neighbor::LinkRoute::eq(&self, &zond_engine::transport::neighbor::LinkRoute) -> bool
-impl core::fmt::Debug for zond_engine::transport::neighbor::LinkRoute
-pub fn zond_engine::transport::neighbor::LinkRoute::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for zond_engine::transport::neighbor::LinkRoute
-impl core::marker::Freeze for zond_engine::transport::neighbor::LinkRoute
-impl core::marker::Send for zond_engine::transport::neighbor::LinkRoute
-impl core::marker::Sync for zond_engine::transport::neighbor::LinkRoute
-impl core::marker::Unpin for zond_engine::transport::neighbor::LinkRoute
-impl core::marker::UnsafeUnpin for zond_engine::transport::neighbor::LinkRoute
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::neighbor::LinkRoute
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::neighbor::LinkRoute
-pub struct zond_engine::transport::neighbor::NeighborResolver
-impl zond_engine::transport::neighbor::NeighborResolver
-pub fn zond_engine::transport::neighbor::NeighborResolver::from_system() -> Self
-pub fn zond_engine::transport::neighbor::NeighborResolver::has_ethernet(&self) -> bool
-pub fn zond_engine::transport::neighbor::NeighborResolver::remember(&mut self, &str, core::net::ip_addr::IpAddr, pnet_base::macaddr::MacAddr)
-pub fn zond_engine::transport::neighbor::NeighborResolver::resolve(&self, core::net::ip_addr::IpAddr) -> core::option::Option<zond_engine::transport::neighbor::LinkRoute>
-pub fn zond_engine::transport::neighbor::NeighborResolver::resolve_from(&self, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr) -> core::option::Option<zond_engine::transport::neighbor::LinkRoute>
-impl core::marker::Freeze for zond_engine::transport::neighbor::NeighborResolver
-impl core::marker::Send for zond_engine::transport::neighbor::NeighborResolver
-impl core::marker::Sync for zond_engine::transport::neighbor::NeighborResolver
-impl core::marker::Unpin for zond_engine::transport::neighbor::NeighborResolver
-impl core::marker::UnsafeUnpin for zond_engine::transport::neighbor::NeighborResolver
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::neighbor::NeighborResolver
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::neighbor::NeighborResolver
 pub mod zond_engine::transport::probe
 #[non_exhaustive] pub enum zond_engine::transport::probe::ProbeKind
 pub zond_engine::transport::probe::ProbeKind::IcmpEcho
@@ -17105,11 +17057,11 @@ impl core::marker::UnsafeUnpin for zond_engine::transport::probe::Emission
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::Emission
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::Emission
 pub struct zond_engine::transport::probe::IpProtocols
-pub zond_engine::transport::probe::IpProtocols::v4: pnet_packet::ip::IpNextHeaderProtocol
-pub zond_engine::transport::probe::IpProtocols::v6: pnet_packet::ip::IpNextHeaderProtocol
+pub zond_engine::transport::probe::IpProtocols::v4: u8
+pub zond_engine::transport::probe::IpProtocols::v6: u8
 impl zond_engine::transport::probe::IpProtocols
-pub const fn zond_engine::transport::probe::IpProtocols::for_destination(self, core::net::ip_addr::IpAddr) -> pnet_packet::ip::IpNextHeaderProtocol
-pub const fn zond_engine::transport::probe::IpProtocols::same(pnet_packet::ip::IpNextHeaderProtocol) -> Self
+pub const fn zond_engine::transport::probe::IpProtocols::for_destination(self, core::net::ip_addr::IpAddr) -> u8
+pub const fn zond_engine::transport::probe::IpProtocols::same(u8) -> Self
 impl core::clone::Clone for zond_engine::transport::probe::IpProtocols
 pub fn zond_engine::transport::probe::IpProtocols::clone(&self) -> zond_engine::transport::probe::IpProtocols
 impl core::cmp::Eq for zond_engine::transport::probe::IpProtocols
@@ -17179,73 +17131,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::UnknownSendMode
 pub trait zond_engine::transport::probe::ProbeSender: core::marker::Send + core::marker::Sync
 pub fn zond_engine::transport::probe::ProbeSender::send(&self, &[u8], core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, core::option::Option<u32>, zond_engine::transport::probe::Emission) -> core::result::Result<(), zond_engine::transport::probe::SendError>
-impl zond_engine::transport::probe::ProbeSender for zond_engine::transport::link::EthernetSender
-pub fn zond_engine::transport::link::EthernetSender::send(&self, &[u8], core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, core::option::Option<u32>, zond_engine::transport::probe::Emission) -> core::result::Result<(), zond_engine::transport::probe::SendError>
 impl zond_engine::transport::probe::ProbeSender for zond_engine::transport::probe::RawIpSender
 pub fn zond_engine::transport::probe::RawIpSender::send(&self, &[u8], core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, core::option::Option<u32>, zond_engine::transport::probe::Emission) -> core::result::Result<(), zond_engine::transport::probe::SendError>
-pub mod zond_engine::transport::raw
-#[non_exhaustive] pub enum zond_engine::transport::raw::RawSocketError
-pub zond_engine::transport::raw::RawSocketError::HopLimit
-pub zond_engine::transport::raw::RawSocketError::HopLimit::hop_limit: u8
-pub zond_engine::transport::raw::RawSocketError::HopLimit::source: core::io::error::Error
-pub zond_engine::transport::raw::RawSocketError::NoSocket
-pub zond_engine::transport::raw::RawSocketError::NoSocket::destination: core::net::ip_addr::IpAddr
-pub zond_engine::transport::raw::RawSocketError::NotHeld
-pub zond_engine::transport::raw::RawSocketError::NotHeld::address: core::net::ip_addr::IpAddr
-pub zond_engine::transport::raw::RawSocketError::Open
-pub zond_engine::transport::raw::RawSocketError::Open::source: core::io::error::Error
-pub zond_engine::transport::raw::RawSocketError::Pin
-pub zond_engine::transport::raw::RawSocketError::Pin::address: core::net::ip_addr::IpAddr
-pub zond_engine::transport::raw::RawSocketError::Pin::source: core::io::error::Error
-pub zond_engine::transport::raw::RawSocketError::Poisoned
-pub zond_engine::transport::raw::RawSocketError::Send
-pub zond_engine::transport::raw::RawSocketError::Send::destination: core::net::ip_addr::IpAddr
-pub zond_engine::transport::raw::RawSocketError::Send::source: core::io::error::Error
-impl core::error::Error for zond_engine::transport::raw::RawSocketError
-pub fn zond_engine::transport::raw::RawSocketError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
-impl core::fmt::Debug for zond_engine::transport::raw::RawSocketError
-pub fn zond_engine::transport::raw::RawSocketError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for zond_engine::transport::raw::RawSocketError
-pub fn zond_engine::transport::raw::RawSocketError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl zond_engine::error::Coded for zond_engine::transport::raw::RawSocketError
-pub fn zond_engine::transport::raw::RawSocketError::code(&self) -> &'static str
-impl core::marker::Freeze for zond_engine::transport::raw::RawSocketError
-impl core::marker::Send for zond_engine::transport::raw::RawSocketError
-impl core::marker::Sync for zond_engine::transport::raw::RawSocketError
-impl core::marker::Unpin for zond_engine::transport::raw::RawSocketError
-impl core::marker::UnsafeUnpin for zond_engine::transport::raw::RawSocketError
-impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::RawSocketError
-impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::RawSocketError
-#[non_exhaustive] pub enum zond_engine::transport::raw::TransportType
-pub zond_engine::transport::raw::TransportType::IcmpLayer4
-pub zond_engine::transport::raw::TransportType::IpProtocol(u8)
-pub zond_engine::transport::raw::TransportType::SctpLayer4
-pub zond_engine::transport::raw::TransportType::TcpLayer4
-pub zond_engine::transport::raw::TransportType::UdpLayer4
-impl core::clone::Clone for zond_engine::transport::raw::TransportType
-pub fn zond_engine::transport::raw::TransportType::clone(&self) -> zond_engine::transport::raw::TransportType
-impl core::fmt::Debug for zond_engine::transport::raw::TransportType
-pub fn zond_engine::transport::raw::TransportType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for zond_engine::transport::raw::TransportType
-impl core::marker::Freeze for zond_engine::transport::raw::TransportType
-impl core::marker::Send for zond_engine::transport::raw::TransportType
-impl core::marker::Sync for zond_engine::transport::raw::TransportType
-impl core::marker::Unpin for zond_engine::transport::raw::TransportType
-impl core::marker::UnsafeUnpin for zond_engine::transport::raw::TransportType
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::TransportType
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::TransportType
-pub struct zond_engine::transport::raw::TransportSenderHandle
-impl zond_engine::transport::raw::TransportSenderHandle
-pub fn zond_engine::transport::raw::TransportSenderHandle::send_from<T: pnet_macros_support::packet::Packet>(&self, T, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, core::option::Option<u32>, u8) -> core::result::Result<usize, zond_engine::transport::raw::RawSocketError>
-pub fn zond_engine::transport::raw::TransportSenderHandle::send_to<T: pnet_macros_support::packet::Packet>(&self, T, core::net::ip_addr::IpAddr, core::option::Option<u32>, u8) -> core::result::Result<usize, zond_engine::transport::raw::RawSocketError>
-impl !core::marker::Freeze for zond_engine::transport::raw::TransportSenderHandle
-impl core::marker::Send for zond_engine::transport::raw::TransportSenderHandle
-impl core::marker::Sync for zond_engine::transport::raw::TransportSenderHandle
-impl core::marker::Unpin for zond_engine::transport::raw::TransportSenderHandle
-impl core::marker::UnsafeUnpin for zond_engine::transport::raw::TransportSenderHandle
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::TransportSenderHandle
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::TransportSenderHandle
-pub fn zond_engine::transport::raw::open_sender(zond_engine::transport::raw::TransportType) -> core::result::Result<zond_engine::transport::raw::TransportSenderHandle, zond_engine::transport::raw::RawSocketError>
 #[non_exhaustive] pub enum zond_engine::HostStatus
 pub zond_engine::HostStatus::Down
 pub zond_engine::HostStatus::Filtered
@@ -18514,6 +18401,8 @@ impl zond_engine::error::Coded for zond_engine::signature::SignatureError
 pub fn zond_engine::signature::SignatureError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::capture::CaptureError
 pub fn zond_engine::transport::capture::CaptureError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::capture::LibraryError
+pub fn zond_engine::transport::capture::LibraryError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::channel::ChannelError
 pub fn zond_engine::transport::channel::ChannelError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::exchange::ExchangeError
@@ -18524,8 +18413,6 @@ impl zond_engine::error::Coded for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::probe::UnknownSendMode
 pub fn zond_engine::transport::probe::UnknownSendMode::code(&self) -> &'static str
-impl zond_engine::error::Coded for zond_engine::transport::raw::RawSocketError
-pub fn zond_engine::transport::raw::RawSocketError::code(&self) -> &'static str
 pub async fn zond_engine::discover(zond_engine::model::ip::set::IpSet, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::discover_with_journal(zond_engine::model::ip::set::IpSet, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::listen(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>

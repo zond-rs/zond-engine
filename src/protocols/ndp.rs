@@ -39,7 +39,7 @@
 //! ignored by the network card of almost every other neighbour, with the
 //! filtering happening in hardware rather than in a stack.
 
-use pnet_base::MacAddr;
+use crate::model::mac::MacAddr;
 use pnet_packet::Packet as _;
 use pnet_packet::ethernet::EtherTypes;
 use pnet_packet::icmpv6::Icmpv6Types;
@@ -159,7 +159,7 @@ pub fn build_neighbor_solicitation(
     };
 
     Packet::new()
-        .push(Ethernet::new(src_mac, multicast_mac(group)).with_ethertype(EtherTypes::Ipv6))
+        .push(Ethernet::new(src_mac, multicast_mac(group)).with_ethertype(EtherTypes::Ipv6.0))
         .push(Ipv6::new(src_addr, group).with_hop_limit(ip::HOP_LIMIT_NDP))
         .push(message)
         .build()
@@ -193,7 +193,7 @@ pub fn build_router_solicitation(src_mac: MacAddr, src_addr: Ipv6Addr) -> Vec<u8
     };
 
     Packet::new()
-        .push(Ethernet::new(src_mac, multicast_mac(ALL_ROUTERS)).with_ethertype(EtherTypes::Ipv6))
+        .push(Ethernet::new(src_mac, multicast_mac(ALL_ROUTERS)).with_ethertype(EtherTypes::Ipv6.0))
         .push(Ipv6::new(src_addr, ALL_ROUTERS).with_hop_limit(ip::HOP_LIMIT_NDP))
         .push(message)
         .build()
@@ -282,7 +282,7 @@ pub(crate) fn is_router_advertisement_in(packet: &[u8]) -> bool {
 
 /// The IPv6 packet `frame` carries, if it carries one.
 fn ipv6_payload<'a>(frame: &Frame<'a>) -> Option<&'a [u8]> {
-    (frame.ethertype() == EtherTypes::Ipv6).then(|| frame.payload())
+    (frame.ethertype() == EtherTypes::Ipv6.0).then(|| frame.payload())
 }
 
 /// `packet` read as IPv6, if it is IPv6 carrying ICMPv6.
@@ -302,7 +302,7 @@ mod tests {
     };
     use pnet_packet::ipv6::Ipv6Packet;
 
-    const SRC_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0x01);
+    const SRC_MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 0x01);
 
     fn src_addr() -> Ipv6Addr {
         Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50)
@@ -431,12 +431,12 @@ mod tests {
             advert.set_flags(flags);
         }
 
-        let eth = ethernet::build_header(SRC_MAC, SRC_MAC, EtherTypes::Ipv6);
+        let eth = ethernet::build_header(SRC_MAC, SRC_MAC, EtherTypes::Ipv6.0);
         let ipv6 = ip::build_ipv6_header(
             target,
             src_addr(),
             message.len() as u16,
-            IpNextHeaderProtocols::Icmpv6,
+            IpNextHeaderProtocols::Icmpv6.0,
             hop_limit,
         );
 

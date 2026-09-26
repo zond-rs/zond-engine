@@ -699,7 +699,7 @@ mod tests {
             received_at: Instant::now(),
             source: ZOMBIE,
             destination: None,
-            protocol: IpNextHeaderProtocols::Tcp,
+            protocol: IpNextHeaderProtocols::Tcp.0,
             observation: Some(IpObservation::V4(Ipv4Observation {
                 ttl: 64,
                 identification,

@@ -62,7 +62,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 
 use crate::model::host::IpProtocolState;
 use crate::protocols::{icmp, sctp, tcp, udp};
@@ -483,7 +483,7 @@ fn matched(
 ) -> Option<(IpAddr, u8, IpProtocolState)> {
     if let Some(error) = icmp_error::parse(reply) {
         let host = error.quoted.destination;
-        let number = error.quoted.protocol.0;
+        let number = error.quoted.protocol;
         if !probed.contains(&host) || !asked.contains(&number) {
             return None;
         }
@@ -512,7 +512,7 @@ fn matched(
 
     // An echo reply is the host answering in the protocol that was asked about,
     // which is the one direct answer this filter admits.
-    let number = match reply.protocol {
+    let number = match IpNextHeaderProtocol(reply.protocol) {
         IpNextHeaderProtocols::Icmp => 1,
         IpNextHeaderProtocols::Icmpv6 => 58,
         _ => return None,
@@ -562,7 +562,6 @@ mod tests {
     use pnet_packet::icmp::destination_unreachable::MutableDestinationUnreachablePacket;
     use pnet_packet::icmp::{IcmpCode, IcmpTypes};
     use pnet_packet::icmpv6::{Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
-    use pnet_packet::ip::IpNextHeaderProtocol;
 
     use crate::protocols::ip;
     use crate::scanner::strategy::icmp_error::ICMPV6_UNRECOGNISED_NEXT_HEADER;
@@ -625,14 +624,9 @@ mod tests {
         let (IpAddr::V4(src), IpAddr::V4(dst)) = (quoted_source, host) else {
             panic!("the fixture is IPv4");
         };
-        let header = ip::build_ipv4_header(
-            src,
-            dst,
-            payload.len() as u16,
-            IpNextHeaderProtocol(number),
-            ip::HOP_LIMIT_ROUTED,
-        )
-        .expect("a header");
+        let header =
+            ip::build_ipv4_header(src, dst, payload.len() as u16, number, ip::HOP_LIMIT_ROUTED)
+                .expect("a header");
         let quoted: Vec<u8> = header.into_iter().chain(payload.iter().copied()).collect();
 
         let mut bytes =
@@ -642,7 +636,7 @@ mod tests {
         message.set_icmp_code(code);
         message.set_payload(&quoted);
 
-        CapturedSegment::synthetic(host, IpNextHeaderProtocols::Icmp, bytes)
+        CapturedSegment::synthetic(host, IpNextHeaderProtocols::Icmp.0, bytes)
     }
 
     /// The IPv6 form of a protocol refusal: a Parameter Problem naming an
@@ -653,13 +647,8 @@ mod tests {
             panic!("the fixture is IPv6");
         };
         let payload = probe_payload(number, LOCAL_V6, host, &keys());
-        let header = ip::build_ipv6_header(
-            src,
-            dst,
-            payload.len() as u16,
-            IpNextHeaderProtocol(number),
-            ip::HOP_LIMIT_ROUTED,
-        );
+        let header =
+            ip::build_ipv6_header(src, dst, payload.len() as u16, number, ip::HOP_LIMIT_ROUTED);
 
         // The Pointer, naming the Next Header field six bytes into the quoted
         // header, and then the quotation.
@@ -673,7 +662,7 @@ mod tests {
         message.set_icmpv6_code(ICMPV6_UNRECOGNISED_NEXT_HEADER);
         message.set_payload(&body);
 
-        CapturedSegment::synthetic(host, IpNextHeaderProtocols::Icmpv6, bytes)
+        CapturedSegment::synthetic(host, IpNextHeaderProtocols::Icmpv6.0, bytes)
     }
 
     /// The verdict a captured message settles, for the tests that assert on it
@@ -760,7 +749,7 @@ mod tests {
     fn an_echo_reply_proves_icmp_only_when_it_is_this_passs_own() {
         let ours = icmp::build_echo_request_message(TARGET, LOCAL, 0, TEST_ECHO_IDENTIFIER, 0, &[])
             .expect("an echo message");
-        let mut ours = CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Icmp, ours);
+        let mut ours = CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Icmp.0, ours);
         ours.bytes[0] = IcmpTypes::EchoReply.0;
 
         assert_eq!(
@@ -771,7 +760,7 @@ mod tests {
         let theirs =
             icmp::build_echo_request_message(TARGET, LOCAL, 0, TEST_ECHO_IDENTIFIER ^ 1, 0, &[])
                 .expect("an echo message");
-        let mut theirs = CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Icmp, theirs);
+        let mut theirs = CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Icmp.0, theirs);
         theirs.bytes[0] = IcmpTypes::EchoReply.0;
 
         assert_eq!(verdict(&theirs, &[1]), None, "somebody else's ping");

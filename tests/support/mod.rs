@@ -45,10 +45,10 @@ pub mod own_process;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet_base::MacAddr;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use zond_engine::model::mac::MacAddr;
 
 use zond_engine::config::ZondConfig;
 use zond_engine::detect::Detections;
@@ -61,7 +61,6 @@ use zond_engine::scanner::session::{HostStore, ScanEvent, ScanSession};
 use zond_engine::scanner::strategy::PortScanner;
 use zond_engine::scanner::{self, ScanTask};
 use zond_engine::system::interface::{Addressing, Link, LinkAddress, LinkKind, SourceResolver};
-use zond_engine::transport::mac::IntoCoreMac;
 
 use loopback::accept_from_this_process;
 
@@ -334,7 +333,7 @@ async fn drive(mut session: ScanSession, task: ScanTask) -> Outcome {
 // convenient, as long as every simulated target is on-link with one of them.
 
 /// The MAC the simulated scanner host presents on the wire.
-pub const SCANNER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
+pub const SCANNER_MAC: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
 
 /// The simulated scanner host's own addresses.
 pub const SCANNER_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 50);
@@ -368,7 +367,7 @@ pub fn scanner_interface() -> Link {
         .with_link_up(true)
         .with_physical(true)
         .with_addressing(Addressing::Broadcast)
-        .with_mac(SCANNER_MAC.into_core())
+        .with_mac(SCANNER_MAC)
         .with_addresses(vec![
             LinkAddress::new(IpAddr::V4(SCANNER_V4), 24),
             LinkAddress::new(IpAddr::V6(SCANNER_LINK_LOCAL), 64),

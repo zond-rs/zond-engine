@@ -475,8 +475,8 @@ impl OsEchoScanner {
 
     /// Reads one captured message: ours or not, and if ours, what it proved.
     fn handle_reply(&mut self, reply: CapturedSegment, now: Instant) {
-        if reply.protocol != IpNextHeaderProtocols::Icmp
-            && reply.protocol != IpNextHeaderProtocols::Icmpv6
+        if reply.protocol != IpNextHeaderProtocols::Icmp.0
+            && reply.protocol != IpNextHeaderProtocols::Icmpv6.0
         {
             self.sweep.audit.record_off_target();
             return;
@@ -767,7 +767,7 @@ mod tests {
             received_at: Instant::now(),
             source: TARGET,
             destination: None,
-            protocol: IpNextHeaderProtocols::Icmp,
+            protocol: IpNextHeaderProtocols::Icmp.0,
             observation: Some(IpObservation::V4(Ipv4Observation {
                 ttl: hops,
                 identification: 0,
@@ -1086,7 +1086,7 @@ mod tests {
             received_at: Instant::now(),
             source: TARGET,
             destination: None,
-            protocol: IpNextHeaderProtocols::Icmp,
+            protocol: IpNextHeaderProtocols::Icmp.0,
             observation: Some(IpObservation::V4(Ipv4Observation {
                 ttl: 128,
                 identification: 0,
@@ -1175,7 +1175,7 @@ mod tests {
             received_at: Instant::now(),
             source: TARGET,
             destination: None,
-            protocol: IpNextHeaderProtocols::Icmp,
+            protocol: IpNextHeaderProtocols::Icmp.0,
             observation: None,
             source_mac: None,
             bytes,

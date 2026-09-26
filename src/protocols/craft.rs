@@ -90,7 +90,8 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet_base::MacAddr;
+use crate::model::mac::MacAddr;
+use crate::protocols::mac::IntoPnetMac;
 use pnet_packet::arp::{ArpHardwareTypes, ArpOperation, MutableArpPacket};
 use pnet_packet::ethernet::{EtherType, EtherTypes, MutableEthernetPacket};
 use pnet_packet::icmp::IcmpPacket;
@@ -182,10 +183,10 @@ pub struct Ethernet {
         serde(
             default = "document::computed",
             skip_serializing_if = "document::is_computed",
-            with = "document::ethertype"
+            with = "document::number"
         )
     )]
-    pub ethertype: Field<EtherType>,
+    pub ethertype: Field<u16>,
 }
 
 impl Ethernet {
@@ -201,7 +202,7 @@ impl Ethernet {
 
     /// Declares an ethertype rather than taking it from the layer inside.
     #[must_use]
-    pub fn with_ethertype(mut self, ethertype: EtherType) -> Self {
+    pub fn with_ethertype(mut self, ethertype: u16) -> Self {
         self.ethertype = Field::Exact(ethertype);
         self
     }
@@ -255,10 +256,10 @@ pub struct Ipv4 {
         serde(
             default = "document::computed",
             skip_serializing_if = "document::is_computed",
-            with = "document::protocol"
+            with = "document::number"
         )
     )]
-    pub protocol: Field<IpNextHeaderProtocol>,
+    pub protocol: Field<u8>,
     /// Header and payload together. Computed from the packet being built.
     #[cfg_attr(
         feature = "packet-exchange",
@@ -419,10 +420,10 @@ pub struct Ipv6 {
         serde(
             default = "document::computed",
             skip_serializing_if = "document::is_computed",
-            with = "document::protocol"
+            with = "document::number"
         )
     )]
-    pub next_header: Field<IpNextHeaderProtocol>,
+    pub next_header: Field<u8>,
     /// Everything after this header. Computed from the packet being built.
     #[cfg_attr(
         feature = "packet-exchange",
@@ -1150,7 +1151,7 @@ impl Arp {
             proto_addr_len: 4,
             sender_hw_addr,
             sender_proto_addr,
-            target_hw_addr: MacAddr::zero(),
+            target_hw_addr: MacAddr::ZERO,
             target_proto_addr,
         }
     }
@@ -1196,9 +1197,9 @@ impl Arp {
             arp.set_hw_addr_len(self.hw_addr_len);
             arp.set_proto_addr_len(self.proto_addr_len);
             arp.set_operation(ArpOperation(self.operation));
-            arp.set_sender_hw_addr(self.sender_hw_addr);
+            arp.set_sender_hw_addr(self.sender_hw_addr.into_pnet());
             arp.set_sender_proto_addr(self.sender_proto_addr);
-            arp.set_target_hw_addr(self.target_hw_addr);
+            arp.set_target_hw_addr(self.target_hw_addr.into_pnet());
             arp.set_target_proto_addr(self.target_proto_addr);
         }
         bytes
@@ -1267,25 +1268,27 @@ layer_from!(
 impl Layer {
     /// What an enclosing header should call this one, if it is computing its
     /// own protocol number.
-    fn ip_protocol(&self) -> Option<IpNextHeaderProtocol> {
-        match self {
-            Self::Tcp(_) => Some(IpNextHeaderProtocols::Tcp),
-            Self::Udp(_) => Some(IpNextHeaderProtocols::Udp),
-            Self::Sctp(_) => Some(IpNextHeaderProtocols::Sctp),
-            Self::Icmpv4(_) => Some(IpNextHeaderProtocols::Icmp),
-            Self::Icmpv6(_) => Some(IpNextHeaderProtocols::Icmpv6),
-            _ => None,
-        }
+    fn ip_protocol(&self) -> Option<u8> {
+        let protocol = match self {
+            Self::Tcp(_) => IpNextHeaderProtocols::Tcp,
+            Self::Udp(_) => IpNextHeaderProtocols::Udp,
+            Self::Sctp(_) => IpNextHeaderProtocols::Sctp,
+            Self::Icmpv4(_) => IpNextHeaderProtocols::Icmp,
+            Self::Icmpv6(_) => IpNextHeaderProtocols::Icmpv6,
+            _ => return None,
+        };
+        Some(protocol.0)
     }
 
     /// What an enclosing Ethernet header should call this one.
-    fn ethertype(&self) -> Option<EtherType> {
-        match self {
-            Self::Ipv4(_) => Some(EtherTypes::Ipv4),
-            Self::Ipv6(_) => Some(EtherTypes::Ipv6),
-            Self::Arp(_) => Some(EtherTypes::Arp),
-            _ => None,
-        }
+    fn ethertype(&self) -> Option<u16> {
+        let ethertype = match self {
+            Self::Ipv4(_) => EtherTypes::Ipv4,
+            Self::Ipv6(_) => EtherTypes::Ipv6,
+            Self::Arp(_) => EtherTypes::Arp,
+            _ => return None,
+        };
+        Some(ethertype.0)
     }
 }
 
@@ -1408,7 +1411,7 @@ impl Packet {
 ///   on the wire, since that is what a caller crafting a wrong one is choosing.
 #[cfg(feature = "packet-exchange")]
 mod document {
-    use super::{EtherType, Field, IpNextHeaderProtocol, MacAddr};
+    use super::{Field, MacAddr};
     use data_encoding::HEXLOWER;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -1506,51 +1509,25 @@ mod document {
         }
     }
 
-    /// A next-header protocol number, which `pnet` types and this crate cannot
-    /// implement a trait for.
-    pub(super) mod protocol {
-        use super::{Deserialize, Deserializer, Field, IpNextHeaderProtocol, Serializer};
+    /// A next-header protocol number or an ethertype: the number itself, or
+    /// nothing where the builder works it out.
+    pub(super) mod number {
+        use super::{Deserialize, Deserializer, Field, Serialize, Serializer};
 
-        pub(in super::super) fn serialize<S: Serializer>(
-            field: &Field<IpNextHeaderProtocol>,
+        pub(in super::super) fn serialize<S: Serializer, T: Serialize>(
+            field: &Field<T>,
             serializer: S,
         ) -> Result<S::Ok, S::Error> {
             match field {
                 Field::Computed => serializer.serialize_none(),
-                Field::Exact(protocol) => serializer.serialize_some(&protocol.0),
+                Field::Exact(number) => serializer.serialize_some(number),
             }
         }
 
-        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
             deserializer: D,
-        ) -> Result<Field<IpNextHeaderProtocol>, D::Error> {
-            Ok(
-                Option::<u8>::deserialize(deserializer)?.map_or(Field::Computed, |raw| {
-                    Field::Exact(IpNextHeaderProtocol(raw))
-                }),
-            )
-        }
-    }
-
-    /// An ethertype, on the same footing as a protocol number.
-    pub(super) mod ethertype {
-        use super::{Deserialize, Deserializer, EtherType, Field, Serializer};
-
-        pub(in super::super) fn serialize<S: Serializer>(
-            field: &Field<EtherType>,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            match field {
-                Field::Computed => serializer.serialize_none(),
-                Field::Exact(ethertype) => serializer.serialize_some(&ethertype.0),
-            }
-        }
-
-        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Field<EtherType>, D::Error> {
-            Ok(Option::<u16>::deserialize(deserializer)?
-                .map_or(Field::Computed, |raw| Field::Exact(EtherType(raw))))
+        ) -> Result<Field<T>, D::Error> {
+            Ok(Option::<T>::deserialize(deserializer)?.map_or(Field::Computed, Field::Exact))
         }
     }
 }
@@ -1584,13 +1561,13 @@ fn write_ethernet(header: &Ethernet, payload: Vec<u8>, inner: Option<&Layer>) ->
     {
         let mut eth =
             MutableEthernetPacket::new(&mut bytes).expect("a header-sized buffer holds a header");
-        eth.set_source(header.source);
-        eth.set_destination(header.destination);
-        eth.set_ethertype(
-            header
-                .ethertype
-                .resolve(|| inner.and_then(Layer::ethertype).unwrap_or(EtherTypes::Ipv4)),
-        );
+        eth.set_source(header.source.into_pnet());
+        eth.set_destination(header.destination.into_pnet());
+        eth.set_ethertype(EtherType(header.ethertype.resolve(|| {
+            inner
+                .and_then(Layer::ethertype)
+                .unwrap_or(EtherTypes::Ipv4.0)
+        })));
     }
     bytes.extend_from_slice(&payload);
     Ok(bytes)
@@ -1625,11 +1602,11 @@ fn write_ipv4(header: &Ipv4, payload: Vec<u8>, inner: Option<&Layer>) -> Result<
         ipv4.set_flags(header.flags);
         ipv4.set_fragment_offset(header.fragment_offset);
         ipv4.set_ttl(header.ttl);
-        ipv4.set_next_level_protocol(header.protocol.resolve(|| {
+        ipv4.set_next_level_protocol(IpNextHeaderProtocol(header.protocol.resolve(|| {
             inner
                 .and_then(Layer::ip_protocol)
-                .unwrap_or(IpNextHeaderProtocols::Tcp)
-        }));
+                .unwrap_or(IpNextHeaderProtocols::Tcp.0)
+        })));
         ipv4.set_source(header.source);
         ipv4.set_destination(header.destination);
         if !header.options.is_empty() {
@@ -1666,11 +1643,11 @@ fn write_ipv6(header: &Ipv6, payload: Vec<u8>, inner: Option<&Layer>) -> Result<
         ipv6.set_traffic_class(header.traffic_class);
         ipv6.set_flow_label(header.flow_label.resolve(rand::random));
         ipv6.set_payload_length(payload_length);
-        ipv6.set_next_header(header.next_header.resolve(|| {
+        ipv6.set_next_header(IpNextHeaderProtocol(header.next_header.resolve(|| {
             inner
                 .and_then(Layer::ip_protocol)
-                .unwrap_or(IpNextHeaderProtocols::Tcp)
-        }));
+                .unwrap_or(IpNextHeaderProtocols::Tcp.0)
+        })));
         ipv6.set_hop_limit(header.hop_limit);
         ipv6.set_source(header.source);
         ipv6.set_destination(header.destination);
@@ -1916,7 +1893,7 @@ mod document_tests {
     fn everything() -> Packet {
         Packet::new()
             .push(Ethernet {
-                ethertype: Field::Exact(EtherType(0x88b5)),
+                ethertype: Field::Exact(0x88b5),
                 ..Ethernet::new(
                     MacAddr::new(2, 0, 0, 0, 0, 1),
                     MacAddr::new(2, 0, 0, 0, 0, 2),
@@ -1929,7 +1906,7 @@ mod document_tests {
                 identification: Field::Exact(0x4242),
                 total_length: Field::Exact(4),
                 checksum: Field::Exact(0),
-                protocol: Field::Exact(IpNextHeaderProtocols::Tcp),
+                protocol: Field::Exact(IpNextHeaderProtocols::Tcp.0),
                 options: vec![1, 2, 3, 4],
                 ..Ipv4::new(Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(192, 0, 2, 9))
             })
@@ -2033,7 +2010,7 @@ mod tests {
 
     const V4_SRC: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
     const V4_DST: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 9);
-    const MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 1);
+    const MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 1);
 
     fn v6(s: &str) -> Ipv6Addr {
         s.parse().expect("a valid address")
@@ -2112,7 +2089,7 @@ mod tests {
     #[test]
     fn a_header_built_alone_falls_back_to_tcp_and_says_so() {
         let derived = Ipv4 {
-            protocol: Field::Exact(IpNextHeaderProtocols::Udp),
+            protocol: Field::Exact(IpNextHeaderProtocols::Udp.0),
             ..Ipv4::new(V4_SRC, V4_DST)
         }
         .header_bytes(100)
@@ -2163,14 +2140,14 @@ mod tests {
     #[test]
     fn an_enclosing_header_names_what_is_inside_it() {
         let over_udp = Packet::new()
-            .push(Ethernet::new(MAC, MacAddr::broadcast()))
+            .push(Ethernet::new(MAC, MacAddr::BROADCAST))
             .push(Ipv4::new(V4_SRC, V4_DST))
             .push(Udp::new(50_000, 53))
             .build()
             .expect("builds");
 
         let eth = super::super::ethernet::parse(&over_udp).expect("a frame");
-        assert_eq!(eth.ethertype(), EtherTypes::Ipv4);
+        assert_eq!(eth.ethertype(), EtherTypes::Ipv4.0);
         assert_eq!(
             Ipv4Packet::new(eth.payload())
                 .expect("an IPv4 header")
@@ -2179,14 +2156,14 @@ mod tests {
         );
 
         let over_v6 = Packet::new()
-            .push(Ethernet::new(MAC, MacAddr::broadcast()))
+            .push(Ethernet::new(MAC, MacAddr::BROADCAST))
             .push(Ipv6::new(v6("2001:db8::1"), v6("2001:db8::2")))
             .push(Tcp::new(50_000, 80))
             .build()
             .expect("builds");
 
         let eth = super::super::ethernet::parse(&over_v6).expect("a frame");
-        assert_eq!(eth.ethertype(), EtherTypes::Ipv6);
+        assert_eq!(eth.ethertype(), EtherTypes::Ipv6.0);
         assert_eq!(
             Ipv6Packet::new(eth.payload())
                 .expect("an IPv6 header")

@@ -76,7 +76,7 @@
 use pnet_packet::icmp::destination_unreachable::{DestinationUnreachablePacket, IcmpCodes};
 use pnet_packet::icmp::{IcmpCode, IcmpPacket, IcmpTypes};
 use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types};
-use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 
 use crate::transport::capture::CapturedSegment;
 use crate::transport::frame::{self, IpSegment};
@@ -189,7 +189,7 @@ pub struct IcmpError<'a> {
 /// port, the protocol nor the path, and for a message whose quotation cannot be
 /// parsed.
 pub fn parse(reply: &CapturedSegment) -> Option<IcmpError<'_>> {
-    match reply.protocol {
+    match IpNextHeaderProtocol(reply.protocol) {
         IpNextHeaderProtocols::Icmp => parse_v4(&reply.bytes),
         IpNextHeaderProtocols::Icmpv6 => parse_v6(&reply.bytes),
         _ => None,
@@ -227,7 +227,7 @@ pub struct Expired<'a> {
 /// eight bytes past the IP header is all RFC 792 guarantees, and a hop
 /// attributed to the wrong probe is a wrong path rather than a missing one.
 pub fn parse_expired(reply: &CapturedSegment) -> Option<Expired<'_>> {
-    let quoted_at = match reply.protocol {
+    let quoted_at = match IpNextHeaderProtocol(reply.protocol) {
         IpNextHeaderProtocols::Icmp => {
             let message = IcmpPacket::new(&reply.bytes)?;
             if message.get_icmp_type() != IcmpTypes::TimeExceeded {
@@ -378,13 +378,21 @@ mod tests {
         let datagram = udp::build_packet(from, to, 50_000, 53, vec![]).unwrap();
         let len = datagram.len() as u16;
         let header = match (from, to) {
-            (IpAddr::V4(s), IpAddr::V4(d)) => {
-                ip::build_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
-                    .unwrap()
-            }
-            (IpAddr::V6(s), IpAddr::V6(d)) => {
-                ip::build_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
-            }
+            (IpAddr::V4(s), IpAddr::V4(d)) => ip::build_ipv4_header(
+                s,
+                d,
+                len,
+                IpNextHeaderProtocols::Udp.0,
+                ip::HOP_LIMIT_ROUTED,
+            )
+            .unwrap(),
+            (IpAddr::V6(s), IpAddr::V6(d)) => ip::build_ipv6_header(
+                s,
+                d,
+                len,
+                IpNextHeaderProtocols::Udp.0,
+                ip::HOP_LIMIT_ROUTED,
+            ),
             _ => panic!("IP version mismatch in test fixture"),
         };
         header.into_iter().chain(datagram).collect()
@@ -401,7 +409,7 @@ mod tests {
         bytes[0] = IcmpTypes::TimeExceeded.0;
         bytes[TIME_EXCEEDED_HEADER_LEN..].copy_from_slice(&quoted);
 
-        CapturedSegment::synthetic(router, IpNextHeaderProtocols::Icmp, bytes)
+        CapturedSegment::synthetic(router, IpNextHeaderProtocols::Icmp.0, bytes)
     }
 
     /// The IPv6 counterpart.
@@ -415,7 +423,7 @@ mod tests {
         packet.set_icmpv6_type(Icmpv6Types::TimeExceeded);
         packet.set_payload(&payload);
 
-        CapturedSegment::synthetic(router, IpNextHeaderProtocols::Icmpv6, bytes)
+        CapturedSegment::synthetic(router, IpNextHeaderProtocols::Icmpv6.0, bytes)
     }
 
     /// A Time Exceeded names the router in its own header and the probe in its
@@ -470,7 +478,7 @@ mod tests {
         packet.set_icmp_code(code);
         packet.set_payload(&quoted);
 
-        CapturedSegment::synthetic(TARGET_V4, IpNextHeaderProtocols::Icmp, bytes)
+        CapturedSegment::synthetic(TARGET_V4, IpNextHeaderProtocols::Icmp.0, bytes)
     }
 
     fn error_v6(code: Icmpv6Code) -> CapturedSegment {
@@ -484,7 +492,7 @@ mod tests {
         packet.set_icmpv6_code(code);
         packet.set_payload(&payload);
 
-        CapturedSegment::synthetic(TARGET_V6, IpNextHeaderProtocols::Icmpv6, bytes)
+        CapturedSegment::synthetic(TARGET_V6, IpNextHeaderProtocols::Icmpv6.0, bytes)
     }
 
     /// An ICMPv6 Parameter Problem under `code`, quoting a probe of ours.
@@ -504,7 +512,7 @@ mod tests {
         packet.set_icmpv6_code(code);
         packet.set_payload(&payload);
 
-        CapturedSegment::synthetic(TARGET_V6, IpNextHeaderProtocols::Icmpv6, bytes)
+        CapturedSegment::synthetic(TARGET_V6, IpNextHeaderProtocols::Icmpv6.0, bytes)
     }
 
     /// What `reply` establishes, for the tests that assert on the reason alone.
@@ -565,7 +573,7 @@ mod tests {
         let error = parse(&reply).expect("parses");
 
         assert_eq!(error.quoted.destination, TARGET_V4);
-        assert_eq!(error.quoted.protocol, IpNextHeaderProtocols::Udp);
+        assert_eq!(error.quoted.protocol, IpNextHeaderProtocols::Udp.0);
     }
 
     /// The near-miss this module exists to prevent: code 3 is a port unreachable

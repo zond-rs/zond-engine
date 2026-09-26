@@ -253,6 +253,10 @@ pub enum RawSocketError {
     /// writes the header, and it will not write someone else's address into it.
     /// A probe that needs a spoofed source has to be framed whole instead.
     #[error("{address} is not an address this host holds, so no raw socket can send from it")]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "a raw socket is pinned to a source on Unix alone")
+    )]
     NotHeld {
         /// The source that was asked for.
         address: IpAddr,

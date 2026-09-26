@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
-use pnet_base::MacAddr;
+use crate::model::mac::MacAddr;
 
 use crate::transport::capture::{self, FrameSink};
 use crate::transport::frame;

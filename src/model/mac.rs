@@ -17,7 +17,11 @@
 //! frames does. A MAC crosses the whole engine, since an ARP reply produces one
 //! and a host record keeps every one it has seen and a report prints them, so
 //! borrowing the type from whichever crate happens to parse Ethernet today would
-//! put that crate in every one of those signatures.
+//! put that crate in every one of those signatures. The frame builders and
+//! readers in [`protocols`](crate::protocols) and
+//! [`transport`](crate::transport) take and return this one too, for the same
+//! reason: the packet library is how they do their work, not part of what they
+//! promise.
 
 use mac_oui::Oui;
 use std::fmt;
@@ -32,6 +36,14 @@ use std::sync::OnceLock;
 pub struct MacAddr([u8; 6]);
 
 impl MacAddr {
+    /// The address every station on a segment receives, `ff:ff:ff:ff:ff:ff`.
+    pub const BROADCAST: Self = Self([0xff; 6]);
+
+    /// The all-zero address, which names no station: what an ARP request
+    /// carries as the target hardware address it is asking for, and what a
+    /// reader takes as "not stated".
+    pub const ZERO: Self = Self([0; 6]);
+
     /// Creates a `MacAddr` from six octets, most significant first.
     pub const fn new(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) -> Self {
         Self([a, b, c, d, e, f])
@@ -58,6 +70,16 @@ impl MacAddr {
     /// which the least significant bit of the first octet marks.
     pub const fn is_multicast(self) -> bool {
         self.0[0] & 0b0000_0001 != 0
+    }
+
+    /// Whether this is [`BROADCAST`](Self::BROADCAST).
+    pub const fn is_broadcast(self) -> bool {
+        matches!(self.0, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+    }
+
+    /// Whether this is [`ZERO`](Self::ZERO).
+    pub const fn is_zero(self) -> bool {
+        matches!(self.0, [0, 0, 0, 0, 0, 0])
     }
 }
 

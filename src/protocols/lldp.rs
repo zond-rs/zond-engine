@@ -37,14 +37,13 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet_base::MacAddr;
-use pnet_packet::ethernet::EtherType;
+use crate::model::mac::MacAddr;
 
 use crate::protocols::ethernet::Frame;
 use crate::protocols::text::field as text;
 
 /// The EtherType carrying an LLDP data unit.
-pub const ETHERTYPE: EtherType = EtherType(0x88CC);
+pub const ETHERTYPE: u16 = 0x88CC;
 
 /// The group addresses LLDP is sent to, all three of which conforming bridges
 /// constrain rather than forward.
@@ -54,9 +53,9 @@ pub const ETHERTYPE: EtherType = EtherType(0x88CC);
 /// read the same way, since what they change is how far the frame travels rather
 /// than what it says.
 const GROUP_ADDRESSES: [MacAddr; 3] = [
-    MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
-    MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x03),
-    MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x00),
+    MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
+    MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x03),
+    MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x00),
 ];
 
 /// How many type-length-value records are read out of one data unit.
@@ -515,8 +514,8 @@ pub(crate) mod tests {
     use crate::protocols::ethernet;
     use crate::protocols::sizes::ETH_HDR_LEN;
 
-    pub(crate) const SWITCH_MAC: MacAddr = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
-    const NEAREST_BRIDGE: MacAddr = MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E);
+    pub(crate) const SWITCH_MAC: MacAddr = MacAddr::new(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
+    const NEAREST_BRIDGE: MacAddr = MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E);
 
     /// One TLV: seven bits of type and nine of length, packed across two bytes.
     ///
@@ -559,15 +558,7 @@ pub(crate) mod tests {
     fn chassis_mac(mac: MacAddr) -> Vec<u8> {
         tlv(
             TLV_CHASSIS_ID,
-            &[
-                CHASSIS_SUBTYPE_MAC,
-                mac.0,
-                mac.1,
-                mac.2,
-                mac.3,
-                mac.4,
-                mac.5,
-            ],
+            &[&[CHASSIS_SUBTYPE_MAC][..], &mac.octets()].concat(),
         )
     }
 
@@ -584,7 +575,7 @@ pub(crate) mod tests {
     fn port_mac(mac: MacAddr) -> Vec<u8> {
         tlv(
             TLV_PORT_ID,
-            &[PORT_SUBTYPE_MAC, mac.0, mac.1, mac.2, mac.3, mac.4, mac.5],
+            &[&[PORT_SUBTYPE_MAC][..], &mac.octets()].concat(),
         )
     }
 
@@ -704,7 +695,7 @@ pub(crate) mod tests {
         );
 
         // And the other direction: a port's hardware address is subtype 3.
-        let port_mac_address = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x60);
+        let port_mac_address = MacAddr::new(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x60);
         let bytes = frame_of(&[chassis_mac(SWITCH_MAC), port_mac(port_mac_address)]);
         let frame = ethernet::parse(&bytes).expect("an Ethernet frame");
 
@@ -971,7 +962,7 @@ pub(crate) mod tests {
         let bytes = ethernet::build_header(
             SWITCH_MAC,
             NEAREST_BRIDGE,
-            pnet_packet::ethernet::EtherTypes::Ipv4,
+            pnet_packet::ethernet::EtherTypes::Ipv4.0,
         );
         let frame = ethernet::parse(&bytes).expect("an Ethernet frame");
 

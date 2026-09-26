@@ -15,6 +15,7 @@
 //! is what a caller actually sees, re-exports and all, and the release checks
 //! already hold it to the build.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The public API listing, as the release checks generate it.
@@ -86,5 +87,75 @@ fn the_machinery_a_strategy_is_built_from_stays_internal() {
     assert!(
         exposed.is_empty(),
         "internal machinery in the public API: {exposed:#?}"
+    );
+}
+
+/// The crates whose types a public signature may name, and why each is there.
+///
+/// A type from another crate in a signature ties this crate's releases to that
+/// one's: its next breaking release is this crate's, whether or not anything
+/// here changed. So the list is short and each entry argues for itself. A
+/// dependency missing from it is used inside the crate and is its business
+/// alone, converted at the boundary into this crate's own types or plain
+/// numbers, as the packet library's hardware addresses and protocol numbers
+/// are.
+const FOREIGN: &[(&str, &str)] = &[
+    ("core", "the language"),
+    ("alloc", "the language"),
+    ("std", "the language"),
+    (
+        "serde_core",
+        "`Serialize` and `Deserialize` on the types that are a document's \
+         shape; serde is 1.x and the file formats are what those derives are for",
+    ),
+    (
+        "tokio",
+        "the runtime every scan runs on, 1.x with a stability commitment: its \
+         channels carry a scan's events and a port scanner's targets, and its \
+         `TcpStream` is what the fingerprinter reads",
+    ),
+];
+
+/// Each path root in a line of the listing, such as `core` in
+/// `core::net::IpAddr`, skipping this crate's own.
+fn foreign_roots(line: &str) -> impl Iterator<Item = &str> {
+    line.match_indices("::").filter_map(move |(at, _)| {
+        let head = &line[..at];
+        let start = head
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .map_or(0, |i| i + 1);
+        let root = &head[start..];
+        let is_root = start == 0 || !head[..start].ends_with("::");
+        (is_root
+            && !root.is_empty()
+            && root.starts_with(|c: char| c.is_ascii_lowercase())
+            && root != "zond_engine")
+            .then_some(root)
+    })
+}
+
+/// A dependency's type reaching a public signature is how a patch release of
+/// that dependency becomes a breaking release of this crate, and it happens by
+/// accident: a helper made `pub` that took the library's type, a `From` impl
+/// written for the `?` operator. Each is caught here before a release pins it.
+#[test]
+fn no_public_signature_names_a_crate_outside_the_allow_list() {
+    let listing = listing();
+    // One line per crate is enough to find the rest by.
+    let mut unexpected: BTreeMap<&str, &str> = BTreeMap::new();
+    for line in listing.lines() {
+        for root in foreign_roots(line) {
+            if !FOREIGN.iter().any(|(allowed, _)| *allowed == root) {
+                unexpected.entry(root).or_insert(line);
+            }
+        }
+    }
+    assert!(
+        listing.contains("tokio::sync::mpsc"),
+        "the listing still spells a foreign path the way this check reads it"
+    );
+    assert!(
+        unexpected.is_empty(),
+        "public signatures naming a crate outside the allow-list: {unexpected:#?}"
     );
 }

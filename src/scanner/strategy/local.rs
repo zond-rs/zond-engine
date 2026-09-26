@@ -31,9 +31,9 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
+use crate::model::mac::MacAddr;
 use crate::protocols::ethernet::Frame;
 use async_trait::async_trait;
-use pnet_base::MacAddr;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
@@ -59,8 +59,6 @@ use crate::system::interface::Link;
 use crate::transport::capture::CapturedFrame;
 use crate::transport::channel::{self, EthernetHandle};
 use crate::transport::frame::LinkType;
-use crate::transport::mac::IntoCoreMac;
-use crate::transport::mac::IntoPnetMac;
 use crate::transport::neighbor;
 
 use crate::scanner::strategy::frames::{self, DiscoveryProtocol, ProtocolMatch, Reading};
@@ -397,7 +395,7 @@ impl SourceIdentity {
             .find(Ipv6Addr::is_unicast_link_local);
 
         Ok(Self {
-            mac: mac.into_pnet(),
+            mac,
             ipv4,
             link_local_ipv6,
             zone: link.zone(),
@@ -1230,7 +1228,7 @@ impl LocalScanner {
         let mut roles: Vec<NetworkRole> = Vec::new();
 
         if let Some(advertisement) = protocol::lldp::parse(frame) {
-            attachment = attachment.with_device_mac(source_mac.into_core());
+            attachment = attachment.with_device_mac(source_mac);
 
             if let Some(name) = advertisement.system_name {
                 attachment = attachment.with_device_name(name);
@@ -1258,7 +1256,7 @@ impl LocalScanner {
                 AttachmentSource::Cdp,
                 captured.observed_at,
             )
-            .with_device_mac(source_mac.into_core());
+            .with_device_mac(source_mac);
 
             if let Some(name) = announcement.device_id {
                 attachment = attachment.with_device_name(name);
@@ -1821,7 +1819,7 @@ impl LocalScanner {
                 // created it first, so enrichment order doesn't decide whether a MAC
                 // is recorded. Repeating one already on record refreshes its
                 // last-seen time, which is what `HardwareInfo` keeps them for.
-                host.record_mac(source_mac.into_core());
+                host.record_mac(source_mac);
 
                 // The protocol name is the whole of the evidence here - a reply came
                 // off the segment carrying this host's own MAC - so there is nothing
@@ -1923,11 +1921,11 @@ impl LocalScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::mac::MacAddr;
     use crate::scanner::strategy::frames::tests::{
         LOCAL_MAC, PEER_MAC, advertisement_body, arp_reply_frame, arp_request_frame,
         dhcp_reply_frame, echo_reply_frame, mdns_frame, ndp_frame,
     };
-    use pnet_base::MacAddr;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     /// A sweep of a segment is given at least the time its own ticker needs to
@@ -2006,7 +2004,7 @@ mod tests {
         fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
             let asked = ethernet::parse(frame)
                 .ok()
-                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp)
+                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp.0)
                 .and_then(|frame| pnet_packet::arp::ArpPacket::owned(frame.payload().to_vec()))
                 .map(|request| request.get_target_proto_addr());
             let Some(target) = asked.filter(|_| !self.answered) else {
@@ -2068,7 +2066,7 @@ mod tests {
             rx,
         );
         let link = Link::new("sim0", 7)
-            .with_mac(LOCAL_MAC.into_core())
+            .with_mac(LOCAL_MAC)
             .with_addresses(vec![LinkAddress::new(
                 IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
                 24,
@@ -2116,7 +2114,7 @@ mod tests {
         fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
             let asked = ethernet::parse(frame)
                 .ok()
-                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp)
+                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp.0)
                 .and_then(|frame| pnet_packet::arp::ArpPacket::owned(frame.payload().to_vec()))
                 .map(|request| request.get_target_proto_addr());
             let Some(target) = asked.filter(|_| !self.answered) else {
@@ -2164,7 +2162,7 @@ mod tests {
             rx,
         );
         let link = Link::new("sim0", 7)
-            .with_mac(LOCAL_MAC.into_core())
+            .with_mac(LOCAL_MAC)
             .with_addresses(vec![LinkAddress::new(
                 IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
                 24,
@@ -2203,7 +2201,7 @@ mod tests {
         fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
             let asked = ethernet::parse(frame)
                 .ok()
-                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp)
+                .filter(|frame| frame.ethertype() == pnet_packet::ethernet::EtherTypes::Arp.0)
                 .and_then(|frame| pnet_packet::arp::ArpPacket::owned(frame.payload().to_vec()))
                 .map(|request| request.get_target_proto_addr());
             if let Some(target) = asked {
@@ -2252,7 +2250,7 @@ mod tests {
         let (_frames, rx) = tokio::sync::mpsc::channel(16);
         let handle = EthernetHandle::from_parts(Box::new(Asked(std::sync::Arc::clone(&asked))), rx);
         let link = Link::new("sim0", 7)
-            .with_mac(LOCAL_MAC.into_core())
+            .with_mac(LOCAL_MAC)
             .with_addresses(vec![LinkAddress::new(
                 IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
                 24,
@@ -2298,10 +2296,8 @@ mod tests {
         );
         let cdp = {
             let group = crate::protocols::cdp::GROUP_ADDRESS;
-            let mut bytes = vec![group.0, group.1, group.2, group.3, group.4, group.5];
-            bytes.extend_from_slice(&[
-                PEER_MAC.0, PEER_MAC.1, PEER_MAC.2, PEER_MAC.3, PEER_MAC.4, PEER_MAC.5,
-            ]);
+            let mut bytes = group.octets().to_vec();
+            bytes.extend_from_slice(&PEER_MAC.octets());
             // 802.3: a length rather than an EtherType, which is the whole
             // reason this clause matches the address instead.
             bytes.extend_from_slice(&[0x00, 0x20]);
@@ -2386,7 +2382,7 @@ mod tests {
                 ethernet::build_header(
                     PEER_MAC,
                     LOCAL_MAC,
-                    pnet_packet::ethernet::EtherTypes::Ipv4,
+                    pnet_packet::ethernet::EtherTypes::Ipv4.0,
                 ),
                 datagram,
             ]

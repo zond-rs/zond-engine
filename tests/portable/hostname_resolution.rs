@@ -345,7 +345,7 @@ fn sniffed(source_port: u16, payload: &[u8]) -> CapturedSegment {
     bytes.extend_from_slice(&0u16.to_be_bytes()); // checksum, unchecked here
     bytes.extend_from_slice(payload);
 
-    CapturedSegment::synthetic(ip("192.0.2.1"), IpNextHeaderProtocols::Udp, bytes)
+    CapturedSegment::synthetic(ip("192.0.2.1"), IpNextHeaderProtocols::Udp.0, bytes)
 }
 
 /// A PTR response as it would appear on the wire, with its question intact.

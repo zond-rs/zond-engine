@@ -46,7 +46,7 @@
 
 use std::net::IpAddr;
 
-use pnet_base::MacAddr;
+use crate::model::mac::MacAddr;
 use pnet_packet::ethernet::{EtherType, EtherTypes};
 use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet_packet::ipv4::Ipv4Packet;
@@ -289,7 +289,7 @@ const IP_ADDRESS_FAMILIES: [u32; 5] = [2, 30, 28, 10, 24];
 /// double-tagged as though no reply had come.
 fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
     let parsed = ethernet::parse(frame).ok()?;
-    match parsed.ethertype() {
+    match EtherType(parsed.ethertype()) {
         EtherTypes::Ipv4 | EtherTypes::Ipv6 => Some(parsed.payload()),
         _ => None,
     }
@@ -361,7 +361,7 @@ pub struct IpSegment<'a> {
     pub destination: IpAddr,
     /// The Layer-4 protocol [`payload`](Self::payload) is, read from the IPv4
     /// protocol field or the IPv6 next-header field.
-    pub protocol: IpNextHeaderProtocol,
+    pub protocol: u8,
     /// The Layer-4 segment: the bytes after the IP header.
     pub payload: &'a [u8],
     /// What the rest of the IP header said about the stack that wrote it.
@@ -407,7 +407,7 @@ pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
             Some(IpSegment {
                 source: IpAddr::V4(packet.get_source()),
                 destination: IpAddr::V4(packet.get_destination()),
-                protocol: packet.get_next_level_protocol(),
+                protocol: packet.get_next_level_protocol().0,
                 payload: ip_bytes.get(header_len..)?,
                 observation: IpObservation::V4(Ipv4Observation {
                     ttl: packet.get_ttl(),
@@ -426,7 +426,7 @@ pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
             Some(IpSegment {
                 source: IpAddr::V6(packet.get_source()),
                 destination: IpAddr::V6(packet.get_destination()),
-                protocol,
+                protocol: protocol.0,
                 payload: ip_bytes.get(offset..)?,
                 observation: IpObservation::V6(Ipv6Observation {
                     hop_limit: packet.get_hop_limit(),
@@ -546,8 +546,8 @@ pub struct FrameSpec {
     pub src: IpAddr,
     /// The destination address written into the IP header.
     pub dst: IpAddr,
-    /// What the IP header says it carries.
-    pub protocol: IpNextHeaderProtocol,
+    /// What the IP header says it carries, by its IANA number.
+    pub protocol: u8,
     /// IPv4's TTL or IPv6's hop limit, whichever the family calls it, so one
     /// caller decides it once for both. It lives here rather than with the
     /// kernel because this is the backend that can honour it exactly, the header
@@ -565,8 +565,8 @@ pub(crate) struct IpSpec {
     pub(crate) src: IpAddr,
     /// The destination address written into the IP header.
     pub(crate) dst: IpAddr,
-    /// What the IP header says it carries.
-    pub(crate) protocol: IpNextHeaderProtocol,
+    /// What the IP header says it carries, by its IANA number.
+    pub(crate) protocol: u8,
     /// IPv4's TTL or IPv6's hop limit; see [`FrameSpec::hop_limit`].
     pub(crate) hop_limit: u8,
 }
@@ -690,7 +690,7 @@ fn behind_ethernet(
         IpAddr::V4(_) => EtherTypes::Ipv4,
         IpAddr::V6(_) => EtherTypes::Ipv6,
     };
-    let header = ethernet::build_header(src_mac, dst_mac, ethertype);
+    let header = ethernet::build_header(src_mac, dst_mac, ethertype.0);
     packets
         .into_iter()
         .map(|packet| {
@@ -871,7 +871,7 @@ mod tests {
     use pnet_packet::ip::IpNextHeaderProtocols;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    const TCP: IpNextHeaderProtocol = IpNextHeaderProtocols::Tcp;
+    const TCP: u8 = IpNextHeaderProtocols::Tcp.0;
 
     #[test]
     fn dlt_mapping_covers_known_link_types() {
@@ -921,7 +921,7 @@ mod tests {
             src,
             Ipv6Addr::LOCALHOST,
             payload.len() as u16,
-            IpNextHeaderProtocols::Udp,
+            IpNextHeaderProtocols::Udp.0,
             ip::HOP_LIMIT_ROUTED,
         );
         let packet: Vec<u8> = header.into_iter().chain(payload).collect();
@@ -929,7 +929,7 @@ mod tests {
         let parsed = parse_ip_segment(&packet).unwrap();
         assert_eq!(parsed.source, IpAddr::V6(src));
         assert_eq!(parsed.destination, IpAddr::V6(Ipv6Addr::LOCALHOST));
-        assert_eq!(parsed.protocol, IpNextHeaderProtocols::Udp);
+        assert_eq!(parsed.protocol, IpNextHeaderProtocols::Udp.0);
         assert_eq!(parsed.payload, &payload);
     }
 
@@ -951,7 +951,7 @@ mod tests {
         packet[4..6].copy_from_slice(&0xBEEFu16.to_be_bytes()); // identification
         packet[6] = 0x40; // don't-fragment set, more-fragments clear
         packet[8] = 57; // TTL
-        packet[9] = TCP.0;
+        packet[9] = TCP;
 
         let IpObservation::V4(observed) = parse_ip_segment(&packet).unwrap().observation else {
             panic!("an IPv4 packet observes an IPv4 header");
@@ -985,7 +985,7 @@ mod tests {
             packet[0] = 0x45;
             packet[2..4].copy_from_slice(&((IP_V4_HDR_LEN + 8) as u16).to_be_bytes());
             packet[6..8].copy_from_slice(&flag_and_offset.to_be_bytes());
-            packet[9] = TCP.0;
+            packet[9] = TCP;
             packet
         };
 
@@ -1021,7 +1021,7 @@ mod tests {
             let mut packet = vec![0u8; IP_V4_HDR_LEN];
             packet[0] = 0x45;
             packet[6] = flag_byte;
-            packet[9] = TCP.0;
+            packet[9] = TCP;
             match parse_ip_segment(&packet).unwrap().observation {
                 IpObservation::V4(observed) => observed,
                 IpObservation::V6(_) => panic!("an IPv4 packet observes an IPv4 header"),
@@ -1048,7 +1048,7 @@ mod tests {
         let mut packet = vec![0u8; IP_V6_HDR_LEN];
         // version 6, traffic class 0x8B, flow label 0x12345.
         packet[0..4].copy_from_slice(&0x68B1_2345u32.to_be_bytes());
-        packet[6] = TCP.0;
+        packet[6] = TCP;
         packet[7] = 57; // hop limit
 
         let IpObservation::V6(observed) = parse_ip_segment(&packet).unwrap().observation else {
@@ -1213,7 +1213,7 @@ mod tests {
             );
             let fragment = FragmentPacket::new(packet.payload()).expect("a fragment header");
             assert_eq!(
-                fragment.get_next_header(),
+                fragment.get_next_header().0,
                 TCP,
                 "the fragment header carries the upper-layer protocol"
             );
@@ -1573,7 +1573,7 @@ mod tests {
             Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
             Ipv6Addr::LOCALHOST,
             payload_len,
-            first,
+            first.0,
             ip::HOP_LIMIT_ROUTED,
         )
         .into_iter()
@@ -1666,6 +1666,6 @@ mod tests {
         let packet = ipv6_chain(IpNextHeaderProtocols::Esp, &[], &[9, 9, 9, 9]);
 
         let parsed = parse_ip_segment(&packet).unwrap();
-        assert_eq!(parsed.protocol, IpNextHeaderProtocols::Esp);
+        assert_eq!(parsed.protocol, IpNextHeaderProtocols::Esp.0);
     }
 }

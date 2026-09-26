@@ -35,16 +35,16 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pnet_base::MacAddr;
 use pnet_packet::Packet;
 use pnet_packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
-use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::ethernet::{EtherType, EtherTypes};
 use pnet_packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
 use pnet_packet::icmpv6::ndp::{MutableNeighborAdvertPacket, NeighborSolicitPacket};
-use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Types};
+use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Type, Icmpv6Types};
 use pnet_packet::ip::IpNextHeaderProtocols;
 use pnet_packet::udp::{MutableUdpPacket, ipv6_checksum as udp_ipv6_checksum};
 use tokio::sync::mpsc::{self, Sender};
+use zond_engine::model::mac::MacAddr;
 
 use zond_engine::model::ip::scoped::Zone;
 use zond_engine::protocols::ethernet::Frame;
@@ -507,14 +507,14 @@ impl FrameSink for FakeSegment {
         self.emit_announcements(&frame);
         self.emit_switch_announcement();
 
-        match frame.ethertype() {
+        match EtherType(frame.ethertype()) {
             EtherTypes::Arp => self.answer_arp(&frame),
             EtherTypes::Ipv4 => self.answer_dhcp(&frame),
             // The two IPv6 probes are told apart by their ICMPv6 type, not by
             // the frame: one asks the whole segment, the other asks about one
             // address, and answering them identically is what let the engine
             // credit an echo reply to neighbour discovery for as long as it did.
-            EtherTypes::Ipv6 => match ip::icmpv6_type(&frame) {
+            EtherTypes::Ipv6 => match ip::icmpv6_type(&frame).map(Icmpv6Type) {
                 Some(Icmpv6Types::NeighborSolicit) => self.answer_neighbor_solicit(&frame),
                 Some(Icmpv6Types::EchoRequest) => self.answer_all_nodes_echo(&frame),
                 Some(Icmpv6Types::RouterSolicit) => self.answer_router_solicit(&frame),
@@ -600,7 +600,7 @@ impl FakeSegment {
             return;
         };
 
-        let scanner_mac = request.get_sender_hw_addr();
+        let scanner_mac = MacAddr::from(<[u8; 6]>::from(request.get_sender_hw_addr()));
         let scanner_ip = request.get_sender_proto_addr();
         if let Some(reply) = arp_reply(host.mac, target, scanner_mac, scanner_ip) {
             self.deliver_late(reply, host.delay, host.queued);
@@ -610,7 +610,7 @@ impl FakeSegment {
     /// Emits each declared unsolicited advertisement once, as soon as the
     /// scanner has put a frame on the wire and named an address to send it to.
     fn emit_unsolicited(&mut self, frame: &Frame<'_>) {
-        if self.unsolicited.is_empty() || frame.ethertype() != EtherTypes::Ipv6 {
+        if self.unsolicited.is_empty() || frame.ethertype() != EtherTypes::Ipv6.0 {
             return;
         }
         let Ok(scanner_ip) = ip::ipv6_source(frame) else {
@@ -646,7 +646,7 @@ impl FakeSegment {
     /// Emits each declared mDNS announcement once, as soon as the scanner has
     /// put a frame on the wire.
     fn emit_announcements(&mut self, frame: &Frame<'_>) {
-        if self.announcements.is_empty() || frame.ethertype() != EtherTypes::Ipv6 {
+        if self.announcements.is_empty() || frame.ethertype() != EtherTypes::Ipv6.0 {
             return;
         }
         let Ok(scanner_ip) = ip::ipv6_source(frame) else {
@@ -829,7 +829,7 @@ fn lldp_tlv(kind: u8, value: &[u8]) -> Vec<u8> {
 
 /// The advertisement a managed switch sends to the port the scanner is on.
 fn lldp_advertisement(switch: Switch) -> Vec<u8> {
-    const NEAREST_BRIDGE: MacAddr = MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E);
+    const NEAREST_BRIDGE: MacAddr = MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E);
     // Chassis subtype 4 is a hardware address; port subtype 5 is an interface
     // name. The two identifiers are numbered by different tables, which is the
     // detail worth stating in a fixture somebody will copy.
@@ -837,14 +837,7 @@ fn lldp_advertisement(switch: Switch) -> Vec<u8> {
     const PORT_SUBTYPE_INTERFACE_NAME: u8 = 5;
 
     let mut chassis = vec![CHASSIS_SUBTYPE_MAC];
-    chassis.extend_from_slice(&[
-        switch.mac.0,
-        switch.mac.1,
-        switch.mac.2,
-        switch.mac.3,
-        switch.mac.4,
-        switch.mac.5,
-    ]);
+    chassis.extend_from_slice(&switch.mac.octets());
 
     let mut port = vec![PORT_SUBTYPE_INTERFACE_NAME];
     port.extend_from_slice(switch.port.as_bytes());
@@ -881,7 +874,7 @@ fn arp_reply(
     scanner_mac: MacAddr,
     scanner_ip: Ipv4Addr,
 ) -> Option<Vec<u8>> {
-    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Arp);
+    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Arp.0);
 
     let mut payload = [0u8; ARP_LEN];
     {
@@ -891,9 +884,9 @@ fn arp_reply(
         arp.set_hw_addr_len(6);
         arp.set_proto_addr_len(4);
         arp.set_operation(ArpOperations::Reply);
-        arp.set_sender_hw_addr(host_mac);
+        arp.set_sender_hw_addr(host_mac.octets().into());
         arp.set_sender_proto_addr(host_ip);
-        arp.set_target_hw_addr(scanner_mac);
+        arp.set_target_hw_addr(scanner_mac.octets().into());
         arp.set_target_proto_addr(scanner_ip);
     }
 
@@ -930,12 +923,12 @@ fn neighbor_advertisement(
         advert.set_target_addr(target);
     }
 
-    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Ipv6);
+    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Ipv6.0);
     let ipv6 = ip::build_ipv6_header(
         from,
         scanner_ip,
         body.len() as u16,
-        IpNextHeaderProtocols::Icmpv6,
+        IpNextHeaderProtocols::Icmpv6.0,
         ip::HOP_LIMIT_NDP,
     );
 
@@ -996,12 +989,12 @@ fn mdns_response(
         datagram.set_checksum(sum);
     }
 
-    let header = ethernet::build_header(announcer, scanner_mac, EtherTypes::Ipv6);
+    let header = ethernet::build_header(announcer, scanner_mac, EtherTypes::Ipv6.0);
     let ipv6 = ip::build_ipv6_header(
         source,
         scanner_ip,
         u16::try_from(udp.len()).ok()?,
-        IpNextHeaderProtocols::Udp,
+        IpNextHeaderProtocols::Udp.0,
         ip::HOP_LIMIT_ON_LINK,
     );
 
@@ -1054,12 +1047,12 @@ fn icmpv6_echo_reply(
         echo.set_sequence_number(sequence);
     }
 
-    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Ipv6);
+    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Ipv6.0);
     let ipv6 = ip::build_ipv6_header(
         host_ip,
         scanner_ip,
         body.len() as u16,
-        IpNextHeaderProtocols::Icmpv6,
+        IpNextHeaderProtocols::Icmpv6.0,
         ip::HOP_LIMIT_ON_LINK,
     );
 
@@ -1106,7 +1099,7 @@ fn dhcp_ack(server: Server, scanner_mac: MacAddr, scanner_ip: Ipv4Addr) -> Optio
         .build()
         .ok()?;
 
-    let mut frame = ethernet::build_header(server.mac, scanner_mac, EtherTypes::Ipv4);
+    let mut frame = ethernet::build_header(server.mac, scanner_mac, EtherTypes::Ipv4.0);
     frame.extend_from_slice(&datagram);
     pad_to_min_frame(&mut frame);
     Some(frame)
@@ -1141,7 +1134,7 @@ fn router_advertisement(router: Router, scanner_mac: MacAddr) -> Option<Vec<u8>>
         .build()
         .ok()?;
 
-    let mut frame = ethernet::build_header(router.mac, scanner_mac, EtherTypes::Ipv6);
+    let mut frame = ethernet::build_header(router.mac, scanner_mac, EtherTypes::Ipv6.0);
     frame.extend_from_slice(&packet);
     pad_to_min_frame(&mut frame);
     Some(frame)

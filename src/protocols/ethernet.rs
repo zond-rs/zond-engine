@@ -33,8 +33,7 @@
 //! stay readable for anything that wants them, which on a trunk is a finding in
 //! its own right.
 
-use pnet_base::MacAddr;
-use pnet_packet::ethernet::EtherType;
+use crate::model::mac::MacAddr;
 
 use crate::protocols::craft;
 use crate::protocols::error::{PacketError, Result};
@@ -132,7 +131,7 @@ pub struct Frame<'a> {
     /// buffer that had one, and there is no arithmetic left to get wrong.
     payload: &'a [u8],
     /// What the frame carries, read from behind the tags.
-    ethertype: EtherType,
+    ethertype: u16,
     tags: [VlanTag; MAX_VLAN_TAGS],
     depth: usize,
 }
@@ -156,7 +155,7 @@ impl<'a> Frame<'a> {
     ///
     /// Never a tag protocol identifier for a frame this parsed successfully,
     /// which is the whole of what this view is for.
-    pub fn ethertype(&self) -> EtherType {
+    pub fn ethertype(&self) -> u16 {
         self.ethertype
     }
 
@@ -197,7 +196,7 @@ impl<'a> Frame<'a> {
     /// `None` for an Ethernet II frame, where the field names a protocol and
     /// says nothing about length.
     pub fn payload_length(&self) -> Option<usize> {
-        (self.ethertype.0 <= MAX_PAYLOAD_LEN).then_some(usize::from(self.ethertype.0))
+        (self.ethertype <= MAX_PAYLOAD_LEN).then_some(usize::from(self.ethertype))
     }
 
     /// The payload, cut to the length an 802.3 header claimed.
@@ -227,8 +226,9 @@ impl<'a> Frame<'a> {
     }
 }
 
-/// Builds the Ethernet header carrying `et` from `src_mac` to `dst_mac`.
-pub fn build_header(src_mac: MacAddr, dst_mac: MacAddr, et: EtherType) -> Vec<u8> {
+/// Builds the Ethernet header carrying ethertype `et` from `src_mac` to
+/// `dst_mac`.
+pub fn build_header(src_mac: MacAddr, dst_mac: MacAddr, et: u16) -> Vec<u8> {
     craft::Ethernet::new(src_mac, dst_mac)
         .with_ethertype(et)
         .header_bytes()
@@ -294,7 +294,7 @@ pub fn parse(frame_bytes: &'_ [u8]) -> Result<Frame<'_>> {
         payload: frame_bytes
             .get(payload_offset..)
             .ok_or_else(|| short_of(payload_offset))?,
-        ethertype: EtherType(ethertype),
+        ethertype,
         tags,
         depth,
     })
@@ -314,8 +314,8 @@ mod tests {
     use super::*;
     use pnet_packet::ethernet::EtherTypes;
 
-    const DST: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 1);
-    const SRC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 2);
+    const DST: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 1);
+    const SRC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 2);
 
     /// A frame carrying `ethertype`, wrapped in `tags` from the outside in.
     ///
@@ -323,8 +323,8 @@ mod tests {
     /// build a customer tag inside a provider tag and say which is which.
     fn frame_with(tags: &[(u16, u16)], ethertype: u16, payload: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[DST.0, DST.1, DST.2, DST.3, DST.4, DST.5]);
-        bytes.extend_from_slice(&[SRC.0, SRC.1, SRC.2, SRC.3, SRC.4, SRC.5]);
+        bytes.extend_from_slice(&DST.octets());
+        bytes.extend_from_slice(&SRC.octets());
 
         // Each tag is its protocol identifier followed by two bytes of tag
         // control information. What says what comes next is the following tag's
@@ -351,7 +351,7 @@ mod tests {
         let bytes = frame_with(&[(0x8100, 0x0064)], EtherTypes::Ipv4.0, &[0xAB; 20]);
         let frame = parse(&bytes).expect("a tagged frame parses");
 
-        assert_eq!(frame.ethertype(), EtherTypes::Ipv4);
+        assert_eq!(frame.ethertype(), EtherTypes::Ipv4.0);
         assert_eq!(frame.payload(), &[0xAB; 20]);
         assert_eq!(frame.source(), SRC, "a tag does not move the addresses");
         assert_eq!(frame.destination(), DST);
@@ -389,7 +389,7 @@ mod tests {
         );
         let frame = parse(&bytes).expect("a QinQ frame parses");
 
-        assert_eq!(frame.ethertype(), EtherTypes::Arp);
+        assert_eq!(frame.ethertype(), EtherTypes::Arp.0);
         assert_eq!(frame.payload(), &[0xCD; 28]);
         assert_eq!(
             frame.vlans().iter().map(|tag| tag.id).collect::<Vec<_>>(),
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(frame.vlans().len(), MAX_VLAN_TAGS, "the walk stopped");
         assert_eq!(
             frame.ethertype(),
-            EtherType(0x8100),
+            0x8100,
             "and reports a tag protocol as the ethertype, which every reader declines"
         );
     }
@@ -450,7 +450,7 @@ mod tests {
         let bytes = frame_with(&[], EtherTypes::Ipv4.0, &[0x11; 20]);
         let frame = parse(&bytes).expect("an untagged frame parses");
 
-        assert_eq!(frame.ethertype(), EtherTypes::Ipv4);
+        assert_eq!(frame.ethertype(), EtherTypes::Ipv4.0);
         assert_eq!(frame.payload(), &[0x11; 20]);
         assert!(frame.vlans().is_empty());
     }

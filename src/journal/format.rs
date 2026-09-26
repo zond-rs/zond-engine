@@ -179,7 +179,11 @@ pub struct Writer<W: Write> {
 impl<W: Write> Writer<W> {
     /// Begins a journal by writing its header.
     pub fn create(mut inner: W) -> Result<Self, JournalError> {
-        writeln!(inner, "{}", serde_json::to_string(&Header::current())?)?;
+        writeln!(
+            inner,
+            "{}",
+            serde_json::to_string(&Header::current()).map_err(JournalError::json)?
+        )?;
         Ok(Self { inner })
     }
 
@@ -208,7 +212,11 @@ impl<W: Write> Writer<W> {
     /// through leaves a line the reader discards rather than a line it
     /// misreads. See [`Reader`].
     pub fn write<T: Serialize>(&mut self, record: &T) -> Result<(), JournalError> {
-        writeln!(self.inner, "{}", serde_json::to_string(record)?)?;
+        writeln!(
+            self.inner,
+            "{}",
+            serde_json::to_string(record).map_err(JournalError::json)?
+        )?;
         Ok(())
     }
 
@@ -219,8 +227,14 @@ impl<W: Write> Writer<W> {
     }
 }
 
-impl From<serde_json::Error> for JournalError {
-    fn from(error: serde_json::Error) -> Self {
+impl JournalError {
+    /// A record `serde_json` would not write or read, at no line in
+    /// particular.
+    ///
+    /// A function rather than a `From` impl: an impl of a public trait is
+    /// public wherever it sits, and one from `serde_json`'s error would make
+    /// that crate's type part of this one's API.
+    pub(crate) fn json(error: serde_json::Error) -> Self {
         JournalError::Malformed {
             line: 0,
             message: error.to_string(),

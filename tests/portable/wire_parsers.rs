@@ -36,10 +36,9 @@
 
 use proptest::prelude::*;
 
-use pnet_base::MacAddr;
-use pnet_packet::ethernet::EtherType;
-use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use pnet_packet::ip::IpNextHeaderProtocols;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use zond_engine::model::mac::MacAddr;
 
 use zond_engine::protocols::ethernet::Frame;
 use zond_engine::protocols::{cdp, craft, dhcp, dns, ethernet, icmp, lldp, mdns, ndp, sctp, tcp};
@@ -94,10 +93,7 @@ fn any_frame_bytes() -> impl Strategy<Value = Vec<u8>> {
 /// A well-formed Ethernet frame carrying `payload` behind `ethertype`.
 fn frame_around(ethertype: u16, payload: Vec<u8>) -> Vec<u8> {
     craft::Packet::new()
-        .push(
-            craft::Ethernet::new(MacAddr::zero(), MacAddr::zero())
-                .with_ethertype(EtherType(ethertype)),
-        )
+        .push(craft::Ethernet::new(MacAddr::ZERO, MacAddr::ZERO).with_ethertype(ethertype))
         .push(craft::Layer::Raw(payload))
         .build()
         .expect("an Ethernet header and a payload cannot overflow")
@@ -163,7 +159,7 @@ fn any_icmpv6_frame() -> impl Strategy<Value = Vec<u8>> {
             message.extend_from_slice(&rest);
 
             let header = craft::Ipv6 {
-                next_header: craft::Field::Exact(IpNextHeaderProtocols::Icmpv6),
+                next_header: craft::Field::Exact(IpNextHeaderProtocols::Icmpv6.0),
                 ..craft::Ipv6::new(Ipv6Addr::UNSPECIFIED, Ipv6Addr::UNSPECIFIED)
                     .with_hop_limit(hop_limit)
             };
@@ -218,7 +214,7 @@ fn any_dhcp_frame() -> impl Strategy<Value = Vec<u8>> {
             .expect("a UDP header over a bounded payload");
 
         let header = craft::Ipv4 {
-            protocol: craft::Field::Exact(IpNextHeaderProtocols::Udp),
+            protocol: craft::Field::Exact(IpNextHeaderProtocols::Udp.0),
             ..craft::Ipv4::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST)
         };
         let mut payload = header
@@ -262,13 +258,13 @@ fn any_captured_frame() -> impl Strategy<Value = (LinkType, Vec<u8>)> {
             let len = rest.len() as u16;
             let (ethertype, mut packet) = if v6 {
                 let header = craft::Ipv6 {
-                    next_header: craft::Field::Exact(IpNextHeaderProtocol(next)),
+                    next_header: craft::Field::Exact(next),
                     ..craft::Ipv6::new(Ipv6Addr::UNSPECIFIED, Ipv6Addr::UNSPECIFIED)
                 };
                 (0x86ddu16, header.header_bytes(len))
             } else {
                 let header = craft::Ipv4 {
-                    protocol: craft::Field::Exact(IpNextHeaderProtocol(next)),
+                    protocol: craft::Field::Exact(next),
                     ..craft::Ipv4::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
                 };
                 let bytes = header

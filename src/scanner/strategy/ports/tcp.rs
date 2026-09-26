@@ -47,7 +47,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use tokio::sync::mpsc;
 
 use crate::config::OsDetection;
@@ -456,7 +456,7 @@ impl TcpPortScanner {
         let Some(error) = icmp_error::parse(reply) else {
             return;
         };
-        if error.quoted.protocol != IpNextHeaderProtocols::Tcp {
+        if error.quoted.protocol != IpNextHeaderProtocols::Tcp.0 {
             return;
         }
 
@@ -646,7 +646,7 @@ impl RawPortScan for TcpPortScanner {
     /// ICMP only reaches here for a technique that asked for it; see
     /// [`TcpScanTechnique::reads_icmp_errors`].
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
-        match reply.protocol {
+        match IpNextHeaderProtocol(reply.protocol) {
             IpNextHeaderProtocols::Tcp => self.handle_tcp_reply(reply, now),
             _ => self.handle_icmp_error(reply, now),
         }
@@ -1303,7 +1303,7 @@ mod tests {
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply),
             Instant::now(),
         );
 
@@ -1395,7 +1395,7 @@ mod tests {
             received_at: Instant::now(),
             source: TARGET,
             destination: None,
-            protocol: IpNextHeaderProtocols::Tcp,
+            protocol: IpNextHeaderProtocols::Tcp.0,
             bytes,
             observation: Some(IpObservation::V4(crate::model::capture::Ipv4Observation {
                 ttl,
@@ -1439,7 +1439,7 @@ mod tests {
             received_at: Instant::now(),
             source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
             destination: Some(TARGET),
-            protocol: IpNextHeaderProtocols::Tcp,
+            protocol: IpNextHeaderProtocols::Tcp.0,
             bytes,
             observation: None,
             source_mac: None,
@@ -1552,7 +1552,7 @@ mod tests {
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -1567,7 +1567,7 @@ mod tests {
 
         let reply = tcp_segment(&scanner, 81, token, RST | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -1590,7 +1590,7 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
         let reply = tcp_segment(&scanner, 80, token, RST | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply),
             Instant::now(),
         );
 
@@ -1618,7 +1618,7 @@ mod tests {
         };
         let reply = tcp_segment(&scanner, 82, stray, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -1638,7 +1638,7 @@ mod tests {
         let elsewhere = scanner.core.src_port.wrapping_add(1);
         let reply = segment_to(83, elsewhere, scanner.technique, token, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -1654,7 +1654,7 @@ mod tests {
         // Same host, but a port we never probed.
         let reply = tcp_segment(&scanner, 1234, token, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -1695,7 +1695,7 @@ mod tests {
 
             let reply = tcp_segment(&scanner, 80, token, RST | ACK);
             scanner.handle_tcp_reply(
-                &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+                &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
                 Instant::now(),
             );
 
@@ -1713,7 +1713,7 @@ mod tests {
 
         let reply = tcp_segment(&scanner, 80, token, RST | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -1739,7 +1739,7 @@ mod tests {
             .expect("the reply is a TCP segment")
             .set_window(8192);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply),
             Instant::now(),
         );
 
@@ -1765,7 +1765,7 @@ mod tests {
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -1836,7 +1836,7 @@ mod tests {
         packet.set_icmp_code(code);
         packet.set_payload(&quotation);
 
-        CapturedSegment::synthetic(from, IpNextHeaderProtocols::Icmp, bytes)
+        CapturedSegment::synthetic(from, IpNextHeaderProtocols::Icmp.0, bytes)
     }
 
     /// The probe under the IP header a router would have echoed back with it.
@@ -1848,7 +1848,7 @@ mod tests {
                 IpAddr::V6(_) => unreachable!("the fixture is v4"),
             },
             probe.len() as u16,
-            IpNextHeaderProtocols::Tcp,
+            IpNextHeaderProtocols::Tcp.0,
             ip::HOP_LIMIT_ROUTED,
         )
         .unwrap();
@@ -2033,10 +2033,10 @@ mod tests {
     /// budget, which the bound here allows ten of.
     #[tokio::test]
     async fn dead_neighbours_behind_a_frame_sender_are_asked_for_together() {
+        use crate::model::mac::MacAddr;
         use crate::system::interface::LinkAddress;
         use crate::transport::link::{ARP_TIMEOUT, Answers, LinkNeighbors, Segment};
         use crate::transport::neighbor::NeighborResolver;
-        use pnet_base::MacAddr;
 
         const LIVE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 60);
         const LIVE_PORTS: u16 = 3;
@@ -2514,7 +2514,7 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -2558,7 +2558,7 @@ mod tests {
 
         let reply = tcp_segment(&scanner, 80, first, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply),
             Instant::now(),
         );
         super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(7200));
@@ -2613,7 +2613,7 @@ mod tests {
 
         let reply = tcp_segment(&scanner, 80, first, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -2654,11 +2654,11 @@ mod tests {
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, reply.clone()),
             Instant::now(),
         );
 
@@ -2726,7 +2726,7 @@ mod tests {
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
                 // Stamped on arrival, as a capture stamps it.
-                let arrived = CapturedSegment::synthetic(dst, IpNextHeaderProtocols::Tcp, reply);
+                let arrived = CapturedSegment::synthetic(dst, IpNextHeaderProtocols::Tcp.0, reply);
                 let _ = replies.send(arrived).await;
             });
             Ok(())
@@ -2763,7 +2763,7 @@ mod tests {
             self.replies
                 .try_send(CapturedSegment::synthetic(
                     dst,
-                    IpNextHeaderProtocols::Tcp,
+                    IpNextHeaderProtocols::Tcp.0,
                     reply,
                 ))
                 .expect("room for the answer");
@@ -3114,7 +3114,7 @@ mod tests {
             LOCAL,
             dst,
             tcp_header.len() as u16,
-            IpNextHeaderProtocols::Tcp,
+            IpNextHeaderProtocols::Tcp.0,
             ip::HOP_LIMIT_ROUTED,
         )
         .expect("an IPv4 header");
@@ -3128,7 +3128,7 @@ mod tests {
         packet.set_icmp_code(IcmpCodes::DestinationHostUnreachable);
         packet.set_payload(&quotation);
 
-        CapturedSegment::synthetic(ROUTER, IpNextHeaderProtocols::Icmp, bytes)
+        CapturedSegment::synthetic(ROUTER, IpNextHeaderProtocols::Icmp.0, bytes)
     }
 
     const TARGET_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 200);
@@ -3189,7 +3189,7 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
         let rst = tcp_segment(&scanner, 80, token, RST | ACK);
         scanner.handle_tcp_reply(
-            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, rst),
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp.0, rst),
             Instant::now(),
         );
 

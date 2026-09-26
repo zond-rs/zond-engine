@@ -826,7 +826,11 @@ mod persistence {
             // file still held open is a hazard on platforms this may yet reach.
             {
                 let mut file = create_staged(&temporary)?;
-                file.write_all(serde_json::to_string(self)?.as_bytes())?;
+                file.write_all(
+                    serde_json::to_string(self)
+                        .map_err(JournalError::json)?
+                        .as_bytes(),
+                )?;
             }
 
             // The destination becomes the temporary's inode, which already
@@ -843,7 +847,7 @@ mod persistence {
         /// re-probes a settled target, which is safe and quietly wrong.
         pub fn read(path: &Path) -> Result<Self, JournalError> {
             let text = super::super::store::read_bounded(path, "a journal cursor")?;
-            let mut checkpoint: Self = serde_json::from_str(&text)?;
+            let mut checkpoint: Self = serde_json::from_str(&text).map_err(JournalError::json)?;
             checkpoint.settled_above.sort_unstable();
             checkpoint.settled_above.dedup();
             Ok(checkpoint)

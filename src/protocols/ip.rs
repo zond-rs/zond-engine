@@ -36,9 +36,9 @@ use crate::protocols::error::{PacketError, Result};
 use crate::protocols::ethernet::Frame;
 use crate::protocols::sizes::{IP_V4_HDR_LEN, IP_V6_HDR_LEN, UDP_HDR_LEN};
 use pnet_packet::Packet;
-use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::ethernet::{EtherType, EtherTypes};
 use pnet_packet::icmpv6::echo_reply::EchoReplyPacket;
-use pnet_packet::icmpv6::{Icmpv6Packet, Icmpv6Type, Icmpv6Types};
+use pnet_packet::icmpv6::{Icmpv6Packet, Icmpv6Types};
 use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet_packet::ipv4::Ipv4Packet;
 use pnet_packet::ipv6::{Ipv6Packet, MutableFragmentPacket};
@@ -96,7 +96,7 @@ pub fn build_ipv4_header(
     src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
     payload_length: u16,
-    next_protocol: IpNextHeaderProtocol,
+    next_protocol: u8,
     ttl: u8,
 ) -> Result<Vec<u8>> {
     craft::Ipv4 {
@@ -311,7 +311,7 @@ pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<V
     let upper = header
         .next_header
         .exact()
-        .unwrap_or(IpNextHeaderProtocols::Tcp);
+        .unwrap_or(IpNextHeaderProtocols::Tcp.0);
 
     // One identification for the whole datagram, so a receiver can group the
     // pieces. Thirty-two bits here, against IPv4's sixteen.
@@ -320,7 +320,7 @@ pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<V
     // The base header each fragment repeats: pointing at the fragment header,
     // with a payload length re-derived per piece.
     let base = craft::Ipv6 {
-        next_header: craft::Field::Exact(IpNextHeaderProtocols::Ipv6Frag),
+        next_header: craft::Field::Exact(IpNextHeaderProtocols::Ipv6Frag.0),
         payload_length: craft::Field::Computed,
         ..header.clone()
     };
@@ -337,7 +337,7 @@ pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<V
         {
             let mut fragment = MutableFragmentPacket::new(&mut extension)
                 .expect("an eight-byte buffer holds a fragment header");
-            fragment.set_next_header(upper);
+            fragment.set_next_header(IpNextHeaderProtocol(upper));
             fragment.set_reserved(0);
             // The offset occupies the top thirteen bits and the More Fragments
             // flag bit zero, with the two reserved bits between them left clear.
@@ -403,7 +403,7 @@ pub fn build_ipv6_header(
     src_addr: Ipv6Addr,
     dst_addr: Ipv6Addr,
     payload_length: u16,
-    next_protocol: IpNextHeaderProtocol,
+    next_protocol: u8,
     hop_limit: u8,
 ) -> Vec<u8> {
     craft::Ipv6 {
@@ -458,7 +458,7 @@ pub(crate) fn ipv6_carrying<'a>(
     frame: &Frame<'a>,
     protocol: IpNextHeaderProtocol,
 ) -> Option<Ipv6Packet<'a>> {
-    if frame.ethertype() != EtherTypes::Ipv6 {
+    if frame.ethertype() != EtherTypes::Ipv6.0 {
         return None;
     }
 
@@ -483,17 +483,17 @@ pub(crate) fn ipv6_carrying_in(
     (packet.get_next_header() == protocol).then_some(packet)
 }
 
-/// The ICMPv6 message type an Ethernet-framed IPv6 packet carries, or `None` if
-/// the frame is not that or is too short to say.
+/// The ICMPv6 message type an Ethernet-framed IPv6 packet carries, by number, or
+/// `None` if the frame is not that or is too short to say.
 ///
 /// The ethertype is checked before anything is read, so a frame that arrived
 /// under another one is declined however its bytes happen to look. The fixed
 /// header's next-header field is read rather than the extension chain walked, so
 /// a packet carrying one is reported as not ICMPv6: the safe direction for a
 /// discovery check, and no probe whose replies this interprets elicits one.
-pub fn icmpv6_type(frame: &Frame<'_>) -> Option<Icmpv6Type> {
+pub fn icmpv6_type(frame: &Frame<'_>) -> Option<u8> {
     let packet = ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)?;
-    Some(Icmpv6Packet::new(packet.payload())?.get_icmpv6_type())
+    Some(Icmpv6Packet::new(packet.payload())?.get_icmpv6_type().0)
 }
 
 /// The identifier and sequence number an Ethernet-framed ICMPv6 echo reply
@@ -547,7 +547,7 @@ pub fn udp_payload<'a>(frame: &Frame<'a>, port: u16) -> Option<&'a [u8]> {
 
     // Offsets rather than `packet.payload()`, because a pnet view owns the
     // slice it hands back and the caller needs one borrowed from the frame.
-    let (header_len, next) = match frame.ethertype() {
+    let (header_len, next) = match EtherType(frame.ethertype()) {
         EtherTypes::Ipv6 => (IP_V6_HDR_LEN, Ipv6Packet::new(packet)?.get_next_header()),
         EtherTypes::Ipv4 => {
             let ipv4 = Ipv4Packet::new(packet)?;
@@ -643,7 +643,7 @@ mod tests {
             V4,
             V4,
             largest as u16,
-            IpNextHeaderProtocols::Tcp,
+            IpNextHeaderProtocols::Tcp.0,
             HOP_LIMIT_ROUTED,
         )
         .expect("the largest describable payload");
@@ -657,7 +657,7 @@ mod tests {
                 V4,
                 V4,
                 oversize as u16,
-                IpNextHeaderProtocols::Tcp,
+                IpNextHeaderProtocols::Tcp.0,
                 HOP_LIMIT_ROUTED,
             );
             assert!(
@@ -796,7 +796,7 @@ mod tests {
 
         let honest = frame_of(EtherTypes::Ipv6.0, &packet);
         assert_eq!(
-            icmpv6_type(&read(&honest)).map(|kind| kind.0),
+            icmpv6_type(&read(&honest)),
             Some(128),
             "an IPv6 frame is still read"
         );
@@ -1094,7 +1094,7 @@ mod tests {
         let mtu = (IP_V6_HDR_LEN + FRAGMENT_HEADER_LEN + 24) as u16;
         let payload: Vec<u8> = (0..60u8).collect();
         let header = craft::Ipv6 {
-            next_header: craft::Field::Exact(IpNextHeaderProtocols::Udp),
+            next_header: craft::Field::Exact(IpNextHeaderProtocols::Udp.0),
             ..craft::Ipv6::new(V6, V6)
         };
         let fragments = fragment_ipv6(&header, &payload, mtu).expect("fragments");
@@ -1126,7 +1126,7 @@ mod tests {
     fn a_datagram_that_fits_is_returned_whole_v6() {
         let payload = vec![0xABu8; 100];
         let header = craft::Ipv6 {
-            next_header: craft::Field::Exact(IpNextHeaderProtocols::Tcp),
+            next_header: craft::Field::Exact(IpNextHeaderProtocols::Tcp.0),
             ..craft::Ipv6::new(V6, V6)
         };
         let fragments = fragment_ipv6(&header, &payload, 1500).expect("one packet");

@@ -92,7 +92,7 @@ use crate::scanner::ScanError;
 use crate::scanner::rdns::ResolverError;
 use crate::scanner::strategy::StrategyError;
 use crate::signature::SignatureError;
-use crate::transport::capture::CaptureError;
+use crate::transport::capture::{CaptureError, LibraryError};
 use crate::transport::channel::ChannelError;
 #[cfg(feature = "packet-exchange")]
 use crate::transport::exchange::ExchangeError;
@@ -575,6 +575,12 @@ impl Coded for CaptureError {
     }
 }
 
+impl Coded for LibraryError {
+    fn code(&self) -> &'static str {
+        "capture.library"
+    }
+}
+
 impl Coded for RawSocketError {
     fn code(&self) -> &'static str {
         match self {
@@ -870,6 +876,7 @@ mod tests {
             "capability.timed_out",
             "capture.denied",
             "capture.filter",
+            "capture.library",
             "capture.no_interface",
             "capture.no_reader",
             "capture.open",

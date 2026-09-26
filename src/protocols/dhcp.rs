@@ -39,7 +39,7 @@
 //! segment, the frame comes from the relay. The caller compares the two; see
 //! [`ServerReply::server`].
 
-use pnet_base::MacAddr;
+use crate::model::mac::MacAddr;
 use pnet_packet::ethernet::EtherTypes;
 use pnet_packet::ip::IpNextHeaderProtocols;
 use pnet_packet::ipv4::Ipv4Packet;
@@ -271,7 +271,7 @@ pub fn build_inform(src_mac: MacAddr, src_addr: Ipv4Addr) -> Vec<u8> {
     message.resize(message.len().max(MIN_MESSAGE_LEN), OPT_PAD);
 
     Packet::new()
-        .push(Ethernet::new(src_mac, MacAddr::broadcast()).with_ethertype(EtherTypes::Ipv4))
+        .push(Ethernet::new(src_mac, MacAddr::BROADCAST).with_ethertype(EtherTypes::Ipv4.0))
         .push(Ipv4::new(src_addr, Ipv4Addr::BROADCAST).with_ttl(ip::HOP_LIMIT_ON_LINK))
         .push(Udp::new(CLIENT_PORT, SERVER_PORT).with_payload(message))
         .build()
@@ -360,7 +360,7 @@ pub fn client_request<'a>(frame: &Frame<'a>) -> Option<ClientRequest<'a>> {
 /// one frame come to disagree: the message for `chaddr`, the options for
 /// everything else.
 fn bootp_message<'a>(frame: &Frame<'a>, source_port: u16, op: u8) -> Option<(&'a [u8], &'a [u8])> {
-    if frame.ethertype() != EtherTypes::Ipv4 {
+    if frame.ethertype() != EtherTypes::Ipv4.0 {
         return None;
     }
 
@@ -489,8 +489,8 @@ pub(crate) mod tests {
     use crate::protocols::ethernet;
     use pnet_packet::Packet as _;
 
-    const SRC_MAC: MacAddr = MacAddr(0x02, 0x00, 0x11, 0x22, 0x33, 0x44);
-    const SERVER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
+    const SRC_MAC: MacAddr = MacAddr::new(0x02, 0x00, 0x11, 0x22, 0x33, 0x44);
+    const SERVER_MAC: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
 
     fn src_addr() -> Ipv4Addr {
         Ipv4Addr::new(192, 0, 2, 50)
@@ -539,7 +539,7 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            ethernet::build_header(SERVER_MAC, SRC_MAC, EtherTypes::Ipv4),
+            ethernet::build_header(SERVER_MAC, SRC_MAC, EtherTypes::Ipv4.0),
             datagram,
         ]
         .concat()
@@ -554,8 +554,8 @@ pub(crate) mod tests {
         let bytes = build_inform(SRC_MAC, src_addr());
         let frame = super::super::ethernet::parse(&bytes).expect("an ethernet frame");
 
-        assert_eq!(frame.destination(), MacAddr::broadcast());
-        assert_eq!(frame.ethertype(), EtherTypes::Ipv4);
+        assert_eq!(frame.destination(), MacAddr::BROADCAST);
+        assert_eq!(frame.ethertype(), EtherTypes::Ipv4.0);
 
         let packet = Ipv4Packet::new(frame.payload()).expect("an ipv4 packet");
         assert_eq!(packet.get_destination(), Ipv4Addr::BROADCAST);
@@ -683,20 +683,13 @@ pub(crate) mod tests {
     /// The shared builder, taking the address the client sends from, which is the
     /// whole of the difference between a discover and a renewal.
     fn request_frame_from(from: Ipv4Addr, kind: u8, options: &[(u8, Vec<u8>)]) -> Vec<u8> {
-        const CLIENT_MAC: MacAddr = MacAddr(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33);
+        const CLIENT_MAC: MacAddr = MacAddr::new(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33);
 
         let mut message = vec![0u8; BOOTP_FIXED_LEN];
         message[0] = BOOTREQUEST;
         message[1] = HTYPE_ETHERNET;
         message[2] = HLEN_ETHERNET;
-        message[CHADDR_OFFSET..CHADDR_OFFSET + 6].copy_from_slice(&[
-            CLIENT_MAC.0,
-            CLIENT_MAC.1,
-            CLIENT_MAC.2,
-            CLIENT_MAC.3,
-            CLIENT_MAC.4,
-            CLIENT_MAC.5,
-        ]);
+        message[CHADDR_OFFSET..CHADDR_OFFSET + 6].copy_from_slice(&CLIENT_MAC.octets());
 
         message.extend_from_slice(&MAGIC_COOKIE);
         message.extend_from_slice(&[OPT_MESSAGE_TYPE, 1, kind]);
@@ -715,9 +708,9 @@ pub(crate) mod tests {
 
         [
             super::super::ethernet::build_header(
-                MacAddr(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33),
-                MacAddr::broadcast(),
-                EtherTypes::Ipv4,
+                MacAddr::new(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33),
+                MacAddr::BROADCAST,
+                EtherTypes::Ipv4.0,
             ),
             datagram,
         ]
@@ -751,7 +744,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             request.client_mac,
-            Some(MacAddr(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33))
+            Some(MacAddr::new(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33))
         );
     }
 

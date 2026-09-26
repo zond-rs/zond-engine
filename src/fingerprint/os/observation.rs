@@ -297,7 +297,7 @@ impl StackObservation {
     /// is not an IP packet carrying a TCP segment this can read.
     pub fn from_ip_packet(packet: &[u8]) -> Option<Self> {
         let parsed = crate::transport::frame::parse_ip_segment(packet)?;
-        if parsed.protocol != pnet_packet::ip::IpNextHeaderProtocols::Tcp {
+        if parsed.protocol != pnet_packet::ip::IpNextHeaderProtocols::Tcp.0 {
             return None;
         }
         Self::from_tcp(parsed.observation, parsed.payload)

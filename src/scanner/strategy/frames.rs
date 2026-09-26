@@ -222,7 +222,7 @@ pub struct ArpProtocol;
 
 impl DiscoveryProtocol for ArpProtocol {
     fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
-        if frame.ethertype() != EtherTypes::Arp {
+        if frame.ethertype() != EtherTypes::Arp.0 {
             return Ok(Reading::unhandled());
         }
 
@@ -470,7 +470,7 @@ impl Icmpv6EchoProtocol {
 
 impl DiscoveryProtocol for Icmpv6EchoProtocol {
     fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
-        if frame.ethertype() != EtherTypes::Ipv6 {
+        if frame.ethertype() != EtherTypes::Ipv6.0 {
             return Ok(Reading::unhandled());
         }
 
@@ -508,15 +508,16 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::model::mac::MacAddr;
+    use crate::protocols::mac::IntoPnetMac;
     use crate::protocols::{arp, ethernet, ip as ip_protocol};
-    use pnet_base::MacAddr;
     use pnet_packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
     use pnet_packet::icmpv6::{Icmpv6Types, MutableIcmpv6Packet};
     use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    pub(crate) const LOCAL_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
-    pub(crate) const PEER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x02);
+    pub(crate) const LOCAL_MAC: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
+    pub(crate) const PEER_MAC: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x02);
     pub(crate) const ICMPV6_ECHO_LEN: usize = 8;
 
     /// The reply a neighbour at `sender_ip` sends to this host's request.
@@ -530,12 +531,15 @@ pub(crate) mod tests {
         reply.set_hw_addr_len(6);
         reply.set_proto_addr_len(4);
         reply.set_operation(ArpOperations::Reply);
-        reply.set_sender_hw_addr(PEER_MAC);
+        reply.set_sender_hw_addr(PEER_MAC.into_pnet());
         reply.set_sender_proto_addr(sender_ip);
-        reply.set_target_hw_addr(LOCAL_MAC);
+        reply.set_target_hw_addr(LOCAL_MAC.into_pnet());
         reply.set_target_proto_addr(Ipv4Addr::new(198, 51, 100, 1));
-        let header =
-            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Arp);
+        let header = ethernet::build_header(
+            PEER_MAC,
+            LOCAL_MAC,
+            pnet_packet::ethernet::EtherTypes::Arp.0,
+        );
         [header, body].concat()
     }
 
@@ -553,13 +557,16 @@ pub(crate) mod tests {
         body: &[u8],
     ) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
-        let eth_header =
-            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv6);
+        let eth_header = ethernet::build_header(
+            PEER_MAC,
+            LOCAL_MAC,
+            pnet_packet::ethernet::EtherTypes::Ipv6.0,
+        );
         let ip_header = ip_protocol::build_ipv6_header(
             source,
             destination,
             body.len() as u16,
-            protocol,
+            protocol.0,
             ip_protocol::HOP_LIMIT_ON_LINK,
         );
 
@@ -769,13 +776,16 @@ pub(crate) mod tests {
     /// traffic that must arrive with a hop limit of 255 to be believed.
     pub(crate) fn ndp_frame(body: &[u8]) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
-        let eth_header =
-            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv6);
+        let eth_header = ethernet::build_header(
+            PEER_MAC,
+            LOCAL_MAC,
+            pnet_packet::ethernet::EtherTypes::Ipv6.0,
+        );
         let ip_header = ip_protocol::build_ipv6_header(
             source,
             Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1),
             body.len() as u16,
-            IpNextHeaderProtocols::Icmpv6,
+            IpNextHeaderProtocols::Icmpv6.0,
             ip_protocol::HOP_LIMIT_NDP,
         );
 
@@ -914,7 +924,11 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv4),
+            ethernet::build_header(
+                PEER_MAC,
+                LOCAL_MAC,
+                pnet_packet::ethernet::EtherTypes::Ipv4.0,
+            ),
             datagram,
         ]
         .concat()
@@ -939,7 +953,11 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv4),
+            ethernet::build_header(
+                PEER_MAC,
+                LOCAL_MAC,
+                pnet_packet::ethernet::EtherTypes::Ipv4.0,
+            ),
             datagram,
         ]
         .concat()

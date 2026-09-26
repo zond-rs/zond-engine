@@ -387,7 +387,7 @@ impl SweepProbe {
     /// chunk on the quoted IPv4 identification, which spells an INIT-ACK or an
     /// ABORT often enough to credit a host with an answer it never sent.
     fn answers(self, reply: &CapturedSegment) -> bool {
-        if reply.protocol != self.answered_under() {
+        if reply.protocol != self.answered_under().0 {
             return false;
         }
         match self {
@@ -1678,7 +1678,7 @@ mod tests {
     fn protocol_unreachable(probe: &[u8], identification: u16) -> CapturedSegment {
         let header = craft::Ipv4 {
             identification: Field::Exact(identification),
-            protocol: Field::Exact(IpNextHeaderProtocols::Sctp),
+            protocol: Field::Exact(IpNextHeaderProtocols::Sctp.0),
             ..craft::Ipv4::new(LOCAL, TARGET)
         }
         .header_bytes(probe.len() as u16)
@@ -1694,7 +1694,7 @@ mod tests {
             icmp.set_icmp_code(IcmpCodes::DestinationProtocolUnreachable);
             icmp.set_payload(&quoted);
         }
-        CapturedSegment::synthetic(TARGET.into(), IpNextHeaderProtocols::Icmp, bytes)
+        CapturedSegment::synthetic(TARGET.into(), IpNextHeaderProtocols::Icmp.0, bytes)
     }
 
     /// An ICMP error from a swept address is never read as an SCTP answer,
@@ -1781,7 +1781,7 @@ mod tests {
         tcp.set_data_offset(5);
         tcp.set_flags(pnet_packet::tcp::TcpFlags::SYN | pnet_packet::tcp::TcpFlags::ACK);
         tcp.set_acknowledgement(probe.sequence().wrapping_add(1));
-        CapturedSegment::synthetic(dst, IpNextHeaderProtocols::Tcp, reply)
+        CapturedSegment::synthetic(dst, IpNextHeaderProtocols::Tcp.0, reply)
     }
 
     /// A path that answers every SYN at once, captured the moment it is sent,

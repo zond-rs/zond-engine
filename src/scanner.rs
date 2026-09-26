@@ -3259,15 +3259,15 @@ mod tests {
     #[test]
     fn a_listener_is_recorded_unprivileged_only_where_privilege_refused_it() {
         use crate::scanner::strategy::StrategyError;
-        use crate::transport::capture::CaptureError;
+        use crate::transport::capture::{CaptureError, LibraryError};
 
         let denied = |link: &str| CaptureError::Denied {
             interface: link.into(),
-            source: pcap::Error::PcapError("permission denied".into()),
+            source: LibraryError::new(pcap::Error::PcapError("permission denied".into())),
         };
         let filter = CaptureError::Filter {
             filter: "ip6 and ether proto 0x86dd".into(),
-            source: pcap::Error::PcapError("not an ethernet link".into()),
+            source: LibraryError::new(pcap::Error::PcapError("not an ethernet link".into())),
         };
         let refused = |refused| StrategyError::Capture(CaptureError::NoInterface { refused });
 

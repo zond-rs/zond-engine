@@ -1062,7 +1062,7 @@ impl FakeLink {
             // watching its own egress cannot place, and leaving it out here
             // would exercise a receive stream no capture produces.
             destination: Some(scanner),
-            protocol: IpNextHeaderProtocols::Tcp,
+            protocol: IpNextHeaderProtocols::Tcp.0,
             bytes: buffer,
             // A real reply arrives under an IP header, and this one says what a
             // Linux host on a local segment says. `synthetic` — which reports no
@@ -1094,7 +1094,7 @@ impl FakeLink {
 
         Some(CapturedSegment::synthetic(
             target,
-            IpNextHeaderProtocols::Udp,
+            IpNextHeaderProtocols::Udp.0,
             bytes,
         ))
     }
@@ -1140,7 +1140,7 @@ impl FakeLink {
 
         Some(CapturedSegment::synthetic(
             target,
-            IpNextHeaderProtocols::Sctp,
+            IpNextHeaderProtocols::Sctp.0,
             bytes,
         ))
     }
@@ -1171,7 +1171,7 @@ impl FakeLink {
 
                 Some(CapturedSegment::synthetic(
                     target,
-                    IpNextHeaderProtocols::Icmp,
+                    IpNextHeaderProtocols::Icmp.0,
                     buffer,
                 ))
             }
@@ -1187,7 +1187,7 @@ impl FakeLink {
 
                 Some(CapturedSegment::synthetic(
                     target,
-                    IpNextHeaderProtocols::Icmpv6,
+                    IpNextHeaderProtocols::Icmpv6.0,
                     buffer,
                 ))
             }
@@ -1253,9 +1253,9 @@ fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8], layer4: Layer4) -> Optio
     };
     let header = match (scanner, target) {
         (IpAddr::V4(s), IpAddr::V4(d)) => {
-            ip::build_ipv4_header(s, d, len, protocol, ip::HOP_LIMIT_ROUTED).ok()?
+            ip::build_ipv4_header(s, d, len, protocol.0, ip::HOP_LIMIT_ROUTED).ok()?
         }
-        (IpAddr::V6(s), IpAddr::V6(d)) => ip::build_ipv6_header(s, d, len, protocol, HOP_LIMIT),
+        (IpAddr::V6(s), IpAddr::V6(d)) => ip::build_ipv6_header(s, d, len, protocol.0, HOP_LIMIT),
         _ => return None,
     };
 

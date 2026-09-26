@@ -725,7 +725,7 @@ impl OsSeriesScanner {
 
     /// Files one reply against the probe whose nonce it echoes.
     fn file(&mut self, reply: &CapturedSegment) {
-        if reply.protocol != IpNextHeaderProtocols::Tcp {
+        if reply.protocol != IpNextHeaderProtocols::Tcp.0 {
             self.audit.record_off_target();
             return;
         }
@@ -1006,7 +1006,7 @@ mod tests {
             received_at: Instant::now(),
             source: TARGET,
             destination: None,
-            protocol: IpNextHeaderProtocols::Tcp,
+            protocol: IpNextHeaderProtocols::Tcp.0,
             observation: Some(IpObservation::V4(Ipv4Observation {
                 ttl: 64,
                 identification,

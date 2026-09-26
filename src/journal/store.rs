@@ -144,12 +144,6 @@ pub enum OpenError {
     Journal(#[from] JournalError),
 }
 
-impl From<serde_json::Error> for OpenError {
-    fn from(error: serde_json::Error) -> Self {
-        OpenError::Journal(error.into())
-    }
-}
-
 impl From<LockRefused> for OpenError {
     fn from(refused: LockRefused) -> Self {
         OpenError::Locked(refused)
@@ -219,7 +213,10 @@ impl Journal {
     /// Split out so there is one place a failure past the claim is caught, rather
     /// than each step having to remember to undo the directory on its way out.
     fn furnish(directory: &Path, manifest: JournalManifest) -> Result<Self, OpenError> {
-        write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
+        write_private(
+            &directory.join(MANIFEST),
+            &serde_json::to_vec(&manifest).map_err(JournalError::json)?,
+        )?;
 
         let lock = Lock::acquire(&directory.join(LOCK))?;
         let sitting = sitting_file(directory, &lock);
@@ -779,7 +776,7 @@ impl Journal {
 
         write_private(
             &self.directory.join(OPTIONS),
-            &serde_json::to_vec(&options)?,
+            &serde_json::to_vec(&options).map_err(JournalError::json)?,
         )?;
         self.options = Some(options);
         Ok(())
@@ -1010,7 +1007,7 @@ fn mark(record: &impl serde::Serialize) -> Result<Mark, JournalError> {
         hasher: std::collections::hash_map::DefaultHasher::new(),
         length: 0,
     };
-    serde_json::to_writer(&mut hashing, record)?;
+    serde_json::to_writer(&mut hashing, record).map_err(JournalError::json)?;
     Ok(Mark {
         digest: hashing.hasher.finish(),
         // A separator or a newline beside it, and saturated for a record past
@@ -1644,14 +1641,16 @@ fn read_options(directory: &Path) -> Result<Option<JobOptions>, JournalError> {
     }
 
     let text = read_bounded(&path, "a journal's options")?;
-    Ok(Some(serde_json::from_str(&text)?))
+    Ok(Some(
+        serde_json::from_str(&text).map_err(JournalError::json)?,
+    ))
 }
 
 /// Reads a journal's manifest, refusing one written by a newer format than this
 /// build understands rather than reading it approximately.
 fn read_manifest(directory: &Path) -> Result<JournalManifest, JournalError> {
     let text = read_bounded(&directory.join(MANIFEST), "a journal manifest")?;
-    let manifest: JournalManifest = serde_json::from_str(&text)?;
+    let manifest: JournalManifest = serde_json::from_str(&text).map_err(JournalError::json)?;
 
     if manifest.journal_version > super::JOURNAL_VERSION {
         return Err(JournalError::VersionTooNew {

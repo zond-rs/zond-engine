@@ -23,12 +23,12 @@ use std::time::Duration;
 
 use crate::support::fake_lan::{FakeLan, LanHost, LanProbe};
 use crate::support::*;
-use pnet_base::MacAddr;
 use zond_engine::config::ZondConfig;
 use zond_engine::model::exclusion::Exclusions;
 use zond_engine::model::host::telemetry::RttSource;
 use zond_engine::model::host::{EvidenceSource, HostStatus, NetworkRole};
 use zond_engine::model::ip::set::IpSet;
+use zond_engine::model::mac::MacAddr;
 use zond_engine::report::{AttachmentSource, ScanKind, StopReason, TargetScope};
 use zond_engine::scanner::recorder::PhaseRecorder;
 use zond_engine::scanner::session::ScanSession;
@@ -36,8 +36,8 @@ use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
 use zond_engine::system::privilege::Privilege;
 
-const PEER_A: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
-const PEER_B: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);
+const PEER_A: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
+const PEER_B: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);
 
 fn v4(host: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(192, 0, 2, host))
@@ -933,7 +933,7 @@ async fn a_directed_probe_outranks_the_segment_wide_one_for_latency() {
 #[tokio::test]
 async fn an_address_only_mdns_knows_about_is_asked_about() {
     let announced = std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0x4b);
-    let announcer = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
+    let announcer = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
 
     // Declared as a host so it can answer, but named by *another* machine's
     // announcement — nothing else in the sweep would ever ask about it.
@@ -978,7 +978,7 @@ async fn an_address_only_mdns_knows_about_is_asked_about() {
 async fn an_excluded_address_learned_mid_sweep_is_not_asked_about() {
     let announced = Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0x4b);
     let overheard = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
-    let announcer = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
+    let announcer = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
 
     let leads = [
         (
@@ -1031,7 +1031,7 @@ async fn an_excluded_address_learned_mid_sweep_is_not_asked_about() {
 #[tokio::test]
 async fn announcing_over_mdns_does_not_make_the_announcer_a_host() {
     let announced = std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0x4b);
-    let announcer = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
+    let announcer = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
 
     // The announcer is not a declared host, so it answers nothing.
     let lan = FakeLan::new().announcing_over_mdns("tv.local", announced, announcer);
@@ -1140,8 +1140,14 @@ async fn every_frame_the_sweep_sends_is_counted() {
     let lan = FakeLan::new()
         .host(targets[0], LanHost::at(PEER_A))
         .host(targets[1], LanHost::at(PEER_B))
-        .host(targets[2], LanHost::at(MacAddr(0x02, 0, 0, 0, 0, 0xCC)))
-        .host(targets[3], LanHost::at(MacAddr(0x02, 0, 0, 0, 0, 0xDD)));
+        .host(
+            targets[2],
+            LanHost::at(MacAddr::new(0x02, 0, 0, 0, 0, 0xCC)),
+        )
+        .host(
+            targets[3],
+            LanHost::at(MacAddr::new(0x02, 0, 0, 0, 0, 0xDD)),
+        );
 
     let (_session, ctx) = sweep_audited(&lan, &targets, Scope::Targeted).await;
 

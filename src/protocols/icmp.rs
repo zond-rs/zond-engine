@@ -31,10 +31,10 @@
 //! run wants and what an IPv4 sweep has no alternative to, there being no
 //! all-nodes group to ask.
 
+use crate::model::mac::MacAddr;
 use crate::protocols::craft::{Ethernet, Icmpv4, Icmpv6, Ipv4, Ipv6, Packet};
 use crate::protocols::error::Result;
 use crate::protocols::ip;
-use pnet_base::MacAddr;
 use pnet_packet::ethernet::EtherTypes;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -59,7 +59,7 @@ const ECHO_REPLY_V6: u8 = 129;
 
 /// The link-layer and IPv6 addresses of the all-nodes group, which every IPv6
 /// host on a segment joins (RFC 4291 §2.7.1).
-const ALL_NODES_MAC: MacAddr = MacAddr(0x33, 0x33, 0, 0, 0, 1);
+const ALL_NODES_MAC: MacAddr = MacAddr::new(0x33, 0x33, 0, 0, 0, 1);
 const ALL_NODES_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
 /// Builds the all-nodes echo request every IPv6 neighbour on the segment may
@@ -125,7 +125,7 @@ pub fn build_echo_request_v4(
     sequence: u16,
 ) -> Vec<u8> {
     Packet::new()
-        .push(Ethernet::new(src_mac, dst_mac).with_ethertype(EtherTypes::Ipv4))
+        .push(Ethernet::new(src_mac, dst_mac).with_ethertype(EtherTypes::Ipv4.0))
         .push(Ipv4::new(src_addr, dst_addr))
         .push(Icmpv4::echo_request(identifier, sequence))
         .build()
@@ -145,7 +145,7 @@ fn echo_frame_v6(
     sequence: u16,
 ) -> Vec<u8> {
     Packet::new()
-        .push(Ethernet::new(src_mac, dst_mac).with_ethertype(EtherTypes::Ipv6))
+        .push(Ethernet::new(src_mac, dst_mac).with_ethertype(EtherTypes::Ipv6.0))
         .push(Ipv6::new(src_addr, dst_addr).with_hop_limit(hop_limit))
         .push(Icmpv6::echo_request(identifier, sequence))
         .build()
@@ -518,8 +518,8 @@ mod tests {
     use pnet_packet::ipv4::Ipv4Packet;
     use pnet_packet::ipv6::Ipv6Packet;
 
-    const SRC_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 1);
-    const DST_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 2);
+    const SRC_MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 1);
+    const DST_MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 2);
     const ID: u16 = 0xBEEF;
     const SEQ: u16 = 7;
 
@@ -536,7 +536,7 @@ mod tests {
 
         let eth = super::super::ethernet::parse(&frame).expect("a frame");
         assert_eq!(eth.destination(), ALL_NODES_MAC);
-        assert_eq!(eth.ethertype(), EtherTypes::Ipv6);
+        assert_eq!(eth.ethertype(), EtherTypes::Ipv6.0);
 
         let ip = Ipv6Packet::new(eth.payload()).expect("an IPv6 header");
         assert_eq!(ip.get_destination(), ALL_NODES_V6);
@@ -566,7 +566,7 @@ mod tests {
         );
 
         let eth = super::super::ethernet::parse(&frame).expect("a frame");
-        assert_eq!(eth.ethertype(), EtherTypes::Ipv4);
+        assert_eq!(eth.ethertype(), EtherTypes::Ipv4.0);
 
         let ip = Ipv4Packet::new(eth.payload()).expect("an IPv4 header");
         assert_eq!(

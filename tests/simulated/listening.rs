@@ -30,9 +30,9 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use pnet_base::MacAddr;
 use pnet_packet::ethernet::EtherTypes;
 use tokio::sync::mpsc;
+use zond_engine::model::mac::MacAddr;
 
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::store::Journal;
@@ -45,11 +45,10 @@ use zond_engine::scanner::strategy::passive::{OnLink, PassiveListener, Recording
 use zond_engine::system::privilege::Privilege;
 use zond_engine::transport::capture::CapturedFrame;
 use zond_engine::transport::frame::LinkType;
-use zond_engine::transport::mac::IntoCoreMac;
 
 /// The one machine every test here listens for, and the link it is heard on.
-const MACHINE: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
-const PEER: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);
+const MACHINE: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
+const PEER: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);
 
 /// The segment being listened to, which every address below is on.
 const SEGMENT: &str = "192.0.2.0/24";
@@ -78,7 +77,7 @@ fn tcp_frame(mac: MacAddr, from: Ipv4Addr, sport: u16, dport: u16, flags: u8) ->
         zone: zone(),
         link: LinkType::Ethernet,
         bytes: [
-            ethernet::build_header(mac, PEER, EtherTypes::Ipv4),
+            ethernet::build_header(mac, PEER, EtherTypes::Ipv4.0),
             datagram,
         ]
         .concat(),
@@ -349,7 +348,7 @@ async fn a_listener_built_from_parts_keeps_the_link_addressing_it_was_given() {
     let hosts = ctx.hosts_snapshot();
     assert_eq!(
         hosts[0].mac(),
-        Some(MACHINE.into_core()),
+        Some(MACHINE),
         "an address inside {SEGMENT} is one this link could have sourced itself"
     );
 }

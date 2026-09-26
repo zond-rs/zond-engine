@@ -34,9 +34,9 @@ use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::model::mac::MacAddr;
 use crate::system::interface::LinkAddress;
 use crate::system::interface::{ProbeSockets, probe_route_source};
-use pnet_base::MacAddr;
 
 /// A resolved link-layer path to a destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +174,7 @@ impl NeighborResolver {
     /// no Ethernet in front of it, such as a VPN's tunnel, and for loopback,
     /// which no frame reaches. See [`resolve_from`](Self::resolve_from) for a
     /// packet whose source is already chosen.
+    #[cfg(test)]
     pub fn resolve(&self, dst: IpAddr) -> Option<LinkRoute> {
         if dst.is_loopback() {
             return None;
@@ -370,7 +371,7 @@ pub(crate) fn learn_neighbor(interface: &str, address: IpAddr, mac: MacAddr) {
 
 /// [`learn_neighbor`], as heard at `at`.
 pub(crate) fn learn_neighbor_at(interface: &str, address: IpAddr, mac: MacAddr, at: Instant) {
-    if mac.is_broadcast() || mac.is_multicast() || mac == MacAddr::zero() {
+    if mac.is_broadcast() || mac.is_multicast() || mac == MacAddr::ZERO {
         return;
     }
     LEARNED_NEIGHBORS
@@ -454,7 +455,7 @@ fn interface_info(iface: netdev::Interface) -> Option<InterfaceInfo> {
 /// gateway is resolved by the sender before a frame carries it, exactly as an
 /// on-link neighbour's address is.
 fn resolved_gateway_mac(mac: MacAddr) -> Option<MacAddr> {
-    (mac != MacAddr::zero()).then_some(mac)
+    (mac != MacAddr::ZERO).then_some(mac)
 }
 
 /// The same six bytes in the type the packet builders take. Two crates spell one
@@ -477,8 +478,8 @@ fn to_pnet_mac(mac: netdev::MacAddr) -> MacAddr {
 mod tests {
     use super::*;
 
-    const IFACE_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0x01);
-    const GW_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0xFE);
+    const IFACE_MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 0x01);
+    const GW_MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 0xFE);
 
     /// en0's address, and what the tests' kernel sources from by default.
     const EN0: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
@@ -500,7 +501,7 @@ mod tests {
     fn second_iface() -> InterfaceInfo {
         InterfaceInfo {
             name: "en1".to_string(),
-            mac: MacAddr(0x02, 0, 0, 0, 0, 0x02),
+            mac: MacAddr::new(0x02, 0, 0, 0, 0, 0x02),
             v4: vec![LinkAddress::new(
                 IpAddr::V4(Ipv4Addr::new(203, 0, 113, 50)),
                 24,
@@ -508,7 +509,7 @@ mod tests {
             v6: vec![],
             gateway_v4: Some((
                 Ipv4Addr::new(203, 0, 113, 1),
-                MacAddr(0x02, 0, 0, 0, 0, 0xFD),
+                MacAddr::new(0x02, 0, 0, 0, 0, 0xFD),
             )),
             gateway_v6: None,
         }
@@ -665,7 +666,7 @@ mod tests {
     /// that address is read as "unknown" rather than carried onto the wire.
     #[test]
     fn an_unknown_gateway_mac_is_read_as_unresolved() {
-        assert_eq!(resolved_gateway_mac(MacAddr::zero()), None);
+        assert_eq!(resolved_gateway_mac(MacAddr::ZERO), None);
         assert_eq!(resolved_gateway_mac(GW_MAC), Some(GW_MAC));
     }
 
@@ -683,7 +684,7 @@ mod tests {
     #[test]
     fn an_off_link_gateway_with_an_unknown_mac_is_resolved_not_sent_to_zeros() {
         let mut iface = ethernet_iface();
-        iface.gateway_v4 = Some((Ipv4Addr::new(192, 0, 2, 1), MacAddr::zero()));
+        iface.gateway_v4 = Some((Ipv4Addr::new(192, 0, 2, 1), MacAddr::ZERO));
 
         let route = resolver(vec![iface])
             .resolve_from(EN0, v4(1, 1, 1, 1))
@@ -706,7 +707,7 @@ mod tests {
     #[test]
     fn a_learned_gateway_mac_is_served_from_the_cache() {
         let mut iface = ethernet_iface();
-        iface.gateway_v4 = Some((Ipv4Addr::new(192, 0, 2, 1), MacAddr::zero()));
+        iface.gateway_v4 = Some((Ipv4Addr::new(192, 0, 2, 1), MacAddr::ZERO));
         let mut resolver = resolver(vec![iface]);
         let learned = MacAddr::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF);
 
@@ -834,7 +835,7 @@ mod tests {
     #[test]
     fn a_group_address_is_not_learned_as_a_neighbour() {
         let address = v4(192, 0, 2, 41);
-        learn_neighbor("test-group0", address, MacAddr::broadcast());
+        learn_neighbor("test-group0", address, MacAddr::BROADCAST);
         learn_neighbor("test-group0", address, MacAddr::new(0x01, 0, 0x5e, 0, 0, 1));
         assert_eq!(learned_neighbor("test-group0", address), None);
     }

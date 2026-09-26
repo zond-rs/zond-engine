@@ -116,12 +116,17 @@ pub mod udp;
 // a reader's helper rather than a protocol this crate speaks.
 pub(crate) mod http;
 
+// Between this crate's `MacAddr` and the one `pnet`'s packet builders take.
+// Private, because every public signature here takes and returns the model's
+// type, and the conversion is the one place the packet library's shows.
+pub(crate) mod mac;
+
 // Reading a string a stranger wrote, shared by the three announcement protocols
 // that carry one. Private, being a helper rather than a protocol.
 mod text;
 
 use crate::protocols::ethernet::Frame;
-use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::ethernet::{EtherType, EtherTypes};
 use std::net::IpAddr;
 
 /// The address `frame` was sent from, whichever of the three shapes it is.
@@ -138,7 +143,7 @@ use std::net::IpAddr;
 /// than a fault, and [`Truncated`](error::PacketError::Truncated) for a frame
 /// too short to read.
 pub fn source_address(frame: &Frame<'_>) -> error::Result<IpAddr> {
-    match frame.ethertype() {
+    match EtherType(frame.ethertype()) {
         EtherTypes::Arp => Ok(IpAddr::V4(arp::sender_address(frame)?)),
         EtherTypes::Ipv4 => Ok(IpAddr::V4(ip::ipv4_source(frame)?)),
         EtherTypes::Ipv6 => Ok(IpAddr::V6(ip::ipv6_source(frame)?)),

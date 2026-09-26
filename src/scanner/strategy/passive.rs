@@ -85,9 +85,8 @@ use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::frames::{self, DiscoveryProtocol, ProtocolMatch};
 use crate::transport::capture::{self, CaptureFilter, CaptureOptions, CapturedFrame, FrameStream};
 use crate::transport::frame::{self as transport_frame, LinkType};
-use crate::transport::mac::IntoCoreMac;
 use crate::{info, warn};
-use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::ethernet::{EtherType, EtherTypes};
 
 /// How much of each frame the kernel keeps for a listener.
 ///
@@ -765,10 +764,11 @@ impl PassiveListener {
         }
         self.read_forwarding(&frame);
 
-        let carries_ip = matches!(frame.ethertype(), EtherTypes::Ipv4 | EtherTypes::Ipv6);
-        if carries_ip
-            && self.read_endpoint(frame.payload(), Some(frame.source().into_core()), captured)
-        {
+        let carries_ip = matches!(
+            EtherType(frame.ethertype()),
+            EtherTypes::Ipv4 | EtherTypes::Ipv6
+        );
+        if carries_ip && self.read_endpoint(frame.payload(), Some(frame.source()), captured) {
             return;
         }
         self.read_client(&frame, &captured.zone);
@@ -784,7 +784,7 @@ impl PassiveListener {
     /// equipment on the far end of its own cable, and no address filter has an
     /// opinion about that.
     fn read_announcement(&mut self, frame: &Frame<'_>, captured: &CapturedFrame) -> bool {
-        let source = frame.source().into_core();
+        let source = frame.source();
 
         let Some(announced) = Announced::read(frame) else {
             return false;
@@ -993,7 +993,7 @@ impl PassiveListener {
             return;
         }
 
-        self.note_declaration(frame.source().into_core(), NetworkRole::Router);
+        self.note_declaration(frame.source(), NetworkRole::Router);
     }
 
     /// Files a claim against the machine that made it, applying it now if that
@@ -1093,7 +1093,7 @@ impl PassiveListener {
             // The address being configured, from the message rather than from
             // the frame: a relay forwarding a client's request replaces the
             // second and preserves the first.
-            host.record_mac(mac.into_core());
+            host.record_mac(mac);
         }
         if let Some(name) = request.hostname {
             host.set_hostname(Some(name.to_owned()));
@@ -1120,7 +1120,7 @@ impl PassiveListener {
         let Ok(source) = crate::protocols::source_address(frame) else {
             return;
         };
-        let mac = frame.source().into_core();
+        let mac = frame.source();
         self.credit_presence(source, Some(mac), zone, |protocol| {
             protocol.interpret(frame).ok()
         });
@@ -1459,7 +1459,7 @@ mod tests {
 
         let lldp = crate::protocols::ethernet::build_header(
             PEER_MAC,
-            pnet_base::MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
+            crate::model::mac::MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
             lldp::ETHERTYPE,
         );
 
@@ -1495,7 +1495,7 @@ mod tests {
                         crate::protocols::ethernet::build_header(
                             PEER_MAC,
                             PEER_MAC,
-                            pnet_packet::ethernet::EtherTypes::Ipv4,
+                            pnet_packet::ethernet::EtherTypes::Ipv4.0,
                         ),
                         datagram,
                     ]
@@ -1728,7 +1728,7 @@ mod tests {
                 .build()
                 .expect("a test datagram");
             [
-                ethernet::build_header(PEER_MAC, PEER_MAC, EtherTypes::Ipv4),
+                ethernet::build_header(PEER_MAC, PEER_MAC, EtherTypes::Ipv4.0),
                 datagram,
             ]
             .concat()
@@ -1829,7 +1829,7 @@ mod tests {
     /// The same, from a stated hardware address, which is the half of a frame
     /// the forwarding proof reads.
     fn tcp_frame_from(
-        mac: pnet_base::MacAddr,
+        mac: crate::model::mac::MacAddr,
         from: Ipv4Addr,
         sport: u16,
         to: Ipv4Addr,
@@ -1846,7 +1846,7 @@ mod tests {
             crate::protocols::ethernet::build_header(
                 mac,
                 PEER_MAC,
-                pnet_packet::ethernet::EtherTypes::Ipv4,
+                pnet_packet::ethernet::EtherTypes::Ipv4.0,
             ),
             datagram,
         ]
@@ -1980,7 +1980,8 @@ mod tests {
     fn a_machine_that_forwards_somebody_elses_packet_is_a_router() {
         use crate::protocols::tcp::flags;
 
-        const ROUTER_MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const ROUTER_MAC: crate::model::mac::MacAddr =
+            crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 0xAA);
         let router = Ipv4Addr::new(198, 51, 100, 1);
         let elsewhere = Ipv4Addr::new(93, 184, 216, 34);
         let local = Ipv4Addr::new(198, 51, 100, 9);
@@ -2144,7 +2145,7 @@ mod tests {
             let mut bytes = crate::protocols::ethernet::build_header(
                 PEER_MAC,
                 PEER_MAC,
-                pnet_packet::ethernet::EtherTypes::Ipv4,
+                pnet_packet::ethernet::EtherTypes::Ipv4.0,
             );
             bytes.extend_from_slice(&[
                 0x45, 0x00, 0x00, 0x3c, 0xbe, 0xef, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc6, 0x33,
@@ -2223,7 +2224,8 @@ mod tests {
     fn one_machine_answering_at_several_addresses_is_one_host() {
         use crate::protocols::tcp::flags;
 
-        const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const MAC: crate::model::mac::MacAddr =
+            crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 0xAA);
         let peer = Ipv4Addr::new(198, 51, 100, 9);
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
@@ -2323,7 +2325,8 @@ mod tests {
     fn a_machine_restored_from_an_earlier_sitting_is_not_recorded_twice() {
         use crate::protocols::tcp::flags;
 
-        const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const MAC: crate::model::mac::MacAddr =
+            crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 0xAA);
         let peer = Ipv4Addr::new(198, 51, 100, 9);
         let first = Ipv4Addr::new(198, 51, 100, 5);
         let second = Ipv4Addr::new(198, 51, 100, 6);
@@ -2334,7 +2337,7 @@ mod tests {
         // empty.
         let (_session, ctx) = ScanSession::new();
         let mut earlier = Host::new(IpAddr::V4(first));
-        earlier.record_mac(MAC.into_core());
+        earlier.record_mac(MAC);
         earlier.set_zone(zone());
         earlier.record_evidence(
             HostStatus::Up,
@@ -2421,7 +2424,8 @@ mod tests {
         use crate::model::exclusion::Exclusions;
         use crate::protocols::tcp::flags;
 
-        const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const MAC: crate::model::mac::MacAddr =
+            crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 0xAA);
         let excluded = Ipv4Addr::new(198, 51, 100, 5);
         let ordinary = Ipv4Addr::new(198, 51, 100, 6);
         let peer = Ipv4Addr::new(198, 51, 100, 9);
@@ -2490,7 +2494,8 @@ mod tests {
         use crate::model::exclusion::Exclusions;
         use crate::protocols::tcp::flags;
 
-        const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const MAC: crate::model::mac::MacAddr =
+            crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 0xAA);
         let excluded = Ipv4Addr::new(198, 51, 100, 5);
         let ordinary = Ipv4Addr::new(198, 51, 100, 6);
         let peer = Ipv4Addr::new(198, 51, 100, 9);
@@ -2545,8 +2550,10 @@ mod tests {
     fn a_watch_at_its_ceiling_stops_taking_machines_and_keeps_enriching_the_ones_it_has() {
         use crate::protocols::tcp::flags;
 
-        const HELD_MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
-        const STRANGER_MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xBB);
+        const HELD_MAC: crate::model::mac::MacAddr =
+            crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 0xAA);
+        const STRANGER_MAC: crate::model::mac::MacAddr =
+            crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 0xBB);
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
         let peer = Ipv4Addr::new(198, 51, 100, 9);
@@ -2644,7 +2651,7 @@ mod tests {
             assert_eq!(attachment.source(), source, "{spoken}: whose word it is");
             assert_eq!(
                 attachment.device_mac(),
-                Some(device_mac.into_core()),
+                Some(device_mac),
                 "{spoken}: the machine that sent it"
             );
             assert_eq!(

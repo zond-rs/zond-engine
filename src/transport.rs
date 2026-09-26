@@ -38,13 +38,17 @@
 //! through a capture like everything else, because building and emitting a
 //! frame byte for byte is a genuinely different job from hearing one.
 //!
-//! The two send backends are named for the layer they write at. [`raw`] hands a
+//! The two send backends are named for the layer they write at. `raw` hands a
 //! segment to a raw Layer-4 socket and lets the kernel route it, resolve the
-//! next hop and fragment it. [`link`] builds the whole Ethernet frame itself,
+//! next hop and fragment it. `link` builds the whole Ethernet frame itself,
 //! which is what Windows requires, since it blocks raw TCP sends outright, and
 //! what bypassing the host's firewall and connection tracking needs.
 //! A scanner picks between them through [`probe::ProbeSender`] and is otherwise
-//! unaware of which one it has.
+//! unaware of which one it has. Both are internal to the crate, along with the
+//! neighbour resolution the second needs: a caller asks for one by
+//! [`SendMode`](probe::SendMode) when it opens a
+//! [`ProbeTransport`](probe::ProbeTransport), and each is built on a packet
+//! library whose types would otherwise surface in its signatures.
 //!
 //! `dial`, internal to the crate, opens the ordinary TCP and UDP sockets the
 //! engine speaks to a target through when the kernel builds the packets, which
@@ -59,8 +63,7 @@ pub(crate) mod dial;
 pub mod exchange;
 pub mod frame;
 pub(crate) mod kernel_neighbors;
-pub mod link;
-pub mod mac;
-pub mod neighbor;
+pub(crate) mod link;
+pub(crate) mod neighbor;
 pub mod probe;
-pub mod raw;
+pub(crate) mod raw;

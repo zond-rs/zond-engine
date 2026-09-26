@@ -36,7 +36,7 @@ use std::net::IpAddr;
 use std::str::FromStr;
 
 use pnet_packet::Packet;
-use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use pnet_packet::ip::IpNextHeaderProtocols;
 
 use crate::model::capture::CaptureCounts;
 use crate::model::ip::scoped::Zone;
@@ -285,21 +285,21 @@ impl ProbeKind {
     pub(crate) fn ip_protocols(self) -> IpProtocols {
         match self {
             ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => {
-                IpProtocols::same(IpNextHeaderProtocols::Tcp)
+                IpProtocols::same(IpNextHeaderProtocols::Tcp.0)
             }
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => {
-                IpProtocols::same(IpNextHeaderProtocols::Udp)
+                IpProtocols::same(IpNextHeaderProtocols::Udp.0)
             }
-            ProbeKind::Sctp { .. } => IpProtocols::same(IpNextHeaderProtocols::Sctp),
+            ProbeKind::Sctp { .. } => IpProtocols::same(IpNextHeaderProtocols::Sctp.0),
             // The one kind whose two families are different protocols rather
             // than one protocol over two address sizes.
             ProbeKind::IcmpEcho { .. } => IpProtocols {
-                v4: IpNextHeaderProtocols::Icmp,
-                v6: IpNextHeaderProtocols::Icmpv6,
+                v4: IpNextHeaderProtocols::Icmp.0,
+                v6: IpNextHeaderProtocols::Icmpv6.0,
             },
             // The one kind whose number is the question rather than the means,
             // and so the one a caller chooses outright.
-            ProbeKind::IpProtocol { number } => IpProtocols::same(IpNextHeaderProtocol(number)),
+            ProbeKind::IpProtocol { number } => IpProtocols::same(number),
         }
     }
 
@@ -564,7 +564,7 @@ fn host_is_down(error: &std::io::Error) -> bool {
 /// Both backends can honour it, by different means: the link-layer sender is
 /// already building the header and simply writes the field, while the raw-socket
 /// sender sets it on the socket before the send, under the lock that serialises
-/// sends anyway. See [`raw::TransportSenderHandle::send_to`].
+/// sends anyway. See `raw::TransportSenderHandle::send_to`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Emission {
     /// How many hops the probe may cross before a router discards it and
@@ -686,14 +686,14 @@ pub trait ProbeSender: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpProtocols {
     /// What an IPv4 header carrying this kind's probes says it carries.
-    pub v4: IpNextHeaderProtocol,
+    pub v4: u8,
     /// What an IPv6 header carrying this kind's probes says it carries.
-    pub v6: IpNextHeaderProtocol,
+    pub v6: u8,
 }
 
 impl IpProtocols {
     /// One protocol under both families.
-    pub const fn same(protocol: IpNextHeaderProtocol) -> Self {
+    pub const fn same(protocol: u8) -> Self {
         Self {
             v4: protocol,
             v6: protocol,
@@ -701,7 +701,7 @@ impl IpProtocols {
     }
 
     /// The number to stamp into a header addressed to `destination`.
-    pub const fn for_destination(self, destination: IpAddr) -> IpNextHeaderProtocol {
+    pub const fn for_destination(self, destination: IpAddr) -> u8 {
         match destination {
             IpAddr::V4(_) => self.v4,
             IpAddr::V6(_) => self.v6,
@@ -1038,7 +1038,7 @@ impl ProbeTransport {
     }
 
     /// Opens a transport whose send half builds and emits Ethernet frames
-    /// directly ([`EthernetSender`]) instead of using a raw socket.
+    /// directly (`EthernetSender`) instead of using a raw socket.
     ///
     /// For Windows (where raw TCP sends are blocked) and for deliberately
     /// bypassing the host stack. Fails if the host has no Ethernet-capable
@@ -1430,7 +1430,7 @@ mod tests {
         // A reply pushed onto the capture stream is observed on rx unchanged.
         let reply = CapturedSegment::synthetic(
             dst,
-            pnet_packet::ip::IpNextHeaderProtocols::Udp,
+            pnet_packet::ip::IpNextHeaderProtocols::Udp.0,
             vec![1, 2, 3],
         );
         reply_tx.send(reply.clone()).await.unwrap();
@@ -1558,7 +1558,7 @@ mod tests {
     fn every_probe_kind_carries_its_own_ip_protocol() {
         assert_eq!(
             ProbeKind::TcpSyn.ip_protocols(),
-            IpProtocols::same(IpNextHeaderProtocols::Tcp)
+            IpProtocols::same(IpNextHeaderProtocols::Tcp.0)
         );
         assert_eq!(
             ProbeKind::TcpProbe {
@@ -1566,15 +1566,15 @@ mod tests {
                 icmp_errors: true,
             }
             .ip_protocols(),
-            IpProtocols::same(IpNextHeaderProtocols::Tcp)
+            IpProtocols::same(IpNextHeaderProtocols::Tcp.0)
         );
         assert_eq!(
             ProbeKind::UdpResolve.ip_protocols(),
-            IpProtocols::same(IpNextHeaderProtocols::Udp)
+            IpProtocols::same(IpNextHeaderProtocols::Udp.0)
         );
         assert_eq!(
             ProbeKind::UdpProbe { reply_port: 40_000 }.ip_protocols(),
-            IpProtocols::same(IpNextHeaderProtocols::Udp)
+            IpProtocols::same(IpNextHeaderProtocols::Udp.0)
         );
     }
 
@@ -1588,15 +1588,15 @@ mod tests {
     #[test]
     fn an_icmp_probe_names_a_different_protocol_per_family() {
         let protocols = ProbeKind::IcmpEcho { identifier: 1 }.ip_protocols();
-        assert_eq!(protocols.v4, IpNextHeaderProtocols::Icmp);
-        assert_eq!(protocols.v6, IpNextHeaderProtocols::Icmpv6);
+        assert_eq!(protocols.v4, IpNextHeaderProtocols::Icmp.0);
+        assert_eq!(protocols.v6, IpNextHeaderProtocols::Icmpv6.0);
         assert_eq!(
             protocols.for_destination(IpAddr::from([192, 0, 2, 1])),
-            IpNextHeaderProtocols::Icmp
+            IpNextHeaderProtocols::Icmp.0
         );
         assert_eq!(
             protocols.for_destination("2001:db8::1".parse().unwrap()),
-            IpNextHeaderProtocols::Icmpv6
+            IpNextHeaderProtocols::Icmpv6.0
         );
     }
 
@@ -1649,7 +1649,7 @@ mod tests {
 mod filter_conformance {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    use pnet_base::MacAddr;
+    use crate::model::mac::MacAddr;
     use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Types, MutableIcmpv6Packet};
     use pnet_packet::ip::IpNextHeaderProtocols;
     use pnet_packet::tcp::MutableTcpPacket;
@@ -1751,7 +1751,7 @@ mod filter_conformance {
                 dst_mac: MacAddr::new(0x02, 0, 0, 0, 0, 0x01),
                 src,
                 dst,
-                protocol,
+                protocol: protocol.0,
                 hop_limit: crate::protocols::ip::HOP_LIMIT_ROUTED,
             },
             segment,

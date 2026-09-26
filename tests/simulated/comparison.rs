@@ -37,10 +37,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use pnet_base::MacAddr;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use zond_engine::model::mac::MacAddr;
 
 use crate::support::fake_lan::{FakeLan, LanHost};
 use crate::support::fake_net::{FakeNet, Layer4, Policy};
@@ -89,7 +89,7 @@ const ARRIVED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 12));
 const RELEASED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
 const RENEWED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 60));
 
-const LEASE_HOLDER: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
+const LEASE_HOLDER: MacAddr = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 
 // ── Driving a scan ──────────────────────────────────────────────────────────
 

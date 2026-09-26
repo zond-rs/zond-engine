@@ -35,13 +35,13 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet_base::MacAddr;
+use crate::model::mac::MacAddr;
 
 use crate::protocols::ethernet::Frame;
 use crate::protocols::text::field as text;
 
 /// The group address Cisco equipment sends these to.
-pub const GROUP_ADDRESS: MacAddr = MacAddr(0x01, 0x00, 0x0C, 0xCC, 0xCC, 0xCC);
+pub const GROUP_ADDRESS: MacAddr = MacAddr::new(0x01, 0x00, 0x0C, 0xCC, 0xCC, 0xCC);
 
 /// The LLC header introducing a SNAP-encapsulated protocol: both service access
 /// points set to the SNAP value, with unnumbered information framing.
@@ -345,7 +345,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::protocols::ethernet;
 
-    pub(crate) const SWITCH_MAC: MacAddr = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
+    pub(crate) const SWITCH_MAC: MacAddr = MacAddr::new(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
 
     /// One record: two bytes of type, two of length, then the value, where the
     /// length includes those four bytes.
@@ -370,22 +370,8 @@ pub(crate) mod tests {
         }
 
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[
-            GROUP_ADDRESS.0,
-            GROUP_ADDRESS.1,
-            GROUP_ADDRESS.2,
-            GROUP_ADDRESS.3,
-            GROUP_ADDRESS.4,
-            GROUP_ADDRESS.5,
-        ]);
-        bytes.extend_from_slice(&[
-            SWITCH_MAC.0,
-            SWITCH_MAC.1,
-            SWITCH_MAC.2,
-            SWITCH_MAC.3,
-            SWITCH_MAC.4,
-            SWITCH_MAC.5,
-        ]);
+        bytes.extend_from_slice(&GROUP_ADDRESS.octets());
+        bytes.extend_from_slice(&SWITCH_MAC.octets());
         // 802.3: the field is the payload's length, not a protocol number.
         bytes.extend_from_slice(
             &u16::try_from(payload.len())
@@ -511,9 +497,9 @@ pub(crate) mod tests {
             "the field is a length, not an EtherType"
         );
         assert!(
-            frame.ethertype().0 <= 1500,
+            frame.ethertype() <= 1500,
             "and so it names no protocol: {:#06x}",
-            frame.ethertype().0
+            frame.ethertype()
         );
         assert_eq!(
             parse(&frame).expect("an announcement").device_id,
@@ -587,7 +573,7 @@ pub(crate) mod tests {
         let bytes = ethernet::build_header(
             SWITCH_MAC,
             GROUP_ADDRESS,
-            pnet_packet::ethernet::EtherTypes::Ipv4,
+            pnet_packet::ethernet::EtherTypes::Ipv4.0,
         );
         let frame = ethernet::parse(&bytes).expect("an Ethernet frame");
 

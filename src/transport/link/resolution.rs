@@ -35,7 +35,8 @@ use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use pnet_base::MacAddr;
+use crate::model::mac::MacAddr;
+use crate::protocols::mac::IntoCoreMac;
 use pnet_packet::Packet;
 use pnet_packet::arp::{ArpOperations, ArpPacket};
 use pnet_packet::ethernet::{EtherTypes, EthernetPacket};
@@ -614,8 +615,12 @@ fn parse_arp_reply(frame: &[u8]) -> Option<(Ipv4Addr, MacAddr)> {
         return None;
     }
     let arp = ArpPacket::new(eth.payload())?;
-    (arp.get_operation() == ArpOperations::Reply)
-        .then(|| (arp.get_sender_proto_addr(), arp.get_sender_hw_addr()))
+    (arp.get_operation() == ArpOperations::Reply).then(|| {
+        (
+            arp.get_sender_proto_addr(),
+            arp.get_sender_hw_addr().into_core(),
+        )
+    })
 }
 
 // ╔════════════════════════════════════════════╗
@@ -630,11 +635,12 @@ fn parse_arp_reply(frame: &[u8]) -> Option<(Ipv4Addr, MacAddr)> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::protocols::mac::IntoPnetMac;
     use pnet_packet::arp::{ArpHardwareTypes, MutableArpPacket};
     use pnet_packet::ethernet::MutableEthernetPacket;
 
     /// This host's hardware address on every simulated segment.
-    const LOCAL_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0x01);
+    const LOCAL_MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 0x01);
     /// This host's address on every simulated segment.
     const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 
@@ -644,8 +650,8 @@ pub(crate) mod tests {
         {
             let mut eth = MutableEthernetPacket::new(&mut buf[..14]).unwrap();
             eth.set_ethertype(EtherTypes::Arp);
-            eth.set_source(sender_mac);
-            eth.set_destination(LOCAL_MAC);
+            eth.set_source(sender_mac.into_pnet());
+            eth.set_destination(LOCAL_MAC.into_pnet());
         }
         {
             let mut a = MutableArpPacket::new(&mut buf[14..]).unwrap();
@@ -654,7 +660,7 @@ pub(crate) mod tests {
             a.set_hw_addr_len(6);
             a.set_proto_addr_len(4);
             a.set_operation(ArpOperations::Reply);
-            a.set_sender_hw_addr(sender_mac);
+            a.set_sender_hw_addr(sender_mac.into_pnet());
             a.set_sender_proto_addr(sender_ip);
             a.set_target_proto_addr(LOCAL_IP);
         }
@@ -749,7 +755,7 @@ pub(crate) mod tests {
             let eth = EthernetPacket::new(frame).expect("a frame");
             let request = ArpPacket::new(eth.payload()).expect("an ARP request");
             let target = request.get_target_proto_addr();
-            let addressed = eth.get_destination() != MacAddr::broadcast();
+            let addressed = eth.get_destination().into_core() != MacAddr::BROADCAST;
             let at = self.elapsed();
             self.asked.entry(target).or_default().push((at, addressed));
             let Some(&(mac, answers)) = self.neighbours.get(&target) else {

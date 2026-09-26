@@ -46,7 +46,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet_packet::udp::UdpPacket;
 use tokio::sync::mpsc;
 
@@ -486,7 +486,7 @@ fn verdict_of(reason: Unreachable) -> Verdict {
 /// header, so an error relayed by a router still points at the host the probe
 /// was aimed at.
 fn quoted_probe(error: &icmp_error::IcmpError<'_>, src_port: u16) -> Option<ProbeTarget> {
-    if error.quoted.protocol != IpNextHeaderProtocols::Udp {
+    if error.quoted.protocol != IpNextHeaderProtocols::Udp.0 {
         return None;
     }
 
@@ -539,7 +539,7 @@ impl RawPortScan for UdpPortScanner {
         // What the reply proves about the *host*, a separate claim from the
         // port verdict and filed after it; see below.
         let mut declared = None;
-        let classified = match reply.protocol {
+        let classified = match IpNextHeaderProtocol(reply.protocol) {
             IpNextHeaderProtocols::Udp => {
                 answering_probe(&reply.bytes, self.core.src_port).map(|(port, datagram)| {
                     declared = payload::declared_role(port, datagram);
@@ -1019,7 +1019,7 @@ mod tests {
         protocol: pnet_packet::ip::IpNextHeaderProtocol,
         bytes: Vec<u8>,
     ) -> CapturedSegment {
-        CapturedSegment::synthetic(source, protocol, bytes)
+        CapturedSegment::synthetic(source, protocol.0, bytes)
     }
 
     /// A direct UDP reply from `src_port`, addressed back to `dst_port`.
@@ -1045,13 +1045,21 @@ mod tests {
         let datagram = udp::build_packet(from, to, src_port, dst_port, vec![]).unwrap();
         let len = datagram.len() as u16;
         let header = match (from, to) {
-            (IpAddr::V4(s), IpAddr::V4(d)) => {
-                ip::build_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
-                    .unwrap()
-            }
-            (IpAddr::V6(s), IpAddr::V6(d)) => {
-                ip::build_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
-            }
+            (IpAddr::V4(s), IpAddr::V4(d)) => ip::build_ipv4_header(
+                s,
+                d,
+                len,
+                IpNextHeaderProtocols::Udp.0,
+                ip::HOP_LIMIT_ROUTED,
+            )
+            .unwrap(),
+            (IpAddr::V6(s), IpAddr::V6(d)) => ip::build_ipv6_header(
+                s,
+                d,
+                len,
+                IpNextHeaderProtocols::Udp.0,
+                ip::HOP_LIMIT_ROUTED,
+            ),
             _ => panic!("IP version mismatch in test fixture"),
         };
         header.into_iter().chain(datagram).collect()

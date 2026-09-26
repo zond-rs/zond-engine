@@ -85,8 +85,8 @@
 
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
-use pnet_base::MacAddr;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use zond_engine::model::mac::MacAddr;
 use zond_engine::protocols::craft::{
     Arp, Ethernet, Field, Icmpv4, Icmpv6, Ipv4, Ipv6, Layer, Packet, Sctp, Tcp, Udp,
 };
@@ -223,7 +223,7 @@ impl LayerSpec {
             } => Layer::Ethernet(Ethernet {
                 source: MacAddr::from(*source),
                 destination: MacAddr::from(*destination),
-                ethertype: field(ethertype.map(pnet_ethertype)),
+                ethertype: field(ethertype),
             }),
             Self::Ipv4 {
                 source,
@@ -245,7 +245,7 @@ impl LayerSpec {
                 fragment_offset: *fragment_offset,
                 ttl: *ttl,
                 identification: field(*identification),
-                protocol: field(protocol.map(pnet_protocol)),
+                protocol: field(protocol),
                 total_length: field(*total_length),
                 checksum: field(*checksum),
                 options: options.clone(),
@@ -263,7 +263,7 @@ impl LayerSpec {
                 traffic_class: *traffic_class,
                 hop_limit: *hop_limit,
                 flow_label: field(*flow_label),
-                next_header: field(next_header.map(pnet_protocol)),
+                next_header: field(next_header),
                 payload_length: field(*payload_length),
                 ..Ipv6::new(Ipv6Addr::from(*source), Ipv6Addr::from(*destination))
             }),
@@ -361,14 +361,6 @@ impl LayerSpec {
             _ => None,
         }
     }
-}
-
-fn pnet_ethertype(raw: u16) -> pnet_packet::ethernet::EtherType {
-    pnet_packet::ethernet::EtherType(raw)
-}
-
-fn pnet_protocol(raw: u8) -> pnet_packet::ip::IpNextHeaderProtocol {
-    pnet_packet::ip::IpNextHeaderProtocol(raw)
 }
 
 fuzz_target!(|recipe: Recipe| {

@@ -68,7 +68,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
@@ -298,7 +298,7 @@ impl SctpPortScanner {
         let Some(error) = icmp_error::parse(reply) else {
             return;
         };
-        if error.quoted.protocol != IpNextHeaderProtocols::Sctp {
+        if error.quoted.protocol != IpNextHeaderProtocols::Sctp.0 {
             return;
         }
 
@@ -552,7 +552,7 @@ impl RawPortScan for SctpPortScanner {
     /// Routes one captured packet to whichever half of the classification can
     /// read it.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
-        match reply.protocol {
+        match IpNextHeaderProtocol(reply.protocol) {
             IpNextHeaderProtocols::Sctp => self.handle_sctp_reply(reply, now),
             _ => self.handle_icmp_error(reply, now),
         }
@@ -830,7 +830,7 @@ mod tests {
     }
 
     fn captured(bytes: Vec<u8>) -> CapturedSegment {
-        CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Sctp, bytes)
+        CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Sctp.0, bytes)
     }
 
     /// An ICMPv4 destination unreachable from `from`, quoting an INIT probe this
@@ -863,7 +863,7 @@ mod tests {
                 IpAddr::V6(_) => unreachable!("the target is v4"),
             },
             probe.len() as u16,
-            IpNextHeaderProtocols::Sctp,
+            IpNextHeaderProtocols::Sctp.0,
             crate::protocols::ip::HOP_LIMIT_ROUTED,
         )
         .expect("an IPv4 header");
@@ -877,7 +877,7 @@ mod tests {
             icmp.set_icmp_code(code);
             icmp.set_payload(&quoted);
         }
-        CapturedSegment::synthetic(from, IpNextHeaderProtocols::Icmp, bytes)
+        CapturedSegment::synthetic(from, IpNextHeaderProtocols::Icmp.0, bytes)
     }
 
     fn port_state(session: &ScanSession, port: u16) -> Option<PortState> {
@@ -1110,7 +1110,7 @@ mod tests {
             // Eight bytes of ICMP header, twenty of quoted IPv4 header, then
             // however much of the SCTP packet this sender bothered to include.
             bytes.truncate(8 + 20 + keep);
-            let cut = CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Icmp, bytes);
+            let cut = CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Icmp.0, bytes);
 
             scanner.handle_reply(&cut, Instant::now());
             assert_eq!(
