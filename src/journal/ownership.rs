@@ -787,34 +787,34 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn only_what_lies_inside_the_invoking_users_home_is_given_to_them() {
-        let erik = InvokingUser {
+        let user = InvokingUser {
             uid: 1000,
             gid: 1000,
-            home: PathBuf::from("/home/erik"),
+            home: PathBuf::from("/home/user"),
         };
 
-        for inside in ["/home/erik/.local", "/home/erik/.config/zond/engine.toml"] {
+        for inside in ["/home/user/.local", "/home/user/.config/zond/engine.toml"] {
             assert_eq!(
-                owner_for(Some(&erik), Path::new(inside)),
+                owner_for(Some(&user), Path::new(inside)),
                 Some((1000, 1000)),
                 "{inside}"
             );
         }
         for outside in [
             "/etc/zond",
-            "/home/erik",
-            "/home/erikb/.config",
-            "/home/erik/../root/.config",
+            "/home/user",
+            "/home/user2/.config",
+            "/home/user/../root/.config",
         ] {
             assert_eq!(
-                owner_for(Some(&erik), Path::new(outside)),
+                owner_for(Some(&user), Path::new(outside)),
                 None,
                 "{outside}"
             );
         }
 
         // Nothing elevated: nobody to give anything to.
-        assert_eq!(owner_for(None, Path::new("/home/erik/.local")), None);
+        assert_eq!(owner_for(None, Path::new("/home/user/.local")), None);
     }
 
     /// What is given is reached from the home without following a link the

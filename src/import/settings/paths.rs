@@ -222,27 +222,27 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn under_sudo_the_invoking_users_settings_are_the_ones_found() {
-        let erik = PathBuf::from("/home/erik");
+        let user = PathBuf::from("/home/user");
         let root = PathBuf::from("/root");
         let configured = PathBuf::from("/config");
 
         assert_eq!(
-            choose(None, Some(erik.clone()), Some(root.clone())),
-            Some(erik.join(".config").join(DIRECTORY)),
+            choose(None, Some(user.clone()), Some(root.clone())),
+            Some(user.join(".config").join(DIRECTORY)),
             "an elevated run read root's settings"
         );
 
         // A configuration root that survived into the elevated process was
         // kept on purpose, and it is what an unelevated run reads too.
         assert_eq!(
-            choose(Some(configured.clone()), Some(erik.clone()), Some(root)),
+            choose(Some(configured.clone()), Some(user.clone()), Some(root)),
             Some(configured.join(DIRECTORY))
         );
 
         // Nothing elevated: this process's own home.
         assert_eq!(
-            choose(None, None, Some(erik.clone())),
-            Some(erik.join(".config").join(DIRECTORY))
+            choose(None, None, Some(user.clone())),
+            Some(user.join(".config").join(DIRECTORY))
         );
         assert_eq!(choose(None, None, None), None);
     }

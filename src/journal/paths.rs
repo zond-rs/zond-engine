@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn a_configured_root_wins_however_the_scan_was_run() {
         let configured = PathBuf::from("/state");
-        let erik = PathBuf::from("/home/erik");
+        let user = PathBuf::from("/home/user");
         let root = PathBuf::from("/root");
         let choose = |configured, invoking, home| {
             choose(
@@ -458,22 +458,22 @@ mod tests {
 
         // Under `sudo -E`, where the variable survived: both agree.
         assert_eq!(
-            choose(Some(configured.clone()), Some(erik.clone()), Some(root)),
-            choose(Some(configured.clone()), None, Some(erik.clone())),
+            choose(Some(configured.clone()), Some(user.clone()), Some(root)),
+            choose(Some(configured.clone()), None, Some(user.clone())),
             "an elevated run and an unelevated one disagreed"
         );
 
         // Under plain `sudo`, where it did not: the invoking user, never root.
         assert_eq!(
-            choose(None, Some(erik.clone()), Some(PathBuf::from("/root"))),
-            Some(erik.join(".local").join("state")),
+            choose(None, Some(user.clone()), Some(PathBuf::from("/root"))),
+            Some(user.join(".local").join("state")),
             "a journal was written to root's home"
         );
 
         // And with nothing elevated, this process's own home.
         assert_eq!(
-            choose(None, None, Some(erik.clone())),
-            Some(erik.join(".local").join("state"))
+            choose(None, None, Some(user.clone())),
+            Some(user.join(".local").join("state"))
         );
     }
 

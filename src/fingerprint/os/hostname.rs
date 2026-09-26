@@ -73,7 +73,7 @@
 //! on the network.
 //!
 //! A prefix is not a convention. Matched with `starts_with`, `DESKTOP-` takes
-//! `desktop-erik` and `sm-` takes `sm-prod-db01`: against a table of bare
+//! `desktop-alice` and `sm-` takes `sm-prod-db01`: against a table of bare
 //! prefixes, ten of twelve ordinary hand-typed names match something. The cost
 //! is not the wrong family on its own, since a lone hit stays under the
 //! reporting floor by design. It is what a wrong vote does to a reading that
@@ -202,7 +202,7 @@ const WITHDRAWN: &[&str] = &[
 ///
 /// This is what makes a generated name evidence. A system that names a
 /// machine draws the tail from an alphabet at a fixed width; a person types a
-/// word. Without a shape to check, `DESKTOP-` matched `desktop-erik` and the
+/// word. Without a shape to check, `DESKTOP-` matched `desktop-alice` and the
 /// table said Windows about somebody's Linux workstation.
 #[derive(Debug, Clone, Copy)]
 enum Token {
@@ -248,7 +248,7 @@ enum Pattern {
     ///
     /// Apple's mDNS names are `MacBook-Pro`, `MacBook-Pro-3`, `iPhone-2`: the
     /// model, then digits. Restricting the tail to a short number is what
-    /// separates that from `macbook-of-erik`, which a prefix alone cannot. The
+    /// separates that from `macbook-of-alice`, which a prefix alone cannot. The
     /// suffix is bounded because an owner's name can be numeric too; two digits
     /// is Apple's own longest default, and the same shape fits the distributions
     /// that set a bare default of their own: `openwrt`, `pfsense`, `freebsd`.
@@ -406,8 +406,8 @@ mod tests {
             "linux-server",
             "mail",
             "NAS",
-            "eriks-macbook",
-            "macbook-of-erik",
+            "alices-macbook",
+            "macbook-of-alice",
             "macbook-12345678",
             "the-ipad",
         ] {
@@ -498,9 +498,9 @@ mod tests {
     #[test]
     fn a_name_a_person_typed_does_not_wear_a_generated_prefix() {
         for name in [
-            "desktop-erik",
+            "desktop-alice",
             "desktop-manager",
-            "laptop-of-erik",
+            "laptop-of-alice",
             "win-file-server",
             "sm-prod-db01",
             "echo-service",
@@ -570,7 +570,7 @@ mod tests {
         let alone = super::super::resolve(vec![stack.clone()]).expect("names the host");
         assert_eq!(alone.accuracy, 65);
 
-        // What a bare `DESKTOP-` prefix would make of `desktop-erik`, stated
+        // What a bare `DESKTOP-` prefix would make of `desktop-alice`, stated
         // directly so the cost is visible without the table having to produce
         // it.
         let mistaken = crate::model::host::OsEvidence {
@@ -589,6 +589,6 @@ mod tests {
         );
 
         // And the table does not produce it.
-        assert_eq!(family_of(Some("desktop-erik")), None);
+        assert_eq!(family_of(Some("desktop-alice")), None);
     }
 }
