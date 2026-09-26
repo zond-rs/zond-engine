@@ -360,15 +360,22 @@ impl NeighborGates {
     /// `state`: in the resolution's own word, and naming the gateway where
     /// the host's probes waited on one.
     pub(crate) fn unreached(&self, host: IpAddr, state: NeighborState) -> String {
-        let resolution = if host.is_ipv4() { "ARP" } else { "NDP" };
-        let how = match state {
-            NeighborState::Failed => format!("no {resolution} reply"),
-            _ => format!("{resolution} pending"),
-        };
-        match self.gated.get(&host).filter(|neighbor| **neighbor != host) {
-            Some(gateway) => format!("{how} from gateway {gateway}"),
-            None => how,
-        }
+        unreached(host, self.gated.get(&host).copied(), state)
+    }
+}
+
+/// Why `host` went unreached, for a `neighbor` whose resolution stands at
+/// `state`: in the resolution's own word, and naming the gateway where the
+/// neighbour is one rather than the host itself.
+pub(crate) fn unreached(host: IpAddr, neighbor: Option<IpAddr>, state: NeighborState) -> String {
+    let resolution = if host.is_ipv4() { "ARP" } else { "NDP" };
+    let how = match state {
+        NeighborState::Failed => format!("no {resolution} reply"),
+        _ => format!("{resolution} pending"),
+    };
+    match neighbor.filter(|neighbor| *neighbor != host) {
+        Some(gateway) => format!("{how} from gateway {gateway}"),
+        None => how,
     }
 }
 

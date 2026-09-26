@@ -80,6 +80,10 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+mod neighbours;
+
+use neighbours::{Held, HeldConnects, Neighbours};
+
 /// The evasion an unprivileged connect probe can honour: a source port to leave
 /// from and a hop limit to carry.
 ///
@@ -279,6 +283,11 @@ enum Refusal {
     /// the operating system's words for it name neither the port nor the
     /// wait, and those are what a reader acts on.
     PortHeld(u16, Holder),
+    /// The neighbour a route leads through did not answer address
+    /// resolution, asked twice: the kernel held the connect's SYN and never
+    /// sent it. A fact about the address, reported against it as
+    /// [`NoRoute`](Self::NoRoute) is; see [`neighbours`].
+    Unresolved,
     /// Anything else: no source to send from, no local port, a probe that met
     /// itself on every try. This machine's failure, in the operating system's
     /// own words, which is the part a reader asking why can act on.
@@ -353,7 +362,7 @@ impl Shortfall {
     fn count(&mut self, ip: IpAddr, attempt: &Attempt) {
         match attempt {
             Attempt::Starved => self.starved += 1,
-            Attempt::Refused(Refusal::NoRoute) => {
+            Attempt::Refused(Refusal::NoRoute | Refusal::Unresolved) => {
                 self.unroutable.insert(ip);
             }
             Attempt::Refused(Refusal::Forbidden) => {
@@ -738,6 +747,7 @@ pub async fn scan(
     let tarpits = crate::scanner::service::Tarpits::default();
     let slow = SlowPaths::default();
     let finding = PathFinding::of(OnLinkTable::of_segments());
+    let neighbours = Arc::new(Neighbours::of_system());
     let mut pool = ProbePool::new(
         concurrency_limit,
         ctx.clone(),
@@ -756,6 +766,7 @@ pub async fn scan(
         zones,
         crowds: &crowds,
         tarpits: &tarpits,
+        neighbours: &neighbours,
     };
 
     let mut probes = 0u128;
@@ -851,6 +862,7 @@ struct Asking<'a> {
     zones: &'a ZoneMap,
     crowds: &'a crate::scanner::service::Crowds,
     tarpits: &'a crate::scanner::service::Tarpits,
+    neighbours: &'a Arc<Neighbours>,
 }
 
 impl Asking<'_> {
@@ -905,6 +917,7 @@ impl Asking<'_> {
             _ => identify,
         };
         let (shaping, ctx) = (self.shaping, ctx.clone());
+        let neighbours = Arc::clone(self.neighbours);
         async move {
             port_prober(
                 target,
@@ -915,6 +928,7 @@ impl Asking<'_> {
                 patience(),
                 ctx,
                 crowd,
+                neighbours,
             )
             .await
         }
@@ -1312,6 +1326,11 @@ fn note_handshake(ctx: &ScanContext, ip: IpAddr, rtt: Duration) {
 /// as the host's round trips show it once its own handshake is among them:
 /// the handshake is filed with its host in `ctx` before the identification
 /// begins, see [`note_handshake`], and the path read back from the host.
+///
+/// A connect the kernel held for a neighbour it has not resolved sent
+/// nothing, however it ended, and is made again as `neighbours` says; a host
+/// whose neighbour has been given up on is sent nothing more, and the port is
+/// unasked. See [`neighbours`].
 #[allow(clippy::too_many_arguments)]
 async fn port_prober(
     planned: PlannedTarget,
@@ -1319,9 +1338,10 @@ async fn port_prober(
     shaping: Shaping,
     egress: Egress,
     socket_addr: SocketAddr,
-    patience: Duration,
+    mut patience: Duration,
     ctx: ScanContext,
     crowd: std::sync::Arc<crate::scanner::service::Crowd>,
+    neighbours: Arc<Neighbours>,
 ) -> ProbedPort {
     let handle = &ctx.handle;
     let target = planned.target;
@@ -1367,7 +1387,12 @@ async fn port_prober(
     };
 
     let mut met_itself = None;
-    for _ in 0..SELF_MEETINGS {
+    let mut meetings = 0;
+    let mut held = HeldConnects::default();
+    while meetings < SELF_MEETINGS {
+        if neighbours.unreached(target.ip) {
+            return unasked(Outcome::Unroutable, Attempt::Refused(Refusal::Unresolved));
+        }
         let (handshake, rtt, descriptor) = match dial(handle, descriptors::PATIENCE, || {
             std::future::ready(egress.start_connect(socket_addr, shaping))
         })
@@ -1398,6 +1423,24 @@ async fn port_prober(
             Dialled::Stopped => return unasked(Outcome::Unasked, Attempt::Unmade),
             Dialled::Starved => return unasked(Outcome::Unroutable, Attempt::Starved),
         };
+
+        // A host unreachable, or a wait run out, is no packet at all where the
+        // kernel held the SYN for a neighbour it has not resolved.
+        let concluded = matches!(handshake, Handshake::Unreachable);
+        if (concluded || matches!(handshake, Handshake::Silent))
+            && let Some(state) = neighbours.holding(target.ip)
+        {
+            match held.after(state, concluded) {
+                Held::Again(wait) => {
+                    patience = patience.max(wait);
+                    continue;
+                }
+                Held::Unreached => {
+                    neighbours.give_up(target.ip);
+                    return unasked(Outcome::Unroutable, Attempt::Refused(Refusal::Unresolved));
+                }
+            }
+        }
 
         return match handshake {
             Handshake::Accepted(stream) => {
@@ -1525,6 +1568,7 @@ async fn port_prober(
                 ..probed
             }),
             Handshake::MetItself(e) => {
+                meetings += 1;
                 met_itself = Some(e);
                 continue;
             }
@@ -2754,6 +2798,7 @@ mod tests {
             CONNECT_PROBE_TIMEOUT,
             ctx.clone(),
             Default::default(),
+            Default::default(),
         )
         .await;
         absorb_probe(
@@ -2793,6 +2838,7 @@ mod tests {
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
             ctx.clone(),
+            Default::default(),
             Default::default(),
         )
         .await;
@@ -2862,6 +2908,51 @@ mod tests {
                 "a live {ip} listener must read as open"
             );
         }
+    }
+
+    /// A port of a host whose neighbour has been given up on is not connected,
+    /// and is unasked, filed against the address rather than as this
+    /// machine's failure.
+    ///
+    /// On Linux every connect to such a host waits out a resolution of its
+    /// own, three seconds, to learn what two already said, and then reads as
+    /// a filter's reject: a dead neighbour's ports cost the scan three
+    /// seconds a wave and read filtered, every one of them.
+    #[tokio::test]
+    async fn a_host_whose_neighbour_was_given_up_is_sent_nothing_more() {
+        use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborTable};
+
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let listener = std::net::TcpListener::bind((ip, 0)).expect("bind a listener");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that does not block");
+        let port = listener.local_addr().expect("an inet address").port();
+        let table = KernelNeighbors::with_reader(Box::new(|| Ok(NeighborTable::new())))
+            .routing(Box::new(|address| Ok(Some(address))));
+        let neighbours = Arc::new(Neighbours::reading(Some(table)));
+        neighbours.give_up(ip);
+
+        let probed = port_prober(
+            tcp_target(ip, port),
+            ServiceDetection::Off,
+            Shaping::default(),
+            Egress::KERNEL,
+            SocketAddr::new(ip, port),
+            CONNECT_PROBE_TIMEOUT,
+            crate::scanner::session::ScanSession::new().1,
+            Default::default(),
+            neighbours,
+        )
+        .await
+        .expect("a TCP target is probed");
+
+        assert_eq!(
+            probed.port.as_ref().map(Port::state),
+            Some(PortState::Unasked)
+        );
+        assert_eq!(probed.attempt, Attempt::Refused(Refusal::Unresolved));
+        assert!(listener.accept().is_err(), "the port was connected");
     }
 
     /// What a round trip measured alone earns on a slow path is the wait a
@@ -2983,6 +3074,7 @@ mod tests {
                 CONNECT_PROBE_TIMEOUT,
                 crate::scanner::session::ScanSession::new().1,
                 Default::default(),
+                Default::default(),
             )
             .await
             .expect("a TCP target is probed");
@@ -3060,6 +3152,7 @@ mod tests {
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
             ctx,
+            Default::default(),
             Default::default(),
         )
         .await
@@ -3156,6 +3249,7 @@ mod tests {
                 patience,
                 ctx,
                 Default::default(),
+                Default::default(),
             ),
         )
         .await
@@ -3197,7 +3291,7 @@ mod tests {
             stopper.abort();
         });
 
-        let (crowds, tarpits) = Default::default();
+        let (crowds, tarpits, neighbours) = Default::default();
         let asking = Asking {
             ctx: &ctx,
             detection: ServiceDetection::Off,
@@ -3205,6 +3299,7 @@ mod tests {
             zones: &ZoneMap::new(),
             crowds: &crowds,
             tarpits: &tarpits,
+            neighbours: &neighbours,
         };
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let probed = tokio::time::timeout(
@@ -3255,6 +3350,7 @@ mod tests {
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
             ctx.clone(),
+            Default::default(),
             Default::default(),
         ));
         first.await.expect("the listener took the connection");

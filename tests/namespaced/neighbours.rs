@@ -145,6 +145,90 @@ fn a_framed_scan_asks_for_every_dead_neighbour_at_once() {
     drop(segment);
 }
 
+/// A connect scan of an on-link address nothing holds leaves every port of it
+/// unasked, and the address unreached, rather than reading them filtered;
+/// the live host beside it reads as it would alone.
+///
+/// Linux holds a connect to a neighbour it is asking for, and when the asking
+/// fails ends it with a host unreachable addressed to itself, the error a
+/// router's reject raises; a connect given less than the asking runs out as
+/// a dropped SYN does. Either, read as it ended, files a port filtered that no
+/// SYN ever reached. The live host's closed ports are what a scan that gave
+/// up on the wrong neighbour, or read the table wrong, would lose.
+#[tokio::test]
+async fn a_connect_scan_leaves_a_dead_neighbour_unasked_rather_than_filtered() {
+    use zond_engine::config::ServiceDetection;
+    use zond_engine::model::port::Protocol;
+    use zond_engine::model::target::{PlannedTarget, Target};
+    use zond_engine::scanner::session::ScanSession;
+
+    if !available() {
+        return;
+    }
+
+    let mut segment = Segment::new();
+    let live = segment.peer();
+    let closed: Vec<u16> = (0..3).map(|_| segment.closed_tcp_port()).collect();
+    let IpAddr::V4(peer) = live else {
+        unreachable!("the segment is addressed in IPv4");
+    };
+    let dead = IpAddr::V4(Ipv4Addr::from(u32::from(peer) + 75));
+    let targets: Vec<(IpAddr, u16)> = (1..=12)
+        .map(|port| (dead, port))
+        .chain(closed.iter().map(|port| (live, *port)))
+        .collect();
+
+    let (session, ctx) = ScanSession::new();
+    let (tx, rx) = tokio::sync::mpsc::channel(targets.len());
+    for (position, (ip, port)) in targets.iter().enumerate() {
+        tx.send(PlannedTarget::new(
+            position as u64,
+            Target::new(*ip, *port, Protocol::Tcp),
+        ))
+        .await
+        .expect("queue");
+    }
+    drop(tx);
+
+    let started = Instant::now();
+    zond_engine::scanner::strategy::connect::scan(
+        rx,
+        8,
+        ctx.clone(),
+        ServiceDetection::Off,
+        &zond_engine::EvasionProfile::default(),
+        &zond_engine::ZoneMap::new(),
+    )
+    .await
+    .expect("the connect scan runs");
+    let took = started.elapsed();
+
+    for port in 1..=12 {
+        assert_eq!(
+            crate::support::port_state(&session, dead, port),
+            Some(PortState::Unasked),
+            "port {port} of an address nothing holds"
+        );
+    }
+    for port in &closed {
+        assert_eq!(
+            crate::support::port_state(&session, live, *port),
+            Some(PortState::Closed),
+            "the live host's port {port}"
+        );
+    }
+    assert!(
+        ctx.failures_snapshot().is_empty(),
+        "nothing on this host failed: {:?}",
+        ctx.failures_snapshot()
+    );
+    assert!(
+        took < RESOLUTION * 4,
+        "a dead neighbour held a connect scan for {took:?}"
+    );
+    drop(segment);
+}
+
 /// How long a frame sender waits for one neighbour to answer before giving
 /// it up.
 const RESOLUTION: Duration = Duration::from_secs(3);
