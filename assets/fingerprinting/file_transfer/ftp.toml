@@ -15,6 +15,27 @@ name = "ftp_banner"
 # daemons name themselves with an "ftpd"; FileZilla and Serv-U do not, so they are
 # named outright rather than by loosening the anchor into every 220 greeting (an
 # SMTP server greets with 220 too).
-pattern = '(?i)^220[\s-]\(?((?:[\w\d .-]*ftp|filezilla|serv-u)[\w\d .-]*)'
+#
+# The phrase is taken as a version only when it holds a digit. `Microsoft FTP
+# Service` or `ProFTPD Server` names a daemon and no release, and a version made
+# of it would also outrank, as a captured version, the versionless reading of a
+# rule that knows the daemon by name.
+pattern = '(?i)^220[\s-]\(?(?:((?:[\w .-]*ftp|filezilla|serv-u)[\w .-]*?\d[\w .-]*)|[\w .-]*ftp|filezilla|serv-u)'
 version_group = 1
 product = "ftp"
+example = "220 (vsFTPd 3.0.5)\r\n"
+
+# ProFTPD names itself and its release in one phrase, `ProFTPD 1.3.5e Server
+# (Debian)`, which the rule above would take whole as a version. This one splits
+# the release out, so a report reads product ProFTPD at 1.3.5e and the version
+# can be compared against what the catalogue says of that release. A server
+# whose ServerIdent hides the release greets with `ProFTPD Server` and is still
+# named, with no version.
+[[match]]
+name = "proftpd_banner"
+pattern = '^220[\s-]ProFTPD(?: (\d[\w.]*))? Server\b'
+version_group = 1
+vendor = "ProFTPD Project"
+product = "ProFTPD"
+example = "220 ProFTPD 1.3.5e Server (Debian) [192.0.2.1]\r\n"
+metadata = { "service.cpe23" = "cpe:/a:proftpd:proftpd:{service.version}" }

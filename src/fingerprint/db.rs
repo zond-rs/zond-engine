@@ -1646,13 +1646,37 @@ mod tests {
             (
                 21,
                 "220 ProFTPD 1.3.5e Server (Debian) [192.0.2.1]\r\n",
-                "ProFTPD 1.3.5e Server",
+                "1.3.5e",
             ),
         ] {
             let found = db
                 .identify(port, Protocol::Tcp, banner)
                 .expect("the corpus names it");
             assert_eq!(found.version.as_deref(), Some(expected), "for {banner:?}");
+        }
+    }
+
+    /// ProFTPD's greeting names the daemon and its release in one phrase, and
+    /// the release is what the catalogue joins on: a version of `ProFTPD 1.3.5e
+    /// Server` under product `ftp` compares against no entry at all. A server
+    /// that hides its release is still named, with no version made up for it.
+    #[test]
+    fn a_proftpd_greeting_names_the_product_and_its_release() {
+        let db = SignatureDb::global();
+        for (banner, version, cpe) in [
+            (
+                "220 ProFTPD 1.3.5e Server (Debian) [192.0.2.1]\r\n",
+                Some("1.3.5e"),
+                Some("cpe:/a:proftpd:proftpd:1.3.5e"),
+            ),
+            ("220 ProFTPD Server (Debian) [192.0.2.1]\r\n", None, None),
+        ] {
+            let found = db
+                .identify(21, Protocol::Tcp, banner)
+                .expect("the corpus names it");
+            assert_eq!(found.product.as_deref(), Some("ProFTPD"), "for {banner:?}");
+            assert_eq!(found.version.as_deref(), version, "for {banner:?}");
+            assert_eq!(found.cpe.as_deref(), cpe, "for {banner:?}");
         }
     }
 
