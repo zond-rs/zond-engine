@@ -40,9 +40,14 @@
 //! read as that letter in lower case, and the automaton, which ignores ASCII
 //! case, finds it in either. Every match holds one of the class's two
 //! members there, so the literal is still one every match contains. `k` and
-//! `s` are not folded: Unicode case folding adds the Kelvin sign and the long
-//! s to their classes, which a match may hold and an ASCII-insensitive
-//! literal would miss, so each ends the run it falls in.
+//! `s` are not folded to one letter: Unicode case folding adds the Kelvin
+//! sign and the long s to their classes, which a match may hold and an
+//! ASCII-insensitive literal would miss. Each is read instead as the two
+//! spellings a match may hold, the letter and that third member, and a run of
+//! letters around it as every spelling of the run, so `bsd` is indexed as
+//! `bsd` and `bſd` and found in `FreeBSD`. The spellings multiply with each
+//! such letter, and a run is cut where they would pass
+//! [`MAX_ALTERNATION_LITERALS`].
 //!
 //! ### Cost per response
 //!
@@ -229,6 +234,71 @@ fn case_pair(class: &Class) -> Option<u8> {
     (lower.is_ascii_lowercase() && u32::from(lower.to_ascii_uppercase()) == upper).then_some(lower)
 }
 
+/// The spellings of a letter whose `(?i)` class Unicode case folding widens
+/// past its two cases: `k` with the Kelvin sign, `s` with the long s. Each
+/// spelling is in lower case where it is ASCII, which the automaton finds in
+/// either case.
+fn case_triple(class: &Class) -> Option<Vec<Vec<u8>>> {
+    let Class::Unicode(class) = class else {
+        return None;
+    };
+    let members: Vec<u32> = class
+        .ranges()
+        .iter()
+        .flat_map(|range| u32::from(range.start())..=u32::from(range.end()))
+        .take(4)
+        .collect();
+    let (lower, third) = match members[..] {
+        [0x4B, 0x6B, 0x212A] => ('k', '\u{212A}'),
+        [0x53, 0x73, 0x17F] => ('s', '\u{17F}'),
+        _ => return None,
+    };
+    Some(vec![vec![lower as u8], third.to_string().into_bytes()])
+}
+
+/// Every string `hir` can match, where it matches only a few, each exact up to
+/// ASCII case, which the automaton ignores: a literal, a letter of
+/// [`case_triple`], and what those make in a concatenation or an alternation,
+/// up to [`MAX_ALTERNATION_LITERALS`]. `None` for anything else.
+fn exact_set(hir: &Hir) -> Option<Vec<Vec<u8>>> {
+    match hir.kind() {
+        HirKind::Literal(literal) => Some(vec![literal.0.to_vec()]),
+        HirKind::Class(class) => case_triple(class),
+        HirKind::Capture(capture) => exact_set(&capture.sub),
+        HirKind::Concat(parts) => parts.iter().try_fold(vec![Vec::new()], |run, part| {
+            joined(&run, &exact_set(part)?)
+        }),
+        HirKind::Alternation(branches) => {
+            let mut set = Vec::new();
+            for branch in branches {
+                set.extend(exact_set(branch)?);
+            }
+            (set.len() <= MAX_ALTERNATION_LITERALS).then_some(set)
+        }
+        _ => None,
+    }
+}
+
+/// Each of `before` followed by each of `after`, or `None` where there would
+/// be more than [`MAX_ALTERNATION_LITERALS`].
+fn joined(before: &[Vec<u8>], after: &[Vec<u8>]) -> Option<Vec<Vec<u8>>> {
+    if before.len() * after.len() > MAX_ALTERNATION_LITERALS {
+        return None;
+    }
+    Some(
+        before
+            .iter()
+            .flat_map(|head| {
+                after.iter().map(move |tail| {
+                    let mut literal = head.clone();
+                    literal.extend_from_slice(tail);
+                    literal
+                })
+            })
+            .collect(),
+    )
+}
+
 /// The prefix or suffix literal set, if bounded and free of empty literals.
 fn literal_set(hir: &Hir, kind: ExtractKind) -> Option<Vec<Vec<u8>>> {
     let mut extractor = Extractor::new();
@@ -256,11 +326,13 @@ fn literal_set(hir: &Hir, kind: ExtractKind) -> Option<Vec<Vec<u8>>> {
 /// HIR. `None` where none is guaranteed: a class, an optional repetition, or
 /// an alternation with a branch that guarantees none.
 ///
-/// Of a concatenation's parts, the one whose shortest literal is longest is
-/// taken, and of those the one with fewest literals: a longer literal is
-/// rarer in a response, and every literal is one more way to be selected. An
-/// alternation guarantees one of its branches' literals, so its set is theirs
-/// together, up to [`MAX_ALTERNATION_LITERALS`].
+/// Of a concatenation's parts, and of its runs of parts each matching one of
+/// a few exact strings, joined into every spelling of the run (see
+/// [`exact_set`]), the one whose shortest literal is longest is taken, and of
+/// those the one with fewest literals: a longer literal is rarer in a
+/// response, and every literal is one more way to be selected. An alternation
+/// guarantees one of its branches' literals, so its set is theirs together,
+/// up to [`MAX_ALTERNATION_LITERALS`].
 fn required_set(hir: &Hir) -> Option<Vec<Vec<u8>>> {
     match hir.kind() {
         HirKind::Literal(literal) => {
@@ -268,12 +340,18 @@ fn required_set(hir: &Hir) -> Option<Vec<Vec<u8>>> {
         }
         HirKind::Capture(capture) => required_set(&capture.sub),
         HirKind::Repetition(rep) if rep.min >= 1 => required_set(&rep.sub),
-        HirKind::Concat(parts) => parts.iter().filter_map(required_set).max_by(|a, b| {
-            let shortest = |set: &Vec<Vec<u8>>| set.iter().map(Vec::len).min();
-            shortest(a)
-                .cmp(&shortest(b))
-                .then_with(|| b.len().cmp(&a.len()))
-        }),
+        HirKind::Concat(parts) => {
+            let mut sets: Vec<Vec<Vec<u8>>> = parts.iter().filter_map(required_set).collect();
+            sets.extend(exact_runs(parts));
+            sets.into_iter()
+                .filter(|set| set.iter().all(|literal| literal.len() >= MIN_LITERAL_LEN))
+                .max_by(|a, b| {
+                    let shortest = |set: &Vec<Vec<u8>>| set.iter().map(Vec::len).min();
+                    shortest(a)
+                        .cmp(&shortest(b))
+                        .then_with(|| b.len().cmp(&a.len()))
+                })
+        }
         HirKind::Alternation(branches) => {
             let mut set = Vec::new();
             for branch in branches {
@@ -283,6 +361,31 @@ fn required_set(hir: &Hir) -> Option<Vec<Vec<u8>>> {
         }
         _ => None,
     }
+}
+
+/// The runs of consecutive `parts` that each match one of a few exact
+/// strings, each run as every spelling of it. Every match of the
+/// concatenation holds one spelling of each run, in one piece. A run whose
+/// spellings would pass [`MAX_ALTERNATION_LITERALS`] is cut there and the
+/// next begins at the part that would have passed it.
+fn exact_runs(parts: &[Hir]) -> Vec<Vec<Vec<u8>>> {
+    let mut runs = Vec::new();
+    let mut run: Option<Vec<Vec<u8>>> = None;
+    for part in parts {
+        match (exact_set(part), run.take()) {
+            (Some(set), Some(before)) => match joined(&before, &set) {
+                Some(longer) => run = Some(longer),
+                None => {
+                    runs.push(before);
+                    run = Some(set);
+                }
+            },
+            (Some(set), None) => run = Some(set),
+            (None, before) => runs.extend(before),
+        }
+    }
+    runs.extend(run);
+    runs
 }
 
 // ╔════════════════════════════════════════════╗
@@ -399,6 +502,45 @@ mod tests {
 
         let pf = LiteralPrefilter::build(&[sig(pattern)]);
         assert!(pf.candidates(response).contains(&0));
+    }
+
+    /// **A case-insensitive word with a `k` or an `s` in it is narrowed by
+    /// every way a match can spell it.** Unicode case folding gives each of
+    /// the two a third member, the Kelvin sign and the long s, so neither is a
+    /// letter an ASCII-folded literal stands for alone; spelled out as the
+    /// letter or that third member, and joined to the letters around it, the
+    /// word is still a set every match holds one of. A rule matching `BSD`
+    /// anywhere in a reply was otherwise run against every reply.
+    #[test]
+    fn a_word_split_by_a_k_or_an_s_is_narrowed_by_each_spelling_of_it() {
+        let pattern = r"(?i)^(.{0,256}?BSD)[ /-]([\d.]+)";
+        let pf = LiteralPrefilter::build(&[sig(pattern)]);
+        assert!(pf.always_run().is_empty(), "left to run on everything");
+
+        let matching = regex::Regex::new(pattern).expect("compiles");
+        for response in [
+            "FreeBSD 14.1",
+            "freebsd-13.2",
+            "Free B\u{17F}D 1",
+            "B\u{17F}D/9",
+        ] {
+            if matching.is_match(response) {
+                assert!(
+                    pf.candidates(response).contains(&0),
+                    "{response:?} matches and was not selected"
+                );
+            }
+        }
+        assert!(
+            matching.is_match("B\u{17F}D/9"),
+            "the long s is an s to the pattern"
+        );
+        assert!(pf.candidates("Linux 6.1").is_empty());
+
+        let kernel = LiteralPrefilter::build(&[sig(r"(?i)^.{0,8}kernel")]);
+        assert!(kernel.always_run().is_empty(), "left to run on everything");
+        assert!(kernel.candidates("\u{212A}ERNEL").contains(&0));
+        assert!(kernel.candidates("KERNEL").contains(&0));
     }
 
     /// An alternation every branch of which holds a literal guarantees one of

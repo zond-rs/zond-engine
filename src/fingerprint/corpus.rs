@@ -138,7 +138,7 @@ fn prefilter_never_drops_a_matching_signature() {
 /// corpus.
 #[test]
 fn only_a_pattern_with_no_literal_is_matched_against_every_response() {
-    const KNOWN_ALWAYS_RUN: usize = 13;
+    const KNOWN_ALWAYS_RUN: usize = 12;
     let (signatures, _) = signatures_with_examples();
     let prefilter = LiteralPrefilter::build(&signatures);
     let always: Vec<&str> = prefilter
