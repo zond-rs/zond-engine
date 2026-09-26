@@ -101,10 +101,22 @@ type PortResult = (ScopedIp, u16, Protocol, Vec<Finding>, Vec<Unfinished>);
 /// reader looking for a fault that is not there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Unfinished {
-    /// A limit the detection runs under, its budget or the process's file
-    /// limit, was reached before it had its answer. Carries the detection's id
-    /// and which limit, as a phrase.
+    /// The detection's own budget, its time, bytes, connections or fuel, was
+    /// spent before it had its answer. Carries the detection's id and which
+    /// budget, as a phrase.
+    ///
+    /// Heard on the console only from the first verbosity up: a budget is the
+    /// detection's own declared bound, not something the reader can change, and
+    /// the run's closing count of detections that did not finish already says
+    /// coverage fell short.
     CutShort { id: String, why: String },
+    /// The process's file limit left the detection without a socket before it
+    /// had its answer. Carries the detection's id and how far it got, as a
+    /// phrase.
+    ///
+    /// Apart from [`CutShort`](Self::CutShort) because its remedy is the
+    /// caller's, raising the limit, and so it is said at every verbosity.
+    Starved { id: String, why: String },
     /// The detection broke, or the runtime refused it something it asked for.
     Failed { id: String, why: String },
     /// The port stopped answering and was given up on before the detection
@@ -150,7 +162,12 @@ impl Unfinished {
     /// Files this against the port it happened on.
     fn record(&self, ctx: &ScanContext, endpoint: &str) {
         match self {
-            Unfinished::CutShort { id, why } | Unfinished::PortGivenUp { id, why } => ctx
+            Unfinished::CutShort { id, why } => {
+                let reason = format!("{id} on {endpoint} cut short: {why}");
+                crate::warn!(verbosity = 1, "{reason}");
+                ctx.file_cut_short(ScannerKind::Detection, reason);
+            }
+            Unfinished::Starved { id, why } | Unfinished::PortGivenUp { id, why } => ctx
                 .record_cut_short(
                     ScannerKind::Detection,
                     format!("{id} on {endpoint} cut short: {why}"),
@@ -593,7 +610,7 @@ fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
 
 /// A flow the process had no socket for, cut short by the file limit.
 fn starved(shortfall: &Shortfall) -> Unfinished {
-    Unfinished::CutShort {
+    Unfinished::Starved {
         id: shortfall.detection.clone(),
         why: format!(
             "no socket ({}/{} answered{})",
@@ -1354,7 +1371,10 @@ mod tests {
     /// rest of the run under dozens saying one thing, which the reader acts on
     /// once: the port stopped answering. The report is read for coverage, and
     /// there each question left open still counts. A detection its own budget
-    /// stopped is not the port's doing and keeps its own line.
+    /// stopped is not the port's doing and keeps its own line, from the first
+    /// verbosity up: the budget is the detection's declared bound, nothing the
+    /// reader can change, and the run's closing count already says coverage
+    /// fell short.
     #[test]
     fn a_port_given_up_on_is_one_console_line_and_an_entry_per_detection() {
         let (session, ctx) = ScanSession::new();
@@ -1389,10 +1409,16 @@ mod tests {
             .collect();
         assert_eq!(
             console,
-            vec![
-                "backup-files on 192.0.2.1:80 cut short: 3000 ms budget (0/4 answered)",
-                "192.0.2.1:80 unresponsive, 3 detections cut short",
-            ]
+            vec!["192.0.2.1:80 unresponsive, 3 detections cut short"]
+        );
+        let verbose: Vec<&str> = lines
+            .iter()
+            .filter(|line| line.verbosity == 1)
+            .map(|line| line.message.as_str())
+            .collect();
+        assert_eq!(
+            verbose,
+            vec!["backup-files on 192.0.2.1:80 cut short: 3000 ms budget (0/4 answered)"]
         );
         let filed: Vec<String> = ctx
             .failures_snapshot()
