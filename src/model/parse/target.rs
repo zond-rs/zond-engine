@@ -750,8 +750,9 @@ impl TargetMapBuilder {
 /// ## Only something shaped like a name is a name
 ///
 /// A token is offered to a lookup only when it could be a host name: letters,
-/// digits, `-`, `_` and dots, with a last label holding at least one letter.
-/// Everything else is an address or a range with a slip in it.
+/// digits, `-`, `_` and dots, with a last label holding at least one letter,
+/// and not three or more numbers ahead of that label. Everything else is an
+/// address or a range with a slip in it.
 ///
 /// The rule is drawn from the name's side because the typos are open-ended and
 /// the names are not. `10.10.10.*`, `10.10.1-5.1-254`, `10.10.10.0/` and `/0`
@@ -770,6 +771,16 @@ impl TargetMapBuilder {
 /// answer for them; `*`, `/`, `%` and the rest are allowed by no naming scheme
 /// a resolver answers for. Letters and digits are not only ASCII, so a name
 /// written in its own script reaches a lookup that may know how to encode it.
+///
+/// The second half catches the slip a letter makes. `10.10.10.1a`,
+/// `10.10.10.a` and `10.10.10.1-2.example` each end in a label with a letter
+/// in it, and each is an IPv4 address or range with a key hit beside or after
+/// its last octet: three dotted numbers, or number ranges, are the shape of
+/// an address, and names are not built that way. Names that carry an address
+/// write it under a domain of their own, as `192.0.2.1.sslip.example` and
+/// the reverse names under `in-addr.arpa` do, and a label that is not a
+/// number stands between the numbers and the last label there. A label with
+/// a letter among the leading ones, as in `3com.example`, is a name too.
 ///
 /// ## Both passes ask this
 ///
@@ -803,7 +814,25 @@ pub(crate) fn host_name(token: &str) -> HostName {
         .next()
         .unwrap_or_default();
 
-    if token.chars().all(name_character) && last_label.chars().any(char::is_alphabetic) {
+    // A number, or a range of numbers, as an octet or an octet range is
+    // written.
+    let numeric = |label: &str| {
+        label
+            .split('-')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    };
+    let leading: Vec<&str> = token
+        .strip_suffix('.')
+        .unwrap_or(token)
+        .rsplit('.')
+        .skip(1)
+        .collect();
+    let address_shaped = leading.len() >= 3 && leading.iter().all(|label| numeric(label));
+
+    if token.chars().all(name_character)
+        && last_label.chars().any(char::is_alphabetic)
+        && !address_shaped
+    {
         HostName::Yes
     } else {
         HostName::Mistyped
@@ -1232,6 +1261,9 @@ mod tests {
             "/0",
             "192.0.2.300",
             "2001:db8::1-ff",
+            "10.10.10.1a",
+            "10.10.10.a",
+            "10.10.10.1-2.example",
         ] {
             let mut builder = TargetMapBuilder::new(ports("80"));
             let err = builder.push(token, &ctx).expect_err(token);
@@ -1260,6 +1292,9 @@ mod tests {
             "3com.example",
             "bücher.example",
             "xn--bcher-kva.example",
+            "0.pool.ntp.example",
+            "192.0.2.1.sslip.example",
+            "1.2.0.192.in-addr.arpa",
         ] {
             assert_eq!(host_name(name), HostName::Yes, "{name}");
         }
