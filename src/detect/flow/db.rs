@@ -135,6 +135,7 @@ pub(crate) fn embedded_flows() -> Vec<CompiledFlow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::port::Protocol;
 
     #[test]
     fn the_embedded_corpus_loads_and_every_flow_carries_a_content_hash() {
@@ -214,6 +215,17 @@ mod tests {
              here: a class above the default is silent by default or intrusive, so \
              adding or changing one is a security decision and must be listed"
         );
+    }
+
+    /// A2S_INFO is a datagram query a Source server answers on its game port,
+    /// so the detection that sends it is gated there. Gated anywhere else it
+    /// asks over a transport nothing answers the query on and never fires.
+    #[test]
+    fn the_source_query_detection_is_gated_on_the_port_its_server_answers() {
+        let gate = shipped_flow("steam-source-query").detection.when;
+        assert!(gate.applies(Some("source-engine"), 27015, Protocol::Udp));
+        assert!(!gate.applies(Some("source-engine"), 27015, Protocol::Tcp));
+        assert!(!gate.applies(Some("steam_master"), 27011, Protocol::Tcp));
     }
 
     #[test]

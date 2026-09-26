@@ -1,16 +1,23 @@
 [service]
 name = "steam_master"
 default_ports = [27010, 27011, 27012, 27013, 27014]
-shared_ports  = [27015]
-description = "Steam Master Server / Source Engine"
+description = "Steam master server"
 
+# The Master Server Query Protocol's list request: the type byte `1`, region
+# 0xFF for every region, the address to page from, where the unspecified one
+# asks for the first page, and an empty filter. A master answers on UDP alone;
+# the game servers it lists answer A2S_INFO, which `source-engine.toml` asks.
 [[probe]]
-name = "get_info"
-payload = '\xff\xff\xff\xffTSource Engine Query\x00'
-protocol = "tcp"
+name = "server_list"
+payload = '1\xff0.0.0.0:0\x00\x00'
+protocol = "udp"
 
 [[match]]
-name = "source_response"
-pattern = '^\xff\xff\xff\xffI'
-product = "source_engine"
-example = "\u00ff\u00ff\u00ff\u00ffI\u0011zond test server\u0000"
+name = "master_server_list"
+# `framed::steam_master_list` reduces a list reply to these words, since what
+# it lists is other hosts' servers.
+pattern = '^server list$'
+product = "Steam master server"
+vendor = "Valve"
+context = "steam.master_list"
+example = "server list"

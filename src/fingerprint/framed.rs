@@ -162,6 +162,26 @@ pub(super) fn source_engine(datagram: &[u8]) -> Option<String> {
     }
 }
 
+/// What a Steam master server answers a server-list query with.
+///
+/// The reply is the out-of-band header every Valve datagram carries, the
+/// response type `f` and a line feed, and then a run of six-byte entries, an
+/// IPv4 address and a port each, which a master pages through and closes with
+/// the unspecified address. The entries are other hosts' game servers and
+/// describe nothing about the one that answered, so none is read: the reply
+/// yields the words `server list`, which is what identifies a master.
+///
+/// [`None`] for a datagram without the header, or whose body is not whole
+/// entries.
+#[must_use]
+pub(super) fn steam_master_list(datagram: &[u8]) -> Option<&'static str> {
+    const HEADER: &[u8] = &[0xFF, 0xFF, 0xFF, 0xFF, b'f', b'\n'];
+    const ENTRY_BYTES: usize = 6;
+
+    let entries = datagram.strip_prefix(HEADER)?;
+    (entries.len() % ENTRY_BYTES == 0).then_some("server list")
+}
+
 /// The status line a Minecraft Bedrock server answers an unconnected ping with.
 ///
 /// The pong repeats the ping's magic and then carries one counted string, which
@@ -1515,6 +1535,26 @@ mod tests {
         assert!(source_engine(b"").is_none());
     }
 
+    /// A master's answer is recognised whatever servers it lists, including
+    /// none but the terminator.
+    #[test]
+    fn a_steam_master_list_is_recognised_as_one() {
+        let mut reply = vec![0xFF, 0xFF, 0xFF, 0xFF, b'f', b'\n'];
+        reply.extend_from_slice(&[192, 0, 2, 7, 0x69, 0x87]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        assert_eq!(steam_master_list(&reply), Some("server list"));
+        assert_eq!(steam_master_list(&reply[..6]), Some("server list"));
+    }
+
+    /// A Source info reply shares the header and is not a master's list, and a
+    /// list cut mid-entry is not a whole reply.
+    #[test]
+    fn a_datagram_that_is_not_a_whole_master_list_yields_nothing() {
+        assert!(steam_master_list(b"\xff\xff\xff\xffI\x11name\x00").is_none());
+        assert!(steam_master_list(b"\xff\xff\xff\xfff\n\xc0\x00\x02").is_none());
+        assert!(steam_master_list(b"").is_none());
+    }
+
     /// Builds an unconnected pong carrying `status`.
     fn pong(status: &str) -> Vec<u8> {
         let mut out = vec![0x1C];
@@ -1935,6 +1975,7 @@ mod tests {
             let _ = wsd_types(bytes);
             let _ = xdmcp_willing(bytes);
             let _ = source_engine(bytes);
+            let _ = steam_master_list(bytes);
             let _ = raknet_pong(bytes);
             let _ = coap_payload(bytes);
             let _ = rpc_program_dump(bytes);

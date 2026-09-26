@@ -1151,6 +1151,7 @@ fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, p
         "ms-sql-browser" => validate_browser_request(payload),
         "xdmcp" => validate_xdmcp_query(payload),
         "source-engine" => validate_a2s_request(payload),
+        "steam_master" => validate_master_query(payload),
         "minecraft-bedrock" => validate_raknet_ping(payload),
         "coap" => validate_coap_request(payload),
         "rpcbind" | "nfs" => validate_rpc_call(payload),
@@ -1536,6 +1537,44 @@ fn validate_a2s_request(payload: &[u8]) -> Result<(), String> {
     match payload.ends_with(b"Source Engine Query\0") {
         true => Ok(()),
         false => Err("does not carry the `Source Engine Query` string A2S_INFO requires".into()),
+    }
+}
+
+/// Checks a Master Server Query list request: the type byte, a region the
+/// protocol defines, the `address:port` to page from, and the filter, each
+/// string closed by its NUL and nothing after the filter's. A master drops a
+/// request it cannot split into those parts.
+fn validate_master_query(payload: &[u8]) -> Result<(), String> {
+    const LIST_REQUEST: u8 = b'1';
+    /// The regions the protocol names, 0x00 to 0x07, and 0xFF for all of them.
+    const REGIONS: std::ops::RangeInclusive<u8> = 0x00..=0x07;
+    const EVERY_REGION: u8 = 0xFF;
+
+    if payload.first() != Some(&LIST_REQUEST) {
+        return Err("does not open with the `1` a list request carries".into());
+    }
+    match payload.get(1) {
+        Some(region) if REGIONS.contains(region) || *region == EVERY_REGION => {}
+        Some(other) => {
+            return Err(format!(
+                "names region {other:#04x}, which the protocol does not"
+            ));
+        }
+        None => return Err("carries no region".into()),
+    }
+    let mut strings = payload[2..].split(|byte| *byte == 0);
+    let seed = strings.next().unwrap_or_default();
+    let seed = std::str::from_utf8(seed).map_err(|_| "carries a seed that is not text")?;
+    if seed.parse::<std::net::SocketAddrV4>().is_err() {
+        return Err(format!(
+            "pages from {seed:?}, which is not an address and port"
+        ));
+    }
+    // A request whose two strings are both closed splits into the seed, the
+    // filter, and the empty remainder after the final NUL.
+    match (strings.next(), strings.next(), strings.next()) {
+        (Some(_filter), Some([]), None) => Ok(()),
+        _ => Err("does not close the seed and the filter with a NUL each, and end there".into()),
     }
 }
 

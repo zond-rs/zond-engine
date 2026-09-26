@@ -2,7 +2,8 @@
 # Source server (Counter-Strike, Team Fortress and the rest) to describe itself,
 # and it replies with the server name, current map, player counts and other
 # details to anyone. It is an information disclosure and confirms an exposed game
-# server. One read-only query.
+# server. One read-only datagram, sent where the server answers it: UDP, on the
+# port the corpus identifies it on.
 #
 # The payload is a single-quoted TOML literal string so its escapes reach the
 # interpreter rather than the TOML parser.
@@ -13,8 +14,8 @@ version = "1.0.0"
 title   = "Source engine server answers A2S_INFO"
 
 [detection.when]
-service  = "steam_master"
-protocol = "tcp"
+service  = "source-engine"
+protocol = "udp"
 
 [detection.capabilities]
 class      = "active-benign"

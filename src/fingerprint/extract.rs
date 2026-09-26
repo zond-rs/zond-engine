@@ -233,6 +233,12 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
         // Either the information a game server publishes, or the challenge it
         // now asks for instead. Both say what is listening.
         27015 => super::framed::source_engine(datagram).into_iter().collect(),
+        // A master answers with a page of other hosts' servers, which says what
+        // it is and nothing about itself.
+        27010..=27014 => super::framed::steam_master_list(datagram)
+            .map(ToOwned::to_owned)
+            .into_iter()
+            .collect(),
         // The status line a Bedrock server builds from its own configuration,
         // once the reply's magic has confirmed it is RakNet at all.
         19132 => super::framed::raknet_pong(datagram)
@@ -361,7 +367,7 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 /// before one has been drawn.
 const DECODED_UDP_PORTS: &[u16] = &[
     53, 88, 111, 123, 161, 177, 500, 623, 1434, 1701, 1900, 2049, 3478, 3702, 4500, 5060, 5061,
-    5353, 5683, 11211, 19132, 27015,
+    5353, 5683, 11211, 19132, 27010, 27011, 27012, 27013, 27014, 27015,
 ];
 
 // ╔════════════════════════════════════════════╗
@@ -1163,6 +1169,31 @@ mod framed_replies {
         assert_eq!(
             identify(5683, &texts[0]).map(|found| found.0),
             Some("coap".to_string())
+        );
+    }
+
+    /// A Steam master is asked its server list over UDP, the only transport it
+    /// answers on, and is named from the list it returns. A query sent over TCP
+    /// draws nothing from a master and costs a connection per port.
+    #[test]
+    fn a_steam_master_is_asked_over_udp_and_named_from_its_list() {
+        let query = b"1\xff0.0.0.0:0\x00\x00";
+        let db = SignatureDb::global();
+        for port in 27010..=27014 {
+            assert!(
+                db.tcp_probe_payloads(port).is_empty(),
+                "tcp probe on {port}"
+            );
+            assert_eq!(db.udp_probe_payloads(port), [query.to_vec()], "on {port}");
+        }
+
+        let mut reply = vec![0xFF, 0xFF, 0xFF, 0xFF, b'f', b'\n'];
+        reply.extend_from_slice(&[198, 51, 100, 4, 0x69, 0x87, 0, 0, 0, 0, 0, 0]);
+        let texts = super::from_datagram(27011, &reply);
+        assert_eq!(texts, ["server list"]);
+        assert_eq!(
+            identify(27011, &texts[0]).map(|found| found.0),
+            Some("Steam master server".to_string())
         );
     }
 

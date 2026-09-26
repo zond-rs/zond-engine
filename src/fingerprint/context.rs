@@ -323,6 +323,11 @@ pub const CONTEXTS: &[Context] = &[
         note: "the software identifier `ssh::software_version` splits out of the identification line, offered beside the whole line by `extract::texts`",
     },
     Context {
+        name: "steam.master_list",
+        reach: Reach::Produced,
+        note: "the words `server list`, which `framed::steam_master_list` yields for a Steam master's answer to a list query",
+    },
+    Context {
         name: "stun.software",
         reach: Reach::Produced,
         note: "the `SOFTWARE` attribute of a STUN binding response, read by `framed::stun_binding`, or `stun` where the server sends none",
