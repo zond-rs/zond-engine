@@ -2219,6 +2219,11 @@ pub struct ScanSummary {
     /// How many ports fell into each state.
     pub ports_by_state: BTreeMap<PortState, usize>,
     /// Ports whose service was identified by fingerprinting.
+    ///
+    /// A name read off the port number is not counted: every scan path seeds
+    /// a port, closed and filtered ones included, with the name its number is
+    /// registered under, and that label says nothing about what is listening
+    /// (see [`Service::is_inferred`](crate::model::port::Service::is_inferred)).
     pub services_identified: usize,
     /// How many hosts were reachable at an IPv4 address, at an IPv6 one, and at
     /// both.
@@ -2736,7 +2741,7 @@ impl ScanReport {
                     summary.ports_open += 1;
                 }
                 *summary.ports_by_state.entry(port.state()).or_default() += 1;
-                if port.service().is_some() {
+                if port.service().is_some_and(|service| !service.is_inferred()) {
                     summary.services_identified += 1;
                 }
             }
@@ -3531,6 +3536,29 @@ mod tests {
         assert_eq!(summary.ports_total, 3);
         assert_eq!(summary.ports_open, 2);
         assert_eq!(summary.ports_by_state[&PortState::Filtered], 1);
+        assert_eq!(summary.services_identified, 1);
+    }
+
+    /// Every scan path seeds a port with the name its number is registered
+    /// under, closed and filtered ones included, so counting ports that carry
+    /// a service would report hundreds of identifications on a host with a
+    /// handful of open ports. Only a name something answered for is one.
+    #[test]
+    fn summary_counts_no_name_read_off_a_port_number_as_identified() {
+        let mut host = Host::new(ip(1));
+        host.set_status(HostStatus::Up);
+        host.add_port(
+            Port::new(22, Protocol::Tcp, PortState::Open).with_service(Service::new("ssh", 90)),
+        );
+        host.add_port(
+            Port::new(80, Protocol::Tcp, PortState::Open).with_service(Service::new("http", 0)),
+        );
+        host.add_port(
+            Port::new(23, Protocol::Tcp, PortState::Closed).with_service(Service::new("telnet", 0)),
+        );
+
+        let summary = ScanReport::new(phase(ScanKind::PortScan), [host]).summary();
+
         assert_eq!(summary.services_identified, 1);
     }
 

@@ -428,7 +428,8 @@ pub struct SummaryDto {
     pub ports_open: usize,
     /// The full port-state distribution.
     pub ports_by_state: PortStateCounts,
-    /// Ports whose service was identified by fingerprinting.
+    /// Ports whose service was identified by fingerprinting, not counting a
+    /// name read off the port number.
     pub services_identified: usize,
     /// Hosts counted by the address families they answered at.
     pub hosts_by_family: FamilyCounts,
