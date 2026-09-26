@@ -56,6 +56,7 @@ use zond_engine::model::mac::MacAddr;
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::protocols::ip::HOP_LIMIT_ROUTED;
+use zond_engine::protocols::tcp::flags;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::ports::{TcpPortScanner, UdpPortScanner};
 use zond_engine::transport::probe::SendMode;
@@ -521,6 +522,64 @@ async fn a_decoy_is_only_used_against_a_target_of_its_own_family() {
         "only the v4 decoy belongs beside a v4 probe, got {probes:?}"
     );
     assert!(probes.iter().any(|probe| probe.source == usable));
+}
+
+// ── An arbitrary flag byte ─────────────────────────────────────────────────
+
+/// A chosen flag byte replaces the technique's on every probe, and the ports
+/// it reaches are read the way an arbitrary combination allows: an answer as
+/// reachable, silence as open or filtered, never open or closed.
+///
+/// FIN with URG is no technique's combination, and a conformant stack treats
+/// it as the flag probes treat theirs: ignored by a listener, reset by a
+/// closed port. Asked of a SYN scan, the two halves fail differently. A byte
+/// that never reached the segment would leave SYNs on the wire and the
+/// verdicts a SYN earns, open and closed. A byte that reached the segment but
+/// not the reading would find the listener's silence filtered and the reset
+/// closed, verdicts only a technique with a defined meaning can give.
+#[tokio::test]
+async fn a_chosen_flag_byte_rides_every_probe_and_is_read_only_as_reachable_or_silent() {
+    let chosen = flags::FIN | flags::URG;
+    let profile = EvasionProfile::default().with_flags(chosen);
+    let (session, net) = syn_scan(
+        &profile,
+        &[
+            (80, Policy::open()),
+            (81, Policy::closed()),
+            (82, Policy::silent()),
+        ],
+    )
+    .await;
+
+    let probes = net.probes();
+    assert!(!probes.is_empty(), "the scan sent nothing");
+    for probe in &probes {
+        assert_eq!(
+            probe.flags, chosen,
+            "a probe to {} carried the technique's flags, not the chosen byte",
+            probe.port
+        );
+    }
+
+    for (port, expected, why) in [
+        (
+            80,
+            PortState::OpenFiltered,
+            "a listener ignores the combination",
+        ),
+        (
+            81,
+            PortState::Unfiltered,
+            "a closed port's reset says only reachable",
+        ),
+        (
+            82,
+            PortState::OpenFiltered,
+            "silence is a drop or an open port",
+        ),
+    ] {
+        assert_eq!(port_state(&session, TARGET, port), Some(expected), "{why}");
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
