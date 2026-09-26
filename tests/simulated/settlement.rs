@@ -887,31 +887,39 @@ async fn an_address_outside_the_plan_settles_nothing() {
 /// The refusal belongs to the engine rather than to whichever front end
 /// remembered to check: a journal is handed over with the settings a scan is
 /// about to run under, and those are the two things that have to agree.
+///
+/// The plan is loopback and the accepted sitting runs without name lookups,
+/// because that sitting really sweeps it: nothing this test sends may leave
+/// the machine.
 #[tokio::test]
 async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
+    use zond_engine::Exclusions;
     use zond_engine::journal::Journal;
     use zond_engine::journal::manifest::Plan;
-    use zond_engine::{Exclusions, ZondConfig};
 
     let root = std::env::temp_dir().join(format!("zond-policy-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("a scratch root");
 
-    let plan: IpSet = "192.0.2.1-192.0.2.8".parse().expect("a range");
+    let plan: IpSet = "127.0.0.1-127.0.0.8".parse().expect("a range");
+    assert!(
+        plan.iter().all(|address| address.is_loopback()),
+        "the accepted sitting sweeps this plan, so it has to stay on the machine"
+    );
     let journal = Journal::create(
         &root,
         &Plan::discovery(&plan, &Exclusions::none(), false),
         Privilege::current(),
-        "192.0.2.1 and 7 more",
+        "127.0.0.1 and 7 more",
     )
     .expect("creates");
     let directory = journal.directory().to_path_buf();
     journal.close().expect("closes");
 
     // The same record, continued by a run that would withhold part of it.
-    let mut narrowed = ZondConfig::default();
+    let mut narrowed = test_config();
     let mut withheld = IpSet::new();
-    withheld.insert_range("192.0.2.1-192.0.2.4".parse().expect("a range"));
+    withheld.insert_range("127.0.0.1-127.0.0.4".parse().expect("a range"));
     narrowed.exclusions = Exclusions::new(withheld);
 
     let (journal, _, _) = Journal::reopen(&directory, Privilege::current()).expect("reopens");
@@ -928,7 +936,7 @@ async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
     // And the policy the record was written under is accepted, so the refusal
     // above is about the change rather than about there being a policy at all.
     let (journal, _, _) = Journal::reopen(&directory, Privilege::current()).expect("reopens");
-    zond_engine::discover_with_journal(plan, &ZondConfig::default(), journal)
+    zond_engine::discover_with_journal(plan, &test_config(), journal)
         .await
         .expect("the recorded policy still describes the recorded plan");
 
