@@ -243,18 +243,19 @@ async fn wide_fin_scan(policy: impl Fn(usize) -> Policy) -> (Vec<PortState>, Win
     (states, window)
 }
 
-/// An open port's silence is the finding a FIN scan exists to make, and it
-/// must not be read as the target failing to keep up.
-///
-/// Every open port on a host with closed ones is a timeout from a host that is
-/// answering, the very shape a SYN scan reads as loss. Read that way here, the
-/// scan cuts its window once per open port it finds and spends the rest of the
-/// run at its floor, slowed by its own results against a host that dropped
-/// nothing.
-#[tokio::test]
-async fn open_ports_in_a_scan_whose_silence_is_a_verdict_do_not_narrow_the_window() {
+/// Whether the port at `index` is one of the `per_hundred` in a hundred a
+/// host keeps open, scattered by a fixed hash rather than evenly, so open
+/// ports fall together as a real host's do and some of their silences are
+/// heard back to back.
+fn scattered_open(index: usize, per_hundred: u64) -> bool {
+    ((index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) % 100 < per_hundred
+}
+
+/// FIN-scans a host with `per_hundred` ports in a hundred open and checks that
+/// every one was found and that the window was never cut for them.
+async fn open_ports_leave_the_window_alone(per_hundred: u64) {
     let (states, window) = wide_fin_scan(|index| {
-        if index % 40 == 0 {
+        if scattered_open(index, per_hundred) {
             Policy::open()
         } else {
             Policy::closed()
@@ -266,17 +267,44 @@ async fn open_ports_in_a_scan_whose_silence_is_a_verdict_do_not_narrow_the_windo
         .iter()
         .filter(|&&state| state == PortState::OpenFiltered)
         .count();
-    assert_eq!(
-        open,
-        (WIDE as usize).div_ceil(40),
-        "every open port ignored the FIN"
-    );
+    let expected = (0..WIDE as usize)
+        .filter(|&index| scattered_open(index, per_hundred))
+        .count();
+    assert_eq!(open, expected, "every open port ignored the FIN");
     assert_eq!(
         window.reductions, 0,
-        "one port in forty silent is a host with services, not a host losing \
-         probes: {window:?}"
+        "{per_hundred} ports in a hundred silent is a host with services, not \
+         a host losing probes: {window:?}"
     );
     assert!(!window.at_floor, "{window:?}");
+}
+
+/// An open port's silence is the finding a FIN scan exists to make, and it
+/// must not be read as the target failing to keep up.
+///
+/// Every open port on a host with closed ones is a timeout from a host that is
+/// answering, the very shape a SYN scan reads as loss. Read that way here, the
+/// scan cuts its window once per open port it finds and spends the rest of the
+/// run at its floor, slowed by its own results against a host that dropped
+/// nothing.
+#[tokio::test]
+async fn open_ports_in_a_scan_whose_silence_is_a_verdict_do_not_narrow_the_window() {
+    open_ports_leave_the_window_alone(3).await;
+}
+
+/// Five in a hundred, a busier host than most.
+#[tokio::test]
+async fn a_host_with_one_port_in_twenty_open_is_not_read_as_losing_probes() {
+    open_ports_leave_the_window_alone(5).await;
+}
+
+/// A tenth of the ports asked open, a service-dense host and the most a scan
+/// promises not to read as loss. The silences of that many open ports reach
+/// the window bunched a budget behind the answers asked beside them, and a
+/// share of recent outcomes read that as loss at every window a cut left.
+#[tokio::test]
+async fn a_host_with_a_tenth_of_its_ports_open_is_not_read_as_losing_probes() {
+    open_ports_leave_the_window_alone(10).await;
 }
 
 /// The other half: silence at a share no set of open ports plausibly accounts
@@ -291,7 +319,7 @@ async fn open_ports_in_a_scan_whose_silence_is_a_verdict_do_not_narrow_the_windo
 #[tokio::test]
 async fn silence_past_any_plausible_share_of_open_ports_still_narrows_the_window() {
     let (_, window) = wide_fin_scan(|index| {
-        if index % 4 == 0 {
+        if scattered_open(index, 25) {
             Policy::silent()
         } else {
             Policy::closed()
