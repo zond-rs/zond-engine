@@ -772,15 +772,24 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// them: the file, and every directory this call made on the way to it. Left to
 /// root, a `0700` directory and a `0600` file are ones their owner can neither
 /// open nor edit, and a `~/.config` made on the way is one no other program of
-/// theirs can write to either. Anything outside that home, the system file
-/// included, stays root's.
+/// theirs can write to either. A directory on the way, or a file, that an
+/// earlier elevated run left to root is given back the same way. Anything
+/// outside that home, the system file included, stays root's.
 pub fn provision(path: &Path) -> Result<Provisioned, SettingsError> {
-    let created = match path.parent() {
-        Some(parent) => create_directory(parent)?,
-        None => Vec::new(),
-    };
-    for directory in &created {
-        crate::journal::ownership::give(directory);
+    provision_document(path, TEMPLATE)
+}
+
+/// [`provision`], writing `document` rather than the engine's template.
+///
+/// For a front end keeping a settings file of its own beside the engine's, as
+/// the [`paths`] documentation suggests: the same promises, and the same
+/// ownership under `sudo`, so the two files in one directory cannot end up
+/// with different owners. `document` should change nothing about a run when
+/// it is first written, as [`TEMPLATE`] does not.
+pub fn provision_document(path: &Path, document: &str) -> Result<Provisioned, SettingsError> {
+    if let Some(parent) = path.parent() {
+        let created = create_directory(parent)?;
+        crate::journal::ownership::hand_over(parent, &created);
     }
 
     let mut options = std::fs::OpenOptions::new();
@@ -795,7 +804,7 @@ pub fn provision(path: &Path) -> Result<Provisioned, SettingsError> {
     match options.open(path) {
         Ok(mut file) => {
             use std::io::Write;
-            file.write_all(TEMPLATE.as_bytes())
+            file.write_all(document.as_bytes())
                 .map_err(|source| SettingsError::Io {
                     path: path.to_path_buf(),
                     source,
@@ -805,7 +814,10 @@ pub fn provision(path: &Path) -> Result<Provisioned, SettingsError> {
         }
         // The one error that is not a failure: somebody else's file, or this
         // from last time, is exactly what this function wants to find.
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(Provisioned::Existed),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            crate::journal::ownership::reclaim(path);
+            Ok(Provisioned::Existed)
+        }
         Err(source) => Err(SettingsError::Io {
             path: path.to_path_buf(),
             source,

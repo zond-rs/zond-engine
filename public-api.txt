@@ -6369,6 +6369,7 @@ pub const zond_engine::import::settings::TEMPLATE: &str
 pub fn zond_engine::import::settings::load(&std::path::Path) -> core::result::Result<zond_engine::import::settings::Loaded, zond_engine::import::settings::SettingsError>
 pub fn zond_engine::import::settings::parse(&str) -> core::result::Result<zond_engine::import::settings::Loaded, zond_engine::import::settings::SettingsError>
 pub fn zond_engine::import::settings::provision(&std::path::Path) -> core::result::Result<zond_engine::import::settings::Provisioned, zond_engine::import::settings::SettingsError>
+pub fn zond_engine::import::settings::provision_document(&std::path::Path, &str) -> core::result::Result<zond_engine::import::settings::Provisioned, zond_engine::import::settings::SettingsError>
 pub fn zond_engine::import::settings::provision_user() -> core::result::Result<(std::path::PathBuf, zond_engine::import::settings::Provisioned), zond_engine::import::settings::SettingsError>
 pub fn zond_engine::import::settings::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::import::settings::Loaded, zond_engine::import::settings::SettingsError>
 pub fn zond_engine::import::settings::resolve(core::option::Option<&str>) -> core::result::Result<(zond_engine::import::settings::Settings, alloc::vec::Vec<zond_engine::import::settings::SettingsWarning>), zond_engine::import::settings::SettingsError>

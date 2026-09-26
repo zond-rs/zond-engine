@@ -1068,22 +1068,40 @@ impl Entry {
 /// that left it to root. Claiming an already-correct directory is a `chown` to
 /// the owner it already has.
 ///
-/// Above those two, only what this call created. A first run on a machine
-/// with no `~/.local/state` creates it and `~/.local` on the way, and left to
-/// root they are directories no other program of the user's can keep its state
-/// in. A state directory that was already there may predate this engine by
-/// years and belongs to whoever made it.
+/// Above those two, what this call created is given too: a first run on a
+/// machine with no `~/.local/state` creates it and `~/.local` on the way, and
+/// left to root they are directories no other program of the user's can keep
+/// its state in. One that was already there may predate this engine by years
+/// and belongs to whoever made it, unless that is root, which is how an
+/// elevated run that gave nothing back leaves it; see
+/// the `ownership` module for why that one is given back.
 ///
 /// Nothing is given outside the invoking user's home, wherever the root is:
 /// a state root kept through `sudo` that points elsewhere stays root's, as a
-/// settings directory there does; see the `ownership` module.
+/// settings directory there does.
 ///
 /// Best effort, like every other claim here: a directory that cannot be given
 /// away is not worth failing a scan over, and an unprivileged run has no
 /// invoking user to give it to and no need of one.
 pub fn prepare_root(root: &Path) -> std::io::Result<()> {
     let own = super::paths::root().as_deref() == Some(root);
-    prepare_root_with(root, own, claim_directory_for_invoking_user)
+    #[cfg(unix)]
+    let home = super::ownership::invoking().map(|user| user.home.as_path());
+    #[cfg(not(unix))]
+    let home = None;
+    prepare_root_with(root, own, home, |path, hand| match hand {
+        Hand::Give => claim_directory_for_invoking_user(path),
+        Hand::Reclaim => super::ownership::reclaim(path),
+    })
+}
+
+/// What [`prepare_root`] does with one directory on the way to a root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hand {
+    /// Gives it to the invoking user, whoever owns it now.
+    Give,
+    /// Gives it back only if root owns it.
+    Reclaim,
 }
 
 /// [`prepare_root`] with the claim passed in, so a test can see what would be
@@ -1094,21 +1112,38 @@ pub fn prepare_root(root: &Path) -> std::io::Result<()> {
 /// somewhere this engine may have created on the invoking user's behalf. A
 /// caller that named its own location is telling us where to write, not
 /// handing us everything above it.
-fn prepare_root_with(root: &Path, own: bool, mut claim: impl FnMut(&Path)) -> std::io::Result<()> {
+///
+/// `home` is the invoking user's, `None` for a run on nobody else's behalf;
+/// the directories between it and the root are the ones a repair looks at.
+fn prepare_root_with(
+    root: &Path,
+    own: bool,
+    home: Option<&Path>,
+    mut claim: impl FnMut(&Path, Hand),
+) -> std::io::Result<()> {
     let created = super::ownership::create_missing(root, None)?;
 
-    if own {
-        let above = root.parent();
-        for directory in &created {
-            if Some(directory.as_path()) != above && directory != root {
-                claim(directory);
-            }
+    if own && let Some(above) = root.parent() {
+        // Outermost first, as they were created.
+        let mut between: Vec<&Path> = above
+            .ancestors()
+            .skip(1)
+            .take_while(|directory| {
+                home.is_some_and(|home| *directory != home && directory.starts_with(home))
+            })
+            .collect();
+        between.reverse();
+        for directory in between {
+            let hand = if created.iter().any(|made| made == directory) {
+                Hand::Give
+            } else {
+                Hand::Reclaim
+            };
+            claim(directory, hand);
         }
-        if let Some(above) = above {
-            claim(above);
-        }
+        claim(above, Hand::Give);
     }
-    claim(root);
+    claim(root, Hand::Give);
 
     Ok(())
 }
@@ -3946,47 +3981,72 @@ mod tests {
     /// own neither it nor `~/.local`, and every other program that keeps state
     /// there would find it refused.
     ///
-    /// Only what this call created: a directory that was already there
-    /// belongs to whoever made it, and the home above them is not the run's
-    /// to give.
+    /// A directory on the way that was already there is given back only if
+    /// root owns it, which is how an elevated run that gave nothing back left
+    /// it; one somebody else owns belongs to them. The home itself, and
+    /// anything above it, is never the run's to give.
     #[test]
-    fn preparing_a_root_gives_away_every_directory_it_created() {
+    fn preparing_a_root_gives_away_what_it_created_and_repairs_what_root_left() {
+        use Hand::{Give, Reclaim};
+
         let home = scratch("prepare-root-home");
         let root = home.join(".local/state/zond/journals");
-
-        let mut claimed = Vec::new();
-        prepare_root_with(&root, true, |path| claimed.push(path.to_path_buf()))
+        let prepared = |root: &Path, own: bool, home: Option<&Path>| {
+            let mut claimed = Vec::new();
+            prepare_root_with(root, own, home, |path, hand| {
+                claimed.push((path.to_path_buf(), hand));
+            })
             .expect("the path is created");
+            claimed
+        };
+        let under = |pairs: &[(&str, Hand)]| -> Vec<(PathBuf, Hand)> {
+            pairs
+                .iter()
+                .map(|(below, hand)| (home.join(below), *hand))
+                .collect()
+        };
+
         assert_eq!(
-            claimed,
-            [
-                ".local",
-                ".local/state",
-                ".local/state/zond",
-                ".local/state/zond/journals"
-            ]
-            .map(|below| home.join(below)),
+            prepared(&root, true, Some(&home)),
+            under(&[
+                (".local", Give),
+                (".local/state", Give),
+                (".local/state/zond", Give),
+                (".local/state/zond/journals", Give),
+            ]),
             "a directory created for the journal was left to root"
         );
 
-        // With `~/.local/state` already there, it is not this run's to give,
-        // and the two directories this crate owns are repaired regardless.
+        // With `~/.local/state` already there, it and `~/.local` are looked
+        // at for a repair, and the two directories this crate owns are given
+        // regardless.
         fs::remove_dir_all(home.join(".local/state/zond")).expect("removes");
-        claimed.clear();
-        prepare_root_with(&root, true, |path| claimed.push(path.to_path_buf()))
-            .expect("the path is created");
         assert_eq!(
-            claimed,
-            [".local/state/zond", ".local/state/zond/journals"].map(|below| home.join(below))
+            prepared(&root, true, Some(&home)),
+            under(&[
+                (".local", Reclaim),
+                (".local/state", Reclaim),
+                (".local/state/zond", Give),
+                (".local/state/zond/journals", Give),
+            ])
+        );
+
+        // A run on nobody else's behalf has no home to repair up to.
+        assert_eq!(
+            prepared(&root, true, None),
+            under(&[
+                (".local/state/zond", Give),
+                (".local/state/zond/journals", Give)
+            ])
         );
 
         // A location the caller named is where to write, not everything above
         // it: only the root itself is claimed.
-        claimed.clear();
         let named = home.join("elsewhere/journals");
-        prepare_root_with(&named, false, |path| claimed.push(path.to_path_buf()))
-            .expect("the path is created");
-        assert_eq!(claimed, [named]);
+        assert_eq!(
+            prepared(&named, false, Some(&home)),
+            [(named.clone(), Give)]
+        );
 
         let _ = fs::remove_dir_all(&home);
     }

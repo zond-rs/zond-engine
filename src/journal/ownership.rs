@@ -32,6 +32,16 @@
 //! would hand the same user a journal directory outside their home and refuse
 //! them a settings directory beside it.
 //!
+//! ## Repairing what an elevated run left to root
+//!
+//! A directory already there belongs to whoever made it, with one exception:
+//! one inside the invoking user's home that root owns. Nothing a user does
+//! makes root the owner of a directory in their own home: an elevated process
+//! made it and did not give it back, and it stays where no other program of
+//! theirs can write. [`reclaim`] gives such a directory, or file, back on the
+//! way to this crate's own locations, and leaves one any other user owns
+//! alone, since that is a choice somebody made.
+//!
 //! Compiled for either of the two things that create there, the journal and
 //! the settings files, neither of which needs the other.
 
@@ -130,6 +140,30 @@ pub(crate) fn give(path: &Path) {
     }
 }
 
+/// Gives the invoking user every directory from their home down to `leaf`:
+/// those in `created` because this run made them, and the others where root
+/// owns them (see [`reclaim`]).
+///
+/// For a writer creating on the way to its own location, which is the one
+/// case where what lies above it is known to be somewhere an elevated run of
+/// this crate made on the user's behalf.
+#[cfg(all(unix, feature = "import-settings"))]
+pub(crate) fn hand_over(leaf: &Path, created: &[PathBuf]) {
+    let Some(user) = invoking() else { return };
+    let mut on_the_way: Vec<&Path> = leaf
+        .ancestors()
+        .take_while(|directory| inside_home(user, directory))
+        .collect();
+    on_the_way.reverse();
+    for directory in on_the_way {
+        if created.iter().any(|made| made == directory) {
+            give(directory);
+        } else {
+            reclaim(directory);
+        }
+    }
+}
+
 /// [`give`], through a handle already open on `path`, so the name is not
 /// looked up a second time between opening it and changing its owner.
 #[cfg(all(unix, feature = "journal-format"))]
@@ -144,6 +178,37 @@ pub(crate) fn give_open(opened: &fs::File, path: &Path) {
     // `fchown` reads it and nothing else.
     unsafe {
         libc::fchown(opened.as_raw_fd(), uid, gid);
+    }
+}
+
+/// Gives `path` back to the invoking user when it lies in their home and root
+/// owns it, and says so at the first verbosity.
+///
+/// For what already exists on the way to this crate's locations; see the
+/// module documentation for why a root-owned directory there is one an
+/// elevated run left, and why one somebody else owns is left alone.
+#[cfg(unix)]
+pub(crate) fn reclaim(path: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::io::AsRawFd;
+
+    let Some(user) = invoking() else { return };
+    let Ok(opened) = open_in_home(user, path) else {
+        return;
+    };
+    // Asked of the handle, so what is checked is what is changed.
+    if !opened.metadata().is_ok_and(|held| held.uid() == 0) {
+        return;
+    }
+
+    // SAFETY: as in `give`.
+    let changed = unsafe { libc::fchown(opened.as_raw_fd(), user.uid, user.gid) } == 0;
+    if changed {
+        crate::info!(
+            verbosity = 1,
+            "{} given back to its user (left to root)",
+            path.display()
+        );
     }
 }
 
@@ -207,9 +272,17 @@ fn open_in_home(user: &InvokingUser, path: &Path) -> io::Result<fs::File> {
 #[cfg(not(unix))]
 pub(crate) fn give(_path: &Path) {}
 
+/// [`hand_over`], inert for the same reason.
+#[cfg(all(not(unix), feature = "import-settings"))]
+pub(crate) fn hand_over(_leaf: &Path, _created: &[PathBuf]) {}
+
 /// [`give`]'s handle form, inert for the same reason.
 #[cfg(all(not(unix), feature = "journal-format"))]
 pub(crate) fn give_open(_opened: &fs::File, _path: &Path) {}
+
+/// Nothing is ever left to root on a platform with no `sudo`.
+#[cfg(not(unix))]
+pub(crate) fn reclaim(_path: &Path) {}
 
 /// Who `path` should be given to: the invoking user, when there is one and
 /// the path lies strictly inside their home.
