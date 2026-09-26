@@ -873,14 +873,31 @@ fn named_finding(id: &str, title: &str, excerpt: &str) -> Finding {
     .with_remediation(format!("Turn it off on {NAMED_HOST}"))
 }
 
+/// A finding a vulnerability correlation drew from a platform identifier a
+/// rule filled from the reply, citing an advisory whose link a document
+/// another tool wrote carried the name in.
+fn named_correlation(title: &str, cpe: &str) -> Finding {
+    named_finding("cve-correlation", title, &format!("identified as {cpe}"))
+        .with_cpe(cpe)
+        .with_reference(Reference::cve("CVE-2023-38408").expect("a CVE id"))
+        .with_reference(Reference::url(format!(
+            "https://advisories.example/{NAMED_HOST}"
+        )))
+}
+
 /// A file server that named itself and its domain, and repeats both in the
 /// text of its replies: in a finding's excerpt as text and as a binary SMB
-/// reply, in titles and remedies, in every string of a service, of its
-/// operating system and of its hardware that a rule can fill from a reply, in
-/// a port named by its banner alone, in the details of the evidence it is up,
-/// and in its certificate's issuer. The earlier record (`later` false) holds
-/// the names and nothing else, so a comparison of the two carries each as a
-/// change.
+/// reply, in titles and remedies, in the platform identifiers and advisory
+/// links of a correlated finding on the host and on a port, in every string of
+/// a service, of its operating system and of its hardware that a rule can
+/// fill from a reply, in a port named by its banner alone, in the details of
+/// the evidence it is up, and in its certificate's issuer and alternative
+/// names. The earlier record (`later` false) holds the names and nothing
+/// else, so a comparison of the two carries each as a change.
+///
+/// Every string the schema declares for a host is either filled with a name
+/// here or listed by the census in the conformance tests as one no host can
+/// fill, so a redaction test over this host covers every field there is.
 fn named_host(later: bool) -> Host {
     let mut host = Host::new(ip(20));
     host.set_status(HostStatus::Up);
@@ -921,19 +938,25 @@ fn named_host(later: bool) -> Host {
         .with_device(format!("file server {NAMED_HOST}"));
     os.add_cpe(format!("cpe:/o:microsoft:windows_server_2019:{NAMED_HOST}"));
     host.set_os(os);
+    host.add_finding(named_correlation(
+        &format!("Windows Server 2019 on {NAMED_HOST} is past its support"),
+        &format!("cpe:/o:microsoft:windows_server_2019:{NAMED_HOST}"),
+    ));
 
-    host.set_hardware(
-        HardwareInfo::described(HardwareDescription {
-            vendor: Some(&format!("Dell for {NAMED_DOMAIN}")),
-            product: Some(&format!("PowerEdge {NAMED_HOST}")),
-            family: Some(&format!("PowerEdge R {NAMED_HOST}")),
-            cpe23: Some(&format!("cpe:/h:dell:poweredge:{NAMED_HOST}")),
-            model: Some(&format!("R740 {NAMED_HOST}")),
-            version: Some(&format!("A01 {NAMED_HOST}")),
-            serial_number: None,
-        })
-        .expect("a description naming something"),
-    );
+    let mut hardware = HardwareInfo::described(HardwareDescription {
+        vendor: Some(&format!("Dell for {NAMED_DOMAIN}")),
+        product: Some(&format!("PowerEdge {NAMED_HOST}")),
+        family: Some(&format!("PowerEdge R {NAMED_HOST}")),
+        cpe23: Some(&format!("cpe:/h:dell:poweredge:{NAMED_HOST}")),
+        model: Some(&format!("R740 {NAMED_HOST}")),
+        version: Some(&format!("A01 {NAMED_HOST}")),
+        serial_number: Some(&format!("SN-{NAMED_HOST}-0001")),
+    })
+    .expect("a description naming something");
+    // Seen at an address too, so a format that writes the vendor beside the
+    // hardware address, and only there, writes it.
+    hardware.add_mac(MacAddr::new(0x02, 0x00, 0x5e, 0x10, 0x20, 0x30));
+    host.set_hardware(hardware);
 
     let mut smb = Port::new(445, Protocol::Tcp, PortState::Open).with_service(
         Service::new("microsoft-ds", 95)
@@ -962,14 +985,34 @@ fn named_host(later: bool) -> Host {
     ));
     host.add_port(smtp);
 
+    // A banner naming the machine as its version, which the rule turned into
+    // a platform identifier and the correlation drew a finding from.
+    let ssh_cpe = format!("cpe:/a:openbsd:openssh:{NAMED_HOST}");
+    let mut ssh = Port::new(22, Protocol::Tcp, PortState::Open).with_service(
+        Service::new("ssh", 95)
+            .with_product("OpenSSH")
+            .with_cpe(ssh_cpe.clone()),
+    );
+    ssh.add_finding(named_correlation(
+        "OpenSSH carries known vulnerabilities",
+        &ssh_cpe,
+    ));
+    host.add_port(ssh);
+
     let ldaps = Port::new(636, Protocol::Tcp, PortState::Open).with_security(
-        Security::new().with_certificate(CertificateInfo::new(
-            format!("fs01.{}.example", NAMED_DOMAIN.to_lowercase()),
-            format!("CN={}-{NAMED_HOST}-CA", NAMED_DOMAIN.to_lowercase()),
-            std::time::UNIX_EPOCH + BASELINE_AT - DAY * 90,
-            std::time::UNIX_EPOCH + BASELINE_AT + DAY * 300,
-            "5f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-        )),
+        Security::new().with_certificate(
+            CertificateInfo::new(
+                format!("fs01.{}.example", NAMED_DOMAIN.to_lowercase()),
+                format!("CN={}-{NAMED_HOST}-CA", NAMED_DOMAIN.to_lowercase()),
+                std::time::UNIX_EPOCH + BASELINE_AT - DAY * 90,
+                std::time::UNIX_EPOCH + BASELINE_AT + DAY * 300,
+                "5f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            )
+            .with_sans([Arc::from(format!(
+                "{NAMED_HOST}.{}.example",
+                NAMED_DOMAIN.to_lowercase()
+            ))]),
+        ),
     );
     host.add_port(ldaps);
 

@@ -473,12 +473,14 @@ fn write_host(
     }
 
     if let Some(mac) = host.mac() {
+        // Named from the address's OUI, or by a rule from a reply, which can
+        // name the machine beside its maker.
         match host.vendor() {
             Some(vendor) => writeln!(
                 out,
                 r#"<address addr="{}" addrtype="mac" vendor="{}"/>"#,
                 Attr(&redaction.mac(&mac)),
-                Attr(vendor),
+                Attr(&masking.text(vendor)),
             )?,
             None => writeln!(
                 out,
@@ -880,7 +882,10 @@ fn finding_output(finding: &Finding, masking: &HostRedaction) -> String {
         severity_name(finding.severity()),
         masking.text(finding.title())
     )];
-    let references: Vec<String> = finding.references().map(reference_text).collect();
+    let references: Vec<String> = finding
+        .references()
+        .map(|reference| reference_text(reference, masking))
+        .collect();
     if !references.is_empty() {
         parts.push(references.join(", "));
     }

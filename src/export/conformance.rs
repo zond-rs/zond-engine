@@ -1433,51 +1433,160 @@ fn no_format_carries_a_name_the_host_gave_under_redaction() {
     }
 }
 
-/// The fields the fixture puts the names in are the fields a reply fills, and
-/// the report masks each rather than dropping it: the finding survives with its
-/// claim, and the binary reply that justified it is replaced by a note saying
-/// it was withheld, not left out as though there had been none.
-#[test]
-fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
-    const FILLED: &[&str] = &[
-        "arch",
-        "cpe23",
-        "details",
-        "device",
-        "evidence",
-        "excerpt",
-        "extrainfo",
-        "family",
-        "generation",
-        "issuer",
-        "kernel",
-        "model",
-        "name",
-        "product",
-        "remediation",
-        "title",
-        "vendor",
-        "version",
-    ];
+/// Every path under a host record at which the schema declares a free
+/// string, as `host.ports[].service.product`: a property of type `string`, or
+/// an array of them, reached through every reference. A property that is only
+/// one of a fixed set of words is left out, since no host can put a name in
+/// it.
+fn host_string_paths() -> BTreeSet<String> {
+    fn walk(
+        node: &Value,
+        path: &str,
+        defs: &Value,
+        within: &mut Vec<String>,
+        out: &mut BTreeSet<String>,
+    ) {
+        if let Some(reference) = node.get("$ref").and_then(Value::as_str) {
+            let name = reference
+                .rsplit('/')
+                .next()
+                .expect("a reference names a definition");
+            if !within.iter().any(|seen| seen == name) {
+                within.push(name.to_owned());
+                walk(&defs[name], path, defs, within, out);
+                within.pop();
+            }
+            return;
+        }
+        for key in ["oneOf", "anyOf", "allOf"] {
+            if let Some(Value::Array(branches)) = node.get(key) {
+                for branch in branches {
+                    walk(branch, path, defs, within, out);
+                }
+            }
+        }
+        let is_string = match node.get("type") {
+            Some(Value::String(kind)) => kind == "string",
+            Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "string"),
+            _ => false,
+        };
+        if is_string {
+            out.insert(path.to_owned());
+        }
+        if let Some(items) = node.get("items") {
+            walk(items, &format!("{path}[]"), defs, within, out);
+        }
+        if let Some(Value::Object(properties)) = node.get("properties") {
+            for (name, property) in properties {
+                walk(property, &format!("{path}.{name}"), defs, within, out);
+            }
+        }
+    }
 
-    fn named_in(value: &Value, out: &mut BTreeSet<String>) {
+    let schema: Value = serde_json::from_str(SCHEMA).expect("the schema file is valid JSON");
+    let defs = &schema["$defs"];
+    let mut paths = BTreeSet::new();
+    walk(&defs["host"], "host", defs, &mut Vec::new(), &mut paths);
+    paths
+}
+
+/// Every path in a rendered host record at which a string names the
+/// [`fixture::named`] host, spelled as [`host_string_paths`] spells them.
+fn host_paths_naming(host: &Value) -> BTreeSet<String> {
+    fn walk(value: &Value, path: &str, out: &mut BTreeSet<String>) {
         match value {
             Value::Object(map) => {
                 for (key, sub) in map {
-                    if sub.as_str().is_some_and(|text| {
-                        [fixture::NAMED_HOST, fixture::NAMED_DOMAIN]
-                            .iter()
-                            .any(|name| as_searched(text).contains(&name.to_lowercase()))
-                    }) {
-                        out.insert(key.clone());
-                    }
-                    named_in(sub, out);
+                    walk(sub, &format!("{path}.{key}"), out);
                 }
             }
-            Value::Array(items) => items.iter().for_each(|item| named_in(item, out)),
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, &format!("{path}[]"), out);
+                }
+            }
+            Value::String(text) => {
+                let searched = as_searched(text);
+                if [fixture::NAMED_HOST, fixture::NAMED_DOMAIN]
+                    .iter()
+                    .any(|name| searched.contains(&name.to_lowercase()))
+                {
+                    out.insert(path.to_owned());
+                }
+            }
             _ => {}
         }
     }
+
+    let mut paths = BTreeSet::new();
+    walk(host, "host", &mut paths);
+    paths
+}
+
+/// **Every free string the schema declares for a host carries the host's
+/// name in the fixture, or is one no host can fill.**
+///
+/// `no_format_carries_a_name_the_host_gave_under_redaction` is only as wide
+/// as [`fixture::named`]: a field the fixture leaves without a name is a
+/// field it walks straight past, and a platform identifier a correlated
+/// finding carried reached a redacted report that way. So this is the census
+/// that keeps the two in step: a string added to the host record fails here
+/// until the fixture names the host in it, or until it is listed below with
+/// the reason no host can.
+///
+/// Then the report masks each rather than dropping it: the finding survives
+/// with its claim, and the binary reply that justified it is replaced by a
+/// note saying it was withheld, not left out as though there had been none.
+#[test]
+fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
+    /// Strings in a host record that no host's reply and no rule reading one
+    /// can fill, each for one of three reasons.
+    ///
+    /// The engine's own words and figures: timestamps, a detection's identity,
+    /// which its author fixed before any host answered, the name a strategy
+    /// gives its own evidence, and the name of an interface on the scanning
+    /// machine.
+    ///
+    /// Values parsed into a type before they are ever a string: addresses,
+    /// hardware addresses, a fingerprint, a suite's number, rendered back by
+    /// this crate from the type.
+    ///
+    /// Values this crate chose from a closed set of its own, which a reply
+    /// only selects among: a protocol version, a cipher suite, a key
+    /// algorithm, and an application protocol, which the handshake refuses
+    /// unless it is one this crate offered.
+    const UNFILLABLE: &[&str] = &[
+        "host.findings[].content_hash",
+        "host.findings[].id",
+        "host.findings[].version",
+        "host.first_seen",
+        "host.hardware.mac",
+        "host.hardware.macs[]",
+        "host.ip_protocols[].name",
+        "host.ips[]",
+        "host.last_seen",
+        "host.path[].address",
+        "host.ports[].discovery.reason",
+        "host.ports[].discovery.source_ip",
+        "host.ports[].discovery.timestamp",
+        "host.ports[].findings[].content_hash",
+        "host.ports[].findings[].id",
+        "host.ports[].findings[].version",
+        "host.ports[].security.accepts[].suites[].code",
+        "host.ports[].security.accepts[].suites[].name",
+        "host.ports[].security.accepts[].unrecognised[]",
+        "host.ports[].security.alpn[]",
+        "host.ports[].security.certificate.fingerprint_sha256",
+        "host.ports[].security.certificate.pubkey_type",
+        "host.ports[].security.certificate.validity_end",
+        "host.ports[].security.certificate.validity_start",
+        "host.ports[].security.cipher_suite",
+        "host.ports[].security.tls_version",
+        "host.primary_ip",
+        "host.reasons[].protocol",
+        "host.reasons[].source_ip",
+        "host.zone",
+    ];
 
     let (_, after) = fixture::named();
     let render = |options: ExportOptions| -> Value {
@@ -1488,18 +1597,30 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
         serde_json::from_slice::<Value>(&bytes).expect("it parses")["hosts"][0].clone()
     };
 
-    let mut carried = BTreeSet::new();
-    named_in(&render(ExportOptions::new()), &mut carried);
-    // Less the fields masked whole in their own right. `name` is both an
-    // operating system's, a reply's, and a name's own.
-    let carried: Vec<&str> = carried
+    let declared = host_string_paths();
+    let named = host_paths_naming(&render(ExportOptions::new()));
+    let unfillable: BTreeSet<String> = UNFILLABLE.iter().map(|path| path.to_string()).collect();
+
+    let stale: Vec<&String> = unfillable.difference(&declared).collect();
+    assert!(
+        stale.is_empty(),
+        "the schema declares no such string, so the exemption is stale: {stale:?}"
+    );
+    let contradicted: Vec<&String> = unfillable.intersection(&named).collect();
+    assert!(
+        contradicted.is_empty(),
+        "the fixture names the host in a string listed as one no host can fill: {contradicted:?}"
+    );
+    let unnamed: Vec<&String> = declared
         .iter()
-        .map(String::as_str)
-        .filter(|key| !["common_name", "hostname"].contains(key))
+        .filter(|path| !named.contains(*path) && !unfillable.contains(*path))
         .collect();
-    assert_eq!(
-        carried, FILLED,
-        "the fixture no longer names the host in every field a reply fills"
+    assert!(
+        unnamed.is_empty(),
+        "the named fixture leaves these strings without the host's name, so no redaction \
+         test covers them: {unnamed:?}\n\nEither name the host in them in \
+         `fixture::named`, or, if no host can fill one, add it to UNFILLABLE with that \
+         reasoning."
     );
 
     let host = render(ExportOptions::new().with_redaction(Redaction::Standard));
@@ -1542,5 +1663,17 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
     assert_eq!(
         smtp["findings"][0]["excerpt"],
         "220 fsXXXXXle Microsoft ESMTP MAIL Service ready"
+    );
+    let ssh = ports
+        .iter()
+        .find(|port| port["port"] == 22)
+        .expect("the SSH port");
+    let correlated = &ssh["findings"][0];
+    assert_eq!(correlated["cpe"], "cpe:/a:openbsd:openssh:XXXXX");
+    assert_eq!(correlated["cpes"][0], "cpe:/a:openbsd:openssh:XXXXX");
+    assert_eq!(correlated["references"][0]["value"], "CVE-2023-38408");
+    assert_eq!(
+        correlated["references"][1]["value"],
+        "https://advisories.example/XXXXX"
     );
 }

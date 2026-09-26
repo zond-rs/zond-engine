@@ -338,7 +338,10 @@ fn findings_cell(port: &Port, masking: &HostRedaction) -> String {
                 severity_name(finding.severity()),
                 masking.text(finding.title())
             );
-            let references: Vec<String> = finding.references().map(reference_text).collect();
+            let references: Vec<String> = finding
+                .references()
+                .map(|reference| reference_text(reference, masking))
+                .collect();
             if !references.is_empty() {
                 entry.push_str(" (");
                 entry.push_str(&references.join(", "));

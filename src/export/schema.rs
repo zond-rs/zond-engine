@@ -2176,7 +2176,8 @@ pub struct FindingDto<'a> {
     /// search cannot be sure of.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub excerpt: Option<Cow<'a, str>>,
-    /// External references: CVE, CWE and advisory links.
+    /// External references: CVE, CWE and advisory links. A link is masked as
+    /// `title` is.
     pub references: Vec<ReferenceDto<'a>>,
     /// Remediation advice, if the detection carried any. Untrusted, and masked
     /// as `title` is.
@@ -2186,13 +2187,17 @@ pub struct FindingDto<'a> {
     /// name more than one. Untrusted; absent from a finding drawn from
     /// anything but a vulnerability correlation.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cpe: Option<&'a str>,
+    pub cpe: Option<Cow<'a, str>>,
     /// Every platform identifier a vulnerability correlation drew it from,
     /// ascending: the claim rests on each, and stands while any is still what
     /// the service is identified as. Untrusted; absent from a finding drawn
     /// from anything else.
+    ///
+    /// Each is the service's own identifier, which a rule fills from what it
+    /// captured of the reply, so a name the host is known by is masked in it
+    /// as in the service's `cpes`. The order is the unmasked one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub cpes: Vec<&'a str>,
+    pub cpes: Vec<Cow<'a, str>>,
 }
 
 impl<'a> FindingDto<'a> {
@@ -2208,10 +2213,13 @@ impl<'a> FindingDto<'a> {
             class: detection_class_name(finding.class()),
             excerpt: (!finding.excerpt().is_empty())
                 .then(|| masking.excerpt(finding.excerpt().as_str())),
-            references: finding.references().map(ReferenceDto::new).collect(),
+            references: finding
+                .references()
+                .map(|reference| ReferenceDto::new(reference, masking))
+                .collect(),
             remediation: finding.remediation().map(|advice| masking.text(advice)),
-            cpe: finding.cpes().next(),
-            cpes: finding.cpes().collect(),
+            cpe: finding.cpes().next().map(|cpe| masking.text(cpe)),
+            cpes: finding.cpes().map(|cpe| masking.text(cpe)).collect(),
         }
     }
 }
@@ -2222,17 +2230,21 @@ impl<'a> FindingDto<'a> {
 pub struct ReferenceDto<'a> {
     /// `cve`, `cwe`, or `url`.
     pub kind: &'static str,
-    /// The identifier or link. A `url` value is untrusted.
+    /// The identifier or link. A `url` value is untrusted, and a name the host
+    /// is known by is masked in it under redaction: a link is free text a
+    /// document another tool wrote can carry anything in. A CVE identifier and
+    /// a CWE number have a fixed shape no name fits.
     pub value: Cow<'a, str>,
 }
 
 impl<'a> ReferenceDto<'a> {
-    /// Renders a reference.
-    pub fn new(reference: &'a Reference) -> Self {
+    /// Renders a reference of a finding on the host `masking` was made for.
+    pub fn new(reference: &'a Reference, masking: &HostRedaction) -> Self {
         Self {
             kind: reference_kind_name(reference),
             value: match reference {
-                Reference::Cve(id) | Reference::Url(id) => Cow::Borrowed(id.as_str()),
+                Reference::Cve(id) => Cow::Borrowed(id.as_str()),
+                Reference::Url(url) => masking.text(url),
                 Reference::Cwe(number) => Cow::Owned(number.to_string()),
             },
         }
@@ -2240,17 +2252,17 @@ impl<'a> ReferenceDto<'a> {
 }
 
 /// A reference as one line of human-readable text: the CVE or CWE identifier, or
-/// the URL. [`ReferenceDto`] keeps the kind and value apart for a parser, while
-/// this is the flattened form the nmap-XML `<script output>` and the CSV findings
-/// column put in front of a reader.
+/// the URL, masked as [`ReferenceDto`] masks it. [`ReferenceDto`] keeps the kind
+/// and value apart for a parser, while this is the flattened form the nmap-XML
+/// `<script output>` and the CSV findings column put in front of a reader.
 ///
 /// Compiled only for the exporters that use it.
 #[cfg(any(feature = "export-nmap", feature = "export-csv"))]
-pub(crate) fn reference_text(reference: &Reference) -> String {
+pub(crate) fn reference_text(reference: &Reference, masking: &HostRedaction) -> String {
     match reference {
         Reference::Cve(id) => id.clone(),
         Reference::Cwe(number) => format!("CWE-{number}"),
-        Reference::Url(url) => url.clone(),
+        Reference::Url(url) => masking.text(url).into_owned(),
     }
 }
 

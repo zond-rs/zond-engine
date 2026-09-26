@@ -1166,7 +1166,7 @@
           "type": "string"
         },
         "cpes": {
-          "description": "Every platform identifier a vulnerability correlation drew the finding from, ascending: the claim rests on the service identification each names, and stands while any of them is still what the service is identified as. One release can carry two, such as a URI form and a 2.3 form, and both draw the same claim. Absent from a finding drawn from anything else. Untrusted.",
+          "description": "Every platform identifier a vulnerability correlation drew the finding from, ascending: the claim rests on the service identification each names, and stands while any of them is still what the service is identified as. One release can carry two, such as a URI form and a 2.3 form, and both draw the same claim. Absent from a finding drawn from anything else. Untrusted, and under redaction a name the host is known by is masked in each, as in the service's `cpes`.",
           "type": "array",
           "items": {
             "type": "string"
@@ -1191,7 +1191,7 @@
           ]
         },
         "value": {
-          "description": "The identifier or link. A `url` value is untrusted.",
+          "description": "The identifier or link. A `url` value is untrusted, and under redaction a name the host is known by is masked in it.",
           "type": "string"
         }
       }

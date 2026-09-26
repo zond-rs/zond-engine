@@ -290,10 +290,11 @@ impl Redaction {
 /// no search of the text can be sure of, and names the scan never recorded.
 ///
 /// Every exporter in this crate reads a host's free text through one of
-/// these: a finding's title, excerpt and remediation, a service's product,
-/// version and extra information, an operating system's name and evidence, a
-/// certificate's issuer, the hardware's product, family, model and version,
-/// and the details of the evidence that the host is up. A front end printing
+/// these: a finding's title, excerpt, remediation, platform identifiers and
+/// links, a service's product, version and extra information, an operating
+/// system's name and evidence, a certificate's issuer, the hardware's vendor,
+/// product, family, model and version, and the details of the evidence that
+/// the host is up. A front end printing
 /// any of them reads them through one too.
 ///
 /// # Examples

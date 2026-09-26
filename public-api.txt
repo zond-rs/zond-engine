@@ -3496,8 +3496,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::Famil
 pub zond_engine::export::schema::FindingDto::class: &'static str
 pub zond_engine::export::schema::FindingDto::confidence: &'static str
 pub zond_engine::export::schema::FindingDto::content_hash: &'a str
-pub zond_engine::export::schema::FindingDto::cpe: core::option::Option<&'a str>
-pub zond_engine::export::schema::FindingDto::cpes: alloc::vec::Vec<&'a str>
+pub zond_engine::export::schema::FindingDto::cpe: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::FindingDto::cpes: alloc::vec::Vec<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::excerpt: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::id: &'a str
 pub zond_engine::export::schema::FindingDto::references: alloc::vec::Vec<zond_engine::export::schema::ReferenceDto<'a>>
@@ -3896,7 +3896,7 @@ impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::R
 pub zond_engine::export::schema::ReferenceDto::kind: &'static str
 pub zond_engine::export::schema::ReferenceDto::value: alloc::borrow::Cow<'a, str>
 impl<'a> zond_engine::export::schema::ReferenceDto<'a>
-pub fn zond_engine::export::schema::ReferenceDto<'a>::new(&'a zond_engine::model::finding::Reference) -> Self
+pub fn zond_engine::export::schema::ReferenceDto<'a>::new(&'a zond_engine::model::finding::Reference, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::ReferenceDto<'a>
 pub fn zond_engine::export::schema::ReferenceDto<'a>::clone(&self) -> zond_engine::export::schema::ReferenceDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::ReferenceDto<'a>
