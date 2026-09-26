@@ -296,6 +296,23 @@ impl Resolutions {
         Some(NeighborState::Resolving)
     }
 
+    /// Where the resolution of `ask`'s neighbour stands, as
+    /// [`state`](Self::state) says, having first set aside this sender's
+    /// memory of an earlier resolution of it going unanswered, so that one
+    /// starts afresh.
+    ///
+    /// For a scan that reads one unanswered resolution as a reason to ask
+    /// again rather than as the neighbour's verdict: the memory stands so
+    /// that the sender does not ask on every send, and a caller that has
+    /// decided to ask once more is the one case it would otherwise refuse.
+    /// A resolution already running is left to run.
+    pub(crate) fn ask_again(self: &Arc<Self>, ask: &Ask) -> Option<NeighborState> {
+        self.lock()
+            .unanswered
+            .clear(&ask.interface, IpAddr::V4(ask.target));
+        self.state(ask)
+    }
+
     /// The hardware address of `ask`'s neighbour, waiting for its resolution
     /// when nothing recent is known of it.
     ///
@@ -694,6 +711,11 @@ pub(crate) mod tests {
         /// The first request addressed to it rather than broadcast, as a
         /// client asleep on Wi-Fi hears a frame for it at its next wake.
         OnlyAddressed,
+        /// Every request sent at or after this instant on the link's clock,
+        /// and none before it, as a machine asleep through the first asking
+        /// would. Kept across the link's openings, since the clock it names is
+        /// the process's and not one opening's.
+        AwakeFrom(Instant),
     }
 
     /// A segment of simulated neighbours on a clock of its own: each quiet
@@ -770,6 +792,7 @@ pub(crate) mod tests {
                         == 1;
                     (addressed && first_addressed).then_some(at)
                 }
+                Answers::AwakeFrom(awake) => (self.now() >= awake).then_some(at),
             };
             if let Some(at) = answer_at {
                 self.replies.push((at, arp_reply(target, mac)));

@@ -204,15 +204,17 @@ impl AdaptiveDeadline {
         self.timer.extend(spent);
     }
 
-    /// Gives the hard deadline `held` more, for probes a kernel's hold-down on
-    /// their neighbour keeps from being sent.
+    /// Gives the hard deadline `held` more, for probes kept from being sent
+    /// while their neighbour could not be asked or was being asked again.
     ///
-    /// Time the kernel would not let the scan ask in, which the deadline, a
-    /// bound on waiting for answers, was not sized for: a hold-down is twenty
-    /// seconds on macOS, several times what a small scan is given, and a scan
-    /// charged for it ends with the held host's ports unasked. Still bounded,
-    /// since a port scan waits out a host's hold-downs a fixed number of times.
-    pub(crate) fn allow_for_hold_down(&mut self, held: Duration) {
+    /// Time the scan could not ask in, which the deadline, a bound on waiting
+    /// for answers, was not sized for: a kernel's hold-down on a neighbour is
+    /// twenty seconds on macOS, several times what a small scan is given, and
+    /// a second resolution of a neighbour that did not answer the first is
+    /// three more. A scan charged for either ends with the held host's ports
+    /// unasked. Still bounded, since a port scan waits out a host's
+    /// hold-downs, and asks for its neighbour again, a fixed number of times.
+    pub(crate) fn allow_for_holding(&mut self, held: Duration) {
         self.timer.extend(held);
     }
 

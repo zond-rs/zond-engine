@@ -1081,6 +1081,7 @@ mod tests {
 
     use crate::protocols::ip;
     use crate::scanner::session::ScanSession;
+    use crate::scanner::strategy::raw::neighbors::NEIGHBOR_ROUNDS;
     use crate::transport::probe::{MockSender, ProbeTransport};
 
     /// The port a scanner under test probes from. A synthetic transport's
@@ -2143,8 +2144,9 @@ mod tests {
     }
 
     /// A scan of an on-link address the kernel never resolves hands the kernel
-    /// one probe, holds the rest until the kernel gives up, and then reads
-    /// every port unasked and the address unreached, with nothing failed.
+    /// one probe for each resolution, the first and the one asked again,
+    /// holds the rest until the kernel gives up, and then reads every port
+    /// unasked and the address unreached, with nothing failed.
     ///
     /// Through the whole loop, because what is at stake is what reaches the
     /// sender: on Linux every write to a neighbour still being resolved is
@@ -2152,7 +2154,7 @@ mod tests {
     /// are twenty probes that never leave, read as twenty filtered ports, and
     /// their retries are what fills the send buffer for every other host.
     #[tokio::test]
-    async fn a_neighbour_the_kernel_never_resolves_is_asked_once_and_reported_unreached() {
+    async fn a_neighbour_the_kernel_never_resolves_is_asked_twice_and_reported_unreached() {
         use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborState, NeighborTable};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2203,8 +2205,8 @@ mod tests {
 
         assert_eq!(
             sent.lock().unwrap().len(),
-            1,
-            "one probe went to the kernel"
+            usize::from(NEIGHBOR_ROUNDS),
+            "one probe went to the kernel for each resolution"
         );
         let host = session
             .hosts()
@@ -2336,6 +2338,94 @@ mod tests {
         );
     }
 
+    /// A neighbour asleep through the whole of one resolution is asked again,
+    /// and a host that answers the second asking has its every port asked.
+    ///
+    /// One resolution going unanswered filed the host unreachable for the
+    /// rest of the scan, though the sender itself would have asked again half
+    /// a minute later: a wired machine whose interface or switch port dozes
+    /// through three broadcasts, or a segment that dropped them, lost every
+    /// port of a live host to three seconds of silence.
+    #[tokio::test]
+    async fn a_neighbour_asleep_through_one_resolution_is_asked_again() {
+        use crate::model::mac::MacAddr;
+        use crate::system::interface::LinkAddress;
+        use crate::transport::link::{ARP_TIMEOUT, Answers, LinkNeighbors, Segment};
+        use crate::transport::neighbor::NeighborResolver;
+
+        const DOZING: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 61);
+        const PORTS: u16 = 3;
+
+        let segment = NeighborResolver::on_segment(
+            "sim-doze1",
+            MacAddr::new(0x02, 0, 0, 0, 0, 0x50),
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)), 24),
+        );
+        // Awake only once the first resolution has been given up, so no
+        // request of it is answered.
+        let awake = Instant::now() + ARP_TIMEOUT + Duration::from_millis(500);
+        let neighbours = LinkNeighbors::simulated(segment, move |_| {
+            Segment::new().in_real_time().with(
+                DOZING,
+                MacAddr::new(0x02, 0, 0, 0, 0, 0x61),
+                Answers::AwakeFrom(awake),
+            )
+        });
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport =
+            ProbeTransport::from_parts(Box::new(sender), reply_rx).with_link_neighbors(neighbours);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx.clone(),
+            TcpScanTechnique::Syn,
+            transport,
+            usize::from(PORTS),
+            SRC_PORT,
+        );
+
+        let (targets, stream) = tokio::sync::mpsc::channel(usize::from(PORTS));
+        for port in 1..=PORTS {
+            targets
+                .send(PlannedTarget::new(
+                    u64::from(port),
+                    Target {
+                        ip: IpAddr::V4(DOZING),
+                        port,
+                        protocol: Protocol::Tcp,
+                    },
+                ))
+                .await
+                .expect("the stream is open");
+        }
+        drop(targets);
+        scanner.scan(stream).await.expect("the scan runs");
+
+        assert!(
+            ctx.take_unroutable().is_empty(),
+            "the host was filed unreachable on one unanswered resolution"
+        );
+        let asked: std::collections::HashSet<u16> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, dst)| *dst == IpAddr::V4(DOZING))
+            .map(|(segment, _, _)| u16::from_be_bytes([segment[2], segment[3]]))
+            .collect();
+        assert_eq!(asked.len(), usize::from(PORTS), "every port was asked");
+        let host = session
+            .hosts()
+            .get(IpAddr::V4(DOZING))
+            .expect("the host is recorded");
+        assert!(
+            host.ports().all(|port| port.state() != PortState::Unasked),
+            "a port of the host was left unasked"
+        );
+    }
+
     /// Under a rate ceiling, the probes held while the kernel resolves dead
     /// neighbours spend none of it, and a live host behind them is asked every
     /// port.
@@ -2446,8 +2536,8 @@ mod tests {
             .count();
         assert_eq!(
             to_dead,
-            dead.len(),
-            "one probe each started the resolutions"
+            dead.len() * usize::from(NEIGHBOR_ROUNDS),
+            "one probe each started each resolution"
         );
     }
 

@@ -59,7 +59,7 @@ use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::raw::SendFaults;
-use crate::scanner::strategy::raw::neighbors::{Admission, NeighborGates, RESOLUTION_BUDGET};
+use crate::scanner::strategy::raw::neighbors::{Admission, NEIGHBOR_BUDGET, NeighborGates};
 use crate::scanner::strategy::sweep::HostSweep;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
@@ -207,7 +207,7 @@ impl OsEchoScanner {
         let target_count = targets.len();
         let probe_lifetime = RETRY_POLICY.longest_spaced_probe_lifetime(ctx.host_probe_interval());
         let held = if transport.neighbors().is_some() {
-            RESOLUTION_BUDGET
+            NEIGHBOR_BUDGET
         } else {
             Duration::ZERO
         };

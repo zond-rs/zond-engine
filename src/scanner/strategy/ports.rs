@@ -103,7 +103,9 @@ use crate::scanner::pacing::retry::{
     Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy, saturating_mul,
 };
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::raw::neighbors::{Admission, NEIGHBOR_RECHECK, NeighborGates};
+use crate::scanner::strategy::raw::neighbors::{
+    Admission, NEIGHBOR_RECHECK, NeighborGates, RESOLUTION_BUDGET,
+};
 use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::system::interface::{NoSource, SourceResolver};
 use crate::transport::capture::CapturedSegment;
@@ -397,9 +399,10 @@ pub(crate) struct RawProbeScan<T> {
     /// How long the kernel holds a neighbour down; see
     /// [`kernel_neighbors::hold_down`](crate::transport::kernel_neighbors::hold_down).
     pub(crate) hold_down_for: Duration,
-    /// Until when the deadline has been given the time hold-downs keep probes
-    /// back, so hold-downs that overlap are given it once.
-    held_down_allowed: Instant,
+    /// Until when the deadline has been given the time hold-downs and second
+    /// resolutions keep probes back, so holds that overlap are given it once.
+    /// See [`allow_until`](Self::allow_until).
+    held_allowed: Instant,
     /// How far this scan has read the resolution of each host's neighbour,
     /// for a transport whose sends wait on one it can read. See
     /// [`admit`](Self::admit).
@@ -579,7 +582,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             unreachable: std::collections::BTreeSet::new(),
             held_down: std::collections::HashMap::new(),
             hold_down_for: crate::transport::kernel_neighbors::hold_down(),
-            held_down_allowed: Instant::now(),
+            held_allowed: Instant::now(),
             neighbors: NeighborGates::default(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(window),
@@ -853,7 +856,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     ///
     /// The deadline is given the time the host is held, counted once however
     /// many hosts are held at a time; see
-    /// [`allow_for_hold_down`](crate::scanner::pacing::deadline::AdaptiveDeadline::allow_for_hold_down).
+    /// [`allow_until`](Self::allow_until).
     pub(crate) fn hold_down(&mut self, host: IpAddr) -> bool {
         let now = Instant::now();
         let held = self.held_down.entry(host).or_insert(HeldDown {
@@ -866,11 +869,20 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         }
         let until = crate::scanner::pacing::timer::later(now, self.hold_down_for);
         held.until = until;
-        let allowed = self.held_down_allowed.max(now);
-        self.deadline
-            .allow_for_hold_down(until.saturating_duration_since(allowed));
-        self.held_down_allowed = allowed.max(until);
+        self.allow_until(now, until);
         true
+    }
+
+    /// Gives the deadline the time from `now` to `until`, for which a host's
+    /// probes are kept back, less whatever of it an earlier hold was already
+    /// given, so any number of hosts held at once cost the deadline the hold
+    /// once. See
+    /// [`allow_for_holding`](crate::scanner::pacing::deadline::AdaptiveDeadline::allow_for_holding).
+    fn allow_until(&mut self, now: Instant, until: Instant) {
+        let allowed = self.held_allowed.max(now);
+        self.deadline
+            .allow_for_holding(until.saturating_duration_since(allowed));
+        self.held_allowed = allowed.max(until);
     }
 
     /// Until when `host`'s probes are held for the kernel's hold-down on its
@@ -953,7 +965,9 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// The rest is for a transport whose sends wait on an address resolution
     /// the scan can read: a host that has not answered is not sent a probe
     /// while its neighbour is being asked for, and one whose neighbour went
-    /// unanswered is filed unreachable. See [`NeighborGates::admit`].
+    /// unanswered twice is filed unreachable. See [`NeighborGates::admit`].
+    /// The deadline is given the time a second resolution takes, counted once
+    /// however many neighbours are asked again at a time.
     ///
     /// A live neighbour answers within a millisecond, so the cost to a live
     /// host whose hardware address was not yet known is one short hold. A host
@@ -973,6 +987,10 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         let admission =
             self.neighbors
                 .admit(self.transport.neighbors(), &mut self.resolver, host, now);
+        if let Some(asked) = self.neighbors.take_asked_again() {
+            let until = crate::scanner::pacing::timer::later(asked, RESOLUTION_BUDGET);
+            self.allow_until(now.max(asked), until);
+        }
         if admission == Admission::Unreachable {
             self.record_unresolved(host, self.neighbors.given_up_in(host));
         }
@@ -1701,17 +1719,15 @@ pub(crate) trait RawPortScan: PortScanner {
                     }
                     // A probe whose neighbour the kernel is still asking for
                     // never left, so none of its attempts was spent: it goes
-                    // back to wait on the resolution as a first attempt, and
-                    // the kernel's own verdict decides what becomes of it. One
-                    // the kernel gave up on is an address nothing reaches.
+                    // back to wait on the resolution as a first attempt. So
+                    // does one whose neighbour it gave up on, which is asked
+                    // again once before it is an address nothing reaches;
+                    // admitting the probe is what decides which.
                     match self.core_mut().pending_neighbor(ip) {
-                        Some(NeighborState::Resolving) => {
+                        Some(NeighborState::Resolving | NeighborState::Failed) => {
                             self.core_mut()
                                 .hold(ip, port, Some(position), now + NEIGHBOR_RECHECK);
                             continue;
-                        }
-                        Some(NeighborState::Failed) => {
-                            self.core_mut().record_unresolved(ip, NeighborState::Failed);
                         }
                         Some(NeighborState::Resolved) | None => {}
                     }
@@ -2193,7 +2209,7 @@ mod tests {
             unreachable: std::collections::BTreeSet::new(),
             held_down: std::collections::HashMap::new(),
             hold_down_for: crate::transport::kernel_neighbors::hold_down(),
-            held_down_allowed: Instant::now(),
+            held_allowed: Instant::now(),
             neighbors: NeighborGates::default(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
@@ -2327,7 +2343,7 @@ mod tests {
             unreachable: std::collections::BTreeSet::new(),
             held_down: std::collections::HashMap::new(),
             hold_down_for: crate::transport::kernel_neighbors::hold_down(),
-            held_down_allowed: Instant::now(),
+            held_allowed: Instant::now(),
             neighbors: NeighborGates::default(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
@@ -2818,21 +2834,53 @@ mod tests {
         assert!(!core.is_unreachable(&TARGET));
     }
 
-    /// A neighbour the kernel gave up on is an address nothing reaches: filed
-    /// unreachable, sent nothing more, and no fault of this host's.
+    /// A neighbour the kernel gave up on twice is an address nothing reaches:
+    /// filed unreachable, sent nothing more, and no fault of this host's. The
+    /// first time, one probe goes, since its write is what has the kernel ask
+    /// again.
     #[test]
-    fn a_neighbour_the_kernel_gave_up_on_is_filed_unreachable_without_a_send() {
+    fn a_neighbour_the_kernel_gave_up_on_twice_is_filed_unreachable_without_a_send() {
         let state = std::sync::Arc::new(std::sync::Mutex::new(None));
         let (mut core, _session, _reads) = core_reading(std::sync::Arc::clone(&state));
         assert_eq!(core.admit(TARGET, Instant::now()), Admission::Send);
 
         *state.lock().unwrap() = Some(NeighborState::Failed);
+        assert_eq!(
+            core.admit(TARGET, Instant::now()),
+            Admission::Send,
+            "one unanswered resolution was taken as the verdict"
+        );
+        assert!(!core.is_unreachable(&TARGET));
         assert_eq!(core.admit(TARGET, Instant::now()), Admission::Unreachable);
         assert!(core.is_unreachable(&TARGET), "the address is filed");
         assert!(
             core.send_failure.is_none(),
             "and nothing on this host failed"
         );
+    }
+
+    /// Asking for a neighbour again is time the scan could not ask its host
+    /// in, and the deadline is given it: a scan sized in seconds would
+    /// otherwise end during the second resolution, with the host it was
+    /// asked for filed pending and its every port unasked.
+    #[test]
+    fn a_second_resolution_is_given_to_the_deadline() {
+        use crate::scanner::pacing::deadline::AdaptiveDeadlineConfig;
+        use crate::scanner::pacing::timer::ScanBudget;
+
+        let state = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (mut core, _session, _reads) = core_reading(std::sync::Arc::clone(&state));
+        let spent = ScanBudget::new(Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        core.deadline = AdaptiveDeadline::new(
+            AdaptiveDeadlineConfig::new(spent, spent, Duration::ZERO, Duration::ZERO, 4.0, 8),
+            1,
+        );
+        assert_eq!(core.admit(TARGET, Instant::now()), Admission::Send);
+
+        *state.lock().unwrap() = Some(NeighborState::Failed);
+        assert_eq!(core.admit(TARGET, Instant::now()), Admission::Send);
+
+        assert!(!core.deadline.hard_deadline_passed());
     }
 
     /// A probe that ran its whole schedule while the kernel was still asking
@@ -2887,7 +2935,7 @@ mod tests {
     }
 
     /// Hosts behind a gateway that never answers its address resolution send
-    /// one probe between them, and are filed unreachable on the gateway's
+    /// one probe between them for each resolution of it, and are filed unreachable on the gateway's
     /// verdict, every one of them.
     ///
     /// A host behind a gateway has no neighbour entry of its own: its writes
@@ -2935,6 +2983,11 @@ mod tests {
 
         *state.lock().unwrap() = Some(NeighborState::Failed);
         std::thread::sleep(NEIGHBOR_RECHECK);
+        assert_eq!(
+            core.admit(ROUTED[1], Instant::now()),
+            Admission::Send,
+            "a probe through the gateway has the kernel ask for it again"
+        );
         assert_eq!(
             core.admit(ROUTED[1], Instant::now()),
             Admission::Unreachable

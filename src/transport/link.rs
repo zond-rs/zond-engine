@@ -204,11 +204,28 @@ impl LinkNeighbors {
     /// resolve; neither is anything to hold a probe for. See
     /// [`Resolutions::state`] for the rest.
     pub(crate) fn state(&self, src: IpAddr, dst: IpAddr) -> Option<NeighborState> {
+        self.read(src, dst, Resolutions::state)
+    }
+
+    /// [`state`](Self::state), starting a resolution of the next hop even
+    /// where one went unanswered lately; see [`Resolutions::ask_again`].
+    pub(crate) fn ask_again(&self, src: IpAddr, dst: IpAddr) -> Option<NeighborState> {
+        self.read(src, dst, Resolutions::ask_again)
+    }
+
+    /// Where the next hop a probe from `src` to `dst` is framed to stands, as
+    /// `ask` reads the resolution of one this sender does not know.
+    fn read(
+        &self,
+        src: IpAddr,
+        dst: IpAddr,
+        ask: fn(&Arc<Resolutions>, &Ask) -> Option<NeighborState>,
+    ) -> Option<NeighborState> {
         let route = self.resolver.lock().ok()?.resolve_from(src, dst)?;
         if route.next_hop_mac.is_some() {
             return Some(NeighborState::Resolved);
         }
-        self.resolutions.state(&ask_for(&route).ok()?)
+        ask(&self.resolutions, &ask_for(&route).ok()?)
     }
 }
 

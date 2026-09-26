@@ -822,7 +822,14 @@ impl Tracer {
             let now = Instant::now();
             let watch = self.transport.neighbors();
             let (gates, resolver) = (&mut self.neighbors, &mut self.resolver);
+            let mut asking_again = Vec::new();
             waiting.retain(|&target| match gates.admit(watch, resolver, target, now) {
+                // Let through to a neighbour the kernel gave up on once, to
+                // have it ask again: written now, and waited on as before.
+                Admission::Send if gates.is_waiting(target) => {
+                    asking_again.push(target);
+                    true
+                }
                 Admission::Send => false,
                 Admission::Hold(_) => true,
                 Admission::Unreachable => {
@@ -830,6 +837,10 @@ impl Tracer {
                     false
                 }
             });
+            for target in asking_again {
+                self.send(target, MAX_HOPS, sources[&target]);
+            }
+            self.in_flight.clear();
         }
         unreached
     }

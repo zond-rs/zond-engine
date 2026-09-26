@@ -26,7 +26,9 @@
 //! Every pass asks per probe, with [`NeighborGates::admit`], so one rule holds
 //! a probe whichever path it leaves by: the first write to a neighbour the
 //! kernel does not hold goes, since the write is what starts the kernel's
-//! asking, and every probe behind it waits on the verdict. What a pass does
+//! asking, and every probe behind it waits on the verdict. A neighbour that
+//! does not answer is asked a second time before the verdict is taken; see
+//! [`NEIGHBOR_ROUNDS`]. What a pass does
 //! with a probe held is its own. The port scans and the echo probe send it
 //! later. The trace and the filter probes wait for it, with [`admit_waiting`]
 //! and [`send_when_admitted`], since neither reads the moment a probe left.
@@ -41,8 +43,9 @@
 //! The kernel asks only once a probe is written, so its table is read once
 //! instead, and the hosts whose neighbour it already holds are asked freely
 //! from then on. Either way a wave of new neighbours costs one resolution's
-//! wait rather than one each, and a neighbour that never answers is an address
-//! nothing reaches, with nothing sent to it past the write that asked.
+//! wait rather than one each, two where any is silent, and a neighbour that
+//! never answers is an address nothing reaches, with nothing sent to it past
+//! the writes that asked.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -64,18 +67,46 @@ use crate::transport::probe::NeighborWatch;
 /// answered from the same reading.
 pub(crate) const NEIGHBOR_RECHECK: Duration = Duration::from_millis(50);
 
-/// The longest a probe can be held while its neighbour is asked for: the
+/// The longest one resolution of a neighbour holds a probe: the
 /// resolution's budget, which is the kernel's three requests a second apart
 /// on either path, and the one recheck it takes to read the verdict.
-///
-/// What a pass with a fixed deadline allows its first probes on top of their
-/// own schedule, so a probe held for a neighbour that answers late is not
-/// left with no time to be answered in.
 pub(crate) const RESOLUTION_BUDGET: Duration = ARP_TIMEOUT.saturating_add(NEIGHBOR_RECHECK);
 
-/// The longest a neighbour may be read as still being asked for before it is
-/// given up on and the host behind it filed unreached: twice
-/// [`RESOLUTION_BUDGET`].
+/// How many resolutions of one neighbour a pass waits out unanswered before
+/// it gives the neighbour up, and every host behind it with it.
+///
+/// Two, because one unanswered resolution is three seconds of a neighbour's
+/// silence, and a live machine can be silent that long: a wired interface or
+/// switch port in power save sleeping through three broadcasts, or a switch
+/// under load dropping them. Given up on the first, such a host is
+/// unreachable for the rest of the scan with every port unasked, on a silence
+/// that has ended a moment later. Two resolutions are six requests across six
+/// seconds, about the evidence macOS's own kernel takes, five requests a
+/// second apart, before it gives a neighbour up. A third would cost every
+/// dead neighbour another resolution to learn what two said.
+///
+/// The second is asked as soon as the first is given up, not after a pause:
+/// a pause is time in which nobody asks, and buys nothing a request sent in
+/// it would not. On the kernel's path a write starts it, as it started the
+/// first, since Linux asks afresh for a neighbour it gave up on when a write
+/// needs one; a frame sender is told to set its memory of the first aside.
+/// Either way the second resolutions of a wave of dead neighbours run
+/// together as the first did, so what they cost a pass is one more
+/// resolution's wait for the whole wave, not one each.
+pub(crate) const NEIGHBOR_ROUNDS: u8 = 2;
+
+/// The longest a probe can be held while its neighbour is asked for, every
+/// resolution of it: [`RESOLUTION_BUDGET`] for each of [`NEIGHBOR_ROUNDS`].
+///
+/// What a pass with a fixed deadline allows its first probes on top of their
+/// own schedule, so a probe held for a neighbour that answers late, or only
+/// when asked again, is not left with no time to be answered in.
+pub(crate) const NEIGHBOR_BUDGET: Duration =
+    RESOLUTION_BUDGET.saturating_mul(NEIGHBOR_ROUNDS as u32);
+
+/// The longest one resolution of a neighbour may be read as still running
+/// before the neighbour is given up on and the host behind it filed
+/// unreached: twice [`RESOLUTION_BUDGET`].
 ///
 /// Both resolutions conclude on their own within their budget, the kernel's
 /// after its third request and the frame path's after its own, so a wait past
@@ -99,6 +130,8 @@ enum NeighborGate {
         /// When it was asked for, which a reading of the kernel's table has
         /// to postdate to show the entry the probe's write created.
         at: Instant,
+        /// Which of the [`NEIGHBOR_ROUNDS`] resolutions this is, from one.
+        round: u8,
     },
     /// The neighbour answered, or there is nothing to go on: the hosts behind
     /// it are asked freely.
@@ -133,6 +166,9 @@ pub(crate) struct NeighborGates {
     /// filed under says which, since the two are different faults: a
     /// neighbour that is not there, and a resolution that never concluded.
     given_up: HashMap<IpAddr, NeighborState>,
+    /// When [`admit`](Self::admit) last asked for a neighbour again, not yet
+    /// taken by [`take_asked_again`](Self::take_asked_again).
+    asked_again: Option<Instant>,
 }
 
 impl NeighborGates {
@@ -143,11 +179,15 @@ impl NeighborGates {
     ///   then on;
     /// - **still resolving**, and the probe is held for [`NEIGHBOR_RECHECK`]
     ///   and asks again;
-    /// - **failed**, and the address is unreachable: the neighbour was asked
-    ///   three times across three seconds and said nothing. So is one still
-    ///   read as resolving [`RESOLUTION_WAIT_LIMIT`] after it was asked for,
-    ///   whose resolution is not going to conclude, so no caller waits on a
-    ///   neighbour for longer than that whatever the resolution does.
+    /// - **failed**, and the neighbour is asked again at once, the probe held
+    ///   while it is, or on the kernel's path sent, since its write is what
+    ///   asks; see [`NEIGHBOR_ROUNDS`];
+    /// - **failed again**, and the address is unreachable: the neighbour was
+    ///   asked three times across three seconds, twice, and said nothing. So
+    ///   is one still read as resolving [`RESOLUTION_WAIT_LIMIT`] after it was
+    ///   last asked for, whose resolution is not going to conclude, so no
+    ///   caller waits on one resolution for longer than that whatever the
+    ///   resolution does.
     ///
     /// The kernel's asking starts with a write, so the first probe that needs
     /// a neighbour goes, which starts it, and every probe behind that one
@@ -176,23 +216,18 @@ impl NeighborGates {
         let Some(neighbor) = neighbor_of(watch, resolver, host) else {
             return Admission::Send;
         };
-        let asked = match self.gates.get(&neighbor) {
+        let (asked, round) = match self.gates.get(&neighbor) {
             Some(NeighborGate::Open) => return Admission::Send,
-            Some(NeighborGate::Asked { at }) => *at,
+            Some(NeighborGate::Asked { at, round }) => (*at, *round),
             None if matches!(watch, NeighborWatch::Kernel(_)) => {
                 // Stamped here rather than from `now`, which the caller read
                 // before this batch of sends: the table has to be read after
                 // this probe's write to show the entry the write creates.
-                self.gates
-                    .insert(neighbor, NeighborGate::Asked { at: Instant::now() });
+                self.ask(neighbor, 1);
                 self.gated.insert(host, neighbor);
                 return Admission::Send;
             }
-            None => {
-                let at = Instant::now();
-                self.gates.insert(neighbor, NeighborGate::Asked { at });
-                at
-            }
+            None => (self.ask(neighbor, 1), 1),
         };
         self.gated.insert(host, neighbor);
         match state(watch, resolver, host, neighbor, asked) {
@@ -203,6 +238,20 @@ impl NeighborGates {
                 Admission::Unreachable
             }
             Some(NeighborState::Resolving) => Admission::Hold(now + NEIGHBOR_RECHECK),
+            Some(NeighborState::Failed) if round < NEIGHBOR_ROUNDS => {
+                self.asked_again = Some(self.ask(neighbor, round + 1));
+                match watch {
+                    // The write is what has the kernel ask again, as it was
+                    // what had it ask the first time.
+                    NeighborWatch::Kernel(_) => Admission::Send,
+                    NeighborWatch::Frames(link) => {
+                        if let Some(source) = resolver.resolve(host) {
+                            link.ask_again(source, host);
+                        }
+                        Admission::Hold(now + NEIGHBOR_RECHECK)
+                    }
+                }
+            }
             Some(NeighborState::Failed) => {
                 self.given_up.insert(neighbor, NeighborState::Failed);
                 Admission::Unreachable
@@ -212,6 +261,22 @@ impl NeighborGates {
                 Admission::Send
             }
         }
+    }
+
+    /// Marks `neighbor` asked for, in resolution `round`, as of now, and
+    /// returns when.
+    fn ask(&mut self, neighbor: IpAddr, round: u8) -> Instant {
+        let at = Instant::now();
+        self.gates
+            .insert(neighbor, NeighborGate::Asked { at, round });
+        at
+    }
+
+    /// When [`admit`](Self::admit) last asked for a neighbour again, once:
+    /// for a pass that gives its deadline the time the second resolution
+    /// takes.
+    pub(crate) fn take_asked_again(&mut self) -> Option<Instant> {
+        self.asked_again.take()
     }
 
     /// Opens the gate of every host in `hosts` whose neighbour the kernel's
@@ -247,7 +312,7 @@ impl NeighborGates {
         host: IpAddr,
     ) -> Option<NeighborState> {
         let neighbor = *self.gated.get(&host)?;
-        let Some(NeighborGate::Asked { at }) = self.gates.get(&neighbor).copied() else {
+        let Some(NeighborGate::Asked { at, .. }) = self.gates.get(&neighbor).copied() else {
             return None;
         };
         state(watch?, resolver, host, neighbor, at)
@@ -257,12 +322,19 @@ impl NeighborGates {
     /// answering.
     pub(crate) fn waiting(&self) -> Vec<IpAddr> {
         self.gated
-            .iter()
-            .filter(|(_, neighbor)| {
-                matches!(self.gates.get(neighbor), Some(NeighborGate::Asked { .. }))
-            })
-            .map(|(host, _)| *host)
+            .keys()
+            .copied()
+            .filter(|host| self.is_waiting(*host))
             .collect()
+    }
+
+    /// Whether `host`'s probes are waiting on a neighbour not yet seen
+    /// answering: true of a host [`admit`](Self::admit) just let a probe
+    /// through to because that probe's write is what asks for it.
+    pub(crate) fn is_waiting(&self, host: IpAddr) -> bool {
+        self.gated.get(&host).is_some_and(|neighbor| {
+            matches!(self.gates.get(neighbor), Some(NeighborGate::Asked { .. }))
+        })
     }
 
     /// Why `host` is unreachable, for a host [`admit`](Self::admit) turned
@@ -302,7 +374,8 @@ impl NeighborGates {
 
 /// Asks for the neighbour of every host in `hosts` at once, and waits until
 /// each has answered or been given up, which is one resolution's wait for all
-/// of them. Returns the gates the pass admits its probes through from then on,
+/// of them, or two where any went unanswered once; see [`NEIGHBOR_ROUNDS`].
+/// Returns the gates the pass admits its probes through from then on,
 /// and the hosts whose neighbour was given up, which nothing reaches from
 /// here, each with why.
 ///
@@ -311,8 +384,8 @@ impl NeighborGates {
 /// asks only once a probe is written: it reads the kernel's table once, and
 /// opens the gate of every host whose neighbour is held there, so those are
 /// asked freely and only the rest wait on the resolution their first probe
-/// starts. Waits no longer than [`RESOLUTION_WAIT_LIMIT`], past which
-/// [`NeighborGates::admit`] gives a neighbour up, and ends early, with the
+/// starts. Waits no longer than [`RESOLUTION_WAIT_LIMIT`] a resolution, past
+/// which [`NeighborGates::admit`] gives a neighbour up, and ends early, with the
 /// rest unresolved, when the scan is stopped.
 pub(crate) async fn resolve_ahead(
     ctx: &ScanContext,
@@ -349,8 +422,8 @@ pub(crate) async fn resolve_ahead(
 /// stopped while it waited.
 ///
 /// For a pass that sends its probes to one host at a time and reads nothing
-/// from when a probe left, the trace. Bounded by [`RESOLUTION_WAIT_LIMIT`],
-/// past which [`NeighborGates::admit`] gives the neighbour up.
+/// from when a probe left, the trace. Bounded by [`RESOLUTION_WAIT_LIMIT`] a
+/// resolution, past which [`NeighborGates::admit`] gives the neighbour up.
 pub(crate) async fn admit_waiting(
     gates: &mut NeighborGates,
     ctx: &ScanContext,
@@ -381,7 +454,8 @@ pub(crate) async fn admit_waiting(
 /// The probes held go together: each pass over them sends every one whose
 /// neighbour has answered and waits one [`NEIGHBOR_RECHECK`] for the rest, so
 /// the first probes of every new neighbour start their resolutions together
-/// and a wave of them costs one resolution's wait. For a pass that sends each
+/// and a wave of them costs one resolution's wait, or two where any went
+/// unanswered once. For a pass that sends each
 /// probe once and reads nothing from when it left, the filter probes. Probes
 /// not yet sent when the scan is stopped are dropped.
 pub(crate) async fn send_when_admitted<P>(
@@ -554,6 +628,7 @@ mod tests {
         let (watch, mut resolver) = kernel_showing(NeighborState::Failed);
         let mut gates = NeighborGates::default();
         gates.admit(Some(&watch), &mut resolver, HOST, start);
+        gates.admit(Some(&watch), &mut resolver, HOST, Instant::now());
         assert_eq!(
             gates.admit(Some(&watch), &mut resolver, HOST, Instant::now()),
             Admission::Unreachable
