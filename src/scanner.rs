@@ -1207,7 +1207,7 @@ fn spawn_discovery(
         // Last, and after every strategy that could add an address: what this
         // machine's own interfaces and routes say about what was found.
         vantage::attribute(&ctx);
-        orchestrator::run_correlation(&ctx, cfg.service_detection);
+        orchestrator::correlate(&ctx, cfg.service_detection).await;
         recorder.finish_last(ctx)
     })
 }
@@ -1606,7 +1606,7 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         // What this machine's own interfaces say about what was heard. The same
         // pass a scan ends with, and it sends nothing either.
         vantage::attribute(&ctx);
-        orchestrator::run_correlation(&ctx, cfg.service_detection);
+        orchestrator::correlate(&ctx, cfg.service_detection).await;
         recorder.finish_last(ctx)
     })
 }
@@ -1973,7 +1973,7 @@ fn spawn_scan(
             let sctp = orchestrator::sctp_discovery_port(&target_map);
             run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx, syn_ports, sctp).await;
 
-            orchestrator::run_correlation(&ctx, cfg.service_detection);
+            orchestrator::correlate(&ctx, cfg.service_detection).await;
             let (report, liveness) = recorder.close(&ctx);
             (Some(report), liveness)
         };
@@ -2049,7 +2049,7 @@ fn spawn_scan(
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
         ctx.enter_stage(Stage::Finishing, None);
         vantage::attribute(&ctx);
-        orchestrator::run_correlation(&ctx, cfg.service_detection);
+        orchestrator::correlate(&ctx, cfg.service_detection).await;
         orchestrator::run_cert_posture(&ctx);
         let report = recorder.finish_last(ctx);
 

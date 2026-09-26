@@ -522,6 +522,9 @@ impl HostScanner for LocalScanner {
     }
 
     async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
+        // Every reply records its sender's hardware address, and the first
+        // loads the manufacturer database; see the call.
+        crate::model::mac::load_vendors().await;
         let mut packet_iter = probes::eth_packet_iter(
             &self.identity.mac,
             &self.identity.ipv4,

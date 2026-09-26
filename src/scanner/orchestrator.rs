@@ -1651,6 +1651,8 @@ pub(super) async fn run_traceroute(
 /// match. That gate reads oddly at first sight, since it makes a *service*
 /// setting decide whether a report carries vulnerability findings, and it is
 /// the honest one: with the pass off there is no CPE anywhere to join on.
+///
+/// A scan runs it through [`correlate`], off the runtime's workers.
 pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
     if detection == ServiceDetection::Off {
         return;
@@ -1660,6 +1662,28 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
     for key in ctx.hosts_owed_passes() {
         let matched = ctx.read_host(&key, |host| crate::cve::matches(host, catalogue));
         record_port_findings(ctx, key, matched.unwrap_or_default());
+    }
+}
+
+/// [`run_correlation`] on the blocking pool, for a scan to await.
+///
+/// The catalogue is decoded the first time anything asks for it, which in a
+/// scan is this step, and the decode is tens of milliseconds in a debug build.
+/// The scan's own probes are done by then, but a runtime is the caller's and
+/// may be carrying another scan's, and a worker busy decoding holds up the
+/// readiness of every connection in flight on it, each of which is then timed
+/// as that much slower than it was. The join after it runs over every host
+/// and is kept off the workers for the same reason.
+pub(super) async fn correlate(ctx: &ScanContext, detection: ServiceDetection) {
+    if detection == ServiceDetection::Off {
+        return;
+    }
+    let ctx = ctx.clone();
+    let joined = tokio::task::spawn_blocking(move || run_correlation(&ctx, detection)).await;
+    if let Err(failed) = joined
+        && failed.is_panic()
+    {
+        std::panic::resume_unwind(failed.into_panic());
     }
 }
 

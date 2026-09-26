@@ -199,6 +199,26 @@ pub fn vendor(mac: &MacAddr) -> Option<String> {
     Some(entry.company_name.clone())
 }
 
+/// Loads the manufacturer database, where nothing has yet, on the blocking
+/// pool, for a pass that reads link-layer addresses to call before its first
+/// frame is read.
+///
+/// The database is loaded the first time a host's address is recorded, and a
+/// pass records one inside the task that read the frame. The load parses tens
+/// of thousands of entries, some hundreds of milliseconds in a debug build,
+/// and a runtime worker busy with it holds up every probe whose answer it
+/// would have read meanwhile, so each of those is timed as that much slower
+/// than it was. Loaded here, before anything is timed and off the workers, it
+/// holds up no probe.
+pub(crate) async fn load_vendors() {
+    // A load that fails is remembered as failed, which `oui_db` hands every
+    // later caller in the same way; nothing is lost here.
+    let _ = tokio::task::spawn_blocking(|| {
+        oui_db();
+    })
+    .await;
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║

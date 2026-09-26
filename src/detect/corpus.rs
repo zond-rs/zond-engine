@@ -66,6 +66,11 @@ static EMBEDDED: OnceLock<Detections> = OnceLock::new();
 impl Detections {
     /// The detections this build ships, compiled from `assets/detect/`. Compiled
     /// once on the first call and shared by every caller after.
+    ///
+    /// The first call is tens of milliseconds of work in a debug build. Make it
+    /// before a runtime starts, or on its blocking pool: a runtime worker busy
+    /// with it holds up the readiness of every connection in flight on it, and a
+    /// scan in flight there times each of those as that much slower than it was.
     pub fn embedded() -> Self {
         EMBEDDED
             .get_or_init(|| Detections {

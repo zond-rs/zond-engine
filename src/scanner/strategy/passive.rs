@@ -1334,6 +1334,9 @@ impl PassiveListener {
         // happened to arrive would be a run nobody could stop on a quiet link.
         let mut stopping = tokio::time::interval(ABORT_POLL);
         stopping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // A frame's sender is recorded by its hardware address, and the first
+        // loads the manufacturer database; see the call.
+        crate::model::mac::load_vendors().await;
 
         loop {
             if self.ctx.handle.should_stop() {
