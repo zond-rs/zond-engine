@@ -1829,6 +1829,7 @@ pub(crate) async fn drive<S: RawPortScan>(
     // A transport whose capture cannot hear this scan's answers would have
     // every port read as silence. Every target is still taken and written down
     // as unasked, so the report says which ports went without a question.
+    crate::fingerprint::load_corpus().await;
     let protocol = scanner.protocol();
     if let Some(kind) = scanner.core().transport.mismatched_for(protocol) {
         while let Some(target) = targets.recv().await {

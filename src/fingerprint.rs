@@ -434,6 +434,29 @@ pub fn baseline_service(port: u16) -> Option<Service> {
     lookup_service_name(port).map(|name| Service::new(name, 0))
 }
 
+/// Builds the shipped signature corpus, where nothing has yet, on the blocking
+/// pool, for a scan to call before its first probe leaves.
+///
+/// The corpus is built the first time anything asks for it, and the first to
+/// ask in a scan is a probe filing its verdict: every verdict carries the
+/// port's registered name. The build is tens of milliseconds of work, and a
+/// runtime worker busy with it holds up the readiness of every connection in
+/// flight, not only its own. On loopback every connect that completes
+/// meanwhile is read the moment the build ends, some 40 ms on in a debug
+/// build, where a loopback handshake takes a tenth of a millisecond. A
+/// connect's round trip runs from its start to its readiness being read, so
+/// each would be filed as a 40 ms path, and a host with more ports than its
+/// round-trip window holds would report nothing else. Built here, before
+/// anything is timed and off the workers, it holds up no probe.
+pub(crate) async fn load_corpus() {
+    // A panic building it is the embedded corpus failing to decode, which
+    // the next caller meets and reports the same way; nothing is lost here.
+    let _ = tokio::task::spawn_blocking(|| {
+        SignatureDb::global();
+    })
+    .await;
+}
+
 /// A [`Port`] in the given `state` carrying only the [`baseline_service`] label.
 ///
 /// This is the shape every discovery path records before (and if) a full

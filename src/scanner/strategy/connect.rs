@@ -658,6 +658,7 @@ impl PortScanner for ConnectUdpPortScanner {
     }
 
     async fn scan(&mut self, mut rx: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
+        crate::fingerprint::load_corpus().await;
         let ctx = self.ctx.clone();
         let shaping = Shaping::from(&self.evasion);
         let mut shortfall = Shortfall::default();
@@ -727,6 +728,7 @@ pub async fn scan(
     evasion: &EvasionProfile,
     zones: &ZoneMap,
 ) -> Result<(), StrategyError> {
+    crate::fingerprint::load_corpus().await;
     let shaping = Shaping::from(evasion);
     let folder = ctx.clone();
     let mut shortfall = Shortfall::default();
